@@ -1531,7 +1531,7 @@ pub mod velocity {
 
     pub fn update_perp_market_taker_fee_addon(
         ctx: Context<AdminUpdatePerpMarket>,
-        taker_fee_addon_tenth_bps: i16,
+        taker_fee_addon_tenth_bps: u16,
     ) -> Result<()> {
         handle_update_perp_market_taker_fee_addon(ctx, taker_fee_addon_tenth_bps)
     }

@@ -2121,14 +2121,6 @@ impl UserStats {
         !self.referrer.eq(&Pubkey::default())
     }
 
-    /// Raw stored 30d volume (taker + maker), WITHOUT projecting decay to the
-    /// current time, so stale by the whole idle gap since the last fill. Use
-    /// `get_total_30d_volume_at` for anything that prices off the live
-    /// trailing window (fee tiers).
-    pub fn get_total_30d_volume(&self) -> VelocityResult<u64> {
-        self.taker_volume_30d.safe_add(self.maker_volume_30d)
-    }
-
     /// Trailing-30d volume (taker + maker) projected to `now`: applies the
     /// same linear decay the next write would apply (`sum * (30d - gap)/30d`,
     /// zero at gap >= 30d) to each component against its own last-update

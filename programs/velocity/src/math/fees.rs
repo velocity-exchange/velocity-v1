@@ -5,7 +5,7 @@ use {
             casting::Cast,
             constants::{
                 FEE_ADJUSTMENT_MAX, FEE_DENOMINATOR, FEE_PERCENTAGE_DENOMINATOR,
-                FIVE_MILLION_QUOTE, TEN_BPS, TEN_MILLION_QUOTE,
+                FIVE_MILLION_QUOTE, PERP_FEE_TIER_MAX_INDEX, TEN_BPS, TEN_MILLION_QUOTE,
             },
             helpers::get_proportion_u128,
             safe_math::SafeMath,
@@ -88,7 +88,7 @@ pub fn calculate_fee_for_fulfillment_with_amm(
     fee_adjustment: i16,
     builder_fee_bps: Option<u16>,
     vamm_maker_rebate: bool,
-    taker_fee_addon_tenth_bps: i16,
+    taker_fee_addon_tenth_bps: u16,
     now: i64,
     promo_fee_tier: u8,
 ) -> VelocityResult<FillFees> {
@@ -228,17 +228,18 @@ pub fn calculate_fee_for_fulfillment_with_amm(
     }
 }
 
-/// Taker fee = `(tier fee + market add-on) * (1 +/- fee_adjustment%)`,
-/// floored at zero. The add-on (`PerpMarket.taker_fee_addon_tenth_bps`,
-/// tenth-bps, signed) is additive per market (an absolute surcharge or promo
-/// discount the multiplicative `fee_adjustment` cannot express across tiers),
-/// and `fee_adjustment` then scales the whole configured fee. The maker
-/// rebate sees `fee_adjustment` only, never the add-on.
+/// Taker fee = `(tier fee + market add-on) * (1 +/- fee_adjustment%)`.
+/// The add-on (`PerpMarket.taker_fee_addon_tenth_bps`, tenth-bps, unsigned)
+/// is an additive per-market surcharge (an absolute markup the multiplicative
+/// `fee_adjustment` cannot express across tiers), and `fee_adjustment` then
+/// scales the whole configured fee. Surcharge only: the fee never drops below
+/// the tier fee, so it always funds the maker rebate the tier validation
+/// guarantees. The maker rebate sees `fee_adjustment` only, never the add-on.
 fn calculate_taker_fee(
     quote_asset_amount: u64,
     fee_tier: &FeeTier,
     fee_adjustment: i16,
-    taker_fee_addon_tenth_bps: i16,
+    taker_fee_addon_tenth_bps: u16,
 ) -> VelocityResult<u64> {
     let tier_fee = quote_asset_amount
         .cast::<u128>()?
@@ -248,15 +249,11 @@ fn calculate_taker_fee(
     // tenth-bps against FEE_DENOMINATOR (100_000 = 100%), same unit the tier
     // numerators use at the default denominator
     let addon_fee = quote_asset_amount
-        .cast::<i128>()?
-        .safe_mul(taker_fee_addon_tenth_bps.cast::<i128>()?)?
-        .safe_div(FEE_DENOMINATOR.cast::<i128>()?)?;
+        .cast::<u128>()?
+        .safe_mul(taker_fee_addon_tenth_bps.cast::<u128>()?)?
+        .safe_div(FEE_DENOMINATOR.cast::<u128>()?)?;
 
-    let mut taker_fee = tier_fee
-        .cast::<i128>()?
-        .safe_add(addon_fee)?
-        .max(0)
-        .cast::<u64>()?;
+    let mut taker_fee = tier_fee.safe_add(addon_fee)?.cast::<u64>()?;
 
     if fee_adjustment < 0 {
         taker_fee = taker_fee.saturating_sub(
@@ -396,7 +393,7 @@ pub fn calculate_fee_for_fulfillment_with_match(
     market_type: &MarketType,
     fee_adjustment: i16,
     builder_fee_bps: Option<u16>,
-    taker_fee_addon_tenth_bps: i16,
+    taker_fee_addon_tenth_bps: u16,
     now: i64,
     promo_fee_tier: u8,
 ) -> VelocityResult<FillFees> {
@@ -507,19 +504,18 @@ fn determine_perp_fee_tier(
 ) -> VelocityResult<FeeTier> {
     let total_30d_volume = user_stats.get_total_30d_volume_at(now)?;
 
-    const TIER_LENGTH: usize = 2;
+    const VOLUME_THRESHOLDS: [u64; PERP_FEE_TIER_MAX_INDEX] =
+        [FIVE_MILLION_QUOTE, TEN_MILLION_QUOTE * 8];
 
-    const VOLUME_THRESHOLDS: [u64; TIER_LENGTH] = [FIVE_MILLION_QUOTE, TEN_MILLION_QUOTE * 8];
-
-    let mut fee_tier_index = TIER_LENGTH;
-    for i in 0..TIER_LENGTH {
+    let mut fee_tier_index = PERP_FEE_TIER_MAX_INDEX;
+    for i in 0..PERP_FEE_TIER_MAX_INDEX {
         if total_30d_volume < VOLUME_THRESHOLDS[i] {
             fee_tier_index = i;
             break;
         }
     }
 
-    fee_tier_index = fee_tier_index.max((promo_fee_tier as usize).min(TIER_LENGTH));
+    fee_tier_index = fee_tier_index.max((promo_fee_tier as usize).min(PERP_FEE_TIER_MAX_INDEX));
 
     Ok(fee_structure.fee_tiers[fee_tier_index])
 }

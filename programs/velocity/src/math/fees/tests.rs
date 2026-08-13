@@ -604,10 +604,16 @@ mod calculate_fee_for_taker_and_maker {
 mod calculate_fee_for_order_fulfill_against_amm {
     use crate::{
         math::{
-            constants::QUOTE_PRECISION_U64,
-            fees::{calculate_fee_for_fulfillment_with_amm, FillFees},
+            constants::{MAX_TAKER_FEE_ADDON_TENTH_BPS, QUOTE_PRECISION_U64},
+            fees::{
+                calculate_fee_for_fulfillment_with_amm, calculate_fee_for_fulfillment_with_match,
+                FillFees,
+            },
         },
-        state::{state::FeeStructure, user::UserStats},
+        state::{
+            state::FeeStructure,
+            user::{MarketType, UserStats},
+        },
     };
 
     #[test]
@@ -859,31 +865,37 @@ mod calculate_fee_for_order_fulfill_against_amm {
         .unwrap();
         assert_eq!(user_fee, 57500);
 
-        // negative addon larger than the tier fee floors at zero
+        // match path at the max addon: the surcharge only grows the taker
+        // fee, so the remainder always funds the full maker rebate (addon is
+        // unsigned precisely so this can never underflow and revert fills)
         let FillFees {
             user_fee,
+            maker_rebate,
+            fee_to_market,
             protocol_fee,
             ..
-        } = calculate_fee_for_fulfillment_with_amm(
+        } = calculate_fee_for_fulfillment_with_match(
             &taker_stats,
+            &None,
             quote_asset_amount,
             &fee_structure,
             0,
             60,
-            false,
-            false,
             0,
             false,
+            &MarketType::Perp,
             0,
             None,
-            false,
-            -150,
+            MAX_TAKER_FEE_ADDON_TENTH_BPS,
             0,
             0,
         )
         .unwrap();
-        assert_eq!(user_fee, 0);
-        assert_eq!(protocol_fee, 0);
+        // 10bps tier fee + 10bps max addon
+        assert_eq!(user_fee, 200000);
+        assert_eq!(maker_rebate, 60000);
+        assert_eq!(fee_to_market, 0);
+        assert_eq!(protocol_fee, 140000);
     }
 
     #[test]
@@ -1031,6 +1043,9 @@ mod calculate_fee_for_order_fulfill_against_amm {
             0,
             None,
             true,
+            0,
+            0,
+            0,
         )
         .unwrap();
 
@@ -1183,7 +1198,9 @@ mod calcuate_fee_tiers {
             determine_user_fee_tier(&taker_stats, &fee_structure, &MarketType::Perp, 0, 2).unwrap();
         assert_eq!(res.fee_numerator, 20);
 
-        // out-of-range promo clamps to the top tier
+        // out-of-range promo clamps to the top tier (defensive only:
+        // update_promo_fee_tier validates against PERP_FEE_TIER_MAX_INDEX,
+        // so a stored value above it is unreachable via the admin ix)
         let res =
             determine_user_fee_tier(&taker_stats, &fee_structure, &MarketType::Perp, 0, 9).unwrap();
         assert_eq!(res.fee_numerator, 20);

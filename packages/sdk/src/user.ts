@@ -4301,14 +4301,18 @@ export class User {
 	}
 
 	/**
-	 * Looks up the user's fee tier from the state account's fee structure.
+	 * Looks up the user's fee tier from the state account's fee structure,
+	 * mirroring the program's `determine_perp_fee_tier`.
 	 *
-	 * For perp markets, the tier is selected by the user's rolling 30-day
-	 * volume (`getUser30dRollingVolumeEstimate`, QUOTE_PRECISION) against fixed
-	 * breakpoints — $2M, $10M, $20M, $80M, $200M — picking the lowest-index
-	 * tier whose breakpoint the user's volume is still under (tier 5, the
-	 * lowest fees, if volume meets or exceeds the top breakpoint). Spot markets
-	 * always use tier 0 (no volume-based discount).
+	 * For perp markets, the tier is selected by the user's trailing 30-day
+	 * volume projected to `now` (`getUser30dRollingVolumeEstimate`,
+	 * QUOTE_PRECISION — the stored rolling sum decays lazily on-chain, so the
+	 * read applies the same decay virtually) against fixed breakpoints — $5M,
+	 * $80M — picking the lowest-index tier whose breakpoint the volume is
+	 * still under (tier 2, the lowest fees, at or above the top breakpoint).
+	 * While `state.promoFeeTier` is non-zero it floors everyone's tier at that
+	 * index (0 = disabled; nobody is downgraded by it). Spot markets always
+	 * use tier 0 (no volume-based discount).
 	 * @param marketType `MarketType.PERP` or `MarketType.SPOT`.
 	 * @param now Optional unix timestamp (seconds) to evaluate the rolling volume window as of; defaults to current time.
 	 * @returns The matching `FeeTier` (numerator/denominator fee fractions and referee-discount fractions).

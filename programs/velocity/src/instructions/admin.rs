@@ -23,8 +23,8 @@ use {
                 LIQUIDATION_FEE_PRECISION, MAX_CONCENTRATION_COEFFICIENT,
                 MAX_TAKER_FEE_ADDON_TENTH_BPS, MM_ORACLE_MAX_STEP_PCT_PRECISION,
                 MM_ORACLE_MIN_SLOT_GAP, PERCENTAGE_PRECISION, PERCENTAGE_PRECISION_I128,
-                PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U32, QUOTE_PRECISION_I64,
-                QUOTE_SPOT_MARKET_INDEX, SPOT_BALANCE_PRECISION,
+                PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U32, PERP_FEE_TIER_MAX_INDEX,
+                QUOTE_PRECISION_I64, QUOTE_SPOT_MARKET_INDEX, SPOT_BALANCE_PRECISION,
                 SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_IMF_PRECISION, SPOT_WEIGHT_PRECISION,
                 THIRTEEN_DAY, TWENTY_FOUR_HOUR,
             },
@@ -2484,13 +2484,16 @@ pub fn handle_update_promo_fee_tier(
 ) -> Result<()> {
     let mut state = ctx.accounts.state.load_mut()?;
 
-    // 10 fee-tier slots exist; the tier fn additionally clamps to the live
-    // tier count. 0 = disabled (no-op floor).
+    // validate against the highest populated tier, not the 10-slot array:
+    // the tier fn clamps to PERP_FEE_TIER_MAX_INDEX, so anything above it
+    // would validate and then silently mean a lower tier. 0 = disabled
+    // (no-op floor).
     validate!(
-        (promo_fee_tier as usize) < state.perp_fee_structure.fee_tiers.len(),
+        (promo_fee_tier as usize) <= PERP_FEE_TIER_MAX_INDEX,
         ErrorCode::DefaultError,
-        "promo fee tier {} out of range",
-        promo_fee_tier
+        "promo fee tier {} above max populated tier {}",
+        promo_fee_tier,
+        PERP_FEE_TIER_MAX_INDEX
     )?;
 
     msg!(
@@ -2908,15 +2911,15 @@ pub fn handle_update_perp_market_fee_adjustment(
 
 pub fn handle_update_perp_market_taker_fee_addon(
     ctx: Context<AdminUpdatePerpMarket>,
-    taker_fee_addon_tenth_bps: i16,
+    taker_fee_addon_tenth_bps: u16,
 ) -> Result<()> {
     let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
     msg!("perp market {}", perp_market.market_index);
 
     validate!(
-        taker_fee_addon_tenth_bps.unsigned_abs() <= MAX_TAKER_FEE_ADDON_TENTH_BPS,
+        taker_fee_addon_tenth_bps <= MAX_TAKER_FEE_ADDON_TENTH_BPS,
         ErrorCode::DefaultError,
-        "taker fee addon {} magnitude greater than max {}",
+        "taker fee addon {} greater than max {}",
         taker_fee_addon_tenth_bps,
         MAX_TAKER_FEE_ADDON_TENTH_BPS
     )?;

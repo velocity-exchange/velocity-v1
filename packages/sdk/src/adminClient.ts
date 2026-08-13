@@ -5019,13 +5019,14 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Sets a perp market's additive taker-fee add-on: `taker fee = (tier fee +
-	 * add-on) * (1 +/- feeAdjustment%)`, floored at zero. Positive = surcharge,
-	 * negative = promo discount; maker rebates are untouched. Requires warm
-	 * admin (`check_warm`). Throws `DefaultError` on-chain if
-	 * `abs(takerFeeAddonTenthBps) > MAX_TAKER_FEE_ADDON_TENTH_BPS` (100).
+	 * Sets a perp market's additive taker-fee surcharge: `taker fee = (tier fee
+	 * + add-on) * (1 +/- feeAdjustment%)`. Unsigned, surcharge only (promo
+	 * discounts go through `updatePromoFeeTier` — a discount could push the
+	 * taker fee below the maker rebate it funds); maker rebates are untouched.
+	 * Requires warm admin (`check_warm`). Throws `DefaultError` on-chain if
+	 * `takerFeeAddonTenthBps > MAX_TAKER_FEE_ADDON_TENTH_BPS` (100).
 	 * @param perpMarketIndex - Perp market to update.
-	 * @param takerFeeAddonTenthBps - Signed add-on in tenth-bps (10 = 1bp, 15 = 1.5bp), -100..100.
+	 * @param takerFeeAddonTenthBps - Unsigned add-on in tenth-bps (10 = 1bp, 15 = 1.5bp), 0..100.
 	 * @returns Transaction signature.
 	 */
 	public async updatePerpMarketTakerFeeAddon(

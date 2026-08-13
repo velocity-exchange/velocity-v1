@@ -11235,7 +11235,7 @@
       "args": [
         {
           "name": "taker_fee_addon_tenth_bps",
-          "type": "i16"
+          "type": "u16"
         }
       ]
     },
@@ -21243,16 +21243,19 @@
           {
             "name": "taker_fee_addon_tenth_bps",
             "docs": [
-              "Additive per-market taker-fee add-on in tenth-bps (10 = 1bp), signed.",
-              "Applied on top of the tier fee before `fee_adjustment` scales the sum:",
-              "`taker_fee = max(0, tier_fee + add-on) * (1 +/- fee_adjustment%)`.",
-              "Positive = surcharge (e.g. toxic-flow markets), negative = promo",
-              "discount. Taker fee only; the maker rebate and the post-only path see",
+              "Additive per-market taker-fee surcharge in tenth-bps (10 = 1bp),",
+              "unsigned: surcharge only (e.g. toxic-flow markets), never a discount.",
+              "A discount could push the taker fee below the maker rebate it must",
+              "fund and revert every match fill; promo discounts go through",
+              "`State.promo_fee_tier` instead. Applied on top of the tier fee before",
+              "`fee_adjustment` scales the sum:",
+              "`taker_fee = (tier_fee + add-on) * (1 +/- fee_adjustment%)`.",
+              "Taker fee only; the maker rebate and the post-only path see",
               "`fee_adjustment` alone. Occupies 2 bytes of the former 4-byte",
               "`_padding_buffer` (same offset/alignment on all targets), so existing",
               "accounts read 0 = no add-on until the admin sets it."
             ],
-            "type": "i16"
+            "type": "u16"
           },
           {
             "name": "_padding_buffer",

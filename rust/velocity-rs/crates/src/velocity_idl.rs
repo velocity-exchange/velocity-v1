@@ -1921,7 +1921,7 @@ pub mod instructions {
     impl anchor_lang::InstructionData for UpdatePerpMarketStepSizeAndTickSize {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdatePerpMarketTakerFeeAddon {
-        pub taker_fee_addon_tenth_bps: i16,
+        pub taker_fee_addon_tenth_bps: u16,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdatePerpMarketTakerFeeAddon {
@@ -4292,7 +4292,7 @@ pub mod types {
         pub pnl_pool: PoolBalance,
         pub protocol_fee_pool: PoolBalance,
         pub protocol_liquidation_fee: u32,
-        pub taker_fee_addon_tenth_bps: i16,
+        pub taker_fee_addon_tenth_bps: u16,
         #[serde(skip)]
         pub _padding_buffer: Padding<2>,
         pub fee_pool_buffer_target: u64,
@@ -5841,7 +5841,7 @@ pub mod accounts {
         pub pnl_pool: PoolBalance,
         pub protocol_fee_pool: PoolBalance,
         pub protocol_liquidation_fee: u32,
-        pub taker_fee_addon_tenth_bps: i16,
+        pub taker_fee_addon_tenth_bps: u16,
         #[serde(skip)]
         pub _padding_buffer: Padding<2>,
         pub fee_pool_buffer_target: u64,

@@ -252,7 +252,7 @@ export function registerFees(parent: Command): void {
 		fees
 			.command('set-taker-addon <market> <tenthBps>')
 			.description(
-				"Set a perp market's additive taker-fee add-on in tenth-bps (15 = +1.5bp surcharge, -10 = -1bp discount, 0 = none), applied to the tier fee before feeAdjustment and floored at zero. Range -100..100. Warm admin."
+				"Set a perp market's additive taker-fee surcharge in tenth-bps (15 = +1.5bp, 0 = none), applied to the tier fee before feeAdjustment. Surcharge only, range 0..100; discounts go through set-promo-tier. Warm admin."
 			)
 	).action(async (market: string, tenthBps: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);

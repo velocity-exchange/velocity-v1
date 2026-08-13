@@ -1143,7 +1143,7 @@ export type PerpMarketAccount = {
 	ifLiquidationFee: number;
 	/** LIQUIDATOR_FEE_PRECISION (1e6); protocol's cut of a liquidation, taken from the liquidatee */
 	protocolLiquidationFee: number;
-	/** signed tenth-bps (10 = 1bp); additive per-market taker-fee add-on, applied to the tier fee before `feeAdjustment` scales the sum and floored at zero. Taker only */
+	/** unsigned tenth-bps (10 = 1bp); additive per-market taker-fee surcharge, applied to the tier fee before `feeAdjustment` scales the sum. Taker only, never a discount */
 	takerFeeAddonTenthBps: number;
 	/** QUOTE_PRECISION (1e6); pnl-pool retention buffer the fee-sweep leaves untouched above `max(net_user_pnl, 0)` */
 	feePoolBufferTarget: BN;

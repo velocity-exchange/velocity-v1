@@ -12855,16 +12855,13 @@ export class VelocityClient {
 				marketAccount = this.getSpotMarketAccountOrThrow(marketIndex);
 			}
 
-			// per-market additive taker-fee add-on (tenth-bps), applied to the
-			// tier fee BEFORE feeAdjustment scales the sum and floored at zero,
+			// per-market additive taker-fee surcharge (tenth-bps, unsigned),
+			// applied to the tier fee BEFORE feeAdjustment scales the sum,
 			// mirroring `calculate_taker_fee` (`math/fees.rs`). Taker only;
 			// the maker rebate sees feeAdjustment alone.
 			if (isVariant(marketType, 'perp')) {
-				takerFee = Math.max(
-					0,
-					takerFee +
-						(marketAccount as PerpMarketAccount).takerFeeAddonTenthBps / 100_000
-				);
+				takerFee +=
+					(marketAccount as PerpMarketAccount).takerFeeAddonTenthBps / 100_000;
 			}
 			takerFee += (takerFee * marketAccount.feeAdjustment) / 100;
 			makerFee += (makerFee * marketAccount.feeAdjustment) / 100;

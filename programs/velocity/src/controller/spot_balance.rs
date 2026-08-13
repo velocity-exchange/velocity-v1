@@ -579,6 +579,7 @@ pub fn update_spot_market_and_check_validity(
         &spot_market.oracle_source,
         LogMode::ExchangeOracle,
         -1,
+        false, // exchange-oracle price, never MM-sourced
         0,
     )?;
 

@@ -791,6 +791,10 @@ pub enum ErrorCode {
     InvalidAccountExtension,
     #[msg("Invalid equity breaker reset")]
     InvalidEquityBreakerReset,
+    #[msg("Native dispatch: instruction data is malformed for this opcode")]
+    InvalidNativeInstructionData,
+    #[msg("MM oracle updates are disabled by the admin feature-bit kill switch")]
+    MmOracleUpdateDisabled,
     #[msg("Spot market interest is too stale to value a borrow for margin")]
     SpotMarketInterestStaleForMargin,
 }

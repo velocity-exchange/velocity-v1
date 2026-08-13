@@ -2,7 +2,7 @@
 '@velocity-exchange/sdk': patch
 ---
 
-New error code `SpotMarketInterestStaleForMargin` (6369). A value-releasing path now reverts when
+New error code `SpotMarketInterestStaleForMargin` (6371). A value-releasing path now reverts when
 a spot market carrying one of the account's **borrows** has not accrued interest within the last
 hour, because margin would otherwise value that debt through a stale `cumulative_borrow_interest`
 and understate it (OtterSec #135 / #148). The gated paths are withdraw, transfer deposit, transfer

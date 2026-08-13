@@ -152,3 +152,86 @@ fn calculate_oracle_valid() {
     assert!(oracle_status.mark_too_divergent);
     assert!(oracle_status.oracle_validity == OracleValidity::TooUncertain);
 }
+
+/// `oracle_slot_delay_override` is the max oracle delay, in slots, that
+/// immediate (JIT / auction-skipping) AMM fills tolerate.
+///
+/// The negative (unset) case is the one that mattered, and its resolution is
+/// source-aware. It used to clamp to `max(override, 0)`, i.e. a threshold of
+/// zero, requiring the price to have been written in this very slot. For an
+/// MM-oracle-sourced price that is unsatisfiable by construction, because the
+/// program refuses MM-oracle writes closer together than
+/// `MM_ORACLE_MIN_SLOT_GAP` slots — so unset resolves to that gap for an
+/// MM-sourced price. An exchange-oracle price has no such floor and keeps the
+/// strict zero threshold, so the safe-price fallback path (which engages
+/// exactly when the MM oracle is stale or diverged) is not widened.
+#[test]
+fn immediate_staleness_threshold_by_override() {
+    let guard_rails = ValidityGuardRails {
+        slots_before_stale_for_amm: 10,
+        slots_before_stale_for_margin: 120,
+        confidence_interval_max_size: 20_000,
+        too_volatile_ratio: 5,
+    };
+
+    let is_valid = |delay: i64, immediate_override: i8, mm_sourced: bool| -> bool {
+        let oracle_price_data = OraclePriceData {
+            price: (100 * PRICE_PRECISION) as i64,
+            confidence: 1,
+            delay,
+            has_sufficient_number_of_data_points: true,
+            sequence_id: None,
+        };
+        let validity = oracle_validity(
+            MarketType::Perp,
+            0,
+            (100 * PRICE_PRECISION) as i64,
+            &oracle_price_data,
+            &guard_rails,
+            1,
+            &OracleSource::PythLazer,
+            LogMode::ExchangeOracle,
+            immediate_override,
+            mm_sourced,
+            0,
+        )
+        .unwrap();
+        matches!(validity, OracleValidity::Valid)
+    };
+
+    // Unset + MM-sourced resolves to MM_ORACLE_MIN_SLOT_GAP, the tightest
+    // window the crank can actually satisfy, rather than to zero.
+    let min_gap = MM_ORACLE_MIN_SLOT_GAP as i64;
+    for delay in 0..=min_gap {
+        assert!(
+            is_valid(delay, -1, true),
+            "delay {delay} should be Valid when unset and MM-sourced"
+        );
+    }
+    assert!(
+        !is_valid(min_gap + 1, -1, true),
+        "unset must not tolerate more than MM_ORACLE_MIN_SLOT_GAP"
+    );
+
+    // Unset + exchange-sourced keeps the strict zero threshold: the exchange
+    // oracle can be same-slot fresh, so nothing forces a wider window there.
+    assert!(is_valid(0, -1, false));
+    assert!(
+        !is_valid(1, -1, false),
+        "unset must not widen the exchange-sourced threshold"
+    );
+
+    // An explicit positive threshold still wins in both directions, tighter or
+    // looser than the default, regardless of the price source.
+    for mm_sourced in [false, true] {
+        assert!(is_valid(1, 1, mm_sourced));
+        assert!(!is_valid(2, 1, mm_sourced));
+        assert!(is_valid(5, 5, mm_sourced));
+        assert!(!is_valid(6, 5, mm_sourced));
+    }
+
+    // Zero remains the explicit "no immediate AMM fills on this market"
+    // sentinel: never Valid, not even same-slot, regardless of source.
+    assert!(!is_valid(0, 0, true));
+    assert!(!is_valid(0, 0, false));
+}

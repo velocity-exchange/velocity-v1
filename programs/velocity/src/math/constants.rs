@@ -289,3 +289,20 @@ pub const INTEREST_RATE_SEGMENT_AND_WEIGHTS: &[(u128, u128)] = &[
 // MM ORACLE
 pub const MM_ORACLE_MIN_SLOT_GAP: u64 = 2; // min slots between accepted writes
 pub const MM_ORACLE_MAX_STEP_PCT_PRECISION: i128 = PERCENTAGE_PRECISION_I128 / 100; // 1%
+/// Max slots between an MM oracle update's source observation slot (carried in
+/// the payload) and the slot it lands, enforced symmetrically in both
+/// directions. The stored `mm_oracle_slot` is the landing slot, so without this
+/// bound a signed update landing late (recent blockhash allows ~150 slots)
+/// would make an old observation read as fresh; the future direction guards
+/// against a wrong-unit source value silently disabling the gate. A skipped
+/// write costs nothing: by the time an update is this late the crank has newer
+/// data to send.
+///
+/// Must stay at or below `MM_ORACLE_MIN_SLOT_GAP` (asserted below): the
+/// landing-slot stamp makes `oracle_delay` understate true observation age by
+/// up to this bound, so the immediate-fill gate's unset threshold of
+/// `MM_ORACLE_MIN_SLOT_GAP` measured slots only bounds true age to twice the
+/// gap while the two constants are equal. Widening this widens what
+/// "slot-fresh" means everywhere downstream.
+pub const MM_ORACLE_MAX_SOURCE_AGE_SLOTS: u64 = 2;
+static_assertions::const_assert!(MM_ORACLE_MAX_SOURCE_AGE_SLOTS <= MM_ORACLE_MIN_SLOT_GAP);

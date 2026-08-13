@@ -9148,7 +9148,7 @@ pub mod resolve_perp_bankruptcy {
                 funding::settle_funding_payment,
                 liquidation::{flag_perp_bankruptcy_claim, resolve_perp_bankruptcy},
                 perp_pools::sweep_market_fees,
-                position::PositionDirection,
+                position::{update_quote_asset_amount, PositionDirection},
             },
             create_anchor_account_info,
             math::constants::{
@@ -10727,6 +10727,75 @@ pub mod resolve_perp_bankruptcy {
                 sweep_market_fees(&mut market, &mut spot_market, 0, now, false).unwrap();
             assert_eq!(if_swept, 50 * QUOTE_PRECISION);
             assert_eq!(market.fee_ledger.pending_if_fee, 0);
+        }
+    }
+
+    /// Only a SETTLED claim is booked. A position that still holds base can
+    /// carry a negative quote through ordinary trading — a partly closed short
+    /// does — and its quote swings either way on the next fill. Booking one
+    /// would let an ordinary fill release the freeze while a real bankruptcy
+    /// was still pending. Both admission predicates already require a zero
+    /// base; this pins the helper's own guard so a new latch site cannot lose
+    /// the invariant.
+    #[test]
+    pub fn bankruptcy_claim_books_only_settled_debt() {
+        let mut market = PerpMarket {
+            market_index: 0,
+            status: MarketStatus::Initialized,
+            ..PerpMarket::default()
+        };
+        create_anchor_account_info!(market, PerpMarket, market_account_info);
+        let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        // a partly closed short: base still open, quote already negative
+        let mut user = User {
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                base_asset_amount: -BASE_PRECISION_I64 / 10,
+                quote_asset_amount: -80 * QUOTE_PRECISION_I64,
+                ..PerpPosition::default()
+            }),
+            spot_positions: [SpotPosition::default(); 8],
+            status: UserStatus::Bankrupt as u8,
+            ..User::default()
+        };
+
+        flag_perp_bankruptcy_claim(&mut user, 0, &market_map).unwrap();
+        assert!(!user.perp_positions[0].has_bankruptcy_claim());
+        assert_eq!(market_map.get_ref(&0).unwrap().pending_bankruptcy_claims, 0);
+
+        // a profitable short is not a debt either
+        user.perp_positions[0].quote_asset_amount = 80 * QUOTE_PRECISION_I64;
+        flag_perp_bankruptcy_claim(&mut user, 0, &market_map).unwrap();
+        assert!(!user.perp_positions[0].has_bankruptcy_claim());
+        assert_eq!(market_map.get_ref(&0).unwrap().pending_bankruptcy_claims, 0);
+
+        // the same debt, now settled to a zero base, IS booked
+        user.perp_positions[0].base_asset_amount = 0;
+        user.perp_positions[0].quote_asset_amount = -80 * QUOTE_PRECISION_I64;
+        flag_perp_bankruptcy_claim(&mut user, 0, &market_map).unwrap();
+        assert!(user.perp_positions[0].has_bankruptcy_claim());
+        assert_eq!(market_map.get_ref(&0).unwrap().pending_bankruptcy_claims, 1);
+
+        // and clearing the quote debt releases it exactly once
+        {
+            let mut market = market_map.get_ref_mut(&0).unwrap();
+            update_quote_asset_amount(
+                &mut user.perp_positions[0],
+                &mut market,
+                80 * QUOTE_PRECISION_I64,
+            )
+            .unwrap();
+            assert!(!user.perp_positions[0].has_bankruptcy_claim());
+            assert_eq!(market.pending_bankruptcy_claims, 0);
+
+            update_quote_asset_amount(
+                &mut user.perp_positions[0],
+                &mut market,
+                10 * QUOTE_PRECISION_I64,
+            )
+            .unwrap();
+            assert_eq!(market.pending_bankruptcy_claims, 0);
         }
     }
 

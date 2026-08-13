@@ -510,12 +510,20 @@ pub fn update_quote_asset_amount(
     }
 
     // A latched bankrupt debt is booked against the market in
-    // `pending_bankruptcy_claims`, which freezes the fee sweep's IF drain. The
-    // booking is discharged the moment the debt goes away, whoever clears it:
-    // the bankruptcy resolver, a quote-deposit setoff, or a settle after the
-    // latch is lifted. This is the one place every such path passes through,
-    // so the freeze can never outlive the debt that justified it. The position
-    // flag makes the release happen exactly once.
+    // `pending_bankruptcy_claims`, which freezes the fee sweep's IF drain.
+    // Release the booking once the quote debt is gone, whoever cleared it: the
+    // bankruptcy resolver, a quote-deposit setoff, or a settle after the latch
+    // is lifted. This is the one place every such path passes through, so the
+    // freeze cannot outlive the debt that justified it. The position flag
+    // makes the release happen exactly once.
+    //
+    // A non-negative quote means there is no bankrupt debt left to release the
+    // tranche against: `resolve_perp_bankruptcy` absorbs a negative quote and
+    // refuses anything else. This does NOT assume a non-negative quote proves
+    // solvency. It cannot, because a position holding base can carry either
+    // sign. `flag_perp_bankruptcy_claim` books only a settled claim (zero
+    // base), so a booked position has no base to re-price, and a later loss on
+    // a re-traded account is a new admission and a new booking.
     if position.has_bankruptcy_claim() && position.quote_asset_amount >= 0 {
         position.clear_bankruptcy_claim();
         market.decrement_pending_bankruptcy_claims();

@@ -3769,7 +3769,16 @@ pub fn liquidate_perp_pnl_for_deposit(
 /// Call this at every point that latches a user bankrupt while `market_index`
 /// is writable. It is idempotent: the position flag records the booking, so a
 /// repeated latch counts the debt once. `update_quote_asset_amount` releases
-/// the booking when the debt goes away.
+/// the booking when the quote debt is gone.
+///
+/// Only a SETTLED debt is booked: `base_asset_amount == 0` and
+/// `quote_asset_amount < 0`. That is exactly what `resolve_perp_bankruptcy`
+/// can absorb, and it is what makes the release condition sound — a position
+/// that still holds base can carry a negative quote through ordinary trading
+/// (a partly closed short does), and its quote swings either way on the next
+/// fill. Booking one would let an ordinary fill release the freeze. Both
+/// bankruptcy predicates already require a zero base, so this only restates
+/// the admission rule locally instead of trusting each call site to hold it.
 ///
 /// A cross-margin latch can leave a debt in a market the latching instruction
 /// did not declare writable, which cannot be booked here. The standing
@@ -3784,7 +3793,10 @@ fn flag_perp_bankruptcy_claim(
     };
 
     let position = &mut user.perp_positions[position_index];
-    if position.has_bankruptcy_claim() || position.quote_asset_amount >= 0 {
+    if position.has_bankruptcy_claim()
+        || position.base_asset_amount != 0
+        || position.quote_asset_amount >= 0
+    {
         return Ok(());
     }
 

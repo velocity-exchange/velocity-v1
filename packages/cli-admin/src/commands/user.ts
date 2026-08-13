@@ -644,9 +644,9 @@ export function registerUser(parent: Command): void {
 				// never subtracts spot borrows and it applies asset weights, so it
 				// reported a different quantity than the gate it was describing.
 				//
-				// Read the lower bound, the same side the gates read, so an invalid
-				// oracle cannot report an account as clear of a floor it is under.
-				const { lower: equity, allOraclesValid } = u.getNetUsdValueBounds(slot);
+				// The gates fail closed on oracle validity, so an invalid oracle
+				// means the account is gate-blocked regardless of the value shown.
+				const { value: equity, allOraclesValid } = u.getFloorNetEquity(slot);
 				const floor = account.equityFloor;
 				const buffer = account.equityFloorBuffer;
 				totalEquity = totalEquity.add(equity);
@@ -659,7 +659,7 @@ export function registerUser(parent: Command): void {
 					)}  buffer ${fmtQuote(buffer)}  headroom ${fmtQuote(
 						equity.sub(floor).sub(buffer)
 					)}  [${level}]${
-						allOraclesValid ? '' : '  (stale oracle: equity is a lower bound)'
+						allOraclesValid ? '' : '  (invalid oracle: floor gates blocked)'
 					}`
 				);
 			}

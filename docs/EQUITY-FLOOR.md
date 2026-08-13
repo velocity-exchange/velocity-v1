@@ -37,7 +37,12 @@ made. A value derived from an invalid price is not bounded by anything: the live
 gate that authorizes an action (withdrawals, risk-increasing placement and fills, transfers out,
 trigger-order activation, liquidator admission) rejects with `InvalidOracle` while any oracle the
 subaccount's positions depend on is invalid, and with `EquityBelowFloor` when a fully valid value
-sits below `floor + buffer`; a bad price can never authorize an action through the floor. The
+sits below `floor + buffer`; a bad price can never authorize an action through the floor. On the
+maker side the rejection is resolved before matching: a floored maker with any invalid oracle has
+its risk-increasing orders pruned from the maker set (its provably reducing orders stay
+matchable), so the maker is unmatchable for new risk during the incident instead of failing the
+taker's transaction. A rejected trigger likewise leaves the resting order in place, so it
+activates normally once the feed recovers; only a trusted value below the floor cancels it. The
 force-cancel path fails closed the other way: being below the raw floor counts as grounds only
 when every oracle is valid and the trusted value sits below it, so a bad price can never make an
 account look breached to a keeper. The standalone lifecycle instructions apply the same rule: the

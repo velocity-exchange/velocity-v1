@@ -1529,19 +1529,18 @@ export class User {
 	 * action gating happens at `equityFloor + equityFloorBuffer` (see
 	 * `isBelowBufferedEquityFloor`). Mirrors `User::is_below_equity_floor` onchain.
 	 *
-	 * Pass `slot` to value the account the way the gates do
-	 * (`getFloorNetEquity`). Note the onchain trip additionally requires
-	 * every oracle to be valid; this predicate only compares the value.
+	 * The value always comes from `getFloorNetEquity` so it prices the
+	 * account exactly the way the gates do. Note the onchain trip
+	 * additionally requires every oracle to be valid; this predicate only
+	 * compares the value (pass `slot` to `getFloorNetEquity` yourself for
+	 * the verdict).
 	 */
 	public isBelowEquityFloor(slot?: BN): boolean {
 		const equityFloor = this.getUserAccountOrThrow().equityFloor;
 		if (equityFloor.lte(ZERO)) {
 			return false;
 		}
-		const netEquity = slot
-			? this.getFloorNetEquity(slot).value
-			: this.getNetUsdValue();
-		return netEquity.lt(equityFloor);
+		return this.getFloorNetEquity(slot).value.lt(equityFloor);
 	}
 
 	/**
@@ -1595,15 +1594,13 @@ export class User {
 		}
 		// With a slot, predict the gates exactly: they fail closed, so any
 		// invalid oracle rejects the same way a value below the buffered
-		// floor does. Without one, assume valid oracles.
-		if (slot) {
-			const netEquity = this.getFloorNetEquity(slot);
-			return (
-				!netEquity.allOraclesValid ||
-				netEquity.value.lt(this.getBufferedEquityFloor())
-			);
-		}
-		return this.getNetUsdValue().lt(this.getBufferedEquityFloor());
+		// floor does. Without one, the value is priced the same way but
+		// oracles are assumed valid.
+		const netEquity = this.getFloorNetEquity(slot);
+		return (
+			!netEquity.allOraclesValid ||
+			netEquity.value.lt(this.getBufferedEquityFloor())
+		);
 	}
 
 	/**
@@ -1620,14 +1617,11 @@ export class User {
 		if (equityFloor.lte(ZERO)) {
 			return null;
 		}
-		if (slot) {
-			const netEquity = this.getFloorNetEquity(slot);
-			if (!netEquity.allOraclesValid) {
-				return ZERO;
-			}
-			return BN.max(netEquity.value.sub(equityFloor), ZERO);
+		const netEquity = this.getFloorNetEquity(slot);
+		if (!netEquity.allOraclesValid) {
+			return ZERO;
 		}
-		return BN.max(this.getNetUsdValue().sub(equityFloor), ZERO);
+		return BN.max(netEquity.value.sub(equityFloor), ZERO);
 	}
 
 	/**
@@ -1643,17 +1637,11 @@ export class User {
 		if (equityFloor.lte(ZERO)) {
 			return null;
 		}
-		if (slot) {
-			const netEquity = this.getFloorNetEquity(slot);
-			if (!netEquity.allOraclesValid) {
-				return ZERO;
-			}
-			return BN.max(netEquity.value.sub(this.getBufferedEquityFloor()), ZERO);
+		const netEquity = this.getFloorNetEquity(slot);
+		if (!netEquity.allOraclesValid) {
+			return ZERO;
 		}
-		return BN.max(
-			this.getNetUsdValue().sub(this.getBufferedEquityFloor()),
-			ZERO
-		);
+		return BN.max(netEquity.value.sub(this.getBufferedEquityFloor()), ZERO);
 	}
 
 	/**
@@ -2323,10 +2311,13 @@ export class User {
 	 * `allOraclesValid` and `value` clears `equityFloor + equityFloorBuffer`;
 	 * being below the raw floor counts as force-cancel or breaker-trip
 	 * grounds only when `allOraclesValid` and `value` sits below it.
-	 * @param slot Current slot, for oracle staleness classification.
+	 * @param slot Current slot, for oracle staleness classification. Omit to
+	 * skip the verdict: `value` is still priced exactly as the gates price it
+	 * (live oracles, expiry price for settled markets), but `allOraclesValid`
+	 * is reported `true` unconditionally.
 	 * @returns Value and verdict, QUOTE_PRECISION.
 	 */
-	getFloorNetEquity(slot: BN): FloorNetEquity {
+	getFloorNetEquity(slot?: BN): FloorNetEquity {
 		const oracleGuardRails =
 			this.velocityClient.getStateAccount().oracleGuardRails;
 		const userAccount = this.getUserAccountOrThrow();
@@ -2345,9 +2336,16 @@ export class User {
 			const oracleData = this.getOracleDataForSpotMarket(
 				spotPosition.marketIndex
 			);
-			const oracleValid = isOracleValidForMarginCalc(
-				getSpotOracleValidity(spotMarket, oracleData, oracleGuardRails, slot)
-			);
+			const oracleValid = slot
+				? isOracleValidForMarginCalc(
+						getSpotOracleValidity(
+							spotMarket,
+							oracleData,
+							oracleGuardRails,
+							slot
+						)
+				  )
+				: true;
 			allOraclesValid = allOraclesValid && oracleValid;
 
 			const tokenAmount = getSignedTokenAmount(
@@ -2379,14 +2377,16 @@ export class User {
 			const quoteOracleData = this.getOracleDataForSpotMarket(
 				market.quoteSpotMarketIndex
 			);
-			const quoteOracleValid = isOracleValidForMarginCalc(
-				getSpotOracleValidity(
-					quoteSpotMarket,
-					quoteOracleData,
-					oracleGuardRails,
-					slot
-				)
-			);
+			const quoteOracleValid = slot
+				? isOracleValidForMarginCalc(
+						getSpotOracleValidity(
+							quoteSpotMarket,
+							quoteOracleData,
+							oracleGuardRails,
+							slot
+						)
+				  )
+				: true;
 			allOraclesValid = allOraclesValid && quoteOracleValid;
 
 			// Keyed off the position flag, matching the program's `is_isolated()`.
@@ -2406,9 +2406,11 @@ export class User {
 			const oracleData = this.getOracleDataForPerpMarket(
 				perpPosition.marketIndex
 			);
-			const oracleValid = isOracleValidForMarginCalc(
-				getOracleValidity(market, oracleData, oracleGuardRails, slot)
-			);
+			const oracleValid = slot
+				? isOracleValidForMarginCalc(
+						getOracleValidity(market, oracleData, oracleGuardRails, slot)
+				  )
+				: true;
 
 			const settled = isVariant(market.status, 'settlement');
 			// A settled market is valued at its expiry price; its oracle does

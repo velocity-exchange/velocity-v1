@@ -299,7 +299,8 @@ export class EquityFloorManager {
 
 	private getSubaccountStatus(user: User): SubaccountFloorStatus {
 		const userAccount = user.getUserAccountOrThrow();
-		const equity = user.getNetUsdValue();
+		// gate-parity pricing (no validity verdict without a slot)
+		const equity = user.getFloorNetEquity().value;
 		const bufferedFloor = userAccount.equityFloor.add(
 			userAccount.equityFloorBuffer
 		);

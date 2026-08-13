@@ -1108,18 +1108,22 @@ impl FloorNetEquity {
         validate!(
             self.all_oracles_valid,
             ErrorCode::InvalidOracle,
-            "cannot verify equity floor {} + buffer {} with an invalid oracle",
+            "cannot verify equity floor {} + buffer {} with an invalid oracle (authority {} subaccount {})",
             user.equity_floor,
-            user.equity_floor_buffer
+            user.equity_floor_buffer,
+            user.authority,
+            user.sub_account_id
         )?;
 
         validate!(
             !user.is_below_buffered_equity_floor(self.value),
             ErrorCode::EquityBelowFloor,
-            "net equity {} below equity floor {} + buffer {}",
+            "net equity {} below equity floor {} + buffer {} (authority {} subaccount {})",
             self.value,
             user.equity_floor,
-            user.equity_floor_buffer
+            user.equity_floor_buffer,
+            user.authority,
+            user.sub_account_id
         )?;
 
         Ok(())

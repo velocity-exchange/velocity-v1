@@ -173,6 +173,13 @@ pub fn sweep_completed_revenue_share_for_market<'a>(
             // The loop must not stop here. Row order does not change between calls, so one row
             // that the pool cannot pay would stop all later rows forever. The code above this
             // point changes no state, so the skip is safe.
+            //
+            // A row pays in full or not at all. A part payment of the largest affordable row would
+            // give the pool remainder to that beneficiary instead of the revenue pool at the
+            // delist. It would also make the payout depend on row order, because the first row
+            // would take the whole pool, and the escrow owner controls that order. Full payment
+            // keeps the outcome independent of order, so a short pool pays the rows that fit and
+            // `forfeit_revenue_share_order` writes off the rest.
             continue;
         }
 
@@ -316,14 +323,22 @@ pub fn sweep_completed_revenue_share_for_market<'a>(
 
 /// The reason that a row on a closing market cannot be paid.
 ///
-/// The program can check each reason now, and no reason can become false later. The forfeit is
-/// therefore permissionless and needs no timer. A missing account is not a reason. A caller that
-/// omits the accounts of a beneficiary proves nothing, and must not destroy a live claim.
+/// A missing account is never a reason on its own. A caller that omits the accounts of a
+/// beneficiary proves nothing, and must not destroy a live claim.
+///
+/// Two of the reasons cannot become false later, so the forfeit needs no waiting period for them.
+/// `NoBeneficiaryAccount` is different: the beneficiary can create the account at any time, so the
+/// handler permits that reason only after the escrow window of the market ends.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RevenueShareForfeitReason {
     /// The beneficiary has no payout account. The handler derives the `User` address for
     /// sub-account 0 of the beneficiary of this row. That account holds no data and the system
-    /// program owns it.
+    /// program owns it. Sub-account 0 is the only account that can receive the payment, because
+    /// `load_revenue_share_map` rejects any other sub-account.
+    ///
+    /// The beneficiary can create that account at any time, so the handler permits this reason
+    /// only after `expiry_ts` plus the escrow window of the state. The beneficiary therefore has
+    /// the whole window to act, and the deadline is the first moment that the market may delist.
     NoBeneficiaryAccount,
     /// The market is closed and the pnl pool is smaller than the row. Nothing adds to the pool
     /// again. Fees need fills, and a market that is not Active rejects a fill. Every other

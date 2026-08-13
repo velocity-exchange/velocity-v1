@@ -61,6 +61,7 @@ pub fn program_entry<'info>(
             1 => Ok(handle_update_amm_spread_adjustment_native(
                 accounts, payload,
             )?),
+            2 => Ok(handle_update_mm_oracle_batch_native(accounts, payload)?),
             _ => Err(
                 anchor_lang::solana_program::program_error::ProgramError::InvalidInstructionData,
             ),
@@ -1784,6 +1785,13 @@ pub mod velocity {
         enable: bool,
     ) -> Result<()> {
         handle_update_feature_bit_flags_builder_codes(ctx, enable)
+    }
+
+    pub fn update_feature_bit_flags_vamm_maker_rebate(
+        ctx: Context<HotAdminUpdateState>,
+        enable: bool,
+    ) -> Result<()> {
+        handle_update_feature_bit_flags_vamm_maker_rebate(ctx, enable)
     }
 
     pub fn initialize_revenue_share<'c: 'info, 'info>(

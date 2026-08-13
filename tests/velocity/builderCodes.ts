@@ -1904,10 +1904,7 @@ describe('builder codes', () => {
 		);
 		const fillEvent = parseLogs(
 			builderClient.program,
-			await printTxLogs(
-				bankrunContextWrapper.connection.toConnection(),
-				fillTx
-			)
+			await printTxLogs(bankrunContextWrapper.connection.toConnection(), fillTx)
 		)
 			.filter((e) => e.name === 'orderActionRecord')
 			.pop();
@@ -1976,7 +1973,9 @@ describe('builder codes', () => {
 			usdcPos.balanceType
 		);
 		assert(
-			builderUsdcAfter.sub(builderUsdcBefore).eq(builderFee.add(referrerReward)),
+			builderUsdcAfter
+				.sub(builderUsdcBefore)
+				.eq(builderFee.add(referrerReward)),
 			`builder credited ${builderUsdcAfter
 				.sub(builderUsdcBefore)
 				.toString()} !== ${builderFee.add(referrerReward).toString()}`

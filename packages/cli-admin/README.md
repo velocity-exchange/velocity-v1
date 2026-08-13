@@ -47,6 +47,7 @@ velocity-admin exchange set-solvency-status <bitfield>  # cold admin; gates solv
 
 velocity-admin feature-flags median-trigger-price <true|false>  # bit 2; enabling requires cold admin
 velocity-admin feature-flags builder-codes <true|false>  # bit 4; enabling requires cold admin
+velocity-admin feature-flags vamm-maker-rebate <true|false>  # bit 8; enabling requires cold admin
 
 velocity-admin fees set-recipient <pubkey> <perp|spot>           # cold admin
 velocity-admin fees set-split <ammFeeNumerator> <ifFeeNumerator> # warm/cold admin

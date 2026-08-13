@@ -791,6 +791,10 @@ pub enum ErrorCode {
     InvalidAccountExtension,
     #[msg("Invalid equity breaker reset")]
     InvalidEquityBreakerReset,
+    #[msg("Native dispatch: instruction data is malformed for this opcode")]
+    InvalidNativeInstructionData,
+    #[msg("MM oracle updates are disabled by the admin feature-bit kill switch")]
+    MmOracleUpdateDisabled,
     #[msg("Market still owes builder/referrer revenue share; settle it before delisting")]
     UnsettledRevenueShareOnDelist,
     #[msg("Revenue share order can still be paid; settle it instead of forfeiting")]

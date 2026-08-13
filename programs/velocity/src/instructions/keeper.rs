@@ -1463,10 +1463,23 @@ pub fn handle_liquidate_spot_with_swap_begin<'c: 'info, 'info>(
         "begin_swap ended in invalid state"
     )?;
 
-    let asset_oracle_data = oracle_map.get_price_data(&asset_spot_market.oracle_id())?;
+    // Accrue interest and advance the deposit/borrow/utilization TWAPs, but pass
+    // `None` so this liquidation does NOT advance the markets' *oracle* TWAPs.
+    // `liquidate_spot_with_swap_begin` gates itself on
+    // `is_oracle_too_divergent_with_twap_5min` against the liability market's
+    // `last_oracle_price_twap_5min`; refreshing it first — in this same
+    // instruction — pulls it toward the live oracle price and lets a liquidation
+    // the band check would reject proceed and transfer collateral
+    // (OtterSec #111).
+    //
+    // The direct `liquidate_spot` lane already runs that same check with no
+    // pre-refresh, so this only brings the swap-backed lane in line with it; a
+    // band-blocked swap liquidation can still be routed through the direct path.
+    // The oracle TWAPs keep advancing on every other spot path and via the
+    // permissionless `update_spot_market_cumulative_interest` crank.
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut asset_spot_market,
-        Some(asset_oracle_data),
+        None,
         now,
         state.funding_paused()?,
     )?;
@@ -1480,10 +1493,11 @@ pub fn handle_liquidate_spot_with_swap_begin<'c: 'info, 'info>(
         "begin_swap ended in invalid state"
     )?;
 
-    let liability_oracle_data = oracle_map.get_price_data(&liability_spot_market.oracle_id())?;
+    // `None` for the same reason as the asset market above (OtterSec #111) — this
+    // is the market whose 5-minute TWAP the divergence check actually reads.
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut liability_spot_market,
-        Some(liability_oracle_data),
+        None,
         now,
         state.funding_paused()?,
     )?;
@@ -2550,12 +2564,28 @@ pub fn handle_update_funding_rate(
     )?;
     // Refresh PerpMarket-level oracle stats. AMM refresh happens inside
     // `update_funding_rate` via the AmmQuoter's setup phase — not here.
+    //
+    // Deliberately the TWAP-free half. `update_funding_rate`'s gate
+    // (`oracle::block_operation` -> `get_oracle_status`) reads
+    // `last_oracle_price_twap` for the too-volatile check and
+    // `last_oracle_price_twap_5min` for the mark-divergence check. Advancing
+    // either one here would pull it toward the live price and let a too-volatile
+    // or too-divergent oracle clear its own gate inside this same instruction,
+    // then go on to mutate cumulative funding (OtterSec #109).
+    //
+    // Nothing is lost by skipping it: on the path where funding actually
+    // updates, `update_funding_rate` advances the TWAPs itself, and on every
+    // path where it does not this handler returns `FundingWasNotUpdated`, which
+    // reverts the whole instruction. The TWAPs also keep advancing independently
+    // via `update_amms`, perp fills, and `update_perp_bid_ask_twap`, so a market
+    // whose oracle is genuinely too volatile still recovers — relaxing its own
+    // gate is not this crank's job.
     let validity = crate::vlp::amm::refresh::compute_amm_refresh_validity(
         perp_market,
         &mm_oracle_price_data,
         &state,
     )?;
-    perp_market.update_oracle_derived_stats(&mm_oracle_price_data, validity, now, clock_slot)?;
+    perp_market.refresh_amm_quote_state(&mm_oracle_price_data, validity, clock_slot)?;
 
     validate!(
         matches!(
@@ -3060,6 +3090,22 @@ pub fn handle_forfeit_revenue_share_order(
                 && *ctx.accounts.beneficiary_user.owner == anchor_lang::system_program::ID;
 
             if beneficiary_user_missing {
+                // The beneficiary can create this account at any time, so the reason is not
+                // permanent on its own. Give them the whole escrow window to do it. That window
+                // ends at the first moment the market may delist, so this adds no delay to the
+                // wind-down. After it, an absent payout account is a missed deadline.
+                let forfeit_after = perp_market
+                    .expiry_ts
+                    .safe_add(state.escrow_period_before_transfer()?)?;
+                validate!(
+                    clock.unix_timestamp > forfeit_after,
+                    ErrorCode::RevenueShareOrderNotForfeitable,
+                    "market {} order {}: the beneficiary has until {} to create a payout account",
+                    market_index,
+                    order_index,
+                    forfeit_after
+                )?;
+
                 RevenueShareForfeitReason::NoBeneficiaryAccount
             } else {
                 // The program can pay the beneficiary. The only other reason is that the pool

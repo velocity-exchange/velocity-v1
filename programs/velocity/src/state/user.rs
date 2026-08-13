@@ -2045,6 +2045,15 @@ impl UserStats {
         Ok(())
     }
 
+    /// Fold a fill into the trailing-30d maker volume. The `*_volume_30d`
+    /// fields are leaky-integrator SUMS approximating trailing-30d notional:
+    /// each update first decays the stored sum by the fraction of the 30d
+    /// window elapsed since the last update (`sum * (30d - gap)/30d`, wiped
+    /// to zero at gap >= 30d), then adds the fill. For a steady trader the
+    /// sum converges to the true trailing-30d total; a burst decays only
+    /// when the account trades again (lazy decay: the stored value does not
+    /// tick down while idle). Readers that need the live window must project
+    /// the decay themselves: see `get_total_30d_volume_at`.
     pub fn update_maker_volume_30d(&mut self, quote_asset_amount: u64, now: i64) -> VelocityResult {
         let since_last = max(1_i64, now.safe_sub(self.last_maker_volume_30d_ts)?);
 
@@ -2059,6 +2068,8 @@ impl UserStats {
         Ok(())
     }
 
+    /// Fold a fill into the trailing-30d taker volume. Same leaky-sum
+    /// mechanics as `update_maker_volume_30d`; see its doc comment.
     pub fn update_taker_volume_30d(&mut self, quote_asset_amount: u64, now: i64) -> VelocityResult {
         let since_last = max(1_i64, now.safe_sub(self.last_taker_volume_30d_ts)?);
 
@@ -2110,8 +2121,30 @@ impl UserStats {
         !self.referrer.eq(&Pubkey::default())
     }
 
-    pub fn get_total_30d_volume(&self) -> VelocityResult<u64> {
-        self.taker_volume_30d.safe_add(self.maker_volume_30d)
+    /// Trailing-30d volume (taker + maker) projected to `now`: applies the
+    /// same linear decay the next write would apply (`sum * (30d - gap)/30d`,
+    /// zero at gap >= 30d) to each component against its own last-update
+    /// timestamp, without mutating the stored values. This is what fee-tier
+    /// determination reads, so demotion tracks the live window at every fill
+    /// while promotion stays instant (the write path already lands each
+    /// fill's volume in the sum immediately).
+    pub fn get_total_30d_volume_at(&self, now: i64) -> VelocityResult<u64> {
+        let project = |volume: u64, last_ts: i64| -> VelocityResult<u64> {
+            let gap = max(0_i64, now.saturating_sub(last_ts));
+            if gap >= THIRTY_DAY {
+                return Ok(0);
+            }
+            volume
+                .cast::<u128>()?
+                .safe_mul(THIRTY_DAY.safe_sub(gap)?.cast::<u128>()?)?
+                .safe_div(THIRTY_DAY.cast::<u128>()?)?
+                .cast::<u64>()
+        };
+
+        project(self.taker_volume_30d, self.last_taker_volume_30d_ts)?.safe_add(project(
+            self.maker_volume_30d,
+            self.last_maker_volume_30d_ts,
+        )?)
     }
 
     pub fn get_age_ts(&self, now: i64) -> i64 {

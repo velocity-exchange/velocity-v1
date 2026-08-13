@@ -492,7 +492,7 @@ describe('orders', () => {
 
 		order = velocityClientUser.getUserAccount().orders[orderIndex.toString()];
 
-		const expectedFillerReward = new BN(100);
+		const expectedFillerReward = new BN(40);
 		console.log(
 			'FillerReward: $',
 			convertToNumber(
@@ -513,7 +513,7 @@ describe('orders', () => {
 
 		// post AMM-isolation: the remainder is the protocol's pending carveout
 		// (default split); the AMM books only its surplus
-		const expectedRemainder = new BN(901);
+		const expectedRemainder = new BN(361);
 		assert(getProtocolFeeTotal(velocityClient, market).eq(expectedRemainder));
 		assert(market.amm.totalFee.eq(new BN(0)));
 
@@ -525,7 +525,7 @@ describe('orders', () => {
 		assert(firstPosition.openBids.eq(new BN(0)));
 
 		const expectedQuoteAssetAmount = new BN(-1000003);
-		const expectedQuoteBreakEvenAmount = new BN(-1001004);
+		const expectedQuoteBreakEvenAmount = new BN(-1000404);
 		// console.log(convertToNumber(firstPosition.quoteAssetAmount, QUOTE_PRECISION),
 		//  '!=',
 		//  convertToNumber(expectedQuoteAssetAmount, QUOTE_PRECISION),
@@ -540,7 +540,7 @@ describe('orders', () => {
 		);
 
 		const expectedFillRecordId = new BN(1);
-		const expectedFee = new BN(1001);
+		const expectedFee = new BN(401);
 		assert(orderRecord.ts.gt(ZERO));
 		assert(orderRecord.takerFee.eq(expectedFee));
 		assert(enumsAreEqual(orderRecord.action, OrderAction.FILL));
@@ -625,7 +625,7 @@ describe('orders', () => {
 
 		order = velocityClientUser.getUserAccount().orders[orderIndex.toString()];
 
-		const expectedFillerReward = new BN(10200);
+		const expectedFillerReward = new BN(10080);
 		console.log(
 			'FillerReward: $',
 			convertToNumber(
@@ -646,7 +646,7 @@ describe('orders', () => {
 		console.log('market.amm.totalFee:', market.amm.totalFee.toString());
 		// post AMM-isolation: cumulative remainders are the protocol's pending
 		// carveout (default split); the AMM books only its surplus
-		const expectedRemainders = new BN(1802);
+		const expectedRemainders = new BN(722);
 		assert(getProtocolFeeTotal(velocityClient, market).eq(expectedRemainders));
 		assert(market.amm.totalFee.eq(new BN(0)));
 

@@ -205,6 +205,7 @@ pub mod fulfill_order_with_maker_order {
             true,
             rev_share_escrow,
             false,
+            0,
         );
         // Restore caller's `maker_stats` so the test can keep using it after.
         *maker_stats = maker_stats_opt;
@@ -3163,6 +3164,7 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            0,
         )
         .unwrap();
 
@@ -3367,6 +3369,7 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            0,
         )
         .unwrap();
 
@@ -3531,6 +3534,7 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            0,
         )
         .unwrap();
 
@@ -3690,6 +3694,7 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            0,
         )
         .unwrap();
 
@@ -3904,6 +3909,7 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            0,
         )
         .unwrap();
 
@@ -4109,6 +4115,7 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            0,
         )
         .unwrap();
 
@@ -4329,6 +4336,7 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            0,
         )
         .unwrap();
 
@@ -4513,6 +4521,7 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            0,
         )
         .unwrap();
 
@@ -4729,6 +4738,7 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            0,
         );
 
         assert!(result.is_ok());
@@ -4931,6 +4941,7 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            0,
         );
 
         assert_eq!(result, Err(ErrorCode::InsufficientCollateral));
@@ -5086,6 +5097,7 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            0,
         )
         .unwrap();
 
@@ -5271,6 +5283,7 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            0,
         )
         .unwrap();
 
@@ -5626,6 +5639,7 @@ pub mod fulfill_order {
     //         true,
     //         &mut None,
     //         false    false,
+    //         false    0,
     //         false)
     //     .unwrap();
     //
@@ -5874,6 +5888,7 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            0,
         )
         .unwrap();
 
@@ -6136,6 +6151,7 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            0,
         )
         .unwrap();
 
@@ -6345,6 +6361,7 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            0,
         )
         .unwrap();
 
@@ -6522,6 +6539,7 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            0,
         )
         .unwrap();
 

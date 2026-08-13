@@ -19,8 +19,6 @@ to host crates); it is never enabled by any SBF/mainnet/devnet build.
 | `velocity-fuzz-common/` | Shared re-exports + reusable invariant assertions (some still stubbed, see below) |
 | `amm-pricing/`, `funding/`, `margin-liq/`, `oracle/`, `orders-matching/`, `spot/`, `fees-if-bankruptcy/` | **Host tier**: call `velocity` math/controller fns directly (no `.so`), assert pure properties. ~1.1k exec/s |
 | `e2e-svm/`, `e2e-svm-liq/`, `e2e-svm-pause/`, `e2e-svm-revshare/`, `e2e-svm-signedmsg/` | **SVM tier**: load the compiled `.so` into LiteSVM, drive real instructions, reconcile on-chain state against invariants |
-| `*/idls/velocity.json` | Vendored copy of the canonical IDL the SVM harnesses embed (see “IDL sync”; do not hand-edit) |
-| `sync-idls.sh` | Re-vendor / `--check` the IDL copies against canonical |
 | `rust-toolchain.toml` | Pins the toolchain (matches the repo `RUST_TOOLCHAIN`, x86_64 host target) |
 
 ## Prerequisites
@@ -66,22 +64,22 @@ Harness features come in two kinds:
   instead (see `prop_borrow_debt_monotonic_in_index`), because a host math check
   that the fix doesn't touch is either vacuous or noise, never a real regression.
 
-## IDL sync (important)
+## IDL
 
-The SVM harnesses embed a copy of the program IDL via
-`crucible_idl_gen::declare_fuzz_program!(velocity_idl = "idls/velocity.json")`
-because this separate workspace can't read the SDK's generated artifact at build
-time. That copy **must** equal the canonical
-`packages/sdk/src/idl/velocity.json`, or the harnesses fuzz a stale ABI. After
-any program change / `bun run program:idl`:
+The SVM harnesses embed the program IDL via
 
-```bash
-bash fuzz/sync-idls.sh          # re-vendor all copies
-bash fuzz/sync-idls.sh --check  # CI mode: fail if any copy is stale
+```rust
+crucible_idl_gen::declare_fuzz_program!(velocity_idl = "../../packages/sdk/src/idl/velocity.json");
 ```
 
-CI (`.github/workflows/fuzz.yml` → `idl-sync`) runs the `--check` and fails the
-build on drift.
+The path is relative to the crate's `Cargo.toml`, so every harness reads the one
+canonical artifact that the TypeScript SDK also consumes. There is no vendored
+copy to keep in sync. `bun run program:idl` regenerates that file; the next
+`cargo build` of a harness picks it up.
+
+The harness crates already take `programs/velocity` as a path dependency, so they
+build only inside a full repo checkout. Reading the SDK artifact across the
+workspace boundary adds no new requirement.
 
 ## Writing a sound harness
 
@@ -109,9 +107,9 @@ against these failure modes (each has bitten a harness here):
 
 ## CI
 
-- `fuzz.yml` (gating, on PRs touching `fuzz/**` or the program hooks): `idl-sync`
-  check + compile every harness feature. It does **not** run the fuzzer, so the
-  required check stays fast and deterministic.
+- `fuzz.yml` (gating, on PRs touching `fuzz/**` or the program hooks): compile
+  every harness feature. It does **not** run the fuzzer, so the required check
+  stays fast and deterministic.
 - `fuzz-nightly.yml` (scheduled + manual, **non-gating**, `continue-on-error`):
   runs the `prop_*`/`inv_*` discovery harnesses; crashes surface as uploaded
   artifacts and job-summary lines, never a red required check. A fuzzer is a

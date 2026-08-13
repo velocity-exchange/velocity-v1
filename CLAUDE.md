@@ -33,8 +33,8 @@ There is also a **second, separate Cargo workspace** at `rust/` (velocity-rs, ke
 **Solana programs (Rust/Anchor):** use the `program:*` scripts in the root package.json — they encode the correct feature flags so you don't have to remember them.
 
 ```bash
-bun run program:build           # program + IDL/types synced into packages/sdk/src/idl/ + vendored fuzz IDLs (devnet/test flavor)
-bun run program:idl             # IDL/types + vendored fuzz IDLs, no SBF build — fast path for layout/name changes
+bun run program:build           # program + IDL/types synced into packages/sdk/src/idl/ (devnet/test flavor)
+bun run program:idl             # IDL/types only, no SBF build — fast path for layout/name changes
 bun run program:build:devnet    # deployable devnet .so (wraps deploy-scripts/build-devnet.sh)
 bun run program:build:mainnet   # mainnet .so (default features: production gates on, devnet ixs compiled out)
 ```
@@ -54,6 +54,8 @@ bunx turbo run build --filter=@velocity-exchange/sdk # build the SDK (+ its deps
 **Update IDL after program changes:**
 
 NEVER hand-edit `packages/sdk/src/idl/velocity.json` or `packages/sdk/src/idl/velocity.ts` — they are generated artifacts. To change them, modify the Rust program and regenerate (`bun run program:build`, or `bun run program:idl` for the fast path). Manual edits will silently drift from on-chain layout and break clients. Note a full `anchor build` already emits both `target/idl/velocity.json` and `target/types/velocity.ts`; the scripts just copy them into `packages/sdk/src/idl/` — no separate `anchor idl build`/`anchor idl type` step is needed after a full build.
+
+`packages/sdk/src/idl/velocity.json` is the single copy of the IDL in the repo. The TypeScript SDK, `rust/velocity-rs`'s `build.rs`, and the `fuzz/e2e-svm*` harnesses all read that one file. Never add a second copy — a duplicate turns every IDL change into a multi-file diff and can go stale.
 
 **Keep `packages/sdk/src/types.ts` in sync with the IDL.** The TypeScript types in `packages/sdk/src/types.ts` (`UserAccount`, `PerpMarketAccount`, `SpotMarketAccount`, `StateAccount`, `AMM`, the `*Record` event types, etc.) are **hand-maintained mirrors** of the on-chain structs — they are NOT derived from the IDL automatically (the SDK does not use Anchor's `IdlAccounts`/`IdlTypes`/`IdlEvents` helpers, because the enum variant classes and SDK-only types can't be generated). Whenever a struct, account, or event changes in the IDL (a field is added, removed, renamed, reordered, or its type changes — including `BN` ↔ `number` width differences), update the corresponding type in `types.ts` in the same change so the mirror stays faithful to the regenerated IDL. The file header already states this contract; treat the IDL as the authoritative layout source and reconcile `types.ts` against it, never the reverse.
 

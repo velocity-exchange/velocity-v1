@@ -4309,7 +4309,9 @@ export class User {
 	 * QUOTE_PRECISION — the stored rolling sum decays lazily on-chain, so the
 	 * read applies the same decay virtually) against fixed breakpoints — $5M,
 	 * $80M — picking the lowest-index tier whose breakpoint the volume is
-	 * still under (tier 2, the lowest fees, at or above the top breakpoint).
+	 * still under. Tiers 0/1/2 are named Regular / VIP 1 / VIP 2 (VIP 2, the
+	 * lowest fees, at or above the top breakpoint); names are presentation
+	 * only, selection is index-based.
 	 * While `state.promoFeeTier` is non-zero it floors everyone's tier at that
 	 * index (0 = disabled; nobody is downgraded by it). Spot markets always
 	 * use tier 0 (no volume-based discount).

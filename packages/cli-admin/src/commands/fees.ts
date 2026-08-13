@@ -282,7 +282,7 @@ export function registerFees(parent: Command): void {
 		fees
 			.command('set-promo-tier <tier>')
 			.description(
-				'Set the promotional fee-tier floor: every account gets at least this perp fee tier while set (accounts already above keep their tier). 0 disables; accounts revert to volume tiers on their next fill. Warm admin.'
+				'Set the promotional fee-tier floor: every account gets at least this perp fee tier while set (1 = VIP 1, 2 = VIP 2; accounts already above keep their tier). 0 disables; accounts revert to volume tiers on their next fill. Warm admin.'
 			)
 	).action(async (tier: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);

@@ -143,16 +143,17 @@ export function registerShow(parent: Command): void {
 			const state = client.getStateAccount();
 
 			// Breakpoints mirror determine_perp_fee_tier (math/fees.rs) /
-			// User.getUserFeeTier: taker's rolling 30-day volume picks tiers 0-2.
+			// User.getUserFeeTier: taker's rolling 30-day volume picks tiers 0-2
+			// (Regular / VIP 1 / VIP 2).
 			const perpTierLabels = [
-				'30d vol <  $5M ',
-				'30d vol >= $5M ',
-				'30d vol >= $80M',
+				['Regular', '30d vol <  $5M '],
+				['VIP 1  ', '30d vol >= $5M '],
+				['VIP 2  ', '30d vol >= $80M'],
 			];
 			console.log('trading fees — perp (per fill, tier by taker 30d volume):');
-			perpTierLabels.forEach((label, i) => {
+			perpTierLabels.forEach(([name, label], i) => {
 				console.log(
-					`  tier ${i} (${label}):`,
+					`  ${name} (tier ${i}, ${label}):`,
 					describeFeeTier(state.perpFeeStructure.feeTiers[i])
 				);
 			});
@@ -165,8 +166,11 @@ export function registerShow(parent: Command): void {
 				'protocol = residual'
 			);
 			if (state.promoFeeTier > 0) {
+				const promoName =
+					perpTierLabels[state.promoFeeTier]?.[0]?.trim() ??
+					`tier ${state.promoFeeTier}`;
 				console.log(
-					`  PROMO ACTIVE: every account gets at least tier ${state.promoFeeTier}`
+					`  PROMO ACTIVE: every account gets at least ${promoName} (tier ${state.promoFeeTier})`
 				);
 			}
 

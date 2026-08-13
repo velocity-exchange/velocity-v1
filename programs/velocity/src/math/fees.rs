@@ -482,7 +482,11 @@ pub fn determine_user_fee_tier(
     }
 }
 
-/// Select the perp fee tier from the trailing-30d volume, evaluated LIVE:
+/// Select the perp fee tier from the trailing-30d volume, evaluated LIVE.
+/// The populated tiers are named Regular / VIP 1 / VIP 2 (indices 0/1/2);
+/// the names are presentation only, everything onchain is index-based.
+///
+/// The volume window:
 /// the stored rolling sum decays lazily (only when the account trades; see
 /// `UserStats::update_taker_volume_30d`), so the raw value can be stale by
 /// the whole idle gap. Projecting the decay to `now` at read time makes

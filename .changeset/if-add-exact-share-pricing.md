@@ -1,5 +1,6 @@
 ---
 '@velocity-exchange/sdk': patch
+'@velocity-exchange/vaults-sdk': patch
 ---
 
 `addInsuranceFundStake`'s `amount` is now an upper bound rather than the staked amount. IF shares are
@@ -17,3 +18,7 @@ unprofitable.
 the staked amount from `InsuranceFundStakeRecord.amount` instead of assuming it equals the requested
 amount; with `fromSubaccount`, any remainder lands in the wallet's token account rather than returning
 to the sub-account.
+
+`VaultClient.addToInsuranceFundStake` inherits the same rule with one difference: the vaults program
+stakes the whole balance of the vault's IF token account, so a remainder from an earlier add is folded
+in and the staked amount can exceed `amount`.

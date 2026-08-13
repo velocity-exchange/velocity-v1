@@ -103,4 +103,15 @@ describe('Insurance Tests', () => {
 			);
 		}
 	});
+
+	it('an empty vault with shares outstanding is rejected', () => {
+		// the program validates this state with `InvalidIFSharesDetected` before pricing 1:1
+		let threw = false;
+		try {
+			depositAmountAndSharesForIfStake(new BN(100), new BN(1), ZERO);
+		} catch (e) {
+			threw = true;
+		}
+		assert(threw);
+	});
 });

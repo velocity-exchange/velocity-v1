@@ -113,6 +113,8 @@ export function stakeAmountToShares(
  * @param {BN} amount - Token amount the caller wants to stake, market's token decimals
  * @param {BN} totalIfShares - Current total insurance fund shares outstanding
  * @param {BN} insuranceFundVaultBalance - Current insurance fund vault token amount, market's token decimals
+ * @throws If the vault is empty while shares are outstanding, which on-chain reverts with
+ *   `InvalidIFSharesDetected`.
  * @return {{amountToDeposit: BN, nShares: BN}} The amount that will be debited (never more than
  *   `amount`) and the shares it mints
  */
@@ -122,6 +124,13 @@ export function depositAmountAndSharesForIfStake(
 	insuranceFundVaultBalance: BN
 ): { amountToDeposit: BN; nShares: BN } {
 	if (insuranceFundVaultBalance.lte(ZERO)) {
+		// an empty vault prices no shares, so shares outstanding against it is invalid state
+		if (!totalIfShares.isZero()) {
+			throw new Error(
+				`InvalidIFSharesDetected: assumes total_if_shares == 0, got ${totalIfShares.toString()}`
+			);
+		}
+
 		// an empty fund mints shares 1:1 with the deposit, so nothing rounds off
 		return { amountToDeposit: amount, nShares: amount };
 	}

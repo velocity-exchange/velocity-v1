@@ -16,7 +16,7 @@ use {
             self, bn,
             casting::Cast,
             constants::{
-                BPS_PRECISION, DEFAULT_BANKRUPTCY_IF_FLOOR_PCT,
+                BANKRUPTCY_IF_FLOOR_DISABLED, BPS_PRECISION, DEFAULT_BANKRUPTCY_IF_FLOOR_PCT,
                 DEFAULT_LIQUIDATION_MARGIN_BUFFER_RATIO, FEE_ADJUSTMENT_MAX,
                 FEE_POOL_TO_REVENUE_POOL_THRESHOLD, IF_FACTOR_PRECISION, INSURANCE_A_MAX,
                 INSURANCE_B_MAX, INSURANCE_C_MAX, INSURANCE_SPECULATIVE_MAX,
@@ -743,7 +743,8 @@ pub fn handle_initialize_perp_market(
         paused_operations: 0,
         quote_spot_market_index: QUOTE_SPOT_MARKET_INDEX,
         fee_adjustment: 0,
-        _padding_align_lfp: [0; 6],
+        pending_bankruptcy_claims: 0,
+        _padding_align_lfp: [0; 4],
         pool_id: 0,
         _padding_pmm: [0; 2],
         _padding_hedge: [0; 5],
@@ -2898,7 +2899,11 @@ pub fn handle_update_perp_market_fee_pool_buffer_target(
 
 /// Set the market's `bankruptcy_if_floor_pct` — the fraction of open-interest
 /// notional the fee sweep must leave behind in `pending_if_fee` as a standing
-/// bankruptcy tranche (PERCENTAGE_PRECISION; 0 disables the floor).
+/// bankruptcy tranche (PERCENTAGE_PRECISION). `0` selects
+/// `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`; `BANKRUPTCY_IF_FLOOR_DISABLED` turns the
+/// standing floor off. Turning it off does not expose a latched bankruptcy:
+/// `pending_bankruptcy_claims` still freezes the sweep until the debt
+/// resolves.
 pub fn handle_update_perp_market_bankruptcy_if_floor_pct(
     ctx: Context<AdminUpdatePerpMarket>,
     bankruptcy_if_floor_pct: u32,
@@ -2907,9 +2912,10 @@ pub fn handle_update_perp_market_bankruptcy_if_floor_pct(
     msg!("perp market {}", perp_market.market_index);
 
     validate!(
-        bankruptcy_if_floor_pct <= PERCENTAGE_PRECISION_U32,
+        bankruptcy_if_floor_pct <= PERCENTAGE_PRECISION_U32
+            || bankruptcy_if_floor_pct == BANKRUPTCY_IF_FLOOR_DISABLED,
         ErrorCode::DefaultError,
-        "bankruptcy_if_floor_pct must be <= PERCENTAGE_PRECISION (100%)"
+        "bankruptcy_if_floor_pct must be <= PERCENTAGE_PRECISION (100%) or BANKRUPTCY_IF_FLOOR_DISABLED"
     )?;
 
     msg!(

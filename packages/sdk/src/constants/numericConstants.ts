@@ -208,6 +208,20 @@ export const MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN = new BN(100).mul(
 /** Max number of pubkeys per `getMultipleAccounts` RPC call the SDK will batch (RPC-imposed ceiling is 100; kept at 99 for headroom). */
 export const GET_MULTIPLE_ACCOUNTS_CHUNK_SIZE = 99;
 
+/**
+ * 10 bps of open-interest notional (`PERCENTAGE_PRECISION`); the standing bankruptcy first-loss
+ * tranche the fee sweep leaves in `feeLedger.pendingIfFee`. A market whose `bankruptcyIfFloorPct`
+ * reads 0 — every market written before the field existed — uses this value. Mirrors the Rust
+ * `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT` constant; keep both in sync.
+ */
+export const DEFAULT_BANKRUPTCY_IF_FLOOR_PCT = 1000;
+/**
+ * The `PerpMarketAccount.bankruptcyIfFloorPct` value that turns the standing floor off, since 0
+ * means `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`. A latched bankruptcy still freezes the sweep through
+ * `pendingBankruptcyClaims`. Mirrors the Rust `BANKRUPTCY_IF_FLOOR_DISABLED` constant.
+ */
+export const BANKRUPTCY_IF_FLOOR_DISABLED = 4294967295; // u32::MAX
+
 // integer constants
 // Built with `BN` directly (not `BigNum.fromPrint`) to avoid a module-load
 // circular dependency: `bigNum.ts` imports `ZERO` from this file, so importing

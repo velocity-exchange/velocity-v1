@@ -509,6 +509,18 @@ pub fn update_quote_asset_amount(
         market.number_of_users = market.number_of_users.saturating_sub(1);
     }
 
+    // A latched bankrupt debt is booked against the market in
+    // `pending_bankruptcy_claims`, which freezes the fee sweep's IF drain. The
+    // booking is discharged the moment the debt goes away, whoever clears it:
+    // the bankruptcy resolver, a quote-deposit setoff, or a settle after the
+    // latch is lifted. This is the one place every such path passes through,
+    // so the freeze can never outlive the debt that justified it. The position
+    // flag makes the release happen exactly once.
+    if position.has_bankruptcy_claim() && position.quote_asset_amount >= 0 {
+        position.clear_bankruptcy_claim();
+        market.decrement_pending_bankruptcy_claims();
+    }
+
     Ok(())
 }
 

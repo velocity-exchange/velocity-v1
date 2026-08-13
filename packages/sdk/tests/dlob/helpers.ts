@@ -179,6 +179,7 @@ function mockPerpMarketCommon(): Omit<
 		protocolLiquidationFee: 0,
 		feePoolBufferTarget: new BN(0),
 		bankruptcyIfFloorPct: 0,
+		pendingBankruptcyClaims: 0,
 		imfFactor: 0,
 		unrealizedPnlImfFactor: 0,
 		unrealizedPnlMaxImbalance: ZERO,

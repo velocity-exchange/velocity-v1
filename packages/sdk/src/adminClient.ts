@@ -5078,9 +5078,14 @@ export class AdminClient extends VelocityClient {
 	 * `feeLedger.pendingIfFee` as a standing bankruptcy tranche (notional valued at the market's
 	 * oracle TWAP). The permissionless sweep cannot drain the tranche below this floor, so a
 	 * sweep front-running a `resolvePerpBankruptcy` cannot strip the first-loss coverage up to
-	 * the floor. New markets initialize to 10 bps; 0 disables. Requires warm admin (`check_warm`).
+	 * the floor. Requires warm admin (`check_warm`).
+	 *
+	 * `0` selects `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT` (10 bps), which is also what a market written
+	 * before the field existed reads. Pass `BANKRUPTCY_IF_FLOOR_DISABLED` to turn the floor off.
+	 * Turning it off does not expose a latched bankruptcy: `pendingBankruptcyClaims` still
+	 * freezes the sweep until the debt resolves.
 	 * @param perpMarketIndex - Perp market to update.
-	 * @param bankruptcyIfFloorPct - Floor as PERCENTAGE_PRECISION (1e6 = 100%; 1000 = 10 bps); max 1e6.
+	 * @param bankruptcyIfFloorPct - Floor as PERCENTAGE_PRECISION (1e6 = 100%; 1000 = 10 bps); max 1e6, or `BANKRUPTCY_IF_FLOOR_DISABLED`.
 	 * @returns Transaction signature.
 	 */
 	public async updatePerpMarketBankruptcyIfFloorPct(

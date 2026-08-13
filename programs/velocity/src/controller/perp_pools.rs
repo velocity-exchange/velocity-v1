@@ -46,10 +46,10 @@ use {
 /// scarcity):
 ///   1. `pending_protocol_fee` -> `protocol_fee_pool` (withdrawable)
 ///   2. `pending_if_fee`       -> quote `SpotMarket.revenue_pool` (insurance),
-///      leaving `get_bankruptcy_if_floor()` behind — a standing first-loss
-///      tranche (pct of OI notional at the oracle TWAP) that
-///      `resolve_perp_bankruptcy` can always reach, so a permissionless
-///      sweep can't drain the tranche ahead of a bankruptcy resolution
+///      leaving `get_pending_if_fee_floor()` behind — the first-loss tranche
+///      `resolve_perp_bankruptcy` can always reach, so a permissionless sweep
+///      can't drain it ahead of a bankruptcy resolution. A latched bankruptcy
+///      holds the whole counter; otherwise a pct of OI notional stands
 ///   3. `pending_amm_provision`-> `amm.fee_pool` (tokenizing the provision the
 ///      AMM already booked at fill — NO ledger change here)
 /// The protocol drain is EXEMPT from the `fee_pool_buffer_target` retention
@@ -110,12 +110,12 @@ pub fn sweep_market_fees(
     // these live claims on the pnl pool fully backed:
     //   * `max(net_user_pnl, 0)`: users' positive unsettled PnL.
     //   * the floored IF bankruptcy tranche (`min(pending_if_fee,
-    //     get_bankruptcy_if_floor())`): `resolve_perp_bankruptcy` consumes
-    //     `pending_if_fee` counter-only, so the tokens backing the standing
-    //     tranche must stay in the pnl pool — the protocol drain moves value
-    //     to `protocol_fee_pool` (outside the insurance backstop) without
+    //     get_pending_if_fee_floor())`): `resolve_perp_bankruptcy` consumes
+    //     `pending_if_fee` counter-only, so the tokens backing the tranche
+    //     must stay in the pnl pool — the protocol drain moves value to
+    //     `protocol_fee_pool` (outside the insurance backstop) without
     //     touching the counter, so without this reservation it could unback
-    //     the tranche the #245 floor promises.
+    //     the tranche the floor and the latch freeze promise.
     //   * `pending_revenue_share`: builder/referrer fees already accrued and
     //     owed out of this pnl pool by `sweep_completed_revenue_share_for_market`
     //     — draining protocol fees ahead of them would leave those claims
@@ -157,21 +157,18 @@ pub fn sweep_market_fees(
     //    pnl settles that run it inline) is permissionless, draining the
     //    tranche completely would let anyone front-run a pending bankruptcy
     //    resolution and push the loss onto the shared IF or into
-    //    socialization. The floor (a pct of OI notional at the oracle TWAP)
-    //    keeps a standing tranche sized to the market's risk. The final
-    //    delisting sweep (`force`) bypasses it: positions are settled and
-    //    bankruptcies resolved before wind-down, and the remaining pnl pool
-    //    is about to be drained to the revenue pool anyway — withholding
-    //    would only strand a stale counter on a dead market.
-    let bankruptcy_if_floor = if force {
-        0
-    } else {
-        market.get_bankruptcy_if_floor()?
-    };
+    //    socialization. Two floors apply. A latched bankruptcy holds the
+    //    whole counter until it resolves, which covers the loss whatever the
+    //    market's open interest is. Before any latch, a pct of OI notional at
+    //    the oracle TWAP keeps a standing tranche sized to the market's risk.
+    //    The final delisting sweep (`force`) bypasses both: positions are
+    //    settled and bankruptcies resolved before wind-down, and the
+    //    remaining pnl pool is about to be drained to the revenue pool anyway
+    //    — withholding would only strand a stale counter on a dead market.
     let if_drain = market
         .fee_ledger
         .pending_if_fee
-        .saturating_sub(bankruptcy_if_floor)
+        .saturating_sub(market.get_pending_if_fee_floor(force)?)
         .min(available);
     if if_drain > 0 {
         transfer_spot_balance_to_revenue_pool(if_drain, spot_market, &mut market.pnl_pool)?;

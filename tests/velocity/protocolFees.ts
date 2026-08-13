@@ -9,6 +9,7 @@ import {
 	TOKEN_PROGRAM_ID,
 } from '@solana/spl-token';
 import {
+	BANKRUPTCY_IF_FLOOR_DISABLED,
 	BN,
 	getTokenAmount,
 	HotRole,
@@ -195,10 +196,14 @@ describe('protocol fees', () => {
 			MARKET_INDEX,
 			bufferTarget
 		);
-		// disable the bankruptcy IF floor (init default 10 bps of OI notional)
-		// so this test can assert a FULL drain; bankruptcyIfFloor.ts covers
-		// the floor-active behavior
-		await velocityClient.updatePerpMarketBankruptcyIfFloorPct(MARKET_INDEX, 0);
+		// disable the bankruptcy IF floor (default 10 bps of OI notional) so
+		// this test can assert a FULL drain; bankruptcyIfFloor.ts covers the
+		// floor-active behavior. 0 selects the default, so disabling needs the
+		// sentinel.
+		await velocityClient.updatePerpMarketBankruptcyIfFloorPct(
+			MARKET_INDEX,
+			BANKRUPTCY_IF_FLOOR_DISABLED
+		);
 
 		// seed the pnl pool with real tokens — the sweep's source is the pnl
 		// pool (where fee value lands as fills settle), never the AMM's pools

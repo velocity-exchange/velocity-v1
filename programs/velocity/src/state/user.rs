@@ -1350,6 +1350,20 @@ impl PerpPosition {
         self.position_flag & PositionFlag::Bankrupt as u8 > 0
     }
 
+    /// True when this position's quote debt is counted in its market's
+    /// `pending_bankruptcy_claims`.
+    pub fn has_bankruptcy_claim(&self) -> bool {
+        self.position_flag & PositionFlag::BankruptcyClaim as u8 > 0
+    }
+
+    pub fn set_bankruptcy_claim(&mut self) {
+        self.position_flag |= PositionFlag::BankruptcyClaim as u8;
+    }
+
+    pub fn clear_bankruptcy_claim(&mut self) {
+        self.position_flag &= !(PositionFlag::BankruptcyClaim as u8);
+    }
+
     pub fn can_transfer_isolated_position_deposit(&self) -> bool {
         self.is_isolated()
             && self.isolated_position_scaled_balance > 0
@@ -1864,6 +1878,12 @@ pub enum PositionFlag {
     IsolatedPosition = 0b00000001,
     BeingLiquidated = 0b00000010,
     Bankrupt = 0b00000100,
+    /// This position's quote debt is counted in its market's
+    /// `pending_bankruptcy_claims`. It marks the counter increment so a
+    /// repeated latch cannot count the same debt twice and a resolution
+    /// cannot discharge it twice. Set on cross-margin and isolated positions
+    /// alike.
+    BankruptcyClaim = 0b00001000,
 }
 
 #[derive(Clone, Copy, BorshSerialize, BorshDeserialize, PartialEq, Debug, Eq)]

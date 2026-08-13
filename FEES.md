@@ -96,16 +96,28 @@ pool's surplus over live user claims — the AMM is never a conduit:
       small, and its value is no bankruptcy tranche so retaining it buys
       nothing.
    2. `pending_if_fee` → quote `SpotMarket.revenue_pool` (→ IF vault),
-      leaving the **bankruptcy floor** behind: `bankruptcy_if_floor_pct` of
-      open-interest notional (valued at the market's oracle TWAP) stays in
-      `pending_if_fee` as a standing first-loss tranche. Since the sweep and
-      the pnl settles that run it inline are permissionless, an unfloored
-      drain would let anyone clear `resolve_perp_bankruptcy`'s tranche-1
-      budget ahead of a pending resolution and push the loss onto the shared
-      IF or into socialization. New markets initialize to 10 bps
-      (`DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`); set per market via
-      `update_perp_market_bankruptcy_if_floor_pct` (0 disables). The final
-      delisting sweep (`force`) bypasses the floor — bankruptcies are
+      leaving the **bankruptcy floor** behind. Since the sweep and the pnl
+      settles that run it inline are permissionless, an unfloored drain would
+      let anyone clear `resolve_perp_bankruptcy`'s tranche-1 budget ahead of a
+      pending resolution and push the loss onto the shared IF or into
+      socialization. Two floors apply, and the drain leaves the larger:
+      - **A latched bankruptcy holds the whole counter.** A liquidation that
+        latches a user bankrupt books the debt in
+        `PerpMarket.pending_bankruptcy_claims`, and the booking is released
+        when the debt is discharged. While the count is above zero the IF
+        drain is frozen, so the tranche covers the loss whatever the market's
+        open interest is and whether or not the floor below is configured.
+      - **Before any latch, a standing tranche.** `bankruptcy_if_floor_pct` of
+        open-interest notional (valued at the market's oracle TWAP) stays in
+        `pending_if_fee`. This covers the case a latch cannot: a resolution
+        that admits the user in the same instruction, and a cross-margin
+        estate whose debt sits in a market the latching instruction did not
+        declare writable. `0` means `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT` (10 bps),
+        which is what a market written before the field existed reads;
+        `update_perp_market_bankruptcy_if_floor_pct` sets it per market and
+        `BANKRUPTCY_IF_FLOOR_DISABLED` turns it off.
+
+      The final delisting sweep (`force`) bypasses both — bankruptcies are
       resolved before wind-down and the pnl pool is drained wholesale right
       after.
    3. `pending_amm_provision` → tokenized into `amm.fee_pool` (the AMM's
@@ -158,9 +170,9 @@ waterfall (`resolve_perp_bankruptcy`, `controller/liquidation.rs`):
 1. **`pending_if_fee`** — the market's own in-transit insurance fees,
    counter-only: the pending claim and the forgiven loss are both claims on
    future pnl-pool inflows, so canceling one against the other needs no token
-   movement. The sweep's `bankruptcy_if_floor_pct` (see the waterfall above)
-   keeps this tranche stocked to a floor of OI notional so a front-running
-   sweep can't clear it
+   movement. The sweep keeps this tranche stocked (see the waterfall above):
+   the latch freezes the whole counter, and `bankruptcy_if_floor_pct` holds a
+   standing floor before any latch, so a front-running sweep can't clear it
 2. **Insurance fund vault** (bounded by the market's `insurance_claim` caps;
    real tokens → pnl pool)
 3. **Provision clawback** — capped at `amm_protocol_fees_received`, two

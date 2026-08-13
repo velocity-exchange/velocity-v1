@@ -213,11 +213,16 @@ impl RevenueShareEscrow {
         num_builders * std::mem::size_of::<BuilderInfo>() // builders data
     }
 
+    /// Upper bound only. The message used to claim a lower bound of 1 that was never enforced,
+    /// which is the invariant finding #114 exploited; that minimum is now checked where it can be
+    /// applied safely, in `handle_initialize_revenue_share_escrow`. It deliberately is not checked
+    /// here, because `resize` and `change_approved_builder` also call this and an escrow already
+    /// at zero capacity on chain has to stay able to resize its way out.
     pub fn validate(&self) -> VelocityResult<()> {
         validate!(
             self.orders.len() <= 128 && self.approved_builders.len() <= 128,
             ErrorCode::DefaultError,
-            "RevenueShareEscrow orders and approved_builders len must be between 1 and 128"
+            "RevenueShareEscrow orders and approved_builders len must each be at most 128"
         )?;
         Ok(())
     }

@@ -1459,10 +1459,23 @@ pub fn handle_liquidate_spot_with_swap_begin<'c: 'info, 'info>(
         "begin_swap ended in invalid state"
     )?;
 
-    let asset_oracle_data = oracle_map.get_price_data(&asset_spot_market.oracle_id())?;
+    // Accrue interest and advance the deposit/borrow/utilization TWAPs, but pass
+    // `None` so this liquidation does NOT advance the markets' *oracle* TWAPs.
+    // `liquidate_spot_with_swap_begin` gates itself on
+    // `is_oracle_too_divergent_with_twap_5min` against the liability market's
+    // `last_oracle_price_twap_5min`; refreshing it first — in this same
+    // instruction — pulls it toward the live oracle price and lets a liquidation
+    // the band check would reject proceed and transfer collateral
+    // (OtterSec #111).
+    //
+    // The direct `liquidate_spot` lane already runs that same check with no
+    // pre-refresh, so this only brings the swap-backed lane in line with it; a
+    // band-blocked swap liquidation can still be routed through the direct path.
+    // The oracle TWAPs keep advancing on every other spot path and via the
+    // permissionless `update_spot_market_cumulative_interest` crank.
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut asset_spot_market,
-        Some(asset_oracle_data),
+        None,
         now,
         state.funding_paused()?,
     )?;
@@ -1476,10 +1489,11 @@ pub fn handle_liquidate_spot_with_swap_begin<'c: 'info, 'info>(
         "begin_swap ended in invalid state"
     )?;
 
-    let liability_oracle_data = oracle_map.get_price_data(&liability_spot_market.oracle_id())?;
+    // `None` for the same reason as the asset market above (OtterSec #111) — this
+    // is the market whose 5-minute TWAP the divergence check actually reads.
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut liability_spot_market,
-        Some(liability_oracle_data),
+        None,
         now,
         state.funding_paused()?,
     )?;
@@ -2150,6 +2164,8 @@ pub fn handle_resolve_perp_pnl_deficit<'c: 'info, 'info>(
         let spot_market = &mut spot_market_map.get_ref_mut(&spot_market_index)?;
         let perp_market = &mut perp_market_map.get_ref_mut(&perp_market_index)?;
 
+        let oracle_price_data = *oracle_map.get_price_data(&perp_market.oracle_id())?;
+
         if perp_market.amm.is_curve_update_enabled() {
             validate!(
                 perp_market.market_stats.last_oracle_valid,
@@ -2162,6 +2178,15 @@ pub fn handle_resolve_perp_pnl_deficit<'c: 'info, 'info>(
                 ErrorCode::AMMNotUpdatedInSameSlot,
                 "AMM must be updated in a prior instruction within same slot"
             )?;
+
+            // The cached verdict only covers the sample the AMM update
+            // validated; a later oracle write in the same slot replaces the
+            // sample without touching `last_oracle_valid`.
+            validate!(
+                perp_market.is_validated_oracle_sample(&oracle_price_data),
+                ErrorCode::InvalidOracle,
+                "Oracle rewritten after same-slot AMM update; sample no longer matches the validated one"
+            )?;
         }
 
         validate!(
@@ -2170,7 +2195,7 @@ pub fn handle_resolve_perp_pnl_deficit<'c: 'info, 'info>(
             "Market is in settlement mode",
         )?;
 
-        let oracle_price = oracle_map.get_price_data(&perp_market.oracle_id())?.price;
+        let oracle_price = oracle_price_data.price;
         controller::orders::validate_market_within_price_band(perp_market, &state, oracle_price)?;
 
         controller::insurance::resolve_perp_pnl_deficit(
@@ -2535,12 +2560,28 @@ pub fn handle_update_funding_rate(
     )?;
     // Refresh PerpMarket-level oracle stats. AMM refresh happens inside
     // `update_funding_rate` via the AmmQuoter's setup phase — not here.
+    //
+    // Deliberately the TWAP-free half. `update_funding_rate`'s gate
+    // (`oracle::block_operation` -> `get_oracle_status`) reads
+    // `last_oracle_price_twap` for the too-volatile check and
+    // `last_oracle_price_twap_5min` for the mark-divergence check. Advancing
+    // either one here would pull it toward the live price and let a too-volatile
+    // or too-divergent oracle clear its own gate inside this same instruction,
+    // then go on to mutate cumulative funding (OtterSec #109).
+    //
+    // Nothing is lost by skipping it: on the path where funding actually
+    // updates, `update_funding_rate` advances the TWAPs itself, and on every
+    // path where it does not this handler returns `FundingWasNotUpdated`, which
+    // reverts the whole instruction. The TWAPs also keep advancing independently
+    // via `update_amms`, perp fills, and `update_perp_bid_ask_twap`, so a market
+    // whose oracle is genuinely too volatile still recovers — relaxing its own
+    // gate is not this crank's job.
     let validity = crate::vlp::amm::refresh::compute_amm_refresh_validity(
         perp_market,
         &mm_oracle_price_data,
         &state,
     )?;
-    perp_market.update_oracle_derived_stats(&mm_oracle_price_data, validity, now, clock_slot)?;
+    perp_market.refresh_amm_quote_state(&mm_oracle_price_data, validity, clock_slot)?;
 
     validate!(
         matches!(
@@ -2896,12 +2937,14 @@ pub fn handle_sweep_perp_market_fees(
     let reserve_price = if perp_market.status == MarketStatus::Settlement {
         perp_market.expiry_price
     } else {
-        let oracle_price = oracle_map.get_price_data(&perp_market.oracle_id())?.price;
+        let oracle_price_data = *oracle_map.get_price_data(&perp_market.oracle_id())?;
+        let oracle_price = oracle_price_data.price;
 
         controller::orders::validate_market_within_price_band(perp_market, &state, oracle_price)?;
 
         if perp_market.amm.is_curve_update_enabled() {
-            let healthy_oracle = perp_market.is_recent_oracle_valid(oracle_map.slot)?;
+            let healthy_oracle =
+                perp_market.is_recent_oracle_valid(oracle_map.slot, &oracle_price_data)?;
 
             if !healthy_oracle {
                 let (_, oracle_validity) = oracle_map.get_price_data_and_validity(
@@ -2938,6 +2981,18 @@ pub fn handle_sweep_perp_market_fees(
                         perp_market.amm.last_update_slot(),
                         perp_market.market_stats.last_oracle_valid
                     )?;
+
+                    // Both cached attestations hold, so `healthy_oracle` is
+                    // false because the oracle account was rewritten after
+                    // the same-slot AMM update. The cached verdict does not
+                    // cover the sample being consumed; reject on its current
+                    // validity.
+                    msg!(
+                        "Market={} oracle rewritten after same-slot AMM update; current sample is invalid ({})",
+                        perp_market_index,
+                        oracle_validity
+                    );
+                    return Err(oracle_validity.get_error_code().into());
                 }
             }
         }

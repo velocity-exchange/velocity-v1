@@ -282,6 +282,10 @@ impl State {
         (self.feature_bit_flags & (FeatureBitFlags::BuilderCodes as u8)) > 0
     }
 
+    pub fn vamm_maker_rebate_enabled(&self) -> bool {
+        (self.feature_bit_flags & (FeatureBitFlags::VammMakerRebate as u8)) > 0
+    }
+
     pub fn allow_settle_lp_pool(&self) -> bool {
         (self.lp_pool_feature_bit_flags & (LpPoolFeatureBitFlags::SettleLpPool as u8)) > 0
     }
@@ -396,6 +400,7 @@ pub enum FeatureBitFlags {
     MmOracleUpdate = 0b00000001,
     MedianTriggerPrice = 0b00000010,
     BuilderCodes = 0b00000100,
+    VammMakerRebate = 0b00001000,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug, Eq)]
@@ -479,7 +484,8 @@ pub struct FeeStructure {
     /// Share of the trade-fee *remainder* (taker fee after maker rebate, referral,
     /// referee discount, and filler reward are taken off the top) provisioned to
     /// the AMM as liquidity (its backstop-of-last-resort tranche, tracked in
-    /// `PerpMarket.fee_ledger.amm_protocol_fees_received`). precision:
+    /// `PerpMarket.fee_ledger.amm_protocol_fees_received` alongside the vAMM
+    /// maker rebate when that feature is enabled). precision:
     /// FEE_PERCENTAGE_DENOMINATOR. `amm_fee_numerator + if_fee_numerator` must
     /// be <= FEE_PERCENTAGE_DENOMINATOR; the protocol receives the residual
     /// (`remainder − amm − if`) into its withdrawable `protocol_fee_pool`.

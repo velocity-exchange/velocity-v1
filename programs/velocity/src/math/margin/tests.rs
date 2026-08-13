@@ -4412,16 +4412,16 @@ mod calculate_user_equity {
 }
 
 #[cfg(test)]
-mod calculate_user_equity_bounds {
+mod floor_net_equity {
     use {
         crate::{
             create_anchor_account_info,
             math::{
                 constants::{
-                    SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
+                    QUOTE_PRECISION_U64, SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
                     SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
                 },
-                margin::{calculate_user_equity, calculate_user_equity_bounds, UserEquityBounds},
+                margin::{calculate_net_equity_for_floor, calculate_user_equity, FloorNetEquity},
             },
             state::{
                 oracle::{HistoricalOracleData, OracleSource},
@@ -4432,27 +4432,21 @@ mod calculate_user_equity_bounds {
                 spot_market_map::SpotMarketMap,
                 user::{Order, PerpPosition, SpotPosition, User},
             },
-            test_utils::{get_pyth_price, *},
+            test_utils::get_pyth_price,
             LIQUIDATION_FEE_PRECISION, PRICE_PRECISION_I64,
         },
         solana_program::pubkey::Pubkey,
         std::str::FromStr,
     };
 
-    /// 10,000 USDC deposit plus a 90 SOL spot position. SOL lives at 100 and
-    /// its 5 minute twap sits at 110, so the two bound prices differ. The
+    /// 10,000 USDC deposit plus a 90 SOL spot position at oracle 100. The
     /// oracle goes stale when `slot` runs far past the posted slot.
-    fn run_scenario(balance_type: SpotBalanceType, slot: u64) -> (UserEquityBounds, i128, bool) {
-        run_scenario_with_prices(balance_type, slot, 100, 110 * PRICE_PRECISION_I64)
-    }
-
-    fn run_scenario_with_prices(
+    fn run_scenario(
         balance_type: SpotBalanceType,
         slot: u64,
-        live_price: i64,
-        twap_5min: i64,
-    ) -> (UserEquityBounds, i128, bool) {
-        let mut sol_oracle_price = get_pyth_price(live_price, 6);
+        equity_floor: u64,
+    ) -> (Option<FloorNetEquity>, User, i128, bool) {
+        let mut sol_oracle_price = get_pyth_price(100, 6);
         let sol_oracle_price_key =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
         create_anchor_account_info!(
@@ -4492,11 +4486,8 @@ mod calculate_user_equity_bounds {
             maintenance_liability_weight: 11 * SPOT_WEIGHT_PRECISION / 10,
             liquidator_fee: LIQUIDATION_FEE_PRECISION / 1000,
             historical_oracle_data: HistoricalOracleData {
-                // The long twap matches the live price so the fresh case is
-                // genuinely valid. Only the 5 minute twap diverges, which is
-                // the pair the bounds use.
                 last_oracle_price_twap: 100 * PRICE_PRECISION_I64,
-                last_oracle_price_twap_5min: twap_5min,
+                last_oracle_price_twap_5min: 100 * PRICE_PRECISION_I64,
                 ..HistoricalOracleData::default()
             },
             ..SpotMarket::default()
@@ -4527,107 +4518,73 @@ mod calculate_user_equity_bounds {
             orders: [Order::default(); 32],
             perp_positions: [PerpPosition::default(); 8],
             spot_positions,
+            equity_floor,
             ..User::default()
         };
 
-        let bounds =
-            calculate_user_equity_bounds(&user, &market_map, &spot_market_map, &mut oracle_map)
+        let net_equity =
+            calculate_net_equity_for_floor(&user, &market_map, &spot_market_map, &mut oracle_map)
                 .unwrap();
         let (live_equity, live_valid) =
             calculate_user_equity(&user, &market_map, &spot_market_map, &mut oracle_map).unwrap();
 
-        (bounds, live_equity, live_valid)
+        (net_equity, user, live_equity, live_valid)
     }
 
     #[test]
-    fn bounds_collapse_onto_live_equity_when_oracles_are_valid() {
-        // Every position is priceable, so both bounds are the exact value and
-        // the gates behave exactly as they did before bounding existed.
-        let (bounds, live_equity, live_valid) = run_scenario(SpotBalanceType::Borrow, 0);
+    fn no_walk_without_a_floor() {
+        let (net_equity, _, _, _) = run_scenario(SpotBalanceType::Borrow, 0, 0);
+        assert!(net_equity.is_none());
+    }
+
+    #[test]
+    fn matches_live_equity_and_verdict() {
+        // 10,000 USDC - 90 SOL at 100 = 1,000 USDC
+        let (net_equity, _, live_equity, live_valid) =
+            run_scenario(SpotBalanceType::Borrow, 0, QUOTE_PRECISION_U64);
+        let net_equity = net_equity.unwrap();
 
         assert!(live_valid);
-        assert!(bounds.all_oracles_valid);
-        // 10,000 USDC - 90 SOL at 100 = 1,000 USDC
+        assert!(net_equity.all_oracles_valid);
         assert_eq!(live_equity, 1_000_000_000);
-        assert_eq!(bounds.lower, 1_000_000_000);
-        assert_eq!(bounds.upper, 1_000_000_000);
+        assert_eq!(net_equity.value, 1_000_000_000);
     }
 
     #[test]
-    fn stale_oracle_prices_a_liability_high_in_the_lower_bound() {
-        let (bounds, live_equity, live_valid) = run_scenario(SpotBalanceType::Borrow, 100_000);
+    fn valid_oracles_decide_both_predicates_exactly() {
+        // equity 1,000 vs floor 100: clears, not below
+        let (net_equity, user, _, _) =
+            run_scenario(SpotBalanceType::Borrow, 0, 100 * QUOTE_PRECISION_U64);
+        let net_equity = net_equity.unwrap();
+        assert!(net_equity.clears_buffered_floor(&user));
+        assert!(!net_equity.proves_below_floor(&user));
+        assert!(net_equity.validate_clears_buffered_floor(&user).is_ok());
 
-        assert!(!live_valid);
-        assert!(!bounds.all_oracles_valid);
-        // The live price still reads 100, which is what the old code trusted.
-        assert_eq!(live_equity, 1_000_000_000);
-        // lower prices the borrow at max(100, 110) = 110: 10,000 - 9,900 = 100
-        assert_eq!(bounds.lower, 100_000_000);
-        // upper prices the borrow at min(100, 110) = 100: 10,000 - 9,000 = 1,000
-        assert_eq!(bounds.upper, 1_000_000_000);
-        assert!(bounds.lower <= live_equity && live_equity <= bounds.upper);
+        // equity 1,000 vs floor 2,000: below, does not clear
+        let (net_equity, user, _, _) =
+            run_scenario(SpotBalanceType::Borrow, 0, 2000 * QUOTE_PRECISION_U64);
+        let net_equity = net_equity.unwrap();
+        assert!(!net_equity.clears_buffered_floor(&user));
+        assert!(net_equity.proves_below_floor(&user));
+        assert!(net_equity.validate_clears_buffered_floor(&user).is_err());
     }
 
     #[test]
-    fn stale_oracle_prices_an_asset_low_in_the_lower_bound() {
-        let (bounds, live_equity, live_valid) = run_scenario(SpotBalanceType::Deposit, 100_000);
+    fn invalid_oracle_fails_both_predicates_closed() {
+        // A stale oracle must neither authorize an action (clears) nor
+        // authorize someone against the user (proves below), regardless of
+        // which side of the floor the untrusted value lands on.
+        for floor in [100 * QUOTE_PRECISION_U64, 2000 * QUOTE_PRECISION_U64] {
+            let (net_equity, user, _, live_valid) =
+                run_scenario(SpotBalanceType::Borrow, 100_000, floor);
+            let net_equity = net_equity.unwrap();
 
-        assert!(!live_valid);
-        assert!(!bounds.all_oracles_valid);
-        assert_eq!(live_equity, 19_000_000_000);
-        // lower prices the deposit at min(100, 110) = 100: 10,000 + 9,000
-        assert_eq!(bounds.lower, 19_000_000_000);
-        // upper prices the deposit at max(100, 110) = 110: 10,000 + 9,900
-        assert_eq!(bounds.upper, 19_900_000_000);
-        assert!(bounds.lower <= live_equity && live_equity <= bounds.upper);
-    }
-
-    #[test]
-    fn lower_never_exceeds_upper() {
-        // The orientation the gates rely on. `lower >= floor` therefore implies
-        // `upper >= floor`, so a permitted action is never trippable.
-        for balance_type in [SpotBalanceType::Deposit, SpotBalanceType::Borrow] {
-            for slot in [0_u64, 100_000] {
-                let (bounds, _, _) = run_scenario(balance_type, slot);
-                assert!(bounds.lower <= bounds.upper);
-            }
+            assert!(!live_valid);
+            assert!(!net_equity.all_oracles_valid);
+            assert!(!net_equity.clears_buffered_floor(&user));
+            assert!(!net_equity.proves_below_floor(&user));
+            assert!(net_equity.validate_clears_buffered_floor(&user).is_err());
         }
-    }
-
-    #[test]
-    fn unseeded_5min_twap_falls_back_to_live_price_without_error() {
-        // A stale oracle on a market whose 5min twap was never seeded is the
-        // reachable degenerate pair. The bounds walk must degrade on it, not
-        // error: it runs inside shared paths (a maker's gate inside another
-        // taker's fill). The single positive candidate (the live price)
-        // prices both bounds.
-        let (bounds, _, live_valid) =
-            run_scenario_with_prices(SpotBalanceType::Borrow, 100_000, 100, 0);
-
-        assert!(!live_valid);
-        assert!(!bounds.all_oracles_valid);
-        // borrow priced at the live 100 in both bounds: 10,000 - 9,000 = 1,000
-        assert_eq!(bounds.lower, 1_000_000_000);
-        assert_eq!(bounds.upper, 1_000_000_000);
-    }
-
-    #[test]
-    fn bound_prices_never_errors() {
-        // A non-positive candidate is dropped; one candidate collapses the
-        // pair; none is None, which the walk turns into saturated bounds.
-        // (Non-positive prices cannot currently reach the walk through the
-        // oracle map, whose validity math errors on them first; this pins the
-        // helper as total anyway so it can never abort a host instruction.)
-        use crate::math::margin::bound_prices;
-
-        assert_eq!(bound_prices(100, 110, false), Some((100, 110)));
-        assert_eq!(bound_prices(110, 100, false), Some((100, 110)));
-        assert_eq!(bound_prices(100, 0, false), Some((100, 100)));
-        assert_eq!(bound_prices(0, 110, false), Some((110, 110)));
-        assert_eq!(bound_prices(0, 0, false), None);
-        assert_eq!(bound_prices(-1, -1, false), None);
-        // a valid oracle passes through untouched, twap ignored
-        assert_eq!(bound_prices(100, 0, true), Some((100, 100)));
     }
 }
 

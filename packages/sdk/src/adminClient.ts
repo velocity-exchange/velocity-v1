@@ -6196,6 +6196,48 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
+	 * Toggles the `VammMakerRebate` feature bit. When enabled, the vAMM earns
+	 * the maker rebate on fills it makes, carved off the taker-fee remainder
+	 * and folded into the AMM's fee provision.
+	 * @param enable - `true` to enable (cold-admin-only), `false` to disable (any `FeatureFlag`-authorised signer).
+	 * @returns Transaction signature.
+	 */
+	public async updateFeatureBitFlagsVammMakerRebate(
+		enable: boolean
+	): Promise<TransactionSignature> {
+		const updateFeatureBitFlagsVammMakerRebateIx =
+			await this.getUpdateFeatureBitFlagsVammMakerRebateIx(enable);
+
+		const tx = await this.buildTransaction(
+			updateFeatureBitFlagsVammMakerRebateIx
+		);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+
+		return txSig;
+	}
+
+	/**
+	 * Builds the `updateFeatureBitFlagsVammMakerRebate` instruction without sending it.
+	 * See `updateFeatureBitFlagsVammMakerRebate`.
+	 * @returns The unsigned `updateFeatureBitFlagsVammMakerRebate` instruction.
+	 */
+	public async getUpdateFeatureBitFlagsVammMakerRebateIx(
+		enable: boolean
+	): Promise<TransactionInstruction> {
+		return this.program.instruction.updateFeatureBitFlagsVammMakerRebate(
+			enable,
+			{
+				accounts: {
+					admin: this.useHotWalletAdmin
+						? this.wallet.publicKey
+						: this.getStateAccount().coldAdmin,
+					state: await this.getStatePublicKey(),
+				},
+			}
+		);
+	}
+
+	/**
 	 * @deprecated There is no `BuilderReferral` bit in the on-chain `FeatureBitFlags`
 	 * enum (only `MmOracleUpdate`, `MedianTriggerPrice`, `BuilderCodes` exist) and no
 	 * `update_feature_bit_flags_builder_referral` instruction is defined in the

@@ -2441,23 +2441,49 @@ fn carveout_dust_is_carried_at_the_token_conversion_too() {
     market.optimal_borrow_rate = SPOT_RATE_PRECISION_U32 * 20;
     market.max_borrow_rate = SPOT_RATE_PRECISION_U32 * 50;
 
-    // A $1 market yields ~6250 micro-tokens of IF cut a year, so it takes hours of cranking
-    // before the token conversion clears its first whole unit.
+    // A $1 market yields about 6250 micro-tokens of insurance fund cut a year. The token
+    // conversion therefore needs hours of cranks before it reaches its first whole unit.
+    let precision_decrease = 10_u128.pow(19 - market.decimals);
     let mut saw_token_dust = false;
+    let mut first_payout = None;
+    let mut previous_tokens = 0_u128;
+
     for i in 1..=(6 * 3600_i64) {
         update_spot_market_cumulative_interest(&mut market, None, i, false).unwrap();
 
         assert_eq!(market.last_interest_ts, i as u64);
+
+        // The carried remainder never reaches a whole token. It therefore always fits the u64
+        // that holds it.
+        assert!((market.revenue_pool.pending_interest_dust as u128) < precision_decrease);
         if market.revenue_pool.pending_interest_dust > 0 {
             saw_token_dust = true;
         }
+
+        let tokens = get_token_amount(
+            market.revenue_pool.scaled_balance,
+            &market,
+            &SpotBalanceType::Deposit,
+        )
+        .unwrap();
+        if tokens > previous_tokens && first_payout.is_none() {
+            first_payout = Some(tokens - previous_tokens);
+        }
+        previous_tokens = tokens;
     }
 
     assert!(
         saw_token_dust,
-        "the token conversion never floored, so this fixture is not exercising the second stage"
+        "the token conversion never floored, so this fixture does not exercise the second stage"
     );
-    assert!(market.revenue_pool.scaled_balance > 0);
+
+    // The remainder crosses one token at a time, so the pool gains exactly one token when it
+    // first crosses. A larger first payment would mean the carry released more than it held.
+    assert_eq!(first_payout, Some(1));
+
+    // Six hours of cranks pay four whole tokens. A single crank of any one second in that range
+    // pays none, so every one of these tokens comes from the carried remainder.
+    assert_eq!(previous_tokens, 4);
 }
 
 #[test]

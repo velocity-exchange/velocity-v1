@@ -946,12 +946,14 @@ pub fn handle_settle_pnl<'c: 'info, 'info>(
 
     // Whether settlement actually happened this call. The revenue-share sweep
     // moves builder/referrer fees out of the market's pnl pool, so it must only
-    // run when we truly settled — a soft-skipped `settle_pnl` (TrySettle turning
-    // a pause/degraded-oracle/etc. into a no-op) must not drain the pool.
+    // run when settlement truly happened. Two calls settle nothing and must not
+    // drain the pool. A `settle_pnl` under TrySettle turns a pause or a degraded
+    // oracle into a no-op. A `settle_expired_position` for a user with no
+    // position returns before the market's SettlePnl pause checks.
     let settled = if market_in_settlement {
         amm_not_paused(&ctx.accounts.state)?;
 
-        controller::pnl::settle_expired_position(
+        let settled = controller::pnl::settle_expired_position(
             market_index,
             user,
             &user_key,
@@ -963,7 +965,7 @@ pub fn handle_settle_pnl<'c: 'info, 'info>(
         )?;
 
         user.update_last_active_slot(clock.slot);
-        true
+        settled
     } else {
         // No `update_amm` here: settle_pnl reads the live oracle and falls
         // back to the AMM's slot-fresh check only when the live oracle is
@@ -1092,14 +1094,16 @@ pub fn handle_settle_multiple_pnls<'c: 'info, 'info>(
             perp_market_map.get_ref(market_index)?.status == MarketStatus::Settlement;
 
         // Whether settlement actually happened for this market. Under
-        // `TrySettle`, `settle_pnl` soft-skips a paused / degraded-oracle
-        // market into `Ok(false)`; the revenue-share sweep below must be tied
-        // to real settlement so it does not move builder/referrer fees out of a
-        // market that never settled.
+        // `TrySettle`, `settle_pnl` soft-skips a paused or degraded-oracle
+        // market into `Ok(false)`. `settle_expired_position` returns `Ok(false)`
+        // for a user with no position, which is a no-op that runs before the
+        // market's SettlePnl pause checks. The revenue-share sweep below must be
+        // tied to real settlement. Otherwise it moves builder/referrer fees out
+        // of a market that never settled.
         let settled = if market_in_settlement {
             amm_not_paused(&ctx.accounts.state)?;
 
-            controller::pnl::settle_expired_position(
+            let settled = controller::pnl::settle_expired_position(
                 *market_index,
                 user,
                 &user_key,
@@ -1111,7 +1115,7 @@ pub fn handle_settle_multiple_pnls<'c: 'info, 'info>(
             )?;
 
             user.update_last_active_slot(clock.slot);
-            true
+            settled
         } else {
             // See `handle_settle_pnl` for the no-refresh rationale.
 

@@ -146,6 +146,19 @@ export const ONE_HOUR = new BN(60 * 60);
 /** 31,536,000 seconds (365 days). */
 export const ONE_YEAR = new BN(31536000);
 
+/**
+ * Mirror of the program's `MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN`.
+ *
+ * A value-releasing path (withdraw, transfer, swap, or a risk-increasing perp fill)
+ * rejects with `SpotMarketInterestStaleForMargin` when a market that carries one of
+ * the account's borrows has not accrued interest within this many seconds. The
+ * program exempts a borrow whose un-booked interest is still under one token unit,
+ * so a client that uses this bound alone cranks a superset of what the program
+ * needs. `updateSpotMarketCumulativeInterest` is permissionless and can be bundled
+ * into the same transaction.
+ */
+export const MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN = ONE_HOUR;
+
 /** Market index of the protocol's quote spot market (the protocol's quote asset on mainnet). */
 export const QUOTE_SPOT_MARKET_INDEX = 0;
 

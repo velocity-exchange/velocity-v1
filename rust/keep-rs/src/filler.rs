@@ -1061,18 +1061,20 @@ async fn try_swift_fill(
     }
 
     // let taker_order_id = taker_account_data.next_order_id;
-    let mut tx_builder = tx_builder
+    let tx_builder = tx_builder
         .with_priority_fee(priority_fee, Some(cu_limit))
-        .place_swift_order(&swift_order, &taker_account_data)
-        .fill_perp_order(
-            taker_order.market_index,
-            taker_subaccount,
-            &taker_account_data,
-            &taker_stats,
-            None, // Some(taker_order_id), // assuming we're fast enough that its the taker_order_id, should be ok for retail
-            maker_accounts.as_slice(),
-            Some(swift_order.has_builder()),
-        );
+        .place_swift_order(&swift_order, &taker_account_data);
+    let mut tx_builder =
+        with_spot_interest_cranks(tx_builder, velocity, &taker_account_data, &maker_accounts)
+            .fill_perp_order(
+                taker_order.market_index,
+                taker_subaccount,
+                &taker_account_data,
+                &taker_stats,
+                None, // Some(taker_order_id), // assuming we're fast enough that its the taker_order_id, should be ok for retail
+                maker_accounts.as_slice(),
+                Some(swift_order.has_builder()),
+            );
 
     // large accounts list, bump CU limit to compensate
     let mut effective_cu_limit = cu_limit;
@@ -1154,6 +1156,39 @@ async fn try_swift_place(
             cu_limit as u64,
         )
         .await;
+}
+
+/// Add the interest cranks a fill needs, ahead of the fill instruction.
+///
+/// The program refuses a risk-increasing fill when the taker, or a maker that also
+/// increases risk, carries a borrow in a spot market whose interest has not accrued
+/// within the hour (`SpotMarketInterestStaleForMargin`): the margin check values
+/// that borrow through a stale index and understates the debt. `fill_perp_order`
+/// receives those markets read-only and cannot refresh them, so the permissionless
+/// crank rides in the same transaction. Call this before `fill_perp_order`, which
+/// also keeps the fill as the last instruction for the account-count check.
+///
+/// A market this misses only costs a reverted fill.
+fn with_spot_interest_cranks<'a>(
+    mut tx_builder: TransactionBuilder<'a>,
+    velocity: &VelocityClient,
+    taker: &User,
+    makers: &[User],
+) -> TransactionBuilder<'a> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs() as i64)
+        .unwrap_or_default();
+
+    let mut users = Vec::with_capacity(makers.len() + 1);
+    users.push(taker);
+    users.extend(makers.iter());
+
+    for market_index in velocity.stale_spot_interest_markets(&users, now) {
+        tx_builder = tx_builder.update_spot_market_cumulative_interest(market_index);
+    }
+
+    tx_builder
 }
 
 /// Build the broadcast transaction and, when needed, a guarded simulation variant.
@@ -1439,15 +1474,17 @@ async fn try_auction_fill(
             }
         }
 
-        tx_builder = tx_builder.fill_perp_order(
-            market_index,
-            taker_subaccount,
-            &taker_account_data,
-            &taker_stats,
-            Some(taker_order.order_id),
-            maker_accounts.as_slice(),
-            None,
-        );
+        tx_builder =
+            with_spot_interest_cranks(tx_builder, velocity, &taker_account_data, &maker_accounts)
+                .fill_perp_order(
+                    market_index,
+                    taker_subaccount,
+                    &taker_account_data,
+                    &taker_stats,
+                    Some(taker_order.order_id),
+                    maker_accounts.as_slice(),
+                    None,
+                );
 
         // large accounts list, bump CU limit to compensate
         let mut effective_cu_limit = cu_limit;
@@ -1597,8 +1634,8 @@ async fn try_uncross(
             std::borrow::Cow::Borrowed(&filler_account_data),
             false,
         );
-        tx_builder = tx_builder
-            .with_priority_fee(priority_fee, Some(cu_limit))
+        tx_builder = tx_builder.with_priority_fee(priority_fee, Some(cu_limit));
+        tx_builder = with_spot_interest_cranks(tx_builder, velocity, &taker_account_data, &makers)
             .fill_perp_order(
                 market_index,
                 taker_subaccount,
@@ -1816,22 +1853,24 @@ async fn try_vamm_taker_fill(
         .filter_map(|m| velocity.try_get_account::<User>(m).ok())
         .collect();
 
-        let mut tx_builder = TransactionBuilder::new(
+        let tx_builder = TransactionBuilder::new(
             velocity.program_data(),
             filler_subaccount,
             std::borrow::Cow::Borrowed(&filler_account_data),
             false,
         )
-        .with_priority_fee(priority_fee, Some(cu_limit))
-        .fill_perp_order(
-            market_index,
-            user_subaccount,
-            &user_account,
-            &user_stats,
-            Some(l3_order.order_id),
-            maker_accounts.as_slice(),
-            None,
-        );
+        .with_priority_fee(priority_fee, Some(cu_limit));
+        let mut tx_builder =
+            with_spot_interest_cranks(tx_builder, velocity, &user_account, &maker_accounts)
+                .fill_perp_order(
+                    market_index,
+                    user_subaccount,
+                    &user_account,
+                    &user_stats,
+                    Some(l3_order.order_id),
+                    maker_accounts.as_slice(),
+                    None,
+                );
 
         // large accounts list, bump CU limit to compensate
         let mut effective_cu_limit = cu_limit;

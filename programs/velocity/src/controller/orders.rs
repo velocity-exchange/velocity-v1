@@ -2297,25 +2297,32 @@ fn fulfill_perp_order(
             // stale-oracle collateral, and the DLOB attack in both findings needs
             // two accounts, so gating only the taker would leave it reachable from
             // the maker seat.
-            validate!(
-                maker_margin_calculation.all_deposit_oracles_valid,
-                ErrorCode::InvalidOracle,
-                "maker ({}) increasing risk while a spot deposit oracle is invalid for margin",
-                maker_key
-            )?;
-            validate!(
-                maker_margin_calculation.all_spot_liability_oracles_valid,
-                ErrorCode::InvalidOracle,
-                "maker ({}) increasing risk while a spot borrow oracle is invalid for margin",
-                maker_key
-            )?;
+            //
+            // Excluded during a liquidation, which is how the taker side treats it
+            // as well. This loop also runs for liquidation fills, so an unqualified
+            // reject here would let one maker's stale spot oracle, or one maker's
+            // un-cranked borrow market, block the liquidation of another account.
+            if !fill_mode.is_liquidation() {
+                validate!(
+                    maker_margin_calculation.all_deposit_oracles_valid,
+                    ErrorCode::InvalidOracle,
+                    "maker ({}) increasing risk while a spot deposit oracle is invalid for margin",
+                    maker_key
+                )?;
+                validate!(
+                    maker_margin_calculation.all_spot_liability_oracles_valid,
+                    ErrorCode::InvalidOracle,
+                    "maker ({}) increasing risk while a spot borrow oracle is invalid for margin",
+                    maker_key
+                )?;
 
-            // Same freshness precondition as the taker side (OtterSec #148).
-            crate::math::margin::validate_spot_borrow_interest_fresh_for_margin(
-                &maker,
-                spot_market_map,
-                now,
-            )?;
+                // Same freshness precondition as the taker side (OtterSec #148).
+                crate::math::margin::validate_spot_borrow_interest_fresh_for_margin(
+                    &maker,
+                    spot_market_map,
+                    now,
+                )?;
+            }
 
             let maker_net_equity = calculate_net_equity_for_floor(
                 &maker,

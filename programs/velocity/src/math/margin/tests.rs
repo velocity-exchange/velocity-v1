@@ -7189,7 +7189,7 @@ fn stale_spot_interest_blocks_borrow_valuation_but_not_deposits() {
     use crate::{
         create_anchor_account_info,
         math::{
-            constants::MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN,
+            constants::{MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN, TWENTY_FOUR_HOUR},
             margin::validate_spot_borrow_interest_fresh_for_margin,
         },
         state::{
@@ -7202,34 +7202,41 @@ fn stale_spot_interest_blocks_borrow_valuation_but_not_deposits() {
 
     let now = 1_700_000_000_i64;
 
+    // 50% utilization under a 70%/6%/100% curve, so the market charges a real
+    // borrow rate and an un-booked interval is measurable.
     let build = |last_interest_ts: u64| SpotMarket {
         market_index: 1,
         deposit_balance: 1_000 * SPOT_BALANCE_PRECISION,
         borrow_balance: 500 * SPOT_BALANCE_PRECISION,
         cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
         cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        optimal_utilization: 700_000,
+        optimal_borrow_rate: 60_000,
+        max_borrow_rate: 1_000_000,
         decimals: 6,
         last_interest_ts,
         ..SpotMarket::default()
     };
 
-    let position = |balance_type: SpotBalanceType| {
+    let position = |balance_type: SpotBalanceType, scaled_balance: u64| {
         let mut user = User::default();
         user.spot_positions[0] = SpotPosition {
             market_index: 1,
-            scaled_balance: 100 * (SPOT_BALANCE_PRECISION as u64),
+            scaled_balance,
             balance_type,
             ..SpotPosition::default()
         };
         user
     };
 
+    let borrow_of = 100 * (SPOT_BALANCE_PRECISION as u64);
+
     // Fresh market: a borrow values fine.
     {
         let mut market = build((now - 10) as u64);
         create_anchor_account_info!(market, SpotMarket, ai);
         let map = SpotMarketMap::load_one(&ai, true).unwrap();
-        let user = position(SpotBalanceType::Borrow);
+        let user = position(SpotBalanceType::Borrow, borrow_of);
         assert!(validate_spot_borrow_interest_fresh_for_margin(&user, &map, now).is_ok());
     }
 
@@ -7239,7 +7246,7 @@ fn stale_spot_interest_blocks_borrow_valuation_but_not_deposits() {
         let mut market = build((now - stale_by) as u64);
         create_anchor_account_info!(market, SpotMarket, ai);
         let map = SpotMarketMap::load_one(&ai, true).unwrap();
-        let user = position(SpotBalanceType::Borrow);
+        let user = position(SpotBalanceType::Borrow, borrow_of);
         assert_eq!(
             validate_spot_borrow_interest_fresh_for_margin(&user, &map, now),
             Err(crate::error::ErrorCode::SpotMarketInterestStaleForMargin),
@@ -7248,7 +7255,7 @@ fn stale_spot_interest_blocks_borrow_valuation_but_not_deposits() {
 
         // ...but the identical staleness on a DEPOSIT position is allowed: a stale
         // deposit index understates collateral, which errs the protocol's way.
-        let depositor = position(SpotBalanceType::Deposit);
+        let depositor = position(SpotBalanceType::Deposit, borrow_of);
         assert!(
             validate_spot_borrow_interest_fresh_for_margin(&depositor, &map, now).is_ok(),
             "a stale deposit index must not block — it understates collateral"
@@ -7260,8 +7267,35 @@ fn stale_spot_interest_blocks_borrow_valuation_but_not_deposits() {
         let mut market = build((now - MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN) as u64);
         create_anchor_account_info!(market, SpotMarket, ai);
         let map = SpotMarketMap::load_one(&ai, true).unwrap();
-        let user = position(SpotBalanceType::Borrow);
+        let user = position(SpotBalanceType::Borrow, borrow_of);
         assert!(validate_spot_borrow_interest_fresh_for_margin(&user, &map, now).is_ok());
+    }
+
+    // A borrow whose un-booked interest is under one token unit passes at any
+    // staleness. `update_spot_market_cumulative_interest` defers an interval it
+    // cannot book in full and leaves `last_interest_ts` where it is, so on a market
+    // this small the clock never advances however often the crank runs. Gating on
+    // the clock alone would make every fill and withdrawal for this account fail
+    // forever. The same market a day stale still refuses a borrow large enough for
+    // the omission to clear a token, so the exemption is bounded by the omission
+    // and not by the market.
+    {
+        let mut market = build((now - TWENTY_FOUR_HOUR) as u64);
+        create_anchor_account_info!(market, SpotMarket, ai);
+        let map = SpotMarketMap::load_one(&ai, true).unwrap();
+
+        let dust = position(SpotBalanceType::Borrow, 1_000);
+        assert!(
+            validate_spot_borrow_interest_fresh_for_margin(&dust, &map, now).is_ok(),
+            "a sub-token omission must not lock the account out"
+        );
+
+        let material = position(SpotBalanceType::Borrow, borrow_of);
+        assert_eq!(
+            validate_spot_borrow_interest_fresh_for_margin(&material, &map, now),
+            Err(crate::error::ErrorCode::SpotMarketInterestStaleForMargin),
+            "the exemption must not extend to a borrow that hides a whole token"
+        );
     }
 }
 

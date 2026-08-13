@@ -17,7 +17,10 @@ use {
                 calculate_base_asset_value_and_pnl_with_oracle_price,
             },
             safe_math::SafeMath,
-            spot_balance::{get_strict_token_value, get_token_value},
+            spot_balance::{
+                calculate_accumulated_interest, get_interest_token_amount, get_strict_token_value,
+                get_token_value, InterestAccumulated,
+            },
         },
         msg,
         state::{
@@ -261,6 +264,16 @@ pub fn calculate_user_safest_position_tiers(
 /// Mirrors the perp side's existing freshness precondition (`amm.is_fresh_at`).
 /// Recovery needs no privileges: `update_spot_market_cumulative_interest` is
 /// permissionless and may be bundled into the same transaction.
+///
+/// A market whose interval cannot be booked yet is exempt. The clock is the cheap
+/// test, not the property that matters: `update_spot_market_cumulative_interest`
+/// *defers* an interval whose split or configured carveout rounds below one token,
+/// and it leaves `last_interest_ts` where it is while it does. On a dust-sized
+/// market that deferral can outlast the staleness bound, and no amount of cranking
+/// moves the clock. Measuring the omission itself instead keeps such a market
+/// fillable: when the un-booked index applied to this borrow converts to less than
+/// one token, the debt is understated by less than the smallest unit the account
+/// can be charged.
 pub fn validate_spot_borrow_interest_fresh_for_margin(
     user: &User,
     spot_market_map: &SpotMarketMap,
@@ -277,14 +290,29 @@ pub fn validate_spot_borrow_interest_fresh_for_margin(
         let spot_market = spot_market_map.get_ref(&spot_position.market_index)?;
         let staleness = now.safe_sub(spot_market.last_interest_ts.cast()?)?;
 
+        if staleness <= MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN {
+            continue;
+        }
+
+        let InterestAccumulated {
+            borrow_interest, ..
+        } = calculate_accumulated_interest(&spot_market, now)?;
+
+        let unbooked_debt = get_interest_token_amount(
+            spot_position.scaled_balance.cast()?,
+            &spot_market,
+            borrow_interest,
+        )?;
+
         validate!(
-            staleness <= MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN,
+            unbooked_debt == 0,
             ErrorCode::SpotMarketInterestStaleForMargin,
-            "spot market {} interest is {}s stale (max {}s) — crank \
-             update_spot_market_cumulative_interest before valuing its borrow",
+            "spot market {} interest is {}s stale (max {}s) and hides {} of this borrow — crank \
+             update_spot_market_cumulative_interest before valuing it",
             spot_position.market_index,
             staleness,
-            MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN
+            MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN,
+            unbooked_debt
         )?;
     }
 

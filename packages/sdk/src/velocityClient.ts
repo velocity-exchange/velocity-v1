@@ -141,6 +141,7 @@ import { TxSender, TxSigAndSlot } from './tx/types';
 import {
 	BASE_PRECISION,
 	MARGIN_PRECISION,
+	MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN,
 	MIN_I64,
 	ONE,
 	PERCENTAGE_PRECISION,
@@ -5971,6 +5972,74 @@ export class VelocityClient {
 				oracle: spotMarket.oracle,
 			},
 		});
+	}
+
+	/**
+	 * Lists the spot markets that must be cranked before the given accounts can be
+	 * used on a value-releasing path.
+	 *
+	 * The program refuses to value a spot **borrow** for margin through an index
+	 * that has not accrued within `MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN`
+	 * (`SpotMarketInterestStaleForMargin`). It applies on withdraw, transfer
+	 * deposit, transfer pools, swap, isolated-position withdraw, and any
+	 * risk-increasing perp fill — for the taker and for a risk-increasing maker
+	 * alike. Only borrow positions count; a stale deposit index understates
+	 * collateral and is allowed.
+	 *
+	 * The program also exempts a borrow whose un-booked interest is still under one
+	 * token unit, which this does not model, so the result is a superset: cranking
+	 * every market it names always clears the check.
+	 *
+	 * @param userAccounts - Accounts the transaction values, e.g. a fill's taker and makers.
+	 * @param now - Unix seconds to measure staleness against; defaults to the local clock.
+	 * @returns Ascending market indexes, deduplicated.
+	 */
+	public getStaleSpotInterestMarketIndexes(
+		userAccounts: UserAccount[],
+		now: number = Math.floor(Date.now() / 1000)
+	): number[] {
+		const stale = new Set<number>();
+		for (const userAccount of userAccounts) {
+			for (const spotPosition of userAccount.spotPositions) {
+				if (
+					!isVariant(spotPosition.balanceType, 'borrow') ||
+					spotPosition.scaledBalance.isZero()
+				) {
+					continue;
+				}
+				if (stale.has(spotPosition.marketIndex)) {
+					continue;
+				}
+				const spotMarket = this.getSpotMarketAccount(spotPosition.marketIndex);
+				if (!spotMarket) {
+					continue;
+				}
+				const staleness = new BN(now).sub(spotMarket.lastInterestTs);
+				if (staleness.gt(MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN)) {
+					stale.add(spotPosition.marketIndex);
+				}
+			}
+		}
+		return Array.from(stale).sort((a, b) => a - b);
+	}
+
+	/**
+	 * Builds one `updateSpotMarketCumulativeInterest` instruction per market that
+	 * `getStaleSpotInterestMarketIndexes` names. Prepend them to a withdraw, swap,
+	 * transfer, or fill so the margin check sees a current borrow index.
+	 * @param userAccounts - Accounts the transaction values, e.g. a fill's taker and makers.
+	 * @param now - Unix seconds to measure staleness against; defaults to the local clock.
+	 * @returns The instructions, in ascending market-index order.
+	 */
+	public async getStaleSpotInterestCrankIxs(
+		userAccounts: UserAccount[],
+		now?: number
+	): Promise<TransactionInstruction[]> {
+		return await Promise.all(
+			this.getStaleSpotInterestMarketIndexes(userAccounts, now).map(
+				(marketIndex) => this.updateSpotMarketCumulativeInterestIx(marketIndex)
+			)
+		);
 	}
 
 	/**

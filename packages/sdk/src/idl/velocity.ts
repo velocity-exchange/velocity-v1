@@ -2496,6 +2496,40 @@ export type Velocity = {
         },
         {
           "name": "velocitySigner"
+        },
+        {
+          "name": "revenueShareEscrow",
+          "docs": [
+            "because most users never create one. It carries the same contract as",
+            "`DeleteUser::revenue_share_escrow`: an `UncheckedAccount` pinned by `seeds`, so",
+            "the handler can tell \"this authority has no escrow\" (`data_is_empty()`) from \"the",
+            "keeper omitted the account to skip the check\". It is required rather than",
+            "`Option` for that second reason (OtterSec #128)."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  82,
+                  69,
+                  86,
+                  95,
+                  69,
+                  83,
+                  67,
+                  82,
+                  79,
+                  87
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              }
+            ]
+          }
         }
       ],
       "args": []
@@ -18513,7 +18547,10 @@ export type Velocity = {
               "Fraction of spot deposit-interest gains carved out to the insurance fund",
               "(staker-owned). precision: IF_FACTOR_PRECISION. (Was `total_factor`; the",
               "protocol-vs-staker split was removed — the IF is now 100% staker-owned,",
-              "so this is purely the staker IF carveout.)"
+              "so this is purely the staker IF carveout.) While non-zero, an accrual",
+              "interval whose cut would convert to less than one token is deferred rather",
+              "than committed, so the cut is never floored away — see",
+              "`update_spot_market_cumulative_interest`."
             ],
             "type": "u32"
           },
@@ -23477,7 +23514,10 @@ export type Velocity = {
             "name": "protocolFeeFactor",
             "docs": [
               "Protocol's carveout of lending deposit-interest gains, routed to",
-              "`protocol_fee_pool`. precision: IF_FACTOR_PRECISION"
+              "`protocol_fee_pool`. precision: IF_FACTOR_PRECISION. While non-zero, an",
+              "accrual interval whose cut would convert to less than one token is",
+              "deferred rather than committed, so the cut is never floored away — see",
+              "`update_spot_market_cumulative_interest`."
             ],
             "type": "u32"
           },

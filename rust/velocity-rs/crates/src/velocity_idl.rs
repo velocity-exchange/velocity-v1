@@ -9467,6 +9467,7 @@ pub mod accounts {
         pub authority: Pubkey,
         pub keeper: Pubkey,
         pub velocity_signer: Pubkey,
+        pub revenue_share_escrow: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for ForceDeleteUser {
@@ -9513,6 +9514,11 @@ pub mod accounts {
                     pubkey: self.velocity_signer,
                     is_signer: false,
                     is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.revenue_share_escrow,
+                    is_signer: false,
+                    is_writable: true,
                 },
             ]
         }

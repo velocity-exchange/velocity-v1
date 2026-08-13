@@ -4131,6 +4131,27 @@ pub fn handle_update_feature_bit_flags_builder_codes(
     Ok(())
 }
 
+pub fn handle_update_feature_bit_flags_vamm_maker_rebate(
+    ctx: Context<HotAdminUpdateState>,
+    enable: bool,
+) -> Result<()> {
+    let mut state = ctx.accounts.state.load_mut()?;
+    if enable {
+        validate!(
+            ctx.accounts.admin.key().eq(&state.cold_admin),
+            ErrorCode::DefaultError,
+            "Only state admin can enable feature bit flags"
+        )?;
+
+        msg!("Setting 4th bit to 1, enabling vamm maker rebate");
+        state.feature_bit_flags |= FeatureBitFlags::VammMakerRebate as u8;
+    } else {
+        msg!("Setting 4th bit to 0, disabling vamm maker rebate");
+        state.feature_bit_flags &= !(FeatureBitFlags::VammMakerRebate as u8);
+    }
+    Ok(())
+}
+
 pub fn handle_update_feature_bit_flags_settle_lp_pool(
     ctx: Context<HotAdminUpdateState>,
     enable: bool,

@@ -74,4 +74,32 @@ export function registerFeatureFlags(parent: Command): void {
 			await client.unsubscribe();
 		}
 	});
+
+	withGlobalOptions(
+		ff
+			.command('vamm-maker-rebate <enable>')
+			.description(
+				'Enable/disable the vAMM earning the maker rebate on fills it makes (bit 8). Enabling requires the cold admin. <enable> = true|false|on|off|1|0.'
+			)
+	).action(async (enable: string, _flags, cmd: Command) => {
+		const on = parseEnable(enable);
+		const opts = readGlobalOpts(cmd);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const ix = await client.getUpdateFeatureBitFlagsVammMakerRebateIx(on);
+			const result = await sendOrPropose(
+				provider,
+				[ix],
+				opts.multisig ? new PublicKey(opts.multisig) : undefined,
+				'velocity-admin feature-flags vamm-maker-rebate'
+			);
+			reportDispatch(
+				`vamm maker rebate = ${on ? 'enabled' : 'disabled'}`,
+				result
+			);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
 }

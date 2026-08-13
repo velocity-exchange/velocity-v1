@@ -141,12 +141,16 @@ pub struct FeeLedger {
     /// quote `revenue_pool`; also the first bankruptcy tranche.
     /// precision: QUOTE_PRECISION
     pub pending_if_fee: u128,
-    /// cumulative fee provision granted to the AMM via `amm_fee_numerator` —
-    /// its backstop-of-last-resort tranche, drawable (and decremented) only in
-    /// bankruptcy. The AMM's own spread/trading capital beyond this provision
-    /// is never tapped. precision: QUOTE_PRECISION
+    /// cumulative fee provision granted to the AMM via `amm_fee_numerator`,
+    /// plus the vAMM maker rebate when `FeatureBitFlags::VammMakerRebate` is
+    /// enabled — its backstop-of-last-resort tranche, drawable (and
+    /// decremented) only in bankruptcy. Enabling the rebate bit therefore
+    /// grows the bankruptcy clawback cap by the rebates earned. The AMM's own
+    /// spread/trading capital beyond this provision is never tapped.
+    /// precision: QUOTE_PRECISION
     pub amm_protocol_fees_received: u128,
-    /// AMM fee provision accrued at fill (already booked into the AMM's
+    /// AMM fee provision (including the vAMM maker rebate when enabled)
+    /// accrued at fill (already booked into the AMM's
     /// `total_fee_minus_distributions`) but not yet tokenized into
     /// `amm.fee_pool` by the sweep. Invariant: `<= amm_protocol_fees_received`.
     /// precision: QUOTE_PRECISION

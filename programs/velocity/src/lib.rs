@@ -1787,6 +1787,13 @@ pub mod velocity {
         handle_update_feature_bit_flags_builder_codes(ctx, enable)
     }
 
+    pub fn update_feature_bit_flags_vamm_maker_rebate(
+        ctx: Context<HotAdminUpdateState>,
+        enable: bool,
+    ) -> Result<()> {
+        handle_update_feature_bit_flags_vamm_maker_rebate(ctx, enable)
+    }
+
     pub fn initialize_revenue_share<'c: 'info, 'info>(
         ctx: Context<'info, InitializeRevenueShare<'info>>,
     ) -> Result<()> {

@@ -1208,6 +1208,7 @@ pub fn fill_perp_order(
             &market.oracle_source,
             oracle::LogMode::SafeMMOracle,
             market.oracle_slot_delay_override,
+            mm_oracle_price_data.is_safe_price_mm_sourced(),
             market.oracle_low_risk_slot_delay_override,
         )?;
 

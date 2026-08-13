@@ -83,6 +83,7 @@ test_files=(
   marketOrderBaseAssetAmount.ts
   maxDeposit.ts
   maxLeverageOrderParams.ts
+  mmOracleBatchNative.ts
   modifyOrder.ts
   multipleMakerOrders.ts
   oracleDiffSources.ts

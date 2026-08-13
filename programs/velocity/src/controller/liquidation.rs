@@ -2459,6 +2459,7 @@ pub fn liquidate_spot_with_swap_end(
                 &asset_market.oracle_source,
                 LogMode::None,
                 -1,
+                false, // exchange-oracle price, never MM-sourced
                 0,
             )?;
 
@@ -2516,6 +2517,7 @@ pub fn liquidate_spot_with_swap_end(
                 &liability_market.oracle_source,
                 LogMode::None,
                 -1,
+                false, // exchange-oracle price, never MM-sourced
                 0,
             )?;
 

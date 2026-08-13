@@ -26170,6 +26170,10 @@ pub mod errors {
         InvalidAccountExtension,
         #[msg("Invalid equity breaker reset")]
         InvalidEquityBreakerReset,
+        #[msg("Native dispatch: instruction data is malformed for this opcode")]
+        InvalidNativeInstructionData,
+        #[msg("MM oracle updates are disabled by the admin feature-bit kill switch")]
+        MmOracleUpdateDisabled,
     }
 }
 pub mod events {

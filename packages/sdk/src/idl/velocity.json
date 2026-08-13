@@ -4615,6 +4615,9 @@
           "writable": true
         },
         {
+          "name": "liquidator_stats"
+        },
+        {
           "name": "user",
           "writable": true
         },
@@ -4746,6 +4749,9 @@
         {
           "name": "liquidator",
           "writable": true
+        },
+        {
+          "name": "liquidator_stats"
         },
         {
           "name": "user",

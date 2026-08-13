@@ -4,7 +4,12 @@ import { Program } from '@coral-xyz/anchor';
 
 import { assert } from 'chai';
 
-import { LAMPORTS_PER_SOL, Keypair, PublicKey } from '@solana/web3.js';
+import {
+	LAMPORTS_PER_SOL,
+	Keypair,
+	PublicKey,
+	SYSVAR_INSTRUCTIONS_PUBKEY,
+} from '@solana/web3.js';
 
 import {
 	BN,
@@ -31,9 +36,10 @@ import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunCon
 // Regression guard for `liquidate_spot_with_swap`: the begin handler introspects
 // the matching end instruction and binds accounts by hard-coded index, with the
 // swap (remaining) accounts assumed to start right after the fixed accounts.
-// `LiquidateSpotWithSwap` has 11 fixed accounts (indexes 0..=10); a stale guard
-// previously used the old 13-account Drift layout (with liquidator_stats/user_stats),
-// which made the begin/end account-count check unsatisfiable and bricked the route.
+// `LiquidateSpotWithSwap` has 12 fixed accounts (indexes 0..=11, including the
+// liquidator_stats the equity-breaker gate reads); a stale guard previously used
+// the old 13-account Drift layout, which made the begin/end account-count check
+// unsatisfiable and bricked the route.
 // This test builds begin + end through the generated SDK/IDL and asserts the account
 // order the program guard depends on, so any future struct reshuffle that desyncs the
 // guard is caught here rather than on-chain.
@@ -62,12 +68,16 @@ describe('liquidate spot with swap account bindings', () => {
 	// account order of `LiquidateSpotWithSwap` and must stay in sync with it.
 	const AUTHORITY_IX_INDEX = 1;
 	const LIQUIDATOR_IX_INDEX = 2;
-	const USER_IX_INDEX = 3;
-	const LIABILITY_VAULT_IX_INDEX = 4;
-	const ASSET_VAULT_IX_INDEX = 5;
-	const LIABILITY_TOKEN_ACCOUNT_IX_INDEX = 6;
-	const ASSET_TOKEN_ACCOUNT_IX_INDEX = 7;
-	const NUM_FIXED_ACCOUNTS = 11;
+	const LIQUIDATOR_STATS_IX_INDEX = 3;
+	const USER_IX_INDEX = 4;
+	const LIABILITY_VAULT_IX_INDEX = 5;
+	const ASSET_VAULT_IX_INDEX = 6;
+	const LIABILITY_TOKEN_ACCOUNT_IX_INDEX = 7;
+	const ASSET_TOKEN_ACCOUNT_IX_INDEX = 8;
+	const TOKEN_PROGRAM_IX_INDEX = 9;
+	const VELOCITY_SIGNER_IX_INDEX = 10;
+	const INSTRUCTIONS_SYSVAR_IX_INDEX = 11;
+	const NUM_FIXED_ACCOUNTS = 12;
 
 	before(async () => {
 		const context = await startAnchor('', [], []);
@@ -190,6 +200,12 @@ describe('liquidate spot with swap account bindings', () => {
 				'liquidator binding index mismatch'
 			);
 			assert.ok(
+				ix.keys[LIQUIDATOR_STATS_IX_INDEX].pubkey.equals(
+					liquidatorClient.getUserStatsAccountPublicKey()
+				),
+				'liquidator_stats binding index mismatch'
+			);
+			assert.ok(
 				ix.keys[USER_IX_INDEX].pubkey.equals(user),
 				'user binding index mismatch'
 			);
@@ -232,8 +248,33 @@ describe('liquidate spot with swap account bindings', () => {
 			);
 		}
 
-		// The guard counts remaining accounts as `ix.accounts.len() - 11` and loops
-		// from index 11; assert the SDK lays out exactly that fixed-account count.
+		// The guard counts remaining accounts as `ix.accounts.len() - 12` and
+		// loops from index 12, so the last fixed account must sit at index 11.
+		// Pinning the tail is what catches a 13th fixed account being appended:
+		// that shifts nothing at 0..=8, so every binding assertion above would
+		// still pass while the program read the first swap account as a fixed
+		// one and the count check went off by one.
+		for (const ix of [beginSwapIx, endSwapIx]) {
+			assert.ok(
+				ix.keys[TOKEN_PROGRAM_IX_INDEX].pubkey.equals(
+					liquidatorClient.getTokenProgramForSpotMarket(assetSpotMarket)
+				),
+				'token_program binding index mismatch'
+			);
+			assert.ok(
+				ix.keys[VELOCITY_SIGNER_IX_INDEX].pubkey.equals(
+					liquidatorClient.getStateAccount().signer
+				),
+				'velocity_signer binding index mismatch'
+			);
+			assert.ok(
+				ix.keys[INSTRUCTIONS_SYSVAR_IX_INDEX].pubkey.equals(
+					SYSVAR_INSTRUCTIONS_PUBKEY
+				),
+				'instructions sysvar binding index mismatch'
+			);
+		}
+
 		const remainingCount = beginSwapIx.keys.length - NUM_FIXED_ACCOUNTS;
 		assert.isAtLeast(
 			remainingCount,

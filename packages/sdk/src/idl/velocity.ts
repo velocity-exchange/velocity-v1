@@ -4621,6 +4621,9 @@ export type Velocity = {
           "writable": true
         },
         {
+          "name": "liquidatorStats"
+        },
+        {
           "name": "user",
           "writable": true
         },
@@ -4752,6 +4755,9 @@ export type Velocity = {
         {
           "name": "liquidator",
           "writable": true
+        },
+        {
+          "name": "liquidatorStats"
         },
         {
           "name": "user",

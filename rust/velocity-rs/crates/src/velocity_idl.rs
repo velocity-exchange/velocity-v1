@@ -11564,6 +11564,7 @@ pub mod accounts {
         pub state: Pubkey,
         pub authority: Pubkey,
         pub liquidator: Pubkey,
+        pub liquidator_stats: Pubkey,
         pub user: Pubkey,
         pub liability_spot_market_vault: Pubkey,
         pub asset_spot_market_vault: Pubkey,
@@ -11603,6 +11604,11 @@ pub mod accounts {
                     pubkey: self.liquidator,
                     is_signer: false,
                     is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.liquidator_stats,
+                    is_signer: false,
+                    is_writable: false,
                 },
                 AccountMeta {
                     pubkey: self.user,
@@ -11682,6 +11688,7 @@ pub mod accounts {
         pub state: Pubkey,
         pub authority: Pubkey,
         pub liquidator: Pubkey,
+        pub liquidator_stats: Pubkey,
         pub user: Pubkey,
         pub liability_spot_market_vault: Pubkey,
         pub asset_spot_market_vault: Pubkey,
@@ -11721,6 +11728,11 @@ pub mod accounts {
                     pubkey: self.liquidator,
                     is_signer: false,
                     is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.liquidator_stats,
+                    is_signer: false,
+                    is_writable: false,
                 },
                 AccountMeta {
                     pubkey: self.user,

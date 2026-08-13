@@ -42,9 +42,10 @@ use {
     velocity::state::user::User,
 };
 
-// Generated types/schemas from the canonical velocity IDL. We only use
-// `register_schemas()`; instruction building goes through `raw_call`.
-crucible_idl_gen::declare_fuzz_program!(velocity_idl = "idls/velocity.json");
+// Generated types/schemas, read straight from the canonical IDL that the SDK
+// also consumes. We only use `register_schemas()`; instruction building goes
+// through `raw_call`.
+crucible_idl_gen::declare_fuzz_program!(velocity_idl = "../../packages/sdk/src/idl/velocity.json");
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -170,15 +171,14 @@ fn read_zc<T: bytemuck::Pod>(ctx: &TestContext, pk: &Pubkey) -> Option<T> {
     let acct = ctx.get_account(pk).ok()?;
     let size = std::mem::size_of::<T>();
     // An account that EXISTS but is too small is a host/on-chain LAYOUT DRIFT
-    // (host `size_of::<T>` diverged from the deployed .so, e.g. a stale vendored
-    // IDL or an un-rebuilt .so). Fail LOUDLY: silently returning None here would
-    // skip every invariant that reads through this helper and turn the whole
-    // harness green with zero checks executed. Genuinely-absent accounts still
-    // return None via the `.ok()?` above.
+    // (host `size_of::<T>` diverged from the deployed .so). Fail LOUDLY:
+    // silently returning None here would skip every invariant that reads through
+    // this helper and turn the whole harness green with zero checks executed.
+    // Genuinely-absent accounts still return None via the `.ok()?` above.
     assert!(
         acct.data.len() >= 8 + size,
         "layout drift: account {pk} has {} data bytes, need >= {} (8 + size_of::<{}>); \
-         re-run `bash fuzz/sync-idls.sh` and rebuild target/deploy/velocity.so",
+         rebuild target/deploy/velocity.so from the current program source",
         acct.data.len(),
         8 + size,
         std::any::type_name::<T>(),

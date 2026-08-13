@@ -141,12 +141,16 @@ pub struct FeeLedger {
     /// quote `revenue_pool`; also the first bankruptcy tranche.
     /// precision: QUOTE_PRECISION
     pub pending_if_fee: u128,
-    /// cumulative fee provision granted to the AMM via `amm_fee_numerator` —
-    /// its backstop-of-last-resort tranche, drawable (and decremented) only in
-    /// bankruptcy. The AMM's own spread/trading capital beyond this provision
-    /// is never tapped. precision: QUOTE_PRECISION
+    /// cumulative fee provision granted to the AMM via `amm_fee_numerator`,
+    /// plus the vAMM maker rebate when `FeatureBitFlags::VammMakerRebate` is
+    /// enabled — its backstop-of-last-resort tranche, drawable (and
+    /// decremented) only in bankruptcy. Enabling the rebate bit therefore
+    /// grows the bankruptcy clawback cap by the rebates earned. The AMM's own
+    /// spread/trading capital beyond this provision is never tapped.
+    /// precision: QUOTE_PRECISION
     pub amm_protocol_fees_received: u128,
-    /// AMM fee provision accrued at fill (already booked into the AMM's
+    /// AMM fee provision (including the vAMM maker rebate when enabled)
+    /// accrued at fill (already booked into the AMM's
     /// `total_fee_minus_distributions`) but not yet tokenized into
     /// `amm.fee_pool` by the sweep. Invariant: `<= amm_protocol_fees_received`.
     /// precision: QUOTE_PRECISION
@@ -424,7 +428,13 @@ pub struct PerpMarket {
     pub market_config: u8,
     /// the oracle provider information. used to decode/scale the oracle public key
     pub oracle_source: OracleSource,
-    /// override for the per-fill slot delay required from the oracle (default -1 = use state default)
+    /// Max oracle delay, in slots, tolerated by immediate (JIT / auction-skipping)
+    /// AMM fills. Positive is an explicit threshold. `0` disables immediate AMM
+    /// fills entirely. Negative (the init default, `-1`) means unset, which
+    /// resolves by price source: `MM_ORACLE_MIN_SLOT_GAP` for an MM-oracle-sourced
+    /// price (the tightest window the crank can satisfy, since the program refuses
+    /// MM-oracle writes closer together than that) and `0` for an exchange-oracle
+    /// price, which can be same-slot fresh. See `math::oracle::oracle_validity`.
     pub oracle_slot_delay_override: i8,
     /// the override for the state.min_perp_auction_duration
     /// 0 is no override, -1 is disable speed bump, 1-100 is literal speed bump
@@ -1258,6 +1268,7 @@ impl PerpMarket {
                 &self.oracle_source,
                 LogMode::MMOracle,
                 self.oracle_slot_delay_override,
+                true, // classifying the MM oracle price itself
                 self.oracle_low_risk_slot_delay_override,
             )?
         };

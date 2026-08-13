@@ -90,7 +90,9 @@ export function isFallbackAvailableLiquiditySource(
 				mmOraclePriceData.hasSufficientNumberOfDataPoints,
 		},
 		state.oracleGuardRails,
-		new BN(slot)
+		new BN(slot),
+		undefined,
+		mmOraclePriceData.isMMSourcedPrice ?? false
 	);
 	if (oracleValidity <= OracleValidity.StaleForAMMLowRisk) {
 		return false;

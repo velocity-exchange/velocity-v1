@@ -63,6 +63,7 @@ export enum FeatureBitFlags {
 	MM_ORACLE_UPDATE = 1,
 	MEDIAN_TRIGGER_PRICE = 2,
 	BUILDER_CODES = 4,
+	VAMM_MAKER_REBATE = 8,
 }
 
 /**

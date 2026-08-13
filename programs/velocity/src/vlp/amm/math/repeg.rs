@@ -49,6 +49,7 @@ pub fn calculate_repeg_validity_from_oracle_account(
         &market.oracle_source,
         oracle::LogMode::ExchangeOracle,
         market.oracle_slot_delay_override,
+        false, // exchange-oracle price, never MM-sourced
         market.oracle_low_risk_slot_delay_override,
     )? == OracleValidity::Valid;
 

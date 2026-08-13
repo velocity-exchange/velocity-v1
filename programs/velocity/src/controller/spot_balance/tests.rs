@@ -2774,6 +2774,7 @@ fn update_and_check_validity_judges_and_snapshots_before_refreshing() {
             &before.oracle_source,
             LogMode::None,
             -1,
+            false, // exchange-oracle price, never MM-sourced
             0,
         )
         .unwrap()

@@ -20,6 +20,7 @@ use {
             spot_balance::get_token_amount,
         },
         state::{
+            market_status::MarketStatus,
             oracle::{HistoricalOracleData, OracleSource},
             paused_operations::PerpOperation,
             perp_market::{FeeLedger, MarketStats, PerpMarket, PoolBalance},
@@ -1268,4 +1269,681 @@ fn revenue_share_map_only_accepts_subaccount_zero() {
             .sub_account_id,
         0
     );
+}
+
+// ---------------------------------------------------------------------------
+// head-of-line blocking
+// ---------------------------------------------------------------------------
+
+/// The sweep skips a row that the pool cannot pay. It does not stop. The loop reads the pool again
+/// for each row, and the reserve is constant for the call, so a smaller later row still pays. Row
+/// order does not change between calls, so a stop would block the later rows forever.
+#[test]
+fn an_unaffordable_row_does_not_block_later_rows() {
+    let builder_authority = Pubkey::new_unique();
+
+    // Pool 5 dollars, no reservation. The first row wants 10 and can never be paid from it.
+    let mut market = perp_market(5, 13);
+    create_anchor_account_info!(market, PerpMarket, market_info);
+    let perp_market_map = PerpMarketMap::load_one(&market_info, true).unwrap();
+
+    let mut spot_market = quote_spot_market();
+    create_anchor_account_info!(spot_market, SpotMarket, spot_market_info);
+    let spot_market_map = SpotMarketMap::load_one(&spot_market_info, true).unwrap();
+
+    let mut builder_user = beneficiary(builder_authority, false);
+    create_anchor_account_info!(builder_user, User, builder_user_info);
+    let mut builder_rev_share = revenue_share(builder_authority);
+    create_anchor_account_info!(builder_rev_share, RevenueShare, builder_rev_share_info);
+    let accounts = vec![builder_user_info, builder_rev_share_info];
+    let mut account_iter = accounts.iter().peekable();
+    let revenue_share_map = load_revenue_share_map(&mut account_iter).unwrap();
+
+    let rows = [completed_builder_row(0, 10), completed_builder_row(0, 3)];
+    escrow!(
+        &rows,
+        &[builder_info(builder_authority)],
+        Pubkey::default(),
+        escrow
+    );
+
+    let discharged = sweep_completed_revenue_share_for_market(
+        0,
+        &mut escrow,
+        &perp_market_map,
+        &spot_market_map,
+        &revenue_share_map,
+        0,
+        100 * PRICE_PRECISION_I64,
+        true,
+        false,
+    )
+    .unwrap();
+
+    // the second row paid despite the first being unaffordable
+    assert_eq!(discharged, 3 * DOLLAR);
+    assert_eq!(
+        quote_balance(&revenue_share_map, &builder_authority),
+        BENEFICIARY_START + 3 * DOLLAR_BALANCE
+    );
+    assert_eq!(
+        pnl_pool_tokens(&perp_market_map, &spot_market_map),
+        tokens(2)
+    );
+    // exactly the paid row's fee left the counter; the skipped row is still owed
+    assert_eq!(
+        perp_market_map.get_ref(&0).unwrap().pending_revenue_share,
+        10 * DOLLAR
+    );
+    assert_eq!(escrow.get_order(0).unwrap(), &rows[0]);
+    assert_eq!(escrow.get_order(1).unwrap(), &RevenueShareOrder::default());
+}
+
+/// The referral branch skips in the same way. It keeps the row and clears only the fee.
+#[test]
+fn an_unaffordable_row_does_not_block_a_later_referral_row() {
+    let referrer_authority = Pubkey::new_unique();
+    let builder_authority = Pubkey::new_unique();
+
+    let mut market = perp_market(5, 13);
+    create_anchor_account_info!(market, PerpMarket, market_info);
+    let perp_market_map = PerpMarketMap::load_one(&market_info, true).unwrap();
+
+    let mut spot_market = quote_spot_market();
+    create_anchor_account_info!(spot_market, SpotMarket, spot_market_info);
+    let spot_market_map = SpotMarketMap::load_one(&spot_market_info, true).unwrap();
+
+    let mut referrer_user = beneficiary(referrer_authority, false);
+    create_anchor_account_info!(referrer_user, User, referrer_user_info);
+    let mut referrer_rev_share = revenue_share(referrer_authority);
+    create_anchor_account_info!(referrer_rev_share, RevenueShare, referrer_rev_share_info);
+    let accounts = vec![referrer_user_info, referrer_rev_share_info];
+    let mut account_iter = accounts.iter().peekable();
+    let revenue_share_map = load_revenue_share_map(&mut account_iter).unwrap();
+
+    let rows = [completed_builder_row(0, 10), referral_row(0, 3)];
+    escrow!(
+        &rows,
+        &[builder_info(builder_authority)],
+        referrer_authority,
+        escrow
+    );
+
+    let discharged = sweep_completed_revenue_share_for_market(
+        0,
+        &mut escrow,
+        &perp_market_map,
+        &spot_market_map,
+        &revenue_share_map,
+        0,
+        100 * PRICE_PRECISION_I64,
+        true,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(discharged, 3 * DOLLAR);
+    assert_eq!(
+        quote_balance(&revenue_share_map, &referrer_authority),
+        BENEFICIARY_START + 3 * DOLLAR_BALANCE
+    );
+    assert_eq!(
+        perp_market_map.get_ref(&0).unwrap().pending_revenue_share,
+        10 * DOLLAR
+    );
+    assert_eq!(escrow.get_order(0).unwrap(), &rows[0]);
+    // a referral row keeps its slot and only loses its fee
+    assert_eq!(escrow.get_order(1).unwrap().fees_accrued, 0);
+    assert!(escrow.get_order(1).unwrap().is_referral_order());
+}
+
+/// The loop holds no stopped state. A skip in the middle leaves every later row payable. Every
+/// payment still keeps the reserve.
+#[test]
+fn every_row_is_reconsidered_after_a_skip() {
+    let builder_authority = Pubkey::new_unique();
+
+    // Pool 10 dollars, 4 dollars of positive user PnL reserved, so 6 are available.
+    let mut market = PerpMarket {
+        quote_asset_amount: 4 * QUOTE_PRECISION_I128,
+        ..perp_market(10, 22)
+    };
+    create_anchor_account_info!(market, PerpMarket, market_info);
+    let perp_market_map = PerpMarketMap::load_one(&market_info, true).unwrap();
+
+    let mut spot_market = quote_spot_market();
+    create_anchor_account_info!(spot_market, SpotMarket, spot_market_info);
+    let spot_market_map = SpotMarketMap::load_one(&spot_market_info, true).unwrap();
+
+    let mut builder_user = beneficiary(builder_authority, false);
+    create_anchor_account_info!(builder_user, User, builder_user_info);
+    let mut builder_rev_share = revenue_share(builder_authority);
+    create_anchor_account_info!(builder_rev_share, RevenueShare, builder_rev_share_info);
+    let accounts = vec![builder_user_info, builder_rev_share_info];
+    let mut account_iter = accounts.iter().peekable();
+    let revenue_share_map = load_revenue_share_map(&mut account_iter).unwrap();
+
+    let rows = [
+        completed_builder_row(0, 9),
+        completed_builder_row(0, 2),
+        completed_builder_row(0, 11),
+    ];
+    escrow!(
+        &rows,
+        &[builder_info(builder_authority)],
+        Pubkey::default(),
+        escrow
+    );
+
+    let discharged = sweep_completed_revenue_share_for_market(
+        0,
+        &mut escrow,
+        &perp_market_map,
+        &spot_market_map,
+        &revenue_share_map,
+        0,
+        100 * PRICE_PRECISION_I64,
+        true,
+        false,
+    )
+    .unwrap();
+
+    // only the middle row was affordable
+    assert_eq!(discharged, 2 * DOLLAR);
+    assert_eq!(
+        quote_balance(&revenue_share_map, &builder_authority),
+        BENEFICIARY_START + 2 * DOLLAR_BALANCE
+    );
+    assert_eq!(escrow.get_order(0).unwrap(), &rows[0]);
+    assert_eq!(escrow.get_order(1).unwrap(), &RevenueShareOrder::default());
+    assert_eq!(escrow.get_order(2).unwrap(), &rows[2]);
+    // and the pool never fell below the reserved floor
+    assert_eq!(
+        pnl_pool_tokens(&perp_market_map, &spot_market_map),
+        tokens(8)
+    );
+    assert!(pnl_pool_tokens(&perp_market_map, &spot_market_map) >= tokens(4));
+}
+
+// ---------------------------------------------------------------------------
+// settlement pricing
+// ---------------------------------------------------------------------------
+
+/// In Settlement, expired positions settle at `expiry_price`, not at the live price. The reserve
+/// must use the same price. A live price below `expiry_price` on a net-long market makes the
+/// reserve too small. The sweep then pays value that the expiry claims need, and those claims
+/// later fail with `InsufficientPerpPnlPool`.
+#[test]
+fn settlement_status_values_the_reserve_at_expiry_price() {
+    let builder_authority = Pubkey::new_unique();
+
+    // One base long against the AMM at a cost basis of 92 dollars. At the live oracle of 92 the
+    // users hold nothing; at the expiry price of 100 they hold 8 dollars.
+    let mut market = PerpMarket {
+        status: MarketStatus::Settlement,
+        expiry_price: 100 * PRICE_PRECISION_I64,
+        amm: AMM {
+            base_asset_amount_with_amm: BASE_PRECISION_I128,
+            ..AMM::default()
+        },
+        quote_asset_amount: -92 * QUOTE_PRECISION_I128,
+        ..perp_market(10, 5)
+    };
+    create_anchor_account_info!(market, PerpMarket, market_info);
+    let perp_market_map = PerpMarketMap::load_one(&market_info, true).unwrap();
+
+    let mut spot_market = quote_spot_market();
+    create_anchor_account_info!(spot_market, SpotMarket, spot_market_info);
+    let spot_market_map = SpotMarketMap::load_one(&spot_market_info, true).unwrap();
+
+    let mut builder_user = beneficiary(builder_authority, false);
+    create_anchor_account_info!(builder_user, User, builder_user_info);
+    let mut builder_rev_share = revenue_share(builder_authority);
+    create_anchor_account_info!(builder_rev_share, RevenueShare, builder_rev_share_info);
+    let accounts = vec![builder_user_info, builder_rev_share_info];
+    let mut account_iter = accounts.iter().peekable();
+    let revenue_share_map = load_revenue_share_map(&mut account_iter).unwrap();
+
+    escrow!(
+        &[completed_builder_row(0, 5)],
+        &[builder_info(builder_authority)],
+        Pubkey::default(),
+        escrow
+    );
+
+    // control: at the live price nothing would be reserved, so the row would pay out of the
+    // 10 dollar pool. Any payout below proves the live price was used.
+    {
+        let market = perp_market_map.get_ref(&0).unwrap();
+        assert_eq!(
+            calculate_net_user_pnl(
+                &market.amm,
+                92 * PRICE_PRECISION_I64,
+                market.quote_asset_amount,
+                market.net_unsettled_funding_pnl,
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            calculate_net_user_pnl(
+                &market.amm,
+                market.expiry_price,
+                market.quote_asset_amount,
+                market.net_unsettled_funding_pnl,
+            )
+            .unwrap(),
+            8 * QUOTE_PRECISION_I128
+        );
+    }
+
+    let discharged = sweep_completed_revenue_share_for_market(
+        0,
+        &mut escrow,
+        &perp_market_map,
+        &spot_market_map,
+        &revenue_share_map,
+        0,
+        // a live oracle below the expiry price, which must be ignored
+        92 * PRICE_PRECISION_I64,
+        true,
+        false,
+    )
+    .unwrap();
+
+    // 8 of the 10 dollars are reserved for the expiring longs, so the 5 dollar fee cannot be paid
+    assert_eq!(discharged, 0);
+    assert_eq!(
+        quote_balance(&revenue_share_map, &builder_authority),
+        BENEFICIARY_START
+    );
+    assert_eq!(
+        pnl_pool_tokens(&perp_market_map, &spot_market_map),
+        tokens(10)
+    );
+    assert_eq!(
+        perp_market_map.get_ref(&0).unwrap().pending_revenue_share,
+        5 * DOLLAR
+    );
+    assert_eq!(escrow.get_order(0).unwrap().fees_accrued, 5 * DOLLAR);
+}
+
+// ---------------------------------------------------------------------------
+// the payability the delist check depends on
+// ---------------------------------------------------------------------------
+
+/// The delist check depends on this: in Settlement the program can pay the whole outstanding
+/// revenue share. The check therefore cannot stop a market from closing.
+///
+/// The expiry solver values winner claims against `pnl_pool - pending_revenue_share` (OtterSec
+/// #147). At `expiry_price` the reserve equals the pool minus the amount owed, so the amount owed
+/// stays available. This test uses a 10 dollar pool and 4 dollars owed, so net user pnl is 6.
+#[test]
+fn settlement_leaves_exactly_the_owed_amount_available() {
+    let builder_authority = Pubkey::new_unique();
+
+    // One base long against the AMM at a cost basis of 92. net_user_pnl(price) = price - 92. An
+    // expiry price of 98 therefore values winner claims at 6, which is pool(10) - owed(4).
+    let mut market = PerpMarket {
+        status: MarketStatus::Settlement,
+        expiry_price: 98 * PRICE_PRECISION_I64,
+        amm: AMM {
+            base_asset_amount_with_amm: BASE_PRECISION_I128,
+            ..AMM::default()
+        },
+        quote_asset_amount: -92 * QUOTE_PRECISION_I128,
+        ..perp_market(10, 4)
+    };
+    create_anchor_account_info!(market, PerpMarket, market_info);
+    let perp_market_map = PerpMarketMap::load_one(&market_info, true).unwrap();
+
+    let mut spot_market = quote_spot_market();
+    create_anchor_account_info!(spot_market, SpotMarket, spot_market_info);
+    let spot_market_map = SpotMarketMap::load_one(&spot_market_info, true).unwrap();
+
+    let mut builder_user = beneficiary(builder_authority, false);
+    create_anchor_account_info!(builder_user, User, builder_user_info);
+    let mut builder_rev_share = revenue_share(builder_authority);
+    create_anchor_account_info!(builder_rev_share, RevenueShare, builder_rev_share_info);
+    let accounts = vec![builder_user_info, builder_rev_share_info];
+    let mut account_iter = accounts.iter().peekable();
+    let revenue_share_map = load_revenue_share_map(&mut account_iter).unwrap();
+
+    // The 4 dollars owed sit in two rows. The whole liability must clear, not one row.
+    escrow!(
+        &[completed_builder_row(0, 3), completed_builder_row(0, 1)],
+        &[builder_info(builder_authority)],
+        Pubkey::default(),
+        escrow
+    );
+
+    // Control: the reserve of the solver equals the pool minus the amount owed.
+    {
+        let market = perp_market_map.get_ref(&0).unwrap();
+        assert_eq!(
+            calculate_net_user_pnl(
+                &market.amm,
+                market.expiry_price,
+                market.quote_asset_amount,
+                market.net_unsettled_funding_pnl,
+            )
+            .unwrap(),
+            6 * QUOTE_PRECISION_I128
+        );
+    }
+
+    let discharged = sweep_completed_revenue_share_for_market(
+        0,
+        &mut escrow,
+        &perp_market_map,
+        &spot_market_map,
+        &revenue_share_map,
+        0,
+        // Settlement ignores the live price. This value proves that.
+        1_000 * PRICE_PRECISION_I64,
+        true,
+        false,
+    )
+    .unwrap();
+
+    // Every dollar owed is paid and the counter is clear. The delist check then passes.
+    assert_eq!(discharged, 4 * DOLLAR);
+    assert_eq!(
+        perp_market_map.get_ref(&0).unwrap().pending_revenue_share,
+        0
+    );
+    assert_eq!(
+        quote_balance(&revenue_share_map, &builder_authority),
+        BENEFICIARY_START + 4 * DOLLAR_BALANCE
+    );
+    // The pool holds exactly the winner claims and no less.
+    assert_eq!(
+        pnl_pool_tokens(&perp_market_map, &spot_market_map),
+        tokens(6)
+    );
+}
+
+/// The delist checks set `net_user_pnl` to zero. The whole pool is then available, and even a
+/// large liability pays in full. The delist check is therefore safe and no market can fail it.
+#[test]
+fn a_wound_down_market_can_pay_its_whole_liability() {
+    let builder_authority = Pubkey::new_unique();
+
+    // A flat AMM and a zero cost basis give net_user_pnl == 0, as the delist checks require.
+    let mut market = PerpMarket {
+        status: MarketStatus::Settlement,
+        expiry_price: 100 * PRICE_PRECISION_I64,
+        ..perp_market(9, 9)
+    };
+    create_anchor_account_info!(market, PerpMarket, market_info);
+    let perp_market_map = PerpMarketMap::load_one(&market_info, true).unwrap();
+
+    let mut spot_market = quote_spot_market();
+    create_anchor_account_info!(spot_market, SpotMarket, spot_market_info);
+    let spot_market_map = SpotMarketMap::load_one(&spot_market_info, true).unwrap();
+
+    let mut builder_user = beneficiary(builder_authority, false);
+    create_anchor_account_info!(builder_user, User, builder_user_info);
+    let mut builder_rev_share = revenue_share(builder_authority);
+    create_anchor_account_info!(builder_rev_share, RevenueShare, builder_rev_share_info);
+    let accounts = vec![builder_user_info, builder_rev_share_info];
+    let mut account_iter = accounts.iter().peekable();
+    let revenue_share_map = load_revenue_share_map(&mut account_iter).unwrap();
+
+    escrow!(
+        &[
+            completed_builder_row(0, 5),
+            completed_builder_row(0, 3),
+            completed_builder_row(0, 1),
+        ],
+        &[builder_info(builder_authority)],
+        Pubkey::default(),
+        escrow
+    );
+
+    let discharged = sweep_completed_revenue_share_for_market(
+        0,
+        &mut escrow,
+        &perp_market_map,
+        &spot_market_map,
+        &revenue_share_map,
+        0,
+        100 * PRICE_PRECISION_I64,
+        true,
+        false,
+    )
+    .unwrap();
+
+    // The pool goes to the beneficiaries, not to the revenue pool at the delist.
+    assert_eq!(discharged, 9 * DOLLAR);
+    assert_eq!(
+        perp_market_map.get_ref(&0).unwrap().pending_revenue_share,
+        0
+    );
+    assert_eq!(pnl_pool_tokens(&perp_market_map, &spot_market_map), 0);
+}
+
+// ---------------------------------------------------------------------------
+// forfeiting rows that provably cannot be paid
+// ---------------------------------------------------------------------------
+
+/// A builder row normally needs `Completed` before payment. Payment clears the row, and a live
+/// order would lose the link that it needs to accrue. In Settlement no fill can happen, so an
+/// `Open` row pays. The program can then clear the liability without the sub-accounts of the
+/// escrow owner. An owner can delete a sub-account, and its rows could never reach `Completed`.
+#[test]
+fn settlement_pays_an_open_builder_row() {
+    let builder_authority = Pubkey::new_unique();
+
+    let mut market = PerpMarket {
+        status: MarketStatus::Settlement,
+        expiry_price: 100 * PRICE_PRECISION_I64,
+        ..perp_market(10, 4)
+    };
+    create_anchor_account_info!(market, PerpMarket, market_info);
+    let perp_market_map = PerpMarketMap::load_one(&market_info, true).unwrap();
+
+    let mut spot_market = quote_spot_market();
+    create_anchor_account_info!(spot_market, SpotMarket, spot_market_info);
+    let spot_market_map = SpotMarketMap::load_one(&spot_market_info, true).unwrap();
+
+    let mut builder_user = beneficiary(builder_authority, false);
+    create_anchor_account_info!(builder_user, User, builder_user_info);
+    let mut builder_rev_share = revenue_share(builder_authority);
+    create_anchor_account_info!(builder_rev_share, RevenueShare, builder_rev_share_info);
+    let accounts = vec![builder_user_info, builder_rev_share_info];
+    let mut account_iter = accounts.iter().peekable();
+    let revenue_share_map = load_revenue_share_map(&mut account_iter).unwrap();
+
+    escrow!(
+        &[open_builder_row(0, 4)],
+        &[builder_info(builder_authority)],
+        Pubkey::default(),
+        escrow
+    );
+
+    let discharged = sweep_completed_revenue_share_for_market(
+        0,
+        &mut escrow,
+        &perp_market_map,
+        &spot_market_map,
+        &revenue_share_map,
+        0,
+        100 * PRICE_PRECISION_I64,
+        true,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(discharged, 4 * DOLLAR);
+    assert_eq!(
+        perp_market_map.get_ref(&0).unwrap().pending_revenue_share,
+        0
+    );
+    assert_eq!(
+        quote_balance(&revenue_share_map, &builder_authority),
+        BENEFICIARY_START + 4 * DOLLAR_BALANCE
+    );
+}
+
+/// The sweep does not pay an `Open` row on a live market. A fill can still accrue to it, and
+/// payment would clear the `order_id` that the fill path matches. Only Settlement removes this
+/// rule.
+#[test]
+fn a_live_market_still_requires_a_completed_builder_row() {
+    let builder_authority = Pubkey::new_unique();
+
+    let mut market = perp_market(10, 4);
+    create_anchor_account_info!(market, PerpMarket, market_info);
+    let perp_market_map = PerpMarketMap::load_one(&market_info, true).unwrap();
+
+    let mut spot_market = quote_spot_market();
+    create_anchor_account_info!(spot_market, SpotMarket, spot_market_info);
+    let spot_market_map = SpotMarketMap::load_one(&spot_market_info, true).unwrap();
+
+    let mut builder_user = beneficiary(builder_authority, false);
+    create_anchor_account_info!(builder_user, User, builder_user_info);
+    let mut builder_rev_share = revenue_share(builder_authority);
+    create_anchor_account_info!(builder_rev_share, RevenueShare, builder_rev_share_info);
+    let accounts = vec![builder_user_info, builder_rev_share_info];
+    let mut account_iter = accounts.iter().peekable();
+    let revenue_share_map = load_revenue_share_map(&mut account_iter).unwrap();
+
+    let rows = [open_builder_row(0, 4)];
+    escrow!(
+        &rows,
+        &[builder_info(builder_authority)],
+        Pubkey::default(),
+        escrow
+    );
+
+    let discharged = sweep_completed_revenue_share_for_market(
+        0,
+        &mut escrow,
+        &perp_market_map,
+        &spot_market_map,
+        &revenue_share_map,
+        0,
+        100 * PRICE_PRECISION_I64,
+        true,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(discharged, 0);
+    assert_eq!(escrow.get_order(0).unwrap(), &rows[0]);
+    assert_eq!(
+        perp_market_map.get_ref(&0).unwrap().pending_revenue_share,
+        4 * DOLLAR
+    );
+}
+
+/// A forfeit removes the exact amount of the row from the counter and moves no tokens. The quote
+/// stays in the pnl pool. It also clears the row before it changes the counter. A failure
+/// therefore cannot leave a low counter and an unpaid row, which a later sweep would subtract a
+/// second time.
+#[test]
+fn forfeit_discharges_the_row_without_moving_tokens() {
+    let builder_authority = Pubkey::new_unique();
+
+    let mut market = PerpMarket {
+        status: MarketStatus::Settlement,
+        ..perp_market(10, 7)
+    };
+    create_anchor_account_info!(market, PerpMarket, market_info);
+    let perp_market_map = PerpMarketMap::load_one(&market_info, true).unwrap();
+
+    let mut spot_market = quote_spot_market();
+    create_anchor_account_info!(spot_market, SpotMarket, spot_market_info);
+    let spot_market_map = SpotMarketMap::load_one(&spot_market_info, true).unwrap();
+
+    escrow!(
+        &[completed_builder_row(0, 4), referral_row(0, 3)],
+        &[builder_info(builder_authority)],
+        Pubkey::new_unique(),
+        escrow
+    );
+
+    {
+        let mut market = perp_market_map.get_ref_mut(&0).unwrap();
+        let forfeited = super::forfeit_revenue_share_order(
+            &mut market,
+            &mut escrow,
+            0,
+            super::RevenueShareForfeitReason::NoBeneficiaryAccount,
+        )
+        .unwrap();
+        assert_eq!(forfeited, 4 * DOLLAR);
+        // counter falls by exactly the row's fee, not to zero
+        assert_eq!(market.pending_revenue_share, 3 * DOLLAR);
+    }
+
+    // a builder row is fully cleared, freeing the slot
+    assert_eq!(escrow.get_order(0).unwrap(), &RevenueShareOrder::default());
+
+    {
+        let mut market = perp_market_map.get_ref_mut(&0).unwrap();
+        let forfeited = super::forfeit_revenue_share_order(
+            &mut market,
+            &mut escrow,
+            1,
+            super::RevenueShareForfeitReason::UnresolvableBeneficiary,
+        )
+        .unwrap();
+        assert_eq!(forfeited, 3 * DOLLAR);
+        // the counter now reaches zero, which is what unblocks delisting
+        assert_eq!(market.pending_revenue_share, 0);
+    }
+
+    // a referral row keeps its slot and only loses the fee, matching how the sweep settles one
+    assert_eq!(escrow.get_order(1).unwrap().fees_accrued, 0);
+    assert!(escrow.get_order(1).unwrap().is_referral_order());
+
+    // no tokens moved anywhere
+    assert_eq!(
+        pnl_pool_tokens(&perp_market_map, &spot_market_map),
+        tokens(10)
+    );
+}
+
+/// Two forfeits of the same row must subtract the amount once. The first call clears the row, so
+/// the second finds nothing. Without this the counter would fall below the amount that the other
+/// rows still owe, and the pool would reserve too little for them.
+#[test]
+fn forfeit_is_not_double_counted() {
+    let builder_authority = Pubkey::new_unique();
+
+    let mut market = PerpMarket {
+        status: MarketStatus::Settlement,
+        ..perp_market(10, 9)
+    };
+    create_anchor_account_info!(market, PerpMarket, market_info);
+    let perp_market_map = PerpMarketMap::load_one(&market_info, true).unwrap();
+
+    escrow!(
+        &[completed_builder_row(0, 4), completed_builder_row(0, 5)],
+        &[builder_info(builder_authority)],
+        Pubkey::default(),
+        escrow
+    );
+
+    let mut market = perp_market_map.get_ref_mut(&0).unwrap();
+    super::forfeit_revenue_share_order(
+        &mut market,
+        &mut escrow,
+        0,
+        super::RevenueShareForfeitReason::NoBeneficiaryAccount,
+    )
+    .unwrap();
+    let second = super::forfeit_revenue_share_order(
+        &mut market,
+        &mut escrow,
+        0,
+        super::RevenueShareForfeitReason::NoBeneficiaryAccount,
+    )
+    .unwrap();
+
+    assert_eq!(second, 0);
+    // the other row's claim is untouched and still reserved
+    assert_eq!(market.pending_revenue_share, 5 * DOLLAR);
 }

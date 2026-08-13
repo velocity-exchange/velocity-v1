@@ -2510,6 +2510,137 @@
       ]
     },
     {
+      "name": "forfeit_revenue_share_order",
+      "discriminator": [
+        141,
+        205,
+        148,
+        171,
+        116,
+        92,
+        53,
+        250
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "perp_market",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  112,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "market_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "spot_market",
+          "docs": [
+            "The quote spot market of the perp market. The PDA seeds enforce this. The handler values",
+            "the pnl pool against it. It is writable because the handler accrues interest first."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "perp_market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "escrow_authority",
+          "docs": [
+            "The owner of the escrow that holds the row."
+          ]
+        },
+        {
+          "name": "revenue_share_escrow",
+          "docs": [
+            "The escrow that holds the row to write off."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  82,
+                  69,
+                  86,
+                  95,
+                  69,
+                  83,
+                  67,
+                  82,
+                  79,
+                  87
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "escrow_authority"
+              }
+            ]
+          }
+        },
+        {
+          "name": "beneficiary_user",
+          "docs": [
+            "Sub-account 0 of the beneficiary of the row. This is the payout account. The handler proves",
+            "that it does not exist."
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "market_index",
+          "type": "u16"
+        },
+        {
+          "name": "order_index",
+          "type": "u32"
+        }
+      ]
+    },
+    {
       "name": "initialize",
       "discriminator": [
         175,
@@ -7524,6 +7655,106 @@
         {
           "name": "market_index",
           "type": "u16"
+        }
+      ]
+    },
+    {
+      "name": "settle_revenue_share",
+      "discriminator": [
+        21,
+        123,
+        155,
+        221,
+        194,
+        240,
+        233,
+        76
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "escrow_authority",
+          "docs": [
+            "The owner of the escrow to settle."
+          ]
+        },
+        {
+          "name": "revenue_share_escrow",
+          "docs": [
+            "The escrow that holds the accrued builder and referrer rows."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  82,
+                  69,
+                  86,
+                  95,
+                  69,
+                  83,
+                  67,
+                  82,
+                  79,
+                  87
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "escrow_authority"
+              }
+            ]
+          }
+        },
+        {
+          "name": "spot_market_vault",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  0,
+                  0
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "market_index",
+          "type": "u16"
+        },
+        {
+          "name": "num_owner_sub_accounts",
+          "type": "u8"
         }
       ]
     },
@@ -16516,6 +16747,16 @@
       "code": 6368,
       "name": "InvalidEquityBreakerReset",
       "msg": "Invalid equity breaker reset"
+    },
+    {
+      "code": 6369,
+      "name": "UnsettledRevenueShareOnDelist",
+      "msg": "Market still owes builder/referrer revenue share; settle it before delisting"
+    },
+    {
+      "code": 6370,
+      "name": "RevenueShareOrderNotForfeitable",
+      "msg": "Revenue share order can still be paid; settle it instead of forfeiting"
     }
   ],
   "types": [
@@ -18469,7 +18710,10 @@
               "Fraction of spot deposit-interest gains carved out to the insurance fund",
               "(staker-owned). precision: IF_FACTOR_PRECISION. (Was `total_factor`; the",
               "protocol-vs-staker split was removed — the IF is now 100% staker-owned,",
-              "so this is purely the staker IF carveout.)"
+              "so this is purely the staker IF carveout.) While non-zero, an accrual",
+              "interval whose cut would convert to less than one token is deferred rather",
+              "than committed, so the cut is never floored away — see",
+              "`update_spot_market_cumulative_interest`."
             ],
             "type": "u32"
           },
@@ -23433,7 +23677,10 @@
             "name": "protocol_fee_factor",
             "docs": [
               "Protocol's carveout of lending deposit-interest gains, routed to",
-              "`protocol_fee_pool`. precision: IF_FACTOR_PRECISION"
+              "`protocol_fee_pool`. precision: IF_FACTOR_PRECISION. While non-zero, an",
+              "accrual interval whose cut would convert to less than one token is",
+              "deferred rather than committed, so the cut is never floored away — see",
+              "`update_spot_market_cumulative_interest`."
             ],
             "type": "u32"
           },

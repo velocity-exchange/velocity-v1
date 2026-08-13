@@ -1265,6 +1265,32 @@ pub fn handle_settle_expired_market_pools_to_revenue_pool(
         escrow_period_before_transfer
     )?;
 
+    // The program must pay the accrued builder and referrer fees before it moves the pnl pool to
+    // the revenue pool. The fees are payable until this point. The expiry solver values winner
+    // claims against `pnl_pool - pending_revenue_share` (OtterSec #147), so the pool still holds
+    // the tokens for the counter. The checks above also set `net_user_pnl` to 0, so
+    // `settle_revenue_share` reserves nothing and can pay every row. A delist with a non-zero
+    // counter would give the earned fees of third parties to the revenue pool.
+    //
+    // The counter must therefore reach zero first. This rule has no time limit, because every row
+    // has an end state. `settle_revenue_share` pays a payable row. In Settlement it needs no help
+    // from the escrow owner and no `Completed` flag. `forfeit_revenue_share_order` writes off a
+    // row that the program cannot pay. Anyone can call both. A market that still owes here is one
+    // that nobody has settled yet.
+    //
+    // The admin holds one exception. While the `BuilderCodes` feature bit is off,
+    // `settle_revenue_share` fails and the sweep skips builder rows. A row that the pool can pay
+    // is then neither payable nor forfeitable, and this check holds. Enable the bit again to close
+    // the market. The admin controls the bit, so this is an order of operations, not a way for
+    // another party to block a delist.
+    validate!(
+        perp_market.pending_revenue_share == 0,
+        ErrorCode::UnsettledRevenueShareOnDelist,
+        "perp market {} still owes {} of builder/referrer revenue share; run settle_revenue_share for every escrow still owed, and forfeit_revenue_share_order for any row that provably cannot be paid",
+        perp_market.market_index,
+        perp_market.pending_revenue_share
+    )?;
+
     // Materialize accrued fees before draining the pnl pool to the revenue
     // pool. The pnl pool holds the un-swept fee value; without this sweep the
     // `pending_protocol_fee` carveout (which the waterfall routes to the

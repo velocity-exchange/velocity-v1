@@ -1858,6 +1858,189 @@ describe('builder codes', () => {
 		await userClient.fetchAccounts();
 	});
 
+	it('builder collects accrued fees via settleRevenueShare without any settlePNL', async () => {
+		const builder = builderClient.wallet;
+		const maxFeeBps = 150 * 10; // 1.5%
+		await userClient.changeApprovedBuilder(builder.publicKey, maxFeeBps, true);
+
+		await userClient.cancelOrders();
+		await userClient.fetchAccounts();
+
+		const marketIndex = 0;
+		const builderFeeBps = 7 * 10; // 7 bps, in tenths
+		const userOrderId = 77;
+		const orderParams = getMarketOrderParams({
+			marketIndex,
+			direction: PositionDirection.LONG,
+			baseAssetAmount: BASE_PRECISION,
+			price: new BN(230).mul(PRICE_PRECISION),
+			auctionStartPrice: new BN(226).mul(PRICE_PRECISION),
+			auctionEndPrice: new BN(230).mul(PRICE_PRECISION),
+			auctionDuration: 10,
+			userOrderId,
+			postOnly: PostOnlyParams.NONE,
+			marketType: MarketType.PERP,
+			builderIdx: 0,
+			builderFeeTenthBps: builderFeeBps,
+		}) as OrderParams;
+
+		await userClient.placePerpOrder(orderParams);
+		await userClient.fetchAccounts();
+		const orderId = userClient
+			.getUser()
+			.getOpenOrders()
+			.find((o) => o.userOrderId === userOrderId).orderId;
+
+		await builderClient.fetchAccounts();
+		const fillTx = await makerClient.fillPerpOrder(
+			await userClient.getUserAccountPublicKey(),
+			userClient.getUserAccount(),
+			{ marketIndex, orderId },
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			true
+		);
+		const fillEvent = parseLogs(
+			builderClient.program,
+			await printTxLogs(
+				bankrunContextWrapper.connection.toConnection(),
+				fillTx
+			)
+		)
+			.filter((e) => e.name === 'orderActionRecord')
+			.pop();
+		const builderFee = fillEvent.data['builderFee'] as BN;
+		// The builder is also the referrer of userClient, so a referral reward accrues too.
+		const referrerReward = new BN(
+			(fillEvent.data['referrerReward'] as number | null) ?? 0
+		);
+		assert(builderFee.gt(ZERO));
+
+		await bankrunContextWrapper.moveTimeForward(100);
+
+		// The market holds the accrued liability. That amount reserves pnl-pool value against every
+		// other drain until the program pays it.
+		await makerClient.fetchAccounts();
+		const owedBefore =
+			makerClient.getPerpMarketAccount(marketIndex).pendingRevenueShare;
+		assert(
+			owedBefore.eq(builderFee.add(referrerReward)),
+			`pendingRevenueShare ${owedBefore.toString()} !== ${builderFee
+				.add(referrerReward)
+				.toString()}`
+		);
+
+		await builderClient.fetchAccounts();
+		let usdcPos = builderClient.getSpotPosition(0);
+		const builderUsdcBefore = getTokenAmount(
+			usdcPos.scaledBalance,
+			builderClient.getSpotMarketAccount(0),
+			usdcPos.balanceType
+		);
+
+		// makerClient is a third party. It settles no pnl and touches none of its own accounts.
+		// Before settleRevenueShare, only a settlePNL by the escrow owner could pay these rows.
+		const escrow = await makerClient.fetchRevenueShareEscrowAccount(
+			userClient.wallet.publicKey
+		);
+		const settleTx = await makerClient.settleRevenueShare(
+			userClient.wallet.publicKey,
+			escrow,
+			marketIndex
+		);
+		const settleRecords = parseLogs(
+			makerClient.program,
+			await printTxLogs(
+				bankrunContextWrapper.connection.toConnection(),
+				settleTx
+			)
+		)
+			.filter((e) => e.name === 'revenueShareSettleRecord')
+			.map((e) => e.data) as RevenueShareSettleRecord[];
+
+		const builderRecord = settleRecords.find((e) => e.builder != null);
+		assert(builderRecord !== undefined);
+		assert(builderRecord.builder.equals(builder.publicKey));
+		assert(builderRecord.feeSettled.eq(builderFee));
+		assert(builderRecord.marketIndex === marketIndex);
+		assert(isVariant(builderRecord.marketType, 'perp'));
+
+		// The builder received tokens.
+		await builderClient.fetchAccounts();
+		usdcPos = builderClient.getSpotPosition(0);
+		const builderUsdcAfter = getTokenAmount(
+			usdcPos.scaledBalance,
+			builderClient.getSpotMarketAccount(0),
+			usdcPos.balanceType
+		);
+		assert(
+			builderUsdcAfter.sub(builderUsdcBefore).eq(builderFee.add(referrerReward)),
+			`builder credited ${builderUsdcAfter
+				.sub(builderUsdcBefore)
+				.toString()} !== ${builderFee.add(referrerReward).toString()}`
+		);
+
+		// The market no longer reserves pnl-pool value for this claim.
+		await makerClient.fetchAccounts();
+		assert(
+			makerClient
+				.getPerpMarketAccount(marketIndex)
+				.pendingRevenueShare.eq(ZERO),
+			'pendingRevenueShare should be fully discharged'
+		);
+
+		// The program cleared the paid builder row and freed the escrow slot.
+		await escrowMap.slowSync();
+		const escrowAfter = (await escrowMap.mustGet(
+			userClient.wallet.publicKey.toBase58()
+		)) as RevenueShareEscrowAccount;
+		assert(
+			escrowAfter.orders.every(
+				(o) => o.orderId !== orderId || o.feesAccrued.eq(ZERO)
+			),
+			'the settled builder row should carry no remaining fee'
+		);
+
+		await userClient.cancelOrders();
+		await userClient.fetchAccounts();
+	});
+
+	it('settleRevenueShare rejects an escrow that does not match the passed authority', async () => {
+		const marketIndex = 0;
+		const escrow = await makerClient.fetchRevenueShareEscrowAccount(
+			userClient.wallet.publicKey
+		);
+
+		// Build the instruction for the escrow of userClient. Then change escrowAuthority to a
+		// different authority. The PDA seeds no longer derive the escrow account that is passed.
+		const ix = await makerClient.getSettleRevenueShareIx(
+			userClient.wallet.publicKey,
+			escrow,
+			marketIndex
+		);
+		ix.keys[1] = {
+			...ix.keys[1],
+			pubkey: builderClient.wallet.publicKey,
+		};
+
+		try {
+			await makerClient.sendTransaction(
+				await makerClient.buildTransaction(ix),
+				[],
+				makerClient.opts
+			);
+			assert(false, 'should reject an escrow that fails its seed derivation');
+		} catch (e) {
+			// ConstraintSeeds (2006 / 0x7d6)
+			assert(
+				e.message.includes('0x7d6') || e.message.includes('ConstraintSeeds'),
+				`unexpected error: ${e.message}`
+			);
+		}
+	});
+
 	it('fill of a builder order fails when the escrow account is omitted', async () => {
 		const builder = builderClient.wallet;
 		const maxFeeBps = 150 * 10; // 1.5%

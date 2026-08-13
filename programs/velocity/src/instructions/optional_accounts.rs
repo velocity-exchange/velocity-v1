@@ -283,6 +283,61 @@ pub fn get_revenue_share_escrow_account<'a>(
     Ok(Some(escrow))
 }
 
+/// Loads `count` read-only `User` accounts of `escrow_authority` from the front of the
+/// remaining-account iterator. The caller runs `RevenueShareEscrow::revoke_completed_orders` on
+/// each one.
+///
+/// `revoke_completed_orders` matches a row by `user.sub_account_id`. The order list of one
+/// sub-account says nothing about a row of a different sub-account. A scan across sub-accounts
+/// would complete a live row that holds fees and clear it too early (OtterSec #82). The caller
+/// must therefore supply each sub-account.
+///
+/// These accounts must be read-only. This also marks the end of the group.
+/// `load_revenue_share_map` reads the next group and requires writable `User` accounts, because it
+/// credits them. A wrong `count` therefore fails: a value that is too high rejects a writable
+/// beneficiary here, and a value that is too low fails the map loader with `UserWrongMutability`.
+pub fn load_escrow_owner_sub_accounts<'a>(
+    account_info_iter: &mut Peekable<Iter<'a, AccountInfo<'a>>>,
+    escrow_authority: &Pubkey,
+    count: u8,
+) -> VelocityResult<Vec<AccountLoader<'a, User>>> {
+    let mut loaders = Vec::with_capacity(count as usize);
+
+    for _ in 0..count {
+        let account_info = account_info_iter.next().safe_unwrap()?;
+
+        validate!(
+            !account_info.is_writable,
+            ErrorCode::UserWrongMutability,
+            "escrow owner sub-account {} must be read-only",
+            account_info.key
+        )?;
+
+        let authority = {
+            let data = account_info
+                .try_borrow_data()
+                .or(Err(ErrorCode::CouldNotLoadUserData))?;
+            if data.len() < User::SIZE || &data[..8] != User::DISCRIMINATOR {
+                return Err(ErrorCode::CouldNotLoadUserData);
+            }
+            Pubkey::from(*array_ref![data, 8, 32])
+        };
+
+        validate!(
+            authority == *escrow_authority,
+            ErrorCode::RevenueShareEscrowAuthorityMismatch,
+            "escrow owner sub-account {} belongs to {}, not escrow authority {}",
+            account_info.key,
+            authority,
+            escrow_authority
+        )?;
+
+        loaders.push(AccountLoader::try_from(account_info).or(Err(ErrorCode::InvalidUserAccount))?);
+    }
+
+    Ok(loaders)
+}
+
 /// Validates that a builder referenced by an order may collect the requested fee.
 ///
 /// Returns `Ok(None)` when builder codes are disabled or the order carries no builder fields.

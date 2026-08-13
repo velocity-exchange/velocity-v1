@@ -2516,6 +2516,137 @@ export type Velocity = {
       ]
     },
     {
+      "name": "forfeitRevenueShareOrder",
+      "discriminator": [
+        141,
+        205,
+        148,
+        171,
+        116,
+        92,
+        53,
+        250
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "perpMarket",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  112,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "marketIndex"
+              }
+            ]
+          }
+        },
+        {
+          "name": "spotMarket",
+          "docs": [
+            "The quote spot market of the perp market. The PDA seeds enforce this. The handler values",
+            "the pnl pool against it. It is writable because the handler accrues interest first."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "perpMarket"
+              }
+            ]
+          }
+        },
+        {
+          "name": "escrowAuthority",
+          "docs": [
+            "The owner of the escrow that holds the row."
+          ]
+        },
+        {
+          "name": "revenueShareEscrow",
+          "docs": [
+            "The escrow that holds the row to write off."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  82,
+                  69,
+                  86,
+                  95,
+                  69,
+                  83,
+                  67,
+                  82,
+                  79,
+                  87
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "escrowAuthority"
+              }
+            ]
+          }
+        },
+        {
+          "name": "beneficiaryUser",
+          "docs": [
+            "Sub-account 0 of the beneficiary of the row. This is the payout account. The handler proves",
+            "that it does not exist."
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "marketIndex",
+          "type": "u16"
+        },
+        {
+          "name": "orderIndex",
+          "type": "u32"
+        }
+      ]
+    },
+    {
       "name": "initialize",
       "discriminator": [
         175,
@@ -7530,6 +7661,106 @@ export type Velocity = {
         {
           "name": "marketIndex",
           "type": "u16"
+        }
+      ]
+    },
+    {
+      "name": "settleRevenueShare",
+      "discriminator": [
+        21,
+        123,
+        155,
+        221,
+        194,
+        240,
+        233,
+        76
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "escrowAuthority",
+          "docs": [
+            "The owner of the escrow to settle."
+          ]
+        },
+        {
+          "name": "revenueShareEscrow",
+          "docs": [
+            "The escrow that holds the accrued builder and referrer rows."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  82,
+                  69,
+                  86,
+                  95,
+                  69,
+                  83,
+                  67,
+                  82,
+                  79,
+                  87
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "escrowAuthority"
+              }
+            ]
+          }
+        },
+        {
+          "name": "spotMarketVault",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  0,
+                  0
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "marketIndex",
+          "type": "u16"
+        },
+        {
+          "name": "numOwnerSubAccounts",
+          "type": "u8"
         }
       ]
     },
@@ -16522,6 +16753,16 @@ export type Velocity = {
       "code": 6368,
       "name": "invalidEquityBreakerReset",
       "msg": "Invalid equity breaker reset"
+    },
+    {
+      "code": 6369,
+      "name": "unsettledRevenueShareOnDelist",
+      "msg": "Market still owes builder/referrer revenue share; settle it before delisting"
+    },
+    {
+      "code": 6370,
+      "name": "revenueShareOrderNotForfeitable",
+      "msg": "Revenue share order can still be paid; settle it instead of forfeiting"
     }
   ],
   "types": [
@@ -18475,7 +18716,10 @@ export type Velocity = {
               "Fraction of spot deposit-interest gains carved out to the insurance fund",
               "(staker-owned). precision: IF_FACTOR_PRECISION. (Was `total_factor`; the",
               "protocol-vs-staker split was removed — the IF is now 100% staker-owned,",
-              "so this is purely the staker IF carveout.)"
+              "so this is purely the staker IF carveout.) While non-zero, an accrual",
+              "interval whose cut would convert to less than one token is deferred rather",
+              "than committed, so the cut is never floored away — see",
+              "`update_spot_market_cumulative_interest`."
             ],
             "type": "u32"
           },
@@ -23439,7 +23683,10 @@ export type Velocity = {
             "name": "protocolFeeFactor",
             "docs": [
               "Protocol's carveout of lending deposit-interest gains, routed to",
-              "`protocol_fee_pool`. precision: IF_FACTOR_PRECISION"
+              "`protocol_fee_pool`. precision: IF_FACTOR_PRECISION. While non-zero, an",
+              "accrual interval whose cut would convert to less than one token is",
+              "deferred rather than committed, so the cut is never floored away — see",
+              "`update_spot_market_cumulative_interest`."
             ],
             "type": "u32"
           },

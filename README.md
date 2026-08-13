@@ -106,7 +106,7 @@ crucible run amm-pricing prop_k_conserved_swap --timeout 30
 crucible run e2e-svm invariant_solvency --release --timeout 60
 ```
 
-After a program change, run `bash fuzz/sync-idls.sh` to re-sync the vendored IDL. See [`fuzz/README.md`](./fuzz/README.md) for the harness list and details.
+The SVM harnesses read `packages/sdk/src/idl/velocity.json` directly, so a program change needs no extra sync step. See [`fuzz/README.md`](./fuzz/README.md) for the harness list and details.
 
 ## Common tasks
 

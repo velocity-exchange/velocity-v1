@@ -332,8 +332,8 @@ export function calculateCollateralDepositRequiredForTrade(
  * (`equityFloor + equityFloorBuffer`): the first
  * `netEquity - (floor + buffer)` of the transfer carries no floor, the
  * remainder carries floor one-for-one, capped at the floor the subaccount
- * actually holds. `netEquity` is `User.getNetUsdValue()`, the metric the
- * onchain floor checks use. Returns zero when no floor is set. The result
+ * actually holds. `netEquity` is `User.getFloorNetEquity().value`, the
+ * metric the onchain floor checks use. Returns zero when no floor is set. The result
  * never exceeds `amount`, so a credited side that met its own buffered floor
  * before the transfer still meets it after. All values QUOTE_PRECISION.
  */
@@ -368,7 +368,7 @@ export type EquityFloorLevel =
 	| 'disabled';
 
 /**
- * Classifies `netEquity` (`User.getNetUsdValue()`) against the floor
+ * Classifies `netEquity` (`User.getFloorNetEquity().value`) against the floor
  * thresholds. Used by the `EquityFloorManager` and the equity-floor guard bot
  * so both report the same levels. `warningBufferMultiple` scales the warning
  * threshold above the floor (default 2: warn inside `floor + 2 * buffer`).

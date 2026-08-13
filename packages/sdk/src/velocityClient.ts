@@ -5114,7 +5114,8 @@ export class VelocityClient {
 			const fromUserAccount = fromUserClass.getUserAccountOrThrow();
 			resolvedFloorDelta = calculateEquityFloorAutoDelta(
 				amount,
-				fromUserClass.getNetUsdValue(),
+				// gate-parity pricing, matching the program-side floor checks
+				fromUserClass.getFloorNetEquity().value,
 				fromUserAccount.equityFloor,
 				fromUserAccount.equityFloorBuffer
 			);

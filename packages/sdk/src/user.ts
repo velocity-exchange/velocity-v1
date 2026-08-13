@@ -1581,7 +1581,7 @@ export class User {
 
 	/**
 	 * True when the account has an admin-set `equityFloor` and its net equity
-	 * (`getNetUsdValue`) is below `equityFloor + equityFloorBuffer`. While
+	 * (`getFloorNetEquity`) is below `equityFloor + equityFloorBuffer`. While
 	 * below, the program rejects risk-increasing order placement and fills,
 	 * withdrawals, and transfers out of the account (`EquityBelowFloor`);
 	 * reduce-only activity stays allowed. Mirrors

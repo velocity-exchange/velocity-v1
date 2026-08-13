@@ -1875,12 +1875,15 @@ pub fn handle_update_spot_market_if_factor(
         "spot_market_index dne spot_market.index"
     )?;
 
-    // Strictly less than 100%: lenders must keep a nonzero configured share.
-    // At a full 100% carveout `deposit_interest_for_lenders` is 0, which skips
-    // the entire accrual block in `update_spot_market_cumulative_interest` —
-    // freezing borrower interest, the interest timestamp, and even the IF /
-    // protocol pool credits themselves. A strict `<` keeps the lender cut >= 1
-    // whenever deposit interest accrues, so the block always runs.
+    // The combined carveout stays below 100%, so lenders keep a configured share.
+    // `split_deposit_interest` relies on this bound. It divides the deposit
+    // interest by IF_FACTOR_PRECISION with the combined factor as the numerator.
+    // A combined factor below IF_FACTOR_PRECISION keeps that quotient at or below
+    // the interval gain, so the two cuts never take more than the market earned.
+    //
+    // The bound does not by itself keep the lender share above zero. A carried
+    // remainder can raise the cuts to the whole gain on a short interval. The
+    // accrual commits anyway in that case, so a zero lender share is safe.
     validate!(
         if_fee_factor.safe_add(protocol_fee_factor)? < IF_FACTOR_PRECISION.cast()?,
         ErrorCode::DefaultError,

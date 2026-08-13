@@ -1423,6 +1423,22 @@ export type PoolBalance = {
 	scaledBalance: BN;
 	/** the spot market this balance's token amount is denominated in */
 	marketIndex: number;
+	/**
+	 * Remainder of one index-space division that splits deposit interest between lenders and the
+	 * carveout pools. The division depends on the pool. On `revenuePool` it is the
+	 * lenders-vs-carveouts split, with divisor `IF_FACTOR_PRECISION`. On `protocolFeePool` it is the
+	 * insurance-fund-vs-protocol split, with divisor `ifFeeFactor + protocolFeeFactor`. Only a spot
+	 * market's `revenuePool` and `protocolFeePool` use it; it is 0 everywhere else.
+	 */
+	pendingInterestSplitDust: number;
+	/**
+	 * Remainder of the token-space division for this pool's carveout
+	 * (`depositBalance * cut / 10^(19 - decimals)`). The program carries it so a cut too small to
+	 * reach a whole token is not taken from lenders and given to nobody.
+	 * precision: token * 10^(19 - decimals). Only a spot market's `revenuePool` and
+	 * `protocolFeePool` use it; it is 0 everywhere else.
+	 */
+	pendingInterestDust: BN;
 };
 
 /**

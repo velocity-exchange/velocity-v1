@@ -234,10 +234,9 @@ pub struct SpotMarket {
     /// precision: LIQUIDATOR_FEE_PRECISION
     pub protocol_liquidation_fee: u32,
     /// Protocol's carveout of lending deposit-interest gains, routed to
-    /// `protocol_fee_pool`. precision: IF_FACTOR_PRECISION. While non-zero, an
-    /// accrual interval whose cut would convert to less than one token is
-    /// deferred rather than committed, so the cut is never floored away — see
-    /// `update_spot_market_cumulative_interest`.
+    /// `protocol_fee_pool`. precision: IF_FACTOR_PRECISION. A cut too small to
+    /// reach a whole unit is carried on the carveout pools, not floored away. See
+    /// `split_deposit_interest`.
     pub protocol_fee_factor: u32,
     /// Donation-proof accounted balance of the insurance-fund vault. It is moved
     /// by the same signed delta as the real SPL vault on *every* instruction that
@@ -776,10 +775,9 @@ pub struct InsuranceFund {
     /// Fraction of spot deposit-interest gains carved out to the insurance fund
     /// (staker-owned). precision: IF_FACTOR_PRECISION. (Was `total_factor`; the
     /// protocol-vs-staker split was removed — the IF is now 100% staker-owned,
-    /// so this is purely the staker IF carveout.) While non-zero, an accrual
-    /// interval whose cut would convert to less than one token is deferred rather
-    /// than committed, so the cut is never floored away — see
-    /// `update_spot_market_cumulative_interest`.
+    /// so this is purely the staker IF carveout.) A cut too small to reach a
+    /// whole unit is carried on `revenue_pool`, not floored away. See
+    /// `split_deposit_interest`.
     pub if_fee_factor: u32,
     /// Was `user_factor` (the old protocol/staker split knob). The IF is now
     /// 100% staker-owned, so the split is gone; slot kept as padding.

@@ -1516,8 +1516,61 @@ pub struct PoolBalance {
     pub scaled_balance: u128,
     /// The spot market the pool is for
     pub market_index: u16,
-    pub padding: [u8; 14],
+    /// Filler for the alignment gap before the two dust fields. Those fields must
+    /// start at offsets 20 and 24. The host layout and the SBF layout then agree,
+    /// and the packed borsh layout in the IDL reaches the same offsets. This
+    /// field shrank from 14 bytes to 2. The size of the struct and every other
+    /// field offset are unchanged. Do not reorder or resize these fields.
+    pub padding: [u8; 2],
+    /// Remainder of one index-space division that splits a spot market's deposit
+    /// interest between lenders and the carveout pools. The accrual carries the
+    /// remainder between intervals. A share too small to reach a whole index unit
+    /// is therefore delayed and not lost.
+    ///
+    /// The division depends on the pool. See `split_deposit_interest`.
+    ///
+    ///   - On `revenue_pool` this is the lenders-vs-carveouts split. The divisor
+    ///     is IF_FACTOR_PRECISION, so the value stays below IF_FACTOR_PRECISION.
+    ///   - On `protocol_fee_pool` this is the insurance-fund-vs-protocol split of
+    ///     the withheld amount. The divisor is
+    ///     `if_fee_factor + protocol_fee_factor`, so the value stays below it.
+    ///
+    /// That order keeps the two carveouts from taking more than the interval
+    /// gain. The first division bounds the total. The second division only
+    /// divides the amount that the first division set aside. Two independent cuts
+    /// can instead each round up and leave lenders at zero.
+    ///
+    /// precision: the numerator units of its division.
+    pub pending_interest_split_dust: u32,
+    /// Remainder of the token-space division for this pool's carveout.
+    ///
+    /// A withheld index amount reaches the pool only as whole tokens, through
+    /// `deposit_balance * cut / 10^(19 - decimals)`. On a small market that
+    /// division floors to zero even when the index-space cut is not zero. Lenders
+    /// have already given up the value at that point, so a floored cut credits
+    /// nobody and leaves unattributed slack in the vault. The accrual parks the
+    /// remainder here and adds it back on the next interval.
+    ///
+    /// precision: token * 10^(19 - decimals). The value always stays below one
+    /// token, which is `10^(19 - decimals)` and at most 10^19. It therefore fits
+    /// a u64 for every supported value of `decimals`.
+    ///
+    /// Only the two lending carveout pools use these two fields. Those pools are
+    /// a spot market's `revenue_pool` and `protocol_fee_pool`. Both fields stay 0
+    /// on every other `PoolBalance`, such as a perp market's `pnl_pool` and
+    /// `fee_pool`. Both fields read 0 on markets created before the fields
+    /// existed, which is the correct starting value.
+    pub pending_interest_dust: u64,
 }
+
+// Layout guard. `PerpMarket` and `SpotMarket` embed `PoolBalance` at frozen
+// offsets. The size must not move, and the two dust fields must start at 20 and
+// 24 with no implicit `#[repr(C)]` padding. Off-chain decoders read the packed
+// layout from the IDL.
+const _: () = assert!(std::mem::size_of::<PoolBalance>() == 32);
+const _: () = assert!(std::mem::offset_of!(PoolBalance, market_index) == 16);
+const _: () = assert!(std::mem::offset_of!(PoolBalance, pending_interest_split_dust) == 20);
+const _: () = assert!(std::mem::offset_of!(PoolBalance, pending_interest_dust) == 24);
 
 impl SpotBalance for PoolBalance {
     fn market_index(&self) -> u16 {

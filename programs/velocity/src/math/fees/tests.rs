@@ -853,6 +853,46 @@ mod calculate_fee_for_order_fulfill_against_amm {
         assert_eq!(fee_to_market, 100000);
         assert_eq!(if_fee, 0);
         assert_eq!(protocol_fee, 0);
+
+        // the rebate is pinned to tier 0, not the taker's tier
+        let mut tiered_structure = FeeStructure::test_default();
+        tiered_structure.fee_tiers[1] = tiered_structure.fee_tiers[0];
+        tiered_structure.fee_tiers[1].fee_numerator = 80;
+        tiered_structure.fee_tiers[1].maker_rebate_numerator = 30;
+
+        let mut tiered_taker_stats = UserStats::default();
+        tiered_taker_stats.taker_volume_30d = 5_000_000 * QUOTE_PRECISION_U64; // tier 1
+
+        let FillFees {
+            user_fee,
+            fee_to_market,
+            protocol_fee,
+            if_fee,
+            amm_fee,
+            ..
+        } = calculate_fee_for_fulfillment_with_amm(
+            &tiered_taker_stats,
+            quote_asset_amount,
+            &tiered_structure,
+            0,
+            60,
+            false,
+            false,
+            0,
+            false,
+            0,
+            None,
+            true,
+        )
+        .unwrap();
+
+        // taker pays tier 1's 8bps; the AMM earns tier 0's 6bps rebate,
+        // not tier 1's 3bps
+        assert_eq!(user_fee, 80000);
+        assert_eq!(amm_fee, 60000);
+        assert_eq!(fee_to_market, 60000);
+        assert_eq!(if_fee, 0);
+        assert_eq!(protocol_fee, 20000);
     }
 }
 

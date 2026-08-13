@@ -174,7 +174,8 @@ pub fn calculate_fee_for_fulfillment_with_amm(
         // remainder: fee-structure numerators are admin-mutable, so the
         // rebate is not guaranteed to fit.
         let amm_rebate = if vamm_maker_rebate {
-            calculate_maker_rebate(quote_asset_amount, &fee_tier, fee_adjustment)?.min(remainder)
+            calculate_vamm_maker_rebate(quote_asset_amount, fee_structure, fee_adjustment)?
+                .min(remainder)
         } else {
             0
         };
@@ -267,6 +268,23 @@ fn calculate_maker_rebate(
     }
 
     Ok(maker_fee)
+}
+
+/// Rebate the vAMM earns when it makes a fill, computed from the base fee
+/// tier (`fee_tiers[0]`). A rebate is a property of the maker, and the vAMM
+/// has no fee tier of its own; using the taker's tier would make the vAMM's
+/// earnings vary with who the taker is. Tier 0 keeps the rebate deterministic
+/// and tracking whatever base maker rebate the admin configures.
+fn calculate_vamm_maker_rebate(
+    quote_asset_amount: u64,
+    fee_structure: &FeeStructure,
+    fee_adjustment: i16,
+) -> VelocityResult<u64> {
+    calculate_maker_rebate(
+        quote_asset_amount,
+        &fee_structure.fee_tiers[0],
+        fee_adjustment,
+    )
 }
 
 fn calculate_referee_fee_and_referrer_reward(

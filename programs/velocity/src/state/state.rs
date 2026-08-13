@@ -484,7 +484,8 @@ pub struct FeeStructure {
     /// Share of the trade-fee *remainder* (taker fee after maker rebate, referral,
     /// referee discount, and filler reward are taken off the top) provisioned to
     /// the AMM as liquidity (its backstop-of-last-resort tranche, tracked in
-    /// `PerpMarket.fee_ledger.amm_protocol_fees_received`). precision:
+    /// `PerpMarket.fee_ledger.amm_protocol_fees_received` alongside the vAMM
+    /// maker rebate when that feature is enabled). precision:
     /// FEE_PERCENTAGE_DENOMINATOR. `amm_fee_numerator + if_fee_numerator` must
     /// be <= FEE_PERCENTAGE_DENOMINATOR; the protocol receives the residual
     /// (`remainder − amm − if`) into its withdrawable `protocol_fee_pool`.

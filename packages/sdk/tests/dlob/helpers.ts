@@ -73,6 +73,8 @@ export const mockAMM: AMM = {
 	feePool: {
 		scaledBalance: new BN(0),
 		marketIndex: 0,
+		pendingInterestSplitDust: 0,
+		pendingInterestDust: new BN(0),
 	},
 	concentrationCoef: new BN(0),
 	minBaseAssetReserve: new BN(0),
@@ -161,10 +163,14 @@ function mockPerpMarketCommon(): Omit<
 		pnlPool: {
 			scaledBalance: new BN(0),
 			marketIndex: 0,
+			pendingInterestSplitDust: 0,
+			pendingInterestDust: new BN(0),
 		},
 		protocolFeePool: {
 			scaledBalance: new BN(0),
 			marketIndex: 0,
+			pendingInterestSplitDust: 0,
+			pendingInterestDust: new BN(0),
 		},
 		feeLedger: {
 			totalExchangeFee: new BN(0),
@@ -271,6 +277,8 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		revenuePool: {
 			scaledBalance: new BN(0),
 			marketIndex: 0,
+			pendingInterestSplitDust: 0,
+			pendingInterestDust: new BN(0),
 		},
 		insuranceFund: {
 			vault: PublicKey.default,
@@ -287,6 +295,8 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		protocolFeePool: {
 			scaledBalance: new BN(0),
 			marketIndex: 0,
+			pendingInterestSplitDust: 0,
+			pendingInterestDust: new BN(0),
 		},
 		protocolLiquidationFee: 0,
 		protocolFeeFactor: 0,
@@ -322,6 +332,8 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		spotFeePool: {
 			scaledBalance: new BN(0),
 			marketIndex: 0,
+			pendingInterestSplitDust: 0,
+			pendingInterestDust: new BN(0),
 		},
 		totalSpotFee: new BN(0),
 		totalSwapFee: new BN(0),
@@ -367,6 +379,8 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		revenuePool: {
 			scaledBalance: new BN(0),
 			marketIndex: 0,
+			pendingInterestSplitDust: 0,
+			pendingInterestDust: new BN(0),
 		},
 		minOrderSize: ZERO,
 		maxPositionSize: ZERO,
@@ -385,6 +399,8 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		protocolFeePool: {
 			scaledBalance: new BN(0),
 			marketIndex: 0,
+			pendingInterestSplitDust: 0,
+			pendingInterestDust: new BN(0),
 		},
 		protocolLiquidationFee: 0,
 		protocolFeeFactor: 0,
@@ -420,6 +436,8 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		spotFeePool: {
 			scaledBalance: new BN(0),
 			marketIndex: 0,
+			pendingInterestSplitDust: 0,
+			pendingInterestDust: new BN(0),
 		},
 		totalSpotFee: new BN(0),
 		totalSwapFee: new BN(0),
@@ -467,6 +485,8 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		revenuePool: {
 			scaledBalance: new BN(0),
 			marketIndex: 0,
+			pendingInterestSplitDust: 0,
+			pendingInterestDust: new BN(0),
 		},
 		minOrderSize: ZERO,
 		maxPositionSize: ZERO,
@@ -485,6 +505,8 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		protocolFeePool: {
 			scaledBalance: new BN(0),
 			marketIndex: 0,
+			pendingInterestSplitDust: 0,
+			pendingInterestDust: new BN(0),
 		},
 		protocolLiquidationFee: 0,
 		protocolFeeFactor: 0,
@@ -520,6 +542,8 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		spotFeePool: {
 			scaledBalance: new BN(0),
 			marketIndex: 0,
+			pendingInterestSplitDust: 0,
+			pendingInterestDust: new BN(0),
 		},
 		totalSpotFee: new BN(0),
 		totalSwapFee: new BN(0),

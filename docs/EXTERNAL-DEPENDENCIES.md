@@ -10,7 +10,7 @@ Two questions this doc is meant to answer directly:
 
 ## Scope
 
-**Covered:** the three programs deployed from this repo — `velocity`, `vaults`, and `jit-proxy` —
+**Covered:** the three programs deployed from this repo (`velocity`, `vaults`, and `jit-proxy`),
 including every program they call, every account owner they deserialize, and their full resolved
 crate graph.
 
@@ -20,7 +20,7 @@ of the on-chain trust surface. §5 lists the off-chain components Velocity depen
 TypeScript SDK's npm tree is likewise out of scope; it is a client library, and a compromise
 there does not move funds on its own.
 
-Program IDs below are mainnet unless noted. Every ID was read from source, not from memory —
+Program IDs below are mainnet unless noted. Every ID was read from source, not from memory;
 see §7 for how to re-verify.
 
 ---
@@ -34,7 +34,7 @@ Solana or SPL infrastructure.
 |---|---|---|---|---|---|
 | System | `11111111111111111111111111111111` | `velocity` | PDA create / allocate / assign / transfer (`controller/pda.rs`) | Part of the runtime; not independently trusted | None separable from the chain halting |
 | SPL Token | `TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA` | `velocity`, `vaults` | `transfer_checked`, `burn`, `mint_to`, `close_account`, `initialize_account3` (`controller/token.rs`) | Program is frozen and heavily audited | A defect would be systemic to Solana; Velocity has no independent mitigation |
-| SPL Token-2022 | `TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb` | `velocity`, `vaults` | Same operations, through `anchor_spl::token_interface` | Upgradeable by the SPL authority; extension semantics behave as documented | See "Token-2022 extensions" below — this is the largest CPI-side risk |
+| SPL Token-2022 | `TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb` | `velocity`, `vaults` | Same operations, through `anchor_spl::token_interface` | Upgradeable by the SPL authority; extension semantics behave as documented | See "Token-2022 extensions" below; this is the largest CPI-side risk |
 | Associated Token Account | `ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL` | `velocity` | Protocol-fee withdrawal accounts; also whitelisted inside swap flows | Standard derivation | Withdrawal instructions fail; no fund risk |
 | Metaplex Token Metadata | `metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s` | `vaults` only | `create_metadata_accounts_v3` in `initialize_tokenized_vault_depositor` | Metaplex upgrade authority | Tokenized vault depositors cannot be created. Existing vault funds and the entire perps program are unaffected |
 
@@ -47,9 +47,9 @@ trust.
 Token-2022 is a single program ID hiding a variable feature set, so it deserves its own note.
 Two extensions change what a transfer means:
 
-- **Transfer fee** — the recipient receives less than the amount sent, which would silently
+- **Transfer fee.** The recipient receives less than the amount sent, which would silently
   under-credit a deposit. Guarded by `validate_mint_fee` (`controller/token.rs:219`).
-- **Transfer hook** — `transfer_checked_with_transfer_hook` (`controller/token.rs:234`) forwards
+- **Transfer hook.** `transfer_checked_with_transfer_hook` (`controller/token.rs:234`) forwards
   `remaining_accounts` into the transfer instruction, so a mint configured with a hook pulls an
   **arbitrary third-party program** into Velocity's CPI. That program is not enumerable in advance:
   it is whatever the mint author set.
@@ -63,10 +63,10 @@ mint have a transfer hook, and what does the hook program do?" as a required lis
 ## 2. Programs Velocity reads but never calls
 
 Oracle prices are read by deserializing account data. No CPI is involved, so the oracle program
-cannot execute code in Velocity's context — but its data drives every margin, liquidation, and
+cannot execute code in Velocity's context. But its data drives every margin, liquidation, and
 funding decision, which makes this the highest-consequence dependency in the system.
 
-### 2.1 Pyth Lazer — primary price source
+### 2.1 Pyth Lazer: primary price source
 
 | | |
 |---|---|
@@ -86,9 +86,9 @@ the Storage account's signer set is correct.
 
 | Failure | Effect | Mitigation |
 |---|---|---|
-| Feed freezes (publisher or relay stalls) | Prices go stale while markets move | `PYTH_LAZER_MAX_STALENESS_SECONDS`; oracle validity gating per `VelocityAction`; monotonic `next_timestamp` rejection. This class of failure has occurred in production — see the filler Lazer feed watchdog work |
+| Feed freezes (publisher or relay stalls) | Prices go stale while markets move | `PYTH_LAZER_MAX_STALENESS_SECONDS`; oracle validity gating per `VelocityAction`; monotonic `next_timestamp` rejection. This class of failure has occurred in production; see the filler Lazer feed watchdog work |
 | Signer key compromise | Attacker sets an arbitrary price and drains via liquidations or mispriced fills | Oracle guard rails: confidence-interval multiplier, TWAP price bands, divergence checks. These bound but do not eliminate the damage |
-| Velocity's keeper stops cranking updates | Prices go stale even though Pyth is healthy | Liveness dependency on our own infrastructure, not on Pyth — see §5 |
+| Velocity's keeper stops cranking updates | Prices go stale even though Pyth is healthy | Liveness dependency on our own infrastructure, not on Pyth; see §5 |
 
 Note the composite dependency: a healthy price requires **both** Pyth to publish **and** a Velocity
 keeper to land the update transaction.
@@ -98,7 +98,7 @@ keeper to land the update transaction.
 `FsJ3A3u2vn5cTVofAjvy6y5kwABJAqYWpe4975bi2epH` (mainnet), `gSbePebfvPy7tRqimPoVecS2UsBvYv46ynrzWocc92s`
 (devnet).
 
-The **only** external program allowed to own an oracle account — `EXTERNAL_ORACLE_PROGRAM_IDS` in
+The **only** external program allowed to own an oracle account: `EXTERNAL_ORACLE_PROGRAM_IDS` in
 `state/oracle_map.rs:47` is a one-element list. Read by direct deserialization.
 
 **Trust assumption:** Pyth's on-chain program and its publisher set.
@@ -115,7 +115,7 @@ Listed here so the inventory is complete and nobody mistakes them for third-part
 |---|---|---|
 | `PrelaunchOracle` | Velocity | Admin/keeper-written account for pre-launch markets |
 | MM oracle | Velocity | Keeper-posted price on `PerpMarket`; used only when it beats the exchange oracle on validity, sequence ID, and divergence checks (`state/oracle.rs`) |
-| `QuoteAsset` | — | Hardcoded to $1; no account read |
+| `QuoteAsset` | n/a | Hardcoded to $1; no account read |
 
 ---
 
@@ -171,7 +171,7 @@ this class of change.
 
 ## 5. Off-chain dependencies (liveness, not solvency)
 
-None of these can move funds on their own — every action they take goes through a signed
+None of these can move funds on their own, because every action they take goes through a signed
 instruction the program validates. But the protocol does not function correctly without them.
 
 | Component | Where it lives | What stops if it stops |
@@ -201,7 +201,7 @@ Deployment and monitoring for these live in `infrastructure-v3`.
 | `borsh` | 1.6.1 | Serialization |
 | `bytemuck` | 1.25.0 | Zero-copy account casting |
 | `pyth-client` | 0.2.2 | Pyth V1 account layouts |
-| `pyth_lazer` | local (`programs/pyth-lazer`) | Lazer message, payload, signature, storage types. Linked as a library — **not** a CPI target |
+| `pyth_lazer` | local (`programs/pyth-lazer`) | Lazer message, payload, signature, storage types. Linked as a library, **not** a CPI target |
 | `uint` | 0.9.5 | 256-bit integer math |
 | `num-traits`, `num-integer` | 0.2.19, 0.1.46 | Numeric traits |
 | `arrayref` | 0.3.9 | Slice-to-array conversion |
@@ -271,7 +271,7 @@ grep -rn "invoke_signed\|CpiContext" --include="*.rs" programs/velocity/src prog
 
 Program IDs for SPL and Metaplex are declared in the dependency crates themselves
 (`spl-token-interface`, `spl-token-2022-interface`, `spl-associated-token-account-interface`,
-`mpl-token-metadata`), not in Velocity's source — check there rather than trusting this table
+`mpl-token-metadata`), not in Velocity's source. Check there rather than trusting this table
 after a dependency bump.
 
 ### Declared but unused
@@ -295,7 +295,7 @@ performs no cross-chain messaging, and the Wormhole ID above is dead code.
 
 ---
 
-## Appendix A — resolved crate graph for `velocity`
+## Appendix A: resolved crate graph for `velocity`
 
 233 entries, default features, `cargo tree -e normal`. Regenerate with the first command in §7.
 

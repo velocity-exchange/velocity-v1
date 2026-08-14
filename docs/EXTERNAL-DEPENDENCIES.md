@@ -176,12 +176,12 @@ instruction the program validates. But the protocol does not function correctly 
 
 | Component | Where it lives | What stops if it stops |
 |---|---|---|
-| Oracle cranker | `rust/keep-rs`, `internal-keeper-bot` | Prices go stale; markets gate into reduced functionality |
-| Filler / keeper bots | `apps/keeper-bots-v2`, `rust/keep-rs`, `internal-keeper-bot` | Orders stop filling; funding and PnL settlement stall |
-| Liquidator | `internal-keeper-bot` | Underwater positions are not liquidated; bad debt accrues |
+| Oracle cranker | `rust/keep-rs`, internal bot suite | Prices go stale; markets gate into reduced functionality |
+| Filler / keeper bots | `apps/keeper-bots-v2`, `rust/keep-rs` | Orders stop filling; funding and PnL settlement stall |
+| Liquidator | Internal bot suite (off-repo) | Underwater positions are not liquidated; bad debt accrues |
 | Swift server | `rust/swift` | Signed-message order submission stops |
 | DLOB server | `apps/dlob-server` | Clients lose the order book view and auction-param endpoint |
-| vAMM crank | `vamm-crank` (separate repo) | vAMM spread does not widen on anomalous flow |
+| vAMM crank | Internal service (off-repo) | vAMM spread does not widen on anomalous flow |
 | Pyth Lazer publisher infrastructure | Third party | See §2.1 |
 | Solana RPC providers | Third party | Bots and clients cannot submit transactions |
 

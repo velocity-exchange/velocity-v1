@@ -1,13 +1,79 @@
 #[cfg(test)]
 mod test {
     use crate::{
+        error::VelocityResult,
         math::constants::{
             AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BID_ASK_SPREAD_PRECISION,
             BID_ASK_SPREAD_PRECISION_I64, QUOTE_PRECISION, QUOTE_PRECISION_I128,
         },
-        state::perp_market::PerpMarket,
+        state::perp_market::{PerpMarket, AMM},
         vlp::amm::math::{amm::calculate_price, spread::*},
     };
+
+    /// Test-local shim keeping the legacy 23-scalar `calculate_spread`
+    /// signature: builds the `AMM` + `SpreadInputs` the refactored function
+    /// takes, so the scalar-to-field mapping lives in exactly one place
+    /// instead of being transcribed at every call site. Shadows the glob
+    /// import of the real function.
+    #[allow(clippy::too_many_arguments)]
+    fn calculate_spread(
+        base_spread: u32,
+        last_oracle_reserve_price_spread_pct: i64,
+        last_oracle_conf_pct: u64,
+        max_spread: u32,
+        quote_asset_reserve: u128,
+        terminal_quote_asset_reserve: u128,
+        peg_multiplier: u128,
+        base_asset_amount_with_amm: i128,
+        reserve_price: u64,
+        total_fee_minus_distributions: i128,
+        net_revenue_since_last_funding: i64,
+        base_asset_reserve: u128,
+        min_base_asset_reserve: u128,
+        max_base_asset_reserve: u128,
+        mark_std: u64,
+        oracle_std: u64,
+        long_intensity_volume: u64,
+        short_intensity_volume: u64,
+        volume_24h: u64,
+        amm_inventory_spread_adjustment: i8,
+        last_24h_avg_funding_rate: i64,
+        last_funding_oracle_twap: i64,
+        funding_bias_sensitivity: u8,
+    ) -> VelocityResult<(u32, u32)> {
+        let amm = AMM {
+            base_spread,
+            max_spread,
+            quote_asset_reserve,
+            terminal_quote_asset_reserve,
+            peg_multiplier,
+            base_asset_amount_with_amm,
+            total_fee_minus_distributions,
+            net_revenue_since_last_funding,
+            base_asset_reserve,
+            min_base_asset_reserve,
+            max_base_asset_reserve,
+            amm_inventory_spread_adjustment,
+            funding_bias_sensitivity,
+            ..AMM::default()
+        };
+        let inputs = SpreadInputs {
+            last_oracle_conf_pct,
+            mark_std,
+            oracle_std,
+            long_intensity_volume,
+            short_intensity_volume,
+            volume_24h,
+            last_24h_avg_funding_rate,
+            last_funding_oracle_twap,
+        };
+        crate::vlp::amm::math::spread::calculate_spread(
+            &amm,
+            &inputs,
+            reserve_price,
+            last_oracle_reserve_price_spread_pct,
+        )
+    }
 
     #[test]
     fn max_spread_tests() {
@@ -1848,5 +1914,368 @@ mod test {
         // negative funding with the same inventory: vAMM receives, no-op
         let (long2, short2) = calc(-saturating_rate, 100);
         assert_eq!((long2, short2), (long0, short0));
+    }
+
+    /// Golden tests for the structure-only refactor: pin the exact outputs of
+    /// `update_amm_quote_state` (the one public entry whose signature the
+    /// refactor keeps) over adversarial inputs. Every assertion below is a
+    /// recorded output of the pre-refactor code; the refactor must not move
+    /// any of them.
+    mod golden {
+        use {
+            super::*,
+            crate::{
+                math::oracle::OracleValidity,
+                state::{
+                    oracle::{MMOraclePriceData, OraclePriceData},
+                    perp_market::MarketStats,
+                },
+                vlp::amm::state::AMM,
+            },
+        };
+
+        fn base_amm() -> AMM {
+            AMM {
+                base_spread: 250,
+                max_spread: 9750,
+                curve_update_intensity: 100,
+                base_asset_amount_with_amm: AMM_RESERVE_PRECISION as i128,
+                total_fee_minus_distributions: 100 * QUOTE_PRECISION_I128,
+                net_revenue_since_last_funding: crate::math::constants::QUOTE_PRECISION_I64,
+                last_spread_update_slot: 90,
+                ..AMM::default_test()
+            }
+        }
+
+        fn base_stats() -> MarketStats {
+            MarketStats {
+                last_oracle_conf_pct: 100,
+                mark_std: 500,
+                oracle_std: 500,
+                long_intensity_volume: 1_000_000,
+                short_intensity_volume: 1_000_000,
+                volume_24h: 10_000_000,
+                ..MarketStats::default()
+            }
+        }
+
+        /// Refresh `amm` in place against an oracle at `reserve + oracle_delta`
+        /// and return (long_spread, short_spread, reference_price_offset,
+        /// last_oracle_reserve_price_spread_pct, ask_base, ask_quote, bid_base,
+        /// bid_quote).
+        fn refresh(
+            amm: &mut AMM,
+            stats: &MarketStats,
+            oracle_delta: i64,
+            slot: u64,
+        ) -> (u32, u32, i32, i64, u128, u128, u128, u128) {
+            let reserve_price = amm.reserve_price().unwrap();
+            let oracle_price = reserve_price as i64 + oracle_delta;
+            let opd = OraclePriceData {
+                price: oracle_price,
+                confidence: 100,
+                delay: 0,
+                has_sufficient_number_of_data_points: true,
+                sequence_id: None,
+            };
+            let mm =
+                MMOraclePriceData::new(oracle_price, 0, 0, OracleValidity::Valid, opd).unwrap();
+            update_amm_quote_state(amm, stats, &mm, reserve_price, slot).unwrap();
+            assert_eq!(amm.last_spread_update_slot, slot);
+            (
+                amm.long_spread,
+                amm.short_spread,
+                amm.reference_price_offset,
+                amm.last_oracle_reserve_price_spread_pct,
+                amm.ask_base_asset_reserve,
+                amm.ask_quote_asset_reserve,
+                amm.bid_base_asset_reserve,
+                amm.bid_quote_asset_reserve,
+            )
+        }
+
+        #[test]
+        fn golden_baseline() {
+            let mut amm = base_amm();
+            let out = refresh(&mut amm, &base_stats(), 0, 100);
+            assert_eq!(
+                out,
+                (
+                    224,
+                    125,
+                    0,
+                    0,
+                    99988800538,
+                    100011200716,
+                    100006200396,
+                    99993799988
+                )
+            );
+        }
+
+        #[test]
+        fn golden_divergence_wide() {
+            // oracle 5% above reserve price: negative spread pct, long retreat.
+            let mut amm = base_amm();
+            let stats = MarketStats {
+                last_oracle_conf_pct: 30_000,
+                ..base_stats()
+            };
+            let reserve_price = amm.reserve_price().unwrap();
+            let out = refresh(&mut amm, &stats, (reserve_price / 20) as i64, 100);
+            assert_eq!(
+                out,
+                (
+                    44859,
+                    15141,
+                    0,
+                    -50000,
+                    97777777778,
+                    102272727272,
+                    100763358778,
+                    99242424243
+                )
+            );
+        }
+
+        #[test]
+        fn golden_tfmd_zero_and_negative() {
+            let mut amm = AMM {
+                total_fee_minus_distributions: 0,
+                ..base_amm()
+            };
+            let out0 = refresh(&mut amm, &base_stats(), 0, 100);
+            assert_eq!(
+                out0,
+                (
+                    2220,
+                    1250,
+                    0,
+                    0,
+                    99889012208,
+                    100111111111,
+                    100062539086,
+                    99937500000
+                )
+            );
+
+            let mut amm = AMM {
+                total_fee_minus_distributions: -1000 * QUOTE_PRECISION_I128,
+                ..base_amm()
+            };
+            let outn = refresh(&mut amm, &base_stats(), 0, 100);
+            assert_eq!(out0, outn);
+        }
+
+        #[test]
+        fn golden_inventory_sign_and_retreat() {
+            // negative revenue triggers the retreat; tiny inventory picks the
+            // side that gets the full amount.
+            let stats = base_stats();
+            let mut amm_long = AMM {
+                base_asset_amount_with_amm: 1,
+                net_revenue_since_last_funding: -30 * crate::math::constants::QUOTE_PRECISION_I64,
+                ..base_amm()
+            };
+            let out_long = refresh(&mut amm_long, &stats, 0, 100);
+            assert_eq!(
+                out_long,
+                (
+                    425,
+                    275,
+                    0,
+                    0,
+                    99978800085,
+                    100021204410,
+                    100013702383,
+                    99986299494
+                )
+            );
+
+            let mut amm_short = AMM {
+                base_asset_amount_with_amm: -1,
+                net_revenue_since_last_funding: -30 * crate::math::constants::QUOTE_PRECISION_I64,
+                ..base_amm()
+            };
+            let out_short = refresh(&mut amm_short, &stats, 0, 100);
+            assert_eq!(
+                out_short,
+                (
+                    275,
+                    425,
+                    0,
+                    0,
+                    99986301370,
+                    100013700506,
+                    100021208907,
+                    99978795590
+                )
+            );
+
+            let mut amm_zero = AMM {
+                base_asset_amount_with_amm: 0,
+                net_revenue_since_last_funding: -30 * crate::math::constants::QUOTE_PRECISION_I64,
+                ..base_amm()
+            };
+            let out_zero = refresh(&mut amm_zero, &stats, 0, 100);
+            assert_eq!(
+                out_zero,
+                (
+                    275,
+                    275,
+                    0,
+                    0,
+                    99986301370,
+                    100013700506,
+                    100013702383,
+                    99986299494
+                )
+            );
+        }
+
+        #[test]
+        fn golden_conf_threshold() {
+            // 25 bp threshold: PERCENTAGE_PRECISION_U64 / 400 == 2500.
+            let mut amm_at = base_amm();
+            let stats_at = MarketStats {
+                last_oracle_conf_pct: 2500,
+                ..base_stats()
+            };
+            let out_at = refresh(&mut amm_at, &stats_at, 0, 100);
+            assert_eq!(
+                out_at,
+                (
+                    350,
+                    250,
+                    0,
+                    0,
+                    99982502187,
+                    100017500875,
+                    100012501562,
+                    99987500000
+                )
+            );
+
+            let mut amm_above = base_amm();
+            let stats_above = MarketStats {
+                last_oracle_conf_pct: 2501,
+                ..base_stats()
+            };
+            let out_above = refresh(&mut amm_above, &stats_above, 0, 100);
+            // One unit of confidence input above the 25 bp threshold moves the
+            // quoted spread ~8x. This pins the cliff itself (design issue 5).
+            assert_eq!(
+                out_above,
+                (
+                    2778,
+                    2501,
+                    0,
+                    0,
+                    99861111111,
+                    100139082058,
+                    100125156445,
+                    99875000000
+                )
+            );
+        }
+
+        #[test]
+        fn golden_offset_sign_transition_smoothing() {
+            // prior offset negative, fresh offset positive, intensity > 100:
+            // the smoothing branch runs and widens both sides asymmetrically.
+            let mut amm = AMM {
+                curve_update_intensity: 110,
+                ..base_amm()
+            };
+            let reserve_price = amm.reserve_price().unwrap();
+            let premium = (reserve_price / 100) as u64;
+            let stats = MarketStats {
+                last_reference_price_offset: -500,
+                last_24h_avg_funding_rate: 100_000,
+                last_funding_oracle_twap: reserve_price as i64,
+                last_mark_price_twap_5min: reserve_price + premium,
+                last_mark_price_twap: reserve_price + premium,
+                historical_oracle_data: crate::state::oracle::HistoricalOracleData {
+                    last_oracle_price_twap_5min: reserve_price as i64,
+                    last_oracle_price_twap: reserve_price as i64,
+                    ..Default::default()
+                },
+                ..base_stats()
+            };
+            let out = refresh(&mut amm, &stats, 0, 100);
+            assert_eq!(
+                out,
+                (
+                    674,
+                    175,
+                    -450,
+                    0,
+                    99988800538,
+                    100011200716,
+                    100031210986,
+                    99968798752
+                )
+            );
+        }
+
+        #[test]
+        fn golden_spread_adjustment() {
+            let mut amm_neg = AMM {
+                amm_spread_adjustment: -50,
+                ..base_amm()
+            };
+            let out_neg = refresh(&mut amm_neg, &base_stats(), 0, 100);
+            assert_eq!(
+                out_neg,
+                (
+                    112,
+                    63,
+                    0,
+                    0,
+                    99994400269,
+                    100005600044,
+                    100003100102,
+                    99996899994
+                )
+            );
+
+            let mut amm_pos = AMM {
+                amm_spread_adjustment: 50,
+                ..base_amm()
+            };
+            let out_pos = refresh(&mut amm_pos, &base_stats(), 0, 100);
+            assert_eq!(
+                out_pos,
+                (
+                    336,
+                    188,
+                    0,
+                    0,
+                    99983201747,
+                    100016801075,
+                    100009401146,
+                    99990599737
+                )
+            );
+
+            let mut amm_inv = AMM {
+                amm_inventory_spread_adjustment: -50,
+                ..base_amm()
+            };
+            let out_inv = refresh(&mut amm_inv, &base_stats(), 0, 100);
+            assert_eq!(
+                out_inv,
+                (
+                    125,
+                    125,
+                    0,
+                    0,
+                    99993800372,
+                    100006200012,
+                    100006200396,
+                    99993799988
+                )
+            );
+        }
     }
 }

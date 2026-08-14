@@ -1,6 +1,10 @@
 # Bug Bounty Overview
 Velocity offers bug bounties for Velocity's on-chain program code; UI only bugs are omitted.
 
+For the protocol's external trust surface — every CPI target, oracle, whitelisted venue, and the
+full transitive crate graph, each with its trust assumption and failure mode — see
+[docs/EXTERNAL-DEPENDENCIES.md](./docs/EXTERNAL-DEPENDENCIES.md).
+
 |Severity|Description|Bug Bounty|
 |-----------|--------------|-------------|
 |Critical|Bugs that freeze user funds or drain the contract's holdings or involve theft of funds without user signatures|10% of the value of the hack up to $500,000|

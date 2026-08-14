@@ -32,8 +32,6 @@ import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
 import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
 
-// EquityBelowFloor
-const EQUITY_BELOW_FLOOR_HEX = '0x18d6';
 // InvalidOracle
 const INVALID_ORACLE_HEX = '0x1793';
 
@@ -41,11 +39,11 @@ const INVALID_ORACLE_HEX = '0x1793';
 //
 // `calculate_user_equity` prices every position at the raw live oracle price
 // and reports the oracle-validity verdict separately. Every floor gate used to
-// discard that verdict. These tests pin the two fixes:
+// discard that verdict. These tests pin the fixes:
 //
-//  - Gates that restrict the user judge on the LOWER bound, which prices an
-//    unpriceable asset at `min(live, twap_5min)`. A stale-high price can no
-//    longer buy a withdrawal down through the floor.
+//  - Gates that authorize an action fail closed on the verdict: any invalid
+//    oracle rejects with `InvalidOracle`, so a stale-high price can no longer
+//    buy a withdrawal down through the floor.
 //  - The floor-shed defusal guard rejects an invalid oracle outright, so it
 //    agrees with `trip_equity_floor_breaker`, which already did.
 describe('equity floor oracle validity', () => {
@@ -285,9 +283,8 @@ describe('equity floor oracle validity', () => {
 
 	it('a stale-high deposit oracle cannot buy a withdrawal through the floor', async () => {
 		// The sol deposit is now unpriceable and the live price reads 500. The
-		// old code valued it at 500 and let the withdrawal through. The lower
-		// bound values it at min(500, twap_5min) instead, which keeps the
-		// subaccount under its floor and refuses.
+		// old code valued it at 500 and let the withdrawal through. The gate
+		// now fails closed on the invalid oracle and refuses outright.
 		await staleSolOracleAt(500);
 
 		const before = await bankrunContextWrapper.connection.getTokenAccount(
@@ -307,8 +304,8 @@ describe('equity floor oracle validity', () => {
 
 		assert(err, 'stale-high withdrawal should have been rejected');
 		assert(
-			err.message.includes(EQUITY_BELOW_FLOOR_HEX),
-			`expected EquityBelowFloor, got: ${err.message}`
+			err.message.includes(INVALID_ORACLE_HEX),
+			`expected InvalidOracle, got: ${err.message}`
 		);
 
 		const after = await bankrunContextWrapper.connection.getTokenAccount(

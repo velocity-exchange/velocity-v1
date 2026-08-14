@@ -60,10 +60,10 @@ use {
     },
 };
 
-// Generated types/schemas from the canonical velocity IDL (identical file to
-// P7). We only use `register_schemas()` for richer crash output; instruction
-// building goes through `raw_call`.
-crucible_idl_gen::declare_fuzz_program!(velocity_idl = "idls/velocity.json");
+// Generated types/schemas, read straight from the canonical IDL that the SDK
+// also consumes. We only use `register_schemas()` for richer crash output;
+// instruction building goes through `raw_call`.
+crucible_idl_gen::declare_fuzz_program!(velocity_idl = "../../packages/sdk/src/idl/velocity.json");
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -885,7 +885,7 @@ impl Fixture {
         assert!(
             acct.data.len() >= 8 + size,
             "layout drift: account {pk} has {} data bytes, need >= {} (8 + size_of::<{}>); \
-             re-run `bash fuzz/sync-idls.sh` and rebuild target/deploy/velocity.so",
+             rebuild target/deploy/velocity.so from the current program source",
             acct.data.len(),
             8 + size,
             std::any::type_name::<T>(),

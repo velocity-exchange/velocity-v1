@@ -6,7 +6,6 @@ import {
 	allocateEquityFloors,
 	planFloorMoves,
 	planCureMoves,
-	boundPrices,
 	ZERO,
 } from '../../src';
 
@@ -388,31 +387,5 @@ describe('planCureMoves', () => {
 				);
 			}
 		}
-	});
-});
-
-describe('boundPrices', () => {
-	const p = (n: number) => new BN(n);
-
-	it('collapses onto the live price when the oracle is valid', () => {
-		const pair = boundPrices(p(100), p(110), true)!;
-		assert(pair[0].eq(p(100)) && pair[1].eq(p(100)));
-	});
-
-	it('pairs live with the 5min twap when invalid, low first', () => {
-		const pair = boundPrices(p(110), p(100), false)!;
-		assert(pair[0].eq(p(100)) && pair[1].eq(p(110)));
-	});
-
-	it('drops a non-positive candidate', () => {
-		const livePair = boundPrices(p(100), ZERO, false)!;
-		assert(livePair[0].eq(p(100)) && livePair[1].eq(p(100)));
-		const twapPair = boundPrices(ZERO, p(110), false)!;
-		assert(twapPair[0].eq(p(110)) && twapPair[1].eq(p(110)));
-	});
-
-	it('returns null when no positive candidate exists', () => {
-		assert.isNull(boundPrices(ZERO, ZERO, false));
-		assert.isNull(boundPrices(p(-1), p(-1), false));
 	});
 });

@@ -16612,6 +16612,16 @@ export type Velocity = {
       "code": 6368,
       "name": "invalidEquityBreakerReset",
       "msg": "Invalid equity breaker reset"
+    },
+    {
+      "code": 6369,
+      "name": "invalidNativeInstructionData",
+      "msg": "Native dispatch: instruction data is malformed for this opcode"
+    },
+    {
+      "code": 6370,
+      "name": "mmOracleUpdateDisabled",
+      "msg": "MM oracle updates are disabled by the admin feature-bit kill switch"
     }
   ],
   "types": [
@@ -21642,7 +21652,13 @@ export type Velocity = {
           {
             "name": "oracleSlotDelayOverride",
             "docs": [
-              "override for the per-fill slot delay required from the oracle (default -1 = use state default)"
+              "Max oracle delay, in slots, tolerated by immediate (JIT / auction-skipping)",
+              "AMM fills. Positive is an explicit threshold. `0` disables immediate AMM",
+              "fills entirely. Negative (the init default, `-1`) means unset, which",
+              "resolves by price source: `MM_ORACLE_MIN_SLOT_GAP` for an MM-oracle-sourced",
+              "price (the tightest window the crank can satisfy, since the program refuses",
+              "MM-oracle writes closer together than that) and `0` for an exchange-oracle",
+              "price, which can be same-slot fresh. See `math::oracle::oracle_validity`."
             ],
             "type": "i8"
           },

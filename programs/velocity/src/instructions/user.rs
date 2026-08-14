@@ -2316,15 +2316,7 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
         &spot_market_map,
         &mut oracle_map,
     )? {
-        // The floor restricts the from side here, so take the lower bound.
-        validate!(
-            !from_user.is_below_buffered_equity_floor(from_user_net_equity.lower),
-            ErrorCode::EquityBelowFloor,
-            "from user net equity {} below equity floor {} + buffer {}",
-            from_user_net_equity.lower,
-            from_user.equity_floor,
-            from_user.equity_floor_buffer
-        )?;
+        from_user_net_equity.validate_clears_buffered_floor(from_user)?;
     }
 
     let to_user_margin_context = MarginContext::standard(MarginRequirementType::Initial);
@@ -2354,15 +2346,7 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
         &spot_market_map,
         &mut oracle_map,
     )? {
-        // The floor restricts the to side here, so take the lower bound.
-        validate!(
-            !to_user.is_below_buffered_equity_floor(to_user_net_equity.lower),
-            ErrorCode::EquityBelowFloor,
-            "to user net equity {} below equity floor {} + buffer {}",
-            to_user_net_equity.lower,
-            to_user.equity_floor,
-            to_user.equity_floor_buffer
-        )?;
+        to_user_net_equity.validate_clears_buffered_floor(to_user)?;
     }
 
     let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;

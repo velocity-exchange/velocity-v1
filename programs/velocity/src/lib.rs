@@ -61,6 +61,7 @@ pub fn program_entry<'info>(
             1 => Ok(handle_update_amm_spread_adjustment_native(
                 accounts, payload,
             )?),
+            2 => Ok(handle_update_mm_oracle_batch_native(accounts, payload)?),
             _ => Err(
                 anchor_lang::solana_program::program_error::ProgramError::InvalidInstructionData,
             ),

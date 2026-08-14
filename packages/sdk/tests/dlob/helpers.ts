@@ -193,6 +193,7 @@ function mockPerpMarketCommon(): Omit<
 		},
 		quoteSpotMarketIndex: 0,
 		feeAdjustment: 0,
+		takerFeeAddonTenthBps: 0,
 		poolId: 0,
 		pausedOperations: 0,
 		hedgeConfig: {
@@ -576,6 +577,7 @@ export const mockStateAccount: StateAccount = {
 	featureBitFlags: 0,
 	lpPoolFeatureBitFlags: 0,
 	solvencyStatus: 0,
+	promoFeeTier: 0,
 	defaultMarketOrderTimeInForce: 0,
 	defaultSpotAuctionDuration: 0,
 	discountMint: PublicKey.default,

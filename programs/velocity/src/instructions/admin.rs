@@ -21,12 +21,12 @@ use {
                 FEE_POOL_TO_REVENUE_POOL_THRESHOLD, IF_FACTOR_PRECISION, INSURANCE_A_MAX,
                 INSURANCE_B_MAX, INSURANCE_C_MAX, INSURANCE_SPECULATIVE_MAX,
                 LIQUIDATION_FEE_PRECISION, MAX_CONCENTRATION_COEFFICIENT,
-                MM_ORACLE_MAX_SOURCE_AGE_SLOTS, MM_ORACLE_MAX_STEP_PCT_PRECISION,
-                MM_ORACLE_MIN_SLOT_GAP, PERCENTAGE_PRECISION, PERCENTAGE_PRECISION_I128,
-                PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U32, QUOTE_PRECISION_I64,
-                QUOTE_SPOT_MARKET_INDEX, SPOT_BALANCE_PRECISION,
-                SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_IMF_PRECISION, SPOT_WEIGHT_PRECISION,
-                THIRTEEN_DAY, TWENTY_FOUR_HOUR,
+                MAX_TAKER_FEE_ADDON_TENTH_BPS, MM_ORACLE_MAX_SOURCE_AGE_SLOTS,
+                MM_ORACLE_MAX_STEP_PCT_PRECISION, MM_ORACLE_MIN_SLOT_GAP, PERCENTAGE_PRECISION,
+                PERCENTAGE_PRECISION_I128, PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U32,
+                PERP_FEE_TIER_MAX_INDEX, QUOTE_PRECISION_I64, QUOTE_SPOT_MARKET_INDEX,
+                SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_IMF_PRECISION,
+                SPOT_WEIGHT_PRECISION, THIRTEEN_DAY, TWENTY_FOUR_HOUR,
             },
             margin::calculate_user_equity,
             orders::is_multiple_of_step_size,
@@ -162,7 +162,8 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         feature_bit_flags: 0,
         lp_pool_feature_bit_flags: 0,
         solvency_status: SolvencyStatus::active(),
-        padding: [0; 239],
+        promo_fee_tier: 0,
+        padding: [0; 238],
     };
 
     Ok(())
@@ -856,7 +857,8 @@ pub fn handle_initialize_perp_market(
             ..PoolBalance::default()
         },
         protocol_liquidation_fee: 0,
-        _padding_buffer: [0; 4],
+        taker_fee_addon_tenth_bps: 0,
+        _padding_buffer: [0; 2],
         fee_pool_buffer_target: FEE_POOL_TO_REVENUE_POOL_THRESHOLD as u64,
     };
 
@@ -2476,6 +2478,34 @@ pub fn handle_update_perp_market_unrealized_asset_weight(
     Ok(())
 }
 
+pub fn handle_update_promo_fee_tier(
+    ctx: Context<AdminUpdateState>,
+    promo_fee_tier: u8,
+) -> Result<()> {
+    let mut state = ctx.accounts.state.load_mut()?;
+
+    // validate against the highest populated tier, not the 10-slot array:
+    // the tier fn clamps to PERP_FEE_TIER_MAX_INDEX, so anything above it
+    // would validate and then silently mean a lower tier. 0 = disabled
+    // (no-op floor).
+    validate!(
+        (promo_fee_tier as usize) <= PERP_FEE_TIER_MAX_INDEX,
+        ErrorCode::DefaultError,
+        "promo fee tier {} above max populated tier {}",
+        promo_fee_tier,
+        PERP_FEE_TIER_MAX_INDEX
+    )?;
+
+    msg!(
+        "state.promo_fee_tier: {:?} -> {:?}",
+        state.promo_fee_tier,
+        promo_fee_tier
+    );
+
+    state.promo_fee_tier = promo_fee_tier;
+    Ok(())
+}
+
 pub fn handle_update_perp_fee_structure(
     ctx: Context<AdminUpdateState>,
     fee_structure: FeeStructure,
@@ -2876,6 +2906,31 @@ pub fn handle_update_perp_market_fee_adjustment(
     );
 
     perp_market.fee_adjustment = fee_adjustment;
+    Ok(())
+}
+
+pub fn handle_update_perp_market_taker_fee_addon(
+    ctx: Context<AdminUpdatePerpMarket>,
+    taker_fee_addon_tenth_bps: u16,
+) -> Result<()> {
+    let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
+    msg!("perp market {}", perp_market.market_index);
+
+    validate!(
+        taker_fee_addon_tenth_bps <= MAX_TAKER_FEE_ADDON_TENTH_BPS,
+        ErrorCode::DefaultError,
+        "taker fee addon {} greater than max {}",
+        taker_fee_addon_tenth_bps,
+        MAX_TAKER_FEE_ADDON_TENTH_BPS
+    )?;
+
+    msg!(
+        "perp_market.taker_fee_addon_tenth_bps: {:?} -> {:?}",
+        perp_market.taker_fee_addon_tenth_bps,
+        taker_fee_addon_tenth_bps
+    );
+
+    perp_market.taker_fee_addon_tenth_bps = taker_fee_addon_tenth_bps;
     Ok(())
 }
 

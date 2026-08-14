@@ -4247,14 +4247,20 @@ export class User {
 	}
 
 	/**
-	 * Looks up the user's fee tier from the state account's fee structure.
+	 * Looks up the user's fee tier from the state account's fee structure,
+	 * mirroring the program's `determine_perp_fee_tier`.
 	 *
-	 * For perp markets, the tier is selected by the user's rolling 30-day
-	 * volume (`getUser30dRollingVolumeEstimate`, QUOTE_PRECISION) against fixed
-	 * breakpoints — $2M, $10M, $20M, $80M, $200M — picking the lowest-index
-	 * tier whose breakpoint the user's volume is still under (tier 5, the
-	 * lowest fees, if volume meets or exceeds the top breakpoint). Spot markets
-	 * always use tier 0 (no volume-based discount).
+	 * For perp markets, the tier is selected by the user's trailing 30-day
+	 * volume projected to `now` (`getUser30dRollingVolumeEstimate`,
+	 * QUOTE_PRECISION — the stored rolling sum decays lazily on-chain, so the
+	 * read applies the same decay virtually) against fixed breakpoints — $5M,
+	 * $80M — picking the lowest-index tier whose breakpoint the volume is
+	 * still under. Tiers 0/1/2 are named Regular / VIP 1 / VIP 2 (VIP 2, the
+	 * lowest fees, at or above the top breakpoint); names are presentation
+	 * only, selection is index-based.
+	 * While `state.promoFeeTier` is non-zero it floors everyone's tier at that
+	 * index (0 = disabled; nobody is downgraded by it). Spot markets always
+	 * use tier 0 (no volume-based discount).
 	 * @param marketType `MarketType.PERP` or `MarketType.SPOT`.
 	 * @param now Optional unix timestamp (seconds) to evaluate the rolling volume window as of; defaults to current time.
 	 * @returns The matching `FeeTier` (numerator/denominator fee fractions and referee-discount fractions).
@@ -4273,20 +4279,25 @@ export class User {
 			);
 
 			const volumeThresholds = [
-				new BN(2_000_000).mul(QUOTE_PRECISION),
-				new BN(10_000_000).mul(QUOTE_PRECISION),
-				new BN(20_000_000).mul(QUOTE_PRECISION),
+				new BN(5_000_000).mul(QUOTE_PRECISION),
 				new BN(80_000_000).mul(QUOTE_PRECISION),
-				new BN(200_000_000).mul(QUOTE_PRECISION),
 			];
 
-			let feeTierIndex = 5;
+			let feeTierIndex = volumeThresholds.length;
 			for (let i = 0; i < volumeThresholds.length; i++) {
 				if (total30dVolume.lt(volumeThresholds[i])) {
 					feeTierIndex = i;
 					break;
 				}
 			}
+
+			// promo tier floor: everyone gets at least `state.promoFeeTier`
+			// while it is set (0 = disabled/no-op), mirroring
+			// `determine_perp_fee_tier`
+			feeTierIndex = Math.max(
+				feeTierIndex,
+				Math.min(state.promoFeeTier, volumeThresholds.length)
+			);
 
 			return state.perpFeeStructure.feeTiers[feeTierIndex];
 		}

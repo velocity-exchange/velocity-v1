@@ -293,7 +293,19 @@ pub struct PerpMarket {
     /// Protocol's cut of a perp liquidation, taken from the liquidatee.
     /// precision: LIQUIDATOR_FEE_PRECISION
     pub protocol_liquidation_fee: u32,
-    pub _padding_buffer: [u8; 4],
+    /// Additive per-market taker-fee surcharge in tenth-bps (10 = 1bp),
+    /// unsigned: surcharge only (e.g. toxic-flow markets), never a discount.
+    /// A discount could push the taker fee below the maker rebate it must
+    /// fund and revert every match fill; promo discounts go through
+    /// `State.promo_fee_tier` instead. Applied on top of the tier fee before
+    /// `fee_adjustment` scales the sum:
+    /// `taker_fee = (tier_fee + add-on) * (1 +/- fee_adjustment%)`.
+    /// Taker fee only; the maker rebate and the post-only path see
+    /// `fee_adjustment` alone. Occupies 2 bytes of the former 4-byte
+    /// `_padding_buffer` (same offset/alignment on all targets), so existing
+    /// accounts read 0 = no add-on until the admin sets it.
+    pub taker_fee_addon_tenth_bps: u16,
+    pub _padding_buffer: [u8; 2],
     /// The pnl-pool retention buffer the streaming sweep's IF and
     /// AMM-provision drains leave untouched: `sweep_market_fees` drains
     /// those pendings only from what the pnl pool holds above
@@ -551,7 +563,8 @@ impl Default for PerpMarket {
             hedge_config: HedgeConfig::default(),
             protocol_fee_pool: PoolBalance::default(),
             protocol_liquidation_fee: 0,
-            _padding_buffer: [0; 4],
+            taker_fee_addon_tenth_bps: 0,
+            _padding_buffer: [0; 2],
             fee_pool_buffer_target: 0,
         }
     }

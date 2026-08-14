@@ -117,6 +117,20 @@ cargo-build-sbf --tools-version v1.54 -- --features anchor-test
 
 ## Testing
 
+**Local CI emulation:** `bash test-scripts/ci-local.sh` runs the gating checks from
+`.github/workflows/main.yml` locally (`--fast` = static checks only, `--full` adds the
+anchor/vault integration suites and rust-workspace tests). **Keep `test-scripts/ci-local.sh`
+in sync with the CI workflow**: whenever a gating job in `.github/workflows/main.yml` is
+added, removed, or its command changes, mirror the change in `ci-local.sh` in the same PR.
+The script also encodes two local-only traps CI never hits:
+- the SBF cache-poisoning guard (see the access-violation runbook entry above): it wipes
+`target/sbpf-solana-solana` before the integration-suite build, since `.so` files built on a
+cache that mixed feature flavors die at entry with `Access violation in unknown section`;
+- the IDL-flavor restore: the anchor suite's own build (default features = `mainnet-beta` ON)
+syncs an IDL with devnet-only instructions compiled out into `packages/sdk/src/idl/`
+(committing that breaks `wipe-devnet.ts`), so after the suites the script reruns
+`bun run program:idl` to restore the canonical flavor.
+
 **Rust unit tests:**
 
 ```bash

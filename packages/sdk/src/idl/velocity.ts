@@ -11214,6 +11214,38 @@ export type Velocity = {
       ]
     },
     {
+      "name": "updatePerpMarketTakerFeeAddon",
+      "discriminator": [
+        53,
+        22,
+        191,
+        15,
+        62,
+        150,
+        36,
+        203
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "perpMarket",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "takerFeeAddonTenthBps",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "updatePerpMarketUnrealizedAssetWeight",
       "discriminator": [
         135,
@@ -11342,6 +11374,35 @@ export type Velocity = {
               "name": "prelaunchOracleParams"
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "updatePromoFeeTier",
+      "discriminator": [
+        104,
+        57,
+        241,
+        162,
+        69,
+        198,
+        5,
+        175
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "promoFeeTier",
+          "type": "u8"
         }
       ]
     },
@@ -21196,11 +21257,28 @@ export type Velocity = {
             "type": "u32"
           },
           {
+            "name": "takerFeeAddonTenthBps",
+            "docs": [
+              "Additive per-market taker-fee surcharge in tenth-bps (10 = 1bp),",
+              "unsigned: surcharge only (e.g. toxic-flow markets), never a discount.",
+              "A discount could push the taker fee below the maker rebate it must",
+              "fund and revert every match fill; promo discounts go through",
+              "`State.promo_fee_tier` instead. Applied on top of the tier fee before",
+              "`fee_adjustment` scales the sum:",
+              "`taker_fee = (tier_fee + add-on) * (1 +/- fee_adjustment%)`.",
+              "Taker fee only; the maker rebate and the post-only path see",
+              "`fee_adjustment` alone. Occupies 2 bytes of the former 4-byte",
+              "`_padding_buffer` (same offset/alignment on all targets), so existing",
+              "accounts read 0 = no add-on until the admin sets it."
+            ],
+            "type": "u16"
+          },
+          {
             "name": "paddingBuffer",
             "type": {
               "array": [
                 "u8",
-                4
+                2
               ]
             }
           },
@@ -23920,11 +23998,23 @@ export type Velocity = {
             "type": "pubkey"
           },
           {
+            "name": "promoFeeTier",
+            "docs": [
+              "Promotional fee-tier floor applied to every account: the effective",
+              "perp fee tier is `max(volume tier, promo_fee_tier)` (clamped to the",
+              "configured tier count), so nobody is downgraded by it. 0 = no-op",
+              "(disabled), also what pre-upgrade accounts read from former padding.",
+              "Reset to 0 and every account is back on its volume tier at its next",
+              "fill; no per-user state."
+            ],
+            "type": "u8"
+          },
+          {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                239
+                238
               ]
             }
           }

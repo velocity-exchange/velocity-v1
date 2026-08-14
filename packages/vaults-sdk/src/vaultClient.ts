@@ -3687,23 +3687,33 @@ export class VaultClient {
 		const vaultAccount = await this.program.account.vault.fetch(vault);
 		const feeUpdate = getFeeUpdateAddressSync(this.program.programId, vault);
 
-		// protocol vaults must pass VaultProtocol so a matured update is validated
-		// against the live combined manager+protocol fee bounds
-		const remainingAccounts: AccountMeta[] = vaultAccount.vaultProtocol
-			? [
-					{
-						pubkey: getVaultProtocolAddressSync(this.program.programId, vault),
-						isSigner: false,
-						isWritable: false,
-					},
-			  ]
-			: [];
+		// Installing a matured update settles the vault's fee first, which needs vault equity:
+		// pass the spot market and its oracle. Protocol vaults also pass VaultProtocol, so the
+		// queued policy is validated against the live combined manager+protocol fee bounds.
+		const user = await this.getSubscribedVaultUser(vaultAccount.user);
+		const userStatsKey = getUserStatsAccountPublicKey(
+			this.velocityClient.program.programId,
+			vault
+		);
+		const userStats = (await (
+			this.velocityClient.program as any
+		).account.userStats.fetch(userStatsKey)) as UserStatsAccount;
+		// the FeeUpdate is a named account on this instruction, so it is not appended here
+		const remainingAccounts: AccountMeta[] = this.getRemainingAccountsForUser(
+			[user.getUserAccount()!],
+			[vaultAccount.spotMarketIndex],
+			vaultAccount,
+			userStats,
+			false,
+			true
+		);
 
 		return this.program.instruction.managerUpdateFees(params, {
 			accounts: {
 				vault,
 				manager: vaultAccount.manager,
 				feeUpdate,
+				velocityUser: vaultAccount.user,
 			},
 			remainingAccounts,
 		});

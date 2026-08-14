@@ -4,11 +4,6 @@ use {
 };
 
 pub fn initialize_vault_depositor(ctx: Context<InitializeVaultDepositor>) -> Result<()> {
-    let mut vault_depositor = ctx.accounts.vault_depositor.load_init()?;
-    vault_depositor.vault = ctx.accounts.vault.key();
-    vault_depositor.pubkey = ctx.accounts.vault_depositor.key();
-    vault_depositor.authority = *ctx.accounts.authority.key;
-
     let vault = ctx.accounts.vault.load()?;
     if vault.permissioned {
         validate!(
@@ -17,6 +12,14 @@ pub fn initialize_vault_depositor(ctx: Context<InitializeVaultDepositor>) -> Res
             "Vault depositor can only be created by vault manager"
         )?;
     }
+
+    let mut vault_depositor = ctx.accounts.vault_depositor.load_init()?;
+    *vault_depositor = VaultDepositor::new(
+        &vault,
+        ctx.accounts.vault_depositor.key(),
+        *ctx.accounts.authority.key,
+        Clock::get()?.unix_timestamp,
+    );
 
     Ok(())
 }

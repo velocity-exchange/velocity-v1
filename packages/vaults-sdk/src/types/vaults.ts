@@ -2386,6 +2386,12 @@ export type Vaults = {
 						];
 					};
 				},
+				{
+					name: 'velocityUser';
+					docs: [
+						"Installing a matured update settles the vault's fee first, which needs vault equity.",
+					];
+				},
 			];
 			args: [
 				{
@@ -4736,7 +4742,10 @@ export type Vaults = {
 							'Fraction of spot deposit-interest gains carved out to the insurance fund',
 							'(staker-owned). precision: IF_FACTOR_PRECISION. (Was `total_factor`; the',
 							'protocol-vs-staker split was removed — the IF is now 100% staker-owned,',
-							'so this is purely the staker IF carveout.)',
+							'so this is purely the staker IF carveout.) While non-zero, an accrual',
+							'interval whose cut would convert to less than one token is deferred rather',
+							'than committed, so the cut is never floored away — see',
+							'`update_spot_market_cumulative_interest`.',
 						];
 						type: 'u32';
 					},
@@ -6088,7 +6097,10 @@ export type Vaults = {
 						name: 'protocolFeeFactor';
 						docs: [
 							"Protocol's carveout of lending deposit-interest gains, routed to",
-							'`protocol_fee_pool`. precision: IF_FACTOR_PRECISION',
+							'`protocol_fee_pool`. precision: IF_FACTOR_PRECISION. While non-zero, an',
+							'accrual interval whose cut would convert to less than one token is',
+							'deferred rather than committed, so the cut is never floored away — see',
+							'`update_spot_market_cumulative_interest`.',
 						];
 						type: 'u32';
 					},
@@ -6260,7 +6272,8 @@ export type Vaults = {
 					{
 						name: 'cumulativeProfitShareAmount';
 						docs: [
-							'the token amount of gains the vault depositor has paid performance fees on',
+							'the token amount of gain, net of the profit share taken on it, that the high-water mark',
+							'already covers. `net_deposits + cumulative_profit_share_amount` is the high-water mark.',
 						];
 						type: 'i64';
 					},
@@ -6278,6 +6291,22 @@ export type Vaults = {
 						type: 'u32';
 					},
 					{
+						name: 'profitShareAtBasis';
+						docs: [
+							"the vault's profit share when the high-water mark was last set. Gain above the high-water",
+							'mark is priced at this rate, so a later raise never prices gain earned before it.',
+						];
+						type: 'u32';
+					},
+					{
+						name: 'hurdleRateAtBasis';
+						docs: [
+							"the vault's hurdle rate when the high-water mark was last set. Gain above the high-water",
+							'mark keeps this shelter, so a later cut never exposes gain earned before it.',
+						];
+						type: 'u32';
+					},
+					{
 						name: 'bump';
 						docs: ['The bump for the vault pda'];
 						type: 'u8';
@@ -6291,7 +6320,7 @@ export type Vaults = {
 					{
 						name: 'padding';
 						type: {
-							array: ['u64', 11];
+							array: ['u64', 10];
 						};
 					},
 				];
@@ -7093,7 +7122,8 @@ export type Vaults = {
 					{
 						name: 'cumulativeProfitShareAmount';
 						docs: [
-							'the token amount of gains the vault depositor has paid performance fees on',
+							'the token amount of gain, net of the profit share taken on it, that the high-water mark',
+							'already covers. `net_deposits + cumulative_profit_share_amount` is the high-water mark.',
 						];
 						type: 'i64';
 					},
@@ -7107,13 +7137,29 @@ export type Vaults = {
 						type: 'u32';
 					},
 					{
+						name: 'profitShareAtBasis';
+						docs: [
+							"the vault's profit share when the high-water mark was last set. Gain above the high-water",
+							'mark is priced at this rate, so a later raise never prices gain earned before it.',
+						];
+						type: 'u32';
+					},
+					{
+						name: 'hurdleRateAtBasis';
+						docs: [
+							"the vault's hurdle rate when the high-water mark was last set. Gain above the high-water",
+							'mark keeps this shelter, so a later cut never exposes gain earned before it.',
+						];
+						type: 'u32';
+					},
+					{
 						name: 'paddingAlign';
 						type: 'u32';
 					},
 					{
 						name: 'padding';
 						type: {
-							array: ['u64', 5];
+							array: ['u64', 4];
 						};
 					},
 				];

@@ -204,30 +204,29 @@ impl Vault {
         vault_equity: u64,
         now: i64,
     ) -> Result<VaultFee> {
+        let mut update_matured = false;
         if let Some(ref mut fee_update) = fee_update {
             // #97: before a matured update takes effect, validate it against the live protocol
             // state (queue-time validation can only see the manager fields, not the protocol
             // combined sums). Reverts here leave the pending update in place, recoverable via
             // manager_cancel_fee_update.
-            {
-                let fu = fee_update.load()?;
-                if fu.is_pending() && now >= fu.incoming_update_ts {
-                    let (is_protocol_vault, protocol_fee, protocol_profit_share) =
-                        match vault_protocol.as_deref() {
-                            Some(vp) => (true, vp.protocol_fee, vp.protocol_profit_share),
-                            None => (false, 0, 0),
-                        };
-                    validate_fee_policy(
-                        fu.incoming_management_fee,
-                        fu.incoming_profit_share,
-                        fu.incoming_hurdle_rate,
-                        is_protocol_vault,
-                        protocol_fee,
-                        protocol_profit_share,
-                    )?;
-                }
+            let fu = fee_update.load()?;
+            update_matured = fu.is_pending() && now >= fu.incoming_update_ts;
+            if update_matured {
+                let (is_protocol_vault, protocol_fee, protocol_profit_share) =
+                    match vault_protocol.as_deref() {
+                        Some(vp) => (true, vp.protocol_fee, vp.protocol_profit_share),
+                        None => (false, 0, 0),
+                    };
+                validate_fee_policy(
+                    fu.incoming_management_fee,
+                    fu.incoming_profit_share,
+                    fu.incoming_hurdle_rate,
+                    is_protocol_vault,
+                    protocol_fee,
+                    protocol_profit_share,
+                )?;
             }
-            fee_update.load_mut()?.try_update_vault_fees(now, self)?;
         }
 
         let depositor_equity =
@@ -400,8 +399,17 @@ impl Vault {
             }
         }
 
-        if !skip_ts_update {
+        // #98: a matured update installs only after the accrual above closed the interval at the
+        // policy that was in force while it accrued. Stamp the boundary even when that accrual was
+        // too small to move a share, so the new policy never prices an interval it did not cover.
+        if !skip_ts_update || update_matured {
             self.last_fee_update_ts = now;
+        }
+
+        if update_matured {
+            if let Some(ref mut fee_update) = fee_update {
+                fee_update.load_mut()?.try_update_vault_fees(now, self)?;
+            }
         }
 
         validate!(

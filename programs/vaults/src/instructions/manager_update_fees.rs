@@ -1,25 +1,29 @@
 use {
     crate::{
         constants::ONE_WEEK,
-        constraints::{is_admin, is_manager_for_vault},
+        constraints::{is_admin, is_manager_for_vault, is_user_for_vault},
         error::ErrorCode,
         state::{
             events::{FeeUpdateAction, FeeUpdateRecord},
             vault::validate_fee_policy,
             FeeUpdate, FeeUpdateStatus,
         },
-        validate, Vault, VaultProtocolProvider,
+        validate, AccountMapProvider, Vault, VaultProtocolProvider,
     },
     anchor_lang::prelude::*,
-    velocity::math::safe_math::SafeMath,
+    velocity::{
+        instructions::optional_accounts::AccountMaps, math::safe_math::SafeMath, state::user::User,
+    },
 };
 
 pub fn manager_update_fees<'info>(
     ctx: Context<'info, ManagerUpdateFees<'info>>,
     params: ManagerUpdateFeesParams,
 ) -> Result<()> {
+    let clock = Clock::get()?;
+    let now = clock.unix_timestamp;
+
     let mut vault = ctx.accounts.vault.load_mut()?;
-    let mut fee_update = ctx.accounts.fee_update.load_mut()?;
     let has_pending_fee_update = FeeUpdateStatus::has_pending_fee_update(vault.fee_update_status);
 
     validate!(!vault.in_liquidation(), ErrorCode::OngoingLiquidation)?;
@@ -32,41 +36,45 @@ pub fn manager_update_fees<'info>(
         )?;
     }
 
-    let now = Clock::get()?.unix_timestamp;
+    let vp = ctx.vault_protocol();
+    vault.validate_vault_protocol(&vp)?;
+    let mut vp = vp.as_ref().map(|vp| vp.load_mut()).transpose()?;
+
     if has_pending_fee_update {
         validate!(
-            fee_update.is_pending(),
+            ctx.accounts.fee_update.load()?.is_pending(),
             ErrorCode::InvalidFeeUpdateStatus,
             "Vault has pending fee status but FeeUpdate is not in a pending state"
         )?;
 
-        // #97: this branch is a maturity path (try_update_vault_fees installs the update once
-        // the timelock has passed), so it must validate the queued policy against live protocol
-        // state exactly like the apply_fee maturity path; otherwise it is an escape that can
-        // install combined manager+protocol sums no initialization could create. Protocol vaults
-        // pass the VaultProtocol account in remaining_accounts (same convention as other paths).
-        let vp = ctx.vault_protocol();
-        vault.validate_vault_protocol(&vp)?;
-        if now >= fee_update.incoming_update_ts {
-            let (is_protocol_vault, protocol_fee, protocol_profit_share) = match &vp {
-                Some(vp) => {
-                    let vp = vp.load()?;
-                    (true, vp.protocol_fee, vp.protocol_profit_share)
-                }
-                None => (false, 0, 0),
-            };
-            validate_fee_policy(
-                fee_update.incoming_management_fee,
-                fee_update.incoming_profit_share,
-                fee_update.incoming_hurdle_rate,
-                is_protocol_vault,
-                protocol_fee,
-                protocol_profit_share,
-            )?;
-        }
+        // #98: installing the update requires the vault to be settled at this instant, so this
+        // path settles the fee through apply_fee rather than writing the new policy directly.
+        // apply_fee is the only installer: it accrues the closing interval at the old policy,
+        // validates the queued policy against live protocol state, then installs.
+        let AccountMaps {
+            perp_market_map,
+            spot_market_map,
+            mut oracle_map,
+        } = ctx.load_maps(
+            clock.slot,
+            Some(vault.spot_market_index),
+            vp.is_some(),
+            false,
+        )?;
 
-        fee_update.try_update_vault_fees(now, &mut vault)?;
+        let vault_equity = {
+            let user = ctx.accounts.velocity_user.load()?;
+            vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?
+        };
+
+        vault.apply_fee(
+            &mut vp,
+            &mut Some(ctx.accounts.fee_update.clone()),
+            vault_equity,
+            now,
+        )?;
     } else {
+        let mut fee_update = ctx.accounts.fee_update.load_mut()?;
         validate!(
             params.timelock_duration > 0,
             ErrorCode::InvalidVaultUpdate,
@@ -150,4 +158,10 @@ pub struct ManagerUpdateFees<'info> {
         bump,
     )]
     pub fee_update: AccountLoader<'info, FeeUpdate>,
+    /// Installing a matured update settles the vault's fee first, which needs vault equity.
+    #[account(
+        constraint = is_user_for_vault(&vault, &velocity_user.key())?
+    )]
+    /// CHECK: checked in constraint
+    pub velocity_user: AccountLoader<'info, User>,
 }

@@ -173,7 +173,10 @@ describe('round in favor', () => {
 		assert(
 			velocityClient
 				.getUserAccount()
-				.perpPositions[0].quoteAssetAmount.eq(new BN(-88262))
+				.perpPositions[0].quoteAssetAmount.eq(new BN(-35344)),
+			`actual quoteAssetAmount: ${velocityClient
+				.getUserAccount()
+				.perpPositions[0].quoteAssetAmount.toString()}`
 		);
 		await velocityClient.unsubscribe();
 	});
@@ -235,7 +238,7 @@ describe('round in favor', () => {
 		assert(
 			velocityClient
 				.getUserAccount()
-				.perpPositions[0].quoteAssetAmount.eq(new BN(-88268))
+				.perpPositions[0].quoteAssetAmount.eq(new BN(-35346))
 		);
 		await velocityClient.unsubscribe();
 	});

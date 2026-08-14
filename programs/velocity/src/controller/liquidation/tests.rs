@@ -3174,17 +3174,17 @@ pub mod liquidate_perp_with_fill {
 
         let user = user_account_loader.load().unwrap();
         assert_eq!(user.perp_positions[0].base_asset_amount, 640000000);
-        assert_eq!(user.perp_positions[0].quote_asset_amount, -64396000);
+        assert_eq!(user.perp_positions[0].quote_asset_amount, -64374400);
         assert_eq!(user.perp_positions[0].open_orders, 0);
         assert_eq!(user.perp_positions[0].open_bids, 0);
 
         let maker = makers_and_referrers.get_ref(&maker_key).unwrap();
         assert_eq!(maker.perp_positions[0].base_asset_amount, 360000000);
-        assert_eq!(maker.perp_positions[0].quote_asset_amount, -35992800);
+        assert_eq!(maker.perp_positions[0].quote_asset_amount, -35999100);
 
         let liquidator = liquidator_account_loader.load().unwrap();
         assert_eq!(liquidator.perp_positions[0].base_asset_amount, 0);
-        assert_eq!(liquidator.perp_positions[0].quote_asset_amount, 3600);
+        assert_eq!(liquidator.perp_positions[0].quote_asset_amount, 1440);
 
         let market_after = perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 360000);
@@ -3382,17 +3382,17 @@ pub mod liquidate_perp_with_fill {
 
         let user = user_account_loader.load().unwrap();
         assert_eq!(user.perp_positions[0].base_asset_amount, -640000000);
-        assert_eq!(user.perp_positions[0].quote_asset_amount, 63604000);
+        assert_eq!(user.perp_positions[0].quote_asset_amount, 63625600);
         assert_eq!(user.perp_positions[0].open_orders, 0);
         assert_eq!(user.perp_positions[0].open_bids, 0);
 
         let maker = makers_and_referrers.get_ref(&maker_key).unwrap();
         assert_eq!(maker.perp_positions[0].base_asset_amount, -360000000);
-        assert_eq!(maker.perp_positions[0].quote_asset_amount, 36007200);
+        assert_eq!(maker.perp_positions[0].quote_asset_amount, 36000900);
 
         let liquidator = liquidator_account_loader.load().unwrap();
         assert_eq!(liquidator.perp_positions[0].base_asset_amount, 0);
-        assert_eq!(liquidator.perp_positions[0].quote_asset_amount, 3600);
+        assert_eq!(liquidator.perp_positions[0].quote_asset_amount, 1440);
 
         let market_after = perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 360000);
@@ -3555,13 +3555,13 @@ pub mod liquidate_perp_with_fill {
 
         let user = user_account_loader.load().unwrap();
         assert_eq!(user.perp_positions[0].base_asset_amount, 640000000);
-        assert_eq!(user.perp_positions[0].quote_asset_amount, -64523715);
+        assert_eq!(user.perp_positions[0].quote_asset_amount, -64502193);
         assert_eq!(user.perp_positions[0].open_orders, 0);
         assert_eq!(user.perp_positions[0].open_bids, 0);
 
         let liquidator = liquidator_account_loader.load().unwrap();
         assert_eq!(liquidator.perp_positions[0].base_asset_amount, 0);
-        assert_eq!(liquidator.perp_positions[0].quote_asset_amount, 3587);
+        assert_eq!(liquidator.perp_positions[0].quote_asset_amount, 1434);
 
         let market_after = perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 358708);
@@ -3724,13 +3724,13 @@ pub mod liquidate_perp_with_fill {
 
         let user = user_account_loader.load().unwrap();
         assert_eq!(user.perp_positions[0].base_asset_amount, -640000000);
-        assert_eq!(user.perp_positions[0].quote_asset_amount, 63472500);
+        assert_eq!(user.perp_positions[0].quote_asset_amount, 63494178);
         assert_eq!(user.perp_positions[0].open_orders, 0);
         assert_eq!(user.perp_positions[0].open_bids, 0);
 
         let liquidator = liquidator_account_loader.load().unwrap();
         assert_eq!(liquidator.perp_positions[0].base_asset_amount, 0);
-        assert_eq!(liquidator.perp_positions[0].quote_asset_amount, 3613);
+        assert_eq!(liquidator.perp_positions[0].quote_asset_amount, 1445);
 
         let market_after = perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 361300);

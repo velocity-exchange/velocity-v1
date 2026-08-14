@@ -380,8 +380,6 @@ describe('velocityVaults', () => {
 			// @ts-ignore
 			.deposit(usdcAmount)
 			.accounts({
-				velocitySpotMarket: adminClient.getSpotMarketAccount(0).pubkey,
-				velocityOracle: adminClient.getSpotMarketAccount(0).oracle,
 				userTokenAccount: vd2UserUSDCAccount,
 				vault,
 				vaultDepositor,
@@ -428,9 +426,6 @@ describe('velocityVaults', () => {
 			.requestWithdraw(usdcAmount, WithdrawUnit.TOKEN)
 			.accounts({
 				velocityState: await adminClient.getStatePublicKey(),
-				velocitySpotMarket: adminClient.getSpotMarketAccount(0).pubkey,
-				velocityOracle: adminClient.getSpotMarketAccount(0).oracle,
-				velocitySpotMarketVault: adminClient.getSpotMarketAccount(0).vault,
 				velocityProgram: adminClient.program.programId,
 				vault,
 				vaultDepositor,
@@ -458,8 +453,6 @@ describe('velocityVaults', () => {
 			const txSig = await vd2Client.program.methods
 				.withdraw()
 				.accounts({
-					velocitySpotMarket: adminClient.getSpotMarketAccount(0).pubkey,
-					velocityOracle: adminClient.getSpotMarketAccount(0).oracle,
 					userTokenAccount: vd2UserUSDCAccount,
 					vault,
 					vaultDepositor,
@@ -784,8 +777,6 @@ describe('TestProtocolVaults', () => {
 			// @ts-ignore
 			.deposit(usdcAmount)
 			.accounts({
-				velocitySpotMarket: adminClient.getSpotMarketAccount(0).pubkey,
-				velocityOracle: adminClient.getSpotMarketAccount(0).oracle,
 				vault: protocolVault,
 				vaultDepositor,
 				vaultTokenAccount: vaultAccount.tokenAccount,
@@ -1256,9 +1247,6 @@ describe('TestProtocolVaults', () => {
 				.requestWithdraw(withdrawAmount, WithdrawUnit.TOKEN)
 				.accounts({
 					velocityState: await adminClient.getStatePublicKey(),
-					velocitySpotMarket: adminClient.getSpotMarketAccount(0).pubkey,
-					velocityOracle: adminClient.getSpotMarketAccount(0).oracle,
-					velocitySpotMarketVault: adminClient.getSpotMarketAccount(0).vault,
 					velocityProgram: adminClient.program.programId,
 					vault: protocolVault,
 					vaultDepositor,
@@ -1298,8 +1286,6 @@ describe('TestProtocolVaults', () => {
 			await vdClient.program.methods
 				.withdraw()
 				.accounts({
-					velocitySpotMarket: adminClient.getSpotMarketAccount(0).pubkey,
-					velocityOracle: adminClient.getSpotMarketAccount(0).oracle,
 					userTokenAccount: vdUserUSDCAccount,
 					vault: protocolVault,
 					vaultDepositor,
@@ -1386,9 +1372,6 @@ describe('TestProtocolVaults', () => {
 				.protocolRequestWithdraw(withdrawAmount, WithdrawUnit.TOKEN)
 				.accounts({
 					velocityState: await adminClient.getStatePublicKey(),
-					velocitySpotMarket: adminClient.getSpotMarketAccount(0).pubkey,
-					velocityOracle: adminClient.getSpotMarketAccount(0).oracle,
-					velocitySpotMarketVault: adminClient.getSpotMarketAccount(0).vault,
 					velocityProgram: adminClient.program.programId,
 					vault: protocolVault,
 					vaultProtocol,
@@ -1422,8 +1405,6 @@ describe('TestProtocolVaults', () => {
 			await protocolClient.program.methods
 				.protocolWithdraw()
 				.accounts({
-					velocitySpotMarket: adminClient.getSpotMarketAccount(0).pubkey,
-					velocityOracle: adminClient.getSpotMarketAccount(0).oracle,
 					userTokenAccount: protocolVdUserUSDCAccount,
 					vault: protocolVault,
 					vaultProtocol,
@@ -2745,8 +2726,6 @@ describe('TestWithdrawFromVaults', () => {
 			const txSig = await vd0Client.program.methods
 				.withdraw()
 				.accounts({
-					velocitySpotMarket: adminClient.getSpotMarketAccount(0).pubkey,
-					velocityOracle: adminClient.getSpotMarketAccount(0).oracle,
 					userTokenAccount: vd0UsdcAccount,
 					vault: commonVaultKey,
 					vaultDepositor: vdKey,
@@ -2783,8 +2762,6 @@ describe('TestWithdrawFromVaults', () => {
 			const txSig = await managerClient.program.methods
 				.managerWithdraw()
 				.accounts({
-					velocitySpotMarket: adminClient.getSpotMarketAccount(0).pubkey,
-					velocityOracle: adminClient.getSpotMarketAccount(0).oracle,
 					userTokenAccount: managerUsdcAccount,
 					manager: managerSigner.publicKey,
 					vault: commonVaultKey,

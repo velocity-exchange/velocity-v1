@@ -553,18 +553,28 @@ impl Vault {
 
     /// Vault NAV, denominated in `spot_market_index`'s token.
     ///
-    /// EVERY CALLER MUST FIRST CPI velocity's `update_spot_market_cumulative_interest` for
-    /// `self.spot_market_index`. See [`crate::velocity_cpi::refresh_denomination_spot_market`] and the
-    /// `refresh_velocity_spot_market!` macro.
+    /// A CALLER WHOSE RESULT REACHES SHARE MATH MUST FIRST run the `refresh_velocity_spot_market!`
+    /// macro. See [`crate::velocity_cpi::refresh_spot_markets_that_price_equity`].
     ///
-    /// This function values the vault's velocity spot deposit through the market's STORED
-    /// `cumulative_deposit_interest`. A market that has not accrued since the last crank therefore
-    /// understates NAV by the accrued but unbooked lender interest. Pricing shares against that stale
-    /// NAV overmints for entrants, and misprices withdraw requests and cancellations
-    /// (OtterSec #136/#137).
+    /// `manager_borrow`, `manager_repay` and `manager_update_borrow` are the exceptions. They read
+    /// equity only to populate event fields, so a stale index misreports a log and nothing else.
+    /// Nothing enforces that split, so a new handler that prices shares must add the macro.
     ///
-    /// The vaults program cannot advance the index itself. Only the owning program may write a
+    /// This function values every velocity spot position through its market's STORED cumulative
+    /// index, and an isolated perp position's collateral through the quote spot market's. A market
+    /// that has not accrued since the last crank therefore misprices that position: a deposit
+    /// reads low by the unbooked lender interest, and a borrow reads low as a liability, which
+    /// reads NAV high. Pricing shares against a stale NAV overmints for entrants, and misprices
+    /// withdraw requests and cancellations (OtterSec #136/#137).
+    ///
+    /// The vaults program cannot advance an index itself. Only the owning program may write a
     /// velocity-owned account.
+    ///
+    /// Two writes still move an index outside that refresh, and neither needs one. A carveout too
+    /// small to convert to one token defers its whole interval, so the index stays put and the
+    /// unbooked amount stays under one token of the carveout divided by its factor. A spot
+    /// bankruptcy haircuts depositors by lowering `cumulative_deposit_interest` directly, in the
+    /// same instruction as the loss, so it leaves nothing unbooked to catch up on.
     pub fn calculate_equity(
         &self,
         user: &User,

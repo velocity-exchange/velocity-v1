@@ -18,20 +18,17 @@ use {
         cpi::accounts::Deposit as VelocityDeposit,
         instructions::optional_accounts::AccountMaps,
         program::Velocity,
-        state::{
-            spot_market::SpotMarket,
-            user::{User, UserStats},
-        },
+        state::user::{User, UserStats},
     },
 };
 
 pub fn deposit<'info>(ctx: Context<'info, Deposit<'info>>, amount: u64) -> Result<()> {
-    // Advance the denomination market's `cumulative_deposit_interest` BEFORE the
-    // NAV snapshot, so the entrant mints against an index that already reflects
-    // the incumbents' accrued lender interest (OtterSec #136) — the deposit CPI
-    // below refreshes it too, but that is *after* shares are minted. Must precede
-    // `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable accounts still
-    // have live borrows, and the maps must read post-refresh data.
+    // Book the lending interest of every market that prices NAV BEFORE the NAV
+    // snapshot, so the entrant mints against indexes that already hold the
+    // incumbents' accrued lender interest (OtterSec #136). The deposit CPI below
+    // refreshes the denomination market too, but that runs after shares are minted.
+    // Must precede `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable
+    // accounts still have live borrows, and the maps must read post-refresh data.
     refresh_velocity_spot_market!(ctx);
 
     let clock = &Clock::get()?;
@@ -149,19 +146,6 @@ pub struct Deposit<'info> {
     pub user_token_account: Box<Account<'info, TokenAccount>>,
     pub velocity_program: Program<'info, Velocity>,
     pub token_program: Program<'info, Token>,
-    /// The vault's denomination spot market, refreshed by CPI before NAV is
-    /// snapshotted (OtterSec #136/#137). Writable because velocity advances its
-    /// `cumulative_deposit_interest`.
-    #[account(
-        mut,
-        seeds = [b"spot_market".as_ref(), vault.load()?.spot_market_index.to_le_bytes().as_ref()],
-        bump,
-        seeds::program = velocity_program.key(),
-    )]
-    pub velocity_spot_market: AccountLoader<'info, SpotMarket>,
-    /// CHECK: must be `velocity_spot_market.oracle`; enforced by velocity's
-    /// `valid_oracle_for_spot_market` access control on the refresh CPI.
-    pub velocity_oracle: AccountInfo<'info>,
 }
 
 impl<'info> TokenTransferCPI for Context<'info, Deposit<'info>> {

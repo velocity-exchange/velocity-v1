@@ -3,6 +3,7 @@ use {
         constants::ONE_WEEK,
         constraints::{is_admin, is_manager_for_vault, is_user_for_vault},
         error::ErrorCode,
+        refresh_velocity_spot_market,
         state::{
             events::{FeeUpdateAction, FeeUpdateRecord},
             vault::validate_fee_policy,
@@ -12,7 +13,8 @@ use {
     },
     anchor_lang::prelude::*,
     velocity::{
-        instructions::optional_accounts::AccountMaps, math::safe_math::SafeMath, state::user::User,
+        instructions::optional_accounts::AccountMaps, math::safe_math::SafeMath, program::Velocity,
+        state::user::User,
     },
 };
 
@@ -20,6 +22,12 @@ pub fn manager_update_fees<'info>(
     ctx: Context<'info, ManagerUpdateFees<'info>>,
     params: ManagerUpdateFeesParams,
 ) -> Result<()> {
+    // Book the lending interest of every market that prices NAV BEFORE any account
+    // is borrowed and before NAV is snapshotted (OtterSec #136/#137). Must precede
+    // `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable accounts still
+    // have live borrows, and the maps must read post-refresh data.
+    refresh_velocity_spot_market!(ctx);
+
     let clock = Clock::get()?;
     let now = clock.unix_timestamp;
 
@@ -164,4 +172,7 @@ pub struct ManagerUpdateFees<'info> {
     )]
     /// CHECK: checked in constraint
     pub velocity_user: AccountLoader<'info, User>,
+    /// CHECK: checked in velocity cpi
+    pub velocity_state: AccountInfo<'info>,
+    pub velocity_program: Program<'info, Velocity>,
 }

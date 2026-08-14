@@ -619,27 +619,45 @@ accounts/events with the previous TS shapes should note:
   cannot manufacture forfeiture an attacker could profitably capture. No ABI/account/token-flow
   change to the cancel instruction (it moves no tokens); the vaults-program CPI wrapper is
   unaffected.
-- **`vaults` program: 19 instruction account lists changed** (vault-nav-interest-refresh). Every
-  vault instruction that snapshots NAV now CPIs velocity's
-  `update_spot_market_cumulative_interest` for the vault's denomination spot market before pricing
-  shares, so each gained `velocity_spot_market` (writable; PDA `["spot_market",
-  vault.spot_market_index as u16 LE]` under the velocity program) and `velocity_oracle`
-  (= `velocity_spot_market.oracle`), plus — only where the instruction did not already have them —
-  `velocity_spot_market_vault` (PDA `["spot_market_vault", vault.spot_market_index as u16 LE]`),
-  `velocity_state` and `velocity_program`. The accounts are **appended**; no existing account was
-  reordered, renamed, or removed, and every instruction discriminator is unchanged. Affected:
-  `deposit`, `manager_deposit`, `withdraw`, `manager_withdraw`, `protocol_withdraw`,
-  `force_withdraw`, `request_withdraw`, `manager_request_withdraw`, `protocol_request_withdraw`,
-  `cancel_request_withdraw`, `manger_cancel_withdraw_request`, `protocol_cancel_withdraw_request`,
-  `apply_rebase`, `apply_rebase_tokenized_depositor`, `apply_profit_share`, `tokenize_shares`,
-  `redeem_tokens`, `transfer_vault_depositor_shares`, `liquidate`. `manager_borrow`,
+- **`vaults` program: 20 instruction account lists changed** (vault-nav-spot-market-refresh). Every
+  vault instruction that snapshots NAV CPIs velocity to book the lending interest of every spot
+  market that prices the vault's equity, before pricing shares. Each carries `velocity_state` and
+  `velocity_program` for that CPI. The markets themselves are **not** named accounts: they travel
+  as writable spot markets inside the instruction's remaining accounts, which the vaults program
+  already passes to `load_maps`. Affected: `deposit`, `manager_deposit`, `withdraw`,
+  `manager_withdraw`, `protocol_withdraw`, `force_withdraw`, `request_withdraw`,
+  `manager_request_withdraw`, `protocol_request_withdraw`, `cancel_withdraw_request`,
+  `manager_cancel_withdraw_request`, `protocol_cancel_withdraw_request`, `apply_rebase`,
+  `apply_rebase_tokenized_depositor`, `apply_profit_share`, `tokenize_shares`, `redeem_tokens`,
+  `transfer_vault_depositor_shares`, `liquidate`, `manager_update_fees`. `manager_borrow`,
   `manager_repay` and `manager_update_borrow` are deliberately unchanged — their equity snapshot
-  only feeds event fields. `VaultClient` supplies all the new accounts, so SDK callers need no
-  change; manual builders must append them and must pass `velocity_spot_market` /
-  `velocity_spot_market_vault` **explicitly** (their seeds read a field of the `vault` account,
-  which Anchor's TypeScript PDA resolver does not resolve — it silently substitutes the default
-  pubkey). No on-chain account layout change in either program, and the `velocity` IDL is
-  byte-for-byte unchanged.
+  only feeds event fields.
+
+  An earlier revision of this fix named the denomination market as three extra accounts on those
+  instructions. Those are **removed**: `velocity_spot_market` and `velocity_oracle` from all of
+  them, and `velocity_spot_market_vault` from the thirteen that do not need it for a deposit or
+  withdraw CPI of their own. `VaultClient` builds every affected instruction, so SDK callers need
+  no change. Manual builders must drop the removed accounts and must mark every spot market in the
+  remaining accounts writable — velocity fails the load with `SpotMarketWrongMutability` when it is
+  asked to refresh a market it was handed read-only. No on-chain account layout change in either
+  program.
+
+- **`velocity` program: new instruction `refresh_spot_market_interest`.** Books the lending
+  interest of up to sixteen spot markets in one call. Accounts: `state`, plus writable spot markets
+  in remaining accounts. Argument: `market_indexes: Vec<u16>`. Permissionless, like the
+  single-market `update_spot_market_cumulative_interest` crank it sits beside, and it keeps that
+  crank's `exchange_not_paused` guard. Two differences from it, both deliberate: it passes no
+  oracle, so it leaves every oracle TWAP untouched, and it has no `spot_market_valid` access
+  control and makes no spot-vault assertion.
+  `update_spot_market_cumulative_interest` is unchanged and remains the crank that keeps a spot
+  market's oracle EMA fresh. SDK: `VelocityClient.refreshSpotMarketInterest` /
+  `refreshSpotMarketInterestIx`.
+
+  Operator note: because the vaults program CPIs this instruction, a **fully** paused exchange
+  (every `ExchangeStatus` bit set) now blocks the vault instructions that snapshot NAV, including
+  `request_withdraw` and `cancel_withdraw_request`. A partial pause does not — `exchange_not_paused`
+  trips only on `is_all()`. Deposits, withdrawals, fills and liquidations are already blocked in a
+  full halt, so the added coupling is share accounting only, and it lifts when the halt lifts.
 
 ---
 
@@ -793,6 +811,7 @@ accounts/events with the previous TS shapes should note:
 | #388 fee-schedule | Rework the perp fee schedule (see §3). Tiers cut 6 -> 3 (Regular / VIP 1 / VIP 2 = tiers 0/1/2) with new hardcoded 30d-volume thresholds ($5M / $80M) and new defaults (4/3/2bps taker, -0.25bp rebate via `maker_rebate_denominator` 1e6). `determine_perp_fee_tier` now reads the rolling 30d volume through `UserStats::get_total_30d_volume_at(now)`, projecting the lazy leaky-sum decay to the current timestamp, so demotion follows the live trailing window instead of the stale stored sum (the write path is unchanged; upgrade was already instant since each fill lands in the sum before the next fill's tier read). New per-market `taker_fee_addon_tenth_bps` (u16 in former `_padding_buffer`, same offsets/size): `taker fee = (tier fee + add-on) * (1 +/- fee_adjustment%)` — an absolute surcharge the multiplicative `fee_adjustment` cannot express across tiers; unsigned (surcharge only) so the taker fee can never drop below the maker rebate it funds — promo discounts go through `promo_fee_tier`; maker rebates and the post-only path never see it; new ix `update_perp_market_taker_fee_addon` (warm admin, addon <= 100 tenth-bps via new constant `MAX_TAKER_FEE_ADDON_TENTH_BPS`). New `State.promo_fee_tier` (u8 from padding, 0 = disabled = legacy reads): effective tier = max(volume tier, promo tier), applied to taker and maker tier selection; new ix `update_promo_fee_tier` (warm admin, validated against the highest populated tier `PERP_FEE_TIER_MAX_INDEX`). Two IDL instruction additions, no account-size, seed, or error-code change. SDK + admin CLI surface per §3 |
 | #387 vamm-maker-rebate | New feature-flagged option for the vAMM to earn the maker rebate on fills it makes (see §3). Adds `FeatureBitFlags::VammMakerRebate` (bit 8) and admin instruction `update_feature_bit_flags_vamm_maker_rebate` (IDL addition). When the bit is on, `calculate_fee_for_fulfillment_with_amm` carves the maker rebate off the taker-fee remainder (clamped to it) before the protocol/IF/AMM split and folds it into `amm_fee`, so the rebate is booked into the AMM's fee ledger at fill and tokenized by the existing `sweep_market_fees` provision drain. Taker fee, user-maker rebates, and the post-only path (where the AMM pays the rebate out of spread surplus) are unchanged; off keeps the exact previous distribution. SDK: `FeatureBitFlags.VAMM_MAKER_REBATE`, `AdminClient.updateFeatureBitFlagsVammMakerRebate`. Admin CLI: `feature-flags vamm-maker-rebate`. No account-layout or error-code change |
 | vaults-fee-policy-grandfathering | Follow-up to `vaults-fee-rebase-hardening`, replacing its **#98** fix. That fix stamped `last_fee_update_ts` to the activation instant, which forfeited the manager's pre-activation accrual and left profit share and the hurdle rate untouched (both are priced off a depositor's high-water mark, not a clock, so no timestamp can slice them). **Management fee**: `apply_fee` now accrues the closing interval at the policy in force while it accrued, stamps `last_fee_update_ts`, and only then installs a matured update; `try_update_vault_fees` rejects an install on an unsettled vault, making `apply_fee` the single installer. The window between maturity and the first vault interaction is charged at the old rate. `manager_update_fees` therefore settles through `apply_fee` instead of writing the policy directly, and gains a `velocity_user` account plus the spot market and its oracle in `remaining_accounts` (SDK `getManagerUpdateFeesIx` passes them; protocol vaults still append `VaultProtocol`). **Profit share / hurdle**: `VaultDepositor` and `TokenizedVaultDepositor` gain `profit_share_at_basis` / `hurdle_rate_at_basis`, recording the policy in force when the high-water mark was last set. Gain above that mark is priced at `min(vault.profit_share, profit_share_at_basis)` and sheltered by `max(vault.hurdle_rate, hurdle_rate_at_basis)`, so a raised profit share or a lowered hurdle never prices gain earned before it, while a policy better for the depositor applies at once. A realization that leaves no unpriced gain advances the stamps to the live policy, so the manager moves depositors onto a new policy with `apply_profit_share`, which realizes their gain at the old policy first. Consequence: gain that stays unpriced (sheltered by the hurdle) keeps its old policy until the depositor clears the *old* hurdle once. Also removes a dead `VaultDepositor::calculate_profit_share_and_update` that shadowed the trait implementation with gross-profit semantics. Account layout: both depositor accounts repurpose trailing padding for the two new fields and keep their existing size; IDL adds those fields and `manager_update_fees`' `velocity_user` account. No error-code change (reuses `InvalidVaultUpdate`) |
+| vault-nav-spot-market-refresh | Follow-up to `vault-nav-interest-refresh`, which fixed OtterSec #136/#137 for one market only. `Vault::calculate_equity` delegates to velocity's `calculate_user_equity`, which converts **every** held spot position through that position's own market's cumulative index — so a vault that also lends or borrows outside its denomination market still priced those positions off whatever index the last unrelated crank left. For a borrow the sign flips: a stale `cumulative_borrow_interest` understates the liability, reads NAV high, and overpays a withdrawer out of the vault rather than out of another depositor. New velocity instruction `refresh_spot_market_interest` books several markets in one call (§5), and both it and `force_delete_user` walk one shared `controller::spot_balance::refresh_spot_market_interest` helper, so the per-market work has a single owner. The vaults program derives the market list on chain from the vault and its velocity user, so a caller cannot leave a market out. Three further corrections. **Oracle TWAP**: the refresh now passes no oracle. `calculate_equity` gates the denomination oracle on `is_oracle_valid_for_action(MarginCalc)`, whose `TooVolatile` arm measures the live price against `last_oracle_price_twap` — and the previous refresh advanced that TWAP toward the live price immediately before the check read it, which is the shape OtterSec #110/#111 closed elsewhere. **Delisting**: the refresh no longer carries `spot_market_valid`, so a vault whose denomination market is delisted is no longer frozen out of every instruction with no way back (`handle_update_spot_market_status` carries `spot_market_valid` itself, making `Delisted` terminal). The paths that move no tokens work again — `request_withdraw`, `cancel_withdraw_request`, `apply_rebase`, `apply_profit_share`, `liquidate`. The token-moving paths still fail, because velocity's own withdraw admits only `Active`, `ReduceOnly` and `Settlement` (`controller/spot_position.rs:159`); that gate is unchanged. Nothing about delisted markets changes — `deposit`, `force_delete_user` and `resolve_spot_bankruptcy` already book interest on one, so the guard blocked callers without stopping the accrual. **Isolated perp positions**: their collateral prices through the perp market's quote spot market, which the position does not name, so the market list reads it off the perp market accounts already present for the equity walk. That walk runs only when the user holds an isolated position. Instruction accounts changed (ABI, §5): 20 vault instructions, `manager_update_fees` included. No account-layout or error-code change |
 
 ---
 

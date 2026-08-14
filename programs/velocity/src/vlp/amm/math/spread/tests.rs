@@ -2219,6 +2219,156 @@ mod test {
         }
 
         #[test]
+        fn golden_inventory_adjustment_positive() {
+            // The positive arm of apply_percent_adjustment (saturating_add +
+            // safe_div_ceil + floors) is executed by no other test in the
+            // repo.
+            let mut amm_50 = AMM {
+                amm_inventory_spread_adjustment: 50,
+                ..base_amm()
+            };
+            let out_50 = refresh(&mut amm_50, &base_stats(), 0, 100);
+            assert_eq!(
+                out_50,
+                (
+                    336,
+                    188,
+                    0,
+                    0,
+                    99983201747,
+                    100016801075,
+                    100009401146,
+                    99990599737
+                )
+            );
+
+            let mut amm_100 = AMM {
+                amm_inventory_spread_adjustment: 100,
+                ..base_amm()
+            };
+            let out_100 = refresh(&mut amm_100, &base_stats(), 0, 100);
+            assert_eq!(
+                out_100,
+                (
+                    448,
+                    250,
+                    0,
+                    0,
+                    99977603584,
+                    100022401433,
+                    100012501562,
+                    99987500000
+                )
+            );
+        }
+
+        #[test]
+        fn golden_asymmetric_intensity_both_divergence_signs() {
+            // Asymmetric intensity volumes make long and short vol spreads
+            // differ, pinning the from_stats long/short mapping and both
+            // arms of the oracle retreat (a vol.0/vol.1 swap in either arm
+            // changes these values).
+            let stats = MarketStats {
+                long_intensity_volume: 1_000_000,
+                short_intensity_volume: 3_000_000,
+                last_oracle_conf_pct: 3000,
+                mark_std: 2000,
+                oracle_std: 2000,
+                ..base_stats()
+            };
+
+            // oracle above reserve: negative pct, long retreat arm
+            let mut amm_neg = base_amm();
+            let rp = amm_neg.reserve_price().unwrap();
+            let out_neg = refresh(&mut amm_neg, &stats, (rp / 50) as i64, 100);
+            assert_eq!(
+                out_neg,
+                (
+                    17899,
+                    2101,
+                    0,
+                    -20000,
+                    99107142858,
+                    100900900900,
+                    100105152470,
+                    99894957984
+                )
+            );
+
+            // oracle below reserve: positive pct, short retreat arm
+            let mut amm_pos = base_amm();
+            let out_pos = refresh(&mut amm_pos, &stats, -((rp / 50) as i64), 100);
+            assert_eq!(
+                out_pos,
+                (
+                    2531,
+                    17469,
+                    0,
+                    20000,
+                    99873577750,
+                    100126582278,
+                    100884955751,
+                    99122807018
+                )
+            );
+        }
+
+        #[test]
+        fn golden_funding_bias_with_adjustment_and_flat_gate() {
+            // Funding bias active through the full refresh, stacked with a
+            // nonzero inventory adjustment: pins the step 6 -> step 7
+            // ordering end to end.
+            let mut amm = AMM {
+                funding_bias_sensitivity: 50,
+                amm_inventory_spread_adjustment: 25,
+                base_asset_amount_with_amm: AMM_RESERVE_PRECISION as i128,
+                ..base_amm()
+            };
+            let rp = amm.reserve_price().unwrap();
+            // q > 0 with negative normalized funding: vAMM pays.
+            let stats = MarketStats {
+                last_24h_avg_funding_rate: -1_000_000,
+                last_funding_oracle_twap: rp as i64,
+                ..base_stats()
+            };
+            let out = refresh(&mut amm, &stats, 0, 100);
+            assert_eq!(
+                out,
+                (
+                    420,
+                    157,
+                    0,
+                    0,
+                    99979000420,
+                    100021003990,
+                    100007800920,
+                    99992199688
+                )
+            );
+
+            // curve_update_intensity == 0: the flat base/2 gate, pinned here
+            // instead of depending on a distant fill test.
+            let mut amm_flat = AMM {
+                curve_update_intensity: 0,
+                ..base_amm()
+            };
+            let out_flat = refresh(&mut amm_flat, &base_stats(), 0, 100);
+            assert_eq!(
+                out_flat,
+                (
+                    125,
+                    125,
+                    0,
+                    0,
+                    99993800372,
+                    100006200012,
+                    100006200396,
+                    99993799988
+                )
+            );
+        }
+
+        #[test]
         fn golden_spread_adjustment() {
             let mut amm_neg = AMM {
                 amm_spread_adjustment: -50,

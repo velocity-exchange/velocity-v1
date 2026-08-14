@@ -211,6 +211,7 @@ not manually edit `package.json` versions; changesets and the bot own those fiel
 | [deploy-scripts/README.md](./deploy-scripts/README.md)                        | Devnet upgrade runbook (two-phase buffer deploys, wipe/reinit)                |
 | [docs/alignment-and-native-offsets.md](./docs/alignment-and-native-offsets.md) | Zero-copy struct alignment invariants; read before adding fields to accounts  |
 | [docs/ACCOUNT-EXTENSION.md](./docs/ACCOUNT-EXTENSION.md)                      | Growing zero-copy accounts past their padding: the `extend_account` crank, migration runbook, client rules |
+| [docs/EXTERNAL-DEPENDENCIES.md](./docs/EXTERNAL-DEPENDENCIES.md)             | Every external dependency of the on-chain programs — CPI targets, oracles, whitelisted venues, and the full transitive crate graph — with trust assumptions and failure modes |
 
 ## Bug bounty
 

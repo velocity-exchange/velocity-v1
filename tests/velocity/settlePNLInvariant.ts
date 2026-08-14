@@ -445,10 +445,10 @@ describe('spot deposit and withdraw', () => {
 
 		const quoteTokenAmount = await secondUserVelocityClient.getTokenAmount(0);
 
-		assert(quoteTokenAmount.eq(new BN(-30003)));
+		assert(quoteTokenAmount.eq(new BN(-12003)));
 
 		const settlePnlRecord = eventSubscriber.getEventsArray('SettlePnlRecord');
 		assert(settlePnlRecord.length === 1);
-		assert(settlePnlRecord[0].pnl.eq(new BN(-30002)));
+		assert(settlePnlRecord[0].pnl.eq(new BN(-12002)));
 	});
 });

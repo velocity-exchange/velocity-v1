@@ -343,7 +343,9 @@ describe('liquidate perp (no open orders)', () => {
 		// IsolatedPosition | Bankrupt | BankruptcyClaim: the latch books the
 		// debt against the market, which freezes its IF-fee sweep until the
 		// resolver discharges it
-		assert(velocityClient.getUserAccount().perpPositions[0].positionFlag === 13);
+		assert(
+			velocityClient.getUserAccount().perpPositions[0].positionFlag === 13
+		);
 		assert(
 			velocityClient.getPerpMarketAccount(marketIndex)
 				.pendingBankruptcyClaims === 1

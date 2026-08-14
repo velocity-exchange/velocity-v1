@@ -9148,7 +9148,10 @@ pub mod resolve_perp_bankruptcy {
                 funding::settle_funding_payment,
                 liquidation::{flag_perp_bankruptcy_claim, resolve_perp_bankruptcy},
                 perp_pools::sweep_market_fees,
-                position::{update_quote_asset_amount, PositionDirection},
+                position::{
+                    update_position_and_market, update_quote_asset_amount, PositionDelta,
+                    PositionDirection,
+                },
             },
             create_anchor_account_info,
             math::constants::{
@@ -9172,7 +9175,8 @@ pub mod resolve_perp_bankruptcy {
                 spot_market::{SpotBalanceType, SpotMarket},
                 spot_market_map::SpotMarketMap,
                 user::{
-                    Order, OrderStatus, OrderType, PerpPosition, SpotPosition, User, UserStatus,
+                    Order, OrderStatus, OrderType, PerpPosition, PositionFlag, SpotPosition, User,
+                    UserStatus,
                 },
             },
             test_utils::{get_orders, get_positions, get_pyth_price, get_spot_positions},
@@ -10797,6 +10801,75 @@ pub mod resolve_perp_bankruptcy {
             .unwrap();
             assert_eq!(market.pending_bankruptcy_claims, 0);
         }
+    }
+
+    /// The fill path writes `quote_asset_amount` directly instead of going
+    /// through `update_quote_asset_amount`, and it is reachable on a booked
+    /// position: the stale-latch path un-latches an estate that still owes the
+    /// market, and the account can trade again. It must release the booking
+    /// too. If it does not, a position whose quote reaches zero reports
+    /// `is_available()`, `add_new_position` recycles the slot and overwrites
+    /// `position_flag`, and the market's sweep stays frozen with no claim left
+    /// to release. An isolated position is the sharpest case, because
+    /// `force_get_isolated_perp_position_mut` re-stamps `position_flag` on
+    /// the recycled slot.
+    #[test]
+    pub fn bankruptcy_claim_released_by_the_fill_path() {
+        let mut market = PerpMarket {
+            market_index: 0,
+            status: MarketStatus::Initialized,
+            order_step_size: 10000000,
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                ..AMM::default()
+            },
+            ..PerpMarket::default()
+        };
+        create_anchor_account_info!(market, PerpMarket, market_account_info);
+        let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        // an isolated position holding a settled bankrupt debt
+        let mut user = User {
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                base_asset_amount: 0,
+                quote_asset_amount: -80 * QUOTE_PRECISION_I64,
+                position_flag: PositionFlag::IsolatedPosition as u8,
+                ..PerpPosition::default()
+            }),
+            spot_positions: [SpotPosition::default(); 8],
+            ..User::default()
+        };
+
+        flag_perp_bankruptcy_claim(&mut user, 0, &market_map).unwrap();
+        assert!(user.perp_positions[0].has_bankruptcy_claim());
+        assert_eq!(market_map.get_ref(&0).unwrap().pending_bankruptcy_claims, 1);
+        assert!(user.perp_positions[0].is_isolated());
+
+        // the estate is un-latched and trades again: a fill that clears the
+        // quote debt goes through update_position_and_market, not
+        // update_quote_asset_amount
+        {
+            let mut market = market_map.get_ref_mut(&0).unwrap();
+            update_position_and_market(
+                &mut user.perp_positions[0],
+                &mut market,
+                &PositionDelta {
+                    base_asset_amount: BASE_PRECISION_I64,
+                    quote_asset_amount: 80 * QUOTE_PRECISION_I64,
+                },
+            )
+            .unwrap();
+
+            assert!(!user.perp_positions[0].has_bankruptcy_claim());
+            assert_eq!(market.pending_bankruptcy_claims, 0);
+        }
+
+        // the isolated bit survives; only the claim was released
+        assert!(user.perp_positions[0].is_isolated());
     }
 
     /// Control leg for the test above: with the floor disabled and no debt

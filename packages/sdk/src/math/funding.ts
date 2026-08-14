@@ -8,6 +8,8 @@ import {
 	FUNDING_RATE_OFFSET_DENOMINATOR,
 	BPS_PRECISION,
 	PERCENTAGE_PRECISION,
+	MARK_TWAP_RESEED_FUNDING_PERIODS,
+	ONE_HOUR,
 } from '../constants/numericConstants';
 import { BigNum } from '../factory/bigNum';
 import { PerpMarketAccount, isVariant } from '../types';
@@ -33,6 +35,19 @@ function calculateLiveMarkTwap(
 	const lastMarkPriceTwapTs = market.marketStats.lastMarkPriceTwapTs;
 
 	const timeSinceLastMarkChange = now.sub(lastMarkPriceTwapTs);
+
+	// Mirrors `MarketStats::update_mark_twap`: a mark TWAP left unwritten for several
+	// funding periods holds no usable history, so the program discards it and re-seeds
+	// from the oracle TWAP. Projecting a blend of the stored value here would predict a
+	// premium the next on-chain update will not charge.
+	const maxStaleness = BN.max(
+		market.marketStats.fundingPeriod.mul(MARK_TWAP_RESEED_FUNDING_PERIODS),
+		ONE_HOUR
+	);
+	if (timeSinceLastMarkChange.gt(maxStaleness)) {
+		return market.marketStats.historicalOracleData.lastOraclePriceTwap;
+	}
+
 	const markTwapTimeSinceLastUpdate = BN.max(
 		period,
 		BN.max(ZERO, period.sub(timeSinceLastMarkChange))

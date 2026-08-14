@@ -2653,12 +2653,16 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
 ) -> Result<()> {
     let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
 
-    // Freeze the funding-input TWAP state whenever this market's funding is
-    // paused. The `funding_not_paused` access_control already blocks the
-    // exchange-wide pause; this mirrors the market-scoped gate the direct
-    // `update_funding_rate` path enforces (`is_operation_paused(UpdateFunding)`)
-    // so a single paused market's mark/bid/ask TWAP can't keep advancing here
-    // and feed a stale jump into funding when it resumes.
+    // Stop this crank while the market's funding is paused. The `funding_not_paused`
+    // access control already blocks the exchange-wide pause.
+    //
+    // The crank estimates the book from `User` accounts that the caller supplies. The
+    // estimate moves the bid, ask and mark TWAPs.
+    // `OrderParams::get_perp_baseline_start_price_offset` reads those TWAPs to set the
+    // auction band for a different user's triggered stop-loss order (OtterSec #146).
+    // A paused market is one the administrator does not trust, so the caller-supplied
+    // input stops here. Perp fills still write the same TWAPs, because a fill is a
+    // trade with capital at risk.
     if perp_market.is_operation_paused(PerpOperation::UpdateFunding) {
         return Ok(());
     }

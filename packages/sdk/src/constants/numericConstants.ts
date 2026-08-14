@@ -168,6 +168,17 @@ export const ONE_HOUR = new BN(60 * 60);
 /** 31,536,000 seconds (365 days). */
 export const ONE_YEAR = new BN(31536000);
 
+/**
+ * Mirror of the program's `MARK_TWAP_RESEED_FUNDING_PERIODS`.
+ *
+ * How many funding periods the mark TWAP may go unwritten before the program discards
+ * its stored value and re-seeds it from the oracle TWAP. The weight an incoming sample
+ * receives grows with the time since the last write, so past this many periods the
+ * stored TWAP holds no usable history. The threshold is floored at {@link ONE_HOUR},
+ * because a market's funding period can be zero.
+ */
+export const MARK_TWAP_RESEED_FUNDING_PERIODS = new BN(3);
+
 /** Market index of the protocol's quote spot market (the protocol's quote asset on mainnet). */
 export const QUOTE_SPOT_MARKET_INDEX = 0;
 

@@ -723,3 +723,204 @@ mod expired_awaiting_settlement {
         assert!(!expired_awaiting_settlement(&perpetual, i64::MAX));
     }
 }
+
+mod mark_twap_reseed {
+    use crate::{
+        math::constants::{
+            MARK_TWAP_RESEED_FUNDING_PERIODS, ONE_HOUR, PRICE_PRECISION_I64, PRICE_PRECISION_U64,
+        },
+        state::{
+            oracle::{HistoricalOracleData, OraclePriceData},
+            perp_market::{MarketStats, AMM},
+        },
+    };
+
+    const ORACLE_TWAP: i64 = 100 * PRICE_PRECISION_I64;
+    const ORACLE_TWAP_5MIN: i64 = 101 * PRICE_PRECISION_I64;
+    const MARK_TWAP: u64 = 110 * PRICE_PRECISION_U64;
+    const START_TS: i64 = 1_662_800_000;
+
+    /// The mark TWAPs sit 10% above the oracle TWAP, and the two oracle TWAPs differ
+    /// from each other, so every re-seeded field shows which source it came from.
+    fn market_stats(funding_period: i64) -> MarketStats {
+        MarketStats {
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price: ORACLE_TWAP,
+                last_oracle_price_twap: ORACLE_TWAP,
+                last_oracle_price_twap_5min: ORACLE_TWAP_5MIN,
+                last_oracle_price_twap_ts: START_TS,
+                ..HistoricalOracleData::default()
+            },
+            last_mark_price_twap: MARK_TWAP,
+            last_mark_price_twap_5min: MARK_TWAP,
+            last_bid_price_twap: MARK_TWAP,
+            last_ask_price_twap: MARK_TWAP,
+            last_mark_price_twap_ts: START_TS,
+            mark_std: PRICE_PRECISION_U64,
+            funding_period,
+            ..MarketStats::default()
+        }
+    }
+
+    fn stale_ts(funding_period: i64) -> i64 {
+        START_TS + funding_period * MARK_TWAP_RESEED_FUNDING_PERIODS + 1
+    }
+
+    #[test]
+    fn reseed_replaces_every_mark_twap_past_the_threshold() {
+        let mut stats = market_stats(ONE_HOUR);
+
+        // A quote far outside the sanitize band, so a blend could not reach the oracle
+        // TWAP by accident.
+        let mid = stats
+            .update_mark_twap(
+                stale_ts(ONE_HOUR),
+                200 * PRICE_PRECISION_U64,
+                300 * PRICE_PRECISION_U64,
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(stats.last_bid_price_twap, ORACLE_TWAP as u64);
+        assert_eq!(stats.last_ask_price_twap, ORACLE_TWAP as u64);
+        assert_eq!(stats.last_mark_price_twap, ORACLE_TWAP as u64);
+        assert_eq!(stats.last_mark_price_twap_5min, ORACLE_TWAP_5MIN as u64);
+        assert_eq!(stats.last_mark_price_twap_ts, stale_ts(ONE_HOUR));
+
+        // The caller reads the seeded value, so `update_funding_rate` computes a zero
+        // price spread and charges the offset alone for this period.
+        assert_eq!(mid, ORACLE_TWAP as u64);
+    }
+
+    #[test]
+    fn reseed_leaves_mark_std_untouched() {
+        let mut stats = market_stats(ONE_HOUR);
+
+        stats
+            .update_mark_twap(
+                stale_ts(ONE_HOUR),
+                200 * PRICE_PRECISION_U64,
+                300 * PRICE_PRECISION_U64,
+                None,
+                None,
+            )
+            .unwrap();
+
+        // The re-seed observed no trade, so it must not record price movement against
+        // the value it just wrote.
+        assert_eq!(stats.mark_std, PRICE_PRECISION_U64);
+    }
+
+    #[test]
+    fn no_reseed_at_the_normal_funding_cadence() {
+        let mut stats = market_stats(ONE_HOUR);
+
+        stats
+            .update_mark_twap(
+                START_TS + ONE_HOUR,
+                109 * PRICE_PRECISION_U64,
+                111 * PRICE_PRECISION_U64,
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert!(stats.last_bid_price_twap > ORACLE_TWAP as u64);
+        assert!(stats.last_mark_price_twap > ORACLE_TWAP as u64);
+    }
+
+    #[test]
+    fn no_reseed_at_the_on_the_hour_worst_case() {
+        // `on_the_hour_update` can stretch one legitimate interval to 5/3 of a period.
+        // A market cranked that late still holds usable history.
+        let mut stats = market_stats(ONE_HOUR);
+
+        stats
+            .update_mark_twap(
+                START_TS + ONE_HOUR * 5 / 3,
+                109 * PRICE_PRECISION_U64,
+                111 * PRICE_PRECISION_U64,
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert!(stats.last_bid_price_twap > ORACLE_TWAP as u64);
+    }
+
+    #[test]
+    fn one_hour_floor_holds_when_the_funding_period_is_zero() {
+        let mut at_the_floor = market_stats(0);
+        at_the_floor
+            .update_mark_twap(
+                START_TS + ONE_HOUR,
+                109 * PRICE_PRECISION_U64,
+                111 * PRICE_PRECISION_U64,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(at_the_floor.last_bid_price_twap > ORACLE_TWAP as u64);
+
+        let mut past_the_floor = market_stats(0);
+        past_the_floor
+            .update_mark_twap(
+                START_TS + ONE_HOUR + 1,
+                109 * PRICE_PRECISION_U64,
+                111 * PRICE_PRECISION_U64,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(past_the_floor.last_bid_price_twap, ORACLE_TWAP as u64);
+    }
+
+    #[test]
+    fn a_clock_that_trails_the_stamp_does_not_reseed() {
+        // The accrual also runs from user instructions, whose `now` can trail the
+        // stored stamp.
+        let mut stats = market_stats(ONE_HOUR);
+
+        stats
+            .update_mark_twap(
+                START_TS - 10,
+                109 * PRICE_PRECISION_U64,
+                111 * PRICE_PRECISION_U64,
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(stats.last_bid_price_twap, MARK_TWAP);
+    }
+
+    /// The bid/ask crank reaches the same core. A crank that lands before the funding
+    /// update must not consume the gap and leave the stale TWAPs in place.
+    #[test]
+    fn the_bid_ask_crank_reseeds_too() {
+        let mut stats = market_stats(ONE_HOUR);
+        let amm = AMM::default_test();
+        let oracle_price_data = OraclePriceData {
+            price: ORACLE_TWAP,
+            confidence: 0,
+            delay: 0,
+            has_sufficient_number_of_data_points: true,
+            sequence_id: None,
+        };
+
+        stats
+            .update_mark_twap_crank(
+                &amm,
+                stale_ts(ONE_HOUR),
+                &oracle_price_data,
+                Some(200 * PRICE_PRECISION_U64),
+                Some(300 * PRICE_PRECISION_U64),
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(stats.last_mark_price_twap, ORACLE_TWAP as u64);
+        assert_eq!(stats.last_mark_price_twap_ts, stale_ts(ONE_HOUR));
+    }
+}

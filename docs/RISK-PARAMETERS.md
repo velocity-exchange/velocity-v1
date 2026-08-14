@@ -640,8 +640,11 @@ diverts) the IF's cut. The dollar floor moves with the latched oracle TWAP, not 
 Bankruptcy resolution itself consumes the `pending_if_fee` counter, not this field.
 
 **vAMM maker rebate bit** shifts part of the taker-fee remainder into the AMM's fee pool on
-AMM-path fills only (`math/fees.rs:176-185`); DLOB match fills never see it. Same asymmetric
-authority as the other feature bits: hot key can turn it off, only cold can turn it on.
+AMM-path fills only (`math/fees.rs:176-185`); DLOB match fills never see it. The rebate is
+sized from tier 0 of the fee schedule, not the taker's tier (`math/fees.rs:278-288`), and
+clamped to the available remainder, so editing `fee_tiers[0]`'s maker-rebate numerators also
+moves the vAMM's own rebate while the bit is on. Same asymmetric authority as the other
+feature bits: hot key can turn it off, only cold can turn it on.
 
 **Protocol fee recipient** (cold, **unchecked**) only constrains where the *next* treasury
 withdrawal may send funds (`address =` constraints in

@@ -266,8 +266,12 @@ This is **Velocity Protocol v1** — a Solana perpetuals and spot trading protoc
   - `admin.rs` — admin/governance instructions
   - `lp_pool.rs`, `lp_admin.rs` — LP pool management
 - **`vaults/`** — Velocity vaults program (Anchor 1.0; program id `vAuLTsyrv…`). Depends on the `velocity` program as a host/CPI path-dep, referenced by its real crate name `velocity` (not the `program` alias velocity-rs uses — anchor's IDL build resolves dependency programs by name, so `velocity` maps to `programs/velocity`). Its TS client is `packages/vaults-sdk` (`@velocity-exchange/vaults-sdk`). Regenerate the SDK's IDL + types from the program with `bun run program:idl:vaults` (writes `packages/vaults-sdk/src/idl/vaults.json` + `src/types/vaults.ts`) — never hand-edit them.
-- **`pyth/`, `pyth-lazer/`, `switchboard/`, `switchboard-on-demand/`** — Oracle stubs/integrations (minimal, mostly `no-entrypoint` wrappers)
-- **`openbook_v2/`, `token_faucet/`** — DEX integration and test utilities
+- **`pyth-lazer/`** — Pyth Lazer message/payload/signature/storage types, linked into `velocity` as a real library dependency and used by `instructions/pyth_lazer_oracle.rs` (not a CPI target).
+- **`pyth/`** — Pyth V1 account layout types, an optional dependency of `velocity` pulled in only by the `fuzz-fixtures` feature (plus a dev-dependency for tests).
+- **`jit-proxy/`** — Just-in-time fill/arb proxy program; CPIs into `velocity` (depends on it with the `cpi` feature).
+- **`token_faucet/`** — Devnet/test token minting utility.
+
+Switchboard oracle support and external spot-fulfillment venues (Serum, Phoenix, OpenBook) were removed from the protocol; there is no `programs/switchboard*` or `programs/openbook_v2`. The `OracleSource` enum keeps `DeprecatedSwitchboard`/`DeprecatedSwitchboardOnDemand` variants only to preserve ABI discriminants — both error out in `get_oracle_price`.
 
 ### SDK (`packages/sdk/`)
 

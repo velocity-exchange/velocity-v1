@@ -1695,6 +1695,19 @@ fn get_maker_orders_info(
             None => false,
         };
 
+        // Reducing is a property of the whole admitted set, not of one order:
+        // a maker long 1 with two resting sells of 0.75 has each order
+        // reducing against the resting position while the pair flips it short.
+        // Judging orders independently would admit both, the post-fill gate
+        // would then see a risk-increasing maker it cannot price, and the
+        // revert would take the taker and every other maker in the
+        // transaction with it, repeatably. So track the position the admitted
+        // orders would leave behind and judge each candidate against that.
+        let mut maker_projected_base_asset_amount = maker
+            .get_perp_position(taker_order.market_index)
+            .map(|position| position.base_asset_amount)
+            .unwrap_or(0);
+
         for (maker_order_index, maker_order_price) in maker_order_price_and_indexes.iter() {
             let maker_order_index = *maker_order_index;
             let maker_order_price = *maker_order_price;
@@ -1784,15 +1797,26 @@ fn get_maker_orders_info(
             // runs after the expire/reduce-only/band cleanup above so a
             // pruned maker still gets its stale orders cancelled and the
             // filler still earns the cleanup reward
-            if maker_floor_unverifiable
-                && !is_order_position_reducing(
+            if maker_floor_unverifiable {
+                let unfilled = maker.orders[maker_order_index]
+                    .get_base_asset_amount_unfilled(Some(existing_base_asset_amount))?;
+
+                if !is_order_position_reducing(
                     &maker.orders[maker_order_index].direction,
-                    maker.orders[maker_order_index]
-                        .get_base_asset_amount_unfilled(Some(existing_base_asset_amount))?,
-                    existing_base_asset_amount,
-                )?
-            {
-                continue;
+                    unfilled,
+                    maker_projected_base_asset_amount,
+                )? {
+                    continue;
+                }
+
+                // admitted, so the next candidate is judged against what this
+                // one would leave behind
+                let signed = match maker.orders[maker_order_index].direction {
+                    PositionDirection::Long => unfilled.cast::<i64>()?,
+                    PositionDirection::Short => -unfilled.cast::<i64>()?,
+                };
+                maker_projected_base_asset_amount =
+                    maker_projected_base_asset_amount.safe_add(signed)?;
             }
 
             insert_maker_order_info(

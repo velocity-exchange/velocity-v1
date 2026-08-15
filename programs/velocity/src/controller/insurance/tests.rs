@@ -2,8 +2,8 @@ use {
     crate::{
         controller::insurance::*,
         math::constants::{
-            PRICE_PRECISION_I64, QUOTE_PRECISION, QUOTE_PRECISION_I128, SPOT_BALANCE_PRECISION,
-            SPOT_CUMULATIVE_INTEREST_PRECISION,
+            ONE_YEAR, PRICE_PRECISION_I64, QUOTE_PRECISION, QUOTE_PRECISION_I128,
+            SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
         },
         state::{
             oracle::OracleSource,
@@ -283,6 +283,22 @@ pub fn large_num_seeded_stake_if_test() {
     .unwrap() as u64;
     assert_eq!(spot_market_vault_amount, 111);
 
+    // This market never settled revenue, so `if_last_settle_vault_amount` is 0 and
+    // the APR cap has no earlier endpoint to size itself off. The settle moves
+    // nothing and only records the endpoint for the next period.
+    let seeding_flow = settle_revenue_to_insurance_fund(
+        spot_market_vault_amount,
+        if_balance,
+        &mut spot_market,
+        1,
+        true,
+        false,
+    )
+    .unwrap();
+    assert_eq!(seeding_flow, 0);
+    assert_eq!(spot_market.if_last_settle_vault_amount, if_balance);
+    assert_eq!(spot_market.revenue_pool.scaled_balance, 100000000000);
+
     let flow = settle_revenue_to_insurance_fund(
         spot_market_vault_amount,
         if_balance,
@@ -293,6 +309,7 @@ pub fn large_num_seeded_stake_if_test() {
     )
     .unwrap();
     assert_eq!(flow, 11);
+    assert_eq!(spot_market.if_last_settle_vault_amount, if_balance + flow);
     // The `flow` tokens physically leave the spot vault, so the revenue-pool
     // ledger debit rounds up (removes one extra share vs the exact floor of
     // 90099009901). This keeps `deposit_balance` from ever exceeding the vault
@@ -1640,4 +1657,145 @@ pub fn cancel_request_after_rebase_floors_request_to_zero() {
     assert_eq!(if_stake_1.last_withdraw_request_shares, 0);
     assert_eq!(if_stake_1.last_withdraw_request_value, 0);
     assert!(if_stake_1.unchecked_if_shares() > 0);
+}
+
+/// The revenue-settle APR cap must size itself off capital the fund held across the
+/// whole settle period. A raw SPL transfer into the vault just before a settle is
+/// absent from `if_last_settle_vault_amount`, so it must not lift the cap.
+#[test]
+pub fn revenue_settle_cap_ignores_pre_settle_donation() {
+    let snapshot = 1_000 * QUOTE_PRECISION as u64;
+    let donation = 9_000 * QUOTE_PRECISION as u64;
+
+    let market = |last_settle_vault_amount: u64| SpotMarket {
+        decimals: 6,
+        deposit_balance: 10_000 * SPOT_BALANCE_PRECISION,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        revenue_pool: PoolBalance {
+            market_index: 0,
+            scaled_balance: 1_000 * SPOT_BALANCE_PRECISION,
+            ..PoolBalance::default()
+        },
+        insurance_fund: InsuranceFund {
+            revenue_settle_period: (ONE_YEAR / 1_000) as i64,
+            total_shares: snapshot as u128,
+            user_shares: snapshot as u128,
+            ..InsuranceFund::default()
+        },
+        if_last_settle_vault_amount: last_settle_vault_amount,
+        ..SpotMarket::default()
+    };
+
+    let spot_market_vault_amount = 10_000 * QUOTE_PRECISION as u64;
+
+    // Baseline: no donation. The APR cap binds, so the settle is bounded by the
+    // fund size rather than by the 1/10-of-revenue-pool bound.
+    let mut plain = market(snapshot);
+    let plain_flow = settle_revenue_to_insurance_fund(
+        spot_market_vault_amount,
+        snapshot,
+        &mut plain,
+        1,
+        false,
+        false,
+    )
+    .unwrap();
+    assert_eq!(plain_flow, 10 * QUOTE_PRECISION as u64);
+
+    // Same market, but somebody transferred `donation` into the vault since the last
+    // settle. The live balance is 10x, the cap is unchanged.
+    let mut donated = market(snapshot);
+    let donated_flow = settle_revenue_to_insurance_fund(
+        spot_market_vault_amount,
+        snapshot + donation,
+        &mut donated,
+        1,
+        false,
+        false,
+    )
+    .unwrap();
+    assert_eq!(donated_flow, plain_flow);
+
+    // The same balance held across the whole period does lift the cap, which is what
+    // makes the exclusion above specific to the donation and not a second clamp.
+    let mut sustained = market(snapshot + donation);
+    let sustained_flow = settle_revenue_to_insurance_fund(
+        spot_market_vault_amount,
+        snapshot + donation,
+        &mut sustained,
+        1,
+        false,
+        false,
+    )
+    .unwrap();
+    assert_eq!(sustained_flow, 100 * QUOTE_PRECISION as u64);
+
+    // A loss draw shrinks the live balance below the snapshot. The `min` picks the
+    // live balance up immediately, so no draw path has to write the snapshot.
+    let mut drawn = market(snapshot);
+    let drawn_flow = settle_revenue_to_insurance_fund(
+        spot_market_vault_amount,
+        snapshot / 10,
+        &mut drawn,
+        1,
+        false,
+        false,
+    )
+    .unwrap();
+    assert_eq!(drawn_flow, plain_flow / 10);
+
+    // Every settle records the balance it leaves behind, donation included: capital
+    // that survives a period belongs to the stakers pro rata and counts next period.
+    assert_eq!(
+        donated.if_last_settle_vault_amount,
+        snapshot + donation + donated_flow
+    );
+}
+
+/// A market that never settled revenue has no earlier endpoint. Its first settle
+/// moves nothing and records the endpoint, rather than falling back to the live
+/// balance, which a donation could have inflated.
+#[test]
+pub fn revenue_settle_cap_seeds_snapshot_without_reading_live_balance() {
+    let donation = 9_000 * QUOTE_PRECISION as u64;
+
+    let mut spot_market = SpotMarket {
+        decimals: 6,
+        deposit_balance: 10_000 * SPOT_BALANCE_PRECISION,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        revenue_pool: PoolBalance {
+            market_index: 0,
+            scaled_balance: 1_000 * SPOT_BALANCE_PRECISION,
+            ..PoolBalance::default()
+        },
+        insurance_fund: InsuranceFund {
+            revenue_settle_period: (ONE_YEAR / 1_000) as i64,
+            total_shares: 1_000,
+            user_shares: 1_000,
+            ..InsuranceFund::default()
+        },
+        if_last_settle_vault_amount: 0,
+        ..SpotMarket::default()
+    };
+
+    let spot_market_vault_amount = 10_000 * QUOTE_PRECISION as u64;
+
+    // `check_invariants` is on, as it is for the keeper instruction. The seeding
+    // settle must not raise `NoRevenueToSettleToIF`, or the snapshot write it needs
+    // would revert and the market would cap at zero forever.
+    let seeding_flow = settle_revenue_to_insurance_fund(
+        spot_market_vault_amount,
+        donation,
+        &mut spot_market,
+        1,
+        true,
+        false,
+    )
+    .unwrap();
+    assert_eq!(seeding_flow, 0);
+    assert_eq!(spot_market.if_last_settle_vault_amount, donation);
+    assert_eq!(
+        spot_market.revenue_pool.scaled_balance,
+        1_000 * SPOT_BALANCE_PRECISION
+    );
 }

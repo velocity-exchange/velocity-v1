@@ -591,23 +591,24 @@ accounts/events with the previous TS shapes should note:
   `resolve_perp_bankruptcy` that a permissionless sweep cannot clear ahead of a
   resolution. New warm-admin instruction `update_perp_market_bankruptcy_if_floor_pct`.
 - **`SpotMarket.if_last_settle_vault_amount: u64`** replaces the 8-byte trailing padding.
-  Account size (808 bytes) and every other field offset are unchanged — existing accounts
-  stay valid (the field reads as 0 = uninitialized, seeded from the live IF vault balance on
-  the first post-upgrade add/settle; new markets initialize to 0), but custom decoders must add
-  the field. It is a **donation-proof accounted balance** of the IF vault: it is moved by the
-  same signed delta as the real SPL vault on **every** instruction that moves the vault, so it
-  shadows the vault minus raw donations. Grown by staker deposits (`add_insurance_fund_stake`)
-  and settled revenue (`settle_revenue_to_insurance_fund`); shrunk (saturating at 0) by staker
-  withdrawals (`remove_insurance_fund_stake`) and by every IF loss-draw —
-  `resolve_perp_pnl_deficit`, `resolve_perp_bankruptcy`, and `resolve_spot_bankruptcy`. The one
-  movement deliberately excluded is a raw SPL transfer straight into the vault: it runs no
-  instruction, so it never enters the balance — exactly the donation the shadow must not see.
-  Used as the base for the per-period revenue-settle APR cap in
-  `settle_revenue_to_insurance_fund` (`min(live_if_vault, this)`), so a donation right before a
-  settle can no longer inflate the cap while legitimate stakes still lift it. This is the field's
-  only consumer; the unstake-cancel share forfeiture is donation-proofed independently (see
-  below) and does not read it. No new instruction — maintained automatically by the IF
-  add/remove/settle and bankruptcy/deficit paths.
+  Account size (800 bytes) and every other field offset are unchanged — existing accounts
+  stay valid (the field reads as 0 until the market settles revenue once; new markets
+  initialize to 0), but custom decoders must add the field. It holds the **IF vault balance at
+  the end of the last revenue settle**. `settle_revenue_to_insurance_fund` is the only writer:
+  it stores the live vault balance plus the amount that settle transfers in. No other
+  instruction touches it, so it lags the live vault by up to one `revenue_settle_period`. It is
+  the base for the per-period revenue-settle APR cap in `settle_revenue_to_insurance_fund`,
+  sized off `min(live_if_vault, this)`. Both endpoints of the period must hold a balance for it
+  to count, so a donation transferred in right before a settle is absent from the older
+  snapshot and cannot inflate the cap. A donation that survives a full period does count — by
+  then it belongs to the stakers pro rata, so the fund really is that large. The `min` with the
+  live balance makes the cap self-correct after an IF loss draw, so `resolve_perp_pnl_deficit`,
+  `resolve_perp_bankruptcy`, and `resolve_spot_bankruptcy` keep no bookkeeping here. A `0`
+  snapshot (never settled, or settled on an empty vault) gives a cap base of 0 for one period.
+  That settle moves nothing but still records the endpoint, so the next period is normal.
+  Integrators who read this field to predict a settle amount must apply the same `min`, not the
+  live balance alone. This is the field's only consumer; the unstake-cancel share forfeiture is
+  donation-proofed independently (see below) and does not read it.
 - **Unstake-cancel share forfeiture** (`cancel_request_remove_insurance_fund_stake` /
   `calculate_if_shares_lost`) is now framed and documented as **withdraw-and-restake at the
   current active share price**: a cancel is modeled as completing the withdrawal of the requested
@@ -792,6 +793,7 @@ accounts/events with the previous TS shapes should note:
 | #386 vamm-maker-rebate | New feature-flagged option for the vAMM to earn the maker rebate on fills it makes (see §3). Adds `FeatureBitFlags::VammMakerRebate` (bit 8) and admin instruction `update_feature_bit_flags_vamm_maker_rebate` (IDL addition). When the bit is on, `calculate_fee_for_fulfillment_with_amm` carves the maker rebate off the taker-fee remainder (clamped to it) before the protocol/IF/AMM split and folds it into `amm_fee`, so the rebate is booked into the AMM's fee ledger at fill and tokenized by the existing `sweep_market_fees` provision drain. Taker fee, user-maker rebates, and the post-only path (where the AMM pays the rebate out of spread surplus) are unchanged; off keeps the exact previous distribution. SDK: `FeatureBitFlags.VAMM_MAKER_REBATE`, `AdminClient.updateFeatureBitFlagsVammMakerRebate`. Admin CLI: `feature-flags vamm-maker-rebate`. No account-layout or error-code change |
 | #388 fee-schedule | Rework the perp fee schedule (see §3). Tiers cut 6 -> 3 (Regular / VIP 1 / VIP 2 = tiers 0/1/2) with new hardcoded 30d-volume thresholds ($5M / $80M) and new defaults (4/3/2bps taker, -0.25bp rebate via `maker_rebate_denominator` 1e6). `determine_perp_fee_tier` now reads the rolling 30d volume through `UserStats::get_total_30d_volume_at(now)`, projecting the lazy leaky-sum decay to the current timestamp, so demotion follows the live trailing window instead of the stale stored sum (the write path is unchanged; upgrade was already instant since each fill lands in the sum before the next fill's tier read). New per-market `taker_fee_addon_tenth_bps` (u16 in former `_padding_buffer`, same offsets/size): `taker fee = (tier fee + add-on) * (1 +/- fee_adjustment%)` — an absolute surcharge the multiplicative `fee_adjustment` cannot express across tiers; unsigned (surcharge only) so the taker fee can never drop below the maker rebate it funds — promo discounts go through `promo_fee_tier`; maker rebates and the post-only path never see it; new ix `update_perp_market_taker_fee_addon` (warm admin, addon <= 100 tenth-bps via new constant `MAX_TAKER_FEE_ADDON_TENTH_BPS`). New `State.promo_fee_tier` (u8 from padding, 0 = disabled = legacy reads): effective tier = max(volume tier, promo tier), applied to taker and maker tier selection; new ix `update_promo_fee_tier` (warm admin, validated against the highest populated tier `PERP_FEE_TIER_MAX_INDEX`). Two IDL instruction additions, no account-size, seed, or error-code change. SDK + admin CLI surface per §3 |
 | #387 vamm-maker-rebate | New feature-flagged option for the vAMM to earn the maker rebate on fills it makes (see §3). Adds `FeatureBitFlags::VammMakerRebate` (bit 8) and admin instruction `update_feature_bit_flags_vamm_maker_rebate` (IDL addition). When the bit is on, `calculate_fee_for_fulfillment_with_amm` carves the maker rebate off the taker-fee remainder (clamped to it) before the protocol/IF/AMM split and folds it into `amm_fee`, so the rebate is booked into the AMM's fee ledger at fill and tokenized by the existing `sweep_market_fees` provision drain. Taker fee, user-maker rebates, and the post-only path (where the AMM pays the rebate out of spread surplus) are unchanged; off keeps the exact previous distribution. SDK: `FeatureBitFlags.VAMM_MAKER_REBATE`, `AdminClient.updateFeatureBitFlagsVammMakerRebate`. Admin CLI: `feature-flags vamm-maker-rebate`. No account-layout or error-code change |
+| #254 follow-up if-revenue-settle-snapshot | Close the remaining donation path in the #254 fix. `SpotMarket.if_last_settle_vault_amount` was an accounted shadow balance whose `0` meant both "uninitialized" and "empty", and both readers fell back to the **live** vault on `0` — so the first post-upgrade settle or stake on any existing market imported whatever sat in the vault, and a `saturating_sub` on a loss draw could return the field to `0` and let the next stake import a donation again. The field is now the **IF vault balance at the end of the last revenue settle**, written only by `settle_revenue_to_insurance_fund`, and the cap base is `min(live_if_vault, snapshot)` with no fallback. A donation must be present at both endpoints of a settle period to count, by which point it belongs to the stakers pro rata. The bookkeeping in `add_insurance_fund_stake`, `remove_insurance_fund_stake`, `resolve_perp_pnl_deficit`, `resolve_perp_bankruptcy`, and `resolve_spot_bankruptcy` is removed — the `min` with the live balance already self-corrects after a draw. A market with a `0` snapshot settles nothing for one period and records the endpoint instead; `NoRevenueToSettleToIF` is suppressed for that one settle so the endpoint write is not reverted. A large stake now takes one settle period to lift the cap. Field name, offset, and account size (800 bytes) are unchanged, so no decoder change; SDK `SpotMarketAccount.ifLastSettleVaultAmount` keeps its type and gains the new meaning. `nextRevenuePoolSettleApr` is still a display estimate and does not mirror the cap |
 
 ---
 

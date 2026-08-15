@@ -34,6 +34,7 @@ use {
             },
             liquidation::{
                 calculate_asset_transfer_for_liability_transfer,
+                calculate_asset_transfer_for_liability_transfer_exact,
                 calculate_base_asset_amount_to_cover_margin_shortage,
                 calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy,
                 calculate_funding_rate_deltas_to_resolve_bankruptcy,
@@ -92,14 +93,6 @@ use {
 
 #[cfg(test)]
 mod tests;
-
-/// Tolerance ($1, in QUOTE_PRECISION) for the audit #25 postcondition in
-/// `liquidate_perp_pnl_for_deposit`. Absorbs the deposit dust-rounding in
-/// `calculate_asset_transfer_for_liability_transfer`, which can round the seized
-/// asset up to the user's full deposit when the rounded-away value is under
-/// QUOTE_PRECISION — a legitimate degradation of up to <$1 that must not trip
-/// the "shortage must not grow" guard.
-const LIQUIDATE_PNL_FOR_DEPOSIT_MARGIN_SHORTAGE_TOLERANCE: u128 = QUOTE_PRECISION;
 
 pub fn liquidate_perp(
     market_index: u16,
@@ -2317,8 +2310,16 @@ pub fn liquidate_spot_with_swap_begin(
     // `max_asset_transfer` here (swap_end re-checks price, not the throttle). This
     // mirrors the direct `liquidate_spot` path, which caps the transfer at
     // `max_liability_allowed_to_be_transferred`.
-    let throttled_asset_transfer = calculate_asset_transfer_for_liability_transfer(
-        asset_amount,
+    //
+    // The bound is exact. No headroom is added on top of the throttle: begin and
+    // end run in one transaction and read the same oracle prices, so there is no
+    // price drift to absorb, and `swap_end` bounds the exchange rate on its own
+    // with `validate_swap_within_liquidation_boundaries`. Headroom here only
+    // raises the collateral volume the liquidator can seize above the throttle.
+    // For the same reason this uses the exact conversion: the round-to-whole-
+    // deposit form would lift the bound to the user's entire deposit whenever the
+    // throttle lands within $1 of it.
+    let max_asset_transfer = calculate_asset_transfer_for_liability_transfer_exact(
         LIQUIDATION_FEE_PRECISION,
         asset_decimals,
         asset_price,
@@ -2326,9 +2327,8 @@ pub fn liquidate_spot_with_swap_begin(
         LIQUIDATION_FEE_PRECISION,
         liability_decimals,
         liability_price,
-    )?;
-
-    let max_asset_transfer = throttled_asset_transfer.safe_add(throttled_asset_transfer / 400)?; // 25bps buffer
+    )?
+    .min(asset_amount);
 
     if max_asset_transfer == 0 {
         msg!(
@@ -3534,6 +3534,44 @@ pub fn liquidate_perp_pnl_for_deposit(
     let pnl_liability_weight_plus_buffer =
         pnl_liability_weight.safe_add(liquidation_margin_buffer_ratio)?;
 
+    // Audit #25: refuse a transfer that cannot improve the account. The account
+    // gives up deposit valued at `asset_weight` and priced with the liquidator
+    // premium, and receives pnl relief valued at `pnl_liability_weight_plus_buffer`
+    // and priced with the liquidator discount. The margin improvement per unit
+    // transferred is therefore constant, and it is positive only while the asset
+    // side stays below the liability side. When the asset side reaches the
+    // liability side, every transfer size strips more collateral than it frees, so
+    // no partial size helps and the call must revert.
+    // `calculate_liability_transfer_to_cover_margin_shortage` below detects the
+    // same condition, but reports it as `u128::MAX`. The sizing then reads that
+    // sentinel as "no bound" and transfers the largest amount the other caps allow.
+    //
+    // `asset_weight` is the raw maintenance weight. A size-scaled (imf) weight is
+    // never higher, so this check errs toward refusing a transfer that would in
+    // fact help by a small amount.
+    //
+    // Settlement is exempt for the reason given at `market_in_settlement`.
+    if !market_in_settlement {
+        // The extra factor of 10 mirrors the precision scaling in
+        // `calculate_liability_transfer_to_cover_margin_shortage`.
+        let asset_weight_component = asset_weight
+            .cast::<u128>()?
+            .safe_mul(10)?
+            .safe_mul(asset_liquidation_multiplier.cast::<u128>()?)?
+            .safe_div(pnl_liquidation_multiplier.cast::<u128>()?)?;
+        let pnl_liability_weight_component = pnl_liability_weight_plus_buffer
+            .cast::<u128>()?
+            .safe_mul(10)?;
+
+        validate!(
+            asset_weight_component < pnl_liability_weight_component,
+            ErrorCode::LiquidationWorsensAccountHealth,
+            "liquidate_perp_pnl_for_deposit cannot improve account health (asset weight component {} >= liability weight component {})",
+            asset_weight_component,
+            pnl_liability_weight_component
+        )?;
+    }
+
     // Determine what amount of borrow to transfer to reduce margin shortage to 0
     let pnl_transfer_to_cover_margin_shortage =
         calculate_liability_transfer_to_cover_margin_shortage(
@@ -3587,17 +3625,34 @@ pub fn liquidate_perp_pnl_for_deposit(
         .min(max_pnl_allowed_to_be_transferred.max(minimum_pnl_transfer))
         .min(pnl_transfer_implied_by_asset_amount);
 
-    // Given the borrow amount to transfer, determine how much deposit amount to transfer
-    let asset_transfer = calculate_asset_transfer_for_liability_transfer(
-        asset_amount,
-        asset_liquidation_multiplier,
-        asset_decimals,
-        asset_price,
-        pnl_transfer,
-        pnl_liquidation_multiplier,
-        quote_decimals,
-        quote_price,
-    )?;
+    // Given the borrow amount to transfer, determine how much deposit amount to transfer.
+    //
+    // Audit #25: every unit seized must be paid for, so this path does not use the
+    // round-to-whole-deposit form of the conversion. That form takes up to $1 of
+    // collateral the pnl relief does not cover, which is real value, not rounding.
+    //
+    // The whole deposit still goes when the deposit is what limited the transfer:
+    // `pnl_transfer_implied_by_asset_amount` is the pnl the whole deposit buys, and
+    // it rounds up, so charging the whole deposit for it never overcharges. The
+    // only gap is the base-unit truncation of the two inverse conversions, and
+    // taking the deposit to zero avoids stranding that dust in the position.
+    //
+    // The exact form can exceed the deposit by a unit or two through the same
+    // truncation, so it is clamped.
+    let asset_transfer = if pnl_transfer == pnl_transfer_implied_by_asset_amount {
+        asset_amount
+    } else {
+        calculate_asset_transfer_for_liability_transfer_exact(
+            asset_liquidation_multiplier,
+            asset_decimals,
+            asset_price,
+            pnl_transfer,
+            pnl_liquidation_multiplier,
+            quote_decimals,
+            quote_price,
+        )?
+        .min(asset_amount)
+    };
 
     if asset_transfer == 0 || pnl_transfer == 0 {
         msg!(
@@ -3663,16 +3718,15 @@ pub fn liquidate_perp_pnl_for_deposit(
     )?;
 
     // Audit #25: `liquidate_perp_pnl_for_deposit` must never worsen the account's
-    // (buffered) margin shortage. When a perp market's liquidator fee exceeds the
-    // liquidation margin buffer, the asset premium the liquidator collects on the
-    // seized deposit can exceed the collateral relief from cancelling the negative
-    // pnl, so the transfer strips quote collateral while the shortage *grows* —
-    // and `calculate_margin_freed` saturates that negative improvement to 0,
-    // hiding it. The per-unit margin improvement is linear through the origin, so
-    // there is no partial "break-even" transfer between zero and the computed
-    // size: either every transfer helps or none does. We therefore revert rather
-    // than silently degrade the account. The tolerance absorbs the sub-$1 deposit
-    // dust-rounding in `calculate_asset_transfer_for_liability_transfer`.
+    // (buffered) margin shortage. The weight check above rejects the market
+    // parameters that make the transfer loss-making at every size, and
+    // `calculate_margin_freed` saturates a negative improvement to 0, so this is
+    // the backstop for anything the sizing math does not model.
+    //
+    // The check is exact. It holds no tolerance, because the seizure above pays
+    // for every unit it takes. A tolerance here would let a liquidator size each
+    // transfer to degrade the account by just under it and repeat the call until
+    // the deposit is gone.
     //
     // Exempt Settlement (delisting): an expired market winds every position down
     // at the expiry price and this path clears the residual expired pnl into the
@@ -3683,8 +3737,7 @@ pub fn liquidate_perp_pnl_for_deposit(
     if !market_in_settlement {
         let new_margin_shortage = liquidation_mode.margin_shortage(&margin_calculation_after)?;
         validate!(
-            new_margin_shortage
-                <= margin_shortage.safe_add(LIQUIDATE_PNL_FOR_DEPOSIT_MARGIN_SHORTAGE_TOLERANCE)?,
+            new_margin_shortage <= margin_shortage,
             ErrorCode::LiquidationWorsensAccountHealth,
             "liquidate_perp_pnl_for_deposit would grow margin shortage ({} -> {}); refusing to worsen account health",
             margin_shortage,

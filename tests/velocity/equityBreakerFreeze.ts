@@ -46,8 +46,8 @@ import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunCon
 
 // EquityBelowFloor
 const EQUITY_BELOW_FLOOR_HEX = '0x18d6';
-// position of liquidator_stats in the LiquidateSpotWithSwap account list
-const LIQUIDATOR_STATS_IX_INDEX = 3;
+// liquidator_stats is the last fixed account of LiquidateSpotWithSwap
+const LIQUIDATOR_STATS_IX_INDEX = 11;
 
 // The authority-wide equity breaker as a freeze over every route the audit
 // issues flagged (#54 trigger, #57 perp transfer, #68 liquidator routes).

@@ -551,6 +551,17 @@ accounts/events with the previous TS shapes should note:
   `liquidate_spot`'s account list changed. Existing callers must add this account; the
   workspace SDK (`getLiquidateSpotIx`) and velocity-rs `liquidate_spot` builder already do.
   No account layout moved.
+- **`liquidate_spot_with_swap_begin` / `_end` gained a required `liquidator_stats` account**
+  (breaker-liquidation-followups): the liquidator's `UserStats` (read-only, derived
+  `["user_stats", liquidator authority]`, constrained `is_stats_for_user`) is **appended** to
+  both instructions' account lists, so it is the last fixed account (index 11) and every
+  pre-existing account keeps its index. Position matters on this pair beyond the usual: the
+  begin handler introspects the matching end instruction and binds accounts by index, and the
+  swap (remaining) accounts start immediately after the fixed block, which is now 12 rather
+  than 11 accounts long. `begin` reads the account to bar a tripped authority from swap-backed
+  liquidations, matching the four direct routes. Existing callers must add this account; the
+  workspace SDK (`getLiquidateSpotWithSwapIx`, and `getJupiterLiquidateSpotWithSwapIxV6`
+  through it) and the velocity-rs builders already do. No account layout moved.
 - **`MarketStatus` discriminants shifted** (#5): the deprecated `FundingPaused`, `AmmPaused`,
   `FillPaused`, `WithdrawPaused` variants were removed, so the surviving variants are now
   `Initialized` (0), `Active` (1), `ReduceOnly` (2), `Settlement` (3), `Delisted` (4) —

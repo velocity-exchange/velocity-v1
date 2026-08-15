@@ -1663,39 +1663,39 @@ pub fn handle_liquidate_spot_with_swap_begin<'c: 'info, 'info>(
             )?;
 
             validate!(
-                ctx.accounts.liquidator_stats.key() == ix.accounts[3].pubkey,
-                ErrorCode::InvalidLiquidateSpotWithSwap,
-                "the liquidator_stats passed to SwapBegin and End must match"
-            )?;
-
-            validate!(
-                ctx.accounts.user.key() == ix.accounts[4].pubkey,
+                ctx.accounts.user.key() == ix.accounts[3].pubkey,
                 ErrorCode::InvalidLiquidateSpotWithSwap,
                 "the user passed to SwapBegin and End must match"
             )?;
 
             validate!(
-                ctx.accounts.liability_spot_market_vault.key() == ix.accounts[5].pubkey,
+                ctx.accounts.liability_spot_market_vault.key() == ix.accounts[4].pubkey,
                 ErrorCode::InvalidLiquidateSpotWithSwap,
                 "the liability_spot_market_vault passed to SwapBegin and End must match"
             )?;
 
             validate!(
-                ctx.accounts.asset_spot_market_vault.key() == ix.accounts[6].pubkey,
+                ctx.accounts.asset_spot_market_vault.key() == ix.accounts[5].pubkey,
                 ErrorCode::InvalidLiquidateSpotWithSwap,
                 "the asset_spot_market_vault passed to SwapBegin and End must match"
             )?;
 
             validate!(
-                ctx.accounts.liability_token_account.key() == ix.accounts[7].pubkey,
+                ctx.accounts.liability_token_account.key() == ix.accounts[6].pubkey,
                 ErrorCode::InvalidLiquidateSpotWithSwap,
                 "the liability_token_account passed to SwapBegin and End must match"
             )?;
 
             validate!(
-                ctx.accounts.asset_token_account.key() == ix.accounts[8].pubkey,
+                ctx.accounts.asset_token_account.key() == ix.accounts[7].pubkey,
                 ErrorCode::InvalidLiquidateSpotWithSwap,
                 "the asset_token_account passed to SwapBegin and End must match"
+            )?;
+
+            validate!(
+                ctx.accounts.liquidator_stats.key() == ix.accounts[11].pubkey,
+                ErrorCode::InvalidLiquidateSpotWithSwap,
+                "the liquidator_stats passed to SwapBegin and End must match"
             )?;
 
             // `LiquidateSpotWithSwap` has 12 fixed accounts (indexes 0..=11);
@@ -3784,10 +3784,6 @@ pub struct LiquidateSpotWithSwap<'info> {
         constraint = can_sign_for_user(&liquidator, &authority)?
     )]
     pub liquidator: AccountLoader<'info, User>,
-    #[account(
-        constraint = is_stats_for_user(&liquidator, &liquidator_stats)?
-    )]
-    pub liquidator_stats: AccountLoader<'info, UserStats>,
     #[account(mut)]
     pub user: AccountLoader<'info, User>,
     #[account(
@@ -3824,6 +3820,21 @@ pub struct LiquidateSpotWithSwap<'info> {
     /// CHECK: fixed instructions sysvar account
     #[account(address = instructions::ID)]
     pub instructions: UncheckedAccount<'info>,
+    /// The liquidator's `UserStats`, read by `begin` to bar an authority whose
+    /// equity breaker is tripped.
+    ///
+    /// It sits last, not beside `liquidator` where the direct liquidation
+    /// contexts carry it, because this pair is addressed by position rather
+    /// than by name: `begin` introspects the matching `end` and compares the
+    /// two account lists index by index, and the swap accounts both forward
+    /// begin where this fixed block ends. Taking the last slot renumbered
+    /// nothing. Slotting it beside `liquidator` would have moved `user`, both
+    /// vaults and both token accounts down one, silently invalidating every
+    /// hand-built transaction that still filled the old order.
+    #[account(
+        constraint = is_stats_for_user(&liquidator, &liquidator_stats)?
+    )]
+    pub liquidator_stats: AccountLoader<'info, UserStats>,
 }
 
 #[derive(Accounts)]

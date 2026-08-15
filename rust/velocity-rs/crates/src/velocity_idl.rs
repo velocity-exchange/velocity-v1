@@ -11564,7 +11564,6 @@ pub mod accounts {
         pub state: Pubkey,
         pub authority: Pubkey,
         pub liquidator: Pubkey,
-        pub liquidator_stats: Pubkey,
         pub user: Pubkey,
         pub liability_spot_market_vault: Pubkey,
         pub asset_spot_market_vault: Pubkey,
@@ -11573,6 +11572,7 @@ pub mod accounts {
         pub token_program: Pubkey,
         pub velocity_signer: Pubkey,
         pub instructions: Pubkey,
+        pub liquidator_stats: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for LiquidateSpotWithSwapBegin {
@@ -11604,11 +11604,6 @@ pub mod accounts {
                     pubkey: self.liquidator,
                     is_signer: false,
                     is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.liquidator_stats,
-                    is_signer: false,
-                    is_writable: false,
                 },
                 AccountMeta {
                     pubkey: self.user,
@@ -11647,6 +11642,11 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.instructions,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.liquidator_stats,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -11688,7 +11688,6 @@ pub mod accounts {
         pub state: Pubkey,
         pub authority: Pubkey,
         pub liquidator: Pubkey,
-        pub liquidator_stats: Pubkey,
         pub user: Pubkey,
         pub liability_spot_market_vault: Pubkey,
         pub asset_spot_market_vault: Pubkey,
@@ -11697,6 +11696,7 @@ pub mod accounts {
         pub token_program: Pubkey,
         pub velocity_signer: Pubkey,
         pub instructions: Pubkey,
+        pub liquidator_stats: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for LiquidateSpotWithSwapEnd {
@@ -11728,11 +11728,6 @@ pub mod accounts {
                     pubkey: self.liquidator,
                     is_signer: false,
                     is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.liquidator_stats,
-                    is_signer: false,
-                    is_writable: false,
                 },
                 AccountMeta {
                     pubkey: self.user,
@@ -11771,6 +11766,11 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.instructions,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.liquidator_stats,
                     is_signer: false,
                     is_writable: false,
                 },

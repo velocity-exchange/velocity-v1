@@ -4621,9 +4621,6 @@ export type Velocity = {
           "writable": true
         },
         {
-          "name": "liquidatorStats"
-        },
-        {
           "name": "user",
           "writable": true
         },
@@ -4715,6 +4712,22 @@ export type Velocity = {
             "Instructions Sysvar for instruction introspection"
           ],
           "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "liquidatorStats",
+          "docs": [
+            "The liquidator's `UserStats`, read by `begin` to bar an authority whose",
+            "equity breaker is tripped.",
+            "",
+            "It sits last, not beside `liquidator` where the direct liquidation",
+            "contexts carry it, because this pair is addressed by position rather",
+            "than by name: `begin` introspects the matching `end` and compares the",
+            "two account lists index by index, and the swap accounts both forward",
+            "begin where this fixed block ends. Taking the last slot renumbered",
+            "nothing. Slotting it beside `liquidator` would have moved `user`, both",
+            "vaults and both token accounts down one, silently invalidating every",
+            "hand-built transaction that still filled the old order."
+          ]
         }
       ],
       "args": [
@@ -4757,9 +4770,6 @@ export type Velocity = {
           "writable": true
         },
         {
-          "name": "liquidatorStats"
-        },
-        {
           "name": "user",
           "writable": true
         },
@@ -4851,6 +4861,22 @@ export type Velocity = {
             "Instructions Sysvar for instruction introspection"
           ],
           "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "liquidatorStats",
+          "docs": [
+            "The liquidator's `UserStats`, read by `begin` to bar an authority whose",
+            "equity breaker is tripped.",
+            "",
+            "It sits last, not beside `liquidator` where the direct liquidation",
+            "contexts carry it, because this pair is addressed by position rather",
+            "than by name: `begin` introspects the matching `end` and compares the",
+            "two account lists index by index, and the swap accounts both forward",
+            "begin where this fixed block ends. Taking the last slot renumbered",
+            "nothing. Slotting it beside `liquidator` would have moved `user`, both",
+            "vaults and both token accounts down one, silently invalidating every",
+            "hand-built transaction that still filled the old order."
+          ]
         }
       ],
       "args": [

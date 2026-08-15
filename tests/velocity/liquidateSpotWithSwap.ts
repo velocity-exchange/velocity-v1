@@ -9,6 +9,7 @@ import {
 	Keypair,
 	PublicKey,
 	SYSVAR_INSTRUCTIONS_PUBKEY,
+	Transaction,
 } from '@solana/web3.js';
 
 import {
@@ -36,13 +37,16 @@ import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunCon
 // Regression guard for `liquidate_spot_with_swap`: the begin handler introspects
 // the matching end instruction and binds accounts by hard-coded index, with the
 // swap (remaining) accounts assumed to start right after the fixed accounts.
-// `LiquidateSpotWithSwap` has 12 fixed accounts (indexes 0..=11, including the
-// liquidator_stats the equity-breaker gate reads); a stale guard previously used
-// the old 13-account Drift layout, which made the begin/end account-count check
-// unsatisfiable and bricked the route.
+// `LiquidateSpotWithSwap` has 12 fixed accounts (indexes 0..=11), the last of
+// them the liquidator_stats the equity-breaker gate reads; a stale guard
+// previously used the old 13-account Drift layout, which made the begin/end
+// account-count check unsatisfiable and bricked the route.
 // This test builds begin + end through the generated SDK/IDL and asserts the account
 // order the program guard depends on, so any future struct reshuffle that desyncs the
 // guard is caught here rather than on-chain.
+// InvalidLiquidateSpotWithSwap
+const INVALID_LIQUIDATE_SPOT_WITH_SWAP_HEX = '0x18a4';
+
 describe('liquidate spot with swap account bindings', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 
@@ -57,6 +61,8 @@ describe('liquidate spot with swap account bindings', () => {
 	let liquidatorUSDC: PublicKey;
 	let liquidatorWSOL: PublicKey;
 	let liquidatorKeypair: Keypair;
+	let userUSDCAccount;
+	let userWSOLAccount: PublicKey;
 
 	const usdcAmount = new BN(200 * 10 ** 6).muln(10);
 	const solAmount = new BN(10 * 10 ** 9).muln(10);
@@ -68,15 +74,17 @@ describe('liquidate spot with swap account bindings', () => {
 	// account order of `LiquidateSpotWithSwap` and must stay in sync with it.
 	const AUTHORITY_IX_INDEX = 1;
 	const LIQUIDATOR_IX_INDEX = 2;
-	const LIQUIDATOR_STATS_IX_INDEX = 3;
-	const USER_IX_INDEX = 4;
-	const LIABILITY_VAULT_IX_INDEX = 5;
-	const ASSET_VAULT_IX_INDEX = 6;
-	const LIABILITY_TOKEN_ACCOUNT_IX_INDEX = 7;
-	const ASSET_TOKEN_ACCOUNT_IX_INDEX = 8;
-	const TOKEN_PROGRAM_IX_INDEX = 9;
-	const VELOCITY_SIGNER_IX_INDEX = 10;
-	const INSTRUCTIONS_SYSVAR_IX_INDEX = 11;
+	const USER_IX_INDEX = 3;
+	const LIABILITY_VAULT_IX_INDEX = 4;
+	const ASSET_VAULT_IX_INDEX = 5;
+	const LIABILITY_TOKEN_ACCOUNT_IX_INDEX = 6;
+	const ASSET_TOKEN_ACCOUNT_IX_INDEX = 7;
+	const TOKEN_PROGRAM_IX_INDEX = 8;
+	const VELOCITY_SIGNER_IX_INDEX = 9;
+	const INSTRUCTIONS_SYSVAR_IX_INDEX = 10;
+	// last, not beside the liquidator as in the direct liquidation contexts,
+	// so that adding it renumbered none of the accounts above
+	const LIQUIDATOR_STATS_IX_INDEX = 11;
 	const NUM_FIXED_ACCOUNTS = 12;
 
 	before(async () => {
@@ -91,8 +99,12 @@ describe('liquidate spot with swap account bindings', () => {
 		);
 
 		usdcMint = await mockUSDCMint(bankrunContextWrapper);
-		await mockUserUSDCAccount(usdcMint, usdcAmount, bankrunContextWrapper);
-		await createWSolTokenAccountForUser(
+		userUSDCAccount = await mockUserUSDCAccount(
+			usdcMint,
+			usdcAmount,
+			bankrunContextWrapper
+		);
+		userWSOLAccount = await createWSolTokenAccountForUser(
 			bankrunContextWrapper,
 			// @ts-ignore
 			bankrunContextWrapper.provider.wallet,
@@ -156,6 +168,14 @@ describe('liquidate spot with swap account bindings', () => {
 			10 * LAMPORTS_PER_SOL
 		);
 
+		// A liquidatable user, so `liquidate_spot_with_swap_begin` gets past the
+		// controller and reaches the begin/end introspection guard the second
+		// test exercises. The liquidator supplies the sol the user borrows.
+		await liquidatorClient.deposit(solAmount, 1, liquidatorWSOL);
+		await userClient.deposit(usdcAmount, 0, userUSDCAccount.publicKey);
+		await userClient.withdraw(new BN(95 * 10 ** 8), 1, userWSOLAccount);
+
+		// sol doubles: the borrow outgrows the usdc collateral backing it
 		await setFeedPriceNoProgram(bankrunContextWrapper, 200, solOracle);
 	});
 
@@ -198,12 +218,6 @@ describe('liquidate spot with swap account bindings', () => {
 			assert.ok(
 				ix.keys[LIQUIDATOR_IX_INDEX].pubkey.equals(liquidator),
 				'liquidator binding index mismatch'
-			);
-			assert.ok(
-				ix.keys[LIQUIDATOR_STATS_IX_INDEX].pubkey.equals(
-					liquidatorClient.getUserStatsAccountPublicKey()
-				),
-				'liquidator_stats binding index mismatch'
 			);
 			assert.ok(
 				ix.keys[USER_IX_INDEX].pubkey.equals(user),
@@ -273,6 +287,12 @@ describe('liquidate spot with swap account bindings', () => {
 				),
 				'instructions sysvar binding index mismatch'
 			);
+			assert.ok(
+				ix.keys[LIQUIDATOR_STATS_IX_INDEX].pubkey.equals(
+					liquidatorClient.getUserStatsAccountPublicKey()
+				),
+				'liquidator_stats binding index mismatch'
+			);
 		}
 
 		const remainingCount = beginSwapIx.keys.length - NUM_FIXED_ACCOUNTS;
@@ -280,6 +300,48 @@ describe('liquidate spot with swap account bindings', () => {
 			remainingCount,
 			0,
 			'fixed account count must not exceed total accounts'
+		);
+	});
+
+	it('the program accepts the layout the sdk builds', async () => {
+		// Everything above compares the built instructions against the IDL,
+		// which cannot catch the program's own copy of these indexes being
+		// wrong: `begin` introspects the matching `end` and compares the two
+		// lists by position, and no test had ever executed that block. The
+		// other suites that send this pair reject earlier, at the equity
+		// breaker check or an account constraint.
+		//
+		// The fixture's user is genuinely liquidatable, so `begin` runs to
+		// completion, introspection included. The pair still fails, at `end`
+		// with InvalidSwap, because nothing swaps between the two
+		// instructions and the flash loan is never repaid. That is the point:
+		// reaching `end` at all means the guard accepted this account order,
+		// while any mis-numbered index or an off-by-one fixed/remaining
+		// boundary would have stopped it in `begin` with the error below.
+		const { beginSwapIx, endSwapIx } =
+			await liquidatorClient.getLiquidateSpotWithSwapIx({
+				swapAmount: new BN(10 ** 6),
+				assetMarketIndex: 0,
+				liabilityMarketIndex: 1,
+				assetTokenAccount: liquidatorUSDC,
+				liabilityTokenAccount: liquidatorWSOL,
+				userAccount: userClient.getUserAccount(),
+				userAccountPublicKey: await userClient.getUserAccountPublicKey(),
+			});
+
+		let err: Error | undefined;
+		try {
+			await liquidatorClient.sendTransaction(
+				new Transaction().add(beginSwapIx, endSwapIx)
+			);
+		} catch (e) {
+			err = e as Error;
+		}
+
+		assert(err, 'the liquidation itself is expected to fail');
+		assert(
+			!err.message.includes(INVALID_LIQUIDATE_SPOT_WITH_SWAP_HEX),
+			`the begin/end introspection guard rejected the sdk-built account order, so the program's indexes disagree with the IDL: ${err.message}`
 		);
 	});
 });

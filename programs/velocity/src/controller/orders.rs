@@ -1430,6 +1430,7 @@ pub fn fill_perp_order(
         oracle_stale_for_margin,
         rev_share_escrow,
         state.vamm_maker_rebate_enabled(),
+        state.promo_fee_tier,
     )?;
 
     if base_asset_amount != 0 {
@@ -1909,6 +1910,7 @@ fn fulfill_perp_order(
     oracle_stale_for_margin: bool,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
     vamm_maker_rebate: bool,
+    promo_fee_tier: u8,
 ) -> VelocityResult<(u64, u64)> {
     let market_index = user.orders[user_order_index].market_index;
 
@@ -2046,6 +2048,7 @@ fn fulfill_perp_order(
                     amm_jit_allowed,
                     rev_share_escrow,
                     vamm_maker_rebate,
+                    promo_fee_tier,
                 )?;
                 (fill_base, fill_quote)
             }
@@ -2087,6 +2090,7 @@ fn fulfill_perp_order(
                     amm_jit_allowed,
                     rev_share_escrow,
                     vamm_maker_rebate,
+                    promo_fee_tier,
                 )?;
 
                 if maker_fill_base != 0 {
@@ -2615,6 +2619,7 @@ fn settle_amm_house_fill(
     now: i64,
     slot: u64,
     vamm_maker_rebate: bool,
+    promo_fee_tier: u8,
 ) -> VelocityResult<(u64, u64)> {
     // For sole-AMM steps with a post_only taker, override the
     // fill's quote at the order's limit price (the taker, acting
@@ -2672,6 +2677,9 @@ fn settle_amm_house_fill(
         market.fee_adjustment,
         builder_order_fee_bps,
         vamm_maker_rebate,
+        market.taker_fee_addon_tenth_bps,
+        now,
+        promo_fee_tier,
     )?;
     let builder_fee = builder_fee_option.unwrap_or(0);
 
@@ -2908,6 +2916,7 @@ fn settle_dlob_match_fill(
     is_liquidation: bool,
     now: i64,
     slot: u64,
+    promo_fee_tier: u8,
 ) -> VelocityResult<(u64, u64, u64)> {
     // DlobMatch fills only land from a Match step, which always
     // populates `match_maker_price`.
@@ -3010,6 +3019,9 @@ fn settle_dlob_match_fill(
         &MarketType::Perp,
         market.fee_adjustment,
         builder_order_fee_bps,
+        market.taker_fee_addon_tenth_bps,
+        now,
+        promo_fee_tier,
     )?;
     let builder_fee = builder_fee_option.unwrap_or(0);
 
@@ -3231,6 +3243,7 @@ pub fn fulfill_perp_order_step(
     amm_jit_allowed: bool,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
     vamm_maker_rebate: bool,
+    promo_fee_tier: u8,
 ) -> VelocityResult<(u64, u64, u64)> {
     // ---- 1. Capture taker order fields. ----
     let market_index = market.market_index;
@@ -3426,7 +3439,13 @@ pub fn fulfill_perp_order_step(
             // override price from the FFM payload, stepped one tick inside
             // the limit. Computed at the orchestrator — the AMM Quoter
             // itself is taker-agnostic.
-            let fee_tier = determine_user_fee_tier(taker_stats, fee_structure, &MarketType::Perp)?;
+            let fee_tier = determine_user_fee_tier(
+                taker_stats,
+                fee_structure,
+                &MarketType::Perp,
+                now,
+                promo_fee_tier,
+            )?;
             let effective_taker_limit = crate::math::orders::calculate_effective_amm_taker_limit(
                 &taker.orders[taker_order_index],
                 taker_limit_price,
@@ -3579,6 +3598,7 @@ pub fn fulfill_perp_order_step(
                     now,
                     slot,
                     vamm_maker_rebate,
+                    promo_fee_tier,
                 )?;
                 total_base_filled = total_base_filled.safe_add(base_filled)?;
                 total_quote_filled = total_quote_filled.safe_add(quote_filled)?;
@@ -3611,6 +3631,7 @@ pub fn fulfill_perp_order_step(
                     is_liquidation,
                     now,
                     slot,
+                    promo_fee_tier,
                 )?;
                 total_base_filled = total_base_filled.safe_add(base_filled)?;
                 total_quote_filled = total_quote_filled.safe_add(quote_filled)?;

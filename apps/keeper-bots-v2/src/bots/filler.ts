@@ -1427,12 +1427,12 @@ export class FillerBot extends TxThreaded implements Bot {
 	/**
 	 * Builds the permissionless interest cranks a fill needs.
 	 *
-	 * The program refuses a risk-increasing fill when the taker, or a maker that
-	 * also increases risk, carries a borrow in a spot market whose interest has not
-	 * accrued within the last hour (`SpotMarketInterestStaleForMargin`): the margin
-	 * check values that borrow through a stale index and understates the debt. The
-	 * fill instruction receives those markets read-only and cannot refresh them, so
-	 * the crank is bundled ahead of it.
+	 * The program refuses a fill when the taker, or any maker, carries a borrow in a
+	 * spot market whose interest has not accrued recently enough
+	 * (`SpotMarketInterestStaleForMargin`): the margin check values that borrow
+	 * through a stale index and understates the debt. The fill instruction receives
+	 * those markets read-only and cannot refresh them, so the crank is bundled ahead
+	 * of it.
 	 *
 	 * A market the filler misses only costs a reverted fill, so a failure here is
 	 * logged and the fill is attempted anyway.

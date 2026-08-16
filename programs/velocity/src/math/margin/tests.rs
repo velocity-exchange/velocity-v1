@@ -7146,8 +7146,11 @@ fn stale_spot_interest_blocks_borrow_valuation_but_not_deposits() {
     use crate::{
         create_anchor_account_info,
         math::{
-            constants::{MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN, TWENTY_FOUR_HOUR},
-            margin::validate_spot_borrow_interest_fresh_for_margin,
+            constants::TWENTY_FOUR_HOUR,
+            margin::{
+                max_spot_interest_staleness_for_margin,
+                validate_spot_borrow_interest_fresh_for_margin,
+            },
         },
         state::{
             spot_market::{SpotBalanceType, SpotMarket},
@@ -7188,6 +7191,11 @@ fn stale_spot_interest_blocks_borrow_valuation_but_not_deposits() {
 
     let borrow_of = 100 * (SPOT_BALANCE_PRECISION as u64);
 
+    // The window this market earns from its own rate ceiling. A 100% APR ceiling
+    // holds one basis point of the debt for 3,153s, inside the one-hour cap.
+    let window = max_spot_interest_staleness_for_margin(&build(now as u64)).unwrap();
+    assert_eq!(window, 3_153);
+
     // Fresh market: a borrow values fine.
     {
         let mut market = build((now - 10) as u64);
@@ -7199,7 +7207,7 @@ fn stale_spot_interest_blocks_borrow_valuation_but_not_deposits() {
 
     // Stale beyond the bound: a borrow is refused.
     {
-        let stale_by = MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN + 1;
+        let stale_by = window + 1;
         let mut market = build((now - stale_by) as u64);
         create_anchor_account_info!(market, SpotMarket, ai);
         let map = SpotMarketMap::load_one(&ai, true).unwrap();
@@ -7221,7 +7229,7 @@ fn stale_spot_interest_blocks_borrow_valuation_but_not_deposits() {
 
     // Exactly at the bound is still allowed (inclusive).
     {
-        let mut market = build((now - MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN) as u64);
+        let mut market = build((now - window) as u64);
         create_anchor_account_info!(market, SpotMarket, ai);
         let map = SpotMarketMap::load_one(&ai, true).unwrap();
         let user = position(SpotBalanceType::Borrow, borrow_of);
@@ -7252,6 +7260,91 @@ fn stale_spot_interest_blocks_borrow_valuation_but_not_deposits() {
             validate_spot_borrow_interest_fresh_for_margin(&material, &map, now),
             Err(crate::error::ErrorCode::SpotMarketInterestStaleForMargin),
             "the exemption must not extend to a borrow that hides a whole token"
+        );
+    }
+}
+
+/// The staleness window must come from the market's rate ceiling, not from one
+/// fixed span.
+///
+/// `validate_borrow_rate` bounds `max_borrow_rate` only against
+/// `optimal_borrow_rate`, so the field is a `u32` a market may set arbitrarily
+/// high. Under a fixed window the share of the debt that un-booked interest hides
+/// then scales with that field without limit, which is the property the bound
+/// exists to hold down.
+#[test]
+fn spot_interest_staleness_window_shrinks_as_the_rate_ceiling_rises() {
+    use crate::{
+        math::{
+            constants::{
+                MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN,
+                MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN, ONE_YEAR, PERCENTAGE_PRECISION,
+            },
+            margin::max_spot_interest_staleness_for_margin,
+        },
+        state::spot_market::SpotMarket,
+    };
+
+    let with_ceiling = |max_borrow_rate: u32, min_borrow_rate: u8| SpotMarket {
+        max_borrow_rate,
+        min_borrow_rate,
+        ..SpotMarket::default()
+    };
+
+    // A low rate earns more than an hour, and the cap keeps it at an hour.
+    assert_eq!(
+        max_spot_interest_staleness_for_margin(&with_ceiling(200_000, 0)).unwrap(),
+        MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN
+    );
+
+    // 100% APR: one basis point of the debt takes 3,153s to accrue.
+    assert_eq!(
+        max_spot_interest_staleness_for_margin(&with_ceiling(1_000_000, 0)).unwrap(),
+        3_153
+    );
+
+    // 1,000% APR: the same one basis point takes a tenth of that. A fixed hour
+    // would have hidden more than ten basis points here.
+    assert_eq!(
+        max_spot_interest_staleness_for_margin(&with_ceiling(10_000_000, 0)).unwrap(),
+        315
+    );
+
+    // The largest rate the field can hold leaves no window at all, so the exact
+    // measurement in `validate_spot_borrow_interest_fresh_for_margin` runs for any
+    // staleness whatsoever.
+    assert_eq!(
+        max_spot_interest_staleness_for_margin(&with_ceiling(u32::MAX, 0)).unwrap(),
+        0
+    );
+
+    // `calculate_borrow_rate` floors its result at `min_borrow_rate`, so the
+    // ceiling is the larger of the two fields. `min_borrow_rate` counts in half
+    // percent, so 40 is 20% APR — here above a `max_borrow_rate` of 1%.
+    assert_eq!(
+        max_spot_interest_staleness_for_margin(&with_ceiling(10_000, 40)).unwrap(),
+        max_spot_interest_staleness_for_margin(&with_ceiling(200_000, 0)).unwrap()
+    );
+
+    // A market that charges nothing cannot understate anything, so it takes the cap.
+    assert_eq!(
+        max_spot_interest_staleness_for_margin(&with_ceiling(0, 0)).unwrap(),
+        MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN
+    );
+
+    // The window is exactly the span in which the ceiling accrues the allowed
+    // share, so the hidden share at the window can never exceed it.
+    for max_borrow_rate in [1_000_000_u32, 10_000_000, 123_456_789] {
+        let window = max_spot_interest_staleness_for_margin(&with_ceiling(max_borrow_rate, 0))
+            .unwrap() as u128;
+        let hidden_share = (max_borrow_rate as u128) * window / ONE_YEAR;
+        assert!(
+            hidden_share <= MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN,
+            "rate {} hides {} of {} at a {}s window",
+            max_borrow_rate,
+            hidden_share,
+            PERCENTAGE_PRECISION,
+            window
         );
     }
 }

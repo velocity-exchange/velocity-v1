@@ -6,9 +6,10 @@ use {
             casting::Cast,
             constants::{
                 MARGIN_PRECISION_U128, MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN,
-                MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN, PRICE_PRECISION, PRICE_PRECISION_I128,
-                PRICE_PRECISION_I64, SPOT_IMF_PRECISION_U128, SPOT_WEIGHT_PRECISION,
-                SPOT_WEIGHT_PRECISION_U128,
+                MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN,
+                MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN, ONE_YEAR, PRICE_PRECISION,
+                PRICE_PRECISION_I128, PRICE_PRECISION_I64, SPOT_IMF_PRECISION_U128,
+                SPOT_WEIGHT_PRECISION, SPOT_WEIGHT_PRECISION_U128,
             },
             funding::calculate_funding_payment,
             oracle::{is_oracle_valid_for_action, LogMode, VelocityAction},
@@ -32,7 +33,7 @@ use {
             oracle_map::OracleMap,
             perp_market::{ContractTier, PerpMarket},
             perp_market_map::PerpMarketMap,
-            spot_market::{AssetTier, SpotBalanceType},
+            spot_market::{AssetTier, SpotBalanceType, SpotMarket},
             spot_market_map::SpotMarketMap,
             user::{MarketType, OrderFillSimulation, PerpPosition, User},
         },
@@ -289,8 +290,9 @@ pub fn validate_spot_borrow_interest_fresh_for_margin(
 
         let spot_market = spot_market_map.get_ref(&spot_position.market_index)?;
         let staleness = now.safe_sub(spot_market.last_interest_ts.cast()?)?;
+        let max_staleness = max_spot_interest_staleness_for_margin(&spot_market)?;
 
-        if staleness <= MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN {
+        if staleness <= max_staleness {
             continue;
         }
 
@@ -311,12 +313,46 @@ pub fn validate_spot_borrow_interest_fresh_for_margin(
              update_spot_market_cumulative_interest before valuing it",
             spot_position.market_index,
             staleness,
-            MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN,
+            max_staleness,
             unbooked_debt
         )?;
     }
 
     Ok(())
+}
+
+/// The time window `validate_spot_borrow_interest_fresh_for_margin` allows one
+/// market, derived from what that market may charge.
+///
+/// The un-booked share of a borrow is `borrow_rate x elapsed / year`, so holding
+/// that share under `MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN` means
+/// `elapsed <= share x year / borrow_rate`. A fixed window would instead let the
+/// hidden share scale with the rate, and the rate is configuration:
+/// `validate_borrow_rate` bounds `max_borrow_rate` only from below, so a market may
+/// carry a rate high enough to hide a material share of the debt within any fixed
+/// window.
+///
+/// The divisor is the ceiling the market's own curve cannot exceed, not its current
+/// rate, so the window costs two divisions rather than a utilization and rate
+/// computation on every borrow of every margin check. `calculate_borrow_rate`
+/// interpolates up to `max_borrow_rate` and then raises the result to
+/// `min_borrow_rate`, so the larger of the two bounds it.
+pub fn max_spot_interest_staleness_for_margin(spot_market: &SpotMarket) -> VelocityResult<i64> {
+    let rate_ceiling = spot_market
+        .max_borrow_rate
+        .max(spot_market.get_min_borrow_rate()?)
+        .cast::<u128>()?;
+
+    if rate_ceiling == 0 {
+        return Ok(MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN);
+    }
+
+    let window = MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN
+        .safe_mul(ONE_YEAR)?
+        .safe_div(rate_ceiling)?
+        .cast::<i64>()?;
+
+    Ok(window.min(MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN))
 }
 
 pub fn calculate_margin_requirement_and_total_collateral_and_liability_info(

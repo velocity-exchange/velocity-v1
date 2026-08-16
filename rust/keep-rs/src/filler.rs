@@ -1160,10 +1160,10 @@ async fn try_swift_place(
 
 /// Add the interest cranks a fill needs, ahead of the fill instruction.
 ///
-/// The program refuses a risk-increasing fill when the taker, or a maker that also
-/// increases risk, carries a borrow in a spot market whose interest has not accrued
-/// within the hour (`SpotMarketInterestStaleForMargin`): the margin check values
-/// that borrow through a stale index and understates the debt. `fill_perp_order`
+/// The program refuses a fill when the taker, or any maker, carries a borrow in a
+/// spot market whose interest has not accrued recently enough
+/// (`SpotMarketInterestStaleForMargin`): the margin check values that borrow
+/// through a stale index and understates the debt. `fill_perp_order`
 /// receives those markets read-only and cannot refresh them, so the permissionless
 /// crank rides in the same transaction. Call this before `fill_perp_order`, which
 /// also keeps the fill as the last instruction for the account-count check.

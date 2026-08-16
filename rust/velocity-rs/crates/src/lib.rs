@@ -826,12 +826,14 @@ impl VelocityClient {
     /// on a value-releasing path.
     ///
     /// The program refuses to value a spot **borrow** for margin through an index
-    /// that has not accrued within `MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN`
-    /// (`SpotMarketInterestStaleForMargin`). It applies on withdraw, transfer
-    /// deposit, transfer pools, swap, isolated-position withdraw, and any
-    /// risk-increasing perp fill, for the taker and for a risk-increasing maker
-    /// alike. Only borrow positions count: a stale deposit index understates
+    /// that has not accrued recently (`SpotMarketInterestStaleForMargin`). It
+    /// applies on withdraw, transfer deposit, transfer pools, swap,
+    /// isolated-position withdraw, and any perp fill, for the taker and for every
+    /// maker alike. Only borrow positions count: a stale deposit index understates
     /// collateral and is allowed.
+    ///
+    /// Each market earns its own window from its rate ceiling, so a market that may
+    /// charge more interest must be cranked more often.
     ///
     /// The program also exempts a borrow whose un-booked interest is still under one
     /// token unit, which this does not model, so the result is a superset. Cranking
@@ -859,9 +861,13 @@ impl VelocityClient {
                     continue;
                 };
 
-                if now.saturating_sub(spot_market.last_interest_ts as i64)
-                    > program::math::constants::MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN
-                {
+                let Ok(window) =
+                    program::math::margin::max_spot_interest_staleness_for_margin(&spot_market)
+                else {
+                    continue;
+                };
+
+                if now.saturating_sub(spot_market.last_interest_ts as i64) > window {
                     stale.push(position.market_index);
                 }
             }

@@ -219,7 +219,6 @@ import { TxSender, TxSigAndSlot } from './tx/types';
 import {
 	BASE_PRECISION,
 	MARGIN_PRECISION,
-	MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN,
 	MIN_I64,
 	ONE,
 	PERCENTAGE_PRECISION,
@@ -232,7 +231,11 @@ import {
 	findDirectionToClose,
 	positionIsAvailable,
 } from './math/position';
-import { getSignedTokenAmount, getTokenAmount } from './math/spotBalance';
+import {
+	getSignedTokenAmount,
+	getTokenAmount,
+	maxSpotInterestStalenessForMargin,
+} from './math/spotBalance';
 import { decodeName, DEFAULT_USER_NAME, encodeName } from './userName';
 import { MMOraclePriceData, OraclePriceData } from './oracles/types';
 import { VelocityClientConfig } from './velocityClientConfig';
@@ -6059,13 +6062,15 @@ export class VelocityClient {
 	 * Lists the spot markets that must be cranked before the given accounts can be
 	 * used on a value-releasing path.
 	 *
-	 * The program refuses to value a spot **borrow** for margin through an index
-	 * that has not accrued within `MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN`
-	 * (`SpotMarketInterestStaleForMargin`). It applies on withdraw, transfer
-	 * deposit, transfer pools, swap, isolated-position withdraw, and any
-	 * risk-increasing perp fill — for the taker and for a risk-increasing maker
-	 * alike. Only borrow positions count; a stale deposit index understates
-	 * collateral and is allowed.
+	 * The program refuses to value a spot **borrow** for margin through an index that
+	 * has not accrued recently (`SpotMarketInterestStaleForMargin`). It applies on
+	 * withdraw, transfer deposit, transfer pools, swap, isolated-position withdraw,
+	 * and any perp fill — for the taker and for every maker alike. Only borrow
+	 * positions count; a stale deposit index understates collateral and is allowed.
+	 *
+	 * Each market earns its own window from its rate ceiling
+	 * (`maxSpotInterestStalenessForMargin`), so a market that may charge more
+	 * interest must be cranked more often.
 	 *
 	 * The program also exempts a borrow whose un-booked interest is still under one
 	 * token unit, which this does not model, so the result is a superset: cranking
@@ -6096,7 +6101,7 @@ export class VelocityClient {
 					continue;
 				}
 				const staleness = new BN(now).sub(spotMarket.lastInterestTs);
-				if (staleness.gt(MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN)) {
+				if (staleness.gt(maxSpotInterestStalenessForMargin(spotMarket))) {
 					stale.add(spotPosition.marketIndex);
 				}
 			}

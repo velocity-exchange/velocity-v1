@@ -2167,7 +2167,20 @@ fn fulfill_perp_order(
             }
         };
 
-        let mut context = MarginContext::standard_with_config(margin_type_config);
+        // A spot deposit whose oracle is invalid for margin contributes zero
+        // collateral instead of its stale weighted value (OtterSec #143). Crediting
+        // it let phantom collateral buy an in-band losing DLOB trade whose
+        // counterparty then settled a real profit out of the PnL pool. Every other
+        // value-releasing path already drops such a deposit —
+        // `meets_withdraw_margin_requirement` and its two siblings all set this — and
+        // a fill is the same decision.
+        //
+        // Dropping the deposit rather than rejecting the fill keeps the honest test:
+        // an account with enough *valid* collateral still fills, and an account that
+        // needs the stale deposit fails on `InsufficientCollateral`. It also covers
+        // the reducing fill, which no reject keyed on risk direction can reach.
+        let mut context = MarginContext::standard_with_config(margin_type_config)
+            .ignore_invalid_deposit_oracles(true);
 
         if oracle_stale_for_margin && !user_order_position_decreasing {
             context = context.margin_ratio_override(MARGIN_PRECISION);
@@ -2206,54 +2219,45 @@ fn fulfill_perp_order(
             return Err(ErrorCode::InsufficientCollateral);
         }
 
+        // A borrow the calculation above could not value must not admit the fill
+        // (OtterSec #144 / #148). The two ways it misvalues one are a stale oracle
+        // and a stale cumulative index:
+        //   #144 — a `StaleForMargin` spot borrow was priced at its stale low value,
+        //          so an account that is insolvent at the refreshed price passes and
+        //          becomes protocol bad debt.
+        //   #148 — this handler makes no spot market refreshable, so every scaled
+        //          borrow is valued through the market's *stored* borrow index and
+        //          the interest accrued since `last_interest_ts` is simply absent.
+        // A borrow has no counterpart to the deposit treatment above: dropping it
+        // understates the debt, which is the very error being closed, so the fill
+        // must revert instead.
+        //
+        // Both apply whichever direction the fill moves the position. The two-account
+        // DLOB transfer in these findings works with both seats reducing: one seat
+        // closes into the worst in-band price and leaves bad debt, the other settles
+        // the matching profit out of the PnL pool. `meets_withdraw_margin_requirement`
+        // draws the same line and exempts no direction. Liquidations are excluded —
+        // this whole block is `if !fill_mode.is_liquidation()`.
+        //
+        // The spot-only liability flag is deliberate. `all_liability_oracles_valid` is
+        // also cleared by an invalid *perp* oracle, which `oracle_stale_for_margin`
+        // above already handles by overriding margin to 100% rather than rejecting.
+        // Reading the broader field would silently replace that design with a hard
+        // reject.
+        validate!(
+            taker_margin_calculation.all_spot_liability_oracles_valid,
+            ErrorCode::InvalidOracle,
+            "taker filling while a spot borrow oracle is invalid for margin"
+        )?;
+
+        // The crank is permissionless and can be bundled into the same transaction.
+        crate::math::margin::validate_spot_borrow_interest_fresh_for_margin(
+            user,
+            spot_market_map,
+            now,
+        )?;
+
         if !user_order_position_decreasing {
-            // A risk-increasing fill must not be admitted on margin the calculation
-            // derived from a stale spot oracle (OtterSec #143 / #144). The margin
-            // calc *records* these verdicts but nothing consumed them here, so:
-            //   #143 — a `StaleForMargin` positive deposit was still credited at its
-            //          stale weighted price, letting phantom collateral open an
-            //          in-band losing DLOB trade whose counterparty then settles a
-            //          real profit out of the PnL pool.
-            //   #144 — a `StaleForMargin` spot borrow was still priced at its stale
-            //          low value, so an account that is actually insolvent at the
-            //          refreshed price passes and becomes protocol bad debt.
-            // `meets_withdraw_margin_requirement` already gates on this for the
-            // withdraw path; the fill path is the same value-releasing decision.
-            //
-            // Only the *risk-increasing* branch is gated: refusing a reducing fill
-            // would block the very action that lowers exposure, which is the trade-off
-            // the surrounding `oracle_stale_for_margin` handling and the equity-floor
-            // check below already make. Liquidations are excluded entirely — this
-            // whole block is `if !fill_mode.is_liquidation()`.
-            //
-            // Note this deliberately reads the spot-only liability flag:
-            // `all_liability_oracles_valid` is also cleared by an invalid *perp*
-            // oracle, which `oracle_stale_for_margin` above already handles by
-            // overriding margin to 100% rather than rejecting. Gating on the broader
-            // field would silently replace that design with a hard reject.
-            validate!(
-                taker_margin_calculation.all_deposit_oracles_valid,
-                ErrorCode::InvalidOracle,
-                "taker increasing risk while a spot deposit oracle is invalid for margin"
-            )?;
-            validate!(
-                taker_margin_calculation.all_spot_liability_oracles_valid,
-                ErrorCode::InvalidOracle,
-                "taker increasing risk while a spot borrow oracle is invalid for margin"
-            )?;
-
-            // OtterSec #148: this handler makes no spot market refreshable, yet the
-            // margin calc above values every scaled spot borrow through its stored
-            // cumulative-borrow index. Unaccrued interest is therefore missing from
-            // the check, so an adverse in-band DLOB fill can be taken against debt
-            // it never fully saw. Require recent accrual instead (the crank is
-            // permissionless and can be bundled into the same transaction).
-            crate::math::margin::validate_spot_borrow_interest_fresh_for_margin(
-                user,
-                spot_market_map,
-                now,
-            )?;
-
             validate!(
                 !user_stats.is_equity_breaker_tripped(),
                 ErrorCode::EquityBelowFloor,
@@ -2313,7 +2317,12 @@ fn fulfill_perp_order(
             }
         };
 
-        let mut context = MarginContext::standard_with_config(margin_type_config);
+        // Same treatment of a stale spot deposit as the taker context above
+        // (OtterSec #143). The DLOB transfer in that finding needs two accounts, so
+        // crediting phantom collateral on the maker seat is worth exactly as much to
+        // it as on the taker seat.
+        let mut context = MarginContext::standard_with_config(margin_type_config)
+            .ignore_invalid_deposit_oracles(true);
 
         if oracle_stale_for_margin {
             validate!(
@@ -2361,39 +2370,31 @@ fn fulfill_perp_order(
             return Err(ErrorCode::InsufficientCollateral);
         }
 
+        // Same borrow-side gate as the taker (OtterSec #144 / #148), and on the same
+        // terms: it applies whichever direction the fill moves the maker's position,
+        // because the transfer these findings describe works with both seats
+        // reducing.
+        //
+        // Excluded during a liquidation, which is how the taker side treats it as
+        // well. This loop also runs for liquidation fills, so an unqualified reject
+        // here would let one maker's stale spot oracle, or one maker's un-cranked
+        // borrow market, block the liquidation of another account.
+        if !fill_mode.is_liquidation() {
+            validate!(
+                maker_margin_calculation.all_spot_liability_oracles_valid,
+                ErrorCode::InvalidOracle,
+                "maker ({}) filling while a spot borrow oracle is invalid for margin",
+                maker_key
+            )?;
+
+            crate::math::margin::validate_spot_borrow_interest_fresh_for_margin(
+                &maker,
+                spot_market_map,
+                now,
+            )?;
+        }
+
         if maker_risk_increasing {
-            // Same gate as the taker side above (OtterSec #143 / #144) — a maker
-            // taking on new risk is exactly as able to do it against phantom
-            // stale-oracle collateral, and the DLOB attack in both findings needs
-            // two accounts, so gating only the taker would leave it reachable from
-            // the maker seat.
-            //
-            // Excluded during a liquidation, which is how the taker side treats it
-            // as well. This loop also runs for liquidation fills, so an unqualified
-            // reject here would let one maker's stale spot oracle, or one maker's
-            // un-cranked borrow market, block the liquidation of another account.
-            if !fill_mode.is_liquidation() {
-                validate!(
-                    maker_margin_calculation.all_deposit_oracles_valid,
-                    ErrorCode::InvalidOracle,
-                    "maker ({}) increasing risk while a spot deposit oracle is invalid for margin",
-                    maker_key
-                )?;
-                validate!(
-                    maker_margin_calculation.all_spot_liability_oracles_valid,
-                    ErrorCode::InvalidOracle,
-                    "maker ({}) increasing risk while a spot borrow oracle is invalid for margin",
-                    maker_key
-                )?;
-
-                // Same freshness precondition as the taker side (OtterSec #148).
-                crate::math::margin::validate_spot_borrow_interest_fresh_for_margin(
-                    &maker,
-                    spot_market_map,
-                    now,
-                )?;
-            }
-
             validate!(
                 !maker_breaker_tripped,
                 ErrorCode::EquityBelowFloor,

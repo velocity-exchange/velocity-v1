@@ -74,7 +74,7 @@
 		"yargs": "17.7.2",
 		"zod": "4.0.17",
 		"zstddec": "0.1.0",
-		"bn.js": "^5.2.0"
+		"bn.js": "5.2.3"
 	},
 	"optionalDependencies": {
 		"helius-laserstream": "0.1.8"

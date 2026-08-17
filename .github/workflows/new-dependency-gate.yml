@@ -1,12 +1,26 @@
 name: New dependency gate
 
-# Flags packages a PR newly introduces and requires the `deps-reviewed` label
-# before it can merge. The collect/comment/enforce logic and the lockfile parser
-# both live in velocity-exchange/dependency-gate, so a PR cannot weaken the check
-# that is inspecting it by editing a script in this repo.
+# Flags packages a PR newly introduces, and existing ones it repoints at a new
+# source, then requires the `deps-reviewed` label before it can merge.
+#
+# pull_request_target runs this workflow from the base branch rather than from the
+# pull request. That matters: the collect/comment/enforce logic and the parser live
+# in velocity-exchange/dependency-gate and were already out of a PR's reach, but
+# under `pull_request` this workflow file was still the PR's own copy, so a PR could
+# empty the lockfiles input, rename the job or delete the gate in the same diff that
+# added a dependency.
+#
+# The usual pull_request_target hazard does not apply, because the PR is never
+# checked out. The action reads the head lockfiles as bytes through the contents API
+# at a pinned head SHA and parses them with the base branch's parser, so there is
+# nothing of the PR's to execute. Do not add a `ref:` to the checkout below; that
+# would reintroduce the hazard this trigger exists to avoid.
+#
+# require-pull-request-target below makes the action fail loudly if the trigger is
+# ever downgraded back to `pull_request`, so the protection cannot be removed quietly.
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, synchronize, reopened, labeled, unlabeled]
 
 permissions:
@@ -37,3 +51,4 @@ jobs:
           # LibAFL or example bump and train people to reach for the override label
           # reflexively. They are not covered by anything else either.
           lockfiles: Cargo.lock rust/Cargo.lock bun.lock
+          require-pull-request-target: true

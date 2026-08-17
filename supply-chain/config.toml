@@ -32,7 +32,7 @@ url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
 url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/audits.toml"
 
 [policy.pyth]
-audit-as-crates-io = true
+audit-as-crates-io = false
 
 [[exemptions.aead]]
 version = "0.5.2"
@@ -436,10 +436,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.ptr_meta_derive]]
 version = "0.1.4"
-criteria = "safe-to-deploy"
-
-[[exemptions.pyth]]
-version = "0.1.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.pyth-client]]

@@ -15,13 +15,18 @@ env:
   # rust/ workspace (velocity-rs, keep-rs, swift) and the bun workspace behind
   # the TS SDK and the dlob/keeper images.
   #
-  # Deliberately NOT watched: fuzz/*/Cargo.lock and
-  # rust/velocity-rs/examples/*/Cargo.lock. Those 23 lockfiles belong to
-  # host-only fuzz harnesses and doc examples that are never deployed and never
-  # published; gating them would fire on every LibAFL or example bump and train
-  # people to reach for the override label reflexively.
+  # Deliberately NOT watched: fuzz/*/Cargo.lock (13),
+  # rust/velocity-rs/examples/*/Cargo.lock (9) and
+  # rust/velocity-rs/crates/*/Cargo.lock (2). Those 24 lockfiles belong to
+  # host-only fuzz harnesses, doc examples and codegen helpers that are never
+  # deployed and never published; gating them would fire on every LibAFL or
+  # example bump and train people to reach for the override label reflexively.
+  # They are still covered by Dependabot.
   LOCKFILES: Cargo.lock rust/Cargo.lock bun.lock
   OVERRIDE_LABEL: deps-reviewed
+  # First line of the comment body. Lets the job find and update its own comment
+  # instead of posting a fresh one on every `synchronize`.
+  COMMENT_MARKER: '<!-- new-dependency-gate -->'
 
 jobs:
   new-dependency-gate:
@@ -34,9 +39,11 @@ jobs:
 
       - name: Collect newly added packages
         id: collect
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
-          base="origin/${{ github.base_ref }}"
+          base="origin/$BASE_REF"
           : > /tmp/new-packages.txt
           for lock in $LOCKFILES; do
             [ -f "$lock" ] || continue
@@ -45,8 +52,10 @@ jobs:
             mkdir -p "/tmp/base/$(dirname "$lock")"
             # Lockfile may be new in this PR; an absent base copy means everything is new.
             git show "$base:$lock" > "/tmp/base/$lock" 2>/dev/null || : > "/tmp/base/$lock"
+            # awk, not `sed s/^/$lock\t/`: only GNU sed expands \t, and the lock
+            # path would otherwise have to be escaped into the replacement.
             python3 .github/scripts/lockfile_packages.py "/tmp/base/$lock" "$lock" \
-              | sed "s#^#${lock}\t#" >> /tmp/new-packages.txt
+              | awk -v lock="$lock" '{ print lock "\t" $0 }' >> /tmp/new-packages.txt
           done
           count=$(wc -l < /tmp/new-packages.txt | tr -d ' ')
           echo "count=$count" >> "$GITHUB_OUTPUT"
@@ -57,10 +66,14 @@ jobs:
         if: steps.collect.outputs.count != '0'
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          COUNT: ${{ steps.collect.outputs.count }}
           LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
         run: |
           set -euo pipefail
           {
+            echo "$COMMENT_MARKER"
             echo "### :package: New dependencies in this PR"
             echo
             echo "This PR adds packages that were not in the base lockfile. Confirm each one's"
@@ -72,11 +85,36 @@ jobs:
             awk -F'\t' '{print "| `" $1 "` | `" $2 "` |"}' /tmp/new-packages.txt
           } > /tmp/comment.md
 
-          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/comment.md
+          # Always leave the verdict somewhere readable, even if commenting fails.
+          cat /tmp/comment.md >> "$GITHUB_STEP_SUMMARY"
+
+          # One sticky comment per PR: update the marker-carrying comment if it is
+          # already there, otherwise create it. Without this the job posts a fresh
+          # near-identical comment on every `synchronize`.
+          #
+          # Commenting is best-effort: a PR from a fork gets a read-only
+          # GITHUB_TOKEN, and a failed comment must not mask the label verdict
+          # below, which is the part that actually gates the merge.
+          # No `| head -n1` here: --paginate applies --jq per page, and closing the
+          # pipe early would SIGPIPE gh into a failure that looks like "not found".
+          matches=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
+            --jq "[.[] | select(.body | contains(\"$COMMENT_MARKER\")) | .id] | first // empty" \
+            2>/dev/null) || matches=""
+          existing=${matches%%$'\n'*}
+
+          if [ -n "$existing" ]; then
+            # -F (not -f) is what reads a value from @file; -f would post the literal string.
+            gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
+              -F body=@/tmp/comment.md >/dev/null \
+              || echo "::warning::could not update the existing PR comment; see the job summary."
+          else
+            gh pr comment "$PR_NUMBER" --body-file /tmp/comment.md \
+              || echo "::warning::could not post a PR comment; see the job summary."
+          fi
 
           if echo "$LABELS" | grep -q "\"$OVERRIDE_LABEL\""; then
-            echo "::notice::${{ steps.collect.outputs.count }} new package(s), signed off via '$OVERRIDE_LABEL'."
+            echo "::notice::$COUNT new package(s), signed off via '$OVERRIDE_LABEL'."
           else
-            echo "::error::${{ steps.collect.outputs.count }} new package(s) need review. Apply the '$OVERRIDE_LABEL' label to merge."
+            echo "::error::$COUNT new package(s) need review. Apply the '$OVERRIDE_LABEL' label to merge."
             exit 1
           fi

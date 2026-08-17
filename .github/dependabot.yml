@@ -5,6 +5,10 @@ version: 2
 # offer it, which keeps us out of the window in which a compromised npm or crates
 # release is published and then yanked. Grouping minor+patch into one PR per
 # directory keeps the review load low enough that the PRs actually get read.
+#
+# The `area/*` labels below do not exist in the repository yet. Dependabot skips
+# labels it cannot find rather than failing, so the config is valid either way,
+# but the routing only starts working once someone creates them.
 
 updates:
   # ────────────────────────────────────────────────────────────────────

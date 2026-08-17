@@ -1,13 +1,18 @@
 name: npm audit signatures
 
 # Registry attestation check for the TypeScript side of the repo. `npm audit
-# signatures` verifies that every resolved package's tarball carries a valid
+# signatures` verifies that every installed package's tarball carries a valid
 # npm registry signature, and checks provenance attestations for the publishers
 # that produce them. It is the npm-ecosystem counterpart to cargo-deny's
 # `[sources]` allowlist on the Rust side.
 #
-# It lives in its own workflow rather than in main.yml because it needs an
-# npm-installed tree, and main.yml installs everything with bun.
+# It is npm-only, but it reads node_modules rather than a lockfile, so it
+# verifies a bun-installed tree directly. This job therefore installs the real
+# workspace with bun from the committed bun.lock. The previous approach copied
+# the manifests into a scratch directory without the lockfile, rewrote every
+# `workspace:` dependency to a `file:` path so npm's resolver would accept them,
+# and let npm re-resolve from the version ranges. That audited a tree that
+# existed nowhere in the repo.
 
 on:
   push:
@@ -32,13 +37,12 @@ jobs:
   npm-audit-signatures:
     name: npm audit signatures
     runs-on: ubicloud
-    # NON-BLOCKING FOR NOW -- but only for one run. Measured baseline at the
-    # time this landed: 2086 of 2086 resolved packages have verified registry
-    # signatures (0 failures), 449 of them also carry provenance attestations.
-    # So this is expected to be green immediately; continue-on-error is here
-    # only so a first-run difference between a laptop and ubicloud cannot block
-    # unrelated PRs. Once one run has passed on master, delete this line and
-    # the check starts gating.
+    # NON-BLOCKING FOR NOW -- but only until one run has passed on master.
+    # Baseline measured against the committed lockfile: 2122 of 2122 installed
+    # packages have verified registry signatures, 381 of them also carrying
+    # provenance attestations. Once one run has passed, delete this line and the
+    # check starts gating. (An earlier 2086/449 figure described the synthetic
+    # npm-resolved tree and does not apply to these packages.)
     continue-on-error: true
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -50,5 +54,9 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           registry-url: 'https://registry.npmjs.org'
+      - name: Setup bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - name: Install the locked workspace with bun
+        run: bun install --frozen-lockfile --ignore-scripts
       - name: Verify registry signatures and provenance
-        run: bash .github/scripts/npm-audit-signatures.sh
+        run: npm audit signatures

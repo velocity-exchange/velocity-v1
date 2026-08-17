@@ -61,8 +61,10 @@ jobs:
     # therefore separate supply-chain/ directories:
     #   .     -> the on-chain Anchor programs (highest-value trust surface)
     #   rust/ -> velocity-rs / keep-rs / swift (host-side SDK + keeper + signer)
-    # `fuzz/` is deliberately not covered: each fuzz crate is its own standalone
-    # workspace and none of it ships to users.
+    # Not covered, deliberately: each `fuzz/<crate>/` and each unlisted
+    # `rust/velocity-rs/examples/<name>/` is its own standalone workspace with
+    # its own lockfile. None of it ships, and each would need a third and
+    # fourth supply-chain/ baseline for no security gain.
     name: vet (${{ matrix.name }})
     runs-on: ubicloud
     # NON-BLOCKING for now. See the header comment for the flip-to-blocking plan.

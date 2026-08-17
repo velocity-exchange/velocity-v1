@@ -18,10 +18,16 @@ name: New dependency gate
 #
 # require-pull-request-target below makes the action fail loudly if the trigger is
 # ever downgraded back to `pull_request`, so the protection cannot be removed quietly.
+#
+# `edited` is in the trigger list because retargeting a PR emits it and nothing else.
+# The head SHA does not move, so without a rerun the passing check computed against
+# the old base survives the retarget: open against a branch that already carries the
+# dependency, then repoint at master. `edited` also fires on title and body edits,
+# which is a cheap rerun, since the action only reads the lockfiles through the API.
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 
 permissions:
   contents: read

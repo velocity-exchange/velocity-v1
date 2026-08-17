@@ -38,8 +38,8 @@ jobs:
     name: npm audit signatures
     runs-on: ubicloud
     # NON-BLOCKING FOR NOW -- but only until one run has passed on master.
-    # Baseline measured against the committed lockfile: 2122 of 2122 installed
-    # packages have verified registry signatures, 381 of them also carrying
+    # Baseline measured against the committed lockfile: 2210 of 2210 installed
+    # packages have verified registry signatures, 480 of them also carrying
     # provenance attestations. Once one run has passed, delete this line and the
     # check starts gating. (An earlier 2086/449 figure described the synthetic
     # npm-resolved tree and does not apply to these packages.)

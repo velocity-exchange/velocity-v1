@@ -12,10 +12,16 @@ version: 2
 
 updates:
   # ────────────────────────────────────────────────────────────────────
-  # npm / bun — one lockfile (bun.lock) covers the whole workspace
-  # (packages/*, apps/*), so a single root entry updates all of them.
+  # bun — one lockfile (bun.lock) covers the whole workspace (packages/*,
+  # apps/*), so a single root entry updates all of them.
+  #
+  # `bun`, not `npm`: the npm ecosystem maintains package-lock/yarn.lock and
+  # leaves bun.lock untouched, so it would bump package.json alone. Every CI job
+  # here runs `bun install --frozen-lockfile`, which fails the moment the
+  # manifest and the lockfile disagree, so an npm-ecosystem entry would open
+  # nothing but red PRs.
   # ────────────────────────────────────────────────────────────────────
-  - package-ecosystem: npm
+  - package-ecosystem: bun
     directory: /
     schedule:
       interval: weekly
@@ -195,9 +201,10 @@ updates:
     commit-message:
       prefix: chore
       include: scope
+    # docker takes `default-days` only -- image tags are not SemVer, so
+    # `semver-major-days` is rejected by Dependabot's config validator.
     cooldown:
       default-days: 7
-      semver-major-days: 14
     groups:
       docker-minor-and-patch:
         applies-to: version-updates
@@ -224,9 +231,10 @@ updates:
     commit-message:
       prefix: chore
       include: scope
+    # Same as docker: action tags are not treated as SemVer, so this entry
+    # supports `default-days` only.
     cooldown:
       default-days: 7
-      semver-major-days: 14
     groups:
       gha-minor-and-patch:
         applies-to: version-updates

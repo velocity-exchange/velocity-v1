@@ -43,7 +43,10 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Setup node
-        uses: actions/setup-node@7c12f8017d5436eb855f1ed4399f037a36fbd9e8 # v2
+        # v4.4.0, not the v2 (2020) pin the rest of .github/workflows still uses.
+        # A supply-chain job should not be the one shipping a five-year-old action;
+        # bumping the pre-existing pins is a separate change.
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           registry-url: 'https://registry.npmjs.org'

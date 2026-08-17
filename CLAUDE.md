@@ -217,6 +217,13 @@ build via `docker/ts-app.Dockerfile` (full-context bun + turbo); Rust apps (`kee
 `docker/rust-app.Dockerfile`. The version is everything after the **last** `-v`, so app keys may
 contain `-v` (e.g. `docker-keeper-bots-v2-v1.4.2`). Add a new app by adding a `docker-info.json` entry.
 
+Each image gets a GitHub build-provenance attestation over its digest — verify with
+`gh attestation verify oci://<registry>/<repo>:<version> -R velocity-exchange/protocol-v2-shadow`
+after an ECR login. **Do not turn on buildx's own `provenance: true`**: it wraps the image in an OCI
+index that ECR rejects during the registry-to-registry copy to prod (this is what left vamm-crank
+v0.2.2's prod tag pointing at the attestation manifest instead of the image). The GitHub attestation
+is stored off-registry precisely to avoid that.
+
 ## Publishing (changesets)
 
 Library packages under `packages/*` publish via [changesets](https://github.com/changesets/changesets),

@@ -4,6 +4,18 @@ name: docker-on-tag
 # `<app>` is a key in docker-info.json (e.g. docker-dlob-server-v0.3.0,
 # docker-keeper-bots-v2-v1.4.2, docker-keep-rs-v2.1.0). The version is everything
 # after the LAST `-v`, so app keys may themselves contain `-v` (keeper-bots-v2).
+#
+# Each pushed image gets a GitHub build-provenance attestation over its digest,
+# binding it to this workflow and commit. After an ECR login, verify with:
+#
+#   gh attestation verify oci://<registry>/<repo>:<version> \
+#     -R velocity-exchange/protocol-v2-shadow
+#
+# The attestation lives on GitHub and is deliberately NOT pushed to the registry.
+# buildx's own `provenance: true` (and cosign-style in-registry signatures) wrap
+# the image in an OCI index with an in-toto manifest beside it, which ECR rejects
+# during the imagetools copy below — that is what left vamm-crank v0.2.2's prod
+# tag pointing at a 1.8KB attestation manifest instead of the image.
 on:
   push:
     tags:
@@ -12,6 +24,7 @@ on:
 permissions:
   id-token: write
   contents: read
+  attestations: write # record the build-provenance attestation for each image digest
 
 jobs:
   route:
@@ -64,7 +77,8 @@ jobs:
           aws-region: eu-west-1
       - id: login-ecr
         uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2
-      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+      - id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: docker/ts-app.Dockerfile
@@ -80,6 +94,11 @@ jobs:
             APP_SCOPE=${{ needs.route.outputs.scope }}
             APP_OUT=${{ needs.route.outputs.out }}
             APP_START=${{ needs.route.outputs.start }}
+      - name: Attest image provenance (non-prod)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.login-ecr.outputs.registry }}/${{ needs.route.outputs.ecr }}
+          subject-digest: ${{ steps.build.outputs.digest }}
       # Copy the just-pushed image into prod ECR (account 039438368040). Assume the
       # prod publish role, log into prod ECR (its login persists alongside the non-prod
       # one in the docker config), then copy the manifest registry-to-registry with
@@ -98,6 +117,31 @@ jobs:
           docker buildx imagetools create \
             --tag ${{ steps.login-ecr-prod.outputs.registry }}/${{ needs.route.outputs.ecr }}:${{ needs.route.outputs.version }} \
             ${{ steps.login-ecr.outputs.registry }}/${{ needs.route.outputs.ecr }}:${{ needs.route.outputs.version }}
+      # infrastructure-v3 deploys from PROD ECR, so an attestation covering only
+      # the non-prod digest would prove nothing about what actually runs.
+      # imagetools should copy the manifest unchanged (same digest, already
+      # attested above); if it ever rewraps, warn and attest the prod digest too
+      # rather than failing a release that has already been pushed.
+      - name: Resolve prod digest
+        id: prod
+        env:
+          IMAGE: ${{ steps.login-ecr-prod.outputs.registry }}/${{ needs.route.outputs.ecr }}:${{ needs.route.outputs.version }}
+          BUILT: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          digest=$(docker buildx imagetools inspect "$IMAGE" --format '{{.Manifest.Digest}}')
+          echo "prod digest: $digest (built: $BUILT)"
+          if [ "$digest" != "$BUILT" ]; then
+            echo "::warning::prod ECR digest ($digest) differs from the built digest ($BUILT) — imagetools rewrapped the manifest"
+            echo "differs=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Attest image provenance (prod)
+        if: steps.prod.outputs.differs == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.login-ecr-prod.outputs.registry }}/${{ needs.route.outputs.ecr }}
+          subject-digest: ${{ steps.prod.outputs.digest }}
 
   build-rust:
     needs: route
@@ -114,7 +158,8 @@ jobs:
           aws-region: eu-west-1
       - id: login-ecr
         uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2
-      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+      - id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: docker/rust-app.Dockerfile
@@ -132,6 +177,11 @@ jobs:
             APP_BIN=${{ needs.route.outputs.bin }}
             GIT_SHA=${{ github.sha }}
             BUILD_VERSION=${{ needs.route.outputs.version }}
+      - name: Attest image provenance (non-prod)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.login-ecr.outputs.registry }}/${{ needs.route.outputs.ecr }}
+          subject-digest: ${{ steps.build.outputs.digest }}
       # Copy the just-pushed image into prod ECR (account 039438368040). See the
       # build-ts job for the rationale; set VELOCITY_PROD_ECR_PUBLISH_ROLE to enable.
       - name: Configure AWS credentials (prod)
@@ -147,3 +197,24 @@ jobs:
           docker buildx imagetools create \
             --tag ${{ steps.login-ecr-prod.outputs.registry }}/${{ needs.route.outputs.ecr }}:${{ needs.route.outputs.version }} \
             ${{ steps.login-ecr.outputs.registry }}/${{ needs.route.outputs.ecr }}:${{ needs.route.outputs.version }}
+      # See the build-ts job for why the prod digest is checked and attested too.
+      - name: Resolve prod digest
+        id: prod
+        env:
+          IMAGE: ${{ steps.login-ecr-prod.outputs.registry }}/${{ needs.route.outputs.ecr }}:${{ needs.route.outputs.version }}
+          BUILT: ${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          digest=$(docker buildx imagetools inspect "$IMAGE" --format '{{.Manifest.Digest}}')
+          echo "prod digest: $digest (built: $BUILT)"
+          if [ "$digest" != "$BUILT" ]; then
+            echo "::warning::prod ECR digest ($digest) differs from the built digest ($BUILT) — imagetools rewrapped the manifest"
+            echo "differs=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Attest image provenance (prod)
+        if: steps.prod.outputs.differs == 'true'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ steps.login-ecr-prod.outputs.registry }}/${{ needs.route.outputs.ecr }}
+          subject-digest: ${{ steps.prod.outputs.digest }}

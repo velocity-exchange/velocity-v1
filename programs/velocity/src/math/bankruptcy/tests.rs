@@ -1,9 +1,13 @@
 use crate::{
     create_anchor_account_info,
     math::{
-        bankruptcy::{is_cross_margin_bankrupt, is_isolated_margin_bankrupt},
+        bankruptcy::{
+            has_realizable_isolated_assets, has_realizable_spot_assets_for_setoff,
+            is_cross_margin_bankrupt, is_isolated_margin_bankrupt,
+        },
         constants::{
-            QUOTE_PRECISION_I64, SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
+            QUOTE_PRECISION_I128, QUOTE_PRECISION_I64, SPOT_BALANCE_PRECISION,
+            SPOT_CUMULATIVE_INTEREST_PRECISION,
         },
     },
     state::{
@@ -16,12 +20,11 @@ use crate::{
     test_utils::{get_positions, get_spot_positions},
 };
 
-/// Scaffolding for the map-taking predicate (OtterSec #145 / #151).
+/// Scaffolding for the map-taking predicate (OtterSec #151).
 ///
-/// `pnl_pool_dollars` funds perp market 0's PnL pool and `deposit_interest` sets spot
-/// market 0's cumulative deposit index. Both matter now: a positive perp quote only
-/// vetoes bankruptcy when the pool can pay it, and a deposit row only vetoes when it
-/// is worth at least one token.
+/// `deposit_interest` sets spot market 0's cumulative deposit index, which is what decides
+/// whether a deposit row is worth a token and so whether it vetoes. `pnl_pool_dollars` funds
+/// perp market 0's PnL pool, which admission is deliberately blind to.
 macro_rules! with_maps {
     ($pnl_pool_dollars:expr, $deposit_interest:expr, |$perp_map:ident, $spot_map:ident| $body:block) => {{
         let mut spot_market = SpotMarket {
@@ -73,7 +76,7 @@ fn user_has_position_with_base() {
     };
 
     healthy_maps!(|perp_map, spot_map| {
-        assert!(!is_cross_margin_bankrupt(&user, &spot_map, &perp_map).unwrap());
+        assert!(!is_cross_margin_bankrupt(&user, &spot_map).unwrap());
     });
 }
 
@@ -87,9 +90,9 @@ fn user_has_position_with_positive_quote() {
         ..User::default()
     };
 
-    // Payable out of a funded pool, so it still vetoes — unchanged behavior.
+    // A lone positive claim leaves the estate net solvent, so it still vetoes.
     healthy_maps!(|perp_map, spot_map| {
-        assert!(!is_cross_margin_bankrupt(&user, &spot_map, &perp_map).unwrap());
+        assert!(!is_cross_margin_bankrupt(&user, &spot_map).unwrap());
     });
 }
 
@@ -105,7 +108,7 @@ fn user_with_deposit() {
     };
 
     healthy_maps!(|perp_map, spot_map| {
-        assert!(!is_cross_margin_bankrupt(&user, &spot_map, &perp_map).unwrap());
+        assert!(!is_cross_margin_bankrupt(&user, &spot_map).unwrap());
     });
 }
 
@@ -120,7 +123,7 @@ fn user_has_position_with_negative_quote() {
     };
 
     healthy_maps!(|perp_map, spot_map| {
-        assert!(is_cross_margin_bankrupt(&user, &spot_map, &perp_map).unwrap());
+        assert!(is_cross_margin_bankrupt(&user, &spot_map).unwrap());
     });
 }
 
@@ -136,7 +139,7 @@ fn user_with_borrow() {
     };
 
     healthy_maps!(|perp_map, spot_map| {
-        assert!(is_cross_margin_bankrupt(&user, &spot_map, &perp_map).unwrap());
+        assert!(is_cross_margin_bankrupt(&user, &spot_map).unwrap());
     });
 }
 
@@ -144,7 +147,7 @@ fn user_with_borrow() {
 fn user_with_empty_position_and_balances() {
     let user = User::default();
     healthy_maps!(|perp_map, spot_map| {
-        assert!(!is_cross_margin_bankrupt(&user, &spot_map, &perp_map).unwrap());
+        assert!(!is_cross_margin_bankrupt(&user, &spot_map).unwrap());
     });
 }
 
@@ -175,7 +178,7 @@ fn zero_token_deposit_residue_does_not_veto_bankruptcy() {
     // cumulative_deposit_interest floored at 1 => the row converts to 0 tokens.
     with_maps!(1_000_000, 1, |perp_map, spot_map| {
         assert!(
-            is_cross_margin_bankrupt(&user, &spot_map, &perp_map).unwrap(),
+            is_cross_margin_bankrupt(&user, &spot_map).unwrap(),
             "a zero-token deposit residue must not veto bankruptcy"
         );
     });
@@ -185,7 +188,7 @@ fn zero_token_deposit_residue_does_not_veto_bankruptcy() {
     solvent.spot_positions[0].scaled_balance = SPOT_BALANCE_PRECISION as u64;
     healthy_maps!(|perp_map, spot_map| {
         assert!(
-            !is_cross_margin_bankrupt(&solvent, &spot_map, &perp_map).unwrap(),
+            !is_cross_margin_bankrupt(&solvent, &spot_map).unwrap(),
             "a deposit worth >= 1 token must still veto"
         );
     });
@@ -205,36 +208,35 @@ fn user_with_isolated_position() {
         let mut user_with_scaled_balance = user;
         user_with_scaled_balance.perp_positions[0].isolated_position_scaled_balance =
             1000000000000000000;
-        assert!(
-            !is_cross_margin_bankrupt(&user_with_scaled_balance, &spot_map, &perp_map).unwrap()
-        );
+        assert!(!is_cross_margin_bankrupt(&user_with_scaled_balance, &spot_map).unwrap());
 
         let mut user_with_base_asset_amount = user;
         user_with_base_asset_amount.perp_positions[0].base_asset_amount = 1000000000000000000;
-        assert!(
-            !is_cross_margin_bankrupt(&user_with_base_asset_amount, &spot_map, &perp_map).unwrap()
-        );
+        assert!(!is_cross_margin_bankrupt(&user_with_base_asset_amount, &spot_map).unwrap());
 
         let mut user_with_open_order = user;
         user_with_open_order.perp_positions[0].open_orders = 1;
-        assert!(!is_cross_margin_bankrupt(&user_with_open_order, &spot_map, &perp_map).unwrap());
+        assert!(!is_cross_margin_bankrupt(&user_with_open_order, &spot_map).unwrap());
 
         let mut user_with_positive_pnl = user;
         user_with_positive_pnl.perp_positions[0].quote_asset_amount = 1000000000000000000;
-        assert!(!is_cross_margin_bankrupt(&user_with_positive_pnl, &spot_map, &perp_map).unwrap());
+        assert!(!is_cross_margin_bankrupt(&user_with_positive_pnl, &spot_map).unwrap());
 
         let mut user_with_negative_pnl = user;
         user_with_negative_pnl.perp_positions[0].quote_asset_amount = -1000000000000000000;
-        assert!(!is_cross_margin_bankrupt(&user_with_negative_pnl, &spot_map, &perp_map).unwrap());
+        assert!(!is_cross_margin_bankrupt(&user_with_negative_pnl, &spot_map).unwrap());
 
         assert!(is_isolated_margin_bankrupt(&user_with_negative_pnl, 0).unwrap());
     });
 }
 
-/// Scaffolding for the cross-market #145 cases: perp market 0 holds the claim (pool funded to
-/// `$claim_pool_dollars`), perp market 1 holds the debt with an empty pool.
+/// Scaffolding for the cross-market #145 cases: perp market 0 holds the claim, perp market 1 holds
+/// the debt with an empty pool.
+///
+/// The claim market owes `$claim_aggregate_dollars` to its users in total and holds
+/// `$claim_pool_dollars` of pool against that.
 macro_rules! with_two_perp_markets {
-    ($claim_pool_dollars:expr, |$perp_map:ident, $spot_map:ident| $body:block) => {{
+    ($claim_aggregate_dollars:expr, $claim_pool_dollars:expr, |$perp_map:ident, $spot_map:ident| $body:block) => {{
         let mut spot_market = SpotMarket {
             market_index: 0,
             decimals: 6,
@@ -249,6 +251,7 @@ macro_rules! with_two_perp_markets {
         let mut claim_market = PerpMarket {
             market_index: 0,
             quote_spot_market_index: 0,
+            quote_asset_amount: ($claim_aggregate_dollars as i128) * QUOTE_PRECISION_I128,
             ..PerpMarket::default()
         };
         claim_market.pnl_pool.scaled_balance =
@@ -298,12 +301,37 @@ fn unfundable_positive_claim_does_not_veto_bankruptcy() {
     let user = cross_market_estate(500, -1_000);
 
     // Claim market's pool is empty: the 500 cannot be realized at all.
-    with_two_perp_markets!(0, |perp_map, spot_map| {
+    with_two_perp_markets!(500, 0, |perp_map, spot_map| {
         assert!(
-            is_cross_margin_bankrupt(&user, &spot_map, &perp_map).unwrap(),
+            is_cross_margin_bankrupt(&user, &spot_map).unwrap(),
             "an unfundable claim must not strand a resolvable loss in another market"
         );
     });
+}
+
+/// OtterSec #145, second half: the state of the pool must not veto admission at all.
+///
+/// The original rule vetoed while the pool held anything, which left the same stall in place. Any
+/// market participant could re-arm it for the price of a trade, because trading fees flow into the
+/// pnl pool, and a keeper had to drain the pool through the ordinary pipeline before the repair
+/// could proceed.
+///
+/// Admission is now silent about the pool. The resolvers recover what it can pay and forfeit the
+/// rest, so no pool state can hold a bad-debt repair open.
+#[test]
+fn pool_state_never_vetoes_bankruptcy() {
+    let user = cross_market_estate(500, -1_000);
+
+    // Empty, part-funded, and funded past the claim: the answer is the same.
+    for pool in [0, 200, 1_000] {
+        with_two_perp_markets!(500, pool, |perp_map, spot_map| {
+            assert!(
+                is_cross_margin_bankrupt(&user, &spot_map).unwrap(),
+                "pool state must not gate admission (pool = {})",
+                pool
+            );
+        });
+    }
 }
 
 /// OtterSec #145: a net-solvent estate is still refused, however unfundable its claim is.
@@ -317,34 +345,79 @@ fn unfundable_positive_claim_does_not_veto_bankruptcy() {
 fn net_solvent_estate_is_never_bankrupt_however_unfundable() {
     let user = cross_market_estate(5_000, -1_000);
 
-    with_two_perp_markets!(0, |perp_map, spot_map| {
+    with_two_perp_markets!(5_000, 0, |perp_map, spot_map| {
         assert!(
-            !is_cross_margin_bankrupt(&user, &spot_map, &perp_map).unwrap(),
+            !is_cross_margin_bankrupt(&user, &spot_map).unwrap(),
             "a net-solvent estate must never be admitted, or the extinguish step over-confiscates"
         );
     });
 }
 
-/// OtterSec #145: a claim the pool can pay still vetoes. That part belongs in the ordinary pipeline
-/// (settle -> deposit -> `liquidate_perp_pnl_for_deposit`), which uses no insurance.
+/// The stale-latch re-check stays scoped to spot deposits (OtterSec #130).
+///
+/// A perp claim is the other place value can sit on a cross-margin estate, but it never needs to be
+/// handed back to ordinary liquidation: the resolvers recover the payable part into the quote deposit
+/// themselves and forfeit the rest under a `ForfeitBudget`. Widening this check to perp claims would
+/// un-latch an estate whose claim no pool can pay, and nothing in ordinary liquidation could move
+/// that claim onto the debt, so the bad debt would never resolve.
 #[test]
-fn fundable_positive_claim_still_vetoes() {
+fn the_stale_latch_check_is_scoped_to_spot_deposits() {
     let user = cross_market_estate(500, -1_000);
 
-    // The pool can cover the whole claim.
-    with_two_perp_markets!(500, |perp_map, spot_map| {
+    with_two_perp_markets!(500, 1_000, |perp_map, spot_map| {
         assert!(
-            !is_cross_margin_bankrupt(&user, &spot_map, &perp_map).unwrap(),
-            "a fundable claim must settle through the ordinary pipeline, not via insurance"
+            !has_realizable_spot_assets_for_setoff(&user, &spot_map).unwrap(),
+            "a perp claim belongs to the resolver's recovery pass, not to the un-latch"
         );
     });
 
-    // Even a partially fundable claim vetoes: settle that part first, then the remainder is
-    // genuinely unfundable and admission proceeds.
-    with_two_perp_markets!(200, |perp_map, spot_map| {
+    let mut with_deposit = user;
+    with_deposit.spot_positions[0] = SpotPosition {
+        market_index: 0,
+        balance_type: SpotBalanceType::Deposit,
+        scaled_balance: SPOT_BALANCE_PRECISION as u64,
+        ..SpotPosition::default()
+    };
+
+    with_two_perp_markets!(500, 0, |perp_map, spot_map| {
         assert!(
-            !is_cross_margin_bankrupt(&user, &spot_map, &perp_map).unwrap(),
-            "a partially fundable claim must still veto"
+            has_realizable_spot_assets_for_setoff(&with_deposit, &spot_map).unwrap(),
+            "a deposit ordinary liquidation can seize must un-latch"
         );
     });
+}
+
+/// An isolated position is walled off from the cross-margin book, so only its own collateral counts.
+///
+/// The cross check must never be asked about an isolated bankruptcy. A cross deposit can never pay an
+/// isolated debt, so un-latching for one would clear the latch that `is_isolated_margin_bankrupt`
+/// immediately sets again, and the resolver would make no progress on any call.
+#[test]
+fn isolated_assets_are_the_isolated_position_own_collateral() {
+    let mut user = User {
+        spot_positions: get_spot_positions(SpotPosition {
+            market_index: 0,
+            balance_type: SpotBalanceType::Deposit,
+            scaled_balance: 1_000 * SPOT_BALANCE_PRECISION as u64,
+            ..SpotPosition::default()
+        }),
+        perp_positions: get_positions(PerpPosition {
+            market_index: 0,
+            quote_asset_amount: -1_000 * QUOTE_PRECISION_I64,
+            position_flag: PositionFlag::IsolatedPosition as u8,
+            ..PerpPosition::default()
+        }),
+        ..User::default()
+    };
+
+    assert!(
+        !has_realizable_isolated_assets(&user, 0).unwrap(),
+        "a cross deposit is out of reach of an isolated debt"
+    );
+
+    user.perp_positions[0].isolated_position_scaled_balance = SPOT_BALANCE_PRECISION as u64;
+    assert!(
+        has_realizable_isolated_assets(&user, 0).unwrap(),
+        "the position's own collateral is what can pay it"
+    );
 }

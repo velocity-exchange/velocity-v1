@@ -41,15 +41,15 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = [
 	# Velocity-owned forks. Direct dependencies of rust/swift and rust/velocity-rs.
 	"https://github.com/velocity-exchange/tokio-tungstenite",
-	"https://github.com/velocity-exchange/jupiter-swap-api-client",
 	"https://github.com/velocity-exchange/titan-swap-api-client",
 
 	# Transitive: pulled in by the tokio-tungstenite fork above, which depends on
-	# the pre-rename drift-labs fork of tungstenite-rs for permessage-deflate.
-	# Tracked by BRANCH, not by rev — Cargo.lock pins the commit, but a `cargo
-	# update` will silently move it. Migrating this to a velocity-exchange fork
-	# pinned to a rev is worth doing.
-	"https://github.com/drift-labs/tungstenite-rs",
+	# a fork of tungstenite-rs for permessage-deflate. Still tracked by BRANCH
+	# (`drift/permessage-deflate`) rather than by rev, so Cargo.lock pins the
+	# commit but a `cargo update` can move it. Now at least a velocity-exchange
+	# fork we control rather than the pre-rename drift-labs one (#414); pinning it
+	# to a rev is still worth doing.
+	"https://github.com/velocity-exchange/tungstenite-rs",
 
 	# Yellowstone gRPC client/proto, pinned to a rev in rust/velocity-rs/Cargo.toml.
 	"https://github.com/rpcpool/yellowstone-grpc",

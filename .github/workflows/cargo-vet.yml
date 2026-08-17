@@ -24,7 +24,7 @@ on:
   push:
     branches: [master]
   pull_request:
-    branches: [master, devnet, feat/monorepo-consolidation]
+    branches: [master]
     paths:
       - 'Cargo.toml'
       - 'Cargo.lock'

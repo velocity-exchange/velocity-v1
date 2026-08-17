@@ -35,5 +35,5 @@ jobs:
           # host-only fuzz harnesses, doc examples and codegen helpers that are
           # never deployed and never published; gating them would fire on every
           # LibAFL or example bump and train people to reach for the override label
-          # reflexively. They are still covered by Dependabot.
+          # reflexively. They are not covered by anything else either.
           lockfiles: Cargo.lock rust/Cargo.lock bun.lock

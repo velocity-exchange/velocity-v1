@@ -36,14 +36,28 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch trusted parser
+        run: |
+          set -euo pipefail
+          # GITHUB_BASE_REF is a runner-provided env var for pull_request events --
+          # using it instead of templating ${{ github.base_ref }} into the script keeps
+          # the branch name out of the shell command line entirely.
+          base="origin/$GITHUB_BASE_REF"
+          # Run the base branch's copy of the parser, not the PR's own. `pull_request`
+          # checks out the merge commit, so otherwise a PR could add a malicious package
+          # and, in the same diff, edit the script that is supposed to catch it. A PR
+          # that adds the script for the first time has no base copy to fetch; fall back
+          # to the head copy there (a first-time addition has nothing to neuter).
+          git show "$base:.github/scripts/lockfile_packages.py" > /tmp/lockfile_packages.py \
+            2>/dev/null || cp .github/scripts/lockfile_packages.py /tmp/lockfile_packages.py
 
       - name: Collect newly added packages
         id: collect
-        env:
-          BASE_REF: ${{ github.base_ref }}
         run: |
           set -euo pipefail
-          base="origin/$BASE_REF"
+          base="origin/$GITHUB_BASE_REF"
           : > /tmp/new-packages.txt
           for lock in $LOCKFILES; do
             [ -f "$lock" ] || continue
@@ -54,7 +68,7 @@ jobs:
             git show "$base:$lock" > "/tmp/base/$lock" 2>/dev/null || : > "/tmp/base/$lock"
             # awk, not `sed s/^/$lock\t/`: only GNU sed expands \t, and the lock
             # path would otherwise have to be escaped into the replacement.
-            python3 .github/scripts/lockfile_packages.py "/tmp/base/$lock" "$lock" \
+            python3 /tmp/lockfile_packages.py "/tmp/base/$lock" "$lock" \
               | awk -v lock="$lock" '{ print lock "\t" $0 }' >> /tmp/new-packages.txt
           done
           count=$(wc -l < /tmp/new-packages.txt | tr -d ' ')
@@ -62,16 +76,55 @@ jobs:
           echo "Newly added packages: $count"
           cat /tmp/new-packages.txt
 
+      - name: Find existing gate comment
+        id: find_comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # --paginate so the marker is still found on a PR with more than one page of
+          # comments. No `| head -n1`: --jq runs per page, and closing the pipe early
+          # would SIGPIPE gh into a failure indistinguishable from "no comment yet".
+          matches=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
+            --jq "[.[] | select(.body | contains(\"$COMMENT_MARKER\"))] | last | .id // empty" \
+            2>/dev/null) || matches=""
+          echo "id=${matches%%$'\n'*}" >> "$GITHUB_OUTPUT"
+
       - name: Report and enforce
-        if: steps.collect.outputs.count != '0'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           COUNT: ${{ steps.collect.outputs.count }}
+          EXISTING_COMMENT_ID: ${{ steps.find_comment.outputs.id }}
           LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
         run: |
           set -euo pipefail
+
+          # `gh api -F` (not -f) is what reads a value from @file; -f would send the
+          # literal string "@/tmp/comment.md" as the comment body.
+          patch_comment() {
+            gh api --method PATCH "repos/$REPO/issues/comments/$EXISTING_COMMENT_ID" \
+              -F body=@/tmp/comment.md >/dev/null
+          }
+
+          if [ "$COUNT" = "0" ]; then
+            # Nothing new. If an earlier push left a gate comment behind, update it in
+            # place rather than leaving outdated package names on the PR.
+            if [ -n "$EXISTING_COMMENT_ID" ]; then
+              {
+                echo "$COMMENT_MARKER"
+                echo "### :package: New dependency gate"
+                echo
+                echo "No new packages remain in the watched lockfiles as of the latest push."
+              } > /tmp/comment.md
+              patch_comment || echo "::warning::could not update the existing PR comment."
+            fi
+            exit 0
+          fi
+
           {
             echo "$COMMENT_MARKER"
             echo "### :package: New dependencies in this PR"
@@ -88,25 +141,10 @@ jobs:
           # Always leave the verdict somewhere readable, even if commenting fails.
           cat /tmp/comment.md >> "$GITHUB_STEP_SUMMARY"
 
-          # One sticky comment per PR: update the marker-carrying comment if it is
-          # already there, otherwise create it. Without this the job posts a fresh
-          # near-identical comment on every `synchronize`.
-          #
-          # Commenting is best-effort: a PR from a fork gets a read-only
-          # GITHUB_TOKEN, and a failed comment must not mask the label verdict
-          # below, which is the part that actually gates the merge.
-          # No `| head -n1` here: --paginate applies --jq per page, and closing the
-          # pipe early would SIGPIPE gh into a failure that looks like "not found".
-          matches=$(gh api "repos/$REPO/issues/$PR_NUMBER/comments" --paginate \
-            --jq "[.[] | select(.body | contains(\"$COMMENT_MARKER\")) | .id] | first // empty" \
-            2>/dev/null) || matches=""
-          existing=${matches%%$'\n'*}
-
-          if [ -n "$existing" ]; then
-            # -F (not -f) is what reads a value from @file; -f would post the literal string.
-            gh api --method PATCH "repos/$REPO/issues/comments/$existing" \
-              -F body=@/tmp/comment.md >/dev/null \
-              || echo "::warning::could not update the existing PR comment; see the job summary."
+          # Commenting is best-effort: it must never mask the label verdict below,
+          # which is the part that actually gates the merge.
+          if [ -n "$EXISTING_COMMENT_ID" ]; then
+            patch_comment || echo "::warning::could not update the existing PR comment; see the job summary."
           else
             gh pr comment "$PR_NUMBER" --body-file /tmp/comment.md \
               || echo "::warning::could not post a PR comment; see the job summary."

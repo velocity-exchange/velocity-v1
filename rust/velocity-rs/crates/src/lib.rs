@@ -861,11 +861,14 @@ impl VelocityClient {
                     continue;
                 };
 
-                let Ok(window) =
+                // A window this cannot compute falls to zero, which names the market
+                // for any staleness at all. The two outcomes are not symmetric: a
+                // market this fails to name reverts the transaction the caller is
+                // building, while one it names needlessly costs an idempotent
+                // permissionless crank.
+                let window =
                     program::math::margin::max_spot_interest_staleness_for_margin(&spot_market)
-                else {
-                    continue;
-                };
+                        .unwrap_or(0);
 
                 if now.saturating_sub(spot_market.last_interest_ts as i64) > window {
                     stale.push(position.market_index);

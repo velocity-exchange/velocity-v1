@@ -1,0 +1,119 @@
+name: cargo-vet
+
+# Crate provenance check. `cargo vet` requires every third-party crate version in
+# a workspace's Cargo.lock to be covered by an audit entry — either one we wrote
+# in supply-chain/audits.toml, or one imported from a trusted third-party audit
+# set (mozilla, google, bytecode-alliance, zcash, ...) listed in
+# supply-chain/config.toml.
+#
+# Crates that are neither audited nor imported sit in the `[[exemptions]]` list.
+# An exemption means "grandfathered in, NOT yet reviewed" — it is a to-do item,
+# not an approval. Because that list is still large, this workflow is
+# NON-BLOCKING (`continue-on-error: true`) so it does not wall off every PR on
+# day one.
+#
+# HOW TO FLIP IT TO BLOCKING: burn the exemption list down (see
+# `cargo vet suggest`, and consider `cargo vet trust` for publishers that the
+# imported registries already trust), then delete the two `continue-on-error`
+# lines below and mark `cargo-vet / vet (...)` as a required status check in
+# the branch protection rules for `master`. Once blocking, a PR that adds a new
+# crate fails until someone audits it or records an explicit exemption — which
+# is the whole point of the tool.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master, devnet, feat/monorepo-consolidation]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'programs/**/Cargo.toml'
+      - 'crates/**/Cargo.toml'
+      - 'rust/**/Cargo.toml'
+      - 'rust/Cargo.lock'
+      - 'supply-chain/**'
+      - 'rust/supply-chain/**'
+      - '.github/workflows/cargo-vet.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: 1.91.1
+  # Pin the tool: cargo-vet's config format is versioned, and an unpinned
+  # upgrade can rewrite supply-chain/ under us.
+  CARGO_VET_VERSION: 0.10.2
+
+concurrency:
+  group: cargo-vet-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vet:
+    # This repo has TWO independent Cargo workspaces with separate lockfiles and
+    # therefore separate supply-chain/ directories:
+    #   .     -> the on-chain Anchor programs (highest-value trust surface)
+    #   rust/ -> velocity-rs / keep-rs / swift (host-side SDK + keeper + signer)
+    # `fuzz/` is deliberately not covered: each fuzz crate is its own standalone
+    # workspace and none of it ships to users.
+    name: vet (${{ matrix.name }})
+    runs-on: ubicloud
+    # NON-BLOCKING for now. See the header comment for the flip-to-blocking plan.
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: programs
+            workspace: .
+          - name: rust
+            workspace: rust
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          profile: minimal
+          override: true
+
+      # Building cargo-vet from source takes a few minutes, so only do it on a
+      # cache miss. Mirrors the anchor-cli cache pattern in main.yml.
+      - name: Cache cargo-vet binary
+        id: cache-cargo-vet
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.cargo/bin/cargo-vet
+          key: ${{ runner.os }}-cargo-vet-${{ env.CARGO_VET_VERSION }}
+
+      - name: Install cargo-vet
+        if: steps.cache-cargo-vet.outputs.cache-hit != 'true'
+        run: cargo install cargo-vet --locked --version ${{ env.CARGO_VET_VERSION }}
+
+      - name: Cache build files
+        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+        with:
+          workspaces: ${{ matrix.workspace }}
+
+      # --locked pins both Cargo.lock and supply-chain/imports.lock, so CI checks
+      # the audits that are committed to the repo rather than re-fetching the
+      # remote audit files at runtime. Refresh them deliberately with
+      # `cargo vet regenerate imports` in a PR.
+      - name: cargo vet
+        working-directory: ${{ matrix.workspace }}
+        run: cargo vet --locked
+
+      # Only runs when the check above fails, to make the failure actionable in
+      # the log rather than sending the reader off to run the tool locally.
+      - name: Suggest audits for anything unvetted
+        if: failure()
+        working-directory: ${{ matrix.workspace }}
+        run: cargo vet suggest || true

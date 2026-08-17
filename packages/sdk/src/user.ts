@@ -4306,6 +4306,29 @@ export class User {
 	}
 
 	/**
+	 * True when the program charges a builder fee on this user's perp fills.
+	 *
+	 * A builder fee is an additive debit on the taker that the builder later
+	 * claims into its own account, and the taker is the party that approves the
+	 * builder. The program therefore treats the fee as a transfer out and
+	 * charges it only when the taker meets initial margin, the gate a
+	 * withdrawal clears. A position-decreasing fill is otherwise checked
+	 * against maintenance margin alone. Mirrors the gate in
+	 * `fulfill_perp_order` (`controller/orders.rs`); when it is false the fill
+	 * still executes and the builder is paid nothing for it.
+	 *
+	 * The program applies initial margin to the bucket the order trades in and
+	 * maintenance margin to the user's other buckets. This method applies
+	 * initial margin to every bucket, so for a user with isolated positions it
+	 * can report false where the program still charges the fee.
+	 *
+	 * @return {boolean} Whether a builder fee applies to this user's fills
+	 */
+	public isBuilderFeeCharged(): boolean {
+		return this.getMarginCalculation('Initial').meetsMarginRequirement();
+	}
+
+	/**
 	 * Calculates how much perp fee will be taken for a given sized trade.
 	 *
 	 * When `marketIndex` is provided, delegates to `VelocityClient.getMarketFees`
@@ -4321,7 +4344,7 @@ export class User {
 	 * @param quoteAmount Trade size, QUOTE_PRECISION (1e6).
 	 * @param marketIndex Optional perp market to use `VelocityClient.getMarketFees` for instead of the volume-tier fee structure.
 	 * @param isReferee Optional override for whether the referee discount applies; defaults to the user's actual `UserStats` referred status. Ignored on the `marketIndex` path (which reads referee status inside `getMarketFees`).
-	 * @param builderInfo Optional builder code; when it carries `builderIdx` + `builderFeeTenthBps`, the builder fee is added on top of the tiered fee.
+	 * @param builderInfo Optional builder code; when it carries `builderIdx` + `builderFeeTenthBps`, the builder fee is added on top of the tiered fee. A user below initial margin pays no builder fee (see `isBuilderFeeCharged`), so none is added.
 	 * @returns feeForQuote : Precision QUOTE_PRECISION (1e6)
 	 */
 	public calculatePerpTakerFee(
@@ -4366,7 +4389,13 @@ export class User {
 
 			// Builder fee (M12): charged on top of the tiered fee, on the raw quote
 			// (independent of the referee discount), mirroring `builder_fee` in `math/fees.rs`.
-			if (builderInfo && hasBuilderParams(builderInfo)) {
+			// The program waives it when the taker is below initial margin — see
+			// `isBuilderFeeCharged`.
+			if (
+				builderInfo &&
+				hasBuilderParams(builderInfo) &&
+				this.isBuilderFeeCharged()
+			) {
 				fee = fee.add(
 					calculateBuilderFee(quoteAmount, builderInfo.builderFeeTenthBps!)
 				);

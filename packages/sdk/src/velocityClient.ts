@@ -12907,7 +12907,7 @@ export class VelocityClient {
 	 * @param marketType
 	 * @param positionMarketIndex
 	 * @param user
-	 * @param orderParams When it carries a builder code, the builder fee (quoteAssetAmount * builderFeeTenthBps / 100_000) is added to takerFee.
+	 * @param orderParams When it carries a builder code, the builder fee (quoteAssetAmount * builderFeeTenthBps / 100_000) is added to takerFee. A `user` that is below initial margin pays no builder fee (see `User.isBuilderFeeCharged`), so none is added.
 	 * @returns : {takerFee: number, makerFee: number} Precision None
 	 */
 	public getMarketFees(
@@ -12969,7 +12969,15 @@ export class VelocityClient {
 			}
 		}
 
-		if (orderParams && hasBuilderParams(orderParams)) {
+		// The program waives the builder fee when the taker is below initial
+		// margin, because the fee is a transfer out of the taker's account. See
+		// `User.isBuilderFeeCharged`. Without a `user` there is no margin state
+		// to read, so the fee is included.
+		if (
+			orderParams &&
+			hasBuilderParams(orderParams) &&
+			(!user || user.isBuilderFeeCharged())
+		) {
 			takerFee += (orderParams.builderFeeTenthBps ?? 0) / 100_000;
 		}
 

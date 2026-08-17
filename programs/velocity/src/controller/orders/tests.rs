@@ -207,6 +207,9 @@ pub mod fulfill_order_with_maker_order {
             rev_share_escrow,
             false,
             0,
+            // The step-level harness has no margin context. Allow the builder
+            // fee so these tests measure fee math, not the margin gate.
+            true,
         );
         // Restore caller's `maker_stats` so the test can keep using it after.
         *maker_stats = maker_stats_opt;
@@ -9491,4 +9494,296 @@ fn oracle_derived_stats_refresh_can_flip_the_5min_divergence_verdict() {
         "the refresh is expected to normalize the divergence away — if this trips, \
          the fixture no longer reproduces #112"
     );
+}
+
+/// The margin gate on the builder fee.
+///
+/// A builder fee is an additive debit on the taker that the builder later
+/// claims into its own account, and the taker is the party that approves the
+/// builder. The fee is therefore a transfer out of the taker's account, so
+/// `fulfill_perp_order` charges it only when the taker meets initial margin —
+/// the gate a withdrawal clears. A position-decreasing fill is otherwise
+/// checked against maintenance margin alone, which lets an under-margined
+/// taker reduce the position in slices and route out value that the
+/// initial-margin gate holds in the account (OtterSec #83).
+pub mod builder_fee_margin_gate {
+    use {
+        super::*,
+        crate::{
+            controller::{orders::fulfill_perp_order, position::PositionDirection},
+            create_anchor_account_info,
+            math::constants::{
+                AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64,
+                MAX_CONCENTRATION_COEFFICIENT, PEG_PRECISION, PRICE_PRECISION, PRICE_PRECISION_U64,
+                QUOTE_PRECISION_I64, SPOT_BALANCE_PRECISION_U64,
+                SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+            },
+            state::{
+                oracle::{HistoricalOracleData, OracleSource},
+                perp_market::{MarketStats, PerpMarket, AMM},
+                perp_market_map::PerpMarketMap,
+                pyth_lazer_oracle::PythLazerOracle,
+                revenue_share::{
+                    BuilderInfo, RevenueShareEscrow, RevenueShareEscrowFixed,
+                    RevenueShareEscrowZeroCopyMut, RevenueShareOrder, RevenueShareOrderBitFlag,
+                },
+                spot_market::{SpotBalanceType, SpotMarket},
+                spot_market_map::SpotMarketMap,
+                state::ValidityGuardRails,
+                user::{OrderBitFlag, OrderStatus, OrderType, SpotPosition, User, UserStats},
+                user_map::{UserMap, UserStatsMap},
+            },
+            test_utils::{get_orders, get_positions, get_pyth_price, get_spot_positions},
+        },
+        anchor_lang::Discriminator,
+        std::{
+            cell::{RefCell, RefMut},
+            str::FromStr,
+        },
+    };
+
+    /// The builder charges the global maximum, 1% of notional.
+    const BUILDER_FEE_TENTH_BPS: u16 = 1000;
+    /// The taker holds one base unit long, entered at the oracle price.
+    const ENTRY_PRICE: i64 = 100;
+    /// Order id of the taker's reducing order. The escrow row is keyed on it.
+    const ORDER_ID: u32 = 1;
+
+    /// Serializes an escrow that holds one open builder row and one approved
+    /// builder. The layout is the one the production loader reads:
+    /// discriminator, fixed header, `padding0`, orders length, orders,
+    /// `padding1`, builders length, builders.
+    fn escrow_backing(order: &RevenueShareOrder, builder: &BuilderInfo) -> (Vec<u128>, usize) {
+        let len = RevenueShareEscrow::space(1, 1);
+        let mut backing = vec![0u128; len.div_ceil(16)];
+        {
+            let full: &mut [u8] = bytemuck::cast_slice_mut(&mut backing);
+            let buf = &mut full[..len];
+            buf[0..8].copy_from_slice(RevenueShareEscrow::DISCRIMINATOR);
+
+            let header = 8 + std::mem::size_of::<RevenueShareEscrowFixed>();
+            let order_size = std::mem::size_of::<RevenueShareOrder>();
+            buf[header + 4..header + 8].copy_from_slice(&1u32.to_le_bytes());
+            buf[header + 8..header + 8 + order_size].copy_from_slice(bytemuck::bytes_of(order));
+
+            let builders_len_offset = header + 12 + order_size;
+            let builder_size = std::mem::size_of::<BuilderInfo>();
+            buf[builders_len_offset..builders_len_offset + 4].copy_from_slice(&1u32.to_le_bytes());
+            buf[builders_len_offset + 4..builders_len_offset + 4 + builder_size]
+                .copy_from_slice(bytemuck::bytes_of(builder));
+        }
+        (backing, len)
+    }
+
+    /// Fills one position-decreasing, builder-coded order and returns
+    /// `(base_filled, builder_fees_accrued)`. `collateral_dollars` sets the
+    /// taker's quote deposit, which decides whether the taker meets initial
+    /// margin. The market uses a 10% initial and a 5% maintenance ratio, so on
+    /// a one-unit position at $100 the taker needs $10 to clear initial margin
+    /// and $5 to clear maintenance.
+    fn run_reducing_builder_fill(collateral_dollars: u64) -> (u64, u64) {
+        let now = 0_i64;
+        let slot = 5_u64;
+
+        let mut oracle_price = get_pyth_price(ENTRY_PRICE, 6);
+        let oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            oracle_price,
+            &oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+
+        let mut market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                terminal_quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                concentration_coef: MAX_CONCENTRATION_COEFFICIENT,
+                max_slippage_ratio: 50,
+                max_fill_reserve_fraction: 100,
+                base_spread: 0,
+                max_spread: 1000,
+                ..AMM::default()
+            },
+            margin_ratio_initial: 1000,
+            margin_ratio_maintenance: 500,
+            status: MarketStatus::Initialized,
+            order_step_size: 1000,
+            order_tick_size: 1,
+            oracle: oracle_price_key,
+            oracle_source: OracleSource::PythLazer,
+            market_stats: MarketStats {
+                historical_oracle_data: HistoricalOracleData {
+                    last_oracle_price: ENTRY_PRICE * PRICE_PRECISION as i64,
+                    last_oracle_price_twap: ENTRY_PRICE * PRICE_PRECISION as i64,
+                    last_oracle_price_twap_5min: ENTRY_PRICE * PRICE_PRECISION as i64,
+                    ..HistoricalOracleData::default()
+                },
+                ..MarketStats::default()
+            },
+            ..PerpMarket::default_test()
+        };
+        market.amm.max_base_asset_reserve = u64::MAX as u128;
+        market.amm.min_base_asset_reserve = 0;
+
+        create_anchor_account_info!(market, PerpMarket, market_account_info);
+        let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        let mut spot_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+            historical_oracle_data: HistoricalOracleData::default_price(QUOTE_PRECISION_I64),
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+
+        // Long one unit, closing it with a builder-coded market sell. The order
+        // reduces the position, so the post-fill check uses maintenance margin.
+        let mut taker = User {
+            orders: get_orders(Order {
+                order_id: ORDER_ID,
+                market_index: 0,
+                status: OrderStatus::Open,
+                order_type: OrderType::Market,
+                direction: PositionDirection::Short,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: 0,
+                auction_duration: 0,
+                price: 90 * PRICE_PRECISION_U64,
+                bit_flags: OrderBitFlag::HasBuilder as u8,
+                ..Order::default()
+            }),
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                base_asset_amount: BASE_PRECISION_I64,
+                quote_asset_amount: -ENTRY_PRICE * QUOTE_PRECISION_I64,
+                quote_entry_amount: -ENTRY_PRICE * QUOTE_PRECISION_I64,
+                quote_break_even_amount: -ENTRY_PRICE * QUOTE_PRECISION_I64,
+                open_orders: 1,
+                open_asks: -BASE_PRECISION_I64,
+                ..PerpPosition::default()
+            }),
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: collateral_dollars * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+
+        let builder_row = RevenueShareOrder::new(
+            0,
+            taker.sub_account_id,
+            ORDER_ID,
+            BUILDER_FEE_TENTH_BPS,
+            MarketType::Perp,
+            0,
+            RevenueShareOrderBitFlag::Open as u8,
+            0,
+        );
+        let builder_info = BuilderInfo {
+            authority: Pubkey::default(),
+            max_fee_tenth_bps: BUILDER_FEE_TENTH_BPS,
+            padding: [0; 6],
+        };
+        let (mut escrow_store, escrow_len) = escrow_backing(&builder_row, &builder_info);
+        let escrow_bytes: &mut [u8] = bytemuck::cast_slice_mut(&mut escrow_store);
+        let escrow_cell = RefCell::new(&mut escrow_bytes[..escrow_len]);
+        let escrow_data = RefMut::map(escrow_cell.borrow_mut(), |d| &mut **d);
+        let (_disc, escrow_data) = RefMut::map_split(escrow_data, |d| d.split_at_mut(8));
+        let (escrow_fixed, escrow_data) = RefMut::map_split(escrow_data, |d| {
+            d.split_at_mut(std::mem::size_of::<RevenueShareEscrowFixed>())
+        });
+        let mut escrow = RevenueShareEscrowZeroCopyMut {
+            fixed: RefMut::map(escrow_fixed, |b| bytemuck::from_bytes_mut(b)),
+            data: escrow_data,
+        };
+
+        let mut filler = User::default();
+        let fee_structure = get_fee_structure();
+        let (taker_key, _, filler_key) = get_user_keys();
+        let mut taker_stats = UserStats::default();
+        let mut filler_stats = UserStats::default();
+
+        let order_index = 0;
+        let user_can_skip_auction_duration = taker
+            .can_skip_auction_duration(&taker_stats, false)
+            .unwrap();
+        let is_amm_available = get_amm_is_available(
+            &taker.orders[order_index],
+            0,
+            &market,
+            &mut oracle_map,
+            slot,
+            user_can_skip_auction_duration,
+        );
+        assert!(is_amm_available);
+
+        let (base_filled, _) = fulfill_perp_order(
+            &mut taker,
+            order_index,
+            &taker_key,
+            &mut taker_stats,
+            &UserMap::empty(),
+            &UserStatsMap::empty(),
+            &[],
+            &mut Some(&mut filler),
+            &filler_key,
+            &mut Some(&mut filler_stats),
+            &spot_market_map,
+            &market_map,
+            &mut oracle_map,
+            &ValidityGuardRails::default(),
+            &fee_structure,
+            ENTRY_PRICE as u64 * PRICE_PRECISION_U64,
+            Some(market.market_stats.historical_oracle_data.last_oracle_price),
+            now,
+            slot,
+            is_amm_available,
+            true,
+            FillMode::Fill,
+            false,
+            &mut Some(&mut escrow),
+            false,
+            0,
+        )
+        .unwrap();
+
+        (base_filled, escrow.get_order(0).unwrap().fees_accrued)
+    }
+
+    #[test]
+    fn charges_builder_fee_when_taker_meets_initial_margin() {
+        // $50 of collateral against a $100 position clears the 10% initial
+        // requirement, so the fee is value the taker could also have withdrawn.
+        let (base_filled, fees_accrued) = run_reducing_builder_fill(50);
+
+        assert_eq!(base_filled, BASE_PRECISION_U64);
+        // About 1% of a fill worth about $100.
+        assert!(
+            fees_accrued > 900_000 && fees_accrued < 1_100_000,
+            "expected about 1% of notional, got {fees_accrued}"
+        );
+    }
+
+    #[test]
+    fn waives_builder_fee_when_taker_below_initial_margin() {
+        // $7 of collateral clears the 5% maintenance requirement but not the
+        // 10% initial one. The reduction still fills and the fee is waived.
+        let (base_filled, fees_accrued) = run_reducing_builder_fill(7);
+
+        assert_eq!(base_filled, BASE_PRECISION_U64);
+        assert_eq!(fees_accrued, 0);
+    }
 }

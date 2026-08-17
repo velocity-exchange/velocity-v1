@@ -402,10 +402,29 @@ export function getEquityFloorLevel(
  * produced it, mirroring the program's `FloorNetEquity`. The onchain floor
  * gates fail closed on the verdict: an action is authorized only when every
  * oracle is valid AND the value clears the relevant floor, and being below
- * the raw floor counts as force-cancel/trip grounds only when every oracle
- * is valid AND the value sits below it. Values QUOTE_PRECISION.
+ * the raw floor counts as force-cancel grounds only when every oracle is
+ * valid AND the value sits below it. The breaker trip uses its own walk
+ * (`TripNetEquity`), which concedes bounded value to invalid-oracle dust
+ * instead of requiring every oracle valid. Values QUOTE_PRECISION.
  */
 export type FloorNetEquity = {
 	value: BN;
 	allOraclesValid: boolean;
+};
+
+/**
+ * Net-equity upper bound for the breaker trip, mirroring the program's
+ * `TripNetEquity`. Positions with valid oracles are valued at live prices.
+ * A position with an invalid oracle is conceded its most favorable value:
+ * an asset worth no more than `EQUITY_FLOOR_TRIP_DUST_ALLOWANCE` at its own
+ * last twap counts as exactly the allowance, a liability counts as zero,
+ * and a larger invalid position makes the breach unprovable (`provable`
+ * false). Every unknown is resolved in the user's favor, so a trip that
+ * fires would fire at any true price of the conceded dust, while dust
+ * parked in dead-oracle markets cannot veto a material breach. Values
+ * QUOTE_PRECISION.
+ */
+export type TripNetEquity = {
+	equityUpperBound: BN;
+	provable: boolean;
 };

@@ -33,7 +33,10 @@ use {
                 BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT, BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS,
                 QUOTE_PRECISION_I128, QUOTE_PRECISION_U64, QUOTE_SPOT_MARKET_INDEX,
             },
-            margin::{calculate_user_equity, meets_settle_pnl_maintenance_margin_requirement},
+            margin::{
+                calculate_user_equity, calculate_user_equity_for_trip,
+                meets_settle_pnl_maintenance_margin_requirement,
+            },
             oracle::{is_oracle_valid_for_action, VelocityAction},
             orders::{
                 estimate_price_from_side, filter_bids_asks_by_oracle_divergence,
@@ -331,31 +334,37 @@ pub fn handle_trip_equity_floor_breaker<'c: 'info, 'info>(
     // The trip threshold is real net equity (unweighted assets and pnl minus
     // unweighted spot liabilities), not the margin numerator: weighted
     // collateral overstates equity when borrows exist and understates it via
-    // asset weights, strict pricing and the positive-pnl clamp.
-    let (net_equity, all_oracles_valid) =
-        calculate_user_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+    // asset weights, strict pricing and the positive-pnl clamp. The walk is
+    // the trip's own: positions with invalid oracles are conceded a bounded
+    // most-favorable value instead of vetoing the proof, so dust in a
+    // dead-oracle market cannot keep a material breach untrippable.
+    let trip_equity =
+        calculate_user_equity_for_trip(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
 
-    // An authority-wide freeze must not arm off an invalid price. The floor
-    // gates on withdrawals/fills still hold independently of the breaker.
+    // An authority-wide freeze must not arm over exposure the program cannot
+    // value: an invalid-oracle position past the dust allowance blocks the
+    // proof. The floor gates on withdrawals/fills still hold independently
+    // of the breaker. The two validates decompose
+    // `TripNetEquity::proves_breach` so each failure keeps its error code.
     validate!(
-        all_oracles_valid,
+        trip_equity.provable,
         ErrorCode::InvalidOracle,
-        "cannot trip equity floor breaker with an invalid oracle"
+        "cannot trip equity floor breaker: invalid oracle on a position above the dust allowance"
     )?;
 
     validate!(
-        user.is_below_equity_floor(net_equity),
+        user.is_below_equity_floor(trip_equity.equity_upper_bound),
         ErrorCode::SufficientCollateral,
-        "user net equity {} not below equity floor {}",
-        net_equity,
+        "user net equity upper bound {} not below equity floor {}",
+        trip_equity.equity_upper_bound,
         user.equity_floor
     )?;
 
     msg!(
-        "equity floor breaker tripped for authority {:?}: subaccount {} net equity {} below floor {}",
+        "equity floor breaker tripped for authority {:?}: subaccount {} net equity upper bound {} below floor {}",
         user.authority,
         user.sub_account_id,
-        net_equity,
+        trip_equity.equity_upper_bound,
         user.equity_floor
     );
 

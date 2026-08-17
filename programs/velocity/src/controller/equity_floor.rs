@@ -11,7 +11,7 @@
 
 use crate::{
     error::VelocityResult,
-    math::margin::calculate_user_equity,
+    math::margin::calculate_user_equity_for_trip,
     msg,
     state::{
         oracle_map::OracleMap,
@@ -22,15 +22,18 @@ use crate::{
 };
 
 /// Arms the authority-wide equity breaker if the subaccount's net equity is
-/// below its raw floor. Mirrors the permissionless trip: values the account
-/// with `calculate_user_equity` and never arms off an invalid oracle. Where
-/// the permissionless trip rejects on an invalid oracle so the keeper can
-/// retry, this skips silently (it must not fail its host); a breach that
-/// rides out an oracle outage is armed by the next touch after the feed
-/// recovers. The gates cover the outage itself, failing closed on the same
-/// verdict, and match fills carry their own `FillOrderMatch` validity rule.
-/// Skips all work when the subaccount has no floor or the breaker is already
-/// set, and never fails the host instruction on its own.
+/// provably below its raw floor. Decides with the same
+/// `TripNetEquity::proves_breach` predicate as the permissionless trip:
+/// invalid-oracle positions are conceded a bounded most-favorable value
+/// rather than vetoing the proof, and a position past the dust allowance
+/// keeps the breach unprovable. Where the permissionless trip rejects on an
+/// unprovable breach so the keeper can retry, this skips silently (it must
+/// not fail its host); a breach that rides out such an outage is armed by
+/// the next touch after the feed recovers. The gates cover the outage
+/// itself, failing closed on the strict verdict, and match fills carry
+/// their own `FillOrderMatch` validity rule. Skips all work when the
+/// subaccount has no floor or the breaker is already set, and never fails
+/// the host instruction on its own.
 pub fn try_lazy_equity_breaker_trip(
     user: &User,
     user_stats: &mut UserStats,
@@ -42,19 +45,15 @@ pub fn try_lazy_equity_breaker_trip(
         return Ok(());
     }
 
-    let (net_equity, all_oracles_valid) =
-        calculate_user_equity(user, perp_market_map, spot_market_map, oracle_map)?;
+    let trip_equity =
+        calculate_user_equity_for_trip(user, perp_market_map, spot_market_map, oracle_map)?;
 
-    if !all_oracles_valid {
-        return Ok(());
-    }
-
-    if user.is_below_equity_floor(net_equity) {
+    if trip_equity.proves_breach(user) {
         msg!(
-            "equity floor breaker tripped for authority {:?}: subaccount {} net equity {} below floor {}",
+            "equity floor breaker tripped for authority {:?}: subaccount {} net equity upper bound {} below floor {}",
             user.authority,
             user.sub_account_id,
-            net_equity,
+            trip_equity.equity_upper_bound,
             user.equity_floor
         );
         user_stats.set_equity_breaker_tripped(true);
@@ -92,9 +91,16 @@ mod tests {
         std::str::FromStr,
     };
 
-    // 10 USDC deposit, 1 base long at oracle 100 entered at -90 quote:
-    // net equity = 10 + (100 - 90) = 20.
-    fn run_scenario(equity_floor: u64, already_tripped: bool, oracle_map_slot: u64) -> UserStats {
+    // 10 USDC deposit plus a perp position at oracle 100 (twap 100). With
+    // the default position (1 base long entered at -90 quote) net equity is
+    // 10 + (100 - 90) = 20.
+    fn run_scenario_with_position(
+        equity_floor: u64,
+        already_tripped: bool,
+        oracle_map_slot: u64,
+        base_asset_amount: i64,
+        quote_asset_amount: i64,
+    ) -> UserStats {
         let mut oracle_price = get_pyth_price(100, 6);
         let oracle_price_key =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
@@ -168,8 +174,8 @@ mod tests {
             orders: [Order::default(); 32],
             perp_positions: get_positions(PerpPosition {
                 market_index: 0,
-                base_asset_amount: BASE_PRECISION_I64,
-                quote_asset_amount: -90 * QUOTE_PRECISION_I64,
+                base_asset_amount,
+                quote_asset_amount,
                 ..PerpPosition::default()
             }),
             spot_positions,
@@ -192,6 +198,16 @@ mod tests {
         user_stats
     }
 
+    fn run_scenario(equity_floor: u64, already_tripped: bool, oracle_map_slot: u64) -> UserStats {
+        run_scenario_with_position(
+            equity_floor,
+            already_tripped,
+            oracle_map_slot,
+            BASE_PRECISION_I64,
+            -90 * QUOTE_PRECISION_I64,
+        )
+    }
+
     #[test]
     fn trips_below_raw_floor() {
         let stats = run_scenario(30 * QUOTE_PRECISION_U64, false, 0);
@@ -212,11 +228,37 @@ mod tests {
     }
 
     #[test]
-    fn no_trip_on_stale_oracle() {
-        // oracle map loaded far past the oracle's posted slot: equity is
-        // below the floor but the breaker must not arm off an invalid price
-        let stats = run_scenario(30 * QUOTE_PRECISION_U64, false, 100_000);
+    fn no_trip_on_stale_material_position() {
+        // oracle map loaded far past the oracle's posted slot, and the
+        // position's twap notional (2 base at 100) is past the dust
+        // allowance: real exposure the trip cannot value, so the breaker
+        // must not arm. Equity would be 10 + (200 - 180) = 30 below the
+        // 50 floor if the oracle were trusted.
+        let stats = run_scenario_with_position(
+            50 * QUOTE_PRECISION_U64,
+            false,
+            100_000,
+            2 * BASE_PRECISION_I64,
+            -180 * QUOTE_PRECISION_I64,
+        );
         assert!(!stats.is_equity_breaker_tripped());
+    }
+
+    #[test]
+    fn trips_on_stale_dust_position() {
+        // same stale oracle, but the position is dust (0.5 base, 50 at its
+        // twap). The base leg is conceded the full allowance and the breach
+        // is still provable: 10 + (-45 + 100) = 65 below the 100 floor.
+        // Before the concession this dust kept the whole subaccount
+        // untrippable for as long as the oracle stayed invalid.
+        let stats = run_scenario_with_position(
+            100 * QUOTE_PRECISION_U64,
+            false,
+            100_000,
+            BASE_PRECISION_I64 / 2,
+            -45 * QUOTE_PRECISION_I64,
+        );
+        assert!(stats.is_equity_breaker_tripped());
     }
 
     #[test]

@@ -492,12 +492,19 @@ describe('equity floor fill gates', () => {
 			'the order should have survived the rejected trigger'
 		);
 
-		// feed recovers -> the same trigger goes through
+		// feed recovers -> the same trigger goes through. The retry must not be
+		// byte-identical to the rejected transaction: nothing advanced the
+		// blockhash since (a failed send skips the slot bump, and the client
+		// caches blockhashes for 2s anyway), so an identical retry lands on the
+		// same signature and is dropped as a duplicate before it reaches the
+		// program. A different compute-unit limit changes the message bytes
+		// deterministically, with no dependence on cache timing.
 		await refreshSpotOracle();
 		await fillerVelocityClient.triggerOrder(
 			userPublicKey,
 			userVelocityClient.getUserAccount(),
-			survivingOrder
+			survivingOrder,
+			{ computeUnits: 599_999 }
 		);
 
 		await userVelocityClient.fetchAccounts();

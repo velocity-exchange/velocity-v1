@@ -9,6 +9,7 @@ import {
 	BN,
 	TestClient,
 	EventSubscriber,
+	getUserStatsAccountPublicKey,
 	OracleSource,
 	OracleInfo,
 	QUOTE_PRECISION,
@@ -46,6 +47,10 @@ const INVALID_ORACLE_HEX = '0x1793';
 //    buy a withdrawal down through the floor.
 //  - The floor-shed defusal guard rejects an invalid oracle outright, so it
 //    agrees with `trip_equity_floor_breaker`, which already did.
+//  - The trip itself uses a concession walk: an invalid-oracle position past
+//    the dust allowance keeps the breach unprovable (`InvalidOracle`), while
+//    dust is conceded its most favorable value and a material breach stays
+//    trippable through it.
 describe('equity floor oracle validity', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 
@@ -72,7 +77,9 @@ describe('equity floor oracle validity', () => {
 
 	const usdcAmount = new BN(200).mul(QUOTE_PRECISION);
 	const solAmount = new BN(20).mul(new BN(LAMPORTS_PER_SOL));
-	// net equity at a fair sol price is 200 usdc + 1 sol at 100 = 300
+	// net equity at a fair sol price is 200 usdc + 2 sol at 100 = 400. The
+	// sol position is deliberately larger than the trip's dust allowance, so
+	// the invalid-oracle trip cases below stay unprovable.
 	const floor = new BN(250).mul(QUOTE_PRECISION);
 
 	let marketIndexes: number[];
@@ -174,7 +181,11 @@ describe('equity floor oracle validity', () => {
 			10 * LAMPORTS_PER_SOL
 		);
 		await takerVelocityClient.deposit(usdcAmount, 0, takerUSDC);
-		await takerVelocityClient.deposit(new BN(LAMPORTS_PER_SOL), 1, takerWSOL);
+		await takerVelocityClient.deposit(
+			new BN(2).mul(new BN(LAMPORTS_PER_SOL)),
+			1,
+			takerWSOL
+		);
 		takerUserPublicKey = await takerVelocityClient.getUserAccountPublicKey();
 
 		takerUser = new User({
@@ -255,8 +266,8 @@ describe('equity floor oracle validity', () => {
 	});
 
 	it('withdraws are allowed while the deposit oracle is priceable', async () => {
-		// positive control at a fair sol price: equity 300, floor 250, so a
-		// 40 usdc withdrawal leaves 260 and is permitted
+		// positive control at a fair sol price: equity 400, floor 250, so a
+		// 40 usdc withdrawal leaves 360 and is permitted
 		await takerVelocityClient.fetchAccounts();
 		await takerUser.fetchAccounts();
 
@@ -325,11 +336,13 @@ describe('equity floor oracle validity', () => {
 		//
 		// Raise the floor to 400 so the subaccount is genuinely breached at an
 		// honest price and merely looks solvent at the stale one. It holds
-		// 160 usdc and 1 sol: 260 at the 5 minute twap, which is under the
-		// floor and therefore provable, against 660 at the stale live price of
-		// 500, which is over it. The shed below moves 100 usdc of funds with
-		// 100 usdc of floor, so the credited side can back its new floor and
-		// the only thing that can stop the transfer is the oracle.
+		// 160 usdc and 2 sol: 360 at the twap, which is under the floor,
+		// against 1160 at the stale live price of 500, which is over it. The
+		// sol position's twap notional is past the trip's dust allowance, so
+		// the breach is unprovable and the trip must reject rather than
+		// concede. The shed below moves 100 usdc of funds with 100 usdc of
+		// floor, so the credited side can back its new floor and the only
+		// thing that can stop the transfer is the oracle.
 		await adminVelocityClient.updateUserEquityFloor(
 			takerUserPublicKey,
 			new BN(400).mul(QUOTE_PRECISION),
@@ -414,6 +427,44 @@ describe('equity floor oracle validity', () => {
 			dustUserPublicKey
 		);
 		assert(stillThere !== null, 'the user account should still exist');
+
+		await refreshSolOracle(100);
+	});
+
+	it('a stale dust position cannot veto the trip', async () => {
+		// The dust account holds 0.0001 sol and nothing else, so its equity
+		// depends entirely on the sol oracle. Before the concession walk, a
+		// stale sol oracle made every trip against it return InvalidOracle
+		// for as long as the outage lasted, however deep the breach. The
+		// position is worth a cent at its twap, far under the allowance, so
+		// the trip now concedes it the full allowance and the breach against
+		// a 150 floor is still provable: 100 conceded < 150.
+		await dustVelocityClient.fetchAccounts();
+		await adminVelocityClient.updateUserEquityFloor(
+			dustUserPublicKey,
+			new BN(150).mul(QUOTE_PRECISION),
+			ZERO
+		);
+
+		await staleSolOracleAt(100);
+
+		await adminVelocityClient.tripEquityFloorBreaker(
+			dustUserPublicKey,
+			dustVelocityClient.getUserAccount()
+		);
+
+		const stats = await (
+			adminVelocityClient.program.account as any
+		).userStats.fetch(
+			getUserStatsAccountPublicKey(
+				adminVelocityClient.program.programId,
+				dustVelocityClient.wallet.publicKey
+			)
+		);
+		assert(
+			stats.equityBreakerTripped !== 0,
+			'the breaker should be armed despite the stale dust oracle'
+		);
 
 		await refreshSolOracle(100);
 	});

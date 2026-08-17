@@ -1,0 +1,231 @@
+version: 2
+
+# The `cooldown` block on every entry is the point of this file. It holds a newly
+# published version back for a week (two for a major) before Dependabot will
+# offer it, which keeps us out of the window in which a compromised npm or crates
+# release is published and then yanked. Grouping minor+patch into one PR per
+# directory keeps the review load low enough that the PRs actually get read.
+
+updates:
+  # ────────────────────────────────────────────────────────────────────
+  # npm / bun — one lockfile (bun.lock) covers the whole workspace
+  # (packages/*, apps/*), so a single root entry updates all of them.
+  # ────────────────────────────────────────────────────────────────────
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '03:00'
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - area/ts
+    commit-message:
+      prefix: chore
+      include: scope
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    groups:
+      ts-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # Pinned via overrides/resolutions in the root package.json as part of
+      # supply-chain incident response. Unpin there before updating.
+      - dependency-name: 'debug'
+      - dependency-name: 'chalk'
+      - dependency-name: 'ansi-styles'
+      - dependency-name: 'supports-color'
+      - dependency-name: 'strip-ansi'
+      - dependency-name: 'ansi-regex'
+      - dependency-name: 'wrap-ansi'
+      - dependency-name: 'color-convert'
+      - dependency-name: 'color-name'
+      - dependency-name: 'color-string'
+      - dependency-name: 'simple-swizzle'
+      - dependency-name: 'is-arrayish'
+      - dependency-name: 'slice-ansi'
+      - dependency-name: 'error-ex'
+      - dependency-name: 'backslash'
+      - dependency-name: 'chalk-template'
+      - dependency-name: 'supports-hyperlinks'
+      - dependency-name: 'has-ansi'
+      # Pinned to match the on-chain runtime / instrumentation stack; bumping
+      # these is a deliberate compatibility decision, not routine maintenance.
+      - dependency-name: '@solana/web3.js'
+      - dependency-name: '@opentelemetry/api'
+      - dependency-name: '@opentelemetry/auto-instrumentations-node'
+
+  # ────────────────────────────────────────────────────────────────────
+  # cargo — the two shipping workspaces
+  # ────────────────────────────────────────────────────────────────────
+
+  # Program (SBF) workspace: programs/*, crates/*. Highest-risk surface in the
+  # repo; a dependency change here alters on-chain bytecode.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '03:00'
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - area/program
+    commit-message:
+      prefix: chore
+      include: scope
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    groups:
+      program-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+
+  # Separate rust/ workspace: velocity-rs (Rust SDK), keep-rs, swift.
+  - package-ecosystem: cargo
+    directory: /rust
+    schedule:
+      interval: weekly
+      day: monday
+      time: '04:00'
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - area/rust
+    commit-message:
+      prefix: chore
+      include: scope
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    groups:
+      rust-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+
+  # ────────────────────────────────────────────────────────────────────
+  # cargo — dev-only standalone workspaces. Each fuzz harness and each
+  # velocity-rs example is its own workspace with its own Cargo.lock, and none
+  # of them ship. Covered so the trees don't rot, but every update type is
+  # collapsed into a single group per directory and the PR limit is low, so they
+  # cannot drown the two entries above.
+  # ────────────────────────────────────────────────────────────────────
+  - package-ecosystem: cargo
+    directories:
+      - /fuzz/*
+    schedule:
+      interval: weekly
+      day: tuesday
+      time: '04:00'
+      timezone: Etc/UTC
+    open-pull-requests-limit: 2
+    labels:
+      - dependencies
+      - area/fuzz
+    commit-message:
+      prefix: chore
+      include: scope
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    groups:
+      fuzz-all:
+        applies-to: version-updates
+        patterns:
+          - '*'
+
+  - package-ecosystem: cargo
+    directories:
+      - /rust/velocity-rs/crates/*
+      - /rust/velocity-rs/examples/*
+    schedule:
+      interval: weekly
+      day: tuesday
+      time: '05:00'
+      timezone: Etc/UTC
+    open-pull-requests-limit: 2
+    labels:
+      - dependencies
+      - area/rust
+    commit-message:
+      prefix: chore
+      include: scope
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    groups:
+      velocity-rs-aux-all:
+        applies-to: version-updates
+        patterns:
+          - '*'
+
+  # ────────────────────────────────────────────────────────────────────
+  # Docker base images
+  # ────────────────────────────────────────────────────────────────────
+  - package-ecosystem: docker
+    directories:
+      - /docker
+      - /.devcontainer
+    schedule:
+      interval: weekly
+      day: monday
+      time: '05:00'
+      timezone: Etc/UTC
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - area/docker
+    commit-message:
+      prefix: chore
+      include: scope
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    groups:
+      docker-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+
+  # ────────────────────────────────────────────────────────────────────
+  # GitHub Actions — keep the SHA-pinned actions current with their tags.
+  # Every action in .github/workflows is pinned to a full commit SHA; without
+  # this entry those pins silently age out.
+  # ────────────────────────────────────────────────────────────────────
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: '06:00'
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - area/ci
+    commit-message:
+      prefix: chore
+      include: scope
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    groups:
+      gha-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch

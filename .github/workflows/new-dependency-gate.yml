@@ -1,0 +1,82 @@
+name: New dependency gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  # Space-separated lockfiles to watch.
+  #
+  # The three that actually ship: the program (SBF) workspace, the separate
+  # rust/ workspace (velocity-rs, keep-rs, swift) and the bun workspace behind
+  # the TS SDK and the dlob/keeper images.
+  #
+  # Deliberately NOT watched: fuzz/*/Cargo.lock and
+  # rust/velocity-rs/examples/*/Cargo.lock. Those 23 lockfiles belong to
+  # host-only fuzz harnesses and doc examples that are never deployed and never
+  # published; gating them would fire on every LibAFL or example bump and train
+  # people to reach for the override label reflexively.
+  LOCKFILES: Cargo.lock rust/Cargo.lock bun.lock
+  OVERRIDE_LABEL: deps-reviewed
+
+jobs:
+  new-dependency-gate:
+    name: New dependency gate
+    runs-on: ubicloud
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Collect newly added packages
+        id: collect
+        run: |
+          set -euo pipefail
+          base="origin/${{ github.base_ref }}"
+          : > /tmp/new-packages.txt
+          for lock in $LOCKFILES; do
+            [ -f "$lock" ] || continue
+            # Mirror the path under /tmp/base so the basename -- and therefore the
+            # parser's format dispatch -- is preserved.
+            mkdir -p "/tmp/base/$(dirname "$lock")"
+            # Lockfile may be new in this PR; an absent base copy means everything is new.
+            git show "$base:$lock" > "/tmp/base/$lock" 2>/dev/null || : > "/tmp/base/$lock"
+            python3 .github/scripts/lockfile_packages.py "/tmp/base/$lock" "$lock" \
+              | sed "s#^#${lock}\t#" >> /tmp/new-packages.txt
+          done
+          count=$(wc -l < /tmp/new-packages.txt | tr -d ' ')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "Newly added packages: $count"
+          cat /tmp/new-packages.txt
+
+      - name: Report and enforce
+        if: steps.collect.outputs.count != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LABELS: ${{ toJson(github.event.pull_request.labels.*.name) }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### :package: New dependencies in this PR"
+            echo
+            echo "This PR adds packages that were not in the base lockfile. Confirm each one's"
+            echo "**source, maintainer and integrity** before merging, then apply the"
+            echo '`'"$OVERRIDE_LABEL"'`'" label."
+            echo
+            echo '| Lockfile | Package |'
+            echo '| --- | --- |'
+            awk -F'\t' '{print "| `" $1 "` | `" $2 "` |"}' /tmp/new-packages.txt
+          } > /tmp/comment.md
+
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/comment.md
+
+          if echo "$LABELS" | grep -q "\"$OVERRIDE_LABEL\""; then
+            echo "::notice::${{ steps.collect.outputs.count }} new package(s), signed off via '$OVERRIDE_LABEL'."
+          else
+            echo "::error::${{ steps.collect.outputs.count }} new package(s) need review. Apply the '$OVERRIDE_LABEL' label to merge."
+            exit 1
+          fi

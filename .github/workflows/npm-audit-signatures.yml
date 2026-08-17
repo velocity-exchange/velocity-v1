@@ -1,0 +1,51 @@
+name: npm audit signatures
+
+# Registry attestation check for the TypeScript side of the repo. `npm audit
+# signatures` verifies that every resolved package's tarball carries a valid
+# npm registry signature, and checks provenance attestations for the publishers
+# that produce them. It is the npm-ecosystem counterpart to cargo-deny's
+# `[sources]` allowlist on the Rust side.
+#
+# It lives in its own workflow rather than in main.yml because it needs an
+# npm-installed tree, and main.yml installs everything with bun.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master, devnet, feat/monorepo-consolidation]
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  NODE_VERSION: '24.x.x'
+
+jobs:
+  npm-audit-signatures:
+    name: npm audit signatures
+    runs-on: ubicloud
+    # NON-BLOCKING FOR NOW -- but only for one run. Measured baseline at the
+    # time this landed: 2086 of 2086 resolved packages have verified registry
+    # signatures (0 failures), 449 of them also carry provenance attestations.
+    # So this is expected to be green immediately; continue-on-error is here
+    # only so a first-run difference between a laptop and ubicloud cannot block
+    # unrelated PRs. Once one run has passed on master, delete this line and
+    # the check starts gating.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Setup node
+        uses: actions/setup-node@7c12f8017d5436eb855f1ed4399f037a36fbd9e8 # v2
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          registry-url: 'https://registry.npmjs.org'
+      - name: Verify registry signatures and provenance
+        run: bash .github/scripts/npm-audit-signatures.sh

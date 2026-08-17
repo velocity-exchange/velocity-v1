@@ -1,0 +1,220 @@
+# cargo-deny configuration — dependency provenance, advisories, licences, bans.
+#
+# ONE config covers BOTH Cargo workspaces. The root workspace (programs/*,
+# crates/*) and the separate `rust/` workspace (velocity-rs, keep-rs, swift) are
+# deliberately not unified (see the `exclude` comment in ./Cargo.toml), so
+# cargo-deny has to be pointed at each in turn. `--manifest-path` selects the
+# graph, `--config` keeps both runs on this file:
+#
+#   cargo deny --manifest-path Cargo.toml      --config deny.toml check
+#   cargo deny --manifest-path rust/Cargo.toml --config deny.toml check
+#
+# The two graphs are a superset/subset in practice — every source, licence and
+# advisory allowance below is the union of what both need — so a single file is
+# simpler to keep honest than two that can silently drift apart.
+#
+# `fuzz/*` is a third set of standalone workspaces (host fuzz harnesses, never
+# shipped) and is not checked; see the PR that introduced this file.
+
+[graph]
+# `targets` left empty on purpose: cargo-deny then considers every target
+# triple. The program builds for SBF and the rust workspace ships Linux
+# containers, so a host-only graph would miss dependencies that exist nowhere
+# but CI.
+targets = []
+# Features are left at the manifests' defaults. Turning everything on would
+# change resolution (the program crate's feature flavors are not all
+# compatible) and the checks below care about the shipped graph.
+all-features = false
+
+# ---------------------------------------------------------------------------
+# Sources — the headline control. A dependency may only come from crates.io or
+# from a git remote explicitly listed here. Anything else fails the build, so a
+# new git dependency (or a swapped registry) cannot land unreviewed.
+# ---------------------------------------------------------------------------
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+
+allow-git = [
+	# Velocity-owned forks. Direct dependencies of rust/swift and rust/velocity-rs.
+	"https://github.com/velocity-exchange/tokio-tungstenite",
+	"https://github.com/velocity-exchange/jupiter-swap-api-client",
+	"https://github.com/velocity-exchange/titan-swap-api-client",
+
+	# Transitive: pulled in by the tokio-tungstenite fork above, which depends on
+	# the pre-rename drift-labs fork of tungstenite-rs for permessage-deflate.
+	# Tracked by BRANCH, not by rev — Cargo.lock pins the commit, but a `cargo
+	# update` will silently move it. Migrating this to a velocity-exchange fork
+	# pinned to a rev is worth doing.
+	"https://github.com/drift-labs/tungstenite-rs",
+
+	# Yellowstone gRPC client/proto, pinned to a rev in rust/velocity-rs/Cargo.toml.
+	"https://github.com/rpcpool/yellowstone-grpc",
+]
+
+# ---------------------------------------------------------------------------
+# Advisories. The ignore list is kept in lockstep with .cargo/audit.toml so
+# cargo-deny and cargo-audit never disagree about what is accepted. If you add
+# an ignore here, add it there too (and vice versa), with the same rationale.
+# ---------------------------------------------------------------------------
+[advisories]
+ignore = [
+	"RUSTSEC-2022-0013", # upstream dependency
+	"RUSTSEC-2022-0093", # Double Public Key Signing Function Oracle Attack on `ed25519-dalek`
+	# rkyv OOB reads: rkyv is a feature-inactive optional dep of rust_decimal
+	# (via programs/pyth-lazer); it is never compiled into any artifact
+	# (`cargo tree -i rkyv` is empty in both workspaces) but Cargo.lock records
+	# optional deps unconditionally, which is all the scanners see. No upgrade
+	# path: rust_decimal supports rkyv ^0.7 only, the fix is >=0.8.17.
+	"RUSTSEC-2026-0235",
+	# Informational advisories. cargo-audit filters both out on its own
+	# (`severity_threshold = "high"` drops advisories with no CVSS score, and
+	# `informational_warnings = ["unmaintained"]` makes the bincode one a warning
+	# it never exits non-zero on). cargo-deny has no severity threshold and no
+	# per-advisory warn level, so they are listed here to keep the two scanners
+	# agreeing rather than have cargo-deny fail on what cargo-audit waves through.
+	"RUSTSEC-2025-0141", # bincode 1.3.3 unmaintained: upstream ceased development and
+	# considers 1.3.3 complete. No fix to take; migrating off it is a real project.
+	"RUSTSEC-2026-0190", # anyhow: unsound Error::downcast_mut after Error::context.
+	# Transitive, and no code in either workspace calls downcast_mut. Drop this
+	# entry once the tree resolves to a patched anyhow.
+
+	# --- rust/ workspace only. PRE-EXISTING and, until this PR, UNSEEN by CI:
+	# the cargo-audit job runs `cargo audit` from the repo root, which reads only
+	# ./Cargo.lock. rust/Cargo.lock has never been scanned. These five are what
+	# that gap was hiding. They are listed individually, not waved through with a
+	# blanket downgrade, so any *new* advisory in the rust workspace still fails.
+	# Each has a fix available; taking it means a lockfile bump, which is a
+	# separate change from wiring up the scanner.
+	"RUSTSEC-2026-0204", # crossbeam-epoch: invalid pointer deref in fmt::Pointer.
+	# Fix: cargo update -p crossbeam-epoch (>=0.9.20).
+	"RUSTSEC-2024-0344", # curve25519-dalek: timing variability in Scalar sub.
+	# Fix: cargo update -p curve25519-dalek (>=4.1.3). Reachable via ed25519-dalek
+	# signing paths in swift/keep-rs — the highest-priority of the five.
+	"RUSTSEC-2024-0437", # protobuf: crash on uncontrolled recursion (yellowstone-grpc).
+	# Fix: cargo update -p protobuf (>=3.7.2).
+	"RUSTSEC-2021-0141", # dotenv unmaintained. No upgrade; replace with dotenvy.
+	"RUSTSEC-2025-0057", # fxhash unmaintained. No upgrade; replace with rustc-hash.
+]
+
+# cargo-audit runs with `[yanked] enabled = false`. Warn rather than deny here so
+# a crate yanked after we locked it shows up in the log without turning every
+# unrelated PR red.
+yanked = "warn"
+
+# Report unmaintained advisories for crates a workspace member depends on
+# directly. cargo-audit surfaces these too (`informational_warnings =
+# ["unmaintained"]`). Kept on rather than switched off so a *new* unmaintained
+# direct dependency fails CI and has to be argued for in the ignore list above.
+unmaintained = "workspace"
+
+# ---------------------------------------------------------------------------
+# Licences — permissive allow-list. Anything outside it fails, so a copyleft or
+# unknown-licence crate cannot enter the tree without a deliberate decision.
+# ---------------------------------------------------------------------------
+[licenses]
+allow = [
+	"Apache-2.0",
+	"Apache-2.0 WITH LLVM-exception",
+	"MIT",
+	"MIT-0",
+	"BSD-1-Clause",
+	"BSD-2-Clause",
+	"BSD-3-Clause",
+	"BSL-1.0",
+	"ISC",
+	"0BSD",
+	"Zlib",
+	"CC0-1.0",
+	"Unlicense",
+	"Unicode-3.0",
+	"CDLA-Permissive-2.0",
+]
+
+# Deliberately NOT allowed: any GPL/LGPL/AGPL/MPL/SSPL variant. `r-efi` offers
+# `LGPL-2.1-or-later` as one arm of a triple licence; the MIT arm satisfies it,
+# so no exception is needed.
+
+confidence-threshold = 0.9
+
+# Skips workspace members marked `publish = false`. None currently are, so the
+# first-party crates are clarified individually below instead.
+private = { ignore = true }
+
+# --- Clarifications: crates whose manifest carries no `license` field. ---
+
+[[licenses.clarify]]
+# mpl-token-metadata ships no `license` field in its manifest. Metaplex licenses
+# the token-metadata program under Apache-2.0
+# (https://github.com/metaplex-foundation/mpl-token-metadata/blob/main/LICENSE).
+name = "mpl-token-metadata"
+expression = "Apache-2.0"
+license-files = []
+
+# First-party crates. Every one of them is governed by the repository's root
+# ./LICENSE (Apache-2.0) but omits `license` from its own `[package]` table.
+# Adding `license = "Apache-2.0"` to those six manifests would make these
+# clarifications unnecessary; that is a manifest change, not a CI change, so it
+# is left for a separate PR.
+[[licenses.clarify]]
+name = "velocity"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+name = "vaults"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+name = "jit-proxy"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+name = "pyth"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+name = "pyth_lazer"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+name = "token-faucet"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+name = "swift-server"
+expression = "Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+name = "dlob-builder"
+expression = "Apache-2.0"
+license-files = []
+
+# ---------------------------------------------------------------------------
+# Bans. Not a provenance control, but the place where "we accidentally grew a
+# second copy of a crypto crate" gets caught.
+# ---------------------------------------------------------------------------
+[bans]
+multiple-versions = "warn"
+
+# The only wildcards in either workspace are intra-workspace path dependencies
+# (`velocity = { path = "../velocity" }` and friends), which resolve locally and
+# carry no registry-resolution risk. `allow-wildcard-paths` would exempt them,
+# but cargo-deny only applies that exemption to crates marked `publish = false`,
+# and none of the program crates are. Warn until those manifests are marked
+# unpublishable, then flip this back to "deny" — a wildcard on a *registry*
+# crate is a real provenance hole and should fail.
+wildcards = "warn"
+allow-wildcard-paths = true
+
+deny = []
+skip-tree = []

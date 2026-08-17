@@ -81,6 +81,7 @@ or reworked.
 | **Auction-duration floor on requested spread**   | #282 auction-floor-client-spread | Order sanitization's duration floor (`max(client duration, spread% × tier slots-per-pct)`) now measures the narrower of the client-requested and post-sanitize price ranges. Start-price improvements toward baseline no longer inflate auction durations — most visibly on tail-tier (C and below) markets with wide baseline spreads, where fully-specified signed-msg orders were floored to the baseline spread regardless of the requested duration. Expect materially shorter auctions for tight-spread orders on tail-tier markets; genuinely wide requested spreads are floored exactly as before. Program-only behavior change; no layout/IDL change (§6). |
 | **Fee schedule rework** (3 tiers, add-on, promo) | #388 fee-schedule | Perp fee tiers cut from 6 to 3 (Regular / VIP 1 / VIP 2) with new hardcoded 30d-volume thresholds ($5M / $80M; was $2M/$10M/$20M/$80M/$200M) and new default tier values (4/3/2bps taker, flat -0.25bp maker rebate; was 10 down to 3.5bps taker, 2bp rebate). Tier determination now projects the rolling volume decay to the current timestamp at read time (`UserStats::get_total_30d_volume_at`), so demotion tracks the live trailing-30d window at every fill; promotion was already instant. Two new admin knobs: `PerpMarket.taker_fee_addon_tenth_bps` (u16, carved from `_padding_buffer`; unsigned additive taker-fee surcharge applied before `fee_adjustment` scales the sum, taker leg only — surcharge only, a discount could push the taker fee below the maker rebate it funds; set via new instruction `update_perp_market_taker_fee_addon`, warm admin, 100 tenth-bps max) and `State.promo_fee_tier` (u8, carved from padding; promotional tier floor for every account, effective tier = max(volume tier, promo tier), 0 = disabled; set via new instruction `update_promo_fee_tier`, warm admin). SDK: `PerpMarketAccount.takerFeeAddonTenthBps`, `StateAccount.promoFeeTier`, `getUserFeeTier` mirrors the new thresholds/projection/promo, `getMarketFees` applies the add-on, `AdminClient.updatePerpMarketTakerFeeAddon` / `updatePromoFeeTier`. Admin CLI: `fees set-taker-addon`, `fees set-promo-tier`. Account sizes unchanged (both fields occupy former padding); integrators pinning fee-tier thresholds or the 6-tier layout must update |
 | **vAMM maker rebate** (feature-flagged)          | #387 vamm-maker-rebate | New `FeatureBitFlags::VammMakerRebate` bit (8) on `State.feature_bit_flags`, off by default. When enabled, the vAMM earns the maker rebate on fills it makes against a taker: the rebate (same `maker_rebate_numerator` schedule and `fee_adjustment` scaling as a user maker's, clamped to the remainder) is carved off the taker-fee remainder before the protocol/IF/AMM split and folded into the AMM's fee provision (`amm_fee`), so it rides the existing fee-ledger and `pending_amm_provision` sweep plumbing. The taker's fee is unchanged; only the distribution shifts (protocol/IF cuts shrink by the rebate share). `OrderActionRecord.makerRebate` stays 0 on these fills (the rebate is the AMM's, not a user maker's). New admin instruction `update_feature_bit_flags_vamm_maker_rebate` (cold admin to enable). SDK: `FeatureBitFlags.VAMM_MAKER_REBATE`, `AdminClient.updateFeatureBitFlagsVammMakerRebate` / `getUpdateFeatureBitFlagsVammMakerRebateIx`. Admin CLI: `velocity-admin feature-flags vamm-maker-rebate <true\|false>`. No account-layout or error-code change. |
+| settled-oracle-twaps | Close the residual half of the pre-refresh-TWAP findings that PR #344 addressed by ordering alone (OtterSec #109-#112, #134, and the earlier #81 withdraw fix). #344 stopped each gated instruction from advancing the oracle TWAP it then measured itself against. The TWAP is not private to that instruction: `update_spot_market_cumulative_interest` takes **no signer at all** and `update_amms` takes any signer, and `begin_swap` inspects only the instructions that follow it. A caller therefore puts the crank one instruction **in front of** its own operation, in the same transaction and at the same `unix_timestamp`, and the gate is measured against exactly the value the in-handler refresh used to leave. Ordering cannot fix a gate that reads mutable state; the anchor has to move out of reach. New `SettledOracleTwaps` (`last_oracle_price_twap`, `last_oracle_price_twap_5min`, `ts`) is appended at the tail of `PerpMarket` and `SpotMarket` (§5) and rolls onto the live TWAPs at most once per `SETTLED_ORACLE_TWAP_INTERVAL` (60s), by at most `1 / SETTLED_ORACLE_TWAP_ROLL_DENOMINATOR` (10%) per roll. The gate anchor is therefore 60-120s old and travels at most 10% per minute, so a price that does not hold across roll boundaries cannot reach it. The gates switched to it: `validate_price_bands_for_swap` (both legs), every `is_oracle_too_divergent_with_twap_5min` call site (perp fill, trigger, perp and spot liquidation, both swap-backed liquidation lanes), `get_oracle_status` (funding's `block_operation` — both the too-volatile ratio and the mark-divergence leg) and `validate_market_within_price_band`. **Valuation deliberately still reads the live TWAPs** — `StrictOraclePrice`, margin, and the protective liquidation prices — so collateral is not valued off a lagging number. **Integrator-visible:** a fill, swap, liquidation or funding crank can now revert (`PriceBandsBreached` / `OrderBreachesOraclePriceLimits` / `FundingWasNotUpdated`) where a preceding crank previously cleared the band, and after a genuine fast move the bands stay tight for longer, since the anchor catches up at 10% per minute rather than with the 5-minute EMA. Accounts written before the upgrade read the field as zero, which means "unseeded": the gates fall back to the live TWAP until the first roll seeds it, so no market is gated on a zero anchor. SDK: `SettledOracleTwaps` type on both market accounts, `getSettledOraclePriceTwap5Min` / `getSettledOraclePriceTwap`, and `isOracleTooDivergent` gained a `settledOracleTwaps` parameter (breaking, §4.6). Account layout grows at the tail only; no seed, discriminator or error-code change |
 
 ---
 
@@ -352,6 +353,15 @@ These public exports were **added** (or restored) relative to the fork point:
   serialization drops the sign, so a negative price would otherwise be written as its magnitude),
   and values that do not fit their program-side width (`i64` price, `u64` sequence id and source
   slot).
+- `SettledOracleTwaps` type, plus `getSettledOraclePriceTwap5Min` /
+  `getSettledOraclePriceTwap` (`math/oracles`) — the TWAPs the program's price-band and
+  divergence gates measure against, which are no longer
+  `historicalOracleData.lastOraclePriceTwap5Min` (settled-oracle-twaps, §5). **Breaking**:
+  `isOracleTooDivergent` gained a second parameter, the market's `settledOracleTwaps`
+  (`isOracleTooDivergent(marketStats, settledOracleTwaps, oraclePriceData, guardRails)`).
+  Anything predicting whether a fill, swap, liquidation or funding crank will breach a band
+  must read the settled pair; valuation (`StrictOraclePrice`, margin, liquidation prices)
+  still reads the live TWAPs.
 - `AdminClient.updatePerpMarketFundingBiasSensitivity` (#77).
 - `AdminClient.updateWithdrawGuardThreshold` / `getUpdateWithdrawGuardThresholdIx` gained an
   optional trailing `oracle?` arg (#76).
@@ -487,9 +497,20 @@ accounts/events with the previous TS shapes should note:
 - **Layouts changed**: `User` is 4376 → 4496 bytes. `PerpMarket` grew across several PRs:
   1216 → 1240 (#16, Anchor-1.0 16-byte `PoolBalance` alignment), reorganized through the
   AMM decoupling (#65) and `HedgeConfig` addition down to 1224 (#66), then 1224 → 1304
-  (#75, embedded `FeeLedger` + protocol fee fields). The current size is **1304 bytes**,
-  with u128/i128 fields front-loaded for alignment. Any custom (non-IDL) decoder must be
-  rebuilt against `sdk/src/idl/velocity.json`.
+  (#75, embedded `FeeLedger` + protocol fee fields), then 1304 → 1336 (settled-oracle-twaps,
+  below). The current size is **1336 bytes**, with u128/i128 fields front-loaded for
+  alignment. Any custom (non-IDL) decoder must be rebuilt against
+  `sdk/src/idl/velocity.json`.
+- **`PerpMarket.settled_oracle_twaps` and `SpotMarket.settled_oracle_twaps`**
+  (`SettledOracleTwaps`, audit #109-#112, #134) are **appended at the tail** of both
+  accounts: `PerpMarket` 1304 → **1336** bytes, `SpotMarket` 808 → **840** bytes (both
+  figures include the 8-byte discriminator). Every existing field offset is unchanged, so an
+  account written before the upgrade decodes as before and reads the new field as all-zero,
+  which the program treats as "unseeded — fall back to the live TWAP". Deployed accounts are
+  grown to the new size by the existing `extend_account` instruction. The struct holds
+  `last_oracle_price_twap`, `last_oracle_price_twap_5min` and `ts`, all i64, plus 8 bytes of
+  padding that keeps each account a multiple of 16. A custom (non-IDL) decoder must add the
+  32 trailing bytes; a decoder that reads only earlier fields needs no change.
 - **`PerpMarket.pending_revenue_share: u64`** (audit #73) was carved in place from the
   8-byte alignment padding that precedes `amm` (formerly `_padding_align_amm: [u8; 8]`; a
   u64 at the same 8-aligned offset). Account size stays **1304 bytes** and no other field

@@ -122,6 +122,15 @@ pub fn update_spot_market_twap_stats(
         if oracle_price_twap != spot_market.historical_oracle_data.last_oracle_price_twap
             || since_last >= (ONE_MINUTE as i64)
         {
+            // Roll before the write, so the anchors take the TWAPs from before
+            // this update. The gates read the anchors.
+            let SpotMarket {
+                historical_oracle_data,
+                settled_oracle_twaps,
+                ..
+            } = &mut *spot_market;
+            settled_oracle_twaps.roll(historical_oracle_data, now)?;
+
             spot_market.historical_oracle_data.last_oracle_price_twap = oracle_price_twap;
             spot_market
                 .historical_oracle_data

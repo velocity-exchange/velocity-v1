@@ -40,6 +40,7 @@ use crate::{
         casting::Cast,
         constants::{
             PERCENTAGE_PRECISION, PRICE_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64,
+            SETTLED_ORACLE_TWAP_INTERVAL, SETTLED_ORACLE_TWAP_ROLL_DENOMINATOR,
         },
         oracle::{is_oracle_valid_for_action, OracleValidity, VelocityAction},
         safe_math::SafeMath,
@@ -54,6 +55,23 @@ use crate::{
 
 #[cfg(test)]
 mod tests;
+
+/// One roll of the settled anchors toward the live TWAPs, capped at
+/// `1 / SETTLED_ORACLE_TWAP_ROLL_DENOMINATOR` of the settled value.
+///
+/// An unseeded settled value (`0`) takes the live value whole. There is no
+/// percentage to clamp against, and the alternative is an anchor pinned at zero.
+fn clamp_settled_roll(settled: i64, live: i64) -> VelocityResult<i64> {
+    if settled == 0 {
+        return Ok(live);
+    }
+
+    let step = settled
+        .abs()
+        .safe_div(SETTLED_ORACLE_TWAP_ROLL_DENOMINATOR)?;
+
+    Ok(live.clamp(settled.safe_sub(step)?, settled.safe_add(step)?))
+}
 
 #[derive(Default, AnchorSerialize, AnchorDeserialize, Clone, Copy, Eq, PartialEq, Debug)]
 pub struct HistoricalOracleData {
@@ -149,6 +167,131 @@ impl HistoricalOracleData {
             .safe_mul(BID_ASK_SPREAD_PRECISION_I128)?
             .safe_div(other_price.cast::<i128>()?)?
             .cast()
+    }
+}
+
+/// The oracle TWAPs as the price-band and divergence gates read them.
+///
+/// A gate must not measure against a number the transaction it guards can move.
+/// The live TWAPs in [`HistoricalOracleData`] are advanced by permissionless
+/// cranks — `update_spot_market_cumulative_interest` takes no signer, and
+/// `update_amms` takes any signer — so an operation a band check would reject
+/// puts a crank in front of itself and is measured against the moved value
+/// instead. Both cranks run at the same `unix_timestamp` as the rest of the
+/// transaction, so the anchor they leave is the same one the operation's own
+/// refresh used to leave (OtterSec #109-#112, #134).
+///
+/// This pair follows the live TWAPs one roll behind, so it is between
+/// `SETTLED_ORACLE_TWAP_INTERVAL` and roughly twice that old, and it travels at
+/// most `1 / SETTLED_ORACLE_TWAP_ROLL_DENOMINATOR` per roll. A price that does
+/// not hold across roll boundaries cannot reach it.
+///
+/// A genuine price move reaches the anchor at that same bounded rate, which is
+/// why only the gates read it. Valuation — `StrictOraclePrice`, margin, the
+/// protective liquidation prices — keeps reading the live TWAPs.
+///
+/// Lives at the tail of `SpotMarket` and `PerpMarket` rather than inside
+/// `HistoricalOracleData`, so no existing field offset moves and accounts
+/// written before the upgrade stay readable. Such an account has `ts == 0`,
+/// which reads as "unseeded" and falls back to the live TWAP.
+#[derive(Default, AnchorSerialize, AnchorDeserialize, Clone, Copy, Eq, PartialEq, Debug)]
+#[repr(C)]
+pub struct SettledOracleTwaps {
+    /// precision: PRICE_PRECISION
+    pub last_oracle_price_twap: i64,
+    /// precision: PRICE_PRECISION
+    pub last_oracle_price_twap_5min: i64,
+    /// unix_timestamp of the last roll. `0` means unseeded.
+    pub ts: i64,
+    /// Keeps the struct a multiple of 16 bytes, so appending it does not change
+    /// the trailing padding either account gets on a 16-aligned host target.
+    pub _padding: [u8; 8],
+}
+
+impl SettledOracleTwaps {
+    /// Seed a market's anchors at launch, at the price its live TWAPs start on.
+    ///
+    /// A market could be left unseeded and fall back to the live TWAPs, but then
+    /// its first gate would measure against a TWAP the first crank can still
+    /// move. Seeding puts the anchor a full roll behind from the first block.
+    pub fn seeded(price: i64, now: i64) -> Self {
+        SettledOracleTwaps {
+            last_oracle_price_twap: price,
+            last_oracle_price_twap_5min: price,
+            ts: now,
+            _padding: [0; 8],
+        }
+    }
+
+    /// The 5-minute anchor, or the live TWAP while unseeded.
+    ///
+    /// A zero anchor counts as unseeded. Zero is not a price, and every gate
+    /// that reads this divides by it.
+    pub fn oracle_price_twap_5min(&self, live: &HistoricalOracleData) -> i64 {
+        if self.ts == 0 || self.last_oracle_price_twap_5min == 0 {
+            live.last_oracle_price_twap_5min
+        } else {
+            self.last_oracle_price_twap_5min
+        }
+    }
+
+    /// The one-hour anchor, or the live TWAP while unseeded. See
+    /// [`Self::oracle_price_twap_5min`] for the zero case.
+    pub fn oracle_price_twap(&self, live: &HistoricalOracleData) -> i64 {
+        if self.ts == 0 || self.last_oracle_price_twap == 0 {
+            live.last_oracle_price_twap
+        } else {
+            self.last_oracle_price_twap
+        }
+    }
+
+    /// Spread between `other_price` and the 5-minute anchor, in
+    /// `BID_ASK_SPREAD_PRECISION`.
+    pub fn twap_5min_spread_pct(
+        &self,
+        live: &HistoricalOracleData,
+        other_price: u64,
+    ) -> VelocityResult<i64> {
+        use crate::math::{
+            casting::Cast, constants::BID_ASK_SPREAD_PRECISION_I128, safe_math::SafeMath,
+        };
+
+        let price_spread = other_price
+            .cast::<i64>()?
+            .safe_sub(self.oracle_price_twap_5min(live))?;
+        price_spread
+            .cast::<i128>()?
+            .safe_mul(BID_ASK_SPREAD_PRECISION_I128)?
+            .safe_div(other_price.cast::<i128>()?)?
+            .cast()
+    }
+
+    /// Roll the anchors onto the live TWAPs, when the anchors are old enough.
+    ///
+    /// Call this immediately **before** the live TWAPs are written, so the
+    /// anchors take the values from before the current update. The seeding
+    /// branch does the same for an account that predates this field.
+    pub fn roll(&mut self, live: &HistoricalOracleData, now: i64) -> VelocityResult {
+        if self.ts == 0 {
+            self.last_oracle_price_twap = live.last_oracle_price_twap;
+            self.last_oracle_price_twap_5min = live.last_oracle_price_twap_5min;
+            self.ts = now;
+            return Ok(());
+        }
+
+        if now.safe_sub(self.ts)? < SETTLED_ORACLE_TWAP_INTERVAL {
+            return Ok(());
+        }
+
+        self.last_oracle_price_twap =
+            clamp_settled_roll(self.last_oracle_price_twap, live.last_oracle_price_twap)?;
+        self.last_oracle_price_twap_5min = clamp_settled_roll(
+            self.last_oracle_price_twap_5min,
+            live.last_oracle_price_twap_5min,
+        )?;
+        self.ts = now;
+
+        Ok(())
     }
 }
 

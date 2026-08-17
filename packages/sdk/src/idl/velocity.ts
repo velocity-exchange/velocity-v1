@@ -21749,6 +21749,22 @@ export type Velocity = {
                 "name": "hedgeConfig"
               }
             }
+          },
+          {
+            "name": "settledOracleTwaps",
+            "docs": [
+              "The oracle TWAPs the price-band and divergence gates read, one roll",
+              "behind `market_stats.historical_oracle_data`. See",
+              "[`SettledOracleTwaps`].",
+              "",
+              "Appended at the tail so no existing offset moves. An account written",
+              "before this field exists reads all-zero, which is the unseeded state."
+            ],
+            "type": {
+              "defined": {
+                "name": "settledOracleTwaps"
+              }
+            }
           }
         ]
       }
@@ -22603,6 +22619,77 @@ export type Velocity = {
               "defined": {
                 "name": "settlePnlExplanation"
               }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "settledOracleTwaps",
+      "docs": [
+        "The oracle TWAPs as the price-band and divergence gates read them.",
+        "",
+        "A gate must not measure against a number the transaction it guards can move.",
+        "The live TWAPs in [`HistoricalOracleData`] are advanced by permissionless",
+        "cranks — `update_spot_market_cumulative_interest` takes no signer, and",
+        "`update_amms` takes any signer — so an operation a band check would reject",
+        "puts a crank in front of itself and is measured against the moved value",
+        "instead. Both cranks run at the same `unix_timestamp` as the rest of the",
+        "transaction, so the anchor they leave is the same one the operation's own",
+        "refresh used to leave (OtterSec #109-#112, #134).",
+        "",
+        "This pair follows the live TWAPs one roll behind, so it is between",
+        "`SETTLED_ORACLE_TWAP_INTERVAL` and roughly twice that old, and it travels at",
+        "most `1 / SETTLED_ORACLE_TWAP_ROLL_DENOMINATOR` per roll. A price that does",
+        "not hold across roll boundaries cannot reach it.",
+        "",
+        "A genuine price move reaches the anchor at that same bounded rate, which is",
+        "why only the gates read it. Valuation — `StrictOraclePrice`, margin, the",
+        "protective liquidation prices — keeps reading the live TWAPs.",
+        "",
+        "Lives at the tail of `SpotMarket` and `PerpMarket` rather than inside",
+        "`HistoricalOracleData`, so no existing field offset moves and accounts",
+        "written before the upgrade stay readable. Such an account has `ts == 0`,",
+        "which reads as \"unseeded\" and falls back to the live TWAP."
+      ],
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "lastOraclePriceTwap",
+            "docs": [
+              "precision: PRICE_PRECISION"
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "lastOraclePriceTwap5min",
+            "docs": [
+              "precision: PRICE_PRECISION"
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "ts",
+            "docs": [
+              "unix_timestamp of the last roll. `0` means unseeded."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "padding",
+            "docs": [
+              "Keeps the struct a multiple of 16 bytes, so appending it does not change",
+              "the trailing padding either account gets on a 16-aligned host target."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
             }
           }
         ]
@@ -23605,6 +23692,21 @@ export type Velocity = {
               "the consumers."
             ],
             "type": "u64"
+          },
+          {
+            "name": "settledOracleTwaps",
+            "docs": [
+              "The oracle TWAPs the price-band and divergence gates read, one roll",
+              "behind `historical_oracle_data`. See [`SettledOracleTwaps`].",
+              "",
+              "Appended at the tail so no existing offset moves. An account written",
+              "before this field exists reads all-zero, which is the unseeded state."
+            ],
+            "type": {
+              "defined": {
+                "name": "settledOracleTwaps"
+              }
+            }
           }
         ]
       }

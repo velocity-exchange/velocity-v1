@@ -263,3 +263,131 @@ fn mm_oracle_confidence() {
     let confidence = mm_oracle_price_data.get_confidence();
     assert_eq!(confidence, expected_confidence);
 }
+
+mod settled_oracle_twaps {
+    use crate::{
+        math::constants::{PRICE_PRECISION_I64, SETTLED_ORACLE_TWAP_INTERVAL},
+        state::oracle::{HistoricalOracleData, SettledOracleTwaps},
+    };
+
+    const NOW: i64 = 1_700_000_000;
+
+    fn live(price: i64) -> HistoricalOracleData {
+        HistoricalOracleData::default_price(price)
+    }
+
+    #[test]
+    fn unseeded_reads_the_live_twaps() {
+        let settled = SettledOracleTwaps::default();
+        let live = live(100 * PRICE_PRECISION_I64);
+
+        assert_eq!(
+            settled.oracle_price_twap_5min(&live),
+            100 * PRICE_PRECISION_I64
+        );
+        assert_eq!(settled.oracle_price_twap(&live), 100 * PRICE_PRECISION_I64);
+    }
+
+    #[test]
+    fn a_zero_anchor_reads_the_live_twap() {
+        // A market can be seeded while its TWAPs are still zero. Zero is not a
+        // price, and every gate that reads the anchor divides by it.
+        let settled = SettledOracleTwaps {
+            ts: NOW,
+            ..SettledOracleTwaps::default()
+        };
+        let live = live(100 * PRICE_PRECISION_I64);
+
+        assert_eq!(
+            settled.oracle_price_twap_5min(&live),
+            100 * PRICE_PRECISION_I64
+        );
+    }
+
+    #[test]
+    fn the_first_roll_seeds_from_the_live_twaps() {
+        let mut settled = SettledOracleTwaps::default();
+        let live = live(100 * PRICE_PRECISION_I64);
+
+        settled.roll(&live, NOW).unwrap();
+
+        assert_eq!(
+            settled.last_oracle_price_twap_5min,
+            100 * PRICE_PRECISION_I64
+        );
+        assert_eq!(settled.ts, NOW);
+    }
+
+    #[test]
+    fn a_roll_inside_the_interval_does_nothing() {
+        let mut settled = SettledOracleTwaps::seeded(100 * PRICE_PRECISION_I64, NOW);
+
+        settled
+            .roll(
+                &live(50 * PRICE_PRECISION_I64),
+                NOW + SETTLED_ORACLE_TWAP_INTERVAL - 1,
+            )
+            .unwrap();
+
+        assert_eq!(
+            settled.last_oracle_price_twap_5min,
+            100 * PRICE_PRECISION_I64,
+            "an anchor that moves inside the interval is reachable from one \
+             transaction, which is the defect this exists to close"
+        );
+        assert_eq!(settled.ts, NOW);
+    }
+
+    #[test]
+    fn a_roll_is_clamped_to_one_step() {
+        let mut settled = SettledOracleTwaps::seeded(100 * PRICE_PRECISION_I64, NOW);
+
+        settled
+            .roll(
+                &live(50 * PRICE_PRECISION_I64),
+                NOW + SETTLED_ORACLE_TWAP_INTERVAL,
+            )
+            .unwrap();
+
+        // 10% of 100, not the whole 50% drop.
+        assert_eq!(
+            settled.last_oracle_price_twap_5min,
+            90 * PRICE_PRECISION_I64
+        );
+        assert_eq!(settled.last_oracle_price_twap, 90 * PRICE_PRECISION_I64);
+        assert_eq!(settled.ts, NOW + SETTLED_ORACLE_TWAP_INTERVAL);
+    }
+
+    #[test]
+    fn a_move_within_one_step_lands_whole() {
+        let mut settled = SettledOracleTwaps::seeded(100 * PRICE_PRECISION_I64, NOW);
+
+        settled
+            .roll(
+                &live(95 * PRICE_PRECISION_I64),
+                NOW + SETTLED_ORACLE_TWAP_INTERVAL,
+            )
+            .unwrap();
+
+        assert_eq!(
+            settled.last_oracle_price_twap_5min,
+            95 * PRICE_PRECISION_I64
+        );
+    }
+
+    #[test]
+    fn a_sustained_move_reaches_the_anchor_over_several_intervals() {
+        let mut settled = SettledOracleTwaps::seeded(100 * PRICE_PRECISION_I64, NOW);
+        let live = live(50 * PRICE_PRECISION_I64);
+
+        let mut now = NOW;
+        for _ in 0..8 {
+            now += SETTLED_ORACLE_TWAP_INTERVAL;
+            settled.roll(&live, now).unwrap();
+        }
+
+        // 100 * 0.9^8 is about 43, so eight intervals of the manipulated price
+        // walk the anchor past 50. Fewer do not.
+        assert!(settled.last_oracle_price_twap_5min <= 50 * PRICE_PRECISION_I64);
+    }
+}

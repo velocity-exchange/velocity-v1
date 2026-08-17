@@ -1244,21 +1244,20 @@ pub fn fill_perp_order(
                 &state.oracle_guard_rails.validity,
             )?;
 
-        // Snapshot the 5-minute oracle TWAP *before* the refresh below advances
-        // it. This fill's own band checks — `is_oracle_too_divergent_with_twap_5min`
-        // and `validate_fill_price_within_price_bands` — both measure against this
-        // value, and the refresh pulls it toward the live oracle price. Reading it
-        // afterwards let a currently-divergent oracle normalize itself inside the
-        // same instruction and clear the very checks meant to stop the fill
-        // (OtterSec #112).
+        // This fill's band checks — `is_oracle_too_divergent_with_twap_5min` and
+        // `validate_fill_price_within_price_bands` — measure against the settled
+        // anchor, not the live 5-minute TWAP (OtterSec #112).
         //
-        // Unlike the funding crank (#109), the refresh itself stays: a fill is one
-        // of the paths that legitimately advances the TWAPs, and it does not gate
-        // on them, so snapshotting the reader is the whole fix.
-        oracle_twap_5min = market
-            .market_stats
-            .historical_oracle_data
-            .last_oracle_price_twap_5min;
+        // Reading the live TWAP before the refresh below is not enough. Anyone
+        // can put `update_amms` in front of this instruction, at the same
+        // `unix_timestamp`, and leave the same advanced TWAP for the snapshot to
+        // read. The settled anchor is the value from at least
+        // `SETTLED_ORACLE_TWAP_INTERVAL` ago, so no instruction in this
+        // transaction can move it.
+        //
+        // The refresh itself stays: a fill is one of the paths that legitimately
+        // advances the TWAPs, and it no longer gates on what it advances.
+        oracle_twap_5min = market.settled_oracle_price_twap_5min();
 
         market.update_oracle_derived_stats(
             &mm_oracle_price_data,
@@ -1562,15 +1561,9 @@ pub fn validate_market_within_price_band(
 ) -> VelocityResult<bool> {
     let reserve_price = market.amm.reserve_price()?;
 
-    let reserve_spread_pct = market
-        .market_stats
-        .historical_oracle_data
-        .twap_5min_spread_pct(reserve_price)?;
+    let reserve_spread_pct = market.settled_twap_5min_spread_pct(reserve_price)?;
 
-    let oracle_spread_pct = market
-        .market_stats
-        .historical_oracle_data
-        .twap_5min_spread_pct(oracle_price.unsigned_abs())?;
+    let oracle_spread_pct = market.settled_twap_5min_spread_pct(oracle_price.unsigned_abs())?;
 
     if reserve_spread_pct.abs() > oracle_spread_pct.abs() {
         let is_reserve_too_divergent = crate::math::oracle::is_mark_oracle_too_divergent(
@@ -3779,10 +3772,7 @@ pub fn trigger_order(
 
     let oracle_too_divergent_with_twap_5min = is_oracle_too_divergent_with_twap_5min(
         oracle_price_data.price,
-        perp_market
-            .market_stats
-            .historical_oracle_data
-            .last_oracle_price_twap_5min,
+        perp_market.settled_oracle_price_twap_5min(),
         state
             .oracle_guard_rails
             .max_oracle_twap_5min_percent_divergence()

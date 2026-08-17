@@ -366,10 +366,7 @@ pub fn liquidate_perp(
         if perp_market.status != MarketStatus::Settlement {
             let oracle_price_too_divergent = is_oracle_too_divergent_with_twap_5min(
                 oracle_price,
-                perp_market
-                    .market_stats
-                    .historical_oracle_data
-                    .last_oracle_price_twap_5min,
+                perp_market.settled_oracle_price_twap_5min(),
                 state
                     .oracle_guard_rails
                     .max_oracle_twap_5min_percent_divergence()
@@ -1049,9 +1046,7 @@ pub fn liquidate_perp_with_fill(
         oracle_price,
         perp_market_map
             .get_ref(&market_index)?
-            .market_stats
-            .historical_oracle_data
-            .last_oracle_price_twap_5min,
+            .settled_oracle_price_twap_5min(),
         state
             .oracle_guard_rails
             .max_oracle_twap_5min_percent_divergence()
@@ -1785,8 +1780,7 @@ pub fn liquidate_spot(
         liability_oracle_price.cast()?,
         spot_market_map
             .get_ref(&liability_market_index)?
-            .historical_oracle_data
-            .last_oracle_price_twap_5min,
+            .settled_oracle_price_twap_5min(),
         state
             .oracle_guard_rails
             .max_oracle_twap_5min_percent_divergence()
@@ -1803,8 +1797,7 @@ pub fn liquidate_spot(
         asset_oracle_price.cast()?,
         spot_market_map
             .get_ref(&asset_market_index)?
-            .historical_oracle_data
-            .last_oracle_price_twap_5min,
+            .settled_oracle_price_twap_5min(),
         state
             .oracle_guard_rails
             .max_oracle_twap_5min_percent_divergence()
@@ -2370,8 +2363,7 @@ pub fn liquidate_spot_with_swap_begin(
         liability_oracle_price.cast()?,
         spot_market_map
             .get_ref(&liability_market_index)?
-            .historical_oracle_data
-            .last_oracle_price_twap_5min,
+            .settled_oracle_price_twap_5min(),
         state
             .oracle_guard_rails
             .max_oracle_twap_5min_percent_divergence()
@@ -2388,8 +2380,7 @@ pub fn liquidate_spot_with_swap_begin(
         asset_oracle_price.cast()?,
         spot_market_map
             .get_ref(&asset_market_index)?
-            .historical_oracle_data
-            .last_oracle_price_twap_5min,
+            .settled_oracle_price_twap_5min(),
         state
             .oracle_guard_rails
             .max_oracle_twap_5min_percent_divergence()

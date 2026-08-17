@@ -82,7 +82,14 @@ fn calculate_oracle_valid() {
 
     let _new_oracle_twap = market
         .market_stats
-        .update_oracle_twap(&market.amm, now, &mm_oracle_price_data, None, None)
+        .update_oracle_twap(
+            &market.amm,
+            now,
+            &mm_oracle_price_data,
+            None,
+            None,
+            &mut market.settled_oracle_twaps,
+        )
         .unwrap();
     assert_eq!(
         market
@@ -109,6 +116,9 @@ fn calculate_oracle_valid() {
     assert!(oracle_status.oracle_validity != OracleValidity::Valid);
 
     oracle_price_data.delay = 8;
+    // `get_oracle_status` gates on the settled anchors, not the live TWAPs, so
+    // the fixture moves both. Writing only the live pair would leave the gate
+    // measuring against the anchors the crank above seeded.
     market
         .market_stats
         .historical_oracle_data
@@ -117,6 +127,8 @@ fn calculate_oracle_valid() {
         .market_stats
         .historical_oracle_data
         .last_oracle_price_twap = 21 * PRICE_PRECISION as i64;
+    market.settled_oracle_twaps.last_oracle_price_twap_5min = 32 * PRICE_PRECISION as i64;
+    market.settled_oracle_twaps.last_oracle_price_twap = 21 * PRICE_PRECISION as i64;
     oracle_status = get_oracle_status(
         &market,
         &oracle_price_data,
@@ -131,6 +143,7 @@ fn calculate_oracle_valid() {
         .market_stats
         .historical_oracle_data
         .last_oracle_price_twap_5min = 29 * PRICE_PRECISION as i64;
+    market.settled_oracle_twaps.last_oracle_price_twap_5min = 29 * PRICE_PRECISION as i64;
     oracle_status = get_oracle_status(
         &market,
         &oracle_price_data,

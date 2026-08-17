@@ -47,7 +47,7 @@ use {
             oracle::{
                 get_oracle_price, get_prelaunch_price, get_pyth_price, HistoricalIndexData,
                 HistoricalOracleData, OraclePriceData, OracleSource, PrelaunchOracle,
-                PrelaunchOracleParams, StrictOraclePrice,
+                PrelaunchOracleParams, SettledOracleTwaps, StrictOraclePrice,
             },
             oracle_map::OracleMap,
             paused_operations::{InsuranceFundOperation, PerpOperation, SpotOperation},
@@ -380,6 +380,10 @@ pub fn handle_initialize_spot_market(
         oracle: ctx.accounts.oracle.key(),
         oracle_source,
         historical_oracle_data: historical_oracle_data_default,
+        settled_oracle_twaps: SettledOracleTwaps::seeded(
+            historical_oracle_data_default.last_oracle_price_twap,
+            historical_oracle_data_default.last_oracle_price_twap_ts,
+        ),
         historical_index_data: historical_index_data_default,
         mint: ctx.accounts.spot_market_mint.key(),
         vault: ctx.accounts.spot_market_vault.key(),
@@ -804,6 +808,7 @@ pub fn handle_initialize_perp_market(
             },
             ..MarketStats::default()
         },
+        settled_oracle_twaps: SettledOracleTwaps::seeded(oracle_price, now),
         pending_revenue_share: 0,
         amm: AMM {
             base_asset_reserve: amm_base_asset_reserve,

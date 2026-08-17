@@ -4346,6 +4346,7 @@ pub mod types {
         pub pending_revenue_share: u64,
         pub amm: AMM,
         pub hedge_config: HedgeConfig,
+        pub settled_oracle_twaps: SettledOracleTwaps,
     }
     #[repr(C)]
     #[derive(
@@ -4753,6 +4754,26 @@ pub mod types {
         Debug,
         PartialEq,
     )]
+    pub struct SettledOracleTwaps {
+        pub last_oracle_price_twap: i64,
+        pub last_oracle_price_twap_5min: i64,
+        pub ts: i64,
+        #[serde(skip)]
+        pub _padding: Padding<8>,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
     pub struct SignedMsgOrderId {
         pub uuid: [u8; 8],
         pub max_slot: u64,
@@ -5013,6 +5034,7 @@ pub mod types {
         pub protocol_liquidation_fee: u32,
         pub protocol_fee_factor: u32,
         pub if_last_settle_vault_amount: u64,
+        pub settled_oracle_twaps: SettledOracleTwaps,
     }
     #[repr(C)]
     #[derive(
@@ -5895,6 +5917,7 @@ pub mod accounts {
         pub pending_revenue_share: u64,
         pub amm: AMM,
         pub hedge_config: HedgeConfig,
+        pub settled_oracle_twaps: SettledOracleTwaps,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for PerpMarket {
@@ -6383,6 +6406,7 @@ pub mod accounts {
         pub protocol_liquidation_fee: u32,
         pub protocol_fee_factor: u32,
         pub if_last_settle_vault_amount: u64,
+        pub settled_oracle_twaps: SettledOracleTwaps,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for SpotMarket {

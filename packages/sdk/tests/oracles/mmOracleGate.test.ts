@@ -54,6 +54,7 @@ describe('MM oracle validity gate (UseMMOraclePrice semantics)', () => {
 		// which is NOT what the program checks before using the mm oracle price.
 		const wasTooDivergentUnderOldGate = isOracleTooDivergent(
 			market.marketStats,
+			market.settledOracleTwaps,
 			{
 				price: mmOraclePrice,
 				slot: mmOracleSlot,

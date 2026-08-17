@@ -20,7 +20,7 @@ use {
         },
         state::{
             market_status::MarketStatus,
-            oracle::{HistoricalIndexData, HistoricalOracleData, OracleSource},
+            oracle::{HistoricalIndexData, HistoricalOracleData, OracleSource, SettledOracleTwaps},
             paused_operations::{InsuranceFundOperation, SpotOperation},
             perp_market::PoolBalance,
             traits::{MarketIndexOffset, Size},
@@ -263,6 +263,12 @@ pub struct SpotMarket {
     /// live balance on the next add/settle and treated as "fall back to live" by
     /// the consumers.
     pub if_last_settle_vault_amount: u64,
+    /// The oracle TWAPs the price-band and divergence gates read, one roll
+    /// behind `historical_oracle_data`. See [`SettledOracleTwaps`].
+    ///
+    /// Appended at the tail so no existing offset moves. An account written
+    /// before this field exists reads all-zero, which is the unseeded state.
+    pub settled_oracle_twaps: SettledOracleTwaps,
 }
 
 // Layout guards: the deployed account layout is frozen, and the borsh/IDL
@@ -270,7 +276,7 @@ pub struct SpotMarket {
 // padding (off-chain decoders read the IDL's packed layout). If one of these
 // fires after a struct change, re-size the explicit padding fields — never
 // let the compiler insert implicit padding.
-const _: () = assert!(std::mem::size_of::<SpotMarket>() == 800);
+const _: () = assert!(std::mem::size_of::<SpotMarket>() == 832);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, withdraw_circuit_breaker_bps) == 740);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, max_deposit_bps_per_day) == 742);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, deposit_guard_threshold) == 744);
@@ -278,6 +284,7 @@ const _: () = assert!(std::mem::offset_of!(SpotMarket, protocol_fee_pool) == 752
 const _: () = assert!(std::mem::offset_of!(SpotMarket, protocol_liquidation_fee) == 784);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, protocol_fee_factor) == 788);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, if_last_settle_vault_amount) == 792);
+const _: () = assert!(std::mem::offset_of!(SpotMarket, settled_oracle_twaps) == 800);
 
 impl Default for SpotMarket {
     fn default() -> Self {
@@ -348,12 +355,13 @@ impl Default for SpotMarket {
             protocol_liquidation_fee: 0,
             protocol_fee_factor: 0,
             if_last_settle_vault_amount: 0,
+            settled_oracle_twaps: SettledOracleTwaps::default(),
         }
     }
 }
 
 impl Size for SpotMarket {
-    const SIZE: usize = 808;
+    const SIZE: usize = 840;
 }
 
 impl MarketIndexOffset for SpotMarket {
@@ -368,12 +376,22 @@ impl MarketIndexOffset for SpotMarket {
     // total content stays a multiple of 16 (816); none are u128/i128 so the
     // "u128 before PoolBalance" ordering rule is unaffected. They sit after
     // market_index, so market_index stays at struct byte 692, account byte 700.
-    const MARKET_INDEX_OFFSET: usize = 700;
+    //
+    // Derived rather than written out, so a field added ahead of `market_index`
+    // moves every reader with it.
+    const MARKET_INDEX_OFFSET: usize = 8 + std::mem::offset_of!(SpotMarket, market_index);
 }
 
 impl SpotMarket {
     pub fn oracle_id(&self) -> OracleIdentifier {
         (self.oracle, self.oracle_source)
+    }
+
+    /// The 5-minute oracle TWAP that price-band and divergence gates must read.
+    /// See [`SettledOracleTwaps`].
+    pub fn settled_oracle_price_twap_5min(&self) -> i64 {
+        self.settled_oracle_twaps
+            .oracle_price_twap_5min(&self.historical_oracle_data)
     }
 
     pub fn is_in_settlement(&self, now: i64) -> bool {

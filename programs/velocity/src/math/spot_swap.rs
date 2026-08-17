@@ -119,7 +119,7 @@ pub fn validate_price_bands_for_swap(
                 fill_price,
                 PositionDirection::Short,
                 in_price,
-                in_market.historical_oracle_data.last_oracle_price_twap_5min,
+                in_market.settled_oracle_price_twap_5min(),
                 in_market_margin_ratio,
             )
         } else {
@@ -130,9 +130,7 @@ pub fn validate_price_bands_for_swap(
                 fill_price,
                 PositionDirection::Long,
                 out_price,
-                out_market
-                    .historical_oracle_data
-                    .last_oracle_price_twap_5min,
+                out_market.settled_oracle_price_twap_5min(),
                 out_market.get_margin_ratio(&MarginRequirementType::Initial)?,
             )
         }

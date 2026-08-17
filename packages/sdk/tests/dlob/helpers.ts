@@ -203,6 +203,11 @@ function mockPerpMarketCommon(): Omit<
 			exchangeFeeExclusionScalar: 0,
 			feeTransferScalar: 0,
 		},
+		settledOracleTwaps: {
+			lastOraclePriceTwap: new BN(0),
+			lastOraclePriceTwap5Min: new BN(0),
+			ts: new BN(0),
+		},
 		marketConfig: 0,
 
 		// Fields migrated off AMM to top-level PerpMarket
@@ -352,6 +357,11 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		poolId: 0,
 		feeAdjustment: 0,
 		ifLastSettleVaultAmount: new BN(0),
+		settledOracleTwaps: {
+			lastOraclePriceTwap: new BN(0),
+			lastOraclePriceTwap5Min: new BN(0),
+			ts: new BN(0),
+		},
 		depositGuardThreshold: new BN(0),
 		withdrawCircuitBreakerBps: 0,
 		maxDepositBpsPerDay: 0,
@@ -450,6 +460,11 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		poolId: 0,
 		feeAdjustment: 0,
 		ifLastSettleVaultAmount: new BN(0),
+		settledOracleTwaps: {
+			lastOraclePriceTwap: new BN(0),
+			lastOraclePriceTwap5Min: new BN(0),
+			ts: new BN(0),
+		},
 		depositGuardThreshold: new BN(0),
 		withdrawCircuitBreakerBps: 0,
 		maxDepositBpsPerDay: 0,
@@ -550,6 +565,11 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		poolId: 0,
 		feeAdjustment: 0,
 		ifLastSettleVaultAmount: new BN(0),
+		settledOracleTwaps: {
+			lastOraclePriceTwap: new BN(0),
+			lastOraclePriceTwap5Min: new BN(0),
+			ts: new BN(0),
+		},
 		depositGuardThreshold: new BN(0),
 		withdrawCircuitBreakerBps: 0,
 		maxDepositBpsPerDay: 0,

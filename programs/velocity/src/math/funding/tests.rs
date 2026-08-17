@@ -510,30 +510,37 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
     )
     .unwrap());
 
-    // Pre-fix ordering: the crank's own refresh moves the TWAP 8 -> 12, and the
-    // very same oracle now passes the very same gate.
-    let mut unfixed = market;
-    unfixed
+    // The composed refresh still moves the live TWAP 8 -> 12, which is what used
+    // to clear the gate. It no longer does: the roll leaves the anchor on the
+    // pre-refresh 8, and `block_operation` reads the anchor. The gate holds
+    // whichever refresh the crank performs, which is the property ordering alone
+    // could not give — a permissionless `update_amms` in front of the crank
+    // reproduces this same refresh (OtterSec #109).
+    let mut refreshed = market;
+    refreshed
         .update_oracle_derived_stats(&mm_oracle_price_data, validity, now, slot)
         .unwrap();
     assert_eq!(
-        unfixed
+        refreshed
             .market_stats
             .historical_oracle_data
             .last_oracle_price_twap,
         (12 * PRICE_PRECISION) as i64
     );
+    assert_eq!(
+        refreshed.settled_oracle_twaps.last_oracle_price_twap,
+        (8 * PRICE_PRECISION) as i64
+    );
     assert!(
-        !block_operation(
-            &unfixed,
+        block_operation(
+            &refreshed,
             &oracle_price_data,
             &state.oracle_guard_rails,
-            unfixed.amm.reserve_price().unwrap(),
+            refreshed.amm.reserve_price().unwrap(),
             slot,
         )
         .unwrap(),
-        "the pre-fix ordering is expected to clear its own gate — if this trips, \
-         the test fixture no longer reproduces #109"
+        "a too-volatile oracle must stay blocked through its own refresh"
     );
 
     // Fixed ordering: the TWAP-free half leaves both gate inputs untouched, so a

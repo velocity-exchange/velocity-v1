@@ -5,6 +5,7 @@ import {
 	OracleSource,
 	OracleValidity,
 	PerpMarketAccount,
+	SettledOracleTwaps,
 	SpotMarketAccount,
 	isOneOfVariant,
 	isVariant,
@@ -243,24 +244,78 @@ export function isOracleValid(
 }
 
 /**
- * True when the live oracle price has diverged from the market's 5-minute oracle TWAP by
- * more than the configured threshold (with a 50% safety floor). Distinct from
+ * The 5-minute oracle TWAP the on-chain price-band and divergence gates read.
+ *
+ * Mirrors `SettledOracleTwaps::oracle_price_twap_5min` in
+ * `programs/velocity/src/state/oracle.rs`. The gates read the settled anchor, not
+ * `historicalOracleData.lastOraclePriceTwap5Min`, because the live TWAP is advanced by
+ * permissionless cranks and so is reachable from the transaction the gate guards. An
+ * unseeded (`ts` of zero) or zero anchor falls back to the live TWAP.
+ * @param settledOracleTwaps The market's `settledOracleTwaps`.
+ * @param historicalOracleData The market's live `historicalOracleData`.
+ * @returns The anchor the gates measure against, PRICE_PRECISION (1e6).
+ */
+export function getSettledOraclePriceTwap5Min(
+	settledOracleTwaps: SettledOracleTwaps,
+	historicalOracleData: HistoricalOracleData
+): BN {
+	if (
+		settledOracleTwaps.ts.isZero() ||
+		settledOracleTwaps.lastOraclePriceTwap5Min.isZero()
+	) {
+		return historicalOracleData.lastOraclePriceTwap5Min;
+	}
+	return settledOracleTwaps.lastOraclePriceTwap5Min;
+}
+
+/**
+ * The one-hour oracle TWAP the on-chain gates read. See
+ * `getSettledOraclePriceTwap5Min`.
+ * @param settledOracleTwaps The market's `settledOracleTwaps`.
+ * @param historicalOracleData The market's live `historicalOracleData`.
+ * @returns The anchor the gates measure against, PRICE_PRECISION (1e6).
+ */
+export function getSettledOraclePriceTwap(
+	settledOracleTwaps: SettledOracleTwaps,
+	historicalOracleData: HistoricalOracleData
+): BN {
+	if (
+		settledOracleTwaps.ts.isZero() ||
+		settledOracleTwaps.lastOraclePriceTwap.isZero()
+	) {
+		return historicalOracleData.lastOraclePriceTwap;
+	}
+	return settledOracleTwaps.lastOraclePriceTwap;
+}
+
+/**
+ * True when the live oracle price has diverged from the market's settled 5-minute oracle
+ * TWAP by more than the configured threshold (with a 50% safety floor). Distinct from
  * `isMarkOracleTooDivergent`, which compares mark (reserve) price to the same TWAP instead
  * of the live oracle price to itself — this catches an oracle feed itself jumping abruptly.
- * @param marketStats Market stats providing `historicalOracleData.lastOraclePriceTwap5Min`, PRICE_PRECISION (1e6).
+ *
+ * Measures against the settled anchor, mirroring
+ * `is_oracle_too_divergent_with_twap_5min`'s call sites.
+ * @param marketStats Market stats providing `historicalOracleData`, PRICE_PRECISION (1e6).
+ * @param settledOracleTwaps The market's `settledOracleTwaps`.
  * @param oraclePriceData Live oracle reading (`price`, PRICE_PRECISION 1e6).
  * @param oracleGuardRails Protocol-wide guard rails; uses `priceDivergence.oracleTwap5MinPercentDivergence`, PERCENTAGE_PRECISION (1e6).
  * @returns `true` if the oracle-vs-TWAP spread exceeds the divergence threshold.
  */
 export function isOracleTooDivergent(
 	marketStats: MarketStats,
+	settledOracleTwaps: SettledOracleTwaps,
 	oraclePriceData: OraclePriceData,
 	oracleGuardRails: OracleGuardRails
 ): boolean {
+	const oracleTwap5Min = getSettledOraclePriceTwap5Min(
+		settledOracleTwaps,
+		marketStats.historicalOracleData
+	);
 	const oracleSpreadPct = oraclePriceData.price
-		.sub(marketStats.historicalOracleData.lastOraclePriceTwap5Min)
+		.sub(oracleTwap5Min)
 		.mul(PERCENTAGE_PRECISION)
-		.div(marketStats.historicalOracleData.lastOraclePriceTwap5Min);
+		.div(oracleTwap5Min);
 	const maxDivergence = BN.max(
 		oracleGuardRails.priceDivergence.oracleTwap5MinPercentDivergence,
 		PERCENTAGE_PRECISION.div(new BN(2))

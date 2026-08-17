@@ -1196,6 +1196,8 @@ export type PerpMarketAccount = {
 		/** scalar for the share of fees transferred to the hedge pool */
 		feeTransferScalar: number;
 	};
+	/** the TWAPs this market's price-band gates read; see `SettledOracleTwaps` */
+	settledOracleTwaps: SettledOracleTwaps;
 	/** bitmask, see `MarketConfigFlag` */
 	marketConfig: number;
 
@@ -1259,6 +1261,25 @@ export type HistoricalOracleData = {
 	lastOraclePriceTwapTs: BN;
 };
 
+/**
+ * The oracle TWAPs the on-chain price-band and divergence gates read, one roll
+ * behind `HistoricalOracleData`. All price fields are PRICE_PRECISION (1e6).
+ *
+ * The live TWAPs are advanced by permissionless cranks, so a transaction can
+ * move them immediately before the gate that reads them. This pair rolls onto
+ * the live TWAPs at most once per `SETTLED_ORACLE_TWAP_INTERVAL` and travels at
+ * most `1 / SETTLED_ORACLE_TWAP_ROLL_DENOMINATOR` per roll.
+ *
+ * `ts` of zero means unseeded: read the live TWAP instead. Valuation
+ * (`StrictOraclePrice`, margin) reads the live TWAPs, not these.
+ */
+export type SettledOracleTwaps = {
+	lastOraclePriceTwap: BN;
+	lastOraclePriceTwap5Min: BN;
+	/** unix timestamp of the last roll; `0` means unseeded */
+	ts: BN;
+};
+
 /** Rolling index-price stats for a spot market (bid/ask/TWAP of the underlying index, e.g. a basket or peg reference). All price fields are PRICE_PRECISION (1e6). */
 export type HistoricalIndexData = {
 	lastIndexBidPrice: BN;
@@ -1317,6 +1338,8 @@ export type SpotMarketAccount = {
 	 * donation-proof base for the per-period revenue-settle APR cap (see `settle_revenue_to_insurance_fund`);
 	 * `0` = uninitialized (pre-upgrade accounts, seeded on first settle) */
 	ifLastSettleVaultAmount: BN;
+	/** the TWAPs this market's price-band gates read; see `SettledOracleTwaps` */
+	settledOracleTwaps: SettledOracleTwaps;
 
 	/** token mint decimals; token-mint precision throughout this account is 10^decimals */
 	decimals: number;

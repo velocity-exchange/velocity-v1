@@ -27,7 +27,10 @@ use {
         state::{
             fill_mode::FillMode,
             market_status::MarketStatus,
-            oracle::{HistoricalOracleData, MMOraclePriceData, OraclePriceData, OracleSource},
+            oracle::{
+                HistoricalOracleData, MMOraclePriceData, OraclePriceData, OracleSource,
+                SettledOracleTwaps,
+            },
             paused_operations::PerpOperation,
             spot_market::{AssetTier, SpotBalance, SpotBalanceType},
             state::{State, ValidityGuardRails},
@@ -494,6 +497,13 @@ pub struct PerpMarket {
     /// This market's hedge (LP pool) configuration. Sits immediately after `amm`
     /// so the trailing `[amm, hedge_config]` span is the contiguous VLP region.
     pub hedge_config: HedgeConfig,
+    /// The oracle TWAPs the price-band and divergence gates read, one roll
+    /// behind `market_stats.historical_oracle_data`. See
+    /// [`SettledOracleTwaps`].
+    ///
+    /// Appended at the tail so no existing offset moves. An account written
+    /// before this field exists reads all-zero, which is the unseeded state.
+    pub settled_oracle_twaps: SettledOracleTwaps,
 }
 
 impl Default for PerpMarket {
@@ -561,6 +571,7 @@ impl Default for PerpMarket {
             pending_revenue_share: 0,
             amm: AMM::default(),
             hedge_config: HedgeConfig::default(),
+            settled_oracle_twaps: SettledOracleTwaps::default(),
             protocol_fee_pool: PoolBalance::default(),
             protocol_liquidation_fee: 0,
             taker_fee_addon_tenth_bps: 0,
@@ -577,7 +588,7 @@ impl Size for PerpMarket {
     // u64 last_spread_update_slot live back on AMM — refreshed by
     // `math::spread::update_amm_quote_state` on each crank/fill `setup` and
     // read directly by quote/fill paths and dashboards.
-    const SIZE: usize = 1304;
+    const SIZE: usize = 1336;
 }
 
 impl MarketIndexOffset for PerpMarket {
@@ -590,6 +601,27 @@ impl MarketIndexOffset for PerpMarket {
 impl PerpMarket {
     pub fn oracle_id(&self) -> OracleIdentifier {
         (self.oracle, self.oracle_source)
+    }
+
+    /// The 5-minute oracle TWAP that price-band and divergence gates must read.
+    /// See [`SettledOracleTwaps`].
+    pub fn settled_oracle_price_twap_5min(&self) -> i64 {
+        self.settled_oracle_twaps
+            .oracle_price_twap_5min(&self.market_stats.historical_oracle_data)
+    }
+
+    /// The one-hour oracle TWAP that price-band and divergence gates must read.
+    /// See [`SettledOracleTwaps`].
+    pub fn settled_oracle_price_twap(&self) -> i64 {
+        self.settled_oracle_twaps
+            .oracle_price_twap(&self.market_stats.historical_oracle_data)
+    }
+
+    /// Spread between `other_price` and the settled 5-minute anchor, in
+    /// `BID_ASK_SPREAD_PRECISION`. Both callers are mark-divergence gates.
+    pub fn settled_twap_5min_spread_pct(&self, other_price: u64) -> VelocityResult<i64> {
+        self.settled_oracle_twaps
+            .twap_5min_spread_pct(&self.market_stats.historical_oracle_data, other_price)
     }
 
     pub fn has_market_config_flag(&self, flag: MarketConfigFlag) -> bool {
@@ -712,7 +744,10 @@ impl PerpMarket {
         )? {
             let sanitize_clamp_denominator = self.get_sanitize_clamp_denominator()?;
             let PerpMarket {
-                amm, market_stats, ..
+                amm,
+                market_stats,
+                settled_oracle_twaps,
+                ..
             } = self;
             market_stats.update_oracle_twap(
                 amm,
@@ -720,6 +755,7 @@ impl PerpMarket {
                 mm_oracle_price_data,
                 Some(reserve_price),
                 sanitize_clamp_denominator,
+                settled_oracle_twaps,
             )?;
         }
 
@@ -1700,7 +1736,7 @@ impl Default for MarketStats {
 }
 
 impl crate::state::traits::Size for MarketStats {
-    const SIZE: usize = 216;
+    const SIZE: usize = 248;
 }
 
 pub fn normalise_oracle_price(
@@ -2144,6 +2180,7 @@ impl MarketStats {
         mm_oracle_price_data: &crate::state::oracle::MMOraclePriceData,
         precomputed_reserve_price: Option<u64>,
         sanitize_clamp: Option<i64>,
+        settled_oracle_twaps: &mut SettledOracleTwaps,
     ) -> crate::error::VelocityResult<i64> {
         let reserve_price = match precomputed_reserve_price {
             Some(reserve_price) => reserve_price,
@@ -2202,6 +2239,10 @@ impl MarketStats {
                 prev_oracle_twap.cast()?,
                 prev_oracle_twap_5min.cast()?,
             )?;
+
+            // Roll before the write, so the anchors take the TWAPs from before
+            // this update. The gates read the anchors.
+            settled_oracle_twaps.roll(&self.historical_oracle_data, now)?;
 
             self.historical_oracle_data.last_oracle_price_twap_5min = oracle_price_twap_5min;
             self.historical_oracle_data.last_oracle_price_twap = oracle_price_twap;

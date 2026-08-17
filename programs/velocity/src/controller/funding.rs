@@ -253,7 +253,10 @@ pub fn update_funding_rate(
 
     let oracle_price_twap = {
         let PerpMarket {
-            amm, market_stats, ..
+            amm,
+            market_stats,
+            settled_oracle_twaps,
+            ..
         } = &mut *market;
         market_stats.update_oracle_twap(
             amm,
@@ -261,6 +264,7 @@ pub fn update_funding_rate(
             &mm_oracle_price_data,
             Some(reserve_price),
             sanitize_clamp_denominator,
+            settled_oracle_twaps,
         )?
     };
 

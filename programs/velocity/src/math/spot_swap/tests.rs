@@ -154,9 +154,13 @@ mod test {
 mod validate_price_bands_for_swap {
     use {
         crate::{
+            controller::spot_balance::update_spot_market_cumulative_interest,
             error::ErrorCode,
             math::spot_swap::validate_price_bands_for_swap,
-            state::{oracle::HistoricalOracleData, spot_market::SpotMarket},
+            state::{
+                oracle::{HistoricalOracleData, OraclePriceData, SettledOracleTwaps},
+                spot_market::SpotMarket,
+            },
             LAMPORTS_PER_SOL_U64, PERCENTAGE_PRECISION_U64, PRICE_PRECISION_I64,
             QUOTE_PRECISION_U64,
         },
@@ -355,5 +359,107 @@ mod validate_price_bands_for_swap {
         );
 
         assert_eq!(result, Err(ErrorCode::PriceBandsBreached));
+    }
+
+    /// A permissionless crank in front of `begin_swap` must not move the number
+    /// `end_swap` measures the fill against.
+    ///
+    /// `update_spot_market_cumulative_interest` takes no signer, and
+    /// `begin_swap` inspects only the instructions that follow it, so a swapper
+    /// can put that crank in front of its own swap in the same transaction. The
+    /// crank runs at the same `unix_timestamp`, so it advances
+    /// `last_oracle_price_twap_5min` by exactly the amount `begin_swap`'s own
+    /// refresh advanced it before OtterSec #110 was addressed. Moving the
+    /// refresh out of the handler did not close that; reading the settled anchor
+    /// does.
+    #[test]
+    fn permissionless_crank_before_begin_swap_does_not_move_the_band_anchor() {
+        let twap_ts = 1_700_000_000_i64;
+        let anchor = 100 * PRICE_PRECISION_I64;
+
+        let mut in_market = SpotMarket {
+            market_index: 1,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price_twap_ts: twap_ts,
+                ..HistoricalOracleData::default_price(anchor)
+            },
+            settled_oracle_twaps: SettledOracleTwaps::seeded(anchor, twap_ts),
+            ..SpotMarket::default_base_market()
+        };
+
+        let out_price = PRICE_PRECISION_I64;
+        let out_market = SpotMarket {
+            market_index: 0,
+            historical_oracle_data: HistoricalOracleData::default_price(out_price),
+            ..SpotMarket::default_quote_market()
+        };
+
+        // 1 SOL out for $49, against a $100 anchor: 51% divergence on a 50% limit.
+        let in_price = 49 * PRICE_PRECISION_I64;
+        let amount_in = LAMPORTS_PER_SOL_U64;
+        let amount_out = 49 * QUOTE_PRECISION_U64;
+        let max_5min_twap_divergence = PERCENTAGE_PRECISION_U64 / 2;
+
+        let result = validate_price_bands_for_swap(
+            &in_market,
+            &out_market,
+            amount_in,
+            amount_out,
+            in_price,
+            out_price,
+            max_5min_twap_divergence,
+        );
+
+        assert_eq!(
+            result,
+            Err(ErrorCode::PriceBandsBreached),
+            "the gate must reject this fill against the stored anchor"
+        );
+
+        // The prepended crank. Five minutes of staleness is one full 5-minute
+        // window, so the anchor moves the whole way to the sanitized sample.
+        let now = twap_ts + 300;
+        let oracle_price_data = OraclePriceData {
+            price: in_price,
+            confidence: 0,
+            delay: 0,
+            has_sufficient_number_of_data_points: true,
+            ..OraclePriceData::default()
+        };
+        update_spot_market_cumulative_interest(
+            &mut in_market,
+            Some(&oracle_price_data),
+            now,
+            false,
+        )
+        .unwrap();
+
+        assert!(
+            in_market.historical_oracle_data.last_oracle_price_twap_5min < anchor,
+            "the crank must still drag the live TWAP toward the live price — if \
+             this trips, the fixture no longer reproduces the attack"
+        );
+        assert_eq!(
+            in_market.settled_oracle_price_twap_5min(),
+            anchor,
+            "the anchor is younger than one roll interval, so it must not move"
+        );
+
+        // Same swap, same transaction, same second. The gate still rejects.
+        let result = validate_price_bands_for_swap(
+            &in_market,
+            &out_market,
+            amount_in,
+            amount_out,
+            in_price,
+            out_price,
+            max_5min_twap_divergence,
+        );
+
+        assert_eq!(
+            result,
+            Err(ErrorCode::PriceBandsBreached),
+            "the crank in front of begin_swap must not clear the gate"
+        );
     }
 }

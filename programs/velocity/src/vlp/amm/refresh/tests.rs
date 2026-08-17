@@ -101,9 +101,7 @@ pub fn update_amm_test() {
         .historical_oracle_data
         .last_oracle_price_twap_ts = now - (167 + 6);
     let oracle_reserve_price_spread_pct_before = market
-        .market_stats
-        .historical_oracle_data
-        .twap_5min_spread_pct(reserve_price_before)
+        .settled_twap_5min_spread_pct(reserve_price_before)
         .unwrap();
     assert_eq!(oracle_reserve_price_spread_pct_before, -5316);
     let too_diverge = crate::math::oracle::is_mark_oracle_too_divergent(
@@ -164,12 +162,14 @@ pub fn update_amm_test() {
         16954113056
     ); // since manually set higher above
 
+    // Measured against the settled anchor, which `_update_amm` left at the
+    // 5-minute TWAP from before its own refresh (18907668639), not at the
+    // refreshed 16954113056. That is the point of the anchor: the refresh a
+    // transaction performs does not move the number its gates are judged on.
     let oracle_reserve_price_spread_pct_before = market
-        .market_stats
-        .historical_oracle_data
-        .twap_5min_spread_pct(reserve_price_after_prepeg)
+        .settled_twap_5min_spread_pct(reserve_price_after_prepeg)
         .unwrap();
-    assert_eq!(oracle_reserve_price_spread_pct_before, -330370);
+    assert_eq!(oracle_reserve_price_spread_pct_before, -483663);
     let too_diverge = crate::math::oracle::is_mark_oracle_too_divergent(
         oracle_reserve_price_spread_pct_before,
         &state.oracle_guard_rails.price_divergence,

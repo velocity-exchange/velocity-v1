@@ -637,7 +637,14 @@ fn calc_mark_std_tests() {
         .unwrap();
         market
             .market_stats
-            .update_oracle_twap(&market.amm, now, &mm_oracle_price_data, None, None)
+            .update_oracle_twap(
+                &market.amm,
+                now,
+                &mm_oracle_price_data,
+                None,
+                None,
+                &mut market.settled_oracle_twaps,
+            )
             .unwrap();
 
         market.amm.peg_multiplier = px as u128;
@@ -856,7 +863,14 @@ fn update_mark_twap_tests() {
     };
     market
         .market_stats
-        .update_oracle_twap(&market.amm, now, &mm_oracle_price_data, None, None)
+        .update_oracle_twap(
+            &market.amm,
+            now,
+            &mm_oracle_price_data,
+            None,
+            None,
+            &mut market.settled_oracle_twaps,
+        )
         .unwrap();
     assert_eq!(
         market.market_stats.historical_oracle_data.last_oracle_price,
@@ -896,7 +910,14 @@ fn update_mark_twap_tests() {
         now += 1;
         market
             .market_stats
-            .update_oracle_twap(&market.amm, now, &mm_oracle_price_data, None, None)
+            .update_oracle_twap(
+                &market.amm,
+                now,
+                &mm_oracle_price_data,
+                None,
+                None,
+                &mut market.settled_oracle_twaps,
+            )
             .unwrap();
         market
             .market_stats
@@ -951,7 +972,14 @@ fn update_mark_twap_tests() {
         now += 1;
         market
             .market_stats
-            .update_oracle_twap(&market.amm, now, &mm_oracle_price_data, None, None)
+            .update_oracle_twap(
+                &market.amm,
+                now,
+                &mm_oracle_price_data,
+                None,
+                None,
+                &mut market.settled_oracle_twaps,
+            )
             .unwrap();
         if now % 200 == 0 {
             market
@@ -1036,7 +1064,14 @@ fn calc_oracle_twap_tests() {
     .unwrap();
     let _new_oracle_twap = market
         .market_stats
-        .update_oracle_twap(&market.amm, now, &mm_oracle_price_data, None, None)
+        .update_oracle_twap(
+            &market.amm,
+            now,
+            &mm_oracle_price_data,
+            None,
+            None,
+            &mut market.settled_oracle_twaps,
+        )
         .unwrap();
     assert_eq!(
         market
@@ -1072,7 +1107,14 @@ fn calc_oracle_twap_tests() {
     // let old_oracle_twap_2 = amm.historical_oracle_data.last_oracle_price_twap;
     let _new_oracle_twap_2 = market
         .market_stats
-        .update_oracle_twap(&market.amm, now, &mm_oracle_price_data, None, None)
+        .update_oracle_twap(
+            &market.amm,
+            now,
+            &mm_oracle_price_data,
+            None,
+            None,
+            &mut market.settled_oracle_twaps,
+        )
         .unwrap();
     assert_eq!(
         market
@@ -1091,7 +1133,14 @@ fn calc_oracle_twap_tests() {
     assert_eq!(market.market_stats.oracle_std, 2_990_000);
     let _new_oracle_twap_2 = market
         .market_stats
-        .update_oracle_twap(&market.amm, now + 60 * 5, &mm_oracle_price_data, None, None)
+        .update_oracle_twap(
+            &market.amm,
+            now + 60 * 5,
+            &mm_oracle_price_data,
+            None,
+            None,
+            &mut market.settled_oracle_twaps,
+        )
         .unwrap();
 
     assert_eq!(
@@ -1133,6 +1182,7 @@ fn calc_oracle_twap_tests() {
             &mm_oracle_price_data,
             None,
             None,
+            &mut market.settled_oracle_twaps,
         )
         .unwrap();
     assert_eq!(
@@ -1206,7 +1256,14 @@ fn calc_oracle_twap_clamp_update_tests() {
     while now < prev + 3600 {
         market
             .market_stats
-            .update_oracle_twap(&market.amm, now, &mm_oracle_price_data, None, None)
+            .update_oracle_twap(
+                &market.amm,
+                now,
+                &mm_oracle_price_data,
+                None,
+                None,
+                &mut market.settled_oracle_twaps,
+            )
             .unwrap();
         now += 1;
     }
@@ -1229,7 +1286,14 @@ fn calc_oracle_twap_clamp_update_tests() {
     while now < prev + 3600 * 2 {
         market
             .market_stats
-            .update_oracle_twap(&market.amm, now, &mm_oracle_price_data, None, None)
+            .update_oracle_twap(
+                &market.amm,
+                now,
+                &mm_oracle_price_data,
+                None,
+                None,
+                &mut market.settled_oracle_twaps,
+            )
             .unwrap();
         now += 1;
     }
@@ -1253,7 +1317,14 @@ fn calc_oracle_twap_clamp_update_tests() {
     while now < prev + 3600 * 10 {
         market
             .market_stats
-            .update_oracle_twap(&market.amm, now, &mm_oracle_price_data, None, None)
+            .update_oracle_twap(
+                &market.amm,
+                now,
+                &mm_oracle_price_data,
+                None,
+                None,
+                &mut market.settled_oracle_twaps,
+            )
             .unwrap();
         now += 1;
     }
@@ -1329,7 +1400,14 @@ fn test_last_oracle_conf_update() {
     .unwrap();
     market
         .market_stats
-        .update_oracle_twap(&market.amm, now, &mm_oracle_price_data, None, None)
+        .update_oracle_twap(
+            &market.amm,
+            now,
+            &mm_oracle_price_data,
+            None,
+            None,
+            &mut market.settled_oracle_twaps,
+        )
         .unwrap();
 
     assert_eq!(market.market_stats.last_oracle_conf_pct, 7692);
@@ -1355,12 +1433,26 @@ fn test_last_oracle_conf_update() {
     // unchanged if now hasnt changed
     market
         .market_stats
-        .update_oracle_twap(&market.amm, now, &mm_oracle_price_data, None, None)
+        .update_oracle_twap(
+            &market.amm,
+            now,
+            &mm_oracle_price_data,
+            None,
+            None,
+            &mut market.settled_oracle_twaps,
+        )
         .unwrap();
     assert_eq!(market.market_stats.last_oracle_conf_pct, 7692);
     market
         .market_stats
-        .update_oracle_twap(&market.amm, now + 1, &mm_oracle_price_data, None, None)
+        .update_oracle_twap(
+            &market.amm,
+            now + 1,
+            &mm_oracle_price_data,
+            None,
+            None,
+            &mut market.settled_oracle_twaps,
+        )
         .unwrap();
 
     assert_eq!(market.market_stats.last_oracle_conf_pct, 7692 - 7692 / 20); // 7287
@@ -1368,7 +1460,14 @@ fn test_last_oracle_conf_update() {
     // longer time between update means delay is faster
     market
         .market_stats
-        .update_oracle_twap(&market.amm, now + 60, &mm_oracle_price_data, None, None)
+        .update_oracle_twap(
+            &market.amm,
+            now + 60,
+            &mm_oracle_price_data,
+            None,
+            None,
+            &mut market.settled_oracle_twaps,
+        )
         .unwrap();
 
     assert_eq!(

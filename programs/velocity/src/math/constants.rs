@@ -129,6 +129,13 @@ pub const ONE_YEAR: u128 = 31536000;
 /// Max age of the last fill before the trigger price's last-fill leg is
 /// treated as absent (oracle price substitutes).
 pub const TRIGGER_PRICE_LAST_FILL_MAX_AGE: i64 = FIVE_MINUTE as i64;
+/// How often the settled oracle TWAP anchors roll onto the live TWAPs.
+/// The anchor a price-band gate reads is therefore at least this old.
+pub const SETTLED_ORACLE_TWAP_INTERVAL: i64 = ONE_MINUTE as i64;
+/// Cap on one settled roll, as a fraction of the settled value. `10` means the
+/// gate anchor moves at most 10% per `SETTLED_ORACLE_TWAP_INTERVAL`, so a move
+/// must hold across several intervals to reach it.
+pub const SETTLED_ORACLE_TWAP_ROLL_DENOMINATOR: i64 = 10;
 
 // QUOTE AMOUNTS
 pub const ONE_HUNDRED_MILLION_QUOTE: u64 = 100_000_000_u64 * QUOTE_PRECISION_U64;

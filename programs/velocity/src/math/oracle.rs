@@ -290,13 +290,13 @@ pub fn get_oracle_status(
     reserve_price: u64,
 ) -> VelocityResult<OracleStatus> {
     let slot_delay_override = guard_rails.validity.slots_before_stale_for_amm.cast()?;
+    // The settled anchors, not the live TWAPs. `block_operation` is the funding
+    // crank's own gate, and the crank can be preceded by `update_amms` — the
+    // same permissionless refresh — in the same transaction (OtterSec #109).
     let oracle_validity = oracle_validity(
         MarketType::Perp,
         market.market_index,
-        market
-            .market_stats
-            .historical_oracle_data
-            .last_oracle_price_twap,
+        market.settled_oracle_price_twap(),
         oracle_price_data,
         &guard_rails.validity,
         market.get_max_confidence_interval_multiplier()?,
@@ -306,10 +306,7 @@ pub fn get_oracle_status(
         false, // exchange-oracle price, never MM-sourced
         slot_delay_override,
     )?;
-    let oracle_reserve_price_spread_pct = market
-        .market_stats
-        .historical_oracle_data
-        .twap_5min_spread_pct(reserve_price)?;
+    let oracle_reserve_price_spread_pct = market.settled_twap_5min_spread_pct(reserve_price)?;
     let is_oracle_mark_too_divergent = is_mark_oracle_too_divergent(
         oracle_reserve_price_spread_pct,
         &guard_rails.price_divergence,

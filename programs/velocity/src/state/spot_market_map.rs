@@ -3,7 +3,10 @@ use {
         error::{ErrorCode, VelocityResult},
         math::{constants::QUOTE_SPOT_MARKET_INDEX, safe_unwrap::SafeUnwrap},
         msg,
-        state::{spot_market::SpotMarket, traits::Size},
+        state::{
+            spot_market::SpotMarket,
+            traits::{MarketIndexOffset, Size},
+        },
     },
     anchor_lang::{
         prelude::{AccountInfo, AccountLoader},
@@ -202,7 +205,8 @@ impl<'a> SpotMarketMap<'a> {
                 break;
             }
 
-            let market_index = u16::from_le_bytes(*array_ref![data, 700, 2]);
+            let market_index =
+                u16::from_le_bytes(*array_ref![data, SpotMarket::MARKET_INDEX_OFFSET, 2]);
 
             if spot_market_map.0.contains_key(&market_index) {
                 msg!("Can not include same market index twice {}", market_index);
@@ -267,7 +271,8 @@ impl<'a> SpotMarketMap<'a> {
             return Err(ErrorCode::CouldNotLoadSpotMarketData);
         }
 
-        let market_index = u16::from_le_bytes(*array_ref![data, 700, 2]);
+        let market_index =
+            u16::from_le_bytes(*array_ref![data, SpotMarket::MARKET_INDEX_OFFSET, 2]);
 
         let is_writable = account_info.is_writable;
         let account_loader: AccountLoader<SpotMarket> =
@@ -319,7 +324,8 @@ impl<'a> SpotMarketMap<'a> {
                 return Err(ErrorCode::CouldNotLoadSpotMarketData);
             }
 
-            let market_index = u16::from_le_bytes(*array_ref![data, 700, 2]);
+            let market_index =
+                u16::from_le_bytes(*array_ref![data, SpotMarket::MARKET_INDEX_OFFSET, 2]);
 
             let is_writable = account_info.is_writable;
             let account_loader: AccountLoader<SpotMarket> =

@@ -89,6 +89,23 @@ ignore = [
 	# blanket downgrade, so any *new* advisory in the rust workspace still fails.
 	# Each has a fix available; taking it means a lockfile bump, which is a
 	# separate change from wiring up the scanner.
+	#
+	# Note on the obvious-looking follow-up: DO NOT "close the gap" by adding
+	# `-f rust/Cargo.lock` to the cargo-audit job. cargo-audit reads the lockfile
+	# as text; cargo-deny resolves the actual dependency graph. The two disagree,
+	# and here cargo-deny is the more accurate of the pair:
+	#
+	#   cargo audit -f rust/Cargo.lock   -> exit 1, "4 vulnerabilities found",
+	#   including RUSTSEC-2026-0185 (quinn-proto 0.11.14, CVSS 7.5). quinn-proto
+	#   is recorded in rust/Cargo.lock but is not reachable from any workspace
+	#   member -- `cargo tree -i quinn-proto --target all --all-features` prints
+	#   "nothing to print" -- so nothing we build or ship contains it. Same shape
+	#   as the rkyv entry above: Cargo.lock records optional deps unconditionally.
+	#
+	# Turning that job green would mean adding those IDs to .cargo/audit.toml,
+	# which is shared with the root scan, so it would also suppress them for the
+	# on-chain program workspace. That trades away coverage on the highest-risk
+	# surface to buy coverage cargo-deny already provides more precisely.
 	"RUSTSEC-2026-0204", # crossbeam-epoch: invalid pointer deref in fmt::Pointer.
 	# Fix: cargo update -p crossbeam-epoch (>=0.9.20).
 	"RUSTSEC-2024-0344", # curve25519-dalek: timing variability in Scalar sub.

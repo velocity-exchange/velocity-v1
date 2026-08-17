@@ -14,17 +14,22 @@ name: cargo-vet
 #
 # HOW TO FLIP IT TO BLOCKING: burn the exemption list down (see
 # `cargo vet suggest`, and consider `cargo vet trust` for publishers that the
-# imported registries already trust), then delete the two `continue-on-error`
-# lines below and mark `cargo-vet / vet (...)` as a required status check in
-# the branch protection rules for `master`. Once blocking, a PR that adds a new
-# crate fails until someone audits it or records an explicit exemption — which
-# is the whole point of the tool.
+# imported registries already trust), then delete the `continue-on-error: true`
+# line on the `vet` job below. Do NOT simply mark `cargo-vet / vet (...)` as a
+# required status check at that point: this workflow is `paths`-filtered, so
+# GitHub never creates the check run on a PR that doesn't touch a Cargo file,
+# and a required check with no run sits permanently "Expected" — blocking
+# every non-Cargo PR from merging. Fold the job into main.yml's `changes` +
+# `CI gate` pattern instead (or replace the `paths` filter here with a
+# `dorny/paths-filter` output gate) so the required check always reports.
+# Once blocking, a PR that adds a new crate fails until someone audits it or
+# records an explicit exemption — which is the whole point of the tool.
 
 on:
   push:
     branches: [master]
   pull_request:
-    branches: [master]
+    branches: [master, devnet, feat/monorepo-consolidation]
     paths:
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -104,6 +109,11 @@ jobs:
         uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
         with:
           workspaces: ${{ matrix.workspace }}
+          # cache-bin defaults to true, which would restore a stale ~/.cargo/bin
+          # over the version-pinned cargo-vet binary installed above, defeating
+          # CARGO_VET_VERSION. This job also gets no benefit from caching build
+          # artifacts — `cargo vet` only needs `cargo metadata`, not a build.
+          cache-bin: false
 
       # --locked pins both Cargo.lock and supply-chain/imports.lock, so CI checks
       # the audits that are committed to the repo rather than re-fetching the

@@ -236,6 +236,13 @@ is idempotent — it skips publish if that version is already on the registry. `
 for publishing because bun does not implement npm's OIDC trusted-publishing flow; workspace dep ranges
 are rewritten to concrete versions by `.github/scripts/rewrite-workspace-deps.mjs` before publish.
 
+After publishing, the workflow re-downloads the tarball from the registry, checks it against npm's
+`dist.integrity`, and records a GitHub build-provenance attestation over those exact bytes. Verify a
+release with `gh attestation verify <tarball> -R velocity-exchange/protocol-v2-shadow`. npm's
+`--provenance` flag is not used because it refuses to run from a private source repo — switch to it
+(and drop the attest steps) when this repo goes public, so external consumers can verify via
+`npm audit signatures`.
+
 **PRs that change user-facing behavior in a publishable package should include a changeset.** This includes new features, bug fixes, and API changes — but not chores, CI config, or internal refactors that don't affect consumers. To add one: run `bun run changeset` at the repo root, select the affected package(s), choose the bump type (patch/minor/major), and write a short description. Commit the generated `.changeset/*.md` file with your changes. Do not manually edit `package.json` versions — changesets and the "Version Packages" bot own those fields.
 
 ## Devnet program upgrade

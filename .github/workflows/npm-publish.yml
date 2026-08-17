@@ -17,6 +17,15 @@ name: npm-publish
 # authentication"). The one thing bun gave us — rewriting `workspace:*` ranges to
 # concrete versions in the manifest, which npm does not do — is handled instead
 # by `.github/scripts/rewrite-workspace-deps.mjs`, run before publish.
+#
+# Every published tarball also gets a GitHub build-provenance attestation, which
+# binds the exact bytes npm serves to this workflow, commit, and runner. Verify
+# with `gh attestation verify <tarball> -R velocity-exchange/protocol-v2-shadow`.
+# npm's own `--provenance` flag is deliberately NOT used: it refuses to run from
+# a private source repo, which is why every sdk version up to 0.13.0 shipped with
+# no attestation at all. Swap these steps for `--provenance` (matching
+# velocity-common) once this repo is public and consumers can verify via the
+# public Sigstore log and `npm audit signatures`.
 on:
   push:
     tags:
@@ -25,6 +34,7 @@ on:
 permissions:
   contents: read
   id-token: write # mint the OIDC token npm trusted publishing exchanges for a credential
+  attestations: write # record the build-provenance attestation for the published tarball
 
 env:
   # Disable Turborepo anonymous telemetry — this job runs `turbo run build` and
@@ -101,6 +111,42 @@ jobs:
           node .github/scripts/rewrite-workspace-deps.mjs "$path"
           echo "publishing $name@$ver"
           ( cd "$path" && npm publish --access public )
+      # Attest AFTER publish, deliberately. The tarball the registry serves is
+      # what consumers install, so that is what the attestation must cover — and
+      # ordering it last means a hiccup here can never block a release that has
+      # already shipped. The job still fails loudly so it gets fixed and re-run
+      # (publish is idempotent, so a re-run just re-attests).
+      - name: Fetch the published tarball
+        id: tarball
+        env:
+          NAME: ${{ steps.parse.outputs.name }}
+          VER: ${{ steps.parse.outputs.version }}
+        run: |
+          set -euo pipefail
+          url=""
+          for attempt in 1 2 3; do
+            if url=$(npm view "$NAME@$VER" dist.tarball 2>/dev/null) && [ -n "$url" ]; then
+              break
+            fi
+            echo "registry not ready for $NAME@$VER (attempt $attempt); retrying"
+            sleep 5
+          done
+          [ -n "$url" ] || { echo "::error::could not resolve dist.tarball for $NAME@$VER"; exit 1; }
+          out="$RUNNER_TEMP/$(basename "$url")"
+          curl -fsSL "$url" -o "$out"
+          # Guard against attesting anything other than the exact bytes npm
+          # serves: compare against the registry's own integrity hash.
+          integrity=$(npm view "$NAME@$VER" dist.integrity)
+          actual="sha512-$(openssl dgst -sha512 -binary "$out" | openssl base64 -A)"
+          if [ "$actual" != "$integrity" ]; then
+            echo "::error::$NAME@$VER tarball does not match registry integrity ($actual != $integrity)"
+            exit 1
+          fi
+          echo "tarball=$out" >> "$GITHUB_OUTPUT"
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ steps.tarball.outputs.tarball }}
       - name: Notify Slack on failure
         if: failure()
         uses: slackapi/slack-github-action@e28cf165c92ffef168d23c5c9000cffc8a25e117 # v1.24.0

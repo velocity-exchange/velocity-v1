@@ -2495,23 +2495,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "jupiter-swap-api-client"
-version = "0.2.0"
-source = "git+https://github.com/velocity-exchange/jupiter-swap-api-client?rev=424ad83959e306e3a3aff73c0a1ab1a2b4aa9509#424ad83959e306e3a3aff73c0a1ab1a2b4aa9509"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "reqwest",
- "rust_decimal",
- "serde",
- "serde_json",
- "solana-account-decoder",
- "solana-instruction",
- "solana-pubkey 3.0.0",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "k256"
 version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6880,7 +6863,6 @@ dependencies = [
  "fxhash",
  "hex",
  "hex-literal",
- "jupiter-swap-api-client",
  "log",
  "nanoid",
  "regex",

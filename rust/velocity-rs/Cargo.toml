@@ -61,7 +61,7 @@ solana-transaction = "3"
 solana-transaction-status = "3"
 spl-associated-token-account = { version = "8.0", default-features = false, features = ["no-entrypoint"] }
 thiserror = "1"
-titan-swap-api-client = { git = "https://github.com/velocity-exchange/titan-swap-api-client.git", optional = true }
+titan-swap-api-client = { git = "https://github.com/velocity-exchange/titan-swap-api-client.git", rev = "9ef7df6753c6378d5ed0f2cfdeb44b66d2669632", optional = true }
 tokio = { version = "1.48", features = ["full"] }
 tokio-stream = "0.1.17"
 tokio-tungstenite = { version = "0.28", features = ["native-tls"] }

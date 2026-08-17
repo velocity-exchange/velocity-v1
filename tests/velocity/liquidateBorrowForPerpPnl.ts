@@ -271,12 +271,12 @@ describe('liquidate borrow for perp pnl', () => {
 
 		assert(
 			liquidationRecord.liquidateBorrowForPerpPnl.pnlTransfer.gt(
-				new BN(79897 - 10)
+				new BN(91957 - 10)
 			)
 		);
 		assert(
 			liquidationRecord.liquidateBorrowForPerpPnl.pnlTransfer.lt(
-				new BN(79897 + 10)
+				new BN(91957 + 10)
 			)
 		);
 		assert(
@@ -290,7 +290,7 @@ describe('liquidate borrow for perp pnl', () => {
 
 		assert(
 			liquidationRecord.liquidateBorrowForPerpPnl.liabilityTransfer.eq(
-				new BN(1597940)
+				new BN(1839140)
 			)
 		);
 	});

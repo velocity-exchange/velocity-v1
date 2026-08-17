@@ -106,10 +106,7 @@ import {
 	calculateCollateralDepositRequiredForTrade,
 	calculateMarginUSDCRequiredForTrade,
 	calculateWorstCaseBaseAssetAmount,
-	boundPrices,
-	NetUsdValueBounds,
-	I128_MIN,
-	I128_MAX,
+	FloorNetEquity,
 } from './math/margin';
 import { MMOraclePriceData, OraclePriceData } from './oracles/types';
 import { UserConfig } from './userConfig';
@@ -1532,31 +1529,28 @@ export class User {
 	 * action gating happens at `equityFloor + equityFloorBuffer` (see
 	 * `isBelowBufferedEquityFloor`). Mirrors `User::is_below_equity_floor` onchain.
 	 *
-	 * Pass `slot` to predict the onchain gates exactly. They compare the LOWER
-	 * equity bound, so an invalid oracle cannot price the account up through the
-	 * floor. Without a slot this assumes valid oracles, where the bounds collapse
-	 * onto the exact value and the two answers agree.
+	 * The value always comes from `getFloorNetEquity` so it prices the
+	 * account exactly the way the gates do. Note the onchain trip
+	 * additionally requires every oracle to be valid; this predicate only
+	 * compares the value (pass `slot` to `getFloorNetEquity` yourself for
+	 * the verdict).
 	 */
 	public isBelowEquityFloor(slot?: BN): boolean {
 		const equityFloor = this.getUserAccountOrThrow().equityFloor;
 		if (equityFloor.lte(ZERO)) {
 			return false;
 		}
-		const netEquity = slot
-			? this.getNetUsdValueBounds(slot).lower
-			: this.getNetUsdValue();
-		return netEquity.lt(equityFloor);
+		return this.getFloorNetEquity(slot).value.lt(equityFloor);
 	}
 
 	/**
 	 * True when the equity floor authorizes a keeper to force-cancel this account's
 	 * orders. Mirrors the `force_cancel_orders` arm of the onchain gate.
 	 *
-	 * This is the one floor consumer that reads the UPPER bound, and it is the only
-	 * one that also requires `allOraclesValid`. Everywhere else, being below the
-	 * floor restricts the account, so the lower bound is what fails closed. Here it
-	 * AUTHORIZES a third party against the account, so the conservative direction
-	 * flips: a bad price must not manufacture that authorization.
+	 * Being below the floor AUTHORIZES a third party against the account, so
+	 * this fails closed in the opposite direction from the gates: it is true
+	 * only when every oracle is valid and the trusted value sits below the
+	 * floor, so a bad price cannot manufacture that authorization.
 	 *
 	 * The onchain instruction also authorizes on a breached maintenance margin, and
 	 * that arm is independent of this one. A `false` here does not mean the keeper
@@ -1567,11 +1561,11 @@ export class User {
 		if (equityFloor.lte(ZERO)) {
 			return false;
 		}
-		const bounds = this.getNetUsdValueBounds(slot);
-		if (!bounds.allOraclesValid) {
+		const netEquity = this.getFloorNetEquity(slot);
+		if (!netEquity.allOraclesValid) {
 			return false;
 		}
-		return bounds.upper.lt(equityFloor);
+		return netEquity.value.lt(equityFloor);
 	}
 
 	/**
@@ -1587,7 +1581,7 @@ export class User {
 
 	/**
 	 * True when the account has an admin-set `equityFloor` and its net equity
-	 * (`getNetUsdValue`) is below `equityFloor + equityFloorBuffer`. While
+	 * (`getFloorNetEquity`) is below `equityFloor + equityFloorBuffer`. While
 	 * below, the program rejects risk-increasing order placement and fills,
 	 * withdrawals, and transfers out of the account (`EquityBelowFloor`);
 	 * reduce-only activity stays allowed. Mirrors
@@ -1598,14 +1592,15 @@ export class User {
 		if (equityFloor.lte(ZERO)) {
 			return false;
 		}
-		// With a slot, predict the gates exactly: they compare the lower
-		// equity bound, so an invalid oracle cannot price the account up
-		// through the floor. Without one, assume valid oracles (the bounds
-		// collapse onto the exact value then, so the answers agree).
-		const netEquity = slot
-			? this.getNetUsdValueBounds(slot).lower
-			: this.getNetUsdValue();
-		return netEquity.lt(this.getBufferedEquityFloor());
+		// With a slot, predict the gates exactly: they fail closed, so any
+		// invalid oracle rejects the same way a value below the buffered
+		// floor does. Without one, the value is priced the same way but
+		// oracles are assumed valid.
+		const netEquity = this.getFloorNetEquity(slot);
+		return (
+			!netEquity.allOraclesValid ||
+			netEquity.value.lt(this.getBufferedEquityFloor())
+		);
 	}
 
 	/**
@@ -1614,18 +1609,19 @@ export class User {
 	 * above the trip threshold; headroom above the level risk-increasing actions
 	 * must clear is `getEquityAboveBufferedFloor`.
 	 *
-	 * Pass `slot` to measure headroom the way the gates do, from the lower bound. An
-	 * invalid oracle then reduces reported headroom instead of inflating it.
+	 * Pass `slot` to measure headroom the way the gates do: any invalid
+	 * oracle reports zero headroom (the gates fail closed).
 	 */
 	public getEquityAboveFloor(slot?: BN): BN | null {
 		const equityFloor = this.getUserAccountOrThrow().equityFloor;
 		if (equityFloor.lte(ZERO)) {
 			return null;
 		}
-		const netEquity = slot
-			? this.getNetUsdValueBounds(slot).lower
-			: this.getNetUsdValue();
-		return BN.max(netEquity.sub(equityFloor), ZERO);
+		const netEquity = this.getFloorNetEquity(slot);
+		if (!netEquity.allOraclesValid) {
+			return ZERO;
+		}
+		return BN.max(netEquity.value.sub(equityFloor), ZERO);
 	}
 
 	/**
@@ -1633,17 +1629,19 @@ export class User {
 	 * (QUOTE_PRECISION). Unbounded (`null`) when no floor is set. When this reaches
 	 * zero, risk-increasing actions start rejecting.
 	 *
-	 * Pass `slot` to measure headroom the way the gates do, from the lower bound.
+	 * Pass `slot` to measure headroom the way the gates do: any invalid
+	 * oracle reports zero headroom (the gates fail closed).
 	 */
 	public getEquityAboveBufferedFloor(slot?: BN): BN | null {
 		const equityFloor = this.getUserAccountOrThrow().equityFloor;
 		if (equityFloor.lte(ZERO)) {
 			return null;
 		}
-		const netEquity = slot
-			? this.getNetUsdValueBounds(slot).lower
-			: this.getNetUsdValue();
-		return BN.max(netEquity.sub(this.getBufferedEquityFloor()), ZERO);
+		const netEquity = this.getFloorNetEquity(slot);
+		if (!netEquity.allOraclesValid) {
+			return ZERO;
+		}
+		return BN.max(netEquity.value.sub(this.getBufferedEquityFloor()), ZERO);
 	}
 
 	/**
@@ -2302,35 +2300,30 @@ export class User {
 	}
 
 	/**
-	 * Two-sided bounds on net equity plus the oracle-validity verdict,
-	 * mirroring the program's `calculate_user_equity_bounds`. Positions whose
-	 * oracle is invalid for `MarginCalc` are priced at both the live price and
-	 * the 5-minute TWAP instead of trusted; a position with no positive
-	 * candidate price saturates the bounds to `I128_MIN`/`I128_MAX`. When
-	 * every oracle is valid, `lower == upper == getNetUsdValue()`.
-	 *
-	 * The onchain floor gates that restrict this account (withdrawals,
-	 * risk-increasing fills, transfers out, trigger cancels, liquidator
-	 * admission) compare `lower`; predict them with it. Settled markets are
+	 * Net equity plus the oracle-validity verdict, mirroring the program's
+	 * `calculate_net_equity_for_floor` metric (`calculate_user_equity`).
+	 * Every position is valued at its live oracle price; settled markets are
 	 * valued at their expiry price and their oracle is excluded from the
 	 * verdict.
-	 * @param slot Current slot, for oracle staleness classification.
-	 * @returns Bounds and verdict, QUOTE_PRECISION.
+	 *
+	 * The onchain floor gates fail closed on the verdict: risk-increasing
+	 * actions, withdrawals and transfers out are authorized only when
+	 * `allOraclesValid` and `value` clears `equityFloor + equityFloorBuffer`;
+	 * being below the raw floor counts as force-cancel or breaker-trip
+	 * grounds only when `allOraclesValid` and `value` sits below it.
+	 * @param slot Current slot, for oracle staleness classification. Omit to
+	 * skip the verdict: `value` is still priced exactly as the gates price it
+	 * (live oracles, expiry price for settled markets), but `allOraclesValid`
+	 * is reported `true` unconditionally.
+	 * @returns Value and verdict, QUOTE_PRECISION.
 	 */
-	getNetUsdValueBounds(slot: BN): NetUsdValueBounds {
+	getFloorNetEquity(slot?: BN): FloorNetEquity {
 		const oracleGuardRails =
 			this.velocityClient.getStateAccount().oracleGuardRails;
 		const userAccount = this.getUserAccountOrThrow();
 
-		let lower = ZERO;
-		let upper = ZERO;
+		let value = ZERO;
 		let allOraclesValid = true;
-		let unpriceable = false;
-
-		const addBounds = (valueA: BN, valueB: BN) => {
-			lower = lower.add(BN.min(valueA, valueB));
-			upper = upper.add(BN.max(valueA, valueB));
-		};
 
 		for (const spotPosition of userAccount.spotPositions) {
 			if (isSpotPositionAvailable(spotPosition)) {
@@ -2343,9 +2336,16 @@ export class User {
 			const oracleData = this.getOracleDataForSpotMarket(
 				spotPosition.marketIndex
 			);
-			const oracleValid = isOracleValidForMarginCalc(
-				getSpotOracleValidity(spotMarket, oracleData, oracleGuardRails, slot)
-			);
+			const oracleValid = slot
+				? isOracleValidForMarginCalc(
+						getSpotOracleValidity(
+							spotMarket,
+							oracleData,
+							oracleGuardRails,
+							slot
+						)
+				  )
+				: true;
 			allOraclesValid = allOraclesValid && oracleValid;
 
 			const tokenAmount = getSignedTokenAmount(
@@ -2356,18 +2356,10 @@ export class User {
 				),
 				spotPosition.balanceType
 			);
-			const prices = boundPrices(
-				oracleData.price,
-				spotMarket.historicalOracleData.lastOraclePriceTwap5Min,
-				oracleValid
-			);
-			if (prices === null) {
-				unpriceable = true;
-				continue;
-			}
-			addBounds(
-				getTokenValue(tokenAmount, spotMarket.decimals, { price: prices[0] }),
-				getTokenValue(tokenAmount, spotMarket.decimals, { price: prices[1] })
+			value = value.add(
+				getTokenValue(tokenAmount, spotMarket.decimals, {
+					price: oracleData.price,
+				})
 			);
 		}
 
@@ -2385,25 +2377,17 @@ export class User {
 			const quoteOracleData = this.getOracleDataForSpotMarket(
 				market.quoteSpotMarketIndex
 			);
-			const quoteOracleValid = isOracleValidForMarginCalc(
-				getSpotOracleValidity(
-					quoteSpotMarket,
-					quoteOracleData,
-					oracleGuardRails,
-					slot
-				)
-			);
+			const quoteOracleValid = slot
+				? isOracleValidForMarginCalc(
+						getSpotOracleValidity(
+							quoteSpotMarket,
+							quoteOracleData,
+							oracleGuardRails,
+							slot
+						)
+				  )
+				: true;
 			allOraclesValid = allOraclesValid && quoteOracleValid;
-
-			const quotePrices = boundPrices(
-				quoteOracleData.price,
-				quoteSpotMarket.historicalOracleData.lastOraclePriceTwap5Min,
-				quoteOracleValid
-			);
-			if (quotePrices === null) {
-				unpriceable = true;
-				continue;
-			}
 
 			// Keyed off the position flag, matching the program's `is_isolated()`.
 			if (this.isPerpPositionIsolated(perpPosition)) {
@@ -2412,12 +2396,9 @@ export class User {
 					quoteSpotMarket,
 					SpotBalanceType.DEPOSIT
 				);
-				addBounds(
+				value = value.add(
 					getTokenValue(isolatedTokenAmount, quoteSpotMarket.decimals, {
-						price: quotePrices[0],
-					}),
-					getTokenValue(isolatedTokenAmount, quoteSpotMarket.decimals, {
-						price: quotePrices[1],
+						price: quoteOracleData.price,
 					})
 				);
 			}
@@ -2425,9 +2406,11 @@ export class User {
 			const oracleData = this.getOracleDataForPerpMarket(
 				perpPosition.marketIndex
 			);
-			const oracleValid = isOracleValidForMarginCalc(
-				getOracleValidity(market, oracleData, oracleGuardRails, slot)
-			);
+			const oracleValid = slot
+				? isOracleValidForMarginCalc(
+						getOracleValidity(market, oracleData, oracleGuardRails, slot)
+				  )
+				: true;
 
 			const settled = isVariant(market.status, 'settlement');
 			// A settled market is valued at its expiry price; its oracle does
@@ -2436,51 +2419,14 @@ export class User {
 				allOraclesValid = allOraclesValid && oracleValid;
 			}
 
-			let valuationPrices: [BN, BN];
-			if (settled) {
-				valuationPrices = [market.expiryPrice, market.expiryPrice];
-			} else {
-				const prices = boundPrices(
-					oracleData.price,
-					market.marketStats.historicalOracleData.lastOraclePriceTwap5Min,
-					oracleValid
-				);
-				if (prices === null) {
-					unpriceable = true;
-					continue;
-				}
-				valuationPrices = prices;
-			}
-
-			// Extremes of pnl x quote sit at the corners of the two pairs;
-			// collapsed pairs skip their duplicate corner.
-			let pnlValueLower: BN | undefined;
-			let pnlValueUpper: BN | undefined;
-			const valuationCount = valuationPrices[0].eq(valuationPrices[1]) ? 1 : 2;
-			const quoteCount = quotePrices[0].eq(quotePrices[1]) ? 1 : 2;
-			for (let v = 0; v < valuationCount; v++) {
-				const pnl = calculatePositionPNL(market, perpPosition, true, {
-					price: valuationPrices[v],
-				});
-				for (let q = 0; q < quoteCount; q++) {
-					const pnlValue = pnl.mul(quotePrices[q]).div(PRICE_PRECISION);
-					if (pnlValueLower === undefined || pnlValue.lt(pnlValueLower)) {
-						pnlValueLower = pnlValue;
-					}
-					if (pnlValueUpper === undefined || pnlValue.gt(pnlValueUpper)) {
-						pnlValueUpper = pnlValue;
-					}
-				}
-			}
-			addBounds(pnlValueLower!, pnlValueUpper!);
+			const valuationPrice = settled ? market.expiryPrice : oracleData.price;
+			const pnl = calculatePositionPNL(market, perpPosition, true, {
+				price: valuationPrice,
+			});
+			value = value.add(pnl.mul(quoteOracleData.price).div(PRICE_PRECISION));
 		}
 
-		if (unpriceable) {
-			lower = I128_MIN;
-			upper = I128_MAX;
-		}
-
-		return { lower, upper, allOraclesValid };
+		return { value, allOraclesValid };
 	}
 
 	/**
@@ -4301,14 +4247,20 @@ export class User {
 	}
 
 	/**
-	 * Looks up the user's fee tier from the state account's fee structure.
+	 * Looks up the user's fee tier from the state account's fee structure,
+	 * mirroring the program's `determine_perp_fee_tier`.
 	 *
-	 * For perp markets, the tier is selected by the user's rolling 30-day
-	 * volume (`getUser30dRollingVolumeEstimate`, QUOTE_PRECISION) against fixed
-	 * breakpoints — $2M, $10M, $20M, $80M, $200M — picking the lowest-index
-	 * tier whose breakpoint the user's volume is still under (tier 5, the
-	 * lowest fees, if volume meets or exceeds the top breakpoint). Spot markets
-	 * always use tier 0 (no volume-based discount).
+	 * For perp markets, the tier is selected by the user's trailing 30-day
+	 * volume projected to `now` (`getUser30dRollingVolumeEstimate`,
+	 * QUOTE_PRECISION — the stored rolling sum decays lazily on-chain, so the
+	 * read applies the same decay virtually) against fixed breakpoints — $5M,
+	 * $80M — picking the lowest-index tier whose breakpoint the volume is
+	 * still under. Tiers 0/1/2 are named Regular / VIP 1 / VIP 2 (VIP 2, the
+	 * lowest fees, at or above the top breakpoint); names are presentation
+	 * only, selection is index-based.
+	 * While `state.promoFeeTier` is non-zero it floors everyone's tier at that
+	 * index (0 = disabled; nobody is downgraded by it). Spot markets always
+	 * use tier 0 (no volume-based discount).
 	 * @param marketType `MarketType.PERP` or `MarketType.SPOT`.
 	 * @param now Optional unix timestamp (seconds) to evaluate the rolling volume window as of; defaults to current time.
 	 * @returns The matching `FeeTier` (numerator/denominator fee fractions and referee-discount fractions).
@@ -4327,20 +4279,25 @@ export class User {
 			);
 
 			const volumeThresholds = [
-				new BN(2_000_000).mul(QUOTE_PRECISION),
-				new BN(10_000_000).mul(QUOTE_PRECISION),
-				new BN(20_000_000).mul(QUOTE_PRECISION),
+				new BN(5_000_000).mul(QUOTE_PRECISION),
 				new BN(80_000_000).mul(QUOTE_PRECISION),
-				new BN(200_000_000).mul(QUOTE_PRECISION),
 			];
 
-			let feeTierIndex = 5;
+			let feeTierIndex = volumeThresholds.length;
 			for (let i = 0; i < volumeThresholds.length; i++) {
 				if (total30dVolume.lt(volumeThresholds[i])) {
 					feeTierIndex = i;
 					break;
 				}
 			}
+
+			// promo tier floor: everyone gets at least `state.promoFeeTier`
+			// while it is set (0 = disabled/no-op), mirroring
+			// `determine_perp_fee_tier`
+			feeTierIndex = Math.max(
+				feeTierIndex,
+				Math.min(state.promoFeeTier, volumeThresholds.length)
+			);
 
 			return state.perpFeeStructure.feeTiers[feeTierIndex];
 		}

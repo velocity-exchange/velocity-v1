@@ -121,7 +121,7 @@ Variable-length account lists are passed via `remaining_accounts` to avoid fixed
 | `addresses/` | `pda.ts` — all PDA derivation helpers. |
 | `dlob/` | Decentralized Limit Order Book: order matching, price levels, maker selection. |
 | `math/` | TypeScript mirrors of on-chain math (margin, funding, AMM pricing). |
-| `oracles/` | Oracle client adapters (Pyth, Switchboard, Pyth Lazer). |
+| `oracles/` | Oracle client adapters (Pyth, Pyth Lazer, Prelaunch, QuoteAsset). |
 | `events/` | Event parsing and subscription from program logs. |
 | `tx/` | Transaction building utilities, compute unit estimation. |
 | `constants/` | Market indices, precision constants, numeric limits. |
@@ -146,16 +146,16 @@ Variable-length account lists are passed via `remaining_accounts` to avoid fixed
 
 ## Ancillary Programs
 
-These are stubs/wrappers used by Velocity for oracle and DEX integrations. No core logic lives here.
+These are stubs/wrappers used by Velocity for oracle integrations, JIT fills, and testing. No core protocol logic lives here.
 
 | Program | Purpose |
 |---|---|
-| `programs/pyth/` | Pyth V1 oracle account layout definitions |
-| `programs/pyth-lazer/` | Pyth Lazer type definitions and utilities |
-| `programs/switchboard/` | Switchboard V2 oracle account type definitions |
-| `programs/switchboard-on-demand/` | Switchboard On-Demand oracle type definitions |
-| `programs/openbook_v2/` | OpenBook V2 account types for spot fulfillment |
+| `programs/pyth-lazer/` | Pyth Lazer type definitions, linked into `velocity` as a real library dependency (not a CPI target) |
+| `programs/pyth/` | Pyth V1 oracle account layout definitions; optional dependency, only pulled in by `velocity`'s `fuzz-fixtures` feature and tests |
+| `programs/jit-proxy/` | Just-in-time fill/arb proxy; CPIs into `velocity` |
 | `programs/token_faucet/` | Devnet/test token minting utility (not on mainnet) |
+
+Switchboard oracle support and external spot-fulfillment venues (Serum, Phoenix, OpenBook) have been removed; there is no `programs/switchboard*` or `programs/openbook_v2`. `OracleSource` keeps `DeprecatedSwitchboard`/`DeprecatedSwitchboardOnDemand` variants only to preserve ABI discriminants.
 
 ---
 

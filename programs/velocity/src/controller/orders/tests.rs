@@ -85,6 +85,7 @@ pub fn get_amm_is_available(
         &market.oracle_source,
         crate::math::oracle::LogMode::SafeMMOracle,
         market.oracle_slot_delay_override,
+        mm_oracle_price_data.is_safe_price_mm_sourced(),
         market.oracle_low_risk_slot_delay_override,
     )
     .unwrap();
@@ -204,6 +205,8 @@ pub mod fulfill_order_with_maker_order {
             // Legacy match path always allowed AMM JIT participation.
             true,
             rev_share_escrow,
+            false,
+            0,
         );
         // Restore caller's `maker_stats` so the test can keep using it after.
         *maker_stats = maker_stats_opt;
@@ -3161,6 +3164,8 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         )
         .unwrap();
 
@@ -3364,6 +3369,8 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         )
         .unwrap();
 
@@ -3527,6 +3534,8 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         )
         .unwrap();
 
@@ -3685,6 +3694,8 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         )
         .unwrap();
 
@@ -3898,6 +3909,8 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         )
         .unwrap();
 
@@ -4102,6 +4115,8 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         )
         .unwrap();
 
@@ -4321,6 +4336,8 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         )
         .unwrap();
 
@@ -4504,6 +4521,8 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         )
         .unwrap();
 
@@ -4719,6 +4738,8 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         );
 
         assert!(result.is_ok());
@@ -4920,6 +4941,8 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         );
 
         assert_eq!(result, Err(ErrorCode::InsufficientCollateral));
@@ -5074,6 +5097,8 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         )
         .unwrap();
 
@@ -5258,6 +5283,8 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         )
         .unwrap();
 
@@ -5612,6 +5639,8 @@ pub mod fulfill_order {
     //         false,
     //         true,
     //         &mut None,
+    //         false    false,
+    //         false    0,
     //         false)
     //     .unwrap();
     //
@@ -5859,6 +5888,8 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         )
         .unwrap();
 
@@ -6120,6 +6151,8 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         )
         .unwrap();
 
@@ -6328,6 +6361,8 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         )
         .unwrap();
 
@@ -6504,6 +6539,8 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         )
         .unwrap();
 
@@ -9330,4 +9367,128 @@ mod get_auction_params_min_duration_floor {
         let (_, _, duration) = get_auction_params(&params, &oracle(), 1, 3).unwrap();
         assert_eq!(duration, 5);
     }
+}
+
+/// OtterSec #112 — a perp fill must measure its band checks against the 5-minute
+/// oracle TWAP as it stood *before* the fill's own refresh.
+///
+/// `fill_perp_order` captures `oracle_twap_5min` once and feeds it to both
+/// `is_oracle_too_divergent_with_twap_5min` and
+/// `validate_fill_price_within_price_bands`. It used to read that value *after*
+/// calling `update_oracle_derived_stats`, which advances the TWAP toward the live
+/// oracle price — so a currently-divergent oracle normalized itself inside the
+/// same instruction and cleared the checks meant to stop the fill. The capture now
+/// happens before the refresh.
+///
+/// This pins the primitive that made it exploitable: one refresh moves the 5-min
+/// TWAP far enough to flip the divergence verdict.
+#[test]
+fn oracle_derived_stats_refresh_can_flip_the_5min_divergence_verdict() {
+    use crate::{
+        math::{
+            constants::{PERCENTAGE_PRECISION_U64, PRICE_PRECISION, PRICE_PRECISION_U64},
+            orders::is_oracle_too_divergent_with_twap_5min,
+        },
+        state::{
+            oracle::{HistoricalOracleData, OraclePriceData, OracleSource},
+            perp_market::{ContractTier, MarketStats, AMM},
+            state::{OracleGuardRails, ValidityGuardRails},
+        },
+    };
+
+    let now = 3600_i64;
+    let slot = 1_u64;
+    // Live oracle at 20 against a 5-min TWAP still at 10 — a 100% divergence,
+    // well past the 50% default ceiling, so the fill must be refused.
+    let oracle_price = (20 * PRICE_PRECISION) as i64;
+    let max_divergence = (PERCENTAGE_PRECISION_U64 / 2) as i64;
+
+    let guard_rails = OracleGuardRails {
+        validity: ValidityGuardRails {
+            slots_before_stale_for_amm: 10,
+            slots_before_stale_for_margin: 120,
+            confidence_interval_max_size: 1000,
+            too_volatile_ratio: 5,
+        },
+        ..OracleGuardRails::default()
+    };
+
+    let mut market = PerpMarket {
+        market_index: 0,
+        status: MarketStatus::Active,
+        // 50% sanitize band, wide enough for one refresh to carry 10 -> 15.
+        contract_tier: ContractTier::C,
+        amm: AMM {
+            base_asset_reserve: 500 * crate::math::constants::AMM_RESERVE_PRECISION,
+            quote_asset_reserve: 500 * crate::math::constants::AMM_RESERVE_PRECISION,
+            sqrt_k: 500 * crate::math::constants::AMM_RESERVE_PRECISION,
+            peg_multiplier: 20_000_000,
+            ..AMM::default()
+        },
+        oracle_source: OracleSource::QuoteAsset,
+        market_stats: MarketStats {
+            funding_period: 3600,
+            last_mark_price_twap: 20 * PRICE_PRECISION_U64,
+            last_mark_price_twap_5min: 20 * PRICE_PRECISION_U64,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price: oracle_price,
+                last_oracle_price_twap: (10 * PRICE_PRECISION) as i64,
+                last_oracle_price_twap_5min: (10 * PRICE_PRECISION) as i64,
+                ..HistoricalOracleData::default()
+            },
+            ..MarketStats::default()
+        },
+        ..PerpMarket::default()
+    };
+
+    let pre_refresh_twap_5min = market
+        .market_stats
+        .historical_oracle_data
+        .last_oracle_price_twap_5min;
+
+    // What the fill now reads: the oracle is too divergent, so the fill is refused.
+    assert!(
+        is_oracle_too_divergent_with_twap_5min(oracle_price, pre_refresh_twap_5min, max_divergence)
+            .unwrap(),
+        "the pre-refresh TWAP must still see this oracle as too divergent"
+    );
+
+    let oracle_price_data = OraclePriceData {
+        price: oracle_price,
+        confidence: 0,
+        delay: 0,
+        has_sufficient_number_of_data_points: true,
+        ..OraclePriceData::default()
+    };
+    let mm_oracle_price_data = market
+        .get_mm_oracle_price_data(oracle_price_data, slot, &guard_rails.validity)
+        .unwrap();
+    let validity = crate::vlp::amm::refresh::compute_amm_refresh_validity_with_guard_rails(
+        &market,
+        &mm_oracle_price_data,
+        &guard_rails.validity,
+    )
+    .unwrap();
+
+    market
+        .update_oracle_derived_stats(&mm_oracle_price_data, validity, now, slot)
+        .unwrap();
+
+    let post_refresh_twap_5min = market
+        .market_stats
+        .historical_oracle_data
+        .last_oracle_price_twap_5min;
+    assert!(post_refresh_twap_5min > pre_refresh_twap_5min);
+
+    // What the fill used to read: the same oracle now looks acceptable.
+    assert!(
+        !is_oracle_too_divergent_with_twap_5min(
+            oracle_price,
+            post_refresh_twap_5min,
+            max_divergence
+        )
+        .unwrap(),
+        "the refresh is expected to normalize the divergence away — if this trips, \
+         the fixture no longer reproduces #112"
+    );
 }

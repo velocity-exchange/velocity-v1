@@ -289,7 +289,7 @@ describe('multiple maker orders', () => {
 
 		const takerPosition = takerVelocityClient.getUser().getPerpPosition(0);
 		assert(takerPosition.baseAssetAmount.eq(takerBaseAssetAmount));
-		assert(takerPosition.quoteAssetAmount.eq(new BN(-576576000)));
+		assert(takerPosition.quoteAssetAmount.eq(new BN(-576230400)));
 
 		const makerPosition = makerVelocityClient.getUser().getPerpPosition(0);
 		assert(
@@ -297,7 +297,7 @@ describe('multiple maker orders', () => {
 				takerBaseAssetAmount.neg().div(new BN(2))
 			)
 		);
-		assert(makerPosition.quoteAssetAmount.eq(new BN(288057600)));
+		assert(makerPosition.quoteAssetAmount.eq(new BN(288007200)));
 
 		const secondMakerPosition = secondMakerVelocityClient
 			.getUser()
@@ -307,7 +307,7 @@ describe('multiple maker orders', () => {
 				takerBaseAssetAmount.neg().div(new BN(2))
 			)
 		);
-		assert(secondMakerPosition.quoteAssetAmount.eq(new BN(288057600)));
+		assert(secondMakerPosition.quoteAssetAmount.eq(new BN(288007200)));
 
 		for (let i = 0; i < 3; i++) {
 			await makerVelocityClient.placePerpOrder({
@@ -511,8 +511,12 @@ describe('multiple maker orders', () => {
 			'takerPosition.quoteAssetAmount=',
 			takerPosition.quoteAssetAmount.toString()
 		);
+		console.log(
+			'takerPosition.baseAssetAmount=',
+			takerPosition.baseAssetAmount.toString()
+		);
 		assert(takerPosition.baseAssetAmount.eq(new BN('-402388600000')));
-		assert(takerPosition.quoteAssetAmount.eq(new BN('273539365')));
+		assert(takerPosition.quoteAssetAmount.eq(new BN('273703650')));
 
 		const makerPosition = makerVelocityClient.getUser().getPerpPosition(1);
 		console.log(
@@ -524,7 +528,7 @@ describe('multiple maker orders', () => {
 			makerPosition.quoteAssetAmount.toString()
 		);
 		assert(makerPosition.baseAssetAmount.eq(new BN('1000000000')));
-		assert(makerPosition.quoteAssetAmount.eq(new BN('-689862')));
+		assert(makerPosition.quoteAssetAmount.eq(new BN('-689983')));
 
 		const secondMakerPosition = secondMakerVelocityClient
 			.getUser()
@@ -538,7 +542,7 @@ describe('multiple maker orders', () => {
 			secondMakerPosition.quoteAssetAmount.toString()
 		);
 		assert(secondMakerPosition.baseAssetAmount.eq(new BN('3000000000')));
-		assert(secondMakerPosition.quoteAssetAmount.eq(new BN('-2063588')));
+		assert(secondMakerPosition.quoteAssetAmount.eq(new BN('-2063949')));
 
 		const thirdMakerPosition = thirdMakerVelocityClient
 			.getUser()
@@ -552,7 +556,7 @@ describe('multiple maker orders', () => {
 			thirdMakerPosition.quoteAssetAmount.toString()
 		);
 		assert(thirdMakerPosition.baseAssetAmount.eq(new BN('3000000000')));
-		assert(thirdMakerPosition.quoteAssetAmount.eq(new BN('-2063588')));
+		assert(thirdMakerPosition.quoteAssetAmount.eq(new BN('-2063949')));
 
 		const dogMarket = takerVelocityClient.getPerpMarketAccount(1);
 		console.log(

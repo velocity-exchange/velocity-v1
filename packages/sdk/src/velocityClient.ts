@@ -82,6 +82,85 @@ import { VelocityCore } from './core/VelocityCore';
 const SPOT_DLOB_TRADING_DISABLED_MSG =
 	'Spot DLOB trading is disabled; spot balances, deposits, and swaps remain available.';
 
+/**
+ * One market's entry in an `updateMmOracleBatchNative` call. `marketIndex` is written into the
+ * instruction payload as well as selecting the account, and the program rejects the instruction if
+ * the two disagree.
+ */
+export type MmOracleBatchUpdate = {
+	marketIndex: number;
+	/** New MM oracle price, PRICE_PRECISION (1e6). Must be positive. */
+	oraclePrice: BN;
+	/** Monotonically increasing sequence id for this market's MM oracle. */
+	oracleSequenceId: BN;
+	/**
+	 * Slot the price was observed at. The program skips the entry when the
+	 * landing slot is more than `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` away from this
+	 * in either direction: behind, so a late-landing transaction cannot make an
+	 * old observation read as fresh; ahead, so a wrong-unit value cannot
+	 * silently disable the check.
+	 */
+	oracleSourceSlot: BN;
+};
+
+/**
+ * Maximum markets per `updateMmOracleBatchNative` call, mirroring the program's
+ * `MM_ORACLE_BATCH_MAX_MARKETS`. Not reachable in practice: the transaction packet size and the
+ * runtime's 64 account-lock ceiling both bind well before this does.
+ */
+export const MM_ORACLE_BATCH_MAX_MARKETS = 64;
+
+/** Bytes per batch payload entry: `u16` market index + `i64` price + `u64` sequence id + `u64` source slot. */
+const MM_ORACLE_BATCH_ENTRY_LEN = 26;
+
+// Default compute budget for `updateMmOracleBatchNative`. `bun run bench:native-cu`
+// decomposes the handler into: a ~1109 CU fixed authentication prologue, ~518 CU
+// per accepted market, ~460 CU per skipped market, and ~453 CU for the reject-mask
+// log, which is emitted at most once and only when something was skipped. The
+// prologue being charged once instead of once per market is the whole reason
+// batching pays.
+//
+// The worst case is a *partially* rejected batch (~1504 + 518n): it pays for the
+// writes and the log. All-accepted is cheaper (no log, 3181 CU at 4 markets) and
+// all-rejected is cheaper still (no writes, 3402 CU), so neither bounds the
+// budget. Measured 4-market figures: 3181 accepted, 3402 rejected, 3576 mixed.
+//
+// Rounded up from the mixed case for ~31% headroom, which also covers the
+// ComputeBudget instructions' own 150 CU and the hot-key compare the bench build
+// compiles out. Priority fee is charged on the requested limit rather than on
+// consumption, so a cranker at production cadence should pass its own measured
+// `txParams.computeUnits` rather than rely on this.
+const MM_ORACLE_BATCH_BASE_CU = 1_900;
+const MM_ORACLE_BATCH_PER_MARKET_CU = 700;
+
+/**
+ * Validates one MM-oracle update's fields before serialization. BN's
+ * little-endian serialization drops the sign and truncates nothing itself, so
+ * without these checks a negative price would reach the program as its
+ * magnitude and an oversized value would throw deep inside `toArrayLike` (or,
+ * for a value above `i64::MAX` but within 8 bytes, arrive on chain as a
+ * negative price). Reject at the API boundary so the caller sees the bug.
+ */
+function validateMmOracleUpdate(
+	context: string,
+	oraclePrice: BN,
+	oracleSequenceId: BN,
+	oracleSourceSlot: BN
+): void {
+	if (oraclePrice.isNeg() || oraclePrice.isZero()) {
+		throw new Error(`${context}: non-positive price`);
+	}
+	if (oraclePrice.bitLength() > 63) {
+		throw new Error(`${context}: price does not fit in i64`);
+	}
+	if (oracleSequenceId.isNeg() || oracleSequenceId.bitLength() > 64) {
+		throw new Error(`${context}: sequence id does not fit in u64`);
+	}
+	if (oracleSourceSlot.isNeg() || oracleSourceSlot.bitLength() > 64) {
+		throw new Error(`${context}: source slot does not fit in u64`);
+	}
+}
+
 import {
 	AccountMeta,
 	AddressLookupTableAccount,
@@ -93,7 +172,6 @@ import {
 	PublicKey,
 	Signer,
 	SystemProgram,
-	SYSVAR_CLOCK_PUBKEY,
 	SYSVAR_INSTRUCTIONS_PUBKEY,
 	SYSVAR_RENT_PUBKEY,
 	Transaction,
@@ -5116,7 +5194,8 @@ export class VelocityClient {
 			const fromUserAccount = fromUserClass.getUserAccountOrThrow();
 			resolvedFloorDelta = calculateEquityFloorAutoDelta(
 				amount,
-				fromUserClass.getNetUsdValue(),
+				// gate-parity pricing, matching the program-side floor checks
+				fromUserClass.getFloorNetEquity().value,
 				fromUserAccount.equityFloor,
 				fromUserAccount.equityFloorBuffer
 			);
@@ -11898,7 +11977,9 @@ export class VelocityClient {
 						hasSufficientNumberOfDataPoints: true,
 					},
 					stateAccountAndSlot.data.oracleGuardRails,
-					new BN(stateAccountAndSlot.slot)
+					new BN(stateAccountAndSlot.slot),
+					undefined,
+					true // classifying the MM oracle price itself
 			  );
 		const isMMOracleInvalidForUse =
 			mmOracleValidity === OracleValidity.NonPositive ||
@@ -11924,6 +12005,7 @@ export class VelocityClient {
 				isMMOracleEnabled,
 				isMMOracleAsRecent,
 				isMMExchangeDiffBpsHigh,
+				isMMSourcedPrice: false,
 			};
 		} else {
 			return {
@@ -11935,6 +12017,7 @@ export class VelocityClient {
 				isMMOracleEnabled,
 				isMMOracleAsRecent,
 				isMMExchangeDiffBpsHigh,
+				isMMSourcedPrice: true,
 			};
 		}
 	}
@@ -12855,6 +12938,14 @@ export class VelocityClient {
 				marketAccount = this.getSpotMarketAccountOrThrow(marketIndex);
 			}
 
+			// per-market additive taker-fee surcharge (tenth-bps, unsigned),
+			// applied to the tier fee BEFORE feeAdjustment scales the sum,
+			// mirroring `calculate_taker_fee` (`math/fees.rs`). Taker only;
+			// the maker rebate sees feeAdjustment alone.
+			if (isVariant(marketType, 'perp')) {
+				takerFee +=
+					(marketAccount as PerpMarketAccount).takerFeeAddonTenthBps / 100_000;
+			}
 			takerFee += (takerFee * marketAccount.feeAdjustment) / 100;
 			makerFee += (makerFee * marketAccount.feeAdjustment) / 100;
 		}
@@ -13045,20 +13136,24 @@ export class VelocityClient {
 	 * disabled entirely via a state feature-bit-flag kill switch. See `getMMOracleDataForPerpMarket`
 	 * for how this price is subsequently gated against the primary oracle before use.
 	 * @param marketIndex - Perp market index whose MM oracle to update.
-	 * @param oraclePrice - New MM oracle price, PRICE_PRECISION (1e6). A value of `0` is a no-op.
+	 * @param oraclePrice - New MM oracle price, PRICE_PRECISION (1e6). Must be positive.
 	 * @param oracleSequenceId - Monotonically increasing sequence id for this update, used for
 	 * recency comparisons against the primary oracle.
+	 * @param oracleSourceSlot - Slot the price was observed at; the program skips the update when
+	 * it lands more than `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` from this in either direction.
 	 * @returns The transaction signature.
 	 */
 	public async updateMmOracleNative(
 		marketIndex: number,
 		oraclePrice: BN,
-		oracleSequenceId: BN
+		oracleSequenceId: BN,
+		oracleSourceSlot: BN
 	): Promise<TransactionSignature> {
 		const updateMmOracleIx = await this.getUpdateMmOracleNativeIx(
 			marketIndex,
 			oraclePrice,
-			oracleSequenceId
+			oracleSequenceId,
+			oracleSourceSlot
 		);
 
 		const tx = await this.buildTransaction(updateMmOracleIx, {
@@ -13072,23 +13167,36 @@ export class VelocityClient {
 
 	/**
 	 * Builds the `updateMmOracleNative` instruction. See `updateMmOracleNative` for semantics. Hand-
-	 * assembles the instruction (perp market, signer, clock sysvar, state) rather than going through
+	 * assembles the instruction (perp market, signer, state; the program reads the slot via the
+	 * Clock sysvar syscall so no clock account is passed) rather than going through
 	 * `this.program.instruction`, since this targets the native (non-Anchor) entrypoint.
 	 * @param marketIndex - Perp market index whose MM oracle to update.
-	 * @param oraclePrice - New MM oracle price, PRICE_PRECISION (1e6). A value of `0` is a no-op.
+	 * @param oraclePrice - New MM oracle price, PRICE_PRECISION (1e6). Must be positive: the program
+	 * hard-errors on a non-positive price, and this builder rejects it before serialization since
+	 * BN's little-endian encoding would silently drop the sign.
 	 * @param oracleSequenceId - Monotonically increasing sequence id for this update.
+	 * @param oracleSourceSlot - Slot the price was observed at; the program skips the update when
+	 * it lands more than `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` from this in either direction.
 	 * @returns The instruction.
 	 */
 	public async getUpdateMmOracleNativeIx(
 		marketIndex: number,
 		oraclePrice: BN,
-		oracleSequenceId: BN
+		oracleSequenceId: BN,
+		oracleSourceSlot: BN
 	): Promise<TransactionInstruction> {
+		validateMmOracleUpdate(
+			'getUpdateMmOracleNativeIx',
+			oraclePrice,
+			oracleSequenceId,
+			oracleSourceSlot
+		);
 		const discriminatorBuffer = createNativeInstructionDiscriminatorBuffer(0);
-		const data = Buffer.alloc(discriminatorBuffer.length + 16);
+		const data = Buffer.alloc(discriminatorBuffer.length + 24);
 		data.set(discriminatorBuffer, 0);
 		data.set(oraclePrice.toArrayLike(Buffer, 'le', 8), 5); // next 8 bytes
 		data.set(oracleSequenceId.toArrayLike(Buffer, 'le', 8), 13); // next 8 bytes
+		data.set(oracleSourceSlot.toArrayLike(Buffer, 'le', 8), 21); // next 8 bytes
 
 		// Build the instruction manually
 		return new TransactionInstruction({
@@ -13105,11 +13213,6 @@ export class VelocityClient {
 					isSigner: true,
 				},
 				{
-					pubkey: SYSVAR_CLOCK_PUBKEY,
-					isWritable: false,
-					isSigner: false,
-				},
-				{
 					pubkey: await this.getStatePublicKey(),
 					isWritable: false,
 					isSigner: false,
@@ -13117,6 +13220,134 @@ export class VelocityClient {
 			],
 			data,
 		});
+	}
+
+	/**
+	 * Updates the MM oracle for several perp markets in one native instruction (dispatch opcode 2).
+	 *
+	 * Equivalent to calling `updateMmOracleNative` once per market, but the authentication prologue
+	 * (state validation, kill-switch, hot-key compare) is paid once for the whole
+	 * batch, and one transaction covers every market so a single signature fee is amortised across
+	 * them all.
+	 *
+	 * Per-market rate-limit and sanity rejections (non-positive price, non-advancing sequence id,
+	 * slot gap below the program floor, source slot more than
+	 * `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` from the landing slot in either direction) skip that market
+	 * and leave the rest of the batch intact. A
+	 * price more than 1% from the last accepted one is clamped to the cap and written, matching
+	 * `updateMmOracleNative`. Structural problems (an account that is not a perp market, a
+	 * non-writable market, malformed data) fail the whole instruction, since those can only be
+	 * builder bugs.
+	 *
+	 * @param updates - One entry per market. Order is preserved and must match the account order,
+	 * which this builder handles. Each entry's market index is also written into the payload and
+	 * re-checked on chain against the account it was paired with, so a misordered list is a hard
+	 * error rather than a silent write to the wrong market. Duplicate market indexes are rejected:
+	 * the program would silently skip the second occurrence.
+	 * @returns The instruction.
+	 */
+	public async getUpdateMmOracleBatchNativeIx(
+		updates: MmOracleBatchUpdate[]
+	): Promise<TransactionInstruction> {
+		if (updates.length === 0) {
+			throw new Error('getUpdateMmOracleBatchNativeIx: no updates supplied');
+		}
+		if (updates.length > MM_ORACLE_BATCH_MAX_MARKETS) {
+			throw new Error(
+				`getUpdateMmOracleBatchNativeIx: ${updates.length} markets exceeds the ${MM_ORACLE_BATCH_MAX_MARKETS} per-batch maximum`
+			);
+		}
+		const seen = new Set<number>();
+		for (const {
+			marketIndex,
+			oraclePrice,
+			oracleSequenceId,
+			oracleSourceSlot,
+		} of updates) {
+			if (seen.has(marketIndex)) {
+				throw new Error(
+					`getUpdateMmOracleBatchNativeIx: duplicate market index ${marketIndex}; the program would skip the second occurrence`
+				);
+			}
+			seen.add(marketIndex);
+
+			validateMmOracleUpdate(
+				`getUpdateMmOracleBatchNativeIx (market ${marketIndex})`,
+				oraclePrice,
+				oracleSequenceId,
+				oracleSourceSlot
+			);
+		}
+
+		const discriminatorBuffer = createNativeInstructionDiscriminatorBuffer(2);
+		const data = Buffer.alloc(
+			discriminatorBuffer.length +
+				1 +
+				updates.length * MM_ORACLE_BATCH_ENTRY_LEN
+		);
+		data.set(discriminatorBuffer, 0);
+		data.writeUInt8(updates.length, discriminatorBuffer.length);
+
+		updates.forEach(
+			({ marketIndex, oraclePrice, oracleSequenceId, oracleSourceSlot }, i) => {
+				const offset =
+					discriminatorBuffer.length + 1 + i * MM_ORACLE_BATCH_ENTRY_LEN;
+				data.writeUInt16LE(marketIndex, offset);
+				data.set(oraclePrice.toArrayLike(Buffer, 'le', 8), offset + 2);
+				data.set(oracleSequenceId.toArrayLike(Buffer, 'le', 8), offset + 10);
+				data.set(oracleSourceSlot.toArrayLike(Buffer, 'le', 8), offset + 18);
+			}
+		);
+
+		return new TransactionInstruction({
+			programId: this.program.programId,
+			keys: [
+				{
+					pubkey: this.wallet.publicKey,
+					isWritable: false,
+					isSigner: true,
+				},
+				{
+					pubkey: await this.getStatePublicKey(),
+					isWritable: false,
+					isSigner: false,
+				},
+				...updates.map(({ marketIndex }) => ({
+					pubkey: this.getPerpMarketAccountOrThrow(marketIndex).pubkey,
+					isWritable: true,
+					isSigner: false,
+				})),
+			],
+			data,
+		});
+	}
+
+	/**
+	 * Sends an `updateMmOracleBatchNative` transaction. See `getUpdateMmOracleBatchNativeIx` for
+	 * semantics.
+	 * @param updates - One entry per market.
+	 * @param txParams - Optional transaction params. `computeUnits` defaults to
+	 * `MM_ORACLE_BATCH_BASE_CU + MM_ORACLE_BATCH_PER_MARKET_CU * updates.length`; note the priority
+	 * fee is charged on the requested limit, not on consumption, so a cranker should pin its own
+	 * measured value rather than pad this one.
+	 * @returns The transaction signature.
+	 */
+	public async updateMmOracleBatchNative(
+		updates: MmOracleBatchUpdate[],
+		txParams?: TxParams
+	): Promise<TransactionSignature> {
+		const ix = await this.getUpdateMmOracleBatchNativeIx(updates);
+
+		const tx = await this.buildTransaction(ix, {
+			computeUnits:
+				MM_ORACLE_BATCH_BASE_CU +
+				MM_ORACLE_BATCH_PER_MARKET_CU * updates.length,
+			computeUnitsPrice: 0,
+			...txParams,
+		});
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+
+		return txSig;
 	}
 
 	/**

@@ -8,15 +8,16 @@ import { makeMockUser, mockUserAccount } from './helpers';
 const quote = (n: number) => new BN(n).mul(QUOTE_PRECISION);
 
 /**
- * The floor consumers must read the bound that fails closed for the decision they
- * make. Being below the floor RESTRICTS the account almost everywhere, so those
- * consumers read `lower` and a bad price cannot price the account up through the
- * floor. `force_cancel_orders` is the exception: there it AUTHORIZES a keeper
- * against the account, so it reads `upper` and additionally requires every oracle
- * to be valid.
+ * The floor consumers fail closed on the oracle-validity verdict, in the
+ * direction of the decision they make. Being below the floor RESTRICTS the
+ * account almost everywhere, so those consumers treat an invalid oracle the
+ * same as a breach and a bad price cannot authorize an action through the
+ * floor. `force_cancel_orders` is the exception: there being below the floor
+ * AUTHORIZES a keeper against the account, so it requires every oracle to be
+ * valid before the floor counts as grounds at all.
  *
- * Getting either direction backwards silently reopens the hole the onchain change
- * closed, and no existing test would catch it.
+ * Getting either direction backwards silently reopens the hole the onchain
+ * change closed, and no existing test would catch it.
  */
 async function userWithFloor(floor: BN, buffer: BN): Promise<User> {
 	const account = _.cloneDeep(mockUserAccount);
@@ -31,7 +32,7 @@ async function userWithFloor(floor: BN, buffer: BN): Promise<User> {
 	);
 }
 
-describe('equity floor reads the bound that fails closed', () => {
+describe('equity floor fails closed on oracle validity', () => {
 	it('no floor set means no predicate fires and no headroom is reported', async () => {
 		const user = await userWithFloor(ZERO, ZERO);
 		assert.isFalse(user.isBelowEquityFloor());
@@ -41,41 +42,61 @@ describe('equity floor reads the bound that fails closed', () => {
 		assert.isFalse(user.isForceCancelAuthorizedByEquityFloor(new BN(0)));
 	});
 
-	it('agrees with the point value when the bounds have not been widened', async () => {
+	it('agrees with the point value while every oracle is valid', async () => {
 		const user = await userWithFloor(quote(1), ZERO);
-		// Valid oracles collapse lower == upper == getNetUsdValue(), so passing a
-		// slot must not change any answer. This is the no-behaviour-change guarantee
-		// that lets the wiring land without moving existing expectations.
-		const bounds = user.getNetUsdValueBounds(new BN(0));
-		assert.isTrue(bounds.lower.eq(bounds.upper));
-		assert.isTrue(bounds.lower.eq(user.getNetUsdValue()));
-		assert.isTrue(bounds.allOraclesValid);
+		// Valid oracles make the floor metric the exact net usd value, so
+		// passing a slot must not change any answer.
+		const netEquity = user.getFloorNetEquity(new BN(0));
+		assert.isTrue(netEquity.value.eq(user.getNetUsdValue()));
+		assert.isTrue(netEquity.allOraclesValid);
 		assert.equal(user.isBelowEquityFloor(), user.isBelowEquityFloor(new BN(0)));
 	});
 
-	it('reports headroom from the same side the gates compare', async () => {
+	it('reports headroom the way the gates measure it', async () => {
 		const user = await userWithFloor(quote(1), quote(1));
 		const withSlot = user.getEquityAboveBufferedFloor(new BN(0));
 		const withoutSlot = user.getEquityAboveBufferedFloor();
 		assert.isNotNull(withSlot);
 		assert.isNotNull(withoutSlot);
-		// Equal while oracles are valid; the slot form is the one that stays correct
-		// when they are not.
+		// Equal while oracles are valid; the slot form is the one that stays
+		// correct when they are not.
 		assert.isTrue(withSlot!.eq(withoutSlot!));
 		// Headroom is floored at zero rather than reported negative.
 		assert.isTrue(withSlot!.gte(ZERO));
+	});
+
+	it('an invalid oracle blocks the gates and reports zero headroom', async () => {
+		const user = await userWithFloor(quote(1), ZERO);
+		const slot = new BN(0);
+
+		// Stub the metric to isolate the decision rules from the pricing walk.
+		user.getFloorNetEquity = () => ({
+			value: quote(100),
+			allOraclesValid: false,
+		});
+
+		assert.isTrue(
+			user.isBelowBufferedEquityFloor(slot),
+			'a value that cannot be trusted must gate like a breach'
+		);
+		assert.isTrue(
+			user.getEquityAboveFloor(slot)!.eq(ZERO),
+			'untrusted equity reports no headroom above the floor'
+		);
+		assert.isTrue(
+			user.getEquityAboveBufferedFloor(slot)!.eq(ZERO),
+			'untrusted equity reports no headroom above the buffered floor'
+		);
 	});
 
 	it('withholds force-cancel authorization when an oracle cannot be trusted', async () => {
 		const user = await userWithFloor(quote(1), ZERO);
 		const slot = new BN(0);
 
-		// Authorization requires BOTH a proven breach and trustworthy prices. Stub
-		// the bounds to isolate the decision rule from the pricing walk.
-		const authorized = (upper: BN, allOraclesValid: boolean) => {
-			user.getNetUsdValueBounds = () => ({
-				lower: upper,
-				upper,
+		// Authorization requires BOTH a proven breach and trustworthy prices.
+		const authorized = (value: BN, allOraclesValid: boolean) => {
+			user.getFloorNetEquity = () => ({
+				value,
 				allOraclesValid,
 			});
 			return user.isForceCancelAuthorizedByEquityFloor(slot);

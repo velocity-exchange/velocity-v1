@@ -36,6 +36,12 @@ export type MMOraclePriceData = Omit<
 	 * When the MM oracle is enabled and as-recent, a high diff suppresses AMM fills (early volatility protection).
 	 */
 	isMMExchangeDiffBpsHigh?: boolean;
+	/**
+	 * Whether `price` carries the MM oracle price (true) or fell back to the exchange oracle
+	 * (false), mirroring `MMOraclePriceData::is_safe_price_mm_sourced`. Drives the source-aware
+	 * unset-default resolution of the immediate-fill staleness threshold in `getOracleValidity`.
+	 */
+	isMMSourcedPrice?: boolean;
 };
 
 /** Normalized oracle price snapshot produced by every `OracleClient`, regardless of underlying source. */

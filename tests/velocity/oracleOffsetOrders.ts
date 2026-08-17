@@ -235,7 +235,7 @@ describe('oracle offset', () => {
 		const position = velocityClientUser.getPerpPosition(marketIndex);
 		const breakEvenPrice = calculateBreakEvenPrice(position);
 		const entryPrice = calculateEntryPrice(position);
-		assert(breakEvenPrice.eq(new BN(910003)));
+		assert(breakEvenPrice.eq(new BN(909457)));
 		assert(entryPrice.eq(new BN(909093)));
 
 		await velocityClient.unsubscribe();
@@ -324,7 +324,7 @@ describe('oracle offset', () => {
 		console.log(breakEvenPrice.toString());
 		const entryPrice = calculateEntryPrice(position);
 		console.log(entryPrice.toString());
-		const expectedBreakEvenPrice = new BN(949810);
+		const expectedBreakEvenPrice = new BN(949977);
 		const expectedEntryPrice = new BN(950000);
 		console.log(breakEvenPrice.toString(), 'vs', expectedEntryPrice.toString());
 		assert(breakEvenPrice.eq(expectedBreakEvenPrice));
@@ -414,7 +414,7 @@ describe('oracle offset', () => {
 		const entryPrice = calculateEntryPrice(position);
 		console.log(breakEvenPrice.toString());
 		console.log(entryPrice.toString());
-		assert(breakEvenPrice.eq(new BN(1098897)));
+		assert(breakEvenPrice.eq(new BN(1099557)));
 		assert(entryPrice.eq(new BN(1099997)));
 
 		await velocityClient.unsubscribe();
@@ -503,7 +503,7 @@ describe('oracle offset', () => {
 		console.log(breakEvenPrice.toString());
 		console.log(entryPrice.toString());
 		const expectedEntryPrice = new BN(1050000);
-		const expectedBreakEvenPrice = new BN(1050210);
+		const expectedBreakEvenPrice = new BN(1050026);
 		assert(breakEvenPrice.eq(expectedBreakEvenPrice));
 		assert(entryPrice.eq(expectedEntryPrice));
 

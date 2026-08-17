@@ -47,9 +47,12 @@ velocity-admin exchange set-solvency-status <bitfield>  # cold admin; gates solv
 
 velocity-admin feature-flags median-trigger-price <true|false>  # bit 2; enabling requires cold admin
 velocity-admin feature-flags builder-codes <true|false>  # bit 4; enabling requires cold admin
+velocity-admin feature-flags vamm-maker-rebate <true|false>  # bit 8; enabling requires cold admin
 
 velocity-admin fees set-recipient <pubkey> <perp|spot>           # cold admin
 velocity-admin fees set-split <ammFeeNumerator> <ifFeeNumerator> # warm/cold admin
+velocity-admin fees set-taker-addon <market> <tenthBps>          # warm/cold admin; additive taker-fee add-on, -100..100 tenth-bps
+velocity-admin fees set-promo-tier <tier>                        # warm/cold admin; promo fee-tier floor for everyone, 0 = off
 velocity-admin fees withdraw-perp <market> <amount>  # FeeWithdraw hot key; pays the recipient's ATA (created if needed)
 velocity-admin fees withdraw-spot <market> <amount>  # FeeWithdraw hot key; pays the recipient's ATA (created if needed)
 velocity-admin fees sweep <market>                               # permissionless

@@ -141,12 +141,16 @@ pub struct FeeLedger {
     /// quote `revenue_pool`; also the first bankruptcy tranche.
     /// precision: QUOTE_PRECISION
     pub pending_if_fee: u128,
-    /// cumulative fee provision granted to the AMM via `amm_fee_numerator` —
-    /// its backstop-of-last-resort tranche, drawable (and decremented) only in
-    /// bankruptcy. The AMM's own spread/trading capital beyond this provision
-    /// is never tapped. precision: QUOTE_PRECISION
+    /// cumulative fee provision granted to the AMM via `amm_fee_numerator`,
+    /// plus the vAMM maker rebate when `FeatureBitFlags::VammMakerRebate` is
+    /// enabled — its backstop-of-last-resort tranche, drawable (and
+    /// decremented) only in bankruptcy. Enabling the rebate bit therefore
+    /// grows the bankruptcy clawback cap by the rebates earned. The AMM's own
+    /// spread/trading capital beyond this provision is never tapped.
+    /// precision: QUOTE_PRECISION
     pub amm_protocol_fees_received: u128,
-    /// AMM fee provision accrued at fill (already booked into the AMM's
+    /// AMM fee provision (including the vAMM maker rebate when enabled)
+    /// accrued at fill (already booked into the AMM's
     /// `total_fee_minus_distributions`) but not yet tokenized into
     /// `amm.fee_pool` by the sweep. Invariant: `<= amm_protocol_fees_received`.
     /// precision: QUOTE_PRECISION
@@ -289,7 +293,19 @@ pub struct PerpMarket {
     /// Protocol's cut of a perp liquidation, taken from the liquidatee.
     /// precision: LIQUIDATOR_FEE_PRECISION
     pub protocol_liquidation_fee: u32,
-    pub _padding_buffer: [u8; 4],
+    /// Additive per-market taker-fee surcharge in tenth-bps (10 = 1bp),
+    /// unsigned: surcharge only (e.g. toxic-flow markets), never a discount.
+    /// A discount could push the taker fee below the maker rebate it must
+    /// fund and revert every match fill; promo discounts go through
+    /// `State.promo_fee_tier` instead. Applied on top of the tier fee before
+    /// `fee_adjustment` scales the sum:
+    /// `taker_fee = (tier_fee + add-on) * (1 +/- fee_adjustment%)`.
+    /// Taker fee only; the maker rebate and the post-only path see
+    /// `fee_adjustment` alone. Occupies 2 bytes of the former 4-byte
+    /// `_padding_buffer` (same offset/alignment on all targets), so existing
+    /// accounts read 0 = no add-on until the admin sets it.
+    pub taker_fee_addon_tenth_bps: u16,
+    pub _padding_buffer: [u8; 2],
     /// The pnl-pool retention buffer the streaming sweep's IF and
     /// AMM-provision drains leave untouched: `sweep_market_fees` drains
     /// those pendings only from what the pnl pool holds above
@@ -424,7 +440,13 @@ pub struct PerpMarket {
     pub market_config: u8,
     /// the oracle provider information. used to decode/scale the oracle public key
     pub oracle_source: OracleSource,
-    /// override for the per-fill slot delay required from the oracle (default -1 = use state default)
+    /// Max oracle delay, in slots, tolerated by immediate (JIT / auction-skipping)
+    /// AMM fills. Positive is an explicit threshold. `0` disables immediate AMM
+    /// fills entirely. Negative (the init default, `-1`) means unset, which
+    /// resolves by price source: `MM_ORACLE_MIN_SLOT_GAP` for an MM-oracle-sourced
+    /// price (the tightest window the crank can satisfy, since the program refuses
+    /// MM-oracle writes closer together than that) and `0` for an exchange-oracle
+    /// price, which can be same-slot fresh. See `math::oracle::oracle_validity`.
     pub oracle_slot_delay_override: i8,
     /// the override for the state.min_perp_auction_duration
     /// 0 is no override, -1 is disable speed bump, 1-100 is literal speed bump
@@ -541,7 +563,8 @@ impl Default for PerpMarket {
             hedge_config: HedgeConfig::default(),
             protocol_fee_pool: PoolBalance::default(),
             protocol_liquidation_fee: 0,
-            _padding_buffer: [0; 4],
+            taker_fee_addon_tenth_bps: 0,
+            _padding_buffer: [0; 2],
             fee_pool_buffer_target: 0,
         }
     }
@@ -635,10 +658,13 @@ impl PerpMarket {
     /// PerpMarket-level oracle bookkeeping: refresh the oracle TWAPs,
     /// cache the latest reference-price-offset (used by the next quote's
     /// smoothing branch), and stamp `last_oracle_valid`. Called from the
-    /// `update_amms` keeper crank and the funding-rate / bid-ask-twap
-    /// keeper ixs. This is a PerpMarket-side concern — it does NOT
-    /// mutate AMM fields. It does read the AMM (for `reserve_price` and
-    /// the spread snapshot used to derive the offset).
+    /// `update_amms` keeper crank and the bid-ask-twap keeper ix. This is a
+    /// PerpMarket-side concern — it does NOT mutate AMM fields. It does read
+    /// the AMM (for `reserve_price` and the spread snapshot used to derive
+    /// the offset).
+    ///
+    /// Callers that then *gate* on a TWAP this would move must not use this
+    /// composed form — see [`Self::refresh_amm_quote_state`].
     pub fn update_oracle_derived_stats(
         &mut self,
         mm_oracle_price_data: &crate::state::oracle::MMOraclePriceData,
@@ -652,6 +678,34 @@ impl PerpMarket {
 
         let reserve_price_after = self.amm.reserve_price()?;
 
+        self.refresh_oracle_twaps(
+            mm_oracle_price_data,
+            oracle_validity,
+            now,
+            reserve_price_after,
+        )?;
+        self.refresh_amm_quote_state_inner(
+            mm_oracle_price_data,
+            oracle_validity,
+            clock_slot,
+            reserve_price_after,
+        )
+    }
+
+    /// Advance the funding-period and 5-minute oracle TWAPs, when the oracle is
+    /// valid for `UpdateTwap`.
+    ///
+    /// Split out of [`Self::update_oracle_derived_stats`] so a caller that gates
+    /// on the *pre-refresh* TWAP can skip it. Refreshing first would drag the
+    /// TWAP toward the live price and let a too-volatile / too-divergent oracle
+    /// clear its own gate inside the same instruction (OtterSec #109).
+    fn refresh_oracle_twaps(
+        &mut self,
+        mm_oracle_price_data: &crate::state::oracle::MMOraclePriceData,
+        oracle_validity: crate::math::oracle::OracleValidity,
+        now: i64,
+        reserve_price: u64,
+    ) -> VelocityResult<()> {
         if crate::math::oracle::is_oracle_valid_for_action(
             oracle_validity,
             Some(crate::math::oracle::VelocityAction::UpdateTwap),
@@ -664,11 +718,46 @@ impl PerpMarket {
                 amm,
                 now,
                 mm_oracle_price_data,
-                Some(reserve_price_after),
+                Some(reserve_price),
                 sanitize_clamp_denominator,
             )?;
         }
 
+        Ok(())
+    }
+
+    /// Refresh the AMM's cached quote state and stamp `last_oracle_valid`,
+    /// **without** touching the oracle TWAPs.
+    ///
+    /// This is the half of [`Self::update_oracle_derived_stats`] that is safe to
+    /// run ahead of a check that reads `last_oracle_price_twap` /
+    /// `last_oracle_price_twap_5min`.
+    pub fn refresh_amm_quote_state(
+        &mut self,
+        mm_oracle_price_data: &crate::state::oracle::MMOraclePriceData,
+        oracle_validity: Option<crate::math::oracle::OracleValidity>,
+        clock_slot: u64,
+    ) -> VelocityResult<()> {
+        let Some(oracle_validity) = oracle_validity else {
+            return Ok(());
+        };
+
+        let reserve_price_after = self.amm.reserve_price()?;
+        self.refresh_amm_quote_state_inner(
+            mm_oracle_price_data,
+            oracle_validity,
+            clock_slot,
+            reserve_price_after,
+        )
+    }
+
+    fn refresh_amm_quote_state_inner(
+        &mut self,
+        mm_oracle_price_data: &crate::state::oracle::MMOraclePriceData,
+        oracle_validity: crate::math::oracle::OracleValidity,
+        clock_slot: u64,
+        reserve_price: u64,
+    ) -> VelocityResult<()> {
         // Refresh the AMM's cached spread state (long/short spread, reference
         // offset, oracle-reserve spread pct, ask/bid reserves) in place, then
         // mirror the fresh reference offset into market_stats so the next
@@ -680,7 +769,7 @@ impl PerpMarket {
             amm,
             market_stats,
             mm_oracle_price_data,
-            reserve_price_after,
+            reserve_price,
             clock_slot,
         )?;
         market_stats.last_reference_price_offset = amm.reference_price_offset;
@@ -1192,6 +1281,7 @@ impl PerpMarket {
                 &self.oracle_source,
                 LogMode::MMOracle,
                 self.oracle_slot_delay_override,
+                true, // classifying the MM oracle price itself
                 self.oracle_low_risk_slot_delay_override,
             )?
         };

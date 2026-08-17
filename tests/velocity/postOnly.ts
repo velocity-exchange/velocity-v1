@@ -340,7 +340,7 @@ describe('post only', () => {
 		await velocityClientUser.fetchAccounts();
 		const position = velocityClientUser.getPerpPosition(marketIndex);
 		assert(position.baseAssetAmount.abs().eq(baseAssetAmount));
-		assert(position.quoteBreakEvenAmount.eq(new BN(1000200)));
+		assert(position.quoteBreakEvenAmount.eq(new BN(1000025)));
 		assert(velocityClient.getQuoteAssetTokenAmount().eq(usdcAmount));
 		assert(
 			velocityClient.getUserStats().getAccount().fees.totalFeePaid.eq(ZERO)
@@ -349,7 +349,7 @@ describe('post only', () => {
 			velocityClient
 				.getUserStats()
 				.getAccount()
-				.fees.totalFeeRebate.eq(new BN(200))
+				.fees.totalFeeRebate.eq(new BN(25))
 		);
 
 		await fillerVelocityClient.fetchAccounts();

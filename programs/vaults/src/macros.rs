@@ -32,6 +32,26 @@ macro_rules! declare_vault_seeds {
     };
 }
 
+/// CPI velocity to advance the vault's denomination spot market `cumulative_deposit_interest`, before
+/// the handler snapshots NAV.
+///
+/// The accounts struct must expose `velocity_program`, `velocity_state`, `velocity_spot_market`,
+/// `velocity_oracle` and `velocity_spot_market_vault`. See
+/// [`crate::velocity_cpi::refresh_denomination_spot_market`] for why this runs first
+/// (OtterSec #136/#137).
+#[macro_export]
+macro_rules! refresh_velocity_spot_market {
+    ( $ctx:expr ) => {
+        $crate::velocity_cpi::refresh_denomination_spot_market(
+            &$ctx.accounts.velocity_program.to_account_info(),
+            &$ctx.accounts.velocity_state.to_account_info(),
+            &$ctx.accounts.velocity_spot_market.to_account_info(),
+            &$ctx.accounts.velocity_oracle.to_account_info(),
+            &$ctx.accounts.velocity_spot_market_vault.to_account_info(),
+        )?;
+    };
+}
+
 #[macro_export]
 macro_rules! implement_update_user_delegate_cpi {
     ( $self:expr, $delegate:expr ) => {

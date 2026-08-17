@@ -12,6 +12,7 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  issues: write # v2 deletes a stale label through the issues API
 
 jobs:
   new-dependency-gate:
@@ -22,7 +23,7 @@ jobs:
         with:
           fetch-depth: 0 # required: the action diffs against the base commit
 
-      - uses: velocity-exchange/dependency-gate@2ed7e2026623ba9b67acef169ff3cb5b013d2488 # v1.0.2
+      - uses: velocity-exchange/dependency-gate@e039f99f9238eafe289d9879caae848c450a1b8e # v2.0.0
         with:
           # The three lockfiles that actually ship: the program (SBF) workspace,
           # the separate rust/ workspace (velocity-rs, keep-rs, swift) and the bun

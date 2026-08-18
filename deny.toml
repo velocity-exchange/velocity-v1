@@ -84,18 +84,19 @@ ignore = [
 
 	# --- rust/ workspace only. PRE-EXISTING and, until this PR, UNSEEN by CI:
 	# the cargo-audit job runs `cargo audit` from the repo root, which reads only
-	# ./Cargo.lock. rust/Cargo.lock has never been scanned. These five are what
-	# that gap was hiding. They are listed individually, not waved through with a
-	# blanket downgrade, so any *new* advisory in the rust workspace still fails.
-	# Each has a fix available; taking it means a lockfile bump, which is a
-	# separate change from wiring up the scanner.
+	# ./Cargo.lock. rust/Cargo.lock has never been scanned. Five advisories were
+	# hiding behind that gap; two are fixed in this PR (crossbeam-epoch bumped to
+	# 0.9.20, and prometheus's `protobuf` default feature switched off, which drops
+	# protobuf 2.28.0 out of the graph entirely). The three below remain. They are
+	# listed individually, not waved through with a blanket downgrade, so any *new*
+	# advisory in the rust workspace still fails.
 	#
 	# Note on the obvious-looking follow-up: DO NOT "close the gap" by adding
 	# `-f rust/Cargo.lock` to the cargo-audit job. cargo-audit reads the lockfile
 	# as text; cargo-deny resolves the actual dependency graph. The two disagree,
 	# and here cargo-deny is the more accurate of the pair:
 	#
-	#   cargo audit -f rust/Cargo.lock   -> exit 1, "4 vulnerabilities found",
+	#   cargo audit -f rust/Cargo.lock   -> exit 1, "2 vulnerabilities found",
 	#   including RUSTSEC-2026-0185 (quinn-proto 0.11.14, CVSS 7.5). quinn-proto
 	#   is recorded in rust/Cargo.lock but is not reachable from any workspace
 	#   member -- `cargo tree -i quinn-proto --target all --all-features` prints
@@ -106,18 +107,15 @@ ignore = [
 	# which is shared with the root scan, so it would also suppress them for the
 	# on-chain program workspace. That trades away coverage on the highest-risk
 	# surface to buy coverage cargo-deny already provides more precisely.
-	"RUSTSEC-2026-0204", # crossbeam-epoch: invalid pointer deref in fmt::Pointer.
-	# Fix: cargo update -p crossbeam-epoch (>=0.9.20).
 	"RUSTSEC-2024-0344", # curve25519-dalek: timing variability in Scalar sub.
-	# The highest-priority of the five, and the only one a lockfile bump cannot
-	# reach: `cargo update -p curve25519-dalek` is stuck at 3.2.0 because the sole
-	# consumer is rust/swift's `ed25519-dalek = "1.0.1"`, which requires
-	# curve25519-dalek ^3. The fix is bumping swift to ed25519-dalek 2.x, an API
-	# break (PublicKey -> VerifyingKey) in the signed-message verification path, so
-	# it needs its own change. keep-rs is already clear: it reaches ed25519-dalek
-	# 2.2.0 / curve25519-dalek 4.1.3 transitively through solana-keypair.
-	"RUSTSEC-2024-0437", # protobuf: crash on uncontrolled recursion (yellowstone-grpc).
-	# Fix: cargo update -p protobuf (>=3.7.2).
+	# The highest-priority of the three, and the only one no dependency edit short
+	# of an API migration can reach: `cargo update -p curve25519-dalek` is stuck at
+	# 3.2.0 because the sole consumer is rust/swift's `ed25519-dalek = "1.0.1"`,
+	# which requires curve25519-dalek ^3. The fix is bumping swift to
+	# ed25519-dalek 2.x, an API break (PublicKey -> VerifyingKey) in the
+	# signed-message verification path, so it needs its own change. keep-rs is
+	# already clear: it reaches ed25519-dalek 2.2.0 / curve25519-dalek 4.1.3
+	# transitively through solana-keypair.
 	"RUSTSEC-2021-0141", # dotenv unmaintained. No upgrade; replace with dotenvy.
 	"RUSTSEC-2025-0057", # fxhash unmaintained. No upgrade; replace with rustc-hash.
 ]

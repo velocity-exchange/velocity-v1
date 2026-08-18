@@ -1471,8 +1471,8 @@ pub fn handle_liquidate_spot_with_swap_begin<'c: 'info, 'info>(
     // The direct `liquidate_spot` lane already runs that same check with no
     // pre-refresh, so this only brings the swap-backed lane in line with it; a
     // band-blocked swap liquidation can still be routed through the direct path.
-    // The oracle TWAPs keep advancing on every other spot path and via the
-    // permissionless `update_spot_market_cumulative_interest` crank.
+    // The refresh is moved, not dropped: `liquidate_spot_with_swap_end` advances
+    // both markets' oracle TWAPs once every check in the lane is done.
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut asset_spot_market,
         None,
@@ -1894,7 +1894,7 @@ pub fn handle_liquidate_spot_with_swap_end<'c: 'info, 'info>(
         liability_vault.amount,
     )?;
 
-    let asset_spot_market = spot_market_map.get_ref_mut(&asset_market_index)?;
+    let mut asset_spot_market = spot_market_map.get_ref_mut(&asset_market_index)?;
 
     validate!(
         asset_spot_market.flash_loan_initial_token_amount == 0
@@ -1904,6 +1904,26 @@ pub fn handle_liquidate_spot_with_swap_end<'c: 'info, 'info>(
     )?;
 
     math::spot_withdraw::validate_spot_market_vault_amount(&asset_spot_market, asset_vault.amount)?;
+
+    // Advance the oracle TWAPs last, for the same reason as `end_swap`: the begin
+    // instruction passes `None` so it cannot refresh the anchor its own
+    // divergence check reads (OtterSec #111), and both this lane's checks are
+    // done by here. The begin instruction left `last_oracle_price_twap_ts` alone,
+    // so this update still weights the full elapsed interval.
+    let asset_oracle_data = *oracle_map.get_price_data(&asset_spot_market.oracle_id())?;
+    controller::spot_balance::update_spot_market_twap_stats(
+        &mut asset_spot_market,
+        Some(&asset_oracle_data),
+        now,
+    )?;
+
+    let mut liability_spot_market = spot_market_map.get_ref_mut(&liability_market_index)?;
+    let liability_oracle_data = *oracle_map.get_price_data(&liability_spot_market.oracle_id())?;
+    controller::spot_balance::update_spot_market_twap_stats(
+        &mut liability_spot_market,
+        Some(&liability_oracle_data),
+        now,
+    )?;
 
     Ok(())
 }

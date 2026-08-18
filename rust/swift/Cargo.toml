@@ -32,7 +32,9 @@ faster-hex = "0.10.0"
 futures-util = "0.3.30"
 log = "0.4.22"
 nanoid = "0.4.0"
-prometheus = "0.13"
+# See the note in keep-rs/Cargo.toml: drops the `protobuf` default feature and
+# with it protobuf 2.x (RUSTSEC-2024-0437).
+prometheus = { version = "0.13", default-features = false }
 rand = "0.8"
 redis = { version = "0.29.1", features = ["tokio-comp", "tokio-native-tls-comp"] }
 serde = { version = "1.0", features = ["derive"] }

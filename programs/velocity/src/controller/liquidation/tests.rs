@@ -7338,7 +7338,7 @@ pub mod liquidate_perp_pnl_for_deposit {
         crate::{
             controller::liquidation::{liquidate_perp_pnl_for_deposit, liquidate_spot},
             create_anchor_account_info,
-            error::ErrorCode,
+            error::{ErrorCode, VelocityResult},
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I128, LIQUIDATION_FEE_PRECISION,
@@ -7368,6 +7368,190 @@ pub mod liquidate_perp_pnl_for_deposit {
         solana_program::pubkey::Pubkey,
         std::str::FromStr,
     };
+
+    /// Liquidates a $150 negative pnl against a 1-token deposit whose maintenance
+    /// asset weight is `maintenance_asset_weight`. The perp market charges a 2%
+    /// liquidator fee, the deposit market 0.1%, and the state buffer is 2%.
+    /// Returns the call result and the deposit the user keeps.
+    fn liquidate_with_asset_weight(maintenance_asset_weight: u32) -> (VelocityResult, u64) {
+        let now = 0_i64;
+        let slot = 0_u64;
+
+        let mut sol_oracle_price = get_pyth_price(100, 6);
+        let sol_oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            sol_oracle_price,
+            &sol_oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+
+        let mut market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                max_slippage_ratio: 50,
+                max_fill_reserve_fraction: 100,
+                base_asset_amount_with_amm: BASE_PRECISION_I128,
+                ..AMM::default()
+            },
+            margin_ratio_initial: 1000,
+            margin_ratio_maintenance: 500,
+            unrealized_pnl_initial_asset_weight: 9000,
+            unrealized_pnl_maintenance_asset_weight: 10000,
+            number_of_users_with_base: 1,
+            status: MarketStatus::Initialized,
+            liquidator_fee: LIQUIDATION_FEE_PRECISION / 50, // 2%
+            order_step_size: 10000000,
+            quote_asset_amount: 150 * QUOTE_PRECISION_I128,
+            oracle: sol_oracle_price_key,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            ..PerpMarket::default()
+        };
+        create_anchor_account_info!(market, PerpMarket, market_account_info);
+        let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        let mut usdc_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+            deposit_balance: 200 * SPOT_BALANCE_PRECISION,
+            liquidator_fee: 0,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price_twap: QUOTE_PRECISION_I64,
+                last_oracle_price_twap_5min: QUOTE_PRECISION_I64,
+                ..HistoricalOracleData::default()
+            },
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(usdc_market, SpotMarket, usdc_spot_market_account_info);
+        let mut sol_market = SpotMarket {
+            market_index: 1,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            oracle: sol_oracle_price_key,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: maintenance_asset_weight,
+            maintenance_asset_weight,
+            initial_liability_weight: 12 * SPOT_WEIGHT_PRECISION / 10,
+            maintenance_liability_weight: 11 * SPOT_WEIGHT_PRECISION / 10,
+            deposit_balance: SPOT_BALANCE_PRECISION,
+            borrow_balance: 0,
+            liquidator_fee: LIQUIDATION_FEE_PRECISION / 1000, // 0.1%
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price_twap: (sol_oracle_price.price * 99 / 100),
+                last_oracle_price_twap_5min: (sol_oracle_price.price * 99 / 100),
+                ..HistoricalOracleData::default()
+            },
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(sol_market, SpotMarket, sol_spot_market_account_info);
+        let spot_market_account_infos = Vec::from([
+            &usdc_spot_market_account_info,
+            &sol_spot_market_account_info,
+        ]);
+        let spot_market_map =
+            SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+
+        let mut spot_positions = [SpotPosition::default(); 8];
+        spot_positions[0] = SpotPosition {
+            market_index: 1,
+            balance_type: SpotBalanceType::Deposit,
+            scaled_balance: SPOT_BALANCE_PRECISION_U64,
+            ..SpotPosition::default()
+        };
+        let mut user = User {
+            orders: [Order::default(); 32],
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                quote_asset_amount: -150 * QUOTE_PRECISION_I64,
+                ..PerpPosition::default()
+            }),
+            spot_positions,
+            ..User::default()
+        };
+
+        let mut liquidator = User {
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+
+        let user_key = Pubkey::default();
+        let liquidator_key = Pubkey::default();
+
+        let result = liquidate_perp_pnl_for_deposit(
+            0,
+            1,
+            150 * 10_u128.pow(6),
+            None,
+            &mut user,
+            &user_key,
+            &mut liquidator,
+            &liquidator_key,
+            &market_map,
+            &spot_market_map,
+            &mut oracle_map,
+            now,
+            slot,
+            MARGIN_PRECISION / 50, // 2% buffer
+            PERCENTAGE_PRECISION,
+            150,
+            false,
+        );
+
+        (result, user.spot_positions[0].scaled_balance)
+    }
+
+    // Audit #25: the seizure premium scales with the deposit's asset weight, so
+    // whether the transfer helps or hurts depends on that weight. At a 2%
+    // liquidation buffer against a 2% perp and 0.1% deposit liquidator fee, the
+    // premium outgrows the buffer at a weight of about 0.9986. Collateral weighted
+    // below that is safe to seize; full-weight collateral is not, because the
+    // account was getting full credit for it and gives it up at a premium.
+    #[test]
+    pub fn asset_weight_sets_whether_the_transfer_helps() {
+        // 0.80 and 0.90: comfortably profitable for the account
+        let (result, remaining_deposit) =
+            liquidate_with_asset_weight(8 * SPOT_WEIGHT_PRECISION / 10);
+        assert_eq!(result, Ok(()));
+        assert!(remaining_deposit < SPOT_BALANCE_PRECISION_U64);
+
+        let (result, remaining_deposit) =
+            liquidate_with_asset_weight(9 * SPOT_WEIGHT_PRECISION / 10);
+        assert_eq!(result, Ok(()));
+        assert!(remaining_deposit < SPOT_BALANCE_PRECISION_U64);
+
+        // 0.99: still under the boundary
+        let (result, _) = liquidate_with_asset_weight(99 * SPOT_WEIGHT_PRECISION / 100);
+        assert_eq!(result, Ok(()));
+
+        // the boundary itself: 0.9986 is the last weight the transfer helps at
+        let (result, _) = liquidate_with_asset_weight(9986);
+        assert_eq!(result, Ok(()));
+
+        let (result, remaining_deposit) = liquidate_with_asset_weight(9987);
+        assert_eq!(result, Err(ErrorCode::LiquidationWorsensAccountHealth));
+        assert_eq!(remaining_deposit, SPOT_BALANCE_PRECISION_U64);
+
+        // 1.00: the premium now exceeds the buffer, so no transfer size helps
+        let (result, remaining_deposit) = liquidate_with_asset_weight(SPOT_WEIGHT_PRECISION);
+        assert_eq!(result, Err(ErrorCode::LiquidationWorsensAccountHealth));
+        assert_eq!(remaining_deposit, SPOT_BALANCE_PRECISION_U64);
+    }
+
     #[test]
     pub fn successful_liquidation_liquidator_max_pnl_transfer() {
         let now = 0_i64;
@@ -7668,6 +7852,141 @@ pub mod liquidate_perp_pnl_for_deposit {
         );
 
         assert_eq!(result, Err(ErrorCode::LiquidationWorsensAccountHealth));
+    }
+
+    // Audit #25 follow-up: a degradation of less than a dollar must revert too.
+    // The liquidator picks `liquidator_max_pnl_transfer`, so any tolerance on this
+    // guard is an amount the liquidator can stay under and repeat until the
+    // deposit is gone. The guard holds no tolerance.
+    #[test]
+    pub fn reverts_when_transfer_worsens_margin_shortage_by_less_than_a_dollar() {
+        let now = 0_i64;
+        let slot = 0_u64;
+
+        let mut sol_oracle_price = get_pyth_price(100, 6);
+        let sol_oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            sol_oracle_price,
+            &sol_oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+
+        let mut market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                max_slippage_ratio: 50,
+                max_fill_reserve_fraction: 100,
+                base_asset_amount_with_amm: BASE_PRECISION_I128,
+                ..AMM::default()
+            },
+            margin_ratio_initial: 1000,
+            margin_ratio_maintenance: 500,
+            unrealized_pnl_initial_asset_weight: 9000,
+            unrealized_pnl_maintenance_asset_weight: 10000,
+            number_of_users_with_base: 1,
+            status: MarketStatus::Initialized,
+            // 1% liquidator fee against a 0.1% buffer: a $50 transfer takes
+            // $50.50 of the deposit, so the shortage grows by about $0.50.
+            liquidator_fee: LIQUIDATION_FEE_PRECISION / 100,
+            order_step_size: 10000000,
+            quote_asset_amount: 150 * QUOTE_PRECISION_I128,
+            oracle: sol_oracle_price_key,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            ..PerpMarket::default()
+        };
+        create_anchor_account_info!(market, PerpMarket, market_account_info);
+        let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        let mut usdc_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+            deposit_balance: 400 * SPOT_BALANCE_PRECISION,
+            liquidator_fee: 0,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price_twap: QUOTE_PRECISION_I64,
+                last_oracle_price_twap_5min: QUOTE_PRECISION_I64,
+                ..HistoricalOracleData::default()
+            },
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(usdc_market, SpotMarket, usdc_spot_market_account_info);
+        let spot_market_map =
+            SpotMarketMap::load_multiple(Vec::from([&usdc_spot_market_account_info]), true)
+                .unwrap();
+
+        let mut spot_positions = [SpotPosition::default(); 8];
+        spot_positions[0] = SpotPosition {
+            market_index: 0,
+            balance_type: SpotBalanceType::Deposit,
+            scaled_balance: 200 * SPOT_BALANCE_PRECISION_U64,
+            ..SpotPosition::default()
+        };
+        let mut user = User {
+            orders: [Order::default(); 32],
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                quote_asset_amount: -250 * QUOTE_PRECISION_I64,
+                ..PerpPosition::default()
+            }),
+            spot_positions,
+            ..User::default()
+        };
+
+        let mut liquidator = User {
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+
+        let user_key = Pubkey::default();
+        let liquidator_key = Pubkey::default();
+
+        let result = liquidate_perp_pnl_for_deposit(
+            0,
+            0,
+            50 * 10_u128.pow(6),
+            None,
+            &mut user,
+            &user_key,
+            &mut liquidator,
+            &liquidator_key,
+            &market_map,
+            &spot_market_map,
+            &mut oracle_map,
+            now,
+            slot,
+            10,
+            PERCENTAGE_PRECISION,
+            150,
+            false,
+        );
+
+        assert_eq!(result, Err(ErrorCode::LiquidationWorsensAccountHealth));
+
+        // the deposit and the pnl stay where they were: the transfer is refused
+        // before any balance moves
+        assert_eq!(
+            user.spot_positions[0].scaled_balance,
+            200 * SPOT_BALANCE_PRECISION_U64
+        );
+        assert_eq!(
+            user.perp_positions[0].quote_asset_amount,
+            -250 * QUOTE_PRECISION_I64
+        );
     }
 
     #[test]
@@ -8568,14 +8887,18 @@ pub mod liquidate_perp_pnl_for_deposit {
         )
         .unwrap();
 
-        assert_eq!(user.spot_positions[0].scaled_balance, 0);
+        // The whole $1.82 of pnl moves, and it buys $1.8402 of the deposit at the
+        // liquidation rate. The rest of the 0.02 SOL deposit ($0.16) stays with the
+        // user: the pnl relief does not pay for it, and the seizure never takes
+        // more than it pays for.
+        assert_eq!(user.spot_positions[0].scaled_balance, 1598000);
         assert_eq!(user.perp_positions[0].quote_asset_amount, 0);
 
         assert_eq!(
             liquidator.spot_positions[1].balance_type,
             SpotBalanceType::Deposit
         );
-        assert_eq!(liquidator.spot_positions[1].scaled_balance, 20000000);
+        assert_eq!(liquidator.spot_positions[1].scaled_balance, 18402000);
         assert_eq!(liquidator.perp_positions[0].quote_asset_amount, -1820000); // -$1
     }
 
@@ -8953,7 +9276,10 @@ pub mod liquidate_perp_pnl_for_deposit {
             &mut oracle_map,
             now,
             slot,
-            10,
+            // 2% liquidation margin buffer: it must stay above the market's 1%
+            // liquidator fee, or the seizure premium outweighs the pnl relief and
+            // the transfer is refused as loss-making
+            200,
             PERCENTAGE_PRECISION,
             150,
             false,
@@ -9001,7 +9327,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             &mut oracle_map,
             now,
             slot,
-            10,
+            200,
             PERCENTAGE_PRECISION,
             150,
             false,
@@ -9025,7 +9351,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             &mut oracle_map,
             now,
             slot,
-            10,
+            200,
             PERCENTAGE_PRECISION,
             150,
             false,
@@ -9219,7 +9545,10 @@ pub mod liquidate_perp_pnl_for_deposit {
             &mut oracle_map,
             now,
             slot,
-            10,
+            // 2% liquidation margin buffer: it must stay above the market's 1%
+            // liquidator fee, or the seizure premium outweighs the pnl relief and
+            // the transfer is refused as loss-making
+            200,
             PERCENTAGE_PRECISION,
             150,
             false,
@@ -9241,7 +9570,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             &mut oracle_map,
             now,
             slot,
-            10,
+            200,
             PERCENTAGE_PRECISION,
             150,
             false,
@@ -9263,7 +9592,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             &mut oracle_map,
             now,
             slot,
-            10,
+            200,
             PERCENTAGE_PRECISION,
             150,
             false,
@@ -9461,7 +9790,10 @@ pub mod liquidate_perp_pnl_for_deposit {
             &mut oracle_map,
             now,
             slot,
-            10,
+            // 2% liquidation margin buffer: it must stay above the market's 1%
+            // liquidator fee, or the seizure premium outweighs the pnl relief and
+            // the transfer is refused as loss-making
+            200,
             PERCENTAGE_PRECISION,
             150,
             false,
@@ -12772,10 +13104,12 @@ pub mod liquidate_spot_with_swap {
         let asset_transfer = 64338200;
         let liability_transfer = 643382;
 
+        // the max-pct-to-liquidate throttle is a hard cap: one unit above the
+        // throttled asset transfer is refused, with no headroom on top
         let res = liquidate_spot_with_swap_begin(
             0,
             1,
-            asset_transfer + (asset_transfer / 400) + 1,
+            asset_transfer + 1,
             &mut user,
             &user_key,
             &mut liquidator,
@@ -15085,7 +15419,10 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
             &mut oracle_map,
             now,
             slot,
-            10,
+            // 2% liquidation margin buffer: it must stay above the market's 1%
+            // liquidator fee, or the seizure premium outweighs the pnl relief and
+            // the transfer is refused as loss-making
+            200,
             PERCENTAGE_PRECISION,
             150,
             false,

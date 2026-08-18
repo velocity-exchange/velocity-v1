@@ -13,6 +13,15 @@ pub const PYTH_LAZER_STORAGE_ID: Pubkey = pubkey!("3rdJbqfnagQ4yx9HXJViD4zc4xpiS
 /// a fresh post but tightly caps how long a replayed message can keep the price pegged as fresh.
 pub const PYTH_LAZER_MAX_STALENESS_SECONDS: i64 = 15;
 
+/// Max time (seconds) a signed Lazer message's feed timestamp may lead `Clock::unix_timestamp`
+/// and still be posted. The monotonic gate skips any message whose timestamp is at or below the
+/// stored `publish_time`, so a message stamped ahead of the wall clock stops every later message
+/// until real time reaches that stamp. Without this bound one bad upstream timestamp freezes the
+/// feed for as long as the stamp is ahead. This bound holds that freeze to 15 seconds. It matches
+/// `PYTH_LAZER_MAX_STALENESS_SECONDS`, which is wider than any clock skew between the Lazer
+/// publisher and the Solana clock, so it never rejects a legitimate message.
+pub const PYTH_LAZER_MAX_FUTURE_SECONDS: i64 = 15;
+
 impl Size for PythLazerOracle {
     const SIZE: usize = 48;
 }

@@ -37,11 +37,13 @@ crossbeam = "0.8.4"
 dashmap = "6"
 env_logger = "0.11"
 futures-util = "0.3"
-fxhash = "0.2.1"
 hex = "0.4"
 log = "0.4"
 regex = "1.10"
 reqwest = { version = "0.12", features = ["json"] }
+# rustc-hash replaces fxhash (RUSTSEC-2025-0057, unmaintained). Same FxHash
+# family, and already in the lockfile transitively.
+rustc-hash = "2.1.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 solana-account-decoder-client-types = "3"

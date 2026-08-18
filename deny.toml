@@ -62,8 +62,9 @@ allow-git = [
 # ---------------------------------------------------------------------------
 [advisories]
 ignore = [
-	"RUSTSEC-2022-0013", # upstream dependency
-	"RUSTSEC-2022-0093", # Double Public Key Signing Function Oracle Attack on `ed25519-dalek`
+	"RUSTSEC-2022-0093", # Double Public Key Signing Function Oracle Attack on `ed25519-dalek`.
+	# Matches only the rust/ workspace: the root lockfile has no ed25519-dalek at all.
+	# Same fix as RUSTSEC-2024-0344 below, one migration clears both.
 	# rkyv OOB reads: rkyv is a feature-inactive optional dep of rust_decimal
 	# (via programs/pyth-lazer); it is never compiled into any artifact
 	# (`cargo tree -i rkyv` is empty in both workspaces) but Cargo.lock records
@@ -78,37 +79,30 @@ ignore = [
 	# agreeing rather than have cargo-deny fail on what cargo-audit waves through.
 	"RUSTSEC-2025-0141", # bincode 1.3.3 unmaintained: upstream ceased development and
 	# considers 1.3.3 complete. No fix to take; migrating off it is a real project.
-	"RUSTSEC-2026-0190", # anyhow: unsound Error::downcast_mut after Error::context.
-	# Transitive, and no code in either workspace calls downcast_mut. Drop this
-	# entry once the tree resolves to a patched anyhow.
 
 	# --- rust/ workspace only. PRE-EXISTING and, until this PR, UNSEEN by CI:
 	# the cargo-audit job runs `cargo audit` from the repo root, which reads only
-	# ./Cargo.lock. rust/Cargo.lock has never been scanned. Five advisories were
-	# hiding behind that gap; two are fixed in this PR (crossbeam-epoch bumped to
-	# 0.9.20, and prometheus's `protobuf` default feature switched off, which drops
-	# protobuf 2.28.0 out of the graph entirely). The three below remain. They are
-	# listed individually, not waved through with a blanket downgrade, so any *new*
-	# advisory in the rust workspace still fails.
+	# ./Cargo.lock. rust/Cargo.lock had never been scanned, and five advisories
+	# were hiding behind that gap. Three are fixed in this PR: crossbeam-epoch
+	# bumped to 0.9.20, prometheus's `protobuf` default feature switched off
+	# (dropping protobuf 2.28.0 out of the graph), and fxhash replaced with
+	# rustc-hash. The two below remain, listed individually rather than waved
+	# through with a blanket downgrade, so any *new* advisory in the rust
+	# workspace still fails.
 	#
-	# Note on the obvious-looking follow-up: DO NOT "close the gap" by adding
-	# `-f rust/Cargo.lock` to the cargo-audit job. cargo-audit reads the lockfile
-	# as text; cargo-deny resolves the actual dependency graph. The two disagree,
-	# and here cargo-deny is the more accurate of the pair:
-	#
-	#   cargo audit -f rust/Cargo.lock   -> exit 1, "2 vulnerabilities found",
-	#   including RUSTSEC-2026-0185 (quinn-proto 0.11.14, CVSS 7.5). quinn-proto
-	#   is recorded in rust/Cargo.lock but is not reachable from any workspace
-	#   member -- `cargo tree -i quinn-proto --target all --all-features` prints
-	#   "nothing to print" -- so nothing we build or ship contains it. Same shape
-	#   as the rkyv entry above: Cargo.lock records optional deps unconditionally.
-	#
-	# Turning that job green would mean adding those IDs to .cargo/audit.toml,
-	# which is shared with the root scan, so it would also suppress them for the
-	# on-chain program workspace. That trades away coverage on the highest-risk
-	# surface to buy coverage cargo-deny already provides more precisely.
+	# On wiring `-f rust/Cargo.lock` into the cargo-audit job: still not worth it,
+	# but the reason has narrowed. cargo-audit reads the lockfile as text while
+	# cargo-deny resolves the real dependency graph, so the two disagree on
+	# optional deps that Cargo.lock records unconditionally; the rkyv entry above
+	# is the live example, and cargo-deny is right there. What that job would now
+	# report on rust/Cargo.lock is a single genuine finding, RUSTSEC-2024-0344
+	# (down from four, after the fixes above plus a quinn-proto bump to 0.11.17
+	# that retired a CVSS 7.5 false positive on an unreachable crate). Greening it
+	# would mean adding that ID to .cargo/audit.toml, which is shared with the
+	# root scan. Worth revisiting once the ed25519-dalek migration below lands,
+	# because at that point there is nothing left to suppress.
 	"RUSTSEC-2024-0344", # curve25519-dalek: timing variability in Scalar sub.
-	# The highest-priority of the three, and the only one no dependency edit short
+	# The highest-priority of the two, and the only one no dependency edit short
 	# of an API migration can reach: `cargo update -p curve25519-dalek` is stuck at
 	# 3.2.0 because the sole consumer is rust/swift's `ed25519-dalek = "1.0.1"`,
 	# which requires curve25519-dalek ^3. The fix is bumping swift to
@@ -117,7 +111,6 @@ ignore = [
 	# already clear: it reaches ed25519-dalek 2.2.0 / curve25519-dalek 4.1.3
 	# transitively through solana-keypair.
 	"RUSTSEC-2021-0141", # dotenv unmaintained. No upgrade; replace with dotenvy.
-	"RUSTSEC-2025-0057", # fxhash unmaintained. No upgrade; replace with rustc-hash.
 ]
 
 # cargo-audit runs with `[yanked] enabled = false`. Warn rather than deny here so

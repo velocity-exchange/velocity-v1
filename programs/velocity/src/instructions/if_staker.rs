@@ -3,7 +3,8 @@ use {
         controller,
         error::ErrorCode,
         instructions::constraints::*,
-        load_mut, math,
+        load_mut,
+        math::{self, safe_math::SafeMath},
         optional_accounts::get_token_mint,
         state::{
             insurance_fund_stake::InsuranceFundStake,
@@ -127,7 +128,10 @@ pub fn handle_add_insurance_fund_stake<'c: 'info, 'info>(
         )?;
     }
 
-    controller::insurance::add_insurance_fund_stake(
+    // Only the portion of `amount` that prices to whole insurance-fund shares is staked;
+    // the remainder is never transferred, so it stays with the depositor instead of
+    // accruing to existing shareholders as rounding.
+    let amount_deposited = controller::insurance::add_insurance_fund_stake(
         amount,
         ctx.accounts.insurance_fund_vault.amount,
         insurance_fund_stake,
@@ -137,12 +141,21 @@ pub fn handle_add_insurance_fund_stake<'c: 'info, 'info>(
         false,
     )?;
 
+    if amount_deposited < amount {
+        msg!(
+            "staking {} of requested {}; remaining {} is below the price of one IF share",
+            amount_deposited,
+            amount,
+            amount.safe_sub(amount_deposited)?
+        );
+    }
+
     controller::token::receive(
         &ctx.accounts.token_program,
         &ctx.accounts.user_token_account,
         &ctx.accounts.insurance_fund_vault,
         &ctx.accounts.authority,
-        amount,
+        amount_deposited,
         &mint,
         if spot_market.has_transfer_hook() {
             Some(remaining_accounts_iter)

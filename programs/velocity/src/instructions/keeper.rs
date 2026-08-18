@@ -1434,6 +1434,28 @@ pub fn handle_liquidate_spot_with_swap_begin<'c: 'info, 'info>(
 
     let user = &mut load_mut!(ctx.accounts.user)?;
     let liquidator = &mut load_mut!(ctx.accounts.liquidator)?;
+    let liquidator_stats = load!(ctx.accounts.liquidator_stats)?;
+
+    // A swap-backed liquidation earns the liquidation fee like the other
+    // liquidator routes, the same value capture the authority-wide equity
+    // breaker freezes, even though the tokens flow through the authority's
+    // wallet accounts rather than the liquidator subaccount. Bar a tripped
+    // authority here too, before any flash-loan state opens; `end` runs in
+    // the same transaction, so checking `begin` covers the pair.
+    //
+    // Only the breaker, deliberately: the four direct routes additionally
+    // require the liquidator subaccount to clear its own buffered floor
+    // (`validate_clears_buffered_floor`), because the liquidation moves the
+    // liquidatee's position onto that subaccount. This route moves nothing
+    // onto it (both `update_spot_balances_and_cumulative_deposits` calls in
+    // `liquidate_spot_with_swap_end` target the liquidatee, and the fees go
+    // to the revenue and protocol pools), so there is no exposure for a
+    // per-subaccount floor to gate.
+    validate!(
+        !liquidator_stats.is_equity_breaker_tripped(),
+        ErrorCode::EquityBelowFloor,
+        "liquidator authority equity breaker is tripped"
+    )?;
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
     let AccountMaps {
@@ -1471,8 +1493,8 @@ pub fn handle_liquidate_spot_with_swap_begin<'c: 'info, 'info>(
     // The direct `liquidate_spot` lane already runs that same check with no
     // pre-refresh, so this only brings the swap-backed lane in line with it; a
     // band-blocked swap liquidation can still be routed through the direct path.
-    // The oracle TWAPs keep advancing on every other spot path and via the
-    // permissionless `update_spot_market_cumulative_interest` crank.
+    // The refresh is moved, not dropped: `liquidate_spot_with_swap_end` advances
+    // both markets' oracle TWAPs once every check in the lane is done.
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut asset_spot_market,
         None,
@@ -1670,22 +1692,28 @@ pub fn handle_liquidate_spot_with_swap_begin<'c: 'info, 'info>(
                 "the asset_token_account passed to SwapBegin and End must match"
             )?;
 
-            // `LiquidateSpotWithSwap` has 11 fixed accounts (indexes 0..=10);
-            // remaining (swap) accounts start at index 11 and must match between
+            validate!(
+                ctx.accounts.liquidator_stats.key() == ix.accounts[11].pubkey,
+                ErrorCode::InvalidLiquidateSpotWithSwap,
+                "the liquidator_stats passed to SwapBegin and End must match"
+            )?;
+
+            // `LiquidateSpotWithSwap` has 12 fixed accounts (indexes 0..=11);
+            // remaining (swap) accounts start at index 12 and must match between
             // begin and end.
             validate!(
-                ctx.remaining_accounts.len() == ix.accounts.len() - 11,
+                ctx.remaining_accounts.len() == ix.accounts.len() - 12,
                 ErrorCode::InvalidLiquidateSpotWithSwap,
                 "begin and end ix must have the same number of accounts"
             )?;
 
-            for i in 11..ix.accounts.len() {
+            for i in 12..ix.accounts.len() {
                 validate!(
-                    *ctx.remaining_accounts[i - 11].key == ix.accounts[i].pubkey,
+                    *ctx.remaining_accounts[i - 12].key == ix.accounts[i].pubkey,
                     ErrorCode::InvalidLiquidateSpotWithSwap,
                     "begin and end ix must have the same accounts. {}th account mismatch. begin: {}, end: {}",
                     i,
-                    ctx.remaining_accounts[i - 11].key,
+                    ctx.remaining_accounts[i - 12].key,
                     ix.accounts[i].pubkey
                 )?;
             }
@@ -1894,7 +1922,7 @@ pub fn handle_liquidate_spot_with_swap_end<'c: 'info, 'info>(
         liability_vault.amount,
     )?;
 
-    let asset_spot_market = spot_market_map.get_ref_mut(&asset_market_index)?;
+    let mut asset_spot_market = spot_market_map.get_ref_mut(&asset_market_index)?;
 
     validate!(
         asset_spot_market.flash_loan_initial_token_amount == 0
@@ -1904,6 +1932,26 @@ pub fn handle_liquidate_spot_with_swap_end<'c: 'info, 'info>(
     )?;
 
     math::spot_withdraw::validate_spot_market_vault_amount(&asset_spot_market, asset_vault.amount)?;
+
+    // Advance the oracle TWAPs last, for the same reason as `end_swap`: the begin
+    // instruction passes `None` so it cannot refresh the anchor its own
+    // divergence check reads (OtterSec #111), and both this lane's checks are
+    // done by here. The begin instruction left `last_oracle_price_twap_ts` alone,
+    // so this update still weights the full elapsed interval.
+    let asset_oracle_data = *oracle_map.get_price_data(&asset_spot_market.oracle_id())?;
+    controller::spot_balance::update_spot_market_twap_stats(
+        &mut asset_spot_market,
+        Some(&asset_oracle_data),
+        now,
+    )?;
+
+    let mut liability_spot_market = spot_market_map.get_ref_mut(&liability_market_index)?;
+    let liability_oracle_data = *oracle_map.get_price_data(&liability_spot_market.oracle_id())?;
+    controller::spot_balance::update_spot_market_twap_stats(
+        &mut liability_spot_market,
+        Some(&liability_oracle_data),
+        now,
+    )?;
 
     Ok(())
 }
@@ -3792,6 +3840,21 @@ pub struct LiquidateSpotWithSwap<'info> {
     /// CHECK: fixed instructions sysvar account
     #[account(address = instructions::ID)]
     pub instructions: UncheckedAccount<'info>,
+    /// The liquidator's `UserStats`, read by `begin` to bar an authority whose
+    /// equity breaker is tripped.
+    ///
+    /// It sits last, not beside `liquidator` where the direct liquidation
+    /// contexts carry it, because this pair is addressed by position rather
+    /// than by name: `begin` introspects the matching `end` and compares the
+    /// two account lists index by index, and the swap accounts both forward
+    /// begin where this fixed block ends. Taking the last slot renumbered
+    /// nothing. Slotting it beside `liquidator` would have moved `user`, both
+    /// vaults and both token accounts down one, silently invalidating every
+    /// hand-built transaction that still filled the old order.
+    #[account(
+        constraint = is_stats_for_user(&liquidator, &liquidator_stats)?
+    )]
+    pub liquidator_stats: AccountLoader<'info, UserStats>,
 }
 
 #[derive(Accounts)]

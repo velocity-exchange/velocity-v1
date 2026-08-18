@@ -8,10 +8,10 @@ use {
                 AMM_TO_QUOTE_PRECISION_RATIO, BASE_PRECISION,
                 DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT, FUNDING_RATE_BUFFER_I128,
                 FUNDING_RATE_OFFSET_PERCENTAGE, LIQUIDATION_FEE_PRECISION, MARGIN_PRECISION,
-                MARGIN_PRECISION_U128, MAX_LIQUIDATION_MULTIPLIER, PERCENTAGE_PRECISION,
-                PERCENTAGE_PRECISION_I128, PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U32,
-                PERCENTAGE_PRECISION_U64, PRICE_PRECISION_I128, SPOT_WEIGHT_PRECISION,
-                TRIGGER_PRICE_LAST_FILL_MAX_AGE,
+                MARGIN_PRECISION_U128, MAX_LIQUIDATION_MULTIPLIER, ONE_MINUTE,
+                PERCENTAGE_PRECISION, PERCENTAGE_PRECISION_I128, PERCENTAGE_PRECISION_I64,
+                PERCENTAGE_PRECISION_U32, PERCENTAGE_PRECISION_U64, PRICE_PRECISION_I128,
+                SPOT_WEIGHT_PRECISION, TRIGGER_PRICE_LAST_FILL_MAX_AGE,
             },
             margin::{
                 calculate_size_discount_asset_weight, calculate_size_premium_liability_weight,
@@ -1854,10 +1854,43 @@ impl MarketStats {
         Ok(())
     }
 
+    /// Ceiling on the elapsed time a single mark-TWAP sample may be weighted by.
+    ///
+    /// A mark-TWAP update weights the new sample by `elapsed / funding_period`,
+    /// where `elapsed` is the time since the TWAP was last advanced. That weight
+    /// is only honest while `elapsed` is time during which the sample could not
+    /// have been chosen by whoever profits from it. The bid/ask crank breaks that
+    /// property: it folds caller-supplied DLOB depth into the TWAP and can run
+    /// after an arbitrarily long gap, so one caller-chosen snapshot would claim a
+    /// near-full-period weight and move the TWAP (and the funding rate it feeds)
+    /// in a single instruction.
+    ///
+    /// Capping the elapsed a single sample may claim bounds that move to
+    /// `sample_deviation * cap / funding_period` no matter how large the gap, so
+    /// no one crank can set the funding input. Moving it then requires holding
+    /// the book across many samples, which costs real resting, fillable depth
+    /// over time and stays bounded by the oracle-divergence band. The cap does
+    /// not make funding manipulation-proof against an actor willing to pay that
+    /// sustained cost; it removes the free, single-shot version.
+    ///
+    /// The value is the same staleness granularity `update_mark_twap` already
+    /// uses to shrink a stale TWAP toward the oracle, so the sample-weight cap
+    /// and that oracle shrink trip at one shared threshold.
+    pub fn max_mark_twap_sample_elapsed(&self) -> VelocityResult<i64> {
+        Ok(self.funding_period.safe_div(60)?.max(ONE_MINUTE.cast()?))
+    }
+
     /// Update the bid/ask/mid mark-price TWAPs (funding-period and 5-minute)
     /// from a freshly-observed bid/ask pair. Pure MarketStats mutation —
     /// callers compute `bid_price` / `ask_price` from whichever liquidity
     /// source produced the fill (vAMM quote, DLOB, JIT participant).
+    ///
+    /// `max_sample_elapsed` caps the elapsed time credited to this sample (see
+    /// [`MarketStats::max_mark_twap_sample_elapsed`]). Fills and the AMM re-blend
+    /// pass `None` (their samples are AMM/trade-derived, not caller-curated); the
+    /// bid/ask crank passes `Some(..)` so caller-supplied DLOB depth cannot claim
+    /// a full-period weight after a gap. It bounds only the new sample's weight;
+    /// the stale-TWAP shrink below still keys off the real last-update timestamp.
     pub fn update_mark_twap(
         &mut self,
         now: i64,
@@ -1865,13 +1898,14 @@ impl MarketStats {
         ask_price: u64,
         precomputed_trade_price: Option<u64>,
         sanitize_clamp: Option<i64>,
+        max_sample_elapsed: Option<i64>,
     ) -> crate::error::VelocityResult<u64> {
         let funding_period = self.funding_period;
         use {
             crate::{
                 math::{
                     casting::Cast,
-                    constants::{FIVE_MINUTE, ONE_MINUTE},
+                    constants::FIVE_MINUTE,
                     safe_math::SafeMath,
                     stats::{calculate_new_twap, calculate_weighted_average},
                 },
@@ -1879,6 +1913,18 @@ impl MarketStats {
                 vlp::amm::math::amm::sanitize_new_price,
             },
             core::cmp::max,
+        };
+
+        // Timestamp the new sample is weighted against. `calculate_new_twap`
+        // credits the sample `now - last_ts` of elapsed time; capping that span
+        // caps the sample's weight. Uncapped callers use the real last-update
+        // time; the crank passes `Some(cap)` so a post-gap sample cannot claim
+        // more than `cap` of elapsed time. The stale-shrink branch below keeps
+        // using the real `last_mark_price_twap_ts`, and the update still stamps
+        // `last_mark_price_twap_ts = now` at the end.
+        let sample_last_ts = match max_sample_elapsed {
+            Some(cap) => max(self.last_mark_price_twap_ts, now.safe_sub(cap)?),
+            None => self.last_mark_price_twap_ts,
         };
 
         let (bid_price_capped_update, ask_price_capped_update) = (
@@ -1907,9 +1953,7 @@ impl MarketStats {
 
         // if delayed more than ONE_MINUTE or 60th of funding period, shrink toward oracle_twap
         let (last_bid_price_twap, last_ask_price_twap) =
-            if last_valid_trade_since_oracle_twap_update
-                > funding_period.safe_div(60)?.max(ONE_MINUTE.cast()?)
-            {
+            if last_valid_trade_since_oracle_twap_update > self.max_mark_twap_sample_elapsed()? {
                 crate::msg!(
                     "correcting mark twap update (oracle previously invalid for {:?} seconds)",
                     last_valid_trade_since_oracle_twap_update
@@ -1960,7 +2004,7 @@ impl MarketStats {
             bid_price_capped_update,
             now,
             last_bid_price_twap,
-            self.last_mark_price_twap_ts,
+            sample_last_ts,
             funding_period,
         )?;
         self.last_bid_price_twap = bid_twap.cast()?;
@@ -1969,7 +2013,7 @@ impl MarketStats {
             ask_price_capped_update,
             now,
             last_ask_price_twap,
-            self.last_mark_price_twap_ts,
+            sample_last_ts,
             funding_period,
         )?;
         self.last_ask_price_twap = ask_twap.cast()?;
@@ -1995,7 +2039,7 @@ impl MarketStats {
                 .cast()?,
             now,
             self.last_mark_price_twap_5min.cast()?,
-            self.last_mark_price_twap_ts,
+            sample_last_ts,
             FIVE_MINUTE as i64,
         )?
         .cast()?;
@@ -2076,18 +2120,25 @@ impl MarketStats {
             direction,
             order_tick_size,
         )?;
+        // AMM/trade-derived sample, not caller-curated: no sample-weight cap.
         self.update_mark_twap(
             now,
             bid_price,
             ask_price,
             precomputed_trade_price,
             sanitize_clamp,
+            None,
         )
     }
 
     /// Update the mark-price TWAP using the *best* of (vAMM bid/ask, DLOB
     /// bid/ask). Used by the explicit mark-twap crank to fold DLOB liquidity
     /// into the on-chain TWAP estimate.
+    ///
+    /// The DLOB side is caller-supplied, so this is the one path that curates
+    /// its own sample. It caps the sample's elapsed weight
+    /// ([`MarketStats::max_mark_twap_sample_elapsed`]) so a single crank after a
+    /// gap cannot set the funding input; funding and fills stay uncapped.
     pub fn update_mark_twap_crank(
         &mut self,
         amm: &AMM,
@@ -2130,7 +2181,15 @@ impl MarketStats {
             }
         }
 
-        self.update_mark_twap(now, best_bid_price, best_ask_price, None, sanitize_clamp)?;
+        let max_sample_elapsed = self.max_mark_twap_sample_elapsed()?;
+        self.update_mark_twap(
+            now,
+            best_bid_price,
+            best_ask_price,
+            None,
+            sanitize_clamp,
+            Some(max_sample_elapsed),
+        )?;
         Ok(())
     }
 

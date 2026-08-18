@@ -218,6 +218,16 @@ else
   skip_check "cargo audit" "cargo-audit not installed"
 fi
 
+# Optional. CI: cargo-deny. Both workspaces, one shared deny.toml.
+if command -v cargo-deny >/dev/null 2>&1; then
+  run_check "cargo deny (program workspace)" \
+    cargo deny --manifest-path Cargo.toml --config deny.toml check
+  run_check "cargo deny (rust workspace)" \
+    cargo deny --manifest-path rust/Cargo.toml --config deny.toml check
+else
+  skip_check "cargo deny" "cargo-deny not installed"
+fi
+
 skip_check "verify-sdk-configs" "needs live RPC endpoints"
 skip_check "devnet-e2e / rust-live-tests / docker / verified-build" "CI-only infra"
 

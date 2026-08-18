@@ -2935,6 +2935,14 @@ impl<'a> TransactionBuilder<'a> {
     /// This function handles common Jupiter-specific logic and returns a struct containing
     /// all the instructions that need to be inserted between begin and end wrapper instructions.
     ///
+    /// Of the route's instructions only the swap and a non-token cleanup (a SOL unwrap)
+    /// go in the bracket. Jupiter's compute-budget instructions are not used — the caller
+    /// budgets the whole transaction, not the swap alone — and its setup instructions are
+    /// replaced with idempotent ATA creation for the two swap token accounts, placed
+    /// before `begin_swap` rather than inside the bracket. Auxiliary instructions the
+    /// bracket could not carry (a Jito tip) are rejected when the route is parsed, so
+    /// nothing the route needs is dropped here.
+    ///
     /// # Arguments
     /// * `jupiter_swap_info` - Jupiter swap route and instructions
     /// * `in_market` - Spot market of the input token
@@ -2972,11 +2980,6 @@ impl<'a> TransactionBuilder<'a> {
         } else {
             Vec::new()
         };
-
-        // TODO: support jito bundle
-        if !jupiter_swap_ixs.other_instructions.is_empty() {
-            panic!("jupiter swap unsupported ix: Jito tip");
-        }
 
         // support SOL unwrap ixs, ignore account delete/reclaim ixs
         let cleanup_instruction = jupiter_swap_ixs.cleanup_instruction.filter(|ix| {
@@ -3756,6 +3759,7 @@ impl<'a> TransactionBuilder<'a> {
                 state: *state_account(),
                 authority: self.authority,
                 liquidator: self.sub_account,
+                liquidator_stats: Wallet::derive_stats_account(&self.owner()),
                 user: Wallet::derive_user_account(
                     &user_account.authority,
                     user_account.sub_account_id,
@@ -3831,6 +3835,7 @@ impl<'a> TransactionBuilder<'a> {
                 state: *state_account(),
                 authority: self.authority,
                 liquidator: self.sub_account,
+                liquidator_stats: Wallet::derive_stats_account(&self.owner()),
                 user: Wallet::derive_user_account(
                     &user_account.authority,
                     user_account.sub_account_id,

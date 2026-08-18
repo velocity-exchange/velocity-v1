@@ -11596,6 +11596,7 @@ pub mod accounts {
         pub token_program: Pubkey,
         pub velocity_signer: Pubkey,
         pub instructions: Pubkey,
+        pub liquidator_stats: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for LiquidateSpotWithSwapBegin {
@@ -11668,6 +11669,11 @@ pub mod accounts {
                     is_signer: false,
                     is_writable: false,
                 },
+                AccountMeta {
+                    pubkey: self.liquidator_stats,
+                    is_signer: false,
+                    is_writable: false,
+                },
             ]
         }
     }
@@ -11714,6 +11720,7 @@ pub mod accounts {
         pub token_program: Pubkey,
         pub velocity_signer: Pubkey,
         pub instructions: Pubkey,
+        pub liquidator_stats: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for LiquidateSpotWithSwapEnd {
@@ -11783,6 +11790,11 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.instructions,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.liquidator_stats,
                     is_signer: false,
                     is_writable: false,
                 },

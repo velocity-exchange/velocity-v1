@@ -172,6 +172,29 @@ jobs:
         run: cargo install cargo-audit --locked
       - name: Run cargo-audit # Using args from .cargo/audit.toml
         run: cargo audit
+  cargo-deny:
+    name: Cargo deny
+    runs-on: ubicloud
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Cache cargo-deny version
+        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+      # `sources` is the reason this job exists: a dependency may only come from
+      # crates.io or from a git remote explicitly allowlisted in deny.toml, so a
+      # new git dependency cannot land unreviewed. `licenses` and `bans` ride
+      # along. The two workspaces are deliberately not unified (see the
+      # `exclude` note in Cargo.toml), so each is checked in turn against the
+      # one shared config.
+      # `--locked` keeps the scan honest: cargo-deny resolves the graph through
+      # `cargo metadata`, which will happily re-resolve from the manifests when a
+      # lockfile is out of sync. That would check a graph nobody committed, and the
+      # new-dependency gate (which diffs lockfiles) would never see it either.
+      - name: Run cargo-deny (program workspace) # Using args from deny.toml
+        run: cargo deny --locked --manifest-path Cargo.toml --config deny.toml check
+      - name: Run cargo-deny (rust workspace) # Using args from deny.toml
+        run: cargo deny --locked --manifest-path rust/Cargo.toml --config deny.toml check
   prettier:
     runs-on: ubicloud
     steps:

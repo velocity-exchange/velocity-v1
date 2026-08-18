@@ -9514,8 +9514,8 @@ pub mod builder_fee_margin_gate {
             create_anchor_account_info,
             math::constants::{
                 AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64,
-                MAX_CONCENTRATION_COEFFICIENT, PEG_PRECISION, PRICE_PRECISION, PRICE_PRECISION_U64,
-                QUOTE_PRECISION_I64, SPOT_BALANCE_PRECISION_U64,
+                MAX_CONCENTRATION_COEFFICIENT, PEG_PRECISION, PRICE_PRECISION, PRICE_PRECISION_I64,
+                PRICE_PRECISION_U64, QUOTE_PRECISION_I64, SPOT_BALANCE_PRECISION_U64,
                 SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
             },
             state::{
@@ -9548,6 +9548,43 @@ pub mod builder_fee_margin_gate {
     const ENTRY_PRICE: i64 = 100;
     /// Order id of the taker's reducing order. The escrow row is keyed on it.
     const ORDER_ID: u32 = 1;
+    /// Price of the spot market the taker borrows in.
+    const SOL_PRICE: i64 = 100;
+    /// A confidence interval this wide makes an oracle invalid for a margin
+    /// calculation. The widest tolerance any asset tier allows is 100% of the
+    /// price, so this is twice the price.
+    const WIDE_ORACLE_CONF: u64 = 2 * SOL_PRICE as u64 * PRICE_PRECISION_U64;
+
+    /// The taker's spot positions: a quote deposit that carries the margin,
+    /// and a borrow in spot market 1 that the fill does not touch.
+    fn sol_borrow_positions(
+        collateral_dollars: u64,
+        sol_borrow_hundredths: u64,
+    ) -> [SpotPosition; 8] {
+        let mut spot_positions = get_spot_positions(SpotPosition {
+            market_index: 0,
+            balance_type: SpotBalanceType::Deposit,
+            scaled_balance: collateral_dollars * SPOT_BALANCE_PRECISION_U64,
+            ..SpotPosition::default()
+        });
+
+        if sol_borrow_hundredths > 0 {
+            spot_positions[1] = SpotPosition {
+                market_index: 1,
+                balance_type: SpotBalanceType::Borrow,
+                scaled_balance: sol_borrow_hundredths * SPOT_BALANCE_PRECISION_U64 / 100,
+                ..SpotPosition::default()
+            };
+        }
+
+        spot_positions
+    }
+
+    /// Fills the reducing order for a taker whose only liability is the perp
+    /// position, on markets whose oracles are all valid.
+    fn run_reducing_builder_fill(collateral_dollars: u64) -> (u64, u64) {
+        run_reducing_builder_fill_with_borrow(collateral_dollars, 0, 0)
+    }
 
     /// Serializes an escrow that holds one open builder row and one approved
     /// builder. The layout is the one the production loader reads:
@@ -9581,7 +9618,16 @@ pub mod builder_fee_margin_gate {
     /// margin. The market uses a 10% initial and a 5% maintenance ratio, so on
     /// a one-unit position at $100 the taker needs $10 to clear initial margin
     /// and $5 to clear maintenance.
-    fn run_reducing_builder_fill(collateral_dollars: u64) -> (u64, u64) {
+    ///
+    /// `sol_borrow_hundredths` gives the taker a borrow in spot market 1, a
+    /// liability that the fill does not touch. `sol_oracle_conf` is that
+    /// market's oracle confidence interval, which decides whether the oracle
+    /// on that liability is valid.
+    fn run_reducing_builder_fill_with_borrow(
+        collateral_dollars: u64,
+        sol_borrow_hundredths: u64,
+        sol_oracle_conf: u64,
+    ) -> (u64, u64) {
         let now = 0_i64;
         let slot = 5_u64;
 
@@ -9594,7 +9640,20 @@ pub mod builder_fee_margin_gate {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut sol_oracle_price = get_pyth_price(SOL_PRICE, 6);
+        sol_oracle_price.conf = sol_oracle_conf;
+        let sol_oracle_price_key =
+            Pubkey::from_str("Gnt27xtC473ZT2Mw5u8wZ68Z3gULkSTb5DuxJy7eJotD").unwrap();
+        create_anchor_account_info!(
+            sol_oracle_price,
+            &sol_oracle_price_key,
+            PythLazerOracle,
+            sol_oracle_account_info
+        );
+
+        let oracle_account_infos = Vec::from([oracle_account_info, sol_oracle_account_info]);
+        let mut oracle_map =
+            OracleMap::load(&mut oracle_account_infos.iter().peekable(), slot, None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -9645,7 +9704,25 @@ pub mod builder_fee_margin_gate {
             ..SpotMarket::default()
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
-        let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+
+        let mut sol_spot_market = SpotMarket {
+            market_index: 1,
+            oracle: sol_oracle_price_key,
+            oracle_source: OracleSource::PythLazer,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            historical_oracle_data: HistoricalOracleData::default_price(
+                SOL_PRICE * PRICE_PRECISION_I64,
+            ),
+            ..SpotMarket::default_base_market()
+        };
+        create_anchor_account_info!(sol_spot_market, SpotMarket, sol_spot_market_account_info);
+
+        let spot_market_map = SpotMarketMap::load_multiple(
+            vec![&spot_market_account_info, &sol_spot_market_account_info],
+            true,
+        )
+        .unwrap();
 
         // Long one unit, closing it with a builder-coded market sell. The order
         // reduces the position, so the post-fill check uses maintenance margin.
@@ -9673,12 +9750,7 @@ pub mod builder_fee_margin_gate {
                 open_asks: -BASE_PRECISION_I64,
                 ..PerpPosition::default()
             }),
-            spot_positions: get_spot_positions(SpotPosition {
-                market_index: 0,
-                balance_type: SpotBalanceType::Deposit,
-                scaled_balance: collateral_dollars * SPOT_BALANCE_PRECISION_U64,
-                ..SpotPosition::default()
-            }),
+            spot_positions: sol_borrow_positions(collateral_dollars, sol_borrow_hundredths),
             ..User::default()
         };
 
@@ -9775,6 +9847,33 @@ pub mod builder_fee_margin_gate {
             fees_accrued > 900_000 && fees_accrued < 1_100_000,
             "expected about 1% of notional, got {fees_accrued}"
         );
+    }
+
+    #[test]
+    fn charges_builder_fee_when_a_liability_oracle_is_valid() {
+        // A quarter of a unit borrowed in spot market 1, about $25 against $50
+        // of collateral. The taker still clears initial margin, and the borrow
+        // oracle is precise, so the fee is charged. Control for the invalid
+        // oracle case below.
+        let (base_filled, fees_accrued) = run_reducing_builder_fill_with_borrow(50, 25, 0);
+
+        assert_eq!(base_filled, BASE_PRECISION_U64);
+        assert!(
+            fees_accrued > 900_000 && fees_accrued < 1_100_000,
+            "expected about 1% of notional, got {fees_accrued}"
+        );
+    }
+
+    #[test]
+    fn waives_builder_fee_when_a_liability_oracle_is_invalid() {
+        // The same taker, and the same margin state, but the borrow's oracle
+        // is too uncertain to price the liability. The reduction still fills
+        // and the fee is waived.
+        let (base_filled, fees_accrued) =
+            run_reducing_builder_fill_with_borrow(50, 25, WIDE_ORACLE_CONF);
+
+        assert_eq!(base_filled, BASE_PRECISION_U64);
+        assert_eq!(fees_accrued, 0);
     }
 
     #[test]

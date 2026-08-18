@@ -1945,6 +1945,14 @@ fn fulfill_perp_order(
     // the builder is not paid for that fill. The margin state is read before
     // the fill, so a reduction that restores initial margin still waives the
     // fee for that fill. This is the safe direction.
+    //
+    // The gate uses the same oracle rules as the withdraw gate. It is strict,
+    // so each price is the more conservative of the live price and the TWAP.
+    // It ignores invalid deposit oracles, so a deposit with a bad oracle adds
+    // no collateral. It also requires every liability oracle to be valid. A
+    // single oracle push, or one stale oracle on an unrelated position, then
+    // cannot clear the gate for the instant the fill needs. An oracle the
+    // program cannot trust waives the fee; it does not fail the fill.
     let builder_fee_allowed = if fill_mode.is_liquidation()
         || !user.orders[user_order_index].is_has_builder()
         || rev_share_escrow.is_none()
@@ -1965,14 +1973,17 @@ fn fulfill_perp_order(
             }
         };
 
-        calculate_margin_requirement_and_total_collateral_and_liability_info(
+        let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
             user,
             perp_market_map,
             spot_market_map,
             oracle_map,
-            MarginContext::standard_with_config(margin_type_config),
-        )?
-        .meets_margin_requirement()
+            MarginContext::standard_with_config(margin_type_config)
+                .strict(true)
+                .ignore_invalid_deposit_oracles(true),
+        )?;
+
+        calculation.meets_margin_requirement() && calculation.all_liability_oracles_valid
     };
 
     let perp_market = perp_market_map.get_ref(&market_index)?;

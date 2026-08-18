@@ -4322,10 +4322,17 @@ export class User {
 	 * initial margin to every bucket, so for a user with isolated positions it
 	 * can report false where the program still charges the fee.
 	 *
+	 * The program also waives the fee when any liability oracle is invalid, and
+	 * values a deposit with an invalid oracle at zero. This method does not
+	 * model oracle validity, so it can report true where the program waives the
+	 * fee. Treat the result as an estimate, not a guarantee.
+	 *
 	 * @return {boolean} Whether a builder fee applies to this user's fills
 	 */
 	public isBuilderFeeCharged(): boolean {
-		return this.getMarginCalculation('Initial').meetsMarginRequirement();
+		return this.getMarginCalculation('Initial', {
+			strict: true,
+		}).meetsMarginRequirement();
 	}
 
 	/**

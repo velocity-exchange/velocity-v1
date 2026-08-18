@@ -14,6 +14,11 @@ checked against maintenance margin alone, which lets an under-margined taker red
 slices and route out value the initial-margin gate holds in the account. The 1% cap on the fee rate
 bounds one fill, not the sequence.
 
+The program's gate reads the same oracle rules a withdrawal reads: strict (TWAP-bounded) prices,
+no collateral for a deposit with an invalid oracle, and every liability oracle valid.
+`isBuilderFeeCharged()` applies the strict prices but does not model oracle validity, so it is an
+estimate — it can report `true` where the program waives the fee.
+
 The program waives the fee, not the fill: the taker still closes the position and the builder is
 paid nothing for that fill. A client that shows a builder fee before a close must read
 `isBuilderFeeCharged()` to predict the charge for an under-margined account.

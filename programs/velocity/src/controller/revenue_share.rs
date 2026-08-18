@@ -1,20 +1,23 @@
 use {
     crate::{
         controller::spot_balance,
+        error::{ErrorCode, VelocityResult},
         math::{casting::Cast, safe_math::SafeMath, spot_balance::get_token_amount},
         state::{
             events::{emit_stack, RevenueShareSettleRecord},
             market_status::MarketStatus,
             paused_operations::PerpOperation,
+            perp_market::PerpMarket,
             perp_market_map::PerpMarketMap,
             revenue_share::{RevenueShareEscrowZeroCopyMut, RevenueShareOrder},
             revenue_share_map::RevenueShareMap,
-            spot_market::SpotBalance,
+            spot_market::{SpotBalance, SpotBalanceType, SpotMarket},
             spot_market_map::SpotMarketMap,
             traits::Size,
             user::MarketType,
         },
-        vlp::amm::math::amm::calculate_net_user_pnl,
+        validate,
+        vlp::amm::math::amm::{calculate_net_user_cost_basis, calculate_net_user_pnl},
     },
     anchor_lang::prelude::*,
 };
@@ -348,6 +351,160 @@ pub enum RevenueShareForfeitReason {
     /// of `approved_builders`, or the escrow of a referral row has no referrer. The current
     /// accrual paths cannot make such a row. A row like this would block the delist forever.
     UnresolvableBeneficiary,
+}
+
+/// Names the reason that the program cannot pay one revenue-share row, or fails.
+///
+/// `forfeit_revenue_share_order` applies the result. This function changes nothing.
+///
+/// `beneficiary_user` is the account that the caller passes as the payout account of the row. The
+/// function derives the address that the row credits and rejects any other address, so a caller
+/// cannot pass an unrelated empty account as proof that a live beneficiary has none.
+/// `beneficiary_user_is_empty` states whether that account holds no data and the system program
+/// owns it.
+///
+/// `now` and `escrow_period_before_transfer` set the deadline for `NoBeneficiaryAccount`. That
+/// deadline is `PerpMarket.expiry_ts` plus the window, which is the first moment that the market
+/// may delist.
+pub fn resolve_revenue_share_forfeit_reason(
+    perp_market: &PerpMarket,
+    quote_spot_market: &SpotMarket,
+    revenue_share_escrow: &mut RevenueShareEscrowZeroCopyMut,
+    market_index: u16,
+    order_index: u32,
+    beneficiary_user: &Pubkey,
+    beneficiary_user_is_empty: bool,
+    now: i64,
+    escrow_period_before_transfer: i64,
+) -> VelocityResult<RevenueShareForfeitReason> {
+    // Only a closing market. On a live market the row blocks nothing, and the beneficiary can
+    // still make the account that they need.
+    validate!(
+        matches!(
+            perp_market.status,
+            MarketStatus::Settlement | MarketStatus::Delisted
+        ),
+        ErrorCode::DefaultError,
+        "market {} must be in Settlement or Delisted to forfeit revenue share, is {:?}",
+        market_index,
+        perp_market.status
+    )?;
+
+    let (is_referral_order, order_market_type, order_market_index, fees_accrued, builder_idx) = {
+        let order = revenue_share_escrow.get_order(order_index)?;
+        (
+            order.is_referral_order(),
+            order.market_type,
+            order.market_index,
+            order.fees_accrued,
+            order.builder_idx,
+        )
+    };
+
+    validate!(
+        order_market_type == MarketType::Perp && order_market_index == market_index,
+        ErrorCode::DefaultError,
+        "order {} is not for perp market {}",
+        order_index,
+        market_index
+    )?;
+    validate!(
+        fees_accrued > 0,
+        ErrorCode::DefaultError,
+        "order {} owes nothing",
+        order_index
+    )?;
+
+    // The beneficiary of the row. The program reads this from the escrow, not from the caller.
+    let beneficiary = if is_referral_order {
+        revenue_share_escrow.get_referrer()
+    } else {
+        revenue_share_escrow
+            .get_approved_builder_mut(builder_idx)
+            .ok()
+            .map(|builder| builder.authority)
+    };
+
+    let beneficiary = match beneficiary {
+        // No caller can pay a row that names nobody.
+        None => return Ok(RevenueShareForfeitReason::UnresolvableBeneficiary),
+        Some(beneficiary) => beneficiary,
+    };
+
+    // The account must be the one that this row credits. The function derives the address and
+    // rejects any other. A caller therefore cannot pass an unrelated empty account as proof that a
+    // live beneficiary does not exist.
+    let (expected_beneficiary_user, _) = Pubkey::find_program_address(
+        &[b"user", beneficiary.as_ref(), 0_u16.to_le_bytes().as_ref()],
+        &crate::ID,
+    );
+    validate!(
+        beneficiary_user == &expected_beneficiary_user,
+        ErrorCode::DefaultError,
+        "beneficiary_user must be {} (sub-account 0 of {}), got {}",
+        expected_beneficiary_user,
+        beneficiary,
+        beneficiary_user
+    )?;
+
+    if beneficiary_user_is_empty {
+        // The beneficiary can create this account at any time, so the reason is not permanent on
+        // its own. Give them the whole escrow window to do it. That window ends at the first
+        // moment the market may delist, so this adds no delay to the wind-down. After it, an
+        // absent payout account is a missed deadline.
+        let forfeit_after = perp_market
+            .expiry_ts
+            .safe_add(escrow_period_before_transfer)?;
+        validate!(
+            now > forfeit_after,
+            ErrorCode::RevenueShareOrderNotForfeitable,
+            "market {} order {}: the beneficiary has until {} to create a payout account",
+            market_index,
+            order_index,
+            forfeit_after
+        )?;
+
+        return Ok(RevenueShareForfeitReason::NoBeneficiaryAccount);
+    }
+
+    // The program can pay the beneficiary. The only other reason is that the pool holds too
+    // little, and that the pool is final. This uses the same closed state that the delist
+    // requires. After that state nothing adds to the pool. Fees need fills, and a market that is
+    // not Active rejects a fill. Every other operation removes value. The shortage is therefore
+    // permanent.
+    //
+    // The check uses `base_asset_amount_with_amm == 0` and a zero net user cost basis. This equals
+    // `net_user_pnl == 0` with the price term removed, and needs no oracle.
+    let net_user_cost_basis = calculate_net_user_cost_basis(
+        perp_market.quote_asset_amount,
+        perp_market.net_unsettled_funding_pnl,
+    )?;
+    validate!(
+        perp_market.amm.base_asset_amount_with_amm == 0 && net_user_cost_basis == 0,
+        ErrorCode::RevenueShareOrderNotForfeitable,
+        "market {} is not wound down (amm base {}, net user cost basis {}); settle_revenue_share can still pay order {}",
+        market_index,
+        perp_market.amm.base_asset_amount_with_amm,
+        net_user_cost_basis,
+        order_index
+    )?;
+
+    let pnl_pool_token_amount = get_token_amount(
+        perp_market.pnl_pool.scaled_balance,
+        quote_spot_market,
+        &SpotBalanceType::Deposit,
+    )?;
+    validate!(
+        pnl_pool_token_amount < fees_accrued as u128,
+        ErrorCode::RevenueShareOrderNotForfeitable,
+        "market {} pnl pool ({}) can still pay order {} ({}); run settle_revenue_share instead",
+        market_index,
+        pnl_pool_token_amount,
+        order_index,
+        fees_accrued
+    )?;
+
+    Ok(RevenueShareForfeitReason::PoolExhausted)
 }
 
 /// Writes off one row that the program cannot pay. The liability counter can then reach zero, and

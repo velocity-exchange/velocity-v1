@@ -1,9 +1,15 @@
-//! Unit tests for [`sweep_completed_revenue_share_for_market`].
+//! Unit tests for the permissionless revenue-share paths:
+//! [`sweep_completed_revenue_share_for_market`], [`super::resolve_revenue_share_forfeit_reason`]
+//! and [`super::forfeit_revenue_share_order`].
 //!
 //! The sweep is permissionless and it moves tokens out of a perp market's pnl
 //! pool into a beneficiary's quote spot position. Each test asserts balances,
 //! counters, and escrow rows before and after the call. Control-flow assertions
 //! alone cannot see a missing transfer, so every case pins money.
+//!
+//! The forfeit is permissionless too, and it destroys a claim. The proof tests
+//! at the end of this file pin every branch that can write off a row, and every
+//! condition that must keep one alive.
 
 use {
     super::sweep_completed_revenue_share_for_market,
@@ -1946,4 +1952,383 @@ fn forfeit_is_not_double_counted() {
     assert_eq!(second, 0);
     // the other row's claim is untouched and still reserved
     assert_eq!(market.pending_revenue_share, 5 * DOLLAR);
+}
+
+// ---------------------------------------------------------------------------
+// forfeit proof
+// ---------------------------------------------------------------------------
+
+/// The address of the payout account of a beneficiary. `resolve_revenue_share_forfeit_reason`
+/// derives the same address and accepts no other.
+fn payout_user(authority: Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[b"user", authority.as_ref(), 0_u16.to_le_bytes().as_ref()],
+        &crate::ID,
+    )
+    .0
+}
+
+/// The `User` address of another sub-account of the same authority. The revenue-share map pays
+/// only sub-account 0, so this address can never receive the row.
+fn sibling_user(authority: Pubkey, sub_account_id: u16) -> Pubkey {
+    Pubkey::find_program_address(
+        &[
+            b"user",
+            authority.as_ref(),
+            sub_account_id.to_le_bytes().as_ref(),
+        ],
+        &crate::ID,
+    )
+    .0
+}
+
+/// The escrow window of the state in these tests. The deadline for a missing payout account is
+/// `expiry_ts` plus this value.
+const ESCROW_PERIOD: i64 = 24 * 60 * 60;
+/// The expiry of the settlement market in these tests.
+const EXPIRY_TS: i64 = 1_700_000_000;
+/// The first moment that a missing payout account is a missed deadline.
+const FORFEIT_AFTER: i64 = EXPIRY_TS + ESCROW_PERIOD;
+
+/// A market that is closed and wound down, with `pnl_pool_dollars` left in the pnl pool. The
+/// default AMM holds no base and no quote, so the market owes its users nothing.
+fn settlement_market(pnl_pool_dollars: u64, pending_revenue_share_dollars: u64) -> PerpMarket {
+    PerpMarket {
+        status: MarketStatus::Settlement,
+        expiry_ts: EXPIRY_TS,
+        ..perp_market(pnl_pool_dollars, pending_revenue_share_dollars)
+    }
+}
+
+/// Runs the proof for order 0 of an escrow that holds one builder row.
+fn resolve_builder_row(
+    market: &PerpMarket,
+    builder_authority: Pubkey,
+    beneficiary_user: &Pubkey,
+    beneficiary_user_is_empty: bool,
+    now: i64,
+) -> Result<super::RevenueShareForfeitReason, ErrorCode> {
+    let spot_market = quote_spot_market();
+    escrow!(
+        &[completed_builder_row(0, 4)],
+        &[builder_info(builder_authority)],
+        Pubkey::default(),
+        escrow
+    );
+    super::resolve_revenue_share_forfeit_reason(
+        market,
+        &spot_market,
+        &mut escrow,
+        0,
+        0,
+        beneficiary_user,
+        beneficiary_user_is_empty,
+        now,
+        ESCROW_PERIOD,
+    )
+}
+
+/// A live market has no forfeit. The row blocks no delist, and the beneficiary can still create
+/// the account that they need.
+#[test]
+fn a_live_market_cannot_forfeit_a_row() {
+    let builder_authority = Pubkey::new_unique();
+    let market = PerpMarket {
+        status: MarketStatus::Active,
+        expiry_ts: EXPIRY_TS,
+        ..perp_market(0, 4)
+    };
+
+    assert_eq!(
+        resolve_builder_row(
+            &market,
+            builder_authority,
+            &payout_user(builder_authority),
+            true,
+            FORFEIT_AFTER + 1,
+        ),
+        Err(ErrorCode::DefaultError)
+    );
+}
+
+/// A missing payout account is proof only after the escrow window ends. The beneficiary can create
+/// the account until then. The deadline is exclusive: the last second of the window still belongs
+/// to the beneficiary.
+#[test]
+fn a_missing_payout_account_waits_for_the_escrow_window() {
+    let builder_authority = Pubkey::new_unique();
+    let market = settlement_market(0, 4);
+    let payout = payout_user(builder_authority);
+
+    // inside the window
+    assert_eq!(
+        resolve_builder_row(&market, builder_authority, &payout, true, EXPIRY_TS),
+        Err(ErrorCode::RevenueShareOrderNotForfeitable)
+    );
+    // the deadline itself is still the beneficiary's
+    assert_eq!(
+        resolve_builder_row(&market, builder_authority, &payout, true, FORFEIT_AFTER),
+        Err(ErrorCode::RevenueShareOrderNotForfeitable)
+    );
+    // one second later the account is late
+    assert_eq!(
+        resolve_builder_row(&market, builder_authority, &payout, true, FORFEIT_AFTER + 1),
+        Ok(super::RevenueShareForfeitReason::NoBeneficiaryAccount)
+    );
+}
+
+/// The proof derives the payout address of the row. A caller cannot pass some other empty account
+/// and claim that the beneficiary has none. A sibling sub-account of the same beneficiary is also
+/// refused, because only sub-account 0 can receive the row.
+#[test]
+fn an_empty_account_of_another_address_is_not_proof() {
+    let builder_authority = Pubkey::new_unique();
+    let market = settlement_market(0, 4);
+    let now = FORFEIT_AFTER + 1;
+
+    // an unrelated address
+    assert_eq!(
+        resolve_builder_row(&market, builder_authority, &Pubkey::new_unique(), true, now),
+        Err(ErrorCode::DefaultError)
+    );
+    // sub-account 1 of the same beneficiary
+    assert_eq!(
+        resolve_builder_row(
+            &market,
+            builder_authority,
+            &sibling_user(builder_authority, 1),
+            true,
+            now,
+        ),
+        Err(ErrorCode::DefaultError)
+    );
+    // the payout account of a different authority
+    assert_eq!(
+        resolve_builder_row(
+            &market,
+            builder_authority,
+            &payout_user(Pubkey::new_unique()),
+            true,
+            now,
+        ),
+        Err(ErrorCode::DefaultError)
+    );
+    // only the derived address passes
+    assert_eq!(
+        resolve_builder_row(
+            &market,
+            builder_authority,
+            &payout_user(builder_authority),
+            true,
+            now,
+        ),
+        Ok(super::RevenueShareForfeitReason::NoBeneficiaryAccount)
+    );
+}
+
+/// A row that the pool can pay is not forfeitable. The beneficiary has an account, the market is
+/// wound down, and the pool holds the fee. `settle_revenue_share` must pay it.
+#[test]
+fn a_payable_row_is_not_forfeitable() {
+    let builder_authority = Pubkey::new_unique();
+    let payout = payout_user(builder_authority);
+    let now = FORFEIT_AFTER + 1;
+
+    // the pool holds more than the row
+    assert_eq!(
+        resolve_builder_row(
+            &settlement_market(10, 4),
+            builder_authority,
+            &payout,
+            false,
+            now
+        ),
+        Err(ErrorCode::RevenueShareOrderNotForfeitable)
+    );
+    // the pool holds exactly the row
+    assert_eq!(
+        resolve_builder_row(
+            &settlement_market(4, 4),
+            builder_authority,
+            &payout,
+            false,
+            now
+        ),
+        Err(ErrorCode::RevenueShareOrderNotForfeitable)
+    );
+    // one dollar short, so the pool can never pay it
+    assert_eq!(
+        resolve_builder_row(
+            &settlement_market(3, 4),
+            builder_authority,
+            &payout,
+            false,
+            now
+        ),
+        Ok(super::RevenueShareForfeitReason::PoolExhausted)
+    );
+}
+
+/// The pool is final only after the market winds down. While the AMM holds base, or while users
+/// still hold quote, the pool can still grow, so a short pool is no proof.
+#[test]
+fn an_open_market_is_not_proof_of_an_exhausted_pool() {
+    let builder_authority = Pubkey::new_unique();
+    let payout = payout_user(builder_authority);
+    let now = FORFEIT_AFTER + 1;
+
+    let mut market = settlement_market(0, 4);
+    market.amm.base_asset_amount_with_amm = BASE_PRECISION_I128;
+    assert_eq!(
+        resolve_builder_row(&market, builder_authority, &payout, false, now),
+        Err(ErrorCode::RevenueShareOrderNotForfeitable)
+    );
+
+    let mut market = settlement_market(0, 4);
+    market.quote_asset_amount = -QUOTE_PRECISION_I128;
+    assert_eq!(
+        resolve_builder_row(&market, builder_authority, &payout, false, now),
+        Err(ErrorCode::RevenueShareOrderNotForfeitable)
+    );
+}
+
+/// A row that names no beneficiary is unresolvable. Nobody can pay it, so it needs no deadline and
+/// no pool check. The passed account is not read.
+#[test]
+fn a_row_that_names_nobody_is_unresolvable() {
+    let market = settlement_market(10, 7);
+    let spot_market = quote_spot_market();
+
+    // a builder row whose index is past the end of the approved builders
+    escrow!(
+        &[completed_builder_row(0, 4)],
+        &[],
+        Pubkey::default(),
+        no_builder
+    );
+    assert_eq!(
+        super::resolve_revenue_share_forfeit_reason(
+            &market,
+            &spot_market,
+            &mut no_builder,
+            0,
+            0,
+            &Pubkey::new_unique(),
+            false,
+            EXPIRY_TS,
+            ESCROW_PERIOD,
+        ),
+        Ok(super::RevenueShareForfeitReason::UnresolvableBeneficiary)
+    );
+
+    // a referral row in an escrow that has no referrer
+    escrow!(&[referral_row(0, 3)], &[], Pubkey::default(), no_referrer);
+    assert_eq!(
+        super::resolve_revenue_share_forfeit_reason(
+            &market,
+            &spot_market,
+            &mut no_referrer,
+            0,
+            0,
+            &Pubkey::new_unique(),
+            false,
+            EXPIRY_TS,
+            ESCROW_PERIOD,
+        ),
+        Ok(super::RevenueShareForfeitReason::UnresolvableBeneficiary)
+    );
+}
+
+/// A referral row credits the referrer of the escrow, not a builder. The proof derives the payout
+/// address of that referrer.
+#[test]
+fn a_referral_row_credits_the_referrer() {
+    let referrer = Pubkey::new_unique();
+    let builder_authority = Pubkey::new_unique();
+    let market = settlement_market(0, 3);
+    let spot_market = quote_spot_market();
+
+    escrow!(
+        &[referral_row(0, 3)],
+        &[builder_info(builder_authority)],
+        referrer,
+        escrow
+    );
+
+    // the builder of the escrow is not the beneficiary of a referral row
+    assert_eq!(
+        super::resolve_revenue_share_forfeit_reason(
+            &market,
+            &spot_market,
+            &mut escrow,
+            0,
+            0,
+            &payout_user(builder_authority),
+            true,
+            FORFEIT_AFTER + 1,
+            ESCROW_PERIOD,
+        ),
+        Err(ErrorCode::DefaultError)
+    );
+    assert_eq!(
+        super::resolve_revenue_share_forfeit_reason(
+            &market,
+            &spot_market,
+            &mut escrow,
+            0,
+            0,
+            &payout_user(referrer),
+            true,
+            FORFEIT_AFTER + 1,
+            ESCROW_PERIOD,
+        ),
+        Ok(super::RevenueShareForfeitReason::NoBeneficiaryAccount)
+    );
+}
+
+/// The proof reads the row that the caller names. A row of another market, or a row that owes
+/// nothing, is refused.
+#[test]
+fn the_row_must_belong_to_the_market_and_owe_something() {
+    let builder_authority = Pubkey::new_unique();
+    let market = settlement_market(0, 4);
+    let spot_market = quote_spot_market();
+
+    escrow!(
+        &[completed_builder_row(1, 4), completed_builder_row(0, 0)],
+        &[builder_info(builder_authority)],
+        Pubkey::default(),
+        escrow
+    );
+
+    // order 0 belongs to market 1
+    assert_eq!(
+        super::resolve_revenue_share_forfeit_reason(
+            &market,
+            &spot_market,
+            &mut escrow,
+            0,
+            0,
+            &payout_user(builder_authority),
+            true,
+            FORFEIT_AFTER + 1,
+            ESCROW_PERIOD,
+        ),
+        Err(ErrorCode::DefaultError)
+    );
+    // order 1 owes nothing, so there is nothing to write off
+    assert_eq!(
+        super::resolve_revenue_share_forfeit_reason(
+            &market,
+            &spot_market,
+            &mut escrow,
+            0,
+            1,
+            &payout_user(builder_authority),
+            true,
+            FORFEIT_AFTER + 1,
+            ESCROW_PERIOD,
+        ),
+        Err(ErrorCode::DefaultError)
+    );
 }

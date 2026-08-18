@@ -11064,8 +11064,10 @@ export class VelocityClient {
 	 * external swap (e.g. Jupiter) so a liquidator can repay a user's `liabilityMarketIndex` debt
 	 * using proceeds from selling `assetMarketIndex` collateral within the same transaction, without
 	 * pre-funding the liability token. The on-chain handler validates the liability spot market's
-	 * flash-loan balance is unwound by `endSwap`. See `getJupiterLiquidateSpotWithSwapIxV6` for the
-	 * Jupiter-specific wrapper that assembles the full instruction list around this pair.
+	 * flash-loan balance is unwound by `endSwap`. Reverts with `EquityBelowFloor` at `begin` if the
+	 * liquidator's authority-wide equity breaker is tripped, matching the other liquidator routes.
+	 * See `getJupiterLiquidateSpotWithSwapIxV6` for the Jupiter-specific wrapper that assembles the
+	 * full instruction list around this pair.
 	 * @param liabilityMarketIndex - Spot market index of the debt being repaid (swap output/buy side).
 	 * @param assetMarketIndex - Spot market index of the collateral being sold (swap input/sell side).
 	 * @param swapAmount - Amount of `assetMarketIndex` token to sell, in that market's mint precision.
@@ -11102,6 +11104,7 @@ export class VelocityClient {
 		const liquidatorAccountPublicKey = await this.getUserAccountPublicKey(
 			liquidatorSubAccountId
 		);
+		const liquidatorStatsPublicKey = this.getUserStatsAccountPublicKey();
 
 		const userAccounts = [userAccount];
 		const remainingAccounts = this.getRemainingAccounts({
@@ -11165,6 +11168,7 @@ export class VelocityClient {
 						state: await this.getStatePublicKey(),
 						user: userAccountPublicKey,
 						liquidator: liquidatorAccountPublicKey,
+						liquidatorStats: liquidatorStatsPublicKey,
 						authority: this.wallet.publicKey,
 						liabilitySpotMarketVault: liabilitySpotMarket.vault,
 						assetSpotMarketVault: assetSpotMarket.vault,
@@ -11186,6 +11190,7 @@ export class VelocityClient {
 					state: await this.getStatePublicKey(),
 					user: userAccountPublicKey,
 					liquidator: liquidatorAccountPublicKey,
+					liquidatorStats: liquidatorStatsPublicKey,
 					authority: this.wallet.publicKey,
 					liabilitySpotMarketVault: liabilitySpotMarket.vault,
 					assetSpotMarketVault: assetSpotMarket.vault,

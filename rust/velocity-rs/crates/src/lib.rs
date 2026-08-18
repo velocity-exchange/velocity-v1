@@ -3759,6 +3759,7 @@ impl<'a> TransactionBuilder<'a> {
                 state: *state_account(),
                 authority: self.authority,
                 liquidator: self.sub_account,
+                liquidator_stats: Wallet::derive_stats_account(&self.owner()),
                 user: Wallet::derive_user_account(
                     &user_account.authority,
                     user_account.sub_account_id,
@@ -3834,6 +3835,7 @@ impl<'a> TransactionBuilder<'a> {
                 state: *state_account(),
                 authority: self.authority,
                 liquidator: self.sub_account,
+                liquidator_stats: Wallet::derive_stats_account(&self.owner()),
                 user: Wallet::derive_user_account(
                     &user_account.authority,
                     user_account.sub_account_id,

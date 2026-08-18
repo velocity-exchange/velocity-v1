@@ -31,7 +31,7 @@ RUN curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-l
     && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
     && rm /tmp/node.tar.xz \
     && corepack enable \
-    && npm install -g ts-mocha typescript mocha \
+    && npm install -g ts-mocha@11.1.0 typescript@5.4.5 mocha@11.7.5 \
     && node -v && npm -v && yarn -v
 
 # Solana CLI (x86_64 build, from anza-xyz/agave for 2.x+)

@@ -18,3 +18,8 @@ It also opens on any multi-period keeper outage.
 
 `calculateLiveMarkTwap` applies the same threshold and re-seed, so the estimate tracks the program.
 New export `MARK_TWAP_RESEED_FUNDING_PERIODS`.
+
+New export `getMaxMarkTwapSampleElapsed`, the mirror of the program's
+`MarketStats::max_mark_twap_sample_elapsed` crank sample-weight cap, for predicting the TWAP a
+bid/ask crank write produces. `calculateLiveMarkTwap` deliberately does not apply it, because it
+predicts the funding update's own write, which is uncapped on-chain. `ONE_MINUTE` is also exported.

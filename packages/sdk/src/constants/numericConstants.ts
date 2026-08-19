@@ -159,6 +159,8 @@ export const PRICE_TIMES_AMM_TO_QUOTE_PRECISION_RATIO = PRICE_PRECISION.mul(
 	AMM_TO_QUOTE_PRECISION_RATIO
 );
 
+/** 60 seconds. */
+export const ONE_MINUTE = new BN(60);
 /** 300 seconds. */
 export const FIVE_MINUTE = new BN(60 * 5);
 /** Max age of the last fill before the trigger price's last-fill leg is treated as absent (oracle price substitutes). */
@@ -169,7 +171,6 @@ export const ONE_HOUR = new BN(60 * 60);
 export const ONE_YEAR = new BN(31536000);
 
 /**
-<<<<<<< HEAD
  * Mirror of the program's `MARK_TWAP_RESEED_FUNDING_PERIODS`.
  *
  * How many funding periods the mark TWAP may go unwritten before the program discards
@@ -180,8 +181,8 @@ export const ONE_YEAR = new BN(31536000);
  * funding period can be zero.
  */
 export const MARK_TWAP_RESEED_FUNDING_PERIODS = new BN(3);
-||||||| 79d3ea7c3
-=======
+
+/**
  * Mirror of the program's `MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN`: the largest
  * share of a spot borrow that un-booked interest may hide, in
  * `PERCENTAGE_PRECISION` (one basis point).
@@ -203,7 +204,6 @@ export const MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN =
  * cannot go un-cranked indefinitely.
  */
 export const MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN = ONE_HOUR;
->>>>>>> origin/master
 
 /** Market index of the protocol's quote spot market (the protocol's quote asset on mainnet). */
 export const QUOTE_SPOT_MARKET_INDEX = 0;

@@ -10,6 +10,7 @@ import {
 	PERCENTAGE_PRECISION,
 	MARK_TWAP_RESEED_FUNDING_PERIODS,
 	ONE_HOUR,
+	ONE_MINUTE,
 } from '../constants/numericConstants';
 import { BigNum } from '../factory/bigNum';
 import { PerpMarketAccount, isVariant } from '../types';
@@ -21,6 +22,19 @@ import {
 	FUNDING_RATE_BUFFER_PRECISION,
 	FUNDING_RATE_PRECISION_EXP,
 } from '../constants/numericConstants';
+
+/**
+ * Mirror of the program's `MarketStats::max_mark_twap_sample_elapsed`: the ceiling on
+ * the elapsed time a single bid/ask-crank mark-TWAP sample may be weighted by. The
+ * crank folds caller-supplied DLOB depth into the TWAP, so one post-gap sample may
+ * claim at most this many seconds of weight. Fills and the funding update's AMM
+ * re-blend pass no cap on-chain, so `calculateLiveMarkTwap`, which predicts the
+ * funding update, deliberately does not apply it. Use it when predicting the TWAP a
+ * bid/ask crank write will produce.
+ */
+export function getMaxMarkTwapSampleElapsed(fundingPeriod: BN): BN {
+	return BN.max(fundingPeriod.div(new BN(60)), ONE_MINUTE);
+}
 
 function calculateLiveMarkTwap(
 	market: PerpMarketAccount,
@@ -48,6 +62,10 @@ function calculateLiveMarkTwap(
 		return market.marketStats.historicalOracleData.lastOraclePriceTwap;
 	}
 
+	// The sample weight is deliberately NOT capped by `getMaxMarkTwapSampleElapsed`:
+	// this function predicts the funding update's own TWAP write, which goes through
+	// `update_mark_twap_with_amm_bid_ask` with no `max_sample_elapsed` on-chain. The
+	// cap applies only to the bid/ask crank's caller-supplied samples.
 	const markTwapTimeSinceLastUpdate = BN.max(
 		period,
 		BN.max(ZERO, period.sub(timeSinceLastMarkChange))

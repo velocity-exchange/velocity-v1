@@ -4116,12 +4116,16 @@ pub fn resolve_perp_bankruptcy(
 
     drop(market);
 
-    user.get_perp_position(market_index).inspect_err(|_e| {
-        msg!(
-            "User does not have a position for perp market {}",
-            market_index
-        );
-    })?;
+    // Hold the index across the recovery and the setoff below. A position with no base, no quote and
+    // no order does not match a lookup by market index, and the setoff can leave this position in
+    // exactly that state, so the reads after it must go through the index.
+    let position_index =
+        get_position_index(&user.perp_positions, market_index).inspect_err(|_e| {
+            msg!(
+                "User does not have a position for perp market {}",
+                market_index
+            );
+        })?;
 
     // OtterSec #130 / #145: turn the estate's own claims into cash before drawing on anyone else's
     // money. Bounded by the part of this market's debt the estate's existing quote deposit does not
@@ -4131,7 +4135,7 @@ pub fn resolve_perp_bankruptcy(
     // cross quote deposit, so it can never pay this debt. Leave the cap at zero for that mode, the
     // same way the setoff below returns early.
     let debt_to_cover = {
-        let position = user.get_perp_position(market_index)?;
+        let position = user.perp_positions[position_index];
         if position.is_isolated() {
             0
         } else {
@@ -4196,8 +4200,7 @@ pub fn resolve_perp_bankruptcy(
         return Ok(0);
     }
 
-    let loss = user
-        .get_perp_position(market_index)?
+    let loss = user.perp_positions[position_index]
         .quote_asset_amount
         .cast::<i128>()?;
 
@@ -4205,11 +4208,23 @@ pub fn resolve_perp_bankruptcy(
     // Nothing is left to resolve here. `has_pending_cross_margin_perp_bankruptcy` no longer reports
     // this market, so the spot resolver is unblocked (#52). Return instead of tripping the assertion
     // below.
+    //
+    // Admission is re-derived first, on the same rule as the tail of this function. The recovery pass
+    // caps what it draws at this debt, so a claim big enough to cover the debt makes a deposit equal
+    // to the debt the designed outcome, and the setoff then zeroes both. Without the re-derive the
+    // latch survives on an estate that owes nothing, and no path can clear it: a deposit rejects a
+    // bankrupt user, ordinary liquidation rejects a latched one, and a second call to this resolver
+    // reaches this same return. A liability in another market keeps the latch set.
     if loss == 0 {
         msg!(
             "perp market {} bad debt fully covered by setoff; nothing to resolve",
             market_index
         );
+
+        if !liquidation_mode.should_user_enter_bankruptcy(user, spot_market_map)? {
+            liquidation_mode.exit_bankruptcy(user)?;
+        }
+
         return Ok(0);
     }
 

@@ -11779,6 +11779,349 @@ pub mod resolve_perp_bankruptcy {
         assert_eq!(user.status, 0);
         assert!(!user.is_cross_margin_bankrupt());
     }
+
+    /// A recovery that covers the whole debt must leave the account able to act again.
+    ///
+    /// The recovery pass caps what it draws at the debt, so a claim bigger than the debt makes a
+    /// deposit equal to the debt the designed outcome, and the setoff then zeroes both. The resolver
+    /// has nothing left to draw for, but the estate is solvent and must not keep the latch: a
+    /// deposit rejects a bankrupt user, ordinary liquidation rejects a latched one, and a second
+    /// call to this resolver reaches the same return.
+    #[test]
+    pub fn full_recovery_of_the_debt_unlatches_the_estate() {
+        let now = 0_i64;
+        let slot = 0_u64;
+
+        let mut oracle_price = get_pyth_price(100, 6);
+        let oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            oracle_price,
+            &oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+
+        // The market carrying the debt.
+        let mut debt_market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                base_asset_amount_with_amm: BASE_PRECISION_I128,
+                ..AMM::default()
+            },
+            market_index: 0,
+            status: MarketStatus::Initialized,
+            number_of_users: 1,
+            quote_asset_amount: -150 * QUOTE_PRECISION_I128,
+            base_asset_amount_long: 5 * BASE_PRECISION_I128,
+            base_asset_amount_short: -5 * BASE_PRECISION_I128,
+            oracle: oracle_price_key,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            ..PerpMarket::default()
+        };
+        create_anchor_account_info!(debt_market, PerpMarket, debt_market_account_info);
+
+        // The market carrying the claim, with a pool that can pay all of it.
+        let mut claim_market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                ..AMM::default()
+            },
+            market_index: 1,
+            status: MarketStatus::Initialized,
+            quote_asset_amount: 500 * QUOTE_PRECISION_I128,
+            pnl_pool: PoolBalance {
+                scaled_balance: 500 * SPOT_BALANCE_PRECISION,
+                market_index: QUOTE_SPOT_MARKET_INDEX,
+                ..PoolBalance::default()
+            },
+            oracle: oracle_price_key,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            ..PerpMarket::default()
+        };
+        create_anchor_account_info!(claim_market, PerpMarket, claim_market_account_info);
+
+        let market_map = PerpMarketMap::load_multiple(
+            vec![&debt_market_account_info, &claim_market_account_info],
+            true,
+        )
+        .unwrap();
+
+        let mut usdc_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            deposit_balance: 500 * SPOT_BALANCE_PRECISION,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price_twap: PRICE_PRECISION_I64,
+                last_oracle_price_twap_5min: PRICE_PRECISION_I64,
+                ..HistoricalOracleData::default()
+            },
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(usdc_market, SpotMarket, usdc_spot_market_account_info);
+        let spot_market_map =
+            SpotMarketMap::load_one(&usdc_spot_market_account_info, true).unwrap();
+
+        // A $100 debt beside a $500 claim, latched, holding no deposit of its own.
+        let mut perp_positions = [PerpPosition::default(); 8];
+        perp_positions[0] = PerpPosition {
+            market_index: 0,
+            quote_asset_amount: -100 * QUOTE_PRECISION_I64,
+            quote_entry_amount: -100 * QUOTE_PRECISION_I64,
+            quote_break_even_amount: -100 * QUOTE_PRECISION_I64,
+            ..PerpPosition::default()
+        };
+        perp_positions[1] = PerpPosition {
+            market_index: 1,
+            quote_asset_amount: 500 * QUOTE_PRECISION_I64,
+            ..PerpPosition::default()
+        };
+
+        let mut user = User {
+            perp_positions,
+            spot_positions: [SpotPosition::default(); 8],
+            status: UserStatus::Bankrupt as u8,
+            next_liquidation_id: 2,
+            ..User::default()
+        };
+
+        let mut liquidator = User::default();
+        let user_key = Pubkey::default();
+        let liquidator_key = Pubkey::default();
+
+        let pay_from_insurance = resolve_perp_bankruptcy(
+            0,
+            &mut user,
+            &user_key,
+            &mut liquidator,
+            &liquidator_key,
+            &market_map,
+            &spot_market_map,
+            &mut oracle_map,
+            now,
+            1_000 * QUOTE_PRECISION_U64,
+            false,
+        )
+        .unwrap();
+
+        // The estate paid its own debt, so nobody else paid anything.
+        assert_eq!(pay_from_insurance, 0);
+        assert_eq!(user.total_social_loss, 0);
+        assert_eq!(user.perp_positions[0].quote_asset_amount, 0);
+
+        // Recovery took only what the debt reached. The surplus claim stays with its owner.
+        assert_eq!(
+            user.perp_positions[1].quote_asset_amount,
+            400 * QUOTE_PRECISION_I64
+        );
+        assert_eq!(
+            market_map.get_ref(&1).unwrap().pnl_pool.scaled_balance,
+            400 * SPOT_BALANCE_PRECISION,
+            "the claim market's pool paid exactly the debt"
+        );
+        assert_eq!(
+            market_map.get_ref(&0).unwrap().pnl_pool.scaled_balance,
+            100 * SPOT_BALANCE_PRECISION,
+            "the setoff put those tokens where the insurance draw would have gone"
+        );
+
+        // The latch is gone, so the account can deposit, trade and be liquidated again.
+        assert_eq!(user.status, 0);
+        assert!(!user.is_cross_margin_bankrupt());
+    }
+
+    /// The same full recovery keeps the latch when a liability remains elsewhere on the estate.
+    ///
+    /// The re-derive on that path answers the whole admission question, not "is this market clear".
+    /// A spot borrow the recovery cannot pay still bankrupts the account, and the spot resolver needs
+    /// the latch to run.
+    #[test]
+    pub fn full_recovery_keeps_the_latch_while_a_borrow_remains() {
+        let now = 0_i64;
+        let slot = 0_u64;
+
+        let mut oracle_price = get_pyth_price(100, 6);
+        let oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            oracle_price,
+            &oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+
+        let mut debt_market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                base_asset_amount_with_amm: BASE_PRECISION_I128,
+                ..AMM::default()
+            },
+            market_index: 0,
+            status: MarketStatus::Initialized,
+            number_of_users: 1,
+            quote_asset_amount: -150 * QUOTE_PRECISION_I128,
+            base_asset_amount_long: 5 * BASE_PRECISION_I128,
+            base_asset_amount_short: -5 * BASE_PRECISION_I128,
+            oracle: oracle_price_key,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            ..PerpMarket::default()
+        };
+        create_anchor_account_info!(debt_market, PerpMarket, debt_market_account_info);
+
+        // The claim is exactly the debt, so the estate keeps no surplus and stays net insolvent.
+        let mut claim_market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                ..AMM::default()
+            },
+            market_index: 1,
+            status: MarketStatus::Initialized,
+            quote_asset_amount: 100 * QUOTE_PRECISION_I128,
+            pnl_pool: PoolBalance {
+                scaled_balance: 100 * SPOT_BALANCE_PRECISION,
+                market_index: QUOTE_SPOT_MARKET_INDEX,
+                ..PoolBalance::default()
+            },
+            oracle: oracle_price_key,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            ..PerpMarket::default()
+        };
+        create_anchor_account_info!(claim_market, PerpMarket, claim_market_account_info);
+
+        let market_map = PerpMarketMap::load_multiple(
+            vec![&debt_market_account_info, &claim_market_account_info],
+            true,
+        )
+        .unwrap();
+
+        let mut usdc_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            deposit_balance: 100 * SPOT_BALANCE_PRECISION,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price_twap: PRICE_PRECISION_I64,
+                last_oracle_price_twap_5min: PRICE_PRECISION_I64,
+                ..HistoricalOracleData::default()
+            },
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(usdc_market, SpotMarket, usdc_spot_market_account_info);
+
+        let mut sol_oracle_price = get_pyth_price(100, 6);
+        let sol_oracle_price_key =
+            Pubkey::from_str("BAtFj4kQttZRVep3UZS2aZRDixkGYgWsbqTBVDbnSsPF").unwrap();
+        create_anchor_account_info!(
+            sol_oracle_price,
+            &sol_oracle_price_key,
+            PythLazerOracle,
+            sol_oracle_account_info
+        );
+        let mut sol_market = SpotMarket {
+            market_index: 1,
+            oracle_source: OracleSource::PythLazer,
+            oracle: sol_oracle_price_key,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 9,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            borrow_balance: SPOT_BALANCE_PRECISION,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price_twap: 100 * PRICE_PRECISION_I64,
+                last_oracle_price_twap_5min: 100 * PRICE_PRECISION_I64,
+                ..HistoricalOracleData::default()
+            },
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(sol_market, SpotMarket, sol_spot_market_account_info);
+        let spot_market_map = SpotMarketMap::load_multiple(
+            Vec::from([
+                &usdc_spot_market_account_info,
+                &sol_spot_market_account_info,
+            ]),
+            true,
+        )
+        .unwrap();
+
+        let mut perp_positions = [PerpPosition::default(); 8];
+        perp_positions[0] = PerpPosition {
+            market_index: 0,
+            quote_asset_amount: -100 * QUOTE_PRECISION_I64,
+            quote_entry_amount: -100 * QUOTE_PRECISION_I64,
+            quote_break_even_amount: -100 * QUOTE_PRECISION_I64,
+            ..PerpPosition::default()
+        };
+        perp_positions[1] = PerpPosition {
+            market_index: 1,
+            quote_asset_amount: 100 * QUOTE_PRECISION_I64,
+            ..PerpPosition::default()
+        };
+
+        // Slot 0 stays the quote row; the SOL borrow goes in slot 1.
+        let mut spot_positions = [SpotPosition::default(); 8];
+        spot_positions[1] = SpotPosition {
+            market_index: 1,
+            balance_type: SpotBalanceType::Borrow,
+            scaled_balance: SPOT_BALANCE_PRECISION_U64,
+            ..SpotPosition::default()
+        };
+
+        let mut user = User {
+            perp_positions,
+            spot_positions,
+            status: UserStatus::Bankrupt as u8,
+            next_liquidation_id: 2,
+            ..User::default()
+        };
+
+        let mut liquidator = User::default();
+        let user_key = Pubkey::default();
+        let liquidator_key = Pubkey::default();
+
+        let pay_from_insurance = resolve_perp_bankruptcy(
+            0,
+            &mut user,
+            &user_key,
+            &mut liquidator,
+            &liquidator_key,
+            &market_map,
+            &spot_market_map,
+            &mut oracle_map,
+            now,
+            1_000 * QUOTE_PRECISION_U64,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(pay_from_insurance, 0);
+        assert_eq!(user.perp_positions[0].quote_asset_amount, 0);
+        assert_eq!(user.perp_positions[1].quote_asset_amount, 0);
+
+        // The borrow still bankrupts the estate, so `resolve_spot_bankruptcy` can still run.
+        assert_eq!(user.status, UserStatus::Bankrupt as u8);
+        assert!(user.is_cross_margin_bankrupt());
+    }
 }
 
 pub mod resolve_spot_bankruptcy {

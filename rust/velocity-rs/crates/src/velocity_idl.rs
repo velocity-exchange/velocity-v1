@@ -8283,6 +8283,7 @@ pub mod accounts {
         pub user_stats: Pubkey,
         pub state: Pubkey,
         pub authority: Pubkey,
+        pub revenue_share_escrow: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for DeleteUser {
@@ -8318,6 +8319,11 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.authority,
                     is_signer: true,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.revenue_share_escrow,
+                    is_signer: false,
                     is_writable: true,
                 },
             ]
@@ -9495,6 +9501,7 @@ pub mod accounts {
         pub authority: Pubkey,
         pub keeper: Pubkey,
         pub velocity_signer: Pubkey,
+        pub revenue_share_escrow: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for ForceDeleteUser {
@@ -9541,6 +9548,11 @@ pub mod accounts {
                     pubkey: self.velocity_signer,
                     is_signer: false,
                     is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.revenue_share_escrow,
+                    is_signer: false,
+                    is_writable: true,
                 },
             ]
         }
@@ -26418,6 +26430,8 @@ pub mod errors {
         InvalidNativeInstructionData,
         #[msg("MM oracle updates are disabled by the admin feature-bit kill switch")]
         MmOracleUpdateDisabled,
+        #[msg("Spot market interest is too stale to value a borrow for margin")]
+        SpotMarketInterestStaleForMargin,
     }
 }
 pub mod events {

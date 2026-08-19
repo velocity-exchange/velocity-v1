@@ -7596,6 +7596,268 @@ mod meets_place_order_margin_requirement_with_isolated {
     }
 }
 
+/// OtterSec #143 / #144 — the spot-only liability flag must not be polluted by
+/// the perp oracle, and both spot flags must actually flip on a stale spot
+/// oracle so the fill-path gate can read them.
+///
+/// The perp-fill path already handles a stale *perp* oracle deliberately
+/// (`oracle_stale_for_margin` → 100% margin override for the taker, reject
+/// unless someone reduces for the maker). Gating the new fill check on the
+/// broad `all_liability_oracles_valid` would silently replace that design with a
+/// hard reject, which is why `all_spot_liability_oracles_valid` exists.
+#[test]
+fn spot_liability_oracle_flag_is_independent_of_the_perp_oracle() {
+    use crate::{
+        math::margin::MarginRequirementType,
+        state::margin_calculation::{MarginCalculation, MarginContext},
+    };
+
+    // A perp-oracle invalidation clears the broad flag but must leave the
+    // spot-only flag alone.
+    let mut calc = MarginCalculation::new(MarginContext::standard(MarginRequirementType::Initial));
+    assert!(calc.all_liability_oracles_valid);
+    assert!(calc.all_spot_liability_oracles_valid);
+    assert!(calc.all_deposit_oracles_valid);
+
+    calc.update_all_liability_oracles_valid(false);
+    assert!(
+        !calc.all_liability_oracles_valid,
+        "the broad flag must record the perp oracle"
+    );
+    assert!(
+        calc.all_spot_liability_oracles_valid,
+        "a perp-oracle invalidation must NOT clear the spot-only flag — that is \
+             what keeps the fill gate from overriding oracle_stale_for_margin"
+    );
+
+    // A spot-borrow invalidation clears both, so every pre-existing consumer of
+    // the broad flag keeps its current meaning.
+    let mut calc2 = MarginCalculation::new(MarginContext::standard(MarginRequirementType::Initial));
+    calc2.update_all_spot_liability_oracles_valid(false);
+    assert!(!calc2.all_spot_liability_oracles_valid);
+    assert!(
+        !calc2.all_liability_oracles_valid,
+        "a spot-borrow invalidation must still fold into the broad flag"
+    );
+}
+
+/// OtterSec #135 / #148 — a stale spot-interest index must block valuing that
+/// market's **borrow** for margin, while a stale *deposit* index stays allowed.
+///
+/// Margin values a scaled borrow through the stored `cumulative_borrow_interest`,
+/// so un-booked interest understates the debt. `handle_withdraw` cranks only the
+/// market being withdrawn and the perp-fill handler cranks none, and the other
+/// markets arrive read-only — hence a freshness precondition rather than a
+/// refresh (which would need them writable) or an in-margin projection (which
+/// would cost CU on every fill).
+#[test]
+fn stale_spot_interest_blocks_borrow_valuation_but_not_deposits() {
+    use crate::{
+        create_anchor_account_info,
+        math::{
+            constants::TWENTY_FOUR_HOUR,
+            margin::{
+                max_spot_interest_staleness_for_margin,
+                validate_spot_borrow_interest_fresh_for_margin,
+            },
+        },
+        state::{
+            spot_market::{SpotBalanceType, SpotMarket},
+            spot_market_map::SpotMarketMap,
+            user::{SpotPosition, User},
+        },
+        SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
+    };
+
+    let now = 1_700_000_000_i64;
+
+    // 50% utilization under a 70%/6%/100% curve, so the market charges a real
+    // borrow rate and an un-booked interval is measurable.
+    let build = |last_interest_ts: u64| SpotMarket {
+        market_index: 1,
+        deposit_balance: 1_000 * SPOT_BALANCE_PRECISION,
+        borrow_balance: 500 * SPOT_BALANCE_PRECISION,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        optimal_utilization: 700_000,
+        optimal_borrow_rate: 60_000,
+        max_borrow_rate: 1_000_000,
+        decimals: 6,
+        last_interest_ts,
+        ..SpotMarket::default()
+    };
+
+    let position = |balance_type: SpotBalanceType, scaled_balance: u64| {
+        let mut user = User::default();
+        user.spot_positions[0] = SpotPosition {
+            market_index: 1,
+            scaled_balance,
+            balance_type,
+            ..SpotPosition::default()
+        };
+        user
+    };
+
+    let borrow_of = 100 * (SPOT_BALANCE_PRECISION as u64);
+
+    // The window this market earns from its own rate ceiling. A 100% APR ceiling
+    // holds one basis point of the debt for 3,153s, inside the one-hour cap.
+    let window = max_spot_interest_staleness_for_margin(&build(now as u64)).unwrap();
+    assert_eq!(window, 3_153);
+
+    // Fresh market: a borrow values fine.
+    {
+        let mut market = build((now - 10) as u64);
+        create_anchor_account_info!(market, SpotMarket, ai);
+        let map = SpotMarketMap::load_one(&ai, true).unwrap();
+        let user = position(SpotBalanceType::Borrow, borrow_of);
+        assert!(validate_spot_borrow_interest_fresh_for_margin(&user, &map, now).is_ok());
+    }
+
+    // Stale beyond the bound: a borrow is refused.
+    {
+        let stale_by = window + 1;
+        let mut market = build((now - stale_by) as u64);
+        create_anchor_account_info!(market, SpotMarket, ai);
+        let map = SpotMarketMap::load_one(&ai, true).unwrap();
+        let user = position(SpotBalanceType::Borrow, borrow_of);
+        assert_eq!(
+            validate_spot_borrow_interest_fresh_for_margin(&user, &map, now),
+            Err(crate::error::ErrorCode::SpotMarketInterestStaleForMargin),
+            "an un-cranked market must not be used to value a borrow"
+        );
+
+        // ...but the identical staleness on a DEPOSIT position is allowed: a stale
+        // deposit index understates collateral, which errs the protocol's way.
+        let depositor = position(SpotBalanceType::Deposit, borrow_of);
+        assert!(
+            validate_spot_borrow_interest_fresh_for_margin(&depositor, &map, now).is_ok(),
+            "a stale deposit index must not block — it understates collateral"
+        );
+    }
+
+    // Exactly at the bound is still allowed (inclusive).
+    {
+        let mut market = build((now - window) as u64);
+        create_anchor_account_info!(market, SpotMarket, ai);
+        let map = SpotMarketMap::load_one(&ai, true).unwrap();
+        let user = position(SpotBalanceType::Borrow, borrow_of);
+        assert!(validate_spot_borrow_interest_fresh_for_margin(&user, &map, now).is_ok());
+    }
+
+    // A borrow whose un-booked interest is under one token unit passes at any
+    // staleness. `update_spot_market_cumulative_interest` defers an interval it
+    // cannot book in full and leaves `last_interest_ts` where it is, so on a market
+    // this small the clock never advances however often the crank runs. Gating on
+    // the clock alone would make every fill and withdrawal for this account fail
+    // forever. The same market a day stale still refuses a borrow large enough for
+    // the omission to clear a token, so the exemption is bounded by the omission
+    // and not by the market.
+    {
+        let mut market = build((now - TWENTY_FOUR_HOUR) as u64);
+        create_anchor_account_info!(market, SpotMarket, ai);
+        let map = SpotMarketMap::load_one(&ai, true).unwrap();
+
+        let dust = position(SpotBalanceType::Borrow, 1_000);
+        assert!(
+            validate_spot_borrow_interest_fresh_for_margin(&dust, &map, now).is_ok(),
+            "a sub-token omission must not lock the account out"
+        );
+
+        let material = position(SpotBalanceType::Borrow, borrow_of);
+        assert_eq!(
+            validate_spot_borrow_interest_fresh_for_margin(&material, &map, now),
+            Err(crate::error::ErrorCode::SpotMarketInterestStaleForMargin),
+            "the exemption must not extend to a borrow that hides a whole token"
+        );
+    }
+}
+
+/// The staleness window must come from the market's rate ceiling, not from one
+/// fixed span.
+///
+/// `validate_borrow_rate` bounds `max_borrow_rate` only against
+/// `optimal_borrow_rate`, so the field is a `u32` a market may set arbitrarily
+/// high. Under a fixed window the share of the debt that un-booked interest hides
+/// then scales with that field without limit, which is the property the bound
+/// exists to hold down.
+#[test]
+fn spot_interest_staleness_window_shrinks_as_the_rate_ceiling_rises() {
+    use crate::{
+        math::{
+            constants::{
+                MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN,
+                MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN, ONE_YEAR, PERCENTAGE_PRECISION,
+            },
+            margin::max_spot_interest_staleness_for_margin,
+        },
+        state::spot_market::SpotMarket,
+    };
+
+    let with_ceiling = |max_borrow_rate: u32, min_borrow_rate: u8| SpotMarket {
+        max_borrow_rate,
+        min_borrow_rate,
+        ..SpotMarket::default()
+    };
+
+    // A low rate earns more than an hour, and the cap keeps it at an hour.
+    assert_eq!(
+        max_spot_interest_staleness_for_margin(&with_ceiling(200_000, 0)).unwrap(),
+        MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN
+    );
+
+    // 100% APR: one basis point of the debt takes 3,153s to accrue.
+    assert_eq!(
+        max_spot_interest_staleness_for_margin(&with_ceiling(1_000_000, 0)).unwrap(),
+        3_153
+    );
+
+    // 1,000% APR: the same one basis point takes a tenth of that. A fixed hour
+    // would have hidden more than ten basis points here.
+    assert_eq!(
+        max_spot_interest_staleness_for_margin(&with_ceiling(10_000_000, 0)).unwrap(),
+        315
+    );
+
+    // The largest rate the field can hold leaves no window at all, so the exact
+    // measurement in `validate_spot_borrow_interest_fresh_for_margin` runs for any
+    // staleness whatsoever.
+    assert_eq!(
+        max_spot_interest_staleness_for_margin(&with_ceiling(u32::MAX, 0)).unwrap(),
+        0
+    );
+
+    // `calculate_borrow_rate` floors its result at `min_borrow_rate`, so the
+    // ceiling is the larger of the two fields. `min_borrow_rate` counts in half
+    // percent, so 40 is 20% APR — here above a `max_borrow_rate` of 1%.
+    assert_eq!(
+        max_spot_interest_staleness_for_margin(&with_ceiling(10_000, 40)).unwrap(),
+        max_spot_interest_staleness_for_margin(&with_ceiling(200_000, 0)).unwrap()
+    );
+
+    // A market that charges nothing cannot understate anything, so it takes the cap.
+    assert_eq!(
+        max_spot_interest_staleness_for_margin(&with_ceiling(0, 0)).unwrap(),
+        MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN
+    );
+
+    // The window is exactly the span in which the ceiling accrues the allowed
+    // share, so the hidden share at the window can never exceed it.
+    for max_borrow_rate in [1_000_000_u32, 10_000_000, 123_456_789] {
+        let window = max_spot_interest_staleness_for_margin(&with_ceiling(max_borrow_rate, 0))
+            .unwrap() as u128;
+        let hidden_share = (max_borrow_rate as u128) * window / ONE_YEAR;
+        assert!(
+            hidden_share <= MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN,
+            "rate {} hides {} of {} at a {}s window",
+            max_borrow_rate,
+            hidden_share,
+            PERCENTAGE_PRECISION,
+            window
+        );
+    }
+}
+
 mod fill_perp_order_margin_requirement_with_isolated {
     use {
         crate::{

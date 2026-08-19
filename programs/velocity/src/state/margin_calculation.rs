@@ -152,6 +152,15 @@ pub struct MarginCalculation {
     pub num_perp_liabilities: u8,
     pub all_deposit_oracles_valid: bool,
     pub all_liability_oracles_valid: bool,
+    /// Spot-only counterpart of `all_liability_oracles_valid`.
+    ///
+    /// `all_liability_oracles_valid` is also cleared by an invalid **perp** oracle,
+    /// and the perp-fill path already handles that case deliberately via
+    /// `oracle_stale_for_margin` (100% margin override for the taker, reject unless
+    /// someone is reducing for the maker). A gate that needs to reason about stale
+    /// *spot borrow* pricing alone therefore cannot use that field without
+    /// overriding the perp design — hence this narrower flag (OtterSec #144).
+    pub all_spot_liability_oracles_valid: bool,
     pub with_perp_isolated_liability: bool,
     pub with_spot_isolated_liability: bool,
     pub total_spot_asset_value: i128,
@@ -206,6 +215,7 @@ impl MarginCalculation {
             num_perp_liabilities: 0,
             all_deposit_oracles_valid: true,
             all_liability_oracles_valid: true,
+            all_spot_liability_oracles_valid: true,
             with_perp_isolated_liability: false,
             with_spot_isolated_liability: false,
             total_spot_asset_value: 0,
@@ -345,6 +355,14 @@ impl MarginCalculation {
     }
 
     pub fn update_all_liability_oracles_valid(&mut self, valid: bool) {
+        self.all_liability_oracles_valid &= valid;
+    }
+
+    /// Record spot-borrow oracle validity. Also folds into
+    /// `all_liability_oracles_valid`, so every existing consumer keeps its current
+    /// meaning and only the new spot-only reader is narrower.
+    pub fn update_all_spot_liability_oracles_valid(&mut self, valid: bool) {
+        self.all_spot_liability_oracles_valid &= valid;
         self.all_liability_oracles_valid &= valid;
     }
 

@@ -235,3 +235,61 @@ fn immediate_staleness_threshold_by_override() {
     assert!(!is_valid(0, 0, true));
     assert!(!is_valid(0, 0, false));
 }
+
+#[test]
+fn fill_order_match_admits_the_same_set_as_margin_calc() {
+    // A DLOB match must not execute at a price the program cannot do margin
+    // with. `FillOrderMatch` used to admit `StaleForMargin`, which let both
+    // sides exactly close (reducing, so the equity-floor gate is skipped)
+    // while the lazy breaker stayed blind for want of `MarginCalc` validity,
+    // crystallizing a temporary mark loss at an unusable price (OtterSec
+    // #142). The two actions therefore admit the same set.
+    let states = [
+        OracleValidity::NonPositive,
+        OracleValidity::TooVolatile,
+        OracleValidity::TooUncertain,
+        OracleValidity::StaleForMargin,
+        OracleValidity::InsufficientDataPoints,
+        OracleValidity::StaleForAMM {
+            immediate: true,
+            low_risk: true,
+        },
+        OracleValidity::StaleForAMM {
+            immediate: true,
+            low_risk: false,
+        },
+        OracleValidity::Valid,
+    ];
+
+    for validity in states {
+        assert_eq!(
+            is_oracle_valid_for_action(validity, Some(VelocityAction::FillOrderMatch)).unwrap(),
+            is_oracle_valid_for_action(validity, Some(VelocityAction::MarginCalc)).unwrap(),
+            "FillOrderMatch and MarginCalc disagree on {:?}",
+            validity
+        );
+    }
+
+    assert!(
+        !is_oracle_valid_for_action(
+            OracleValidity::StaleForMargin,
+            Some(VelocityAction::FillOrderMatch)
+        )
+        .unwrap(),
+        "a stale-for-margin oracle must not admit a match"
+    );
+
+    // The actions that shared the arm keep their own, looser policy: they read
+    // a price for bookkeeping rather than admitting a trade against it.
+    for action in [
+        VelocityAction::UpdateAmmCache,
+        VelocityAction::UpdateLpPoolAum,
+        VelocityAction::LpPoolSwap,
+    ] {
+        assert!(
+            is_oracle_valid_for_action(OracleValidity::StaleForMargin, Some(action)).unwrap(),
+            "{:?} should not have been tightened alongside FillOrderMatch",
+            action
+        );
+    }
+}

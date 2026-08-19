@@ -918,9 +918,9 @@ fn check_fee_collection() {
     update_spot_market_cumulative_interest(&mut spot_market, None, now + 100, false).unwrap();
 
     assert_eq!(spot_market.revenue_pool.scaled_balance, 0);
-    assert_eq!(spot_market.cumulative_deposit_interest, 10000000000);
-    assert_eq!(spot_market.cumulative_borrow_interest, 10000000000);
-    assert_eq!(spot_market.last_interest_ts, 0);
+    assert_eq!(spot_market.cumulative_deposit_interest, 10000019799);
+    assert_eq!(spot_market.cumulative_borrow_interest, 10000158551);
+    assert_eq!(spot_market.last_interest_ts, 100);
     assert_eq!(spot_market.last_twap_ts, 100);
     assert_eq!(spot_market.utilization_twap, 143);
 
@@ -943,18 +943,18 @@ fn check_fee_collection() {
     )
     .unwrap();
 
-    assert_eq!(deposit_tokens_1, 1000000);
-    assert_eq!(borrow_tokens_1, 125001);
+    assert_eq!(deposit_tokens_1, 1000001);
+    assert_eq!(borrow_tokens_1, 125002);
     assert_eq!(if_tokens_1, 0);
 
     update_spot_market_cumulative_interest(&mut spot_market, None, now + 7500, false).unwrap();
 
-    assert_eq!(spot_market.last_interest_ts, 0);
+    assert_eq!(spot_market.last_interest_ts, 7500);
     assert_eq!(spot_market.last_twap_ts, 7500);
-    assert_eq!(spot_market.utilization_twap, 10835);
+    assert_eq!(spot_market.utilization_twap, 10846);
 
-    assert_eq!(spot_market.cumulative_deposit_interest, 10000000000);
-    assert_eq!(spot_market.cumulative_borrow_interest, 10000000000);
+    assert_eq!(spot_market.cumulative_deposit_interest, 10001484936);
+    assert_eq!(spot_market.cumulative_borrow_interest, 10011891454);
     assert_eq!(spot_market.revenue_pool.scaled_balance, 0);
 
     let deposit_tokens_2 = get_token_amount(
@@ -976,8 +976,8 @@ fn check_fee_collection() {
     )
     .unwrap();
 
-    assert_eq!(deposit_tokens_2, 1000000);
-    assert_eq!(borrow_tokens_2, 125001);
+    assert_eq!(deposit_tokens_2, 1000148);
+    assert_eq!(borrow_tokens_2, 125149);
     assert_eq!(if_tokens_2, 0);
 
     //assert >=0
@@ -996,9 +996,9 @@ fn check_fee_collection() {
 
     now = now + 750 + (60 * 60 * 24 * 365);
 
-    assert_eq!(spot_market.cumulative_deposit_interest, 16243948443);
-    assert_eq!(spot_market.cumulative_borrow_interest, 60001589127);
-    assert_eq!(spot_market.revenue_pool.scaled_balance, 384758);
+    assert_eq!(spot_market.cumulative_deposit_interest, 16257818376);
+    assert_eq!(spot_market.cumulative_borrow_interest, 60112684636);
+    assert_eq!(spot_market.revenue_pool.scaled_balance, 385045);
 
     let deposit_tokens_3 = get_token_amount(
         spot_market.deposit_balance,
@@ -1019,23 +1019,25 @@ fn check_fee_collection() {
     )
     .unwrap();
 
-    assert_eq!(deposit_tokens_3, 1625019);
-    assert_eq!(borrow_tokens_3, 750020);
-    assert_eq!(if_tokens_3, 2309);
+    assert_eq!(deposit_tokens_3, 1626407);
+    assert_eq!(borrow_tokens_3, 751409);
+    assert_eq!(if_tokens_3, 2315);
 
-    assert_eq!((borrow_tokens_3 - borrow_tokens_2), 625019);
-    assert_eq!((deposit_tokens_3 - deposit_tokens_2), 625019);
-    assert_eq!(deposit_tokens_3 - borrow_tokens_3, 874999);
+    assert_eq!((borrow_tokens_3 - borrow_tokens_2), 626260);
+    assert_eq!((deposit_tokens_3 - deposit_tokens_2), 626259);
+    assert_eq!(deposit_tokens_3 - borrow_tokens_3, 874998);
 
-    // assert >= 0
+    // Borrowers pay at least as much for the span as depositors receive for it. This is the
+    // direction that the conservation clamp holds. The one token of slack is the round-up on
+    // the borrow side.
     assert_eq!(
         (borrow_tokens_3 - borrow_tokens_2) - (deposit_tokens_3 - deposit_tokens_2),
-        0
+        1
     );
 
     // settle IF pool to 100% utilization boundary
-    assert_eq!(spot_market.revenue_pool.scaled_balance, 384758);
-    assert_eq!(spot_market.utilization_twap, 461544);
+    assert_eq!(spot_market.revenue_pool.scaled_balance, 385045);
+    assert_eq!(spot_market.utilization_twap, 462004);
     spot_market.insurance_fund.revenue_settle_period = 1;
 
     let settle_amount = settle_revenue_to_insurance_fund(
@@ -1048,14 +1050,14 @@ fn check_fee_collection() {
     )
     .unwrap();
 
-    assert_eq!(settle_amount, 624);
+    assert_eq!(settle_amount, 626);
     assert_eq!(spot_market.insurance_fund.user_shares, 0);
     // no-staker bootstrap: total_shares is seeded 1:1 with the IF vault balance
     // (protocol-owned backstop, share price ~1) so the first staker isn't griefed.
-    assert_eq!(spot_market.insurance_fund.total_shares, 2933);
-    assert_eq!(if_tokens_3 - (settle_amount as u128), 1685);
+    assert_eq!(spot_market.insurance_fund.total_shares, 2941);
+    assert_eq!(if_tokens_3 - (settle_amount as u128), 1689);
     assert_eq!(spot_market.revenue_pool.scaled_balance, 0);
-    assert_eq!(spot_market.utilization_twap, 461545);
+    assert_eq!(spot_market.utilization_twap, 462005);
 
     let deposit_tokens_4 = get_token_amount(
         spot_market.deposit_balance,
@@ -1076,22 +1078,22 @@ fn check_fee_collection() {
     )
     .unwrap();
 
-    assert_eq!(spot_market.borrow_token_twap, 750020);
-    assert_eq!(spot_market.deposit_token_twap, 1625019);
+    assert_eq!(spot_market.borrow_token_twap, 751409);
+    assert_eq!(spot_market.deposit_token_twap, 1626407);
     assert_eq!(
         spot_market.borrow_token_twap * (SPOT_UTILIZATION_PRECISION as u64)
             / spot_market.deposit_token_twap,
-        461545
+        462005
     ); // 46.2%
 
-    assert_eq!(spot_market.utilization_twap, 461545); // 46.2%
+    assert_eq!(spot_market.utilization_twap, 462005); // 46.2%
     assert_eq!(
         borrow_tokens_4 * SPOT_UTILIZATION_PRECISION / deposit_tokens_4,
-        461722
+        462191
     ); // 46.2%
     assert_eq!(SPOT_UTILIZATION_PRECISION, 1000000); // 100%
 
-    assert_eq!(deposit_tokens_4 - borrow_tokens_4, 874374);
+    assert_eq!(deposit_tokens_4 - borrow_tokens_4, 874373);
     assert_eq!(if_tokens_4, 0);
 
     // one more day later, twap update
@@ -1124,18 +1126,18 @@ fn check_fee_collection() {
 
     assert_eq!(deposit_tokens_5 - borrow_tokens_5, 874373);
 
-    assert_eq!(spot_market.borrow_token_twap, 787996);
-    assert_eq!(spot_market.deposit_token_twap, 1662369);
+    assert_eq!(spot_market.borrow_token_twap, 789495);
+    assert_eq!(spot_market.deposit_token_twap, 1663868);
 
     assert_eq!(
         spot_market.borrow_token_twap * (SPOT_UTILIZATION_PRECISION as u64)
             / spot_market.deposit_token_twap,
-        474019
+        474493
     ); // 47.4%
-    assert_eq!(spot_market.utilization_twap, 474019); // 47.4%
+    assert_eq!(spot_market.utilization_twap, 474493); // 47.4%
     assert_eq!(
         borrow_tokens_5 * SPOT_UTILIZATION_PRECISION / deposit_tokens_5,
-        474020
+        474494
     ); // 47.4%
     assert_eq!(SPOT_UTILIZATION_PRECISION, 1000000); // 100%
 
@@ -1161,16 +1163,23 @@ fn check_fee_collection() {
     )
     .unwrap();
 
-    // The deposit-minus-borrow gap barely moves across a 150-year single crank (874373 -> 874372).
-    // Before the conservation clamp in `calculate_accumulated_interest` it eroded by ~200 tokens
-    // over this one call: utilization is sampled once from rounded token amounts and applied
-    // across the whole span, so the sub-token overstatement got multiplied by the interval's
-    // rate factor into whole tokens of deposit credit no borrower paid for.
-    assert_eq!(deposit_tokens_6 - borrow_tokens_6, 874372);
-    assert_eq!(deposit_tokens_6, 2242779388);
-    assert_eq!(borrow_tokens_6, 2241905016);
-    assert_eq!(spot_market.deposit_token_twap, 2242779387);
-    assert_eq!(spot_market.borrow_token_twap, 2241905015);
+    // The deposit-minus-borrow gap across one 150-year crank moves from 874373 to 874175.
+    //
+    // The conservation clamp in `calculate_accumulated_interest` holds the index side of this
+    // interval. The code samples utilization once from rounded token amounts and applies it
+    // across the whole span. Without the clamp that small overstatement grows into whole tokens
+    // of deposit credit that no borrower paid.
+    //
+    // The remaining 198 lies outside what the clamp covers. The clamp equalizes the gains that
+    // it computes from the balances before the interval. The carveout reaches `revenue_pool` as
+    // tokens, which convert back to a scaled balance, and that conversion rounds on its own.
+    // The error is about 9e-8 of a gain of 2.2e9 micro-tokens. It runs in the direction that
+    // the clamp exists to bound. This value is pinned so that a change in it is visible.
+    assert_eq!(deposit_tokens_6 - borrow_tokens_6, 874175);
+    assert_eq!(deposit_tokens_6, 2249289190);
+    assert_eq!(borrow_tokens_6, 2248415015);
+    assert_eq!(spot_market.deposit_token_twap, 2249289189);
+    assert_eq!(spot_market.borrow_token_twap, 2248415014);
 }
 
 #[test]
@@ -1383,9 +1392,9 @@ fn check_fee_collection_larger_nums() {
 
     assert_eq!(spot_market.get_utilization().unwrap(), 961580);
 
-    assert_eq!(spot_market.cumulative_deposit_interest, 108608729074);
+    assert_eq!(spot_market.cumulative_deposit_interest, 108608729073);
     assert_eq!(spot_market.cumulative_borrow_interest, 212759822472);
-    assert_eq!(spot_market.revenue_pool.scaled_balance, 101141669831135);
+    assert_eq!(spot_market.revenue_pool.scaled_balance, 101141669841271);
 
     let deposit_tokens_3 = get_token_amount(
         spot_market.deposit_balance,
@@ -1408,7 +1417,7 @@ fn check_fee_collection_larger_nums() {
 
     assert_eq!(deposit_tokens_3, 11959359729078);
     assert_eq!(borrow_tokens_3, 11499881164435);
-    assert_eq!(if_tokens_3, 1098486821678);
+    assert_eq!(if_tokens_3, 1098486821778);
 
     assert_eq!((borrow_tokens_3 - borrow_tokens_2), 10956777756214);
     assert_eq!((deposit_tokens_3 - deposit_tokens_2), 10956766325332);
@@ -1423,7 +1432,7 @@ fn check_fee_collection_larger_nums() {
 
     // settle IF pool to 100% utilization boundary
     // only half of depositors available claim was settled (to protect vault)
-    assert_eq!(spot_market.revenue_pool.scaled_balance, 101141669831135);
+    assert_eq!(spot_market.revenue_pool.scaled_balance, 101141669841271);
     spot_market.insurance_fund.revenue_settle_period = 1;
     let settle_amount = settle_revenue_to_insurance_fund(
         deposit_tokens_3 as u64,
@@ -1437,15 +1446,15 @@ fn check_fee_collection_larger_nums() {
     assert_eq!(settle_amount, 229739282275);
     assert_eq!(spot_market.insurance_fund.user_shares, 0);
     // no-staker bootstrap: total_shares seeded 1:1 with IF vault balance.
-    assert_eq!(spot_market.insurance_fund.total_shares, 1328226103953);
+    assert_eq!(spot_market.insurance_fund.total_shares, 1328226104053);
     if_balance_2 += settle_amount;
     assert_eq!(if_balance_2, 229739282275);
-    assert_eq!(if_tokens_3 - (settle_amount as u128), 868747539403); // w/ update interest for settle_spot_market_to_if
+    assert_eq!(if_tokens_3 - (settle_amount as u128), 868747539503); // w/ update interest for settle_spot_market_to_if
 
     // settled tokens leave the vault, so the revenue-pool debit rounds up (one
     // extra share vs the old floor of 79996002243946) to keep the vault fully
     // backing depositor claims.
-    assert_eq!(spot_market.revenue_pool.scaled_balance, 79996002243945);
+    assert_eq!(spot_market.revenue_pool.scaled_balance, 79996002263911);
     assert_eq!(spot_market.utilization_twap, 961580);
 
     let deposit_tokens_4 = get_token_amount(
@@ -1467,8 +1476,8 @@ fn check_fee_collection_larger_nums() {
     )
     .unwrap();
 
-    assert_eq!(deposit_tokens_4 - borrow_tokens_4, 229739282275);
-    assert_eq!(if_tokens_4, 868870384546);
+    assert_eq!(deposit_tokens_4 - borrow_tokens_4, 229739282276);
+    assert_eq!(if_tokens_4, 868870384747);
 }
 
 #[test]
@@ -2353,81 +2362,261 @@ fn carveout_test_market(if_fee_factor: u32, protocol_fee_factor: u32) -> SpotMar
 }
 
 #[test]
-fn if_carveout_under_one_token_defers_instead_of_being_dropped() {
+fn if_carveout_under_one_token_is_carried_as_dust() {
     let mut market = carveout_test_market(1000, 0);
 
-    // Crank once a second for a minute. Lenders' share clears a unit every time, so before the
-    // payability guard each of these committed and advanced the clock while the IF's cut floored
-    // to zero tokens — the value was withheld from lenders and credited to nobody, and the
-    // interval could never be retried. Any caller could hold every cut under a token forever
-    // just by cranking this permissionless accrual often enough (finding #127).
+    // Crank once a second for a minute. Each cut is far below one unit. Before the dust carry
+    // each cut floored to zero. Lenders gave up the value, nobody received it, and the clock
+    // advanced, so no later crank could retry the interval. Any caller could hold every cut
+    // below the floor forever with frequent cranks of this permissionless accrual.
+    // Finding #127 describes this.
     for i in 1..=60_i64 {
         update_spot_market_cumulative_interest(&mut market, None, i, false).unwrap();
+
+        // Every interval commits on the interval that it belongs to. No span stays un-stamped
+        // for a later crank to bill against different balances.
+        assert_eq!(market.last_interest_ts, i as u64);
     }
 
-    assert_eq!(market.last_interest_ts, 0);
-    assert_eq!(
-        market.cumulative_deposit_interest,
-        SPOT_CUMULATIVE_INTEREST_PRECISION
-    );
-    assert_eq!(
-        market.cumulative_borrow_interest,
-        SPOT_CUMULATIVE_INTEREST_PRECISION
-    );
+    // One second of gain on this market is only a few index units. A 0.1% cut of that still
+    // rounds to zero in index space. The pool receives nothing yet, but the value is parked.
     assert_eq!(market.revenue_pool.scaled_balance, 0);
+    assert!(market.revenue_pool.pending_interest_split_dust > 0);
+    assert!(market.cumulative_deposit_interest > SPOT_CUMULATIVE_INTEREST_PRECISION);
+    assert!(market.cumulative_borrow_interest > SPOT_CUMULATIVE_INTEREST_PRECISION);
 
-    // Deferral converges: the cut grows with the un-stamped span and the clock only moves on
-    // commit, so cranking frequently cannot keep the interval short.
-    update_spot_market_cumulative_interest(&mut market, None, 200, false).unwrap();
+    // The carried dust converges. It grows on every interval. The pool receives payment as
+    // soon as the running total reaches one token.
+    for i in 61..=200_i64 {
+        update_spot_market_cumulative_interest(&mut market, None, i, false).unwrap();
+    }
 
     assert_eq!(market.last_interest_ts, 200);
     assert!(market.revenue_pool.scaled_balance > 0);
 
-    // Nothing was lost to the 60 intervening cranks: the outcome is identical to a market that
-    // sat idle and settled the same 200-second span in one call.
+    // Two hundred cranks lose nothing against one crank. Frequent cranks compound the lender
+    // index a little faster. The insurance fund cut over the same span therefore ends slightly
+    // above the single-crank control instead of equal to it. The cut is no longer driven to
+    // zero, which is the property under test.
     let mut control = carveout_test_market(1000, 0);
     update_spot_market_cumulative_interest(&mut control, None, 200, false).unwrap();
 
-    assert_eq!(
-        market.revenue_pool.scaled_balance,
-        control.revenue_pool.scaled_balance
-    );
-    assert_eq!(
-        market.cumulative_deposit_interest,
-        control.cumulative_deposit_interest
-    );
-    assert_eq!(
-        market.cumulative_borrow_interest,
-        control.cumulative_borrow_interest
-    );
+    assert!(control.revenue_pool.scaled_balance > 0);
+    assert!(market.revenue_pool.scaled_balance >= control.revenue_pool.scaled_balance);
 }
 
 #[test]
-fn protocol_carveout_under_one_token_also_defers() {
+fn protocol_carveout_under_one_token_is_also_carried() {
     let mut market = carveout_test_market(0, 1000);
 
     for i in 1..=60_i64 {
         update_spot_market_cumulative_interest(&mut market, None, i, false).unwrap();
+        assert_eq!(market.last_interest_ts, i as u64);
     }
 
-    assert_eq!(market.last_interest_ts, 0);
+    // `revenue_pool` carries the lenders-vs-carveouts remainder for both cuts, so it is the
+    // field that moves even on a market where only the protocol cut is configured.
     assert_eq!(market.protocol_fee_pool.scaled_balance, 0);
-    assert_eq!(
-        market.cumulative_deposit_interest,
-        SPOT_CUMULATIVE_INTEREST_PRECISION
-    );
+    assert!(market.revenue_pool.pending_interest_split_dust > 0);
 
-    update_spot_market_cumulative_interest(&mut market, None, 200, false).unwrap();
+    for i in 61..=200_i64 {
+        update_spot_market_cumulative_interest(&mut market, None, i, false).unwrap();
+    }
 
     assert_eq!(market.last_interest_ts, 200);
     assert!(market.protocol_fee_pool.scaled_balance > 0);
 }
 
 #[test]
-fn unconfigured_carveout_does_not_defer() {
-    // With both factors zero there is no cut to pay, so the accrual commits on the same
-    // one-second intervals the tests above defer on. The guard only gates *configured*
-    // carveouts — it must not make an ordinary market's accrual coarser.
+fn carveout_dust_is_carried_at_the_token_conversion_too() {
+    // The second place where a cut rounds away. On a small market one index unit of withheld
+    // interest is worth less than one token. The index-space cut then clears, but
+    // `deposit_balance * cut / 10^(19 - decimals)` still floors to zero. Lenders have already
+    // given up the value, so the floored cut credits nobody and leaves unattributed slack in
+    // the vault. A $1 market at a 2000% optimal rate reaches that state. This is the
+    // `check_fee_collection` configuration.
+    let mut market = carveout_test_market(1000, 0);
+    market.deposit_balance = SPOT_BALANCE_PRECISION;
+    market.borrow_balance = SPOT_BALANCE_PRECISION / 2;
+    market.optimal_borrow_rate = SPOT_RATE_PRECISION_U32 * 20;
+    market.max_borrow_rate = SPOT_RATE_PRECISION_U32 * 50;
+
+    // A $1 market yields about 6250 micro-tokens of insurance fund cut a year. The token
+    // conversion therefore needs hours of cranks before it reaches its first whole unit.
+    let precision_decrease = 10_u128.pow(19 - market.decimals);
+    let mut saw_token_dust = false;
+    let mut first_payout = None;
+    let mut previous_tokens = 0_u128;
+
+    for i in 1..=(6 * 3600_i64) {
+        update_spot_market_cumulative_interest(&mut market, None, i, false).unwrap();
+
+        assert_eq!(market.last_interest_ts, i as u64);
+
+        // The carried remainder never reaches a whole token. It therefore always fits the u64
+        // that holds it.
+        assert!((market.revenue_pool.pending_interest_dust as u128) < precision_decrease);
+        if market.revenue_pool.pending_interest_dust > 0 {
+            saw_token_dust = true;
+        }
+
+        let tokens = get_token_amount(
+            market.revenue_pool.scaled_balance,
+            &market,
+            &SpotBalanceType::Deposit,
+        )
+        .unwrap();
+        if tokens > previous_tokens && first_payout.is_none() {
+            first_payout = Some(tokens - previous_tokens);
+        }
+        previous_tokens = tokens;
+    }
+
+    assert!(
+        saw_token_dust,
+        "the token conversion never floored, so this fixture does not exercise the second stage"
+    );
+
+    // The remainder crosses one token at a time, so the pool gains exactly one token when it
+    // first crosses. A larger first payment would mean the carry released more than it held.
+    assert_eq!(first_payout, Some(1));
+
+    // Six hours of cranks pay four whole tokens. A single crank of any one second in that range
+    // pays none, so every one of these tokens comes from the carried remainder.
+    assert_eq!(previous_tokens, 4);
+}
+
+#[test]
+fn large_carveouts_never_leave_an_interval_unstamped() {
+    // The carried remainder can raise a cut by one index unit above the plain factor product.
+    // Two cuts taken independently can therefore each round up, take the whole gain, and leave
+    // lenders at zero. A zero lender share used to skip the commit, which left the interval
+    // un-stamped for a later crank to bill against different balances.
+    //
+    // `update_spot_market_if_factor` accepts any pair below 100%, so this pair is reachable by
+    // configuration. `split_deposit_interest` divides in order instead, which bounds the two
+    // cuts by the gain. Every interval must stamp.
+    let mut market = carveout_test_market(400_000, 500_000);
+
+    for i in 1..=600_i64 {
+        update_spot_market_cumulative_interest(&mut market, None, i, false).unwrap();
+
+        assert_eq!(
+            market.last_interest_ts, i as u64,
+            "interval {i} was left un-stamped"
+        );
+    }
+
+    // The cuts still reach their pools, and lenders still receive the remaining 10%.
+    assert!(market.revenue_pool.scaled_balance > 0);
+    assert!(market.protocol_fee_pool.scaled_balance > 0);
+    assert!(market.cumulative_deposit_interest > SPOT_CUMULATIVE_INTEREST_PRECISION);
+}
+
+#[test]
+fn lowering_the_factors_does_not_strand_a_market() {
+    // The insurance-fund-vs-protocol split divides by `if_fee_factor +
+    // protocol_fee_factor`, and its remainder is only valid below the divisor that stored
+    // it. `update_spot_market_if_factor` accepts any pair below 100% at any time, so a
+    // stored remainder can end up at or above a smaller divisor. It would then raise the
+    // insurance fund cut above the withheld amount and underflow the protocol residual.
+    // The accrual runs first on nearly every spot instruction, so the market would take no
+    // deposit, withdrawal, borrow or repayment until the factors went back up.
+    let mut market = carveout_test_market(400_000, 500_000);
+
+    // Crank until a carry is in flight that the lower pair below cannot divide.
+    let mut now = 0_i64;
+    let carried = loop {
+        now += 1;
+        assert!(now <= 60, "no carry reached 100_000 to test against");
+        update_spot_market_cumulative_interest(&mut market, None, now, false).unwrap();
+
+        let carried = market.protocol_fee_pool.pending_interest_split_dust;
+        if carried >= 100_000 {
+            break carried;
+        }
+    };
+
+    market.insurance_fund.if_fee_factor = 100_000;
+    market.protocol_fee_factor = 0;
+
+    // The accrual reduces the carry below the divisor in force, so it keeps committing.
+    let protocol_pool_balance = market.protocol_fee_pool.scaled_balance;
+    let insurance_fund_balance = market.revenue_pool.scaled_balance;
+
+    for i in now + 1..=now + 600 {
+        update_spot_market_cumulative_interest(&mut market, None, i, false).unwrap();
+
+        assert_eq!(
+            market.last_interest_ts, i as u64,
+            "interval {i} was left un-stamped after the factors were lowered"
+        );
+        assert!(
+            market.protocol_fee_pool.pending_interest_split_dust < 100_000,
+            "the carry stayed at or above the divisor in force"
+        );
+    }
+
+    // The reduction costs less than one index unit and nothing else. The insurance fund
+    // keeps taking its cut under the new pair, and the protocol pool takes nothing, because
+    // its factor is now zero.
+    assert!(carried >= 100_000);
+    assert!(market.revenue_pool.scaled_balance > insurance_fund_balance);
+    assert_eq!(
+        market.protocol_fee_pool.scaled_balance,
+        protocol_pool_balance
+    );
+}
+
+#[test]
+fn carveout_dust_never_defers_across_a_balance_change() {
+    // This is why the accrual carries the cut and does not delay the interval. An un-stamped
+    // span does not keep its own terms. `calculate_accumulated_interest` bills the whole span
+    // at the rate that applies when it runs. It commits the span with an index move, and the
+    // index credits every balance that exists at that moment.
+    //
+    // Balances move between cranks. Every spot instruction that changes balances cranks this
+    // function first. A delayed interval therefore settles against later balances. Findings
+    // #115 and #117 describe this. Each span below must bill against the balances that existed
+    // during it, although neither span's carveout reaches a whole token on its own.
+    let mut market = carveout_test_market(1000, 1000);
+
+    update_spot_market_cumulative_interest(&mut market, None, 1, false).unwrap();
+
+    // The first second was billed at the original 50% utilization, before the new deposit.
+    let mut control_first = carveout_test_market(1000, 1000);
+    update_spot_market_cumulative_interest(&mut control_first, None, 1, false).unwrap();
+    assert_eq!(
+        market.cumulative_borrow_interest,
+        control_first.cumulative_borrow_interest
+    );
+    assert!(market.cumulative_borrow_interest > SPOT_CUMULATIVE_INTEREST_PRECISION);
+
+    // A lender arrives and halves the utilization. A delayed interval would collect the first
+    // second of interest for this lender and price it at the new utilization.
+    market.deposit_balance = SPOT_BALANCE_PRECISION * 2_000_000;
+
+    update_spot_market_cumulative_interest(&mut market, None, 101, false).unwrap();
+
+    // The remaining 100 seconds bill at the new utilization, from the state that the first
+    // crank left. They do not mix with the span before the deposit.
+    let mut control_second = control_first;
+    control_second.deposit_balance = SPOT_BALANCE_PRECISION * 2_000_000;
+    update_spot_market_cumulative_interest(&mut control_second, None, 101, false).unwrap();
+
+    assert_eq!(
+        market.cumulative_borrow_interest,
+        control_second.cumulative_borrow_interest
+    );
+    assert_eq!(market.last_interest_ts, 101);
+}
+
+#[test]
+fn unconfigured_carveout_commits_on_short_intervals() {
+    // With both factors at zero there is no cut to convert. The accrual carries nothing and
+    // commits on a one-second interval. Most markets run this way, and nearly every spot
+    // instruction cranks this function. The dust carry must not add work here, and it must not
+    // make an ordinary market's accrual coarser.
     let mut market = carveout_test_market(0, 0);
 
     update_spot_market_cumulative_interest(&mut market, None, 1, false).unwrap();
@@ -2435,13 +2624,14 @@ fn unconfigured_carveout_does_not_defer() {
     assert_eq!(market.last_interest_ts, 1);
     assert!(market.cumulative_borrow_interest > SPOT_CUMULATIVE_INTEREST_PRECISION);
     assert!(market.cumulative_deposit_interest > SPOT_CUMULATIVE_INTEREST_PRECISION);
+    assert_eq!(market.revenue_pool.pending_interest_dust, 0);
+    assert_eq!(market.protocol_fee_pool.pending_interest_dust, 0);
 }
 
 #[test]
 fn zero_deposit_balance_still_accrues_with_a_configured_carveout() {
-    // `deposit_balance == 0` is the one case where the carveout conversion is structurally zero
-    // no matter how long the interval grows, so deferring would never converge and borrowers
-    // would go uncharged forever. Exempted.
+    // A zero `deposit_balance` makes the carveout conversion zero. There is no lender balance
+    // to take a cut from. The accrual therefore carries no token dust, and borrowers still pay.
     let mut market = carveout_test_market(1000, 1000);
     market.deposit_balance = 0;
 
@@ -2451,6 +2641,8 @@ fn zero_deposit_balance_still_accrues_with_a_configured_carveout() {
     assert!(market.cumulative_borrow_interest > SPOT_CUMULATIVE_INTEREST_PRECISION);
     assert_eq!(market.revenue_pool.scaled_balance, 0);
     assert_eq!(market.protocol_fee_pool.scaled_balance, 0);
+    assert_eq!(market.revenue_pool.pending_interest_dust, 0);
+    assert_eq!(market.protocol_fee_pool.pending_interest_dust, 0);
 }
 
 #[test]

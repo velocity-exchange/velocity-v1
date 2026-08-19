@@ -4447,7 +4447,9 @@ pub mod types {
         pub scaled_balance: u128,
         pub market_index: u16,
         #[serde(skip)]
-        pub padding: Padding<14>,
+        pub padding: Padding<2>,
+        pub pending_interest_split_dust: u32,
+        pub pending_interest_dust: u64,
     }
     #[derive(
         AnchorSerialize,

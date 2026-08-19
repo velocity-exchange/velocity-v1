@@ -9497,7 +9497,10 @@ pub mod maker_floor_prune {
     use {
         super::*,
         crate::{
-            controller::{orders::get_maker_orders_info, position::PositionDirection},
+            controller::{
+                orders::{admit_reducing_maker_orders, get_maker_orders_info},
+                position::PositionDirection,
+            },
             create_anchor_account_info,
             math::constants::{
                 AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64, PEG_PRECISION,
@@ -9528,7 +9531,14 @@ pub mod maker_floor_prune {
     // both look reducing, but together they flip the maker short, the post-fill
     // gate then rejects a maker it cannot price, and the revert takes the taker
     // and every other maker in the transaction down with it, repeatably.
-    fn run(order_base: u64, maker_position_base: i64, floor: u64) -> usize {
+    // The admitted set is judged best price first, so the reducing budget
+    // goes to the orders the taker wants matched, not to the lowest slots.
+    // Returns the admitted (maker key, order index, price) tuples.
+    fn run(
+        orders: [(u64, u64); 2],
+        maker_position_base: i64,
+        floor: u64,
+    ) -> Vec<(Pubkey, usize, u64)> {
         let now = 0_i64;
         // far past the oracle's posted slot, so the maker's floor is
         // unverifiable and the prune engages
@@ -9607,18 +9617,19 @@ pub mod maker_floor_prune {
         let maker_authority =
             Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
         let mut maker_orders = get_orders(Order::default());
-        for slot_index in 0..2 {
+        for (slot_index, (order_base, order_price)) in orders.iter().enumerate() {
             maker_orders[slot_index] = Order {
                 market_index: 0,
                 status: OrderStatus::Open,
                 post_only: true,
                 order_type: OrderType::Limit,
                 direction: PositionDirection::Short,
-                base_asset_amount: order_base,
-                price: 100 * PRICE_PRECISION_U64,
+                base_asset_amount: *order_base,
+                price: *order_price,
                 ..Order::default()
             };
         }
+        let total_asks = orders.iter().map(|(base, _)| *base as i64).sum::<i64>();
 
         let mut maker = User {
             authority: maker_authority,
@@ -9628,7 +9639,7 @@ pub mod maker_floor_prune {
                 market_index: 0,
                 base_asset_amount: maker_position_base,
                 open_orders: 2,
-                open_asks: -(2 * order_base as i64),
+                open_asks: -total_asks,
                 ..PerpPosition::default()
             }),
             spot_positions: get_spot_positions(SpotPosition {
@@ -9661,23 +9672,27 @@ pub mod maker_floor_prune {
             slot,
         )
         .unwrap()
-        .len()
     }
 
     #[test]
     fn two_individually_reducing_orders_cannot_flip_the_position() {
-        // long 1, two sells of 0.75. The first is reducing against +1 and is
-        // admitted; the second is then judged against the +0.25 the first
-        // leaves behind, where 0.75 is not reducing, so it is pruned.
-        // Admitting both is what let a maker revert unrelated fills.
+        // long 1, two sells of 0.75 at the same price. One is reducing
+        // against +1 and is admitted; the other is then judged against the
+        // +0.25 the first leaves behind, where 0.75 is not reducing, so it
+        // is pruned. Admitting both is what let a maker revert unrelated
+        // fills.
         let admitted = run(
-            3 * BASE_PRECISION_U64 / 4,
+            [
+                (3 * BASE_PRECISION_U64 / 4, 100 * PRICE_PRECISION_U64),
+                (3 * BASE_PRECISION_U64 / 4, 100 * PRICE_PRECISION_U64),
+            ],
             BASE_PRECISION_I64,
             100 * QUOTE_PRECISION_I64 as u64,
         );
         assert_eq!(
-            admitted, 1,
-            "the pair would flip the maker short, so only the first order may match"
+            admitted.len(),
+            1,
+            "the pair would flip the maker short, so only one order may match"
         );
     }
 
@@ -9686,17 +9701,72 @@ pub mod maker_floor_prune {
         // long 1, two sells of 0.25: the pair still leaves the maker long, so
         // pruning either one would needlessly stop a floored maker reducing.
         let admitted = run(
-            BASE_PRECISION_U64 / 4,
+            [
+                (BASE_PRECISION_U64 / 4, 100 * PRICE_PRECISION_U64),
+                (BASE_PRECISION_U64 / 4, 100 * PRICE_PRECISION_U64),
+            ],
             BASE_PRECISION_I64,
             100 * QUOTE_PRECISION_I64 as u64,
         );
-        assert_eq!(admitted, 2, "both orders keep the maker long");
+        assert_eq!(admitted.len(), 2, "both orders keep the maker long");
+    }
+
+    #[test]
+    fn the_reducing_budget_goes_to_the_best_priced_order() {
+        // long 1, sell 0.75 at 101 in slot 0 and sell 0.75 at 100 in slot 1.
+        // Only one fits the budget, and judging in slot order would hand it
+        // to the 101 sell and prune the 100 the taker actually wants. The
+        // admitted set is judged best price first, so the 100 survives.
+        let admitted = run(
+            [
+                (3 * BASE_PRECISION_U64 / 4, 101 * PRICE_PRECISION_U64),
+                (3 * BASE_PRECISION_U64 / 4, 100 * PRICE_PRECISION_U64),
+            ],
+            BASE_PRECISION_I64,
+            100 * QUOTE_PRECISION_I64 as u64,
+        );
+        assert_eq!(admitted.len(), 1);
+        assert_eq!(
+            (admitted[0].1, admitted[0].2),
+            (1, 100 * PRICE_PRECISION_U64),
+            "the better-priced order must win the reducing budget"
+        );
     }
 
     #[test]
     fn an_unfloored_maker_is_never_pruned() {
         // no floor, so the walk short-circuits and the pair matches as before
-        let admitted = run(3 * BASE_PRECISION_U64 / 4, BASE_PRECISION_I64, 0);
-        assert_eq!(admitted, 2, "prune must not touch a maker with no floor");
+        let admitted = run(
+            [
+                (3 * BASE_PRECISION_U64 / 4, 100 * PRICE_PRECISION_U64),
+                (3 * BASE_PRECISION_U64 / 4, 100 * PRICE_PRECISION_U64),
+            ],
+            BASE_PRECISION_I64,
+            0,
+        );
+        assert_eq!(
+            admitted.len(),
+            2,
+            "prune must not touch a maker with no floor"
+        );
+    }
+
+    #[test]
+    fn maker_buys_are_judged_highest_price_first() {
+        // direct check of the admission order for the other side: the taker
+        // sells to maker buys, so the best price for the taker is the
+        // highest buy. Maker short 1, buys of 0.75 at 99 (slot 0) and 100
+        // (slot 1): the 100 wins the budget.
+        let admitted = admit_reducing_maker_orders(
+            vec![
+                (0, 99 * PRICE_PRECISION_U64, 3 * BASE_PRECISION_U64 / 4),
+                (1, 100 * PRICE_PRECISION_U64, 3 * BASE_PRECISION_U64 / 4),
+            ],
+            PositionDirection::Long,
+            -BASE_PRECISION_I64,
+        )
+        .unwrap();
+
+        assert_eq!(admitted, vec![(1, 100 * PRICE_PRECISION_U64)]);
     }
 }

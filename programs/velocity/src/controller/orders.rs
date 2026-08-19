@@ -1695,18 +1695,11 @@ fn get_maker_orders_info(
             None => false,
         };
 
-        // Reducing is a property of the whole admitted set, not of one order:
-        // a maker long 1 with two resting sells of 0.75 has each order
-        // reducing against the resting position while the pair flips it short.
-        // Judging orders independently would admit both, the post-fill gate
-        // would then see a risk-increasing maker it cannot price, and the
-        // revert would take the taker and every other maker in the
-        // transaction with it, repeatably. So track the position the admitted
-        // orders would leave behind and judge each candidate against that.
-        let mut maker_projected_base_asset_amount = maker
-            .get_perp_position(taker_order.market_index)
-            .map(|position| position.base_asset_amount)
-            .unwrap_or(0);
+        // Candidates of an unverifiable floored maker that survive the
+        // cleanup below, as (order index, price, unfilled base). The
+        // admit/prune decision is made on the whole set after the loop, in
+        // `admit_reducing_maker_orders`.
+        let mut floor_prune_candidates: Vec<(usize, u64, u64)> = Vec::new();
 
         for (maker_order_index, maker_order_price) in maker_order_price_and_indexes.iter() {
             let maker_order_index = *maker_order_index;
@@ -1796,27 +1789,15 @@ fn get_maker_orders_info(
 
             // runs after the expire/reduce-only/band cleanup above so a
             // pruned maker still gets its stale orders cancelled and the
-            // filler still earns the cleanup reward
+            // filler still earns the cleanup reward. Admission is deferred:
+            // the candidates are judged together after the loop, so the
+            // reducing budget goes to the best-priced orders instead of the
+            // lowest order slots.
             if maker_floor_unverifiable {
                 let unfilled = maker.orders[maker_order_index]
                     .get_base_asset_amount_unfilled(Some(existing_base_asset_amount))?;
-
-                if !is_order_position_reducing(
-                    &maker.orders[maker_order_index].direction,
-                    unfilled,
-                    maker_projected_base_asset_amount,
-                )? {
-                    continue;
-                }
-
-                // admitted, so the next candidate is judged against what this
-                // one would leave behind
-                let signed = match maker.orders[maker_order_index].direction {
-                    PositionDirection::Long => unfilled.cast::<i64>()?,
-                    PositionDirection::Short => -unfilled.cast::<i64>()?,
-                };
-                maker_projected_base_asset_amount =
-                    maker_projected_base_asset_amount.safe_add(signed)?;
+                floor_prune_candidates.push((maker_order_index, maker_order_price, unfilled));
+                continue;
             }
 
             insert_maker_order_info(
@@ -1825,9 +1806,72 @@ fn get_maker_orders_info(
                 maker_direction,
             );
         }
+
+        if maker_floor_unverifiable {
+            let resting_base_asset_amount = maker
+                .get_perp_position(taker_order.market_index)
+                .map(|position| position.base_asset_amount)
+                .unwrap_or(0);
+
+            for (maker_order_index, maker_order_price) in admit_reducing_maker_orders(
+                floor_prune_candidates,
+                maker_direction,
+                resting_base_asset_amount,
+            )? {
+                insert_maker_order_info(
+                    &mut maker_orders_info,
+                    (*maker_key, maker_order_index, maker_order_price),
+                    maker_direction,
+                );
+            }
+        }
     }
 
     Ok(maker_orders_info)
+}
+
+/// The subset of an unverifiable floored maker's candidate orders
+/// `(order index, price, unfilled base)` that is reducing as a set against
+/// the maker's resting position, judged best price for the taker first
+/// (ascending for maker sells, descending for maker buys). Reducing is a
+/// property of the admitted set, not of one order: a maker long 1 with two
+/// resting sells of 0.75 has each order reducing against the resting
+/// position while the pair flips it short, so each candidate is judged
+/// against the position the previously admitted orders would leave behind.
+/// Judging best price first spends that budget on the orders the taker
+/// wants matched. Every admitted order's fill is exempt at the fill-time
+/// floor gate (`is_order_position_reducing` is the shared predicate), so a
+/// pruned maker can never revert the taker's transaction.
+fn admit_reducing_maker_orders(
+    mut candidates: Vec<(usize, u64, u64)>,
+    maker_direction: PositionDirection,
+    resting_base_asset_amount: i64,
+) -> VelocityResult<Vec<(usize, u64)>> {
+    match maker_direction {
+        PositionDirection::Long => candidates.sort_by(|a, b| b.1.cmp(&a.1)),
+        PositionDirection::Short => candidates.sort_by(|a, b| a.1.cmp(&b.1)),
+    }
+
+    let mut projected_base_asset_amount = resting_base_asset_amount;
+    let mut admitted = Vec::with_capacity(candidates.len());
+
+    for (order_index, order_price, unfilled) in candidates {
+        if !is_order_position_reducing(&maker_direction, unfilled, projected_base_asset_amount)? {
+            continue;
+        }
+
+        // admitted, so the next candidate is judged against what this one
+        // would leave behind
+        let signed = match maker_direction {
+            PositionDirection::Long => unfilled.cast::<i64>()?,
+            PositionDirection::Short => -unfilled.cast::<i64>()?,
+        };
+        projected_base_asset_amount = projected_base_asset_amount.safe_add(signed)?;
+
+        admitted.push((order_index, order_price));
+    }
+
+    Ok(admitted)
 }
 
 #[inline(always)]

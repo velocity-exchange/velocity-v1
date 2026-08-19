@@ -279,7 +279,7 @@ describe('market order', () => {
 		const market = velocityClient.getPerpMarketAccount(marketIndex);
 		// post AMM-isolation: the gross fee is on the ledger (protocol
 		// residual under the default split); the AMM books only its surplus
-		const expectedGrossFee = new BN(1001);
+		const expectedGrossFee = new BN(401);
 		assert(market.feeLedger.totalExchangeFee.eq(expectedGrossFee));
 		assert(getProtocolFeeTotal(velocityClient, market).eq(expectedGrossFee));
 		assert(market.amm.totalFee.eq(new BN(0)));
@@ -291,7 +291,7 @@ describe('market order', () => {
 
 		const expectedQuoteAssetAmount = new BN(-1000001);
 		assert(firstPosition.quoteEntryAmount.eq(expectedQuoteAssetAmount));
-		assert(firstPosition.quoteBreakEvenAmount.eq(new BN(-1001002)));
+		assert(firstPosition.quoteBreakEvenAmount.eq(new BN(-1000402)));
 
 		const orderActionRecord =
 			eventSubscriber.getEventsArray('OrderActionRecord')[0];
@@ -304,7 +304,7 @@ describe('market order', () => {
 		);
 
 		const expectedFillRecordId = new BN(1);
-		const expectedFee = new BN(1001);
+		const expectedFee = new BN(401);
 		assert(orderActionRecord.ts.gt(ZERO));
 		assert(orderActionRecord.takerFee.eq(expectedFee));
 		assert(isVariant(orderActionRecord.action, 'fill'));
@@ -347,7 +347,7 @@ describe('market order', () => {
 		);
 
 		const expectedFillRecord = new BN(2);
-		const expectedFee = new BN(1000);
+		const expectedFee = new BN(400);
 		assert(orderActionRecord.ts.gt(ZERO));
 		assert(orderActionRecord.takerFee.eq(expectedFee));
 		assert(isVariant(orderActionRecord.action, 'fill'));

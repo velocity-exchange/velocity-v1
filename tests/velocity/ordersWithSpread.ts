@@ -235,7 +235,7 @@ describe('amm spread: market order', () => {
 		// post AMM-isolation: the AMM books only its spread surplus; the
 		// exchange fee is the protocol's pending carveout (default split)
 		const expectedQuoteAssetSurplus = new BN(250);
-		const expectedExchangeFee = new BN(1001);
+		const expectedExchangeFee = new BN(401);
 		console.log(market.amm.totalFee.toString());
 		assert(market.amm.totalFee.eq(expectedQuoteAssetSurplus));
 		assert(market.feeLedger.totalExchangeFee.eq(expectedExchangeFee));
@@ -249,7 +249,7 @@ describe('amm spread: market order', () => {
 			expectedQuoteAssetAmount.toString()
 		);
 		assert(firstPosition.quoteEntryAmount.eq(expectedQuoteAssetAmount));
-		assert(firstPosition.quoteBreakEvenAmount.eq(new BN(-1001252)));
+		assert(firstPosition.quoteBreakEvenAmount.eq(new BN(-1000652)));
 
 		const orderRecord = eventSubscriber.getEventsArray('OrderActionRecord')[0];
 
@@ -275,7 +275,7 @@ describe('amm spread: market order', () => {
 		const pnl = velocityClient
 			.getQuoteAssetTokenAmount()
 			.sub(initialCollateral);
-		assert(pnl.eq(new BN(-2502)));
+		assert(pnl.eq(new BN(-1302)));
 		console.log(velocityClient.getPerpMarketAccount(0).amm.totalFee.toString());
 		// surplus only post AMM-isolation (2 x 250); fees sit on the ledger
 		assert(velocityClient.getPerpMarketAccount(0).amm.totalFee.eq(new BN(500)));
@@ -369,7 +369,7 @@ describe('amm spread: market order', () => {
 			.getQuoteAssetTokenAmount()
 			.sub(initialCollateral);
 		console.log(pnl.toString());
-		assert(pnl.eq(new BN(-2502)));
+		assert(pnl.eq(new BN(-1302)));
 
 		console.log(
 			velocityClient
@@ -547,7 +547,7 @@ describe('amm spread: market order', () => {
 
 		assert(firstPosition.baseAssetAmount.eq(baseAssetAmount));
 		assert(firstPosition.quoteEntryAmount.eq(expectedQuoteAssetAmount));
-		assert(firstPosition.quoteBreakEvenAmount.eq(new BN(-1001252)));
+		assert(firstPosition.quoteBreakEvenAmount.eq(new BN(-1000652)));
 
 		await velocityClient.closePosition(marketIndex);
 
@@ -635,7 +635,7 @@ describe('amm spread: market order', () => {
 
 		assert(firstPosition.baseAssetAmount.abs().eq(baseAssetAmount));
 		assert(firstPosition.quoteEntryAmount.eq(expectedQuoteAssetAmount));
-		assert(firstPosition.quoteBreakEvenAmount.eq(new BN(998750)));
+		assert(firstPosition.quoteBreakEvenAmount.eq(new BN(999350)));
 
 		await velocityClient.closePosition(marketIndex);
 
@@ -754,7 +754,7 @@ describe('amm spread: market order', () => {
 			convertToNumber(expectedQuoteAssetAmount)
 		);
 		assert(firstPosition.quoteEntryAmount.eq(expectedQuoteAssetAmount));
-		assert(firstPosition.quoteBreakEvenAmount.eq(new BN(-4005043))); //todo
+		assert(firstPosition.quoteBreakEvenAmount.eq(new BN(-4002642))); //todo
 
 		const orderRecord = eventSubscriber.getEventsArray('OrderActionRecord')[0];
 

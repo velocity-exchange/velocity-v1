@@ -38,3 +38,4 @@ vendor
 # Devnet deploy artifacts — contain keypairs, never commit
 /devnet_program_admin.json
 /deploy-scripts/out/
+.ci-local-logs/

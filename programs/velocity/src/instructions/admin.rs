@@ -21,12 +21,12 @@ use {
                 FEE_POOL_TO_REVENUE_POOL_THRESHOLD, IF_FACTOR_PRECISION, INSURANCE_A_MAX,
                 INSURANCE_B_MAX, INSURANCE_C_MAX, INSURANCE_SPECULATIVE_MAX,
                 LIQUIDATION_FEE_PRECISION, MAX_CONCENTRATION_COEFFICIENT,
-                MM_ORACLE_MAX_SOURCE_AGE_SLOTS, MM_ORACLE_MAX_STEP_PCT_PRECISION,
-                MM_ORACLE_MIN_SLOT_GAP, PERCENTAGE_PRECISION, PERCENTAGE_PRECISION_I128,
-                PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U32, QUOTE_PRECISION_I64,
-                QUOTE_SPOT_MARKET_INDEX, SPOT_BALANCE_PRECISION,
-                SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_IMF_PRECISION, SPOT_WEIGHT_PRECISION,
-                THIRTEEN_DAY, TWENTY_FOUR_HOUR,
+                MAX_TAKER_FEE_ADDON_TENTH_BPS, MM_ORACLE_MAX_SOURCE_AGE_SLOTS,
+                MM_ORACLE_MAX_STEP_PCT_PRECISION, MM_ORACLE_MIN_SLOT_GAP, PERCENTAGE_PRECISION,
+                PERCENTAGE_PRECISION_I128, PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U32,
+                PERP_FEE_TIER_MAX_INDEX, QUOTE_PRECISION_I64, QUOTE_SPOT_MARKET_INDEX,
+                SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_IMF_PRECISION,
+                SPOT_WEIGHT_PRECISION, THIRTEEN_DAY,
             },
             margin::calculate_user_equity,
             orders::is_multiple_of_step_size,
@@ -162,7 +162,8 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         feature_bit_flags: 0,
         lp_pool_feature_bit_flags: 0,
         solvency_status: SolvencyStatus::active(),
-        padding: [0; 239],
+        promo_fee_tier: 0,
+        padding: [0; 238],
     };
 
     Ok(())
@@ -856,7 +857,8 @@ pub fn handle_initialize_perp_market(
             ..PoolBalance::default()
         },
         protocol_liquidation_fee: 0,
-        _padding_buffer: [0; 4],
+        taker_fee_addon_tenth_bps: 0,
+        _padding_buffer: [0; 2],
         fee_pool_buffer_target: FEE_POOL_TO_REVENUE_POOL_THRESHOLD as u64,
     };
 
@@ -1247,15 +1249,7 @@ pub fn handle_settle_expired_market_pools_to_revenue_pool(
         "invalid state.settlement_duration (is 0)"
     )?;
 
-    let escrow_period_before_transfer = if state.settlement_duration > 1 {
-        // minimum of TWENTY_FOUR_HOUR to examine settlement process
-        TWENTY_FOUR_HOUR
-            .safe_add(state.settlement_duration.cast()?)?
-            .safe_sub(1)?
-    } else {
-        // for testing / expediting if settlement_duration not default but 1
-        state.settlement_duration.cast::<i64>()?
-    };
+    let escrow_period_before_transfer = state.escrow_period_before_transfer()?;
 
     validate!(
         now > perp_market
@@ -1264,6 +1258,32 @@ pub fn handle_settle_expired_market_pools_to_revenue_pool(
         ErrorCode::DefaultError,
         "must be escrow_period_before_transfer={} after market.expiry_ts",
         escrow_period_before_transfer
+    )?;
+
+    // The program must pay the accrued builder and referrer fees before it moves the pnl pool to
+    // the revenue pool. The fees are payable until this point. The expiry solver values winner
+    // claims against `pnl_pool - pending_revenue_share` (OtterSec #147), so the pool still holds
+    // the tokens for the counter. The checks above also set `net_user_pnl` to 0, so
+    // `settle_revenue_share` reserves nothing and can pay every row. A delist with a non-zero
+    // counter would give the earned fees of third parties to the revenue pool.
+    //
+    // The counter must therefore reach zero first. This rule has no time limit, because every row
+    // has an end state. `settle_revenue_share` pays a payable row. In Settlement it needs no help
+    // from the escrow owner and no `Completed` flag. `forfeit_revenue_share_order` writes off a
+    // row that the program cannot pay. Anyone can call both. A market that still owes here is one
+    // that nobody has settled yet.
+    //
+    // The admin holds one exception. While the `BuilderCodes` feature bit is off,
+    // `settle_revenue_share` fails and the sweep skips builder rows. A row that the pool can pay
+    // is then neither payable nor forfeitable, and this check holds. Enable the bit again to close
+    // the market. The admin controls the bit, so this is an order of operations, not a way for
+    // another party to block a delist.
+    validate!(
+        perp_market.pending_revenue_share == 0,
+        ErrorCode::UnsettledRevenueShareOnDelist,
+        "perp market {} still owes {} of builder/referrer revenue share; run settle_revenue_share for every escrow still owed, and forfeit_revenue_share_order for any row that provably cannot be paid",
+        perp_market.market_index,
+        perp_market.pending_revenue_share
     )?;
 
     // Materialize accrued fees before draining the pnl pool to the revenue
@@ -2479,6 +2499,34 @@ pub fn handle_update_perp_market_unrealized_asset_weight(
     Ok(())
 }
 
+pub fn handle_update_promo_fee_tier(
+    ctx: Context<AdminUpdateState>,
+    promo_fee_tier: u8,
+) -> Result<()> {
+    let mut state = ctx.accounts.state.load_mut()?;
+
+    // validate against the highest populated tier, not the 10-slot array:
+    // the tier fn clamps to PERP_FEE_TIER_MAX_INDEX, so anything above it
+    // would validate and then silently mean a lower tier. 0 = disabled
+    // (no-op floor).
+    validate!(
+        (promo_fee_tier as usize) <= PERP_FEE_TIER_MAX_INDEX,
+        ErrorCode::DefaultError,
+        "promo fee tier {} above max populated tier {}",
+        promo_fee_tier,
+        PERP_FEE_TIER_MAX_INDEX
+    )?;
+
+    msg!(
+        "state.promo_fee_tier: {:?} -> {:?}",
+        state.promo_fee_tier,
+        promo_fee_tier
+    );
+
+    state.promo_fee_tier = promo_fee_tier;
+    Ok(())
+}
+
 pub fn handle_update_perp_fee_structure(
     ctx: Context<AdminUpdateState>,
     fee_structure: FeeStructure,
@@ -2879,6 +2927,31 @@ pub fn handle_update_perp_market_fee_adjustment(
     );
 
     perp_market.fee_adjustment = fee_adjustment;
+    Ok(())
+}
+
+pub fn handle_update_perp_market_taker_fee_addon(
+    ctx: Context<AdminUpdatePerpMarket>,
+    taker_fee_addon_tenth_bps: u16,
+) -> Result<()> {
+    let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
+    msg!("perp market {}", perp_market.market_index);
+
+    validate!(
+        taker_fee_addon_tenth_bps <= MAX_TAKER_FEE_ADDON_TENTH_BPS,
+        ErrorCode::DefaultError,
+        "taker fee addon {} greater than max {}",
+        taker_fee_addon_tenth_bps,
+        MAX_TAKER_FEE_ADDON_TENTH_BPS
+    )?;
+
+    msg!(
+        "perp_market.taker_fee_addon_tenth_bps: {:?} -> {:?}",
+        perp_market.taker_fee_addon_tenth_bps,
+        taker_fee_addon_tenth_bps
+    );
+
+    perp_market.taker_fee_addon_tenth_bps = taker_fee_addon_tenth_bps;
     Ok(())
 }
 

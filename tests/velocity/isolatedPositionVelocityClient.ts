@@ -343,11 +343,11 @@ describe('velocity client', () => {
 			velocityClient
 				.getUserStats()
 				.getAccountAndSlot()
-				.data.fees.totalFeePaid.eq(new BN(48001))
+				.data.fees.totalFeePaid.eq(new BN(19201))
 		);
 
 		assert.ok(user.perpPositions[0].quoteEntryAmount.eq(new BN(-48000001)));
-		assert.ok(user.perpPositions[0].quoteBreakEvenAmount.eq(new BN(-48048002)));
+		assert.ok(user.perpPositions[0].quoteBreakEvenAmount.eq(new BN(-48019202)));
 		assert.ok(user.perpPositions[0].baseAssetAmount.eq(new BN(48000000000)));
 		assert.ok(user.perpPositions[0].positionFlag === 1);
 
@@ -359,8 +359,8 @@ describe('velocity client', () => {
 		console.log(market.amm.totalFee.toString());
 		// post AMM-isolation: the gross fee is on the ledger (protocol residual
 		// under the default split); the AMM books only its spread surplus
-		assert.ok(market.feeLedger.totalExchangeFee.eq(new BN(48001)));
-		assert.ok(getProtocolFeeTotal(velocityClient, market).eq(new BN(48001)));
+		assert.ok(market.feeLedger.totalExchangeFee.eq(new BN(19201)));
+		assert.ok(getProtocolFeeTotal(velocityClient, market).eq(new BN(19201)));
 		assert.ok(market.amm.totalFee.eq(market.amm.totalFeeMinusDistributions));
 
 		const orderActionRecord =
@@ -427,9 +427,9 @@ describe('velocity client', () => {
 			user.perpPositions[0].quoteBreakEvenAmount.toNumber()
 		);
 
-		assert.ok(user.perpPositions[0].quoteAssetAmount.eq(new BN(-24072002)));
+		assert.ok(user.perpPositions[0].quoteAssetAmount.eq(new BN(-24028802)));
 		assert.ok(user.perpPositions[0].quoteEntryAmount.eq(new BN(-24000001)));
-		assert.ok(user.perpPositions[0].quoteBreakEvenAmount.eq(new BN(-24048001)));
+		assert.ok(user.perpPositions[0].quoteBreakEvenAmount.eq(new BN(-24019201)));
 
 		assert.ok(user.perpPositions[0].baseAssetAmount.eq(new BN(24000000000)));
 		console.log(
@@ -448,15 +448,15 @@ describe('velocity client', () => {
 			velocityClient
 				.getUserStats()
 				.getAccountAndSlot()
-				.data.fees.totalFeePaid.eq(new BN(72001))
+				.data.fees.totalFeePaid.eq(new BN(28801))
 		);
 
 		const market = velocityClient.getPerpMarketAccount(0);
 		assert.ok(market.amm.baseAssetAmountWithAmm.eq(new BN(24000000000)));
 		// post AMM-isolation: the gross fee is on the ledger (protocol residual
 		// under the default split); the AMM books only its spread surplus
-		assert.ok(market.feeLedger.totalExchangeFee.eq(new BN(72001)));
-		assert.ok(getProtocolFeeTotal(velocityClient, market).eq(new BN(72001)));
+		assert.ok(market.feeLedger.totalExchangeFee.eq(new BN(28801)));
+		assert.ok(getProtocolFeeTotal(velocityClient, market).eq(new BN(28801)));
 		assert.ok(market.amm.totalFee.eq(market.amm.totalFeeMinusDistributions));
 
 		const orderActionRecord =
@@ -515,19 +515,19 @@ describe('velocity client', () => {
 				.data.fees.totalFeePaid.toString()
 		);
 		assert.ok(
-			velocityClient.getIsolatedPerpPositionTokenAmount(0).eq(new BN(9879998))
+			velocityClient.getIsolatedPerpPositionTokenAmount(0).eq(new BN(9951998))
 		);
 		assert(
 			velocityClient
 				.getUserStats()
 				.getAccountAndSlot()
-				.data.fees.totalFeePaid.eq(new BN(120001))
+				.data.fees.totalFeePaid.eq(new BN(48001))
 		);
 		console.log(user.perpPositions[0].quoteBreakEvenAmount.toString());
 		console.log(user.perpPositions[0].quoteAssetAmount.toString());
 
 		assert.ok(user.perpPositions[0].quoteEntryAmount.eq(new BN(24000000)));
-		assert.ok(user.perpPositions[0].quoteBreakEvenAmount.eq(new BN(23952000)));
+		assert.ok(user.perpPositions[0].quoteBreakEvenAmount.eq(new BN(23980800)));
 		assert.ok(user.perpPositions[0].quoteAssetAmount.eq(new BN(24000000)));
 		console.log(user.perpPositions[0].baseAssetAmount.toString());
 		assert.ok(user.perpPositions[0].baseAssetAmount.eq(new BN(-24000000000)));
@@ -536,8 +536,8 @@ describe('velocity client', () => {
 		assert.ok(market.amm.baseAssetAmountWithAmm.eq(new BN(-24000000000)));
 		// post AMM-isolation: the gross fee is on the ledger (protocol residual
 		// under the default split); the AMM books only its spread surplus
-		assert.ok(market.feeLedger.totalExchangeFee.eq(new BN(120001)));
-		assert.ok(getProtocolFeeTotal(velocityClient, market).eq(new BN(120001)));
+		assert.ok(market.feeLedger.totalExchangeFee.eq(new BN(48001)));
+		assert.ok(getProtocolFeeTotal(velocityClient, market).eq(new BN(48001)));
 		assert.ok(market.amm.totalFee.eq(market.amm.totalFeeMinusDistributions));
 
 		const orderActionRecord =
@@ -579,7 +579,7 @@ describe('velocity client', () => {
 		assert.ok(
 			velocityClient.getIsolatedPerpPositionTokenAmount(0).eq(new BN(0))
 		);
-		assert.ok(velocityClient.getQuoteAssetTokenAmount().eq(new BN(9855998)));
+		assert.ok(velocityClient.getQuoteAssetTokenAmount().eq(new BN(9942398)));
 		console.log(
 			velocityClient
 				.getUserStats()
@@ -590,15 +590,15 @@ describe('velocity client', () => {
 			velocityClient
 				.getUserStats()
 				.getAccountAndSlot()
-				.data.fees.totalFeePaid.eq(new BN(144001))
+				.data.fees.totalFeePaid.eq(new BN(57601))
 		);
 
 		const market = velocityClient.getPerpMarketAccount(0);
 		assert.ok(market.amm.baseAssetAmountWithAmm.eq(new BN(0)));
 		// post AMM-isolation: the gross fee is on the ledger (protocol residual
 		// under the default split); the AMM books only its spread surplus
-		assert.ok(market.feeLedger.totalExchangeFee.eq(new BN(144001)));
-		assert.ok(getProtocolFeeTotal(velocityClient, market).eq(new BN(144001)));
+		assert.ok(market.feeLedger.totalExchangeFee.eq(new BN(57601)));
+		assert.ok(getProtocolFeeTotal(velocityClient, market).eq(new BN(57601)));
 		assert.ok(market.amm.totalFee.eq(market.amm.totalFeeMinusDistributions));
 
 		const orderActionRecord =
@@ -619,7 +619,7 @@ describe('velocity client', () => {
 	it('Open short position', async () => {
 		// Re-Deposit USDC, assuming we have 0 balance here
 		await velocityClient.transferIsolatedPerpPositionDeposit(
-			new BN(9855998),
+			new BN(9942398),
 			0,
 			undefined,
 			undefined,
@@ -646,7 +646,7 @@ describe('velocity client', () => {
 		assert.ok(user.perpPositions[0].positionFlag === 1);
 		console.log(user.perpPositions[0].quoteBreakEvenAmount.toString());
 		assert.ok(user.perpPositions[0].quoteEntryAmount.eq(new BN(47999999)));
-		assert.ok(user.perpPositions[0].quoteBreakEvenAmount.eq(new BN(47951999)));
+		assert.ok(user.perpPositions[0].quoteBreakEvenAmount.eq(new BN(47980799)));
 		assert.ok(user.perpPositions[0].baseAssetAmount.eq(new BN(-48000000000)));
 
 		const market = velocityClient.getPerpMarketAccount(0);

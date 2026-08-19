@@ -448,6 +448,18 @@ pub fn settle_pnl(
     Ok(true)
 }
 
+/// Close a user's position in an expired (Settlement-status) market against the
+/// market's expiry price and settle the result with the pnl pool.
+///
+/// Returns `Ok(true)` when settlement actually occurred. Returns `Ok(false)`
+/// when the user holds no position in the market, which makes the call a no-op.
+/// Every other rejection is an `Err`. The no-op returns before the market-scoped
+/// SettlePnl pause checks below. Callers must therefore treat `false` exactly as
+/// they treat a soft-skipped [`settle_pnl`] and skip any follow-on side effect
+/// that assumes settlement happened. The one that matters is
+/// `sweep_completed_revenue_share_for_market`. It moves builder/referrer fees
+/// out of the market's pnl pool. A paused market must not lose those fees to a
+/// call that settled nothing.
 pub fn settle_expired_position(
     perp_market_index: u16,
     user: &mut User,
@@ -457,14 +469,14 @@ pub fn settle_expired_position(
     oracle_map: &mut OracleMap,
     clock: &Clock,
     state: &State,
-) -> VelocityResult {
+) -> VelocityResult<bool> {
     validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
 
     let position_index = match get_position_index(&user.perp_positions, perp_market_index) {
         Ok(index) => index,
         Err(_) => {
             msg!("User has no position for market {}", perp_market_index);
-            return Ok(());
+            return Ok(false);
         }
     };
 
@@ -726,5 +738,5 @@ pub fn settle_expired_position(
         "Issue occurred in expired settlement"
     )?;
 
-    Ok(())
+    Ok(true)
 }

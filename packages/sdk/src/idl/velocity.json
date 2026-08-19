@@ -1495,6 +1495,44 @@
             "user",
             "user_stats"
           ]
+        },
+        {
+          "name": "revenue_share_escrow",
+          "docs": [
+            "most users never create one. Deliberately an `UncheckedAccount` **pinned by",
+            "`seeds`** rather than a typed `AccountLoader`: because the address is derived",
+            "and not caller-chosen, absence is *provable* (`data_is_empty()`), so the handler",
+            "can distinguish \"this authority has no escrow\" from \"the caller omitted it to",
+            "skip the check\". A typed loader would instead make deletion impossible for the",
+            "majority of users, who have no escrow account to pass.",
+            "",
+            "Required rather than `Option` so a caller holding fee-bearing builder rows",
+            "cannot simply leave it out (OtterSec #128)."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  82,
+                  69,
+                  86,
+                  95,
+                  69,
+                  83,
+                  67,
+                  82,
+                  79,
+                  87
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              }
+            ]
+          }
         }
       ],
       "args": []
@@ -2452,6 +2490,40 @@
         },
         {
           "name": "velocity_signer"
+        },
+        {
+          "name": "revenue_share_escrow",
+          "docs": [
+            "because most users never create one. It carries the same contract as",
+            "`DeleteUser::revenue_share_escrow`: an `UncheckedAccount` pinned by `seeds`, so",
+            "the handler can tell \"this authority has no escrow\" (`data_is_empty()`) from \"the",
+            "keeper omitted the account to skip the check\". It is required rather than",
+            "`Option` for that second reason (OtterSec #128)."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  82,
+                  69,
+                  86,
+                  95,
+                  69,
+                  83,
+                  67,
+                  82,
+                  79,
+                  87
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              }
+            ]
+          }
         }
       ],
       "args": []
@@ -2506,6 +2578,137 @@
         {
           "name": "velocity_signer_nonce",
           "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "forfeit_revenue_share_order",
+      "discriminator": [
+        141,
+        205,
+        148,
+        171,
+        116,
+        92,
+        53,
+        250
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "perp_market",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  112,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "market_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "spot_market",
+          "docs": [
+            "The quote spot market of the perp market. The PDA seeds enforce this. The handler values",
+            "the pnl pool against it. It is writable because the handler accrues interest first."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "perp_market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "escrow_authority",
+          "docs": [
+            "The owner of the escrow that holds the row."
+          ]
+        },
+        {
+          "name": "revenue_share_escrow",
+          "docs": [
+            "The escrow that holds the row to write off."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  82,
+                  69,
+                  86,
+                  95,
+                  69,
+                  83,
+                  67,
+                  82,
+                  79,
+                  87
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "escrow_authority"
+              }
+            ]
+          }
+        },
+        {
+          "name": "beneficiary_user",
+          "docs": [
+            "Sub-account 0 of the beneficiary of the row. This is the payout account. The handler proves",
+            "that it does not exist."
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "market_index",
+          "type": "u16"
+        },
+        {
+          "name": "order_index",
+          "type": "u32"
         }
       ]
     },
@@ -4706,6 +4909,22 @@
             "Instructions Sysvar for instruction introspection"
           ],
           "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "liquidator_stats",
+          "docs": [
+            "The liquidator's `UserStats`, read by `begin` to bar an authority whose",
+            "equity breaker is tripped.",
+            "",
+            "It sits last, not beside `liquidator` where the direct liquidation",
+            "contexts carry it, because this pair is addressed by position rather",
+            "than by name: `begin` introspects the matching `end` and compares the",
+            "two account lists index by index, and the swap accounts both forward",
+            "begin where this fixed block ends. Taking the last slot renumbered",
+            "nothing. Slotting it beside `liquidator` would have moved `user`, both",
+            "vaults and both token accounts down one, silently invalidating every",
+            "hand-built transaction that still filled the old order."
+          ]
         }
       ],
       "args": [
@@ -4839,6 +5058,22 @@
             "Instructions Sysvar for instruction introspection"
           ],
           "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "liquidator_stats",
+          "docs": [
+            "The liquidator's `UserStats`, read by `begin` to bar an authority whose",
+            "equity breaker is tripped.",
+            "",
+            "It sits last, not beside `liquidator` where the direct liquidation",
+            "contexts carry it, because this pair is addressed by position rather",
+            "than by name: `begin` introspects the matching `end` and compares the",
+            "two account lists index by index, and the swap accounts both forward",
+            "begin where this fixed block ends. Taking the last slot renumbered",
+            "nothing. Slotting it beside `liquidator` would have moved `user`, both",
+            "vaults and both token accounts down one, silently invalidating every",
+            "hand-built transaction that still filled the old order."
+          ]
         }
       ],
       "args": [
@@ -7524,6 +7759,106 @@
         {
           "name": "market_index",
           "type": "u16"
+        }
+      ]
+    },
+    {
+      "name": "settle_revenue_share",
+      "discriminator": [
+        21,
+        123,
+        155,
+        221,
+        194,
+        240,
+        233,
+        76
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "escrow_authority",
+          "docs": [
+            "The owner of the escrow to settle."
+          ]
+        },
+        {
+          "name": "revenue_share_escrow",
+          "docs": [
+            "The escrow that holds the accrued builder and referrer rows."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  82,
+                  69,
+                  86,
+                  95,
+                  69,
+                  83,
+                  67,
+                  82,
+                  79,
+                  87
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "escrow_authority"
+              }
+            ]
+          }
+        },
+        {
+          "name": "spot_market_vault",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  0,
+                  0
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "market_index",
+          "type": "u16"
+        },
+        {
+          "name": "num_owner_sub_accounts",
+          "type": "u8"
         }
       ]
     },
@@ -11208,6 +11543,38 @@
       ]
     },
     {
+      "name": "update_perp_market_taker_fee_addon",
+      "discriminator": [
+        53,
+        22,
+        191,
+        15,
+        62,
+        150,
+        36,
+        203
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "perp_market",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "taker_fee_addon_tenth_bps",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "update_perp_market_unrealized_asset_weight",
       "discriminator": [
         135,
@@ -11336,6 +11703,35 @@
               "name": "PrelaunchOracleParams"
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "update_promo_fee_tier",
+      "discriminator": [
+        104,
+        57,
+        241,
+        162,
+        69,
+        198,
+        5,
+        175
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "promo_fee_tier",
+          "type": "u8"
         }
       ]
     },
@@ -16555,6 +16951,21 @@
       "code": 6370,
       "name": "MmOracleUpdateDisabled",
       "msg": "MM oracle updates are disabled by the admin feature-bit kill switch"
+    },
+    {
+      "code": 6371,
+      "name": "SpotMarketInterestStaleForMargin",
+      "msg": "Spot market interest is too stale to value a borrow for margin"
+    },
+    {
+      "code": 6372,
+      "name": "UnsettledRevenueShareOnDelist",
+      "msg": "Market still owes builder/referrer revenue share; settle it before delisting"
+    },
+    {
+      "code": 6373,
+      "name": "RevenueShareOrderNotForfeitable",
+      "msg": "Revenue share order can still be paid; settle it instead of forfeiting"
     }
   ],
   "types": [
@@ -21189,11 +21600,28 @@
             "type": "u32"
           },
           {
+            "name": "taker_fee_addon_tenth_bps",
+            "docs": [
+              "Additive per-market taker-fee surcharge in tenth-bps (10 = 1bp),",
+              "unsigned: surcharge only (e.g. toxic-flow markets), never a discount.",
+              "A discount could push the taker fee below the maker rebate it must",
+              "fund and revert every match fill; promo discounts go through",
+              "`State.promo_fee_tier` instead. Applied on top of the tier fee before",
+              "`fee_adjustment` scales the sum:",
+              "`taker_fee = (tier_fee + add-on) * (1 +/- fee_adjustment%)`.",
+              "Taker fee only; the maker rebate and the post-only path see",
+              "`fee_adjustment` alone. Occupies 2 bytes of the former 4-byte",
+              "`_padding_buffer` (same offset/alignment on all targets), so existing",
+              "accounts read 0 = no add-on until the admin sets it."
+            ],
+            "type": "u16"
+          },
+          {
             "name": "_padding_buffer",
             "type": {
               "array": [
                 "u8",
-                4
+                2
               ]
             }
           },
@@ -23968,11 +24396,23 @@
             "type": "pubkey"
           },
           {
+            "name": "promo_fee_tier",
+            "docs": [
+              "Promotional fee-tier floor applied to every account: the effective",
+              "perp fee tier is `max(volume tier, promo_fee_tier)` (clamped to the",
+              "configured tier count), so nobody is downgraded by it. 0 = no-op",
+              "(disabled), also what pre-upgrade accounts read from former padding.",
+              "Reset to 0 and every account is back on its volume tier at its next",
+              "fill; no per-user state."
+            ],
+            "type": "u8"
+          },
+          {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                239
+                238
               ]
             }
           }

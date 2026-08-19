@@ -1,6 +1,7 @@
 use crate::{
     error::{ErrorCode, VelocityResult},
     math::{
+        bn::U192,
         casting::Cast,
         constants::PRICE_PRECISION,
         helpers::{get_proportion_u128, log10_iter},
@@ -40,6 +41,60 @@ pub fn vault_amount_to_if_shares(
     };
 
     Ok(n_shares)
+}
+
+/// Price an insurance-fund deposit exactly: the whole shares `amount` buys at the
+/// current share price, and the token cost of precisely those shares.
+///
+/// A share is indivisible, so a deposit that is not an exact multiple of the share
+/// price cannot be fully converted. Transferring the whole `amount` anyway donates the
+/// remainder to existing shareholders — with a donation-inflated share price the
+/// remainder is most of the deposit (a deposit worth 1.5 shares mints 1 and forfeits a
+/// third of itself). Only the priced portion is charged; the caller leaves the rest in
+/// the depositor's token account.
+///
+/// Returns `(amount_to_deposit, n_shares)`, and `(0, 0)` when `amount` is below the
+/// price of a single share — the caller decides whether that is an error.
+///
+/// Both roundings run against the deposit: shares are floored, then their cost is
+/// ceiled, so the fund never sells a share below its price and `amount_to_deposit` is
+/// never above `amount` (flooring guarantees `n_shares * price <= amount`, and `amount`
+/// is an integer). The residual overpayment is at most one token unit.
+pub fn deposit_amount_and_shares_for_if_stake(
+    amount: u64,
+    total_if_shares: u128,
+    insurance_fund_vault_balance: u64,
+) -> VelocityResult<(u64, u128)> {
+    if insurance_fund_vault_balance == 0 {
+        // must be case that total_if_shares == 0 for nice result for user
+        validate!(
+            total_if_shares == 0,
+            ErrorCode::InvalidIFSharesDetected,
+            "assumes total_if_shares == 0",
+        )?;
+
+        // an empty fund mints shares 1:1 with the deposit, so nothing rounds off
+        return Ok((amount, amount.cast::<u128>()?));
+    }
+
+    let vault_balance = U192::from(insurance_fund_vault_balance);
+    let total_shares = U192::from(total_if_shares);
+
+    let n_shares = U192::from(amount)
+        .safe_mul(total_shares)?
+        .safe_div(vault_balance)?;
+
+    if n_shares.is_zero() {
+        return Ok((0, 0));
+    }
+
+    let amount_to_deposit = n_shares
+        .safe_mul(vault_balance)?
+        .safe_div_ceil(total_shares)?
+        .cast::<u128>()?
+        .cast::<u64>()?;
+
+    Ok((amount_to_deposit, n_shares.cast::<u128>()?))
 }
 
 pub fn if_shares_to_vault_amount(

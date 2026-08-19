@@ -16,7 +16,7 @@ use {
             self, bn,
             casting::Cast,
             constants::{
-                BPS_PRECISION, DEFAULT_BANKRUPTCY_IF_FLOOR_PCT,
+                BANKRUPTCY_IF_FLOOR_DISABLED, BPS_PRECISION, DEFAULT_BANKRUPTCY_IF_FLOOR_PCT,
                 DEFAULT_LIQUIDATION_MARGIN_BUFFER_RATIO, FEE_ADJUSTMENT_MAX,
                 FEE_POOL_TO_REVENUE_POOL_THRESHOLD, IF_FACTOR_PRECISION, INSURANCE_A_MAX,
                 INSURANCE_B_MAX, INSURANCE_C_MAX, INSURANCE_SPECULATIVE_MAX,
@@ -744,7 +744,8 @@ pub fn handle_initialize_perp_market(
         paused_operations: 0,
         quote_spot_market_index: QUOTE_SPOT_MARKET_INDEX,
         fee_adjustment: 0,
-        _padding_align_lfp: [0; 6],
+        pending_bankruptcy_claims: 0,
+        _padding_align_lfp: [0; 4],
         pool_id: 0,
         _padding_pmm: [0; 2],
         _padding_hedge: [0; 5],
@@ -1228,6 +1229,24 @@ pub fn handle_settle_expired_market_pools_to_revenue_pool(
         )? == 0,
         ErrorCode::DefaultError,
         "outstanding quote_asset_amounts must be balanced"
+    )?;
+
+    // The wind-down checks above cannot see a booked bankruptcy claim. They sum the quote across
+    // the market, so a latched bankrupt's settled debt of -X nets against another user's unsettled
+    // claim of +X. Both positions hold no base, so all three checks pass with the debt still open.
+    // The final sweep below runs with `force = true` and reserves nothing, so it would drain the
+    // insurance tranche that backs that debt.
+    //
+    // The counter must therefore reach zero first. Two permissionless paths take it there.
+    // `resolve_perp_bankruptcy` absorbs the debt through the bankruptcy waterfall. `settle_pnl`
+    // releases the claim once the position's quote reaches zero. Neither needs the admin, and the
+    // market stays in Settlement while they run.
+    validate!(
+        perp_market.pending_bankruptcy_claims == 0,
+        ErrorCode::DefaultError,
+        "perp market {} still holds {} unresolved bankruptcy claims; resolve them before delisting",
+        perp_market.market_index,
+        perp_market.pending_bankruptcy_claims
     )?;
 
     // With user base, AMM base, and net user cost basis all wound down,
@@ -1896,12 +1915,21 @@ pub fn handle_update_spot_market_if_factor(
         "spot_market_index dne spot_market.index"
     )?;
 
-    // Strictly less than 100%: lenders must keep a nonzero configured share.
-    // At a full 100% carveout `deposit_interest_for_lenders` is 0, which skips
-    // the entire accrual block in `update_spot_market_cumulative_interest` —
-    // freezing borrower interest, the interest timestamp, and even the IF /
-    // protocol pool credits themselves. A strict `<` keeps the lender cut >= 1
-    // whenever deposit interest accrues, so the block always runs.
+    // The combined carveout stays below 100%, so lenders keep a configured share.
+    // `split_deposit_interest` relies on this bound. It divides the deposit
+    // interest by IF_FACTOR_PRECISION with the combined factor as the numerator.
+    // A combined factor below IF_FACTOR_PRECISION keeps that quotient at or below
+    // the interval gain, so the two cuts never take more than the market earned.
+    //
+    // The bound does not by itself keep the lender share above zero. A carried
+    // remainder can raise the cuts to the whole gain on a short interval. The
+    // accrual commits anyway in that case, so a zero lender share is safe.
+    //
+    // A lower pair can leave a carried remainder at or above the new combined
+    // factor, which is the divisor of the insurance-fund-vs-protocol split.
+    // `split_deposit_interest` reduces that remainder below the divisor in force, so
+    // this handler does not have to settle or rescale it. The reduction costs less
+    // than one index unit.
     validate!(
         if_fee_factor.safe_add(protocol_fee_factor)? < IF_FACTOR_PRECISION.cast()?,
         ErrorCode::DefaultError,
@@ -2971,7 +2999,11 @@ pub fn handle_update_perp_market_fee_pool_buffer_target(
 
 /// Set the market's `bankruptcy_if_floor_pct` — the fraction of open-interest
 /// notional the fee sweep must leave behind in `pending_if_fee` as a standing
-/// bankruptcy tranche (PERCENTAGE_PRECISION; 0 disables the floor).
+/// bankruptcy tranche (PERCENTAGE_PRECISION). `0` selects
+/// `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`; `BANKRUPTCY_IF_FLOOR_DISABLED` turns the
+/// standing floor off. Turning it off does not expose a latched bankruptcy:
+/// `pending_bankruptcy_claims` still freezes the sweep until the debt
+/// resolves.
 pub fn handle_update_perp_market_bankruptcy_if_floor_pct(
     ctx: Context<AdminUpdatePerpMarket>,
     bankruptcy_if_floor_pct: u32,
@@ -2980,9 +3012,10 @@ pub fn handle_update_perp_market_bankruptcy_if_floor_pct(
     msg!("perp market {}", perp_market.market_index);
 
     validate!(
-        bankruptcy_if_floor_pct <= PERCENTAGE_PRECISION_U32,
+        bankruptcy_if_floor_pct <= PERCENTAGE_PRECISION_U32
+            || bankruptcy_if_floor_pct == BANKRUPTCY_IF_FLOOR_DISABLED,
         ErrorCode::DefaultError,
-        "bankruptcy_if_floor_pct must be <= PERCENTAGE_PRECISION (100%)"
+        "bankruptcy_if_floor_pct must be <= PERCENTAGE_PRECISION (100%) or BANKRUPTCY_IF_FLOOR_DISABLED"
     )?;
 
     msg!(
@@ -4372,9 +4405,17 @@ pub fn handle_update_special_user_status(
 /// every floored subaccount must show net equity at or above its
 /// floor + buffer with all oracles valid. An approval that has gone stale
 /// (a subaccount drifted back into breach after review) therefore fails
-/// instead of unfreezing a breached authority. The escape hatch when
-/// resumption is the business decision anyway is `update_user_equity_floor`:
-/// lower the floors first, explicitly and auditably.
+/// instead of unfreezing a breached authority.
+///
+/// The validity requirement here stays all-or-nothing, deliberately not
+/// sharing the trip's dust concession. The trip proves equity below the
+/// floor, so unknowns are conceded upward and a trip that fires is sound at
+/// any true dust price; the reset proves the opposite direction, where
+/// conceding dust upward would unfreeze off values the program cannot
+/// verify. A dead oracle on a dust position therefore blocks the reset
+/// until the feed recovers. The escape hatch, here and whenever resumption
+/// is the business decision anyway, is `update_user_equity_floor`: lower
+/// the floors first, explicitly and auditably.
 pub fn handle_reset_equity_floor_breaker<'c: 'info, 'info>(
     ctx: Context<'info, ResetEquityFloorBreaker<'info>>,
 ) -> Result<()> {

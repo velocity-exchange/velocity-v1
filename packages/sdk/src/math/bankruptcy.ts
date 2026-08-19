@@ -1,4 +1,4 @@
-import { QUOTE_SPOT_MARKET_INDEX, ZERO } from '../constants/numericConstants';
+import { ZERO } from '../constants/numericConstants';
 import { hasOpenOrders } from './position';
 import { getTokenAmount } from './spotBalance';
 import {
@@ -53,26 +53,28 @@ function isIsolatedPositionEconomicallyBankrupt(
  *   depositor holding a positive `scaledBalance` worth zero tokens. Such a row cannot be
  *   seized (`liquidate_spot` rejects a zero token amount), so treating it as collateral
  *   blocks admission forever.
- * - **A positive perp quote vetoes only while its market's PnL pool can pay part of it.**
- *   That payable portion settles through the ordinary pipeline (settle → deposit →
- *   `liquidatePerpPnlForDeposit`), which needs no insurance. Once the pool is empty the
- *   claim cannot become a deposit at all, so it can never clear the veto on its own; the
- *   resolvers forfeit the unfundable remainder to the market's insurance tranche.
+ * - **A positive perp quote does not veto, and neither does its market's PnL pool.** The
+ *   resolvers recover whatever that pool can pay into the estate's quote deposit and forfeit
+ *   the rest to the market's insurance tranche, so a claim cannot strand a resolvable loss in
+ *   another market whatever the pool holds. Vetoing on the pool would stall the repair, and
+ *   trading fees flow into the pool, so any market participant could re-arm such a veto with
+ *   a trade.
  *
  * The net-quote gate then keeps an estate that is net *solvent* out of bankruptcy however
- * unfundable its claims are, which is what bounds the forfeit to what the estate owes.
- * Summing quotes is exact here, not an approximation: every position that reaches it has
- * `baseAssetAmount == 0`, so its whole value is its `quoteAssetAmount`.
+ * unfundable its claims are. Summing quotes is exact here, not an approximation: every position
+ * that reaches it has `baseAssetAmount == 0`, so its whole value is its `quoteAssetAmount`.
+ * The gate does not bound the forfeit — the program bounds that against the loss each
+ * resolver call covers, because a latched estate reaches a resolver without passing this
+ * predicate again.
  *
  * @param user The `User` account wrapper to evaluate.
  * @returns `true` if the user's cross-margin collateral is exhausted and they still owe a
  *   liability (spot borrow or negative perp quote balance); `false` otherwise.
- * @throws if a spot or perp market referenced by a nonzero position is not loaded on the
- *   client (via `getSpotMarketAccountOrThrow` / `getPerpMarketAccountOrThrow`) — the token
- *   and PnL-pool conversions cannot be evaluated without them, and silently treating an
- *   unloaded market as "no assets" would over-report bankruptcy. `User.canBeLiquidated`
- *   already throws on the same condition, so a keeper screening users with both does not
- *   gain a new failure mode here.
+ * @throws if a spot market referenced by a nonzero deposit row is not loaded on the client
+ *   (via `getSpotMarketAccountOrThrow`) — the token conversion cannot be evaluated without it,
+ *   and silently treating an unloaded market as "no assets" would over-report bankruptcy.
+ *   `User.canBeLiquidated` already throws on the same condition, so a keeper screening users
+ *   with both does not gain a new failure mode here.
  */
 export function isUserBankrupt(user: User): boolean {
 	const userAccount = user.getUserAccountOrThrow();
@@ -99,9 +101,6 @@ export function isUserBankrupt(user: User): boolean {
 		}
 	}
 
-	const quoteSpotMarket = user.velocityClient.getSpotMarketAccountOrThrow(
-		QUOTE_SPOT_MARKET_INDEX
-	);
 	let netPerpQuote = ZERO;
 
 	for (const position of userAccount.perpPositions) {
@@ -114,19 +113,7 @@ export function isUserBankrupt(user: User): boolean {
 			return false;
 		}
 
-		if (position.quoteAssetAmount.gt(ZERO)) {
-			const perpMarket = user.velocityClient.getPerpMarketAccountOrThrow(
-				position.marketIndex
-			);
-			const pnlPoolTokens = getTokenAmount(
-				perpMarket.pnlPool.scaledBalance,
-				quoteSpotMarket,
-				SpotBalanceType.DEPOSIT
-			);
-			if (pnlPoolTokens.gt(ZERO)) {
-				return false;
-			}
-		} else if (position.quoteAssetAmount.lt(ZERO)) {
+		if (position.quoteAssetAmount.lt(ZERO)) {
 			hasLiability = true;
 		}
 

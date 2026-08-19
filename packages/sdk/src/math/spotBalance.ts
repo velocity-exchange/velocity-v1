@@ -659,13 +659,11 @@ export function maxSpotInterestStalenessForMargin(bank: SpotMarketAccount): BN {
  * interest is owed — while the market's `UpdateCumulativeInterest` op (or the exchange-wide funding
  * pause) is set, and while utilization is zero. So a projection from `bank.lastInterestTs` never
  * spans a paused or zero-borrow window; those intervals are dropped on chain rather than billed
- * later to whatever balances exist at the time (findings #115, #117). Conversely, an interval whose
- * *configured* carveout (`insuranceFund.ifFeeFactor` / `protocolFeeFactor`) would convert to less
- * than one token is **deferred**: the program commits nothing and leaves `lastInterestTs` in place
- * until the span is long enough to pay the cut, rather than dropping it (finding #127). So a
- * projection can legitimately span a long window on a market with a configured carveout even though
- * the accrual has been cranked repeatedly; the amounts here are what *would* be committed if the
- * carveout clears at `now`. Borrow interest
+ * later to whatever balances exist at the time (findings #115, #117). Every other interval that is
+ * owed commits on the interval it belongs to, once it reaches a whole index unit on both sides. An
+ * interval under that floor (`borrowInterest` of 1, or `depositInterest` of 0) stays on the clock
+ * and is retried on the next crank, so a projection from `bank.lastInterestTs` spans a window in
+ * which balances changed only by that sub-unit remainder. Borrow interest
  * is always rounded up by 1 (added unconditionally), matching the program's lender-favoring
  * rounding, and is credited to `cumulativeBorrowInterest` in full. **`depositInterest` here is the
  * gross pre-carveout amount** — on-chain, `insuranceFund.ifFeeFactor` and `protocolFeeFactor`
@@ -673,6 +671,14 @@ export function maxSpotInterestStalenessForMargin(bank: SpotMarketAccount): BN {
  * respectively) and only the remainder is what actually gets added to `cumulativeDepositInterest`;
  * this function does not replicate that split, so it overstates the deposit-side increment
  * whenever either factor is non-zero.
+ *
+ * A cut too small to pay in whole units is neither dropped nor delayed. The program carries the
+ * remainder of each of the cut's two divisions. Those divisions are the factor multiply in index
+ * space and the conversion to tokens. The remainders live on the carveout pools, in
+ * `pendingInterestSplitDust` and `pendingInterestDust`, and the program adds them back on the next
+ * interval (finding #127). A market with a configured carveout therefore pays its pools in steps
+ * rather than on every interval, while `cumulativeDepositInterest` and `lastInterestTs` still
+ * advance on every interval that clears the floor above.
  *
  * `depositInterest` is subject to the program's conservation clamp: it is scaled down if the tokens
  * it would credit to `depositBalance` exceed the tokens `borrowInterest` charges `borrowBalance`.

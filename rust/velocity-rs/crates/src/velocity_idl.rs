@@ -896,6 +896,16 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for ReclaimRent {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct RefreshSpotMarketInterest {
+        pub market_indexes: Vec<u16>,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for RefreshSpotMarketInterest {
+        const DISCRIMINATOR: &[u8] = &[11, 188, 50, 141, 73, 51, 134, 78];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for RefreshSpotMarketInterest {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct RemoveAmmConstituentMappingData {
         pub perp_market_index: u16,
         pub constituent_index: u16,
@@ -4351,8 +4361,9 @@ pub mod types {
         pub paused_operations: u8,
         pub quote_spot_market_index: u16,
         pub fee_adjustment: i16,
+        pub pending_bankruptcy_claims: u16,
         #[serde(skip)]
-        pub _padding_align_lfp: Padding<6>,
+        pub _padding_align_lfp: Padding<4>,
         pub last_fill_price: u64,
         pub pool_id: u8,
         #[serde(skip)]
@@ -4436,7 +4447,9 @@ pub mod types {
         pub scaled_balance: u128,
         pub market_index: u16,
         #[serde(skip)]
-        pub padding: Padding<14>,
+        pub padding: Padding<2>,
+        pub pending_interest_split_dust: u32,
+        pub pending_interest_dust: u64,
     }
     #[derive(
         AnchorSerialize,
@@ -5900,8 +5913,9 @@ pub mod accounts {
         pub paused_operations: u8,
         pub quote_spot_market_index: u16,
         pub fee_adjustment: i16,
+        pub pending_bankruptcy_claims: u16,
         #[serde(skip)]
-        pub _padding_align_lfp: Padding<6>,
+        pub _padding_align_lfp: Padding<4>,
         pub last_fill_price: u64,
         pub pool_id: u8,
         #[serde(skip)]
@@ -13625,6 +13639,62 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for ReclaimRent {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct RefreshSpotMarketInterest {
+        pub state: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for RefreshSpotMarketInterest {
+        const DISCRIMINATOR: &[u8] = &[24, 94, 102, 184, 76, 160, 55, 219];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for RefreshSpotMarketInterest {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for RefreshSpotMarketInterest {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for RefreshSpotMarketInterest {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for RefreshSpotMarketInterest {}
+    #[automatically_derived]
+    impl ToAccountMetas for RefreshSpotMarketInterest {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![AccountMeta {
+                pubkey: self.state,
+                is_signer: false,
+                is_writable: false,
+            }]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for RefreshSpotMarketInterest {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for RefreshSpotMarketInterest {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {

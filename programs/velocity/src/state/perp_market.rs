@@ -5,13 +5,14 @@ use {
         math::{
             casting::Cast,
             constants::{
-                AMM_TO_QUOTE_PRECISION_RATIO, BASE_PRECISION,
-                DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT, FUNDING_RATE_BUFFER_I128,
-                FUNDING_RATE_OFFSET_PERCENTAGE, LIQUIDATION_FEE_PRECISION, MARGIN_PRECISION,
-                MARGIN_PRECISION_U128, MAX_LIQUIDATION_MULTIPLIER, ONE_MINUTE,
-                PERCENTAGE_PRECISION, PERCENTAGE_PRECISION_I128, PERCENTAGE_PRECISION_I64,
-                PERCENTAGE_PRECISION_U32, PERCENTAGE_PRECISION_U64, PRICE_PRECISION_I128,
-                SPOT_WEIGHT_PRECISION, TRIGGER_PRICE_LAST_FILL_MAX_AGE,
+                AMM_TO_QUOTE_PRECISION_RATIO, BANKRUPTCY_IF_FLOOR_DISABLED, BASE_PRECISION,
+                DEFAULT_BANKRUPTCY_IF_FLOOR_PCT, DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT,
+                FUNDING_RATE_BUFFER_I128, FUNDING_RATE_OFFSET_PERCENTAGE,
+                LIQUIDATION_FEE_PRECISION, MARGIN_PRECISION, MARGIN_PRECISION_U128,
+                MAX_LIQUIDATION_MULTIPLIER, ONE_MINUTE, PERCENTAGE_PRECISION,
+                PERCENTAGE_PRECISION_I128, PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U32,
+                PERCENTAGE_PRECISION_U64, PRICE_PRECISION_I128, SPOT_WEIGHT_PRECISION,
+                TRIGGER_PRICE_LAST_FILL_MAX_AGE,
             },
             margin::{
                 calculate_size_discount_asset_weight, calculate_size_premium_liability_weight,
@@ -424,11 +425,37 @@ pub struct PerpMarket {
     /// E.g. if this is -50 and the fee is 5bps, the new fee will be 2.5bps
     /// if this is 50 and the fee is 5bps, the new fee will be 7.5bps
     pub fee_adjustment: i16,
-    /// Explicit padding so the IDL records the 6 bytes the Rust compiler
-    /// inserts to 8-align `last_fill_price`. Without this the JS borsh
+    /// Number of unresolved bankrupt quote debts booked against this market.
+    /// A liquidation that latches a user bankrupt increments it. Both writers
+    /// of `PerpPosition.quote_asset_amount` decrement it when that debt
+    /// reaches zero: `update_quote_asset_amount` and
+    /// `update_position_and_market`. The count tracks the debt, not the latch:
+    /// an un-latched estate that still owes the market stays booked, because
+    /// the debt still resolves through the bankruptcy waterfall.
+    ///
+    /// While it is above zero the fee sweep withholds the whole
+    /// `pending_if_fee`, not just `get_bankruptcy_if_floor()` — the sweep is
+    /// permissionless, so a caller could otherwise drain the first-loss
+    /// tranche between the latch and the resolution and push the loss onto the
+    /// shared insurance fund or into socialization. The freeze is independent
+    /// of open interest and of `bankruptcy_if_floor_pct`, both of which can be
+    /// zero exactly when a bankruptcy is pending.
+    ///
+    /// Occupies 2 of the 6 bytes the Rust compiler inserts to 8-align
+    /// `last_fill_price`. The remaining 4 stay explicit padding, so every
+    /// later byte offset and the account size are unchanged and existing
+    /// accounts read 0 (no pending claim).
+    ///
+    /// `settle_expired_market_pools_to_revenue_pool` rejects while this count
+    /// is above zero, because that instruction's final sweep bypasses the
+    /// floor.
+    pub pending_bankruptcy_claims: u16,
+    /// Explicit padding so the IDL records the 4 bytes the Rust compiler
+    /// still inserts to 8-align `last_fill_price`. Without this the JS borsh
     /// decoder (which reads sequentially after the variable-span enum
-    /// `status`) reads every field past `fee_adjustment` 6 bytes early.
-    pub _padding_align_lfp: [u8; 6],
+    /// `status`) reads every field past `pending_bankruptcy_claims` 4 bytes
+    /// early.
+    pub _padding_align_lfp: [u8; 4],
     pub last_fill_price: u64,
     pub pool_id: u8,
     pub _padding_pmm: [u8; 2],
@@ -452,16 +479,26 @@ pub struct PerpMarket {
     /// 0 is no override, -1 is disable speed bump, 1-100 is literal speed bump
     pub oracle_low_risk_slot_delay_override: i8,
     /// Floor on the unswept IF-fee carveout, as a percentage of open-interest
-    /// notional (PERCENTAGE_PRECISION; 0 disables). The fee sweep's IF drain
-    /// leaves `pending_if_fee` at (at least) this floor, so a standing
-    /// first-loss tranche is always available to `resolve_perp_bankruptcy` —
-    /// a permissionless sweep (or the inline sweep on any pnl settle) cannot
-    /// drain the tranche below it ahead of a bankruptcy resolution. Notional
-    /// is valued at the market's own oracle TWAP so a manipulated spot print
-    /// can't crush the floor. Occupies the former 4-byte trailing padding
-    /// before `market_stats` (same offset/alignment on all targets), so
-    /// existing accounts read 0 = disabled until the admin sets it;
-    /// new markets initialize to `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`.
+    /// notional (PERCENTAGE_PRECISION). The fee sweep's IF drain leaves
+    /// `pending_if_fee` at (at least) this floor, so a standing first-loss
+    /// tranche is available to `resolve_perp_bankruptcy` before any user is
+    /// latched bankrupt — a permissionless sweep (or the inline sweep on any
+    /// pnl settle) cannot drain the tranche below it. Notional is valued at
+    /// the market's own oracle TWAP so a manipulated spot print can't crush
+    /// the floor.
+    ///
+    /// `0` means `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`, so every market created
+    /// before the field existed carries the standing tranche without an admin
+    /// call. `BANKRUPTCY_IF_FLOOR_DISABLED` turns the floor off. Read it
+    /// through `get_bankruptcy_if_floor_pct`, never directly.
+    ///
+    /// The floor sizes the tranche off market risk, which is a proxy for the
+    /// loss and can be smaller than it. `pending_bankruptcy_claims` covers
+    /// every latched bankruptcy exactly, by withholding all of
+    /// `pending_if_fee` until it resolves.
+    ///
+    /// Occupies the former 4-byte trailing padding before `market_stats`
+    /// (same offset/alignment on all targets).
     pub bankruptcy_if_floor_pct: u32,
     /// Market-wide stats shared across all makers: mark/oracle TWAPs, std,
     /// volume, intensity, mm-oracle snapshot, `historical_oracle_data`,
@@ -547,7 +584,8 @@ impl Default for PerpMarket {
             paused_operations: 0,
             quote_spot_market_index: 0,
             fee_adjustment: 0,
-            _padding_align_lfp: [0; 6],
+            pending_bankruptcy_claims: 0,
+            _padding_align_lfp: [0; 4],
             pool_id: 0,
             _padding_pmm: [0; 2],
             _padding_hedge: [0; 5],
@@ -935,12 +973,45 @@ impl PerpMarket {
             .unsigned_abs()
     }
 
+    /// The effective floor percentage. `0` is the value every market written
+    /// before the field existed holds, so it resolves to
+    /// `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT` — a market gets the standing tranche
+    /// without an admin call. `BANKRUPTCY_IF_FLOOR_DISABLED` resolves to 0.
+    /// precision: PERCENTAGE_PRECISION
+    pub fn get_bankruptcy_if_floor_pct(&self) -> u32 {
+        match self.bankruptcy_if_floor_pct {
+            0 => DEFAULT_BANKRUPTCY_IF_FLOOR_PCT,
+            BANKRUPTCY_IF_FLOOR_DISABLED => 0,
+            pct => pct,
+        }
+    }
+
+    /// True while at least one latched bankruptcy still holds an unresolved
+    /// quote debt against this market.
+    pub fn has_pending_bankruptcy_claim(&self) -> bool {
+        self.pending_bankruptcy_claims > 0
+    }
+
+    /// Book a latched bankrupt debt against this market. The fee sweep then
+    /// withholds the whole `pending_if_fee` until the debt resolves.
+    pub fn increment_pending_bankruptcy_claims(&mut self) {
+        self.pending_bankruptcy_claims = self.pending_bankruptcy_claims.saturating_add(1);
+    }
+
+    /// Discharge a booked debt. Saturating: an extra decrement must not wrap
+    /// the counter to a value that freezes the sweep forever.
+    pub fn decrement_pending_bankruptcy_claims(&mut self) {
+        self.pending_bankruptcy_claims = self.pending_bankruptcy_claims.saturating_sub(1);
+    }
+
     /// The `pending_if_fee` floor the sweep's IF drain must leave behind:
-    /// `bankruptcy_if_floor_pct` of open-interest notional, valued at the
-    /// market's oracle TWAP (manipulation-resistant; no live oracle needed).
+    /// `get_bankruptcy_if_floor_pct()` of open-interest notional, valued at
+    /// the market's oracle TWAP (manipulation-resistant; no live oracle
+    /// needed). This is the standing tranche, held before any user is latched.
     /// precision: QUOTE_PRECISION
     pub fn get_bankruptcy_if_floor(&self) -> VelocityResult<u128> {
-        if self.bankruptcy_if_floor_pct == 0 {
+        let bankruptcy_if_floor_pct = self.get_bankruptcy_if_floor_pct();
+        if bankruptcy_if_floor_pct == 0 {
             return Ok(0);
         }
 
@@ -954,13 +1025,30 @@ impl PerpMarket {
         self.get_open_interest()
             .safe_mul(oracle_price_twap)?
             .safe_div(BASE_PRECISION)?
-            .safe_mul(self.bankruptcy_if_floor_pct.cast()?)?
+            .safe_mul(bankruptcy_if_floor_pct.cast()?)?
             .safe_div(PERCENTAGE_PRECISION)
     }
 
-    /// The pnl-pool tokens that must stay behind to keep the standing
-    /// first-loss IF bankruptcy tranche backed: `min(pending_if_fee,
-    /// get_bankruptcy_if_floor())`. `resolve_perp_bankruptcy` consumes
+    /// The `pending_if_fee` the sweep's IF drain must leave behind. A latched
+    /// bankruptcy holds all of it; otherwise the standing floor holds its
+    /// part. `force` (the delisting sweep) holds nothing, because the delist
+    /// handler rejects while `pending_bankruptcy_claims` is above zero.
+    /// precision: QUOTE_PRECISION
+    pub fn get_pending_if_fee_floor(&self, force: bool) -> VelocityResult<u128> {
+        if force {
+            return Ok(0);
+        }
+
+        if self.has_pending_bankruptcy_claim() {
+            return Ok(self.fee_ledger.pending_if_fee);
+        }
+
+        self.get_bankruptcy_if_floor()
+    }
+
+    /// The pnl-pool tokens that must stay behind to keep the first-loss IF
+    /// bankruptcy tranche backed: `min(pending_if_fee,
+    /// get_pending_if_fee_floor())`. `resolve_perp_bankruptcy` consumes
     /// `pending_if_fee` counter-only (it cancels the forgiven loss against the
     /// pending claim with no token movement, relying on that fee value still
     /// sitting in the pnl pool), so a permissionless drain that moved those
@@ -968,17 +1056,14 @@ impl PerpMarket {
     /// into `protocol_fee_pool`, which is not part of the insurance backstop —
     /// would leave the tranche unbacked and surviving-trader PnL short. Every
     /// permissionless pnl-pool drain reserves this on top of
-    /// `max(net_user_pnl, 0)`. `force` (delisting, once bankruptcies are
-    /// resolved) returns 0.
+    /// `max(net_user_pnl, 0)`. `force` (delisting, which the handler allows
+    /// only after every bankruptcy claim is discharged) returns 0.
     /// precision: QUOTE_PRECISION
     pub fn get_bankruptcy_if_tranche_reservation(&self, force: bool) -> VelocityResult<u128> {
-        if force {
-            return Ok(0);
-        }
         Ok(self
             .fee_ledger
             .pending_if_fee
-            .min(self.get_bankruptcy_if_floor()?))
+            .min(self.get_pending_if_fee_floor(force)?))
     }
 
     /// Record builder/referrer revenue share accrued on a fill into the
@@ -1540,8 +1625,65 @@ pub struct PoolBalance {
     pub scaled_balance: u128,
     /// The spot market the pool is for
     pub market_index: u16,
-    pub padding: [u8; 14],
+    /// Filler for the alignment gap before the two dust fields. Those fields must
+    /// start at offsets 20 and 24. The host layout and the SBF layout then agree,
+    /// and the packed borsh layout in the IDL reaches the same offsets. This
+    /// field shrank from 14 bytes to 2. The size of the struct and every other
+    /// field offset are unchanged. Do not reorder or resize these fields.
+    pub padding: [u8; 2],
+    /// Remainder of one index-space division that splits a spot market's deposit
+    /// interest between lenders and the carveout pools. The accrual carries the
+    /// remainder between intervals. A share too small to reach a whole index unit
+    /// is therefore delayed and not lost.
+    ///
+    /// The division depends on the pool. See `split_deposit_interest`.
+    ///
+    ///   - On `revenue_pool` this is the lenders-vs-carveouts split. The divisor
+    ///     is IF_FACTOR_PRECISION, so the value stays below IF_FACTOR_PRECISION.
+    ///   - On `protocol_fee_pool` this is the insurance-fund-vs-protocol split of
+    ///     the withheld amount. The divisor is
+    ///     `if_fee_factor + protocol_fee_factor`, so the value stays below it. The
+    ///     admin can lower that pair, which leaves a stored value at or above the
+    ///     new divisor. `split_deposit_interest` reduces the value it reads below
+    ///     the divisor in force, so a change of the factors costs less than one
+    ///     index unit and cannot strand the market.
+    ///
+    /// That order keeps the two carveouts from taking more than the interval
+    /// gain. The first division bounds the total. The second division only
+    /// divides the amount that the first division set aside. Two independent cuts
+    /// can instead each round up and leave lenders at zero.
+    ///
+    /// precision: the numerator units of its division.
+    pub pending_interest_split_dust: u32,
+    /// Remainder of the token-space division for this pool's carveout.
+    ///
+    /// A withheld index amount reaches the pool only as whole tokens, through
+    /// `deposit_balance * cut / 10^(19 - decimals)`. On a small market that
+    /// division floors to zero even when the index-space cut is not zero. Lenders
+    /// have already given up the value at that point, so a floored cut credits
+    /// nobody and leaves unattributed slack in the vault. The accrual parks the
+    /// remainder here and adds it back on the next interval.
+    ///
+    /// precision: token * 10^(19 - decimals). The value always stays below one
+    /// token, which is `10^(19 - decimals)` and at most 10^19. It therefore fits
+    /// a u64 for every supported value of `decimals`.
+    ///
+    /// Only the two lending carveout pools use these two fields. Those pools are
+    /// a spot market's `revenue_pool` and `protocol_fee_pool`. Both fields stay 0
+    /// on every other `PoolBalance`, such as a perp market's `pnl_pool` and
+    /// `fee_pool`. Both fields read 0 on markets created before the fields
+    /// existed, which is the correct starting value.
+    pub pending_interest_dust: u64,
 }
+
+// Layout guard. `PerpMarket` and `SpotMarket` embed `PoolBalance` at frozen
+// offsets. The size must not move, and the two dust fields must start at 20 and
+// 24 with no implicit `#[repr(C)]` padding. Off-chain decoders read the packed
+// layout from the IDL.
+const _: () = assert!(std::mem::size_of::<PoolBalance>() == 32);
+const _: () = assert!(std::mem::offset_of!(PoolBalance, market_index) == 16);
+const _: () = assert!(std::mem::offset_of!(PoolBalance, pending_interest_split_dust) == 20);
+const _: () = assert!(std::mem::offset_of!(PoolBalance, pending_interest_dust) == 24);
 
 impl SpotBalance for PoolBalance {
     fn market_index(&self) -> u16 {

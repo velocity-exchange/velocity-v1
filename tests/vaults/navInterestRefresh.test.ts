@@ -38,6 +38,7 @@ import {
 	BulkAccountLoader,
 	VELOCITY_PROGRAM_ID,
 	VelocityClient,
+	MarketStatus,
 	OracleSource,
 	PEG_PRECISION,
 	PublicKey,
@@ -536,5 +537,71 @@ describe('vault NAV interest refresh (OtterSec #136/#137)', () => {
 			user2Equity.gt(depositAmount),
 			`user2Equity=${user2Equity.toString()} deposit=${depositAmount.toString()}`
 		).to.equal(true);
+	});
+
+	// The refresh CPI used to carry velocity's `spot_market_valid` access control, which
+	// rejects a delisted market. Every vault instruction ran that CPI first, so delisting
+	// the denomination market froze all of them, including the paths that move no tokens.
+	// Delisting is terminal (`handle_update_spot_market_status` carries the same guard), so
+	// there was no recovery.
+	//
+	// The token-moving paths stay blocked either way: velocity's own withdraw admits only
+	// Active, ReduceOnly and Settlement. This test covers what the refresh actually unblocks.
+	it('keeps the token-less paths working when the denomination market is delisted', async () => {
+		await user1Client.deposit(
+			user1VaultDepositor,
+			depositAmount,
+			{ authority: user1Signer.publicKey, vault: commonVaultKey },
+			{ noLut: true },
+			user1UserUSDCAccount
+		);
+		await openBorrow();
+
+		await adminVelocityClient.updateSpotMarketStatus(0, MarketStatus.DELISTED);
+		await adminVelocityClient.fetchAccounts();
+
+		// Request moves no tokens, so a wound-down market is no reason to block it.
+		const shares = (await fetchVaultDepositor(user1VaultDepositor))
+			.vaultShares as BN;
+		await user1Client.syncVaultUsers();
+		await user1Client.requestWithdraw(
+			user1VaultDepositor,
+			shares,
+			WithdrawUnit.SHARES,
+			{ noLut: true }
+		);
+		expect(
+			(
+				(await fetchVaultDepositor(user1VaultDepositor))
+					.lastWithdrawRequest as { value: BN }
+			).value.gt(ZERO)
+		).to.equal(true);
+
+		// Cancelling is the case with no recovery path of its own: a depositor stuck
+		// mid-request could neither finish nor undo it.
+		await user1Client.syncVaultUsers();
+		await user1Client.cancelRequestWithdraw(user1VaultDepositor, {
+			noLut: true,
+		});
+		expect(
+			(
+				(await fetchVaultDepositor(user1VaultDepositor))
+					.lastWithdrawRequest as { value: BN }
+			).value.eq(ZERO)
+		).to.equal(true);
+
+		// The interest still accrues on a delisted market, so the refresh still books it.
+		// Nothing about delisting stops the accrual — `deposit` and `force_delete_user`
+		// book interest there too — so refusing here only ever blocked the caller.
+		const indexBefore = await fetchDepositInterestIndex();
+		await bankrunContextWrapper.moveTimeForward(SIX_MONTHS);
+		await user1Client.syncVaultUsers();
+		await user1Client.requestWithdraw(
+			user1VaultDepositor,
+			shares,
+			WithdrawUnit.SHARES,
+			{ noLut: true }
+		);
+		expect((await fetchDepositInterestIndex()).gt(indexBefore)).to.equal(true);
 	});
 });

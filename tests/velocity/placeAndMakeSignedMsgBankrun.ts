@@ -519,11 +519,12 @@ describe('place and make signedMsg order', () => {
 
 		// Get pyth lazer instruction
 		const pythLazerCrankIxs =
-			// crank rides inside the fill tx sent further below (after building the lookup
-			// table + taker), so lead the stamp to stay fresh across those transactions.
+			// crank rides inside the fill tx sent further below, so lead the stamp to stay fresh
+			// across the transactions in between. The lead must stay under
+			// PYTH_LAZER_MAX_FUTURE_SECONDS, which the program now enforces.
 			await makerVelocityClient.getPostPythLazerOracleUpdateIxs(
 				[6],
-				freshLazerSolHex(bankrunContextWrapper.connection.getTime(), 90),
+				freshLazerSolHex(bankrunContextWrapper.connection.getTime(), 10),
 				undefined,
 				1
 			);

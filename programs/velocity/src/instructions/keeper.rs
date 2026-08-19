@@ -33,7 +33,10 @@ use {
                 BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT, BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS,
                 QUOTE_PRECISION_I128, QUOTE_PRECISION_U64, QUOTE_SPOT_MARKET_INDEX,
             },
-            margin::{calculate_user_equity, meets_settle_pnl_maintenance_margin_requirement},
+            margin::{
+                calculate_user_equity, calculate_user_equity_for_trip,
+                meets_settle_pnl_maintenance_margin_requirement,
+            },
             orders::{
                 estimate_price_from_side, filter_bids_asks_by_oracle_divergence,
                 find_bids_and_asks_from_users,
@@ -330,31 +333,38 @@ pub fn handle_trip_equity_floor_breaker<'c: 'info, 'info>(
     // The trip threshold is real net equity (unweighted assets and pnl minus
     // unweighted spot liabilities), not the margin numerator: weighted
     // collateral overstates equity when borrows exist and understates it via
-    // asset weights, strict pricing and the positive-pnl clamp.
-    let (net_equity, all_oracles_valid) =
-        calculate_user_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+    // asset weights, strict pricing and the positive-pnl clamp. The walk is
+    // the trip's own: positions with invalid oracles are conceded a bounded
+    // most-favorable value instead of vetoing the proof, so dust in a
+    // dead-oracle market cannot keep a material breach untrippable.
+    let trip_equity =
+        calculate_user_equity_for_trip(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
 
-    // An authority-wide freeze must not arm off an invalid price. The floor
-    // gates on withdrawals/fills still hold independently of the breaker.
+    // An authority-wide freeze must not arm over exposure the program cannot
+    // value: an invalid-oracle asset or long past the dust allowance (or one
+    // whose twap cannot size it) blocks the proof. The floor gates on
+    // withdrawals/fills still hold independently of the breaker. The two
+    // validates decompose `TripNetEquity::proves_breach` so each failure
+    // keeps its error code.
     validate!(
-        all_oracles_valid,
+        trip_equity.provable,
         ErrorCode::InvalidOracle,
-        "cannot trip equity floor breaker with an invalid oracle"
+        "cannot trip equity floor breaker: invalid oracle on a position the dust test cannot bound"
     )?;
 
     validate!(
-        user.is_below_equity_floor(net_equity),
+        user.is_below_equity_floor(trip_equity.equity_upper_bound),
         ErrorCode::SufficientCollateral,
-        "user net equity {} not below equity floor {}",
-        net_equity,
+        "user net equity upper bound {} not below equity floor {}",
+        trip_equity.equity_upper_bound,
         user.equity_floor
     )?;
 
     msg!(
-        "equity floor breaker tripped for authority {:?}: subaccount {} net equity {} below floor {}",
+        "equity floor breaker tripped for authority {:?}: subaccount {} net equity upper bound {} below floor {}",
         user.authority,
         user.sub_account_id,
-        net_equity,
+        trip_equity.equity_upper_bound,
         user.equity_floor
     );
 
@@ -2467,10 +2477,14 @@ pub fn handle_resolve_spot_bankruptcy<'c: 'info, 'info>(
         mut oracle_map,
     } = load_maps(
         remaining_accounts_iter,
-        // OtterSec #145: this resolver also winds up unfundable perp claims, so the markets holding
-        // them are written to even though the bankruptcy being resolved is a spot borrow.
+        // OtterSec #145: this resolver also recovers and winds up the estate's perp claims, so the
+        // markets holding them are written to even though the bankruptcy being resolved is a spot
+        // borrow.
         &get_writable_perp_market_set_from_vec(&perp_markets_with_forfeitable_claims(user)),
-        &get_writable_spot_market_set(market_index),
+        // The quote market is written too: a recovered claim lands in the estate's quote deposit,
+        // and the borrow being resolved may be in another market entirely. It was already a required
+        // account here, because the claim passes read it, but only as read-only.
+        &get_writable_spot_market_set_from_many(vec![market_index, QUOTE_SPOT_MARKET_INDEX]),
         clock.slot,
         Some(state.oracle_guard_rails),
     )?;
@@ -3249,6 +3263,74 @@ pub fn handle_update_spot_market_cumulative_interest(
     Ok(())
 }
 
+/// Permissionless batch refresh: book the lending interest of several spot markets in one
+/// instruction. Markets and their indexes arrive through `remaining_accounts`, and each one goes
+/// through the same `update_spot_market_cumulative_interest` as the single-market crank above.
+///
+/// Written for a caller that must value several markets in one transaction, such as a program
+/// that prices a share against the markets a user holds. The single-market crank stays the
+/// instruction that keeps a market's oracle EMA fresh.
+///
+/// This instruction moves no tokens and passes no oracle, which is why it drops two of the crank's
+/// guards and its spot-vault assertion, and keeps the third:
+///
+/// - No oracle means `update_spot_market_twap_stats` leaves `historical_oracle_data` alone. A
+///   caller that reads a market's oracle TWAP after this call therefore reads a value this call
+///   did not move, and no caller can pick the sampling instant of an oracle EMA.
+/// - A market status of `Delisted` is not rejected. `deposit` and `force_delete_user` already
+///   book interest on a delisted market, so refusing here would block callers without stopping
+///   the accrual.
+/// - `exchange_not_paused` is kept. A full halt sets every `ExchangeStatus` bit, `FundingPaused`
+///   included, so no interest can accrue and the only work left is stamping the clock and the
+///   balance TWAPs. Those TWAPs size the withdraw and borrow circuit breakers, and a halt freezes
+///   them for a reason. Without this guard a caller could re-baseline a breaker mid-halt, or stamp
+///   the halted interval away so nobody is charged for it.
+/// - The spot vault holds the same tokens after this call as before it, and booking interest can
+///   only lower the depositors' claim, never raise it. Asserting the vault invariant here would
+///   let one market that is already short abort the refresh of every other market in the batch.
+#[access_control(
+    exchange_not_paused(&ctx.accounts.state)
+)]
+pub fn handle_refresh_spot_market_interest<'c: 'info, 'info>(
+    ctx: Context<'info, RefreshSpotMarketInterest<'info>>,
+    market_indexes: Vec<u16>,
+) -> Result<()> {
+    // A user holds eight spot positions, and every perp market quotes the same spot market
+    // (`initialize_perp_market` hardcodes it and no setter exists), so ten markets cover every
+    // market one user's equity can read. The cap keeps one call inside a compute budget.
+    validate!(
+        market_indexes.len() <= 16,
+        ErrorCode::DefaultError,
+        "too many markets passed, max 16, got {}",
+        market_indexes.len()
+    )?;
+
+    let state = ctx.accounts.state.load()?;
+    let clock = Clock::get()?;
+
+    let writable_spot_markets = get_writable_spot_market_set_from_many(market_indexes);
+
+    let AccountMaps {
+        spot_market_map, ..
+    } = load_maps(
+        &mut ctx.remaining_accounts.iter().peekable(),
+        &MarketSet::new(),
+        &writable_spot_markets,
+        clock.slot,
+        Some(state.oracle_guard_rails),
+    )?;
+
+    controller::spot_balance::refresh_spot_market_interest(
+        &spot_market_map,
+        None,
+        &writable_spot_markets,
+        clock.unix_timestamp,
+        state.funding_paused()?,
+    )?;
+
+    Ok(())
+}
+
 #[access_control(
     exchange_not_paused(&ctx.accounts.state)
 )]
@@ -3446,20 +3528,27 @@ pub fn handle_force_delete_user<'c: 'info, 'info>(
         "user must have no perp positions"
     )?;
 
+    // Book the interest of every market the user still holds before the transfers below read a
+    // token amount. Cancelling the orders above can free a position that only open orders kept
+    // alive, so the set is taken here rather than reused from the account load.
+    //
+    // The dust gate earlier in this handler still values the user through the stored indexes. An
+    // account close to the cap can therefore read below it and be deleted, which sends its
+    // deposits to the keeper. Moving that gate after this call is a separate change.
+    controller::spot_balance::refresh_spot_market_interest(
+        &spot_market_map,
+        Some(&mut oracle_map),
+        &get_market_set_for_spot_positions(&user.spot_positions),
+        now,
+        state.funding_paused()?,
+    )?;
+
     for spot_position in user.spot_positions.iter_mut() {
         if spot_position.is_available() {
             continue;
         }
 
         let spot_market = &mut spot_market_map.get_ref_mut(&spot_position.market_index)?;
-        let oracle_price_data = oracle_map.get_price_data(&spot_market.oracle_id())?;
-
-        controller::spot_balance::update_spot_market_cumulative_interest(
-            spot_market,
-            Some(oracle_price_data),
-            now,
-            state.funding_paused()?,
-        )?;
 
         let token_amount = spot_position.get_token_amount(spot_market)?;
         let balance_type = spot_position.balance_type;
@@ -3589,6 +3678,12 @@ pub fn handle_force_delete_user<'c: 'info, 'info>(
     }
 
     safe_decrement!(user_stats.number_of_sub_accounts, 1);
+
+    // Release the shared `State` borrow taken at the top of this handler. `Ref` implements `Drop`,
+    // so the borrow lives to the end of the scope and a shadowing `let` does not end it. Without
+    // this the `load_mut` below fails with `AccountBorrowFailed`, and it fails after the user's
+    // tokens have already moved to the keeper.
+    drop(state);
 
     let mut state = ctx.accounts.state.load_mut()?;
     safe_decrement!(state.number_of_sub_accounts, 1);
@@ -4204,6 +4299,14 @@ pub struct UpdateSpotMarketCumulativeInterest<'info> {
         bump,
     )]
     pub spot_market_vault: Box<InterfaceAccount<'info, TokenAccount>>,
+}
+
+/// The markets to refresh arrive as writable spot market accounts in `remaining_accounts`.
+/// `SpotMarketMap` reads each market's index out of the account it loads, so a market is refreshed
+/// only when its own account is passed.
+#[derive(Accounts)]
+pub struct RefreshSpotMarketInterest<'info> {
+    pub state: AccountLoader<'info, State>,
 }
 
 #[derive(Accounts)]

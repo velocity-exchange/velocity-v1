@@ -3,8 +3,8 @@ use {
         error::{ErrorCode, VelocityResult},
         math::{casting::Cast, safe_math::SafeMath},
         state::pyth_lazer_oracle::{
-            PythLazerOracle, PYTH_LAZER_MAX_STALENESS_SECONDS, PYTH_LAZER_ORACLE_SEED,
-            PYTH_LAZER_STORAGE_ID,
+            PythLazerOracle, PYTH_LAZER_MAX_FUTURE_SECONDS, PYTH_LAZER_MAX_STALENESS_SECONDS,
+            PYTH_LAZER_ORACLE_SEED, PYTH_LAZER_STORAGE_ID,
         },
         validate,
     },
@@ -109,26 +109,46 @@ pub fn handle_update_pyth_lazer_oracle<'c: 'info, 'info>(
             continue;
         }
 
-        if next_timestamp.unwrap() < current_timestamp {
+        // The gate rejects an equal timestamp as well as an older one. A message that repeats the
+        // stored timestamp carries the same signed content, so it adds no price information, but
+        // posting it stamps `posted_slot` to the current slot. A keeper could otherwise re-post one
+        // message every slot and hold the feed at slot-fresh while the price never moves.
+        if next_timestamp.unwrap() <= current_timestamp {
             msg!(
-                "Skipping lazer price update. next_timestamp {} < current_timestamp {}",
+                "Skipping lazer price update. next_timestamp {} <= current_timestamp {}",
                 next_timestamp.unwrap(),
                 current_timestamp
             );
             continue;
         }
 
-        // Reject stale/replayed messages against the wall clock. The monotonic check above only
-        // guarantees the feed timestamp is non-decreasing versus the cached value, not that it is
-        // recent; since `posted_slot` (set to the current slot below) is the sole input to
-        // downstream staleness, an authentic-but-old message would otherwise read as slot-fresh.
+        // Bound the feed timestamp against the wall clock in both directions. The monotonic check
+        // above only guarantees the feed timestamp is above the cached value, not that it is near
+        // the present.
+        //
+        // Below: `posted_slot` (set to the current slot further down) is the sole input to
+        // downstream staleness, so an authentic-but-old message would read as slot-fresh.
+        //
+        // Above: the monotonic check skips every message at or below the stored `publish_time`, so
+        // a message stamped ahead of the wall clock stops all later messages until real time
+        // reaches that stamp. The bound holds that freeze to `PYTH_LAZER_MAX_FUTURE_SECONDS`.
         let now = Clock::get()?.unix_timestamp;
         let next_timestamp_secs = next_timestamp.unwrap().safe_div(1_000_000)?.cast::<i64>()?;
-        if now.safe_sub(next_timestamp_secs)? > PYTH_LAZER_MAX_STALENESS_SECONDS {
+        let age = now.safe_sub(next_timestamp_secs)?;
+        if age > PYTH_LAZER_MAX_STALENESS_SECONDS {
             msg!(
                 "Skipping lazer price update. message ts {}s is older than {}s (now {}s)",
                 next_timestamp_secs,
                 PYTH_LAZER_MAX_STALENESS_SECONDS,
+                now
+            );
+            continue;
+        }
+        if age < -PYTH_LAZER_MAX_FUTURE_SECONDS {
+            msg!(
+                "Skipping lazer price update. message ts {}s is more than {}s ahead (now {}s)",
+                next_timestamp_secs,
+                PYTH_LAZER_MAX_FUTURE_SECONDS,
                 now
             );
             continue;

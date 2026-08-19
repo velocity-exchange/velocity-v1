@@ -6067,6 +6067,63 @@ export class VelocityClient {
 	}
 
 	/**
+	 * Permissionless batch crank: books the lending interest of several spot markets in one
+	 * instruction. Written for a caller that has to value several markets in one transaction,
+	 * such as a program pricing a share against the markets a user holds.
+	 *
+	 * Two differences from `updateSpotMarketCumulativeInterest`, which stays the crank that keeps
+	 * a market's oracle EMA fresh. This one passes no oracle, so it leaves every oracle TWAP
+	 * alone, and it accepts a market whose status is `Delisted`.
+	 * @param marketIndexes - Spot market indexes to book, at most 16.
+	 * @param txParams - Optional compute-unit/priority-fee overrides for the transaction.
+	 * @returns The transaction signature.
+	 */
+	public async refreshSpotMarketInterest(
+		marketIndexes: number[],
+		txParams?: TxParams
+	): Promise<TransactionSignature> {
+		const { txSig } = await this.sendTransaction(
+			await this.buildTransaction(
+				await this.refreshSpotMarketInterestIx(marketIndexes),
+				txParams
+			),
+			[],
+			this.opts
+		);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `refreshSpotMarketInterest` instruction. See `refreshSpotMarketInterest` for
+	 * semantics.
+	 * @param marketIndexes - Spot market indexes to book, at most 16.
+	 * @returns The instruction.
+	 */
+	public async refreshSpotMarketInterestIx(
+		marketIndexes: number[]
+	): Promise<TransactionInstruction> {
+		// `load_maps` reads oracles first, then spot markets, and stops at the first account it
+		// does not recognize. This instruction reads no price, so it passes no oracle at all and
+		// the market accounts start the list. Each is writable because velocity advances its
+		// cumulative indexes.
+		const remainingAccounts = marketIndexes.map((marketIndex) => ({
+			pubkey: this.getSpotMarketAccountOrThrow(marketIndex).pubkey,
+			isWritable: true,
+			isSigner: false,
+		}));
+
+		return await this.program.instruction.refreshSpotMarketInterest(
+			marketIndexes,
+			{
+				accounts: {
+					state: await this.getStatePublicKey(),
+				},
+				remainingAccounts,
+			}
+		);
+	}
+
+	/**
 	 * Lists the spot markets that must be cranked before the given accounts can be
 	 * used on a value-releasing path.
 	 *
@@ -11573,9 +11630,9 @@ export class VelocityClient {
 				this.getUserAccountOrThrow(liquidatorSubAccountId),
 				userAccount,
 			],
-			// The resolver also forfeits the estate's unfundable positive perp claims to their own
-			// markets' insurance tranches, so those markets are written to as well. Passing one
-			// read-only makes the program revert at map load.
+			// The resolver also recovers the estate's payable perp claims from those markets' pnl
+			// pools, and forfeits what is left to their insurance tranches, so those markets are
+			// written to as well. Passing one read-only makes the program revert at map load.
 			writablePerpMarketIndexes: [
 				marketIndex,
 				...getPerpMarketsWithForfeitableClaims(userAccount).filter(
@@ -11673,10 +11730,12 @@ export class VelocityClient {
 				this.getUserAccountOrThrow(liquidatorSubAccountId),
 				userAccount,
 			],
-			writableSpotMarketIndexes: [marketIndex],
-			// This resolver also winds up the estate's unfundable positive perp claims into their
-			// markets' insurance tranches, so those perp markets must be writable even though the
-			// bankruptcy being resolved is a spot borrow.
+			// The quote market is writable because the resolver recovers the estate's payable perp
+			// claims into its quote deposit, and the borrow being resolved may be in another market.
+			// It must be passed even when the estate holds no quote row of its own.
+			writableSpotMarketIndexes: [marketIndex, QUOTE_SPOT_MARKET_INDEX],
+			// The resolver also recovers from, and forfeits to, the markets holding those claims, so
+			// those perp markets must be writable even though the bankruptcy is a spot borrow.
 			writablePerpMarketIndexes:
 				getPerpMarketsWithForfeitableClaims(userAccount),
 		});
@@ -12789,7 +12848,10 @@ export class VelocityClient {
 	 * fee carveouts out of the PnL pool — `pendingProtocolFee` to the market's protocol fee pool
 	 * (runs first, buffer-exempt), then `pendingIfFee` to the quote spot market's revenue pool and
 	 * `pendingAmmProvision` into the AMM's fee pool (both leave `feePoolBufferTarget` behind). Every
-	 * drain reserves `max(netUserPnl, 0)` so user claims stay backed. This runs inline on every
+	 * drain reserves `max(netUserPnl, 0)` so user claims stay backed. The `pendingIfFee` drain also
+	 * leaves the bankruptcy first-loss tranche behind: the whole counter while
+	 * `pendingBankruptcyClaims` is above zero, otherwise `bankruptcyIfFloorPct` of open-interest
+	 * notional at the oracle TWAP. This runs inline on every
 	 * `settlePNL` already — this instruction lets a keeper run it on demand without settling anyone's
 	 * PnL. Values `netUserPnl` at the market's fixed `expiryPrice` when the market is in `settlement`
 	 * status (expired positions settle at that price, not the live oracle, so no live-oracle gate is

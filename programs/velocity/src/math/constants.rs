@@ -234,6 +234,14 @@ pub const OPEN_ORDER_MARGIN_REQUIREMENT: u128 = QUOTE_PRECISION / 100;
 /// "reducing" swap can leak through a bad route while the account is frozen.
 /// 100 = 1%. TUNABLE.
 pub const EQUITY_FLOOR_SWAP_MAX_VALUE_LOSS_BPS: u128 = 100;
+/// Most favorable value the breaker-trip proof concedes to a position whose
+/// oracle is invalid: an asset worth no more than this at its own last twap
+/// counts as exactly this much, a liability counts as zero, and a larger
+/// invalid position keeps the trip blocked. Bounds how much equity dust in
+/// dead-oracle markets can add to the trip's upper bound (allowance times
+/// the account's position slots), so dust cannot veto a material breach.
+/// $100. TUNABLE.
+pub const EQUITY_FLOOR_TRIP_DUST_ALLOWANCE: i128 = 100 * QUOTE_PRECISION_I128;
 pub const FEE_ADJUSTMENT_MAX: u64 = 100;
 pub const FEE_ADJUSTMENT_MAX_I16: i16 = FEE_ADJUSTMENT_MAX as i16;
 
@@ -316,8 +324,15 @@ pub const DEFAULT_MAX_TWAP_UPDATE_PRICE_BAND_DENOMINATOR: i64 = 3; // '3' here m
 pub const DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT: i64 = -25 * QUOTE_PRECISION_I64; //$25 loss
 /// Default `PerpMarket.bankruptcy_if_floor_pct` for new markets: 10 bps of
 /// open-interest notional retained in `pending_if_fee` as a standing
-/// bankruptcy tranche (PERCENTAGE_PRECISION).
+/// bankruptcy tranche (PERCENTAGE_PRECISION). A market that holds `0` — every
+/// market created before the field existed — also uses this value, so the
+/// tranche does not depend on an admin call per market.
 pub const DEFAULT_BANKRUPTCY_IF_FLOOR_PCT: u32 = PERCENTAGE_PRECISION_U32 / 1000; // 0.1%
+/// The `PerpMarket.bankruptcy_if_floor_pct` value that turns the standing
+/// floor off. `0` means "use `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`", so a market
+/// with no floor needs an explicit sentinel. The freeze that
+/// `pending_bankruptcy_claims` applies is not affected by this value.
+pub const BANKRUPTCY_IF_FLOOR_DISABLED: u32 = u32::MAX;
 pub const DEFAULT_LARGE_BID_ASK_FACTOR: u64 = 10 * BID_ASK_SPREAD_PRECISION;
 pub const DEFAULT_LIQUIDATION_MARGIN_BUFFER_RATIO: u32 = MARGIN_PRECISION / 50; // 2%
 pub const DEFAULT_BASE_ASSET_AMOUNT_STEP_SIZE: u64 = BASE_PRECISION_U64 / 10000; // 1e-4;

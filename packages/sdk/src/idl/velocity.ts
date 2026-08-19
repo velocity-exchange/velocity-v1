@@ -6442,6 +6442,32 @@ export type Velocity = {
       "args": []
     },
     {
+      "name": "refreshSpotMarketInterest",
+      "discriminator": [
+        11,
+        188,
+        50,
+        141,
+        73,
+        51,
+        134,
+        78
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        }
+      ],
+      "args": [
+        {
+          "name": "marketIndexes",
+          "type": {
+            "vec": "u16"
+          }
+        }
+      ]
+    },
+    {
       "name": "removeAmmConstituentMappingData",
       "discriminator": [
         20,
@@ -18930,10 +18956,9 @@ export type Velocity = {
               "Fraction of spot deposit-interest gains carved out to the insurance fund",
               "(staker-owned). precision: IF_FACTOR_PRECISION. (Was `total_factor`; the",
               "protocol-vs-staker split was removed — the IF is now 100% staker-owned,",
-              "so this is purely the staker IF carveout.) While non-zero, an accrual",
-              "interval whose cut would convert to less than one token is deferred rather",
-              "than committed, so the cut is never floored away — see",
-              "`update_spot_market_cumulative_interest`."
+              "so this is purely the staker IF carveout.) A cut too small to reach a",
+              "whole unit is carried on `revenue_pool`, not floored away. See",
+              "`split_deposit_interest`."
             ],
             "type": "u32"
           },
@@ -21938,17 +21963,48 @@ export type Velocity = {
             "type": "i16"
           },
           {
+            "name": "pendingBankruptcyClaims",
+            "docs": [
+              "Number of unresolved bankrupt quote debts booked against this market.",
+              "A liquidation that latches a user bankrupt increments it. Both writers",
+              "of `PerpPosition.quote_asset_amount` decrement it when that debt",
+              "reaches zero: `update_quote_asset_amount` and",
+              "`update_position_and_market`. The count tracks the debt, not the latch:",
+              "an un-latched estate that still owes the market stays booked, because",
+              "the debt still resolves through the bankruptcy waterfall.",
+              "",
+              "While it is above zero the fee sweep withholds the whole",
+              "`pending_if_fee`, not just `get_bankruptcy_if_floor()` — the sweep is",
+              "permissionless, so a caller could otherwise drain the first-loss",
+              "tranche between the latch and the resolution and push the loss onto the",
+              "shared insurance fund or into socialization. The freeze is independent",
+              "of open interest and of `bankruptcy_if_floor_pct`, both of which can be",
+              "zero exactly when a bankruptcy is pending.",
+              "",
+              "Occupies 2 of the 6 bytes the Rust compiler inserts to 8-align",
+              "`last_fill_price`. The remaining 4 stay explicit padding, so every",
+              "later byte offset and the account size are unchanged and existing",
+              "accounts read 0 (no pending claim).",
+              "",
+              "`settle_expired_market_pools_to_revenue_pool` rejects while this count",
+              "is above zero, because that instruction's final sweep bypasses the",
+              "floor."
+            ],
+            "type": "u16"
+          },
+          {
             "name": "paddingAlignLfp",
             "docs": [
-              "Explicit padding so the IDL records the 6 bytes the Rust compiler",
-              "inserts to 8-align `last_fill_price`. Without this the JS borsh",
+              "Explicit padding so the IDL records the 4 bytes the Rust compiler",
+              "still inserts to 8-align `last_fill_price`. Without this the JS borsh",
               "decoder (which reads sequentially after the variable-span enum",
-              "`status`) reads every field past `fee_adjustment` 6 bytes early."
+              "`status`) reads every field past `pending_bankruptcy_claims` 4 bytes",
+              "early."
             ],
             "type": {
               "array": [
                 "u8",
-                6
+                4
               ]
             }
           },
@@ -22024,16 +22080,26 @@ export type Velocity = {
             "name": "bankruptcyIfFloorPct",
             "docs": [
               "Floor on the unswept IF-fee carveout, as a percentage of open-interest",
-              "notional (PERCENTAGE_PRECISION; 0 disables). The fee sweep's IF drain",
-              "leaves `pending_if_fee` at (at least) this floor, so a standing",
-              "first-loss tranche is always available to `resolve_perp_bankruptcy` —",
-              "a permissionless sweep (or the inline sweep on any pnl settle) cannot",
-              "drain the tranche below it ahead of a bankruptcy resolution. Notional",
-              "is valued at the market's own oracle TWAP so a manipulated spot print",
-              "can't crush the floor. Occupies the former 4-byte trailing padding",
-              "before `market_stats` (same offset/alignment on all targets), so",
-              "existing accounts read 0 = disabled until the admin sets it;",
-              "new markets initialize to `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`."
+              "notional (PERCENTAGE_PRECISION). The fee sweep's IF drain leaves",
+              "`pending_if_fee` at (at least) this floor, so a standing first-loss",
+              "tranche is available to `resolve_perp_bankruptcy` before any user is",
+              "latched bankrupt — a permissionless sweep (or the inline sweep on any",
+              "pnl settle) cannot drain the tranche below it. Notional is valued at",
+              "the market's own oracle TWAP so a manipulated spot print can't crush",
+              "the floor.",
+              "",
+              "`0` means `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`, so every market created",
+              "before the field existed carries the standing tranche without an admin",
+              "call. `BANKRUPTCY_IF_FLOOR_DISABLED` turns the floor off. Read it",
+              "through `get_bankruptcy_if_floor_pct`, never directly.",
+              "",
+              "The floor sizes the tranche off market risk, which is a proxy for the",
+              "loss and can be smaller than it. `pending_bankruptcy_claims` covers",
+              "every latched bankruptcy exactly, by withholding all of",
+              "`pending_if_fee` until it resolves.",
+              "",
+              "Occupies the former 4-byte trailing padding before `market_stats`",
+              "(same offset/alignment on all targets)."
             ],
             "type": "u32"
           },
@@ -22292,12 +22358,68 @@ export type Velocity = {
           },
           {
             "name": "padding",
+            "docs": [
+              "Filler for the alignment gap before the two dust fields. Those fields must",
+              "start at offsets 20 and 24. The host layout and the SBF layout then agree,",
+              "and the packed borsh layout in the IDL reaches the same offsets. This",
+              "field shrank from 14 bytes to 2. The size of the struct and every other",
+              "field offset are unchanged. Do not reorder or resize these fields."
+            ],
             "type": {
               "array": [
                 "u8",
-                14
+                2
               ]
             }
+          },
+          {
+            "name": "pendingInterestSplitDust",
+            "docs": [
+              "Remainder of one index-space division that splits a spot market's deposit",
+              "interest between lenders and the carveout pools. The accrual carries the",
+              "remainder between intervals. A share too small to reach a whole index unit",
+              "is therefore delayed and not lost.",
+              "",
+              "The division depends on the pool. See `split_deposit_interest`.",
+              "",
+              "- On `revenue_pool` this is the lenders-vs-carveouts split. The divisor",
+              "is IF_FACTOR_PRECISION, so the value stays below IF_FACTOR_PRECISION.",
+              "- On `protocol_fee_pool` this is the insurance-fund-vs-protocol split of",
+              "the withheld amount. The divisor is",
+              "`if_fee_factor + protocol_fee_factor`, so the value stays below it.",
+              "",
+              "That order keeps the two carveouts from taking more than the interval",
+              "gain. The first division bounds the total. The second division only",
+              "divides the amount that the first division set aside. Two independent cuts",
+              "can instead each round up and leave lenders at zero.",
+              "",
+              "precision: the numerator units of its division."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "pendingInterestDust",
+            "docs": [
+              "Remainder of the token-space division for this pool's carveout.",
+              "",
+              "A withheld index amount reaches the pool only as whole tokens, through",
+              "`deposit_balance * cut / 10^(19 - decimals)`. On a small market that",
+              "division floors to zero even when the index-space cut is not zero. Lenders",
+              "have already given up the value at that point, so a floored cut credits",
+              "nobody and leaves unattributed slack in the vault. The accrual parks the",
+              "remainder here and adds it back on the next interval.",
+              "",
+              "precision: token * 10^(19 - decimals). The value always stays below one",
+              "token, which is `10^(19 - decimals)` and at most 10^19. It therefore fits",
+              "a u64 for every supported value of `decimals`.",
+              "",
+              "Only the two lending carveout pools use these two fields. Those pools are",
+              "a spot market's `revenue_pool` and `protocol_fee_pool`. Both fields stay 0",
+              "on every other `PoolBalance`, such as a perp market's `pnl_pool` and",
+              "`fee_pool`. Both fields read 0 on markets created before the fields",
+              "existed, which is the correct starting value."
+            ],
+            "type": "u64"
           }
         ]
       }
@@ -23920,10 +24042,9 @@ export type Velocity = {
             "name": "protocolFeeFactor",
             "docs": [
               "Protocol's carveout of lending deposit-interest gains, routed to",
-              "`protocol_fee_pool`. precision: IF_FACTOR_PRECISION. While non-zero, an",
-              "accrual interval whose cut would convert to less than one token is",
-              "deferred rather than committed, so the cut is never floored away — see",
-              "`update_spot_market_cumulative_interest`."
+              "`protocol_fee_pool`. precision: IF_FACTOR_PRECISION. A cut too small to",
+              "reach a whole unit is carried on the carveout pools, not floored away. See",
+              "`split_deposit_interest`."
             ],
             "type": "u32"
           },

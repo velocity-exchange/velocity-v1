@@ -162,13 +162,17 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
             &mut oracle_map,
             MarginContext::standard(MarginRequirementType::Initial),
         )?;
+        // "Below floor" authorizes a keeper against the user here, so it fails
+        // closed the other way from the gates that restrict the user: the floor
+        // counts as grounds only when every oracle is valid and the trusted
+        // value sits below it, so a bad price cannot manufacture authorization.
         let below_equity_floor = calculate_net_equity_for_floor(
             user,
             &perp_market_map,
             &spot_market_map,
             &mut oracle_map,
         )?
-        .is_some_and(|net_equity| user.is_below_equity_floor(net_equity));
+        .is_some_and(|net_equity| net_equity.proves_below_floor(user));
         validate!(
             !margin_calc.meets_margin_requirement() || below_equity_floor,
             ErrorCode::SufficientCollateral

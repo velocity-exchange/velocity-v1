@@ -20,20 +20,23 @@ use {
         instructions::{
             constraints::*,
             optional_accounts::{
-                add_builder_order, get_revenue_share_escrow_account, load_maps,
-                validate_and_load_builder, AccountMaps,
+                add_builder_order, get_revenue_share_escrow_account,
+                load_escrow_owner_sub_accounts, load_maps, validate_and_load_builder, AccountMaps,
             },
         },
         load, load_mut,
         math::{
             self,
+            bankruptcy::perp_markets_with_forfeitable_claims,
             casting::Cast,
             constants::{
-                BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT, QUOTE_PRECISION_I128,
-                QUOTE_PRECISION_U64, QUOTE_SPOT_MARKET_INDEX,
+                BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT, BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS,
+                QUOTE_PRECISION_I128, QUOTE_PRECISION_U64, QUOTE_SPOT_MARKET_INDEX,
             },
-            margin::{calculate_user_equity, meets_settle_pnl_maintenance_margin_requirement},
-            oracle::{is_oracle_valid_for_action, VelocityAction},
+            margin::{
+                calculate_user_equity, calculate_user_equity_for_trip,
+                meets_settle_pnl_maintenance_margin_requirement,
+            },
             orders::{
                 estimate_price_from_side, filter_bids_asks_by_oracle_divergence,
                 find_bids_and_asks_from_users,
@@ -62,7 +65,7 @@ use {
                 get_writable_perp_market_set_from_vec, MarketSet, PerpMarketMap,
             },
             prop_amm::Direction,
-            revenue_share::RevenueShareEscrowZeroCopyMut,
+            revenue_share::{RevenueShareEscrowZeroCopyMut, REVENUE_SHARE_ESCROW_PDA_SEED},
             revenue_share_map::load_revenue_share_map,
             settle_pnl_mode::SettlePnlMode,
             signed_msg_user::{
@@ -444,6 +447,11 @@ pub fn handle_trigger_order<'c: 'info, 'info>(
 
     let (writeable_perp_markets, writeable_spot_markets) = (MarketSet::new(), MarketSet::new());
 
+    let state = ctx.accounts.state.load()?;
+
+    // Load the map under the live State guard rails so every oracle-validity
+    // decision on this path, including the lazy breaker trip on the cancel
+    // branch, uses the same policy as the permissionless trip.
     let AccountMaps {
         perp_market_map,
         spot_market_map,
@@ -453,12 +461,12 @@ pub fn handle_trigger_order<'c: 'info, 'info>(
         &writeable_perp_markets,
         &writeable_spot_markets,
         Clock::get()?.slot,
-        None,
+        Some(state.oracle_guard_rails),
     )?;
 
     controller::orders::trigger_order(
         order_id,
-        &*ctx.accounts.state.load()?,
+        &state,
         &ctx.accounts.user,
         &ctx.accounts.user_stats,
         &spot_market_map,
@@ -488,6 +496,13 @@ pub fn handle_trigger_order<'c: 'info, 'info>(
 pub fn handle_force_cancel_orders<'c: 'info, 'info>(
     ctx: Context<'info, ForceCancelOrder>,
 ) -> Result<()> {
+    let state = ctx.accounts.state.load()?;
+
+    // Load the map under the live State guard rails. The equity-floor arm of
+    // force-cancel requires an oracle-validity verdict, so this handler must
+    // apply the same validity policy as `withdraw` and the permissionless trip.
+    // Without the guard rails the same account gets a different floor verdict
+    // here than everywhere else.
     let AccountMaps {
         perp_market_map,
         spot_market_map,
@@ -497,11 +512,11 @@ pub fn handle_force_cancel_orders<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set(QUOTE_SPOT_MARKET_INDEX),
         Clock::get()?.slot,
-        None,
+        Some(state.oracle_guard_rails),
     )?;
 
     controller::orders::force_cancel_orders(
-        &*ctx.accounts.state.load()?,
+        &state,
         &ctx.accounts.user,
         &spot_market_map,
         &perp_market_map,
@@ -546,31 +561,38 @@ pub fn handle_trip_equity_floor_breaker<'c: 'info, 'info>(
     // The trip threshold is real net equity (unweighted assets and pnl minus
     // unweighted spot liabilities), not the margin numerator: weighted
     // collateral overstates equity when borrows exist and understates it via
-    // asset weights, strict pricing and the positive-pnl clamp.
-    let (net_equity, all_oracles_valid) =
-        calculate_user_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+    // asset weights, strict pricing and the positive-pnl clamp. The walk is
+    // the trip's own: positions with invalid oracles are conceded a bounded
+    // most-favorable value instead of vetoing the proof, so dust in a
+    // dead-oracle market cannot keep a material breach untrippable.
+    let trip_equity =
+        calculate_user_equity_for_trip(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
 
-    // An authority-wide freeze must not arm off an invalid price. The floor
-    // gates on withdrawals/fills still hold independently of the breaker.
+    // An authority-wide freeze must not arm over exposure the program cannot
+    // value: an invalid-oracle asset or long past the dust allowance (or one
+    // whose twap cannot size it) blocks the proof. The floor gates on
+    // withdrawals/fills still hold independently of the breaker. The two
+    // validates decompose `TripNetEquity::proves_breach` so each failure
+    // keeps its error code.
     validate!(
-        all_oracles_valid,
+        trip_equity.provable,
         ErrorCode::InvalidOracle,
-        "cannot trip equity floor breaker with an invalid oracle"
+        "cannot trip equity floor breaker: invalid oracle on a position the dust test cannot bound"
     )?;
 
     validate!(
-        user.is_below_equity_floor(net_equity),
+        user.is_below_equity_floor(trip_equity.equity_upper_bound),
         ErrorCode::SufficientCollateral,
-        "user net equity {} not below equity floor {}",
-        net_equity,
+        "user net equity upper bound {} not below equity floor {}",
+        trip_equity.equity_upper_bound,
         user.equity_floor
     )?;
 
     msg!(
-        "equity floor breaker tripped for authority {:?}: subaccount {} net equity {} below floor {}",
+        "equity floor breaker tripped for authority {:?}: subaccount {} net equity upper bound {} below floor {}",
         user.authority,
         user.sub_account_id,
-        net_equity,
+        trip_equity.equity_upper_bound,
         user.equity_floor
     );
 
@@ -1188,12 +1210,14 @@ pub fn handle_settle_pnl<'c: 'info, 'info>(
 
     // Whether settlement actually happened this call. The revenue-share sweep
     // moves builder/referrer fees out of the market's pnl pool, so it must only
-    // run when we truly settled — a soft-skipped `settle_pnl` (TrySettle turning
-    // a pause/degraded-oracle/etc. into a no-op) must not drain the pool.
+    // run when settlement truly happened. Two calls settle nothing and must not
+    // drain the pool. A `settle_pnl` under TrySettle turns a pause or a degraded
+    // oracle into a no-op. A `settle_expired_position` for a user with no
+    // position returns before the market's SettlePnl pause checks.
     let settled = if market_in_settlement {
         amm_not_paused(&ctx.accounts.state)?;
 
-        controller::pnl::settle_expired_position(
+        let settled = controller::pnl::settle_expired_position(
             market_index,
             user,
             &user_key,
@@ -1205,7 +1229,7 @@ pub fn handle_settle_pnl<'c: 'info, 'info>(
         )?;
 
         user.update_last_active_slot(clock.slot);
-        true
+        settled
     } else {
         // No `update_amm` here: settle_pnl reads the live oracle and falls
         // back to the AMM's slot-fresh check only when the live oracle is
@@ -1244,7 +1268,7 @@ pub fn handle_settle_pnl<'c: 'info, 'info>(
                         let perp_market = perp_market_map.get_ref(&market_index)?;
                         oracle_map.get_price_data(&perp_market.oracle_id())?.price
                     };
-                    controller::revenue_share::sweep_completed_revenue_share_for_market(
+                    let _ = controller::revenue_share::sweep_completed_revenue_share_for_market(
                         market_index,
                         escrow,
                         &perp_market_map,
@@ -1334,14 +1358,16 @@ pub fn handle_settle_multiple_pnls<'c: 'info, 'info>(
             perp_market_map.get_ref(market_index)?.status == MarketStatus::Settlement;
 
         // Whether settlement actually happened for this market. Under
-        // `TrySettle`, `settle_pnl` soft-skips a paused / degraded-oracle
-        // market into `Ok(false)`; the revenue-share sweep below must be tied
-        // to real settlement so it does not move builder/referrer fees out of a
-        // market that never settled.
+        // `TrySettle`, `settle_pnl` soft-skips a paused or degraded-oracle
+        // market into `Ok(false)`. `settle_expired_position` returns `Ok(false)`
+        // for a user with no position, which is a no-op that runs before the
+        // market's SettlePnl pause checks. The revenue-share sweep below must be
+        // tied to real settlement. Otherwise it moves builder/referrer fees out
+        // of a market that never settled.
         let settled = if market_in_settlement {
             amm_not_paused(&ctx.accounts.state)?;
 
-            controller::pnl::settle_expired_position(
+            let settled = controller::pnl::settle_expired_position(
                 *market_index,
                 user,
                 &user_key,
@@ -1353,7 +1379,7 @@ pub fn handle_settle_multiple_pnls<'c: 'info, 'info>(
             )?;
 
             user.update_last_active_slot(clock.slot);
-            true
+            settled
         } else {
             // See `handle_settle_pnl` for the no-refresh rationale.
 
@@ -1388,17 +1414,18 @@ pub fn handle_settle_multiple_pnls<'c: 'info, 'info>(
                             let perp_market = perp_market_map.get_ref(market_index)?;
                             oracle_map.get_price_data(&perp_market.oracle_id())?.price
                         };
-                        controller::revenue_share::sweep_completed_revenue_share_for_market(
-                            *market_index,
-                            escrow,
-                            &perp_market_map,
-                            &spot_market_map,
-                            builder_map,
-                            clock.unix_timestamp,
-                            oracle_price,
-                            state.builder_codes_enabled(),
-                            state.funding_paused()?,
-                        )?;
+                        let _ =
+                            controller::revenue_share::sweep_completed_revenue_share_for_market(
+                                *market_index,
+                                escrow,
+                                &perp_market_map,
+                                &spot_market_map,
+                                builder_map,
+                                clock.unix_timestamp,
+                                oracle_price,
+                                state.builder_codes_enabled(),
+                                state.funding_paused()?,
+                            )?;
                     } else {
                         msg!("Builder Users not provided, but RevenueEscrow was provided");
                     }
@@ -1718,6 +1745,28 @@ pub fn handle_liquidate_spot_with_swap_begin<'c: 'info, 'info>(
 
     let user = &mut load_mut!(ctx.accounts.user)?;
     let liquidator = &mut load_mut!(ctx.accounts.liquidator)?;
+    let liquidator_stats = load!(ctx.accounts.liquidator_stats)?;
+
+    // A swap-backed liquidation earns the liquidation fee like the other
+    // liquidator routes, the same value capture the authority-wide equity
+    // breaker freezes, even though the tokens flow through the authority's
+    // wallet accounts rather than the liquidator subaccount. Bar a tripped
+    // authority here too, before any flash-loan state opens; `end` runs in
+    // the same transaction, so checking `begin` covers the pair.
+    //
+    // Only the breaker, deliberately: the four direct routes additionally
+    // require the liquidator subaccount to clear its own buffered floor
+    // (`validate_clears_buffered_floor`), because the liquidation moves the
+    // liquidatee's position onto that subaccount. This route moves nothing
+    // onto it (both `update_spot_balances_and_cumulative_deposits` calls in
+    // `liquidate_spot_with_swap_end` target the liquidatee, and the fees go
+    // to the revenue and protocol pools), so there is no exposure for a
+    // per-subaccount floor to gate.
+    validate!(
+        !liquidator_stats.is_equity_breaker_tripped(),
+        ErrorCode::EquityBelowFloor,
+        "liquidator authority equity breaker is tripped"
+    )?;
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
     let AccountMaps {
@@ -1743,10 +1792,23 @@ pub fn handle_liquidate_spot_with_swap_begin<'c: 'info, 'info>(
         "begin_swap ended in invalid state"
     )?;
 
-    let asset_oracle_data = oracle_map.get_price_data(&asset_spot_market.oracle_id())?;
+    // Accrue interest and advance the deposit/borrow/utilization TWAPs, but pass
+    // `None` so this liquidation does NOT advance the markets' *oracle* TWAPs.
+    // `liquidate_spot_with_swap_begin` gates itself on
+    // `is_oracle_too_divergent_with_twap_5min` against the liability market's
+    // `last_oracle_price_twap_5min`; refreshing it first — in this same
+    // instruction — pulls it toward the live oracle price and lets a liquidation
+    // the band check would reject proceed and transfer collateral
+    // (OtterSec #111).
+    //
+    // The direct `liquidate_spot` lane already runs that same check with no
+    // pre-refresh, so this only brings the swap-backed lane in line with it; a
+    // band-blocked swap liquidation can still be routed through the direct path.
+    // The refresh is moved, not dropped: `liquidate_spot_with_swap_end` advances
+    // both markets' oracle TWAPs once every check in the lane is done.
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut asset_spot_market,
-        Some(asset_oracle_data),
+        None,
         now,
         state.funding_paused()?,
     )?;
@@ -1760,10 +1822,11 @@ pub fn handle_liquidate_spot_with_swap_begin<'c: 'info, 'info>(
         "begin_swap ended in invalid state"
     )?;
 
-    let liability_oracle_data = oracle_map.get_price_data(&liability_spot_market.oracle_id())?;
+    // `None` for the same reason as the asset market above (OtterSec #111) — this
+    // is the market whose 5-minute TWAP the divergence check actually reads.
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut liability_spot_market,
-        Some(liability_oracle_data),
+        None,
         now,
         state.funding_paused()?,
     )?;
@@ -1940,22 +2003,28 @@ pub fn handle_liquidate_spot_with_swap_begin<'c: 'info, 'info>(
                 "the asset_token_account passed to SwapBegin and End must match"
             )?;
 
-            // `LiquidateSpotWithSwap` has 11 fixed accounts (indexes 0..=10);
-            // remaining (swap) accounts start at index 11 and must match between
+            validate!(
+                ctx.accounts.liquidator_stats.key() == ix.accounts[11].pubkey,
+                ErrorCode::InvalidLiquidateSpotWithSwap,
+                "the liquidator_stats passed to SwapBegin and End must match"
+            )?;
+
+            // `LiquidateSpotWithSwap` has 12 fixed accounts (indexes 0..=11);
+            // remaining (swap) accounts start at index 12 and must match between
             // begin and end.
             validate!(
-                ctx.remaining_accounts.len() == ix.accounts.len() - 11,
+                ctx.remaining_accounts.len() == ix.accounts.len() - 12,
                 ErrorCode::InvalidLiquidateSpotWithSwap,
                 "begin and end ix must have the same number of accounts"
             )?;
 
-            for i in 11..ix.accounts.len() {
+            for i in 12..ix.accounts.len() {
                 validate!(
-                    *ctx.remaining_accounts[i - 11].key == ix.accounts[i].pubkey,
+                    *ctx.remaining_accounts[i - 12].key == ix.accounts[i].pubkey,
                     ErrorCode::InvalidLiquidateSpotWithSwap,
                     "begin and end ix must have the same accounts. {}th account mismatch. begin: {}, end: {}",
                     i,
-                    ctx.remaining_accounts[i - 11].key,
+                    ctx.remaining_accounts[i - 12].key,
                     ix.accounts[i].pubkey
                 )?;
             }
@@ -2164,7 +2233,7 @@ pub fn handle_liquidate_spot_with_swap_end<'c: 'info, 'info>(
         liability_vault.amount,
     )?;
 
-    let asset_spot_market = spot_market_map.get_ref_mut(&asset_market_index)?;
+    let mut asset_spot_market = spot_market_map.get_ref_mut(&asset_market_index)?;
 
     validate!(
         asset_spot_market.flash_loan_initial_token_amount == 0
@@ -2174,6 +2243,26 @@ pub fn handle_liquidate_spot_with_swap_end<'c: 'info, 'info>(
     )?;
 
     math::spot_withdraw::validate_spot_market_vault_amount(&asset_spot_market, asset_vault.amount)?;
+
+    // Advance the oracle TWAPs last, for the same reason as `end_swap`: the begin
+    // instruction passes `None` so it cannot refresh the anchor its own
+    // divergence check reads (OtterSec #111), and both this lane's checks are
+    // done by here. The begin instruction left `last_oracle_price_twap_ts` alone,
+    // so this update still weights the full elapsed interval.
+    let asset_oracle_data = *oracle_map.get_price_data(&asset_spot_market.oracle_id())?;
+    controller::spot_balance::update_spot_market_twap_stats(
+        &mut asset_spot_market,
+        Some(&asset_oracle_data),
+        now,
+    )?;
+
+    let mut liability_spot_market = spot_market_map.get_ref_mut(&liability_market_index)?;
+    let liability_oracle_data = *oracle_map.get_price_data(&liability_spot_market.oracle_id())?;
+    controller::spot_balance::update_spot_market_twap_stats(
+        &mut liability_spot_market,
+        Some(&liability_oracle_data),
+        now,
+    )?;
 
     Ok(())
 }
@@ -2434,6 +2523,8 @@ pub fn handle_resolve_perp_pnl_deficit<'c: 'info, 'info>(
         let spot_market = &mut spot_market_map.get_ref_mut(&spot_market_index)?;
         let perp_market = &mut perp_market_map.get_ref_mut(&perp_market_index)?;
 
+        let oracle_price_data = *oracle_map.get_price_data(&perp_market.oracle_id())?;
+
         if perp_market.amm.is_curve_update_enabled() {
             validate!(
                 perp_market.market_stats.last_oracle_valid,
@@ -2446,6 +2537,15 @@ pub fn handle_resolve_perp_pnl_deficit<'c: 'info, 'info>(
                 ErrorCode::AMMNotUpdatedInSameSlot,
                 "AMM must be updated in a prior instruction within same slot"
             )?;
+
+            // The cached verdict only covers the sample the AMM update
+            // validated; a later oracle write in the same slot replaces the
+            // sample without touching `last_oracle_valid`.
+            validate!(
+                perp_market.is_validated_oracle_sample(&oracle_price_data),
+                ErrorCode::InvalidOracle,
+                "Oracle rewritten after same-slot AMM update; sample no longer matches the validated one"
+            )?;
         }
 
         validate!(
@@ -2454,7 +2554,7 @@ pub fn handle_resolve_perp_pnl_deficit<'c: 'info, 'info>(
             "Market is in settlement mode",
         )?;
 
-        let oracle_price = oracle_map.get_price_data(&perp_market.oracle_id())?.price;
+        let oracle_price = oracle_price_data.price;
         controller::orders::validate_market_within_price_band(perp_market, &state, oracle_price)?;
 
         controller::insurance::resolve_perp_pnl_deficit(
@@ -2541,6 +2641,13 @@ pub fn handle_resolve_perp_bankruptcy<'c: 'info, 'info>(
     let liquidator = &mut load_mut!(ctx.accounts.liquidator)?;
     let state = ctx.accounts.state.load()?;
 
+    // OtterSec #145: the resolver forfeits unfundable claims to their own markets' insurance
+    // tranches, so every market holding such a claim is written to, not just `market_index`.
+    // Declaring them here makes a caller that passes one read-only fail at load with
+    // `MarketWrongMutability` instead of deep inside the resolver.
+    let mut writable_perp_markets = vec![market_index];
+    writable_perp_markets.extend(perp_markets_with_forfeitable_claims(user));
+
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
     let AccountMaps {
         perp_market_map,
@@ -2548,7 +2655,7 @@ pub fn handle_resolve_perp_bankruptcy<'c: 'info, 'info>(
         mut oracle_map,
     } = load_maps(
         remaining_accounts_iter,
-        &get_writable_perp_market_set(market_index),
+        &get_writable_perp_market_set_from_vec(&writable_perp_markets),
         &get_writable_spot_market_set(quote_spot_market_index),
         clock.slot,
         Some(state.oracle_guard_rails),
@@ -2684,8 +2791,14 @@ pub fn handle_resolve_spot_bankruptcy<'c: 'info, 'info>(
         mut oracle_map,
     } = load_maps(
         remaining_accounts_iter,
-        &MarketSet::new(),
-        &get_writable_spot_market_set(market_index),
+        // OtterSec #145: this resolver also recovers and winds up the estate's perp claims, so the
+        // markets holding them are written to even though the bankruptcy being resolved is a spot
+        // borrow.
+        &get_writable_perp_market_set_from_vec(&perp_markets_with_forfeitable_claims(user)),
+        // The quote market is written too: a recovered claim lands in the estate's quote deposit,
+        // and the borrow being resolved may be in another market entirely. It was already a required
+        // account here, because the claim passes read it, but only as read-only.
+        &get_writable_spot_market_set_from_many(vec![market_index, QUOTE_SPOT_MARKET_INDEX]),
         clock.slot,
         Some(state.oracle_guard_rails),
     )?;
@@ -2810,12 +2923,28 @@ pub fn handle_update_funding_rate(
     )?;
     // Refresh PerpMarket-level oracle stats. AMM refresh happens inside
     // `update_funding_rate` via the AmmQuoter's setup phase — not here.
+    //
+    // Deliberately the TWAP-free half. `update_funding_rate`'s gate
+    // (`oracle::block_operation` -> `get_oracle_status`) reads
+    // `last_oracle_price_twap` for the too-volatile check and
+    // `last_oracle_price_twap_5min` for the mark-divergence check. Advancing
+    // either one here would pull it toward the live price and let a too-volatile
+    // or too-divergent oracle clear its own gate inside this same instruction,
+    // then go on to mutate cumulative funding (OtterSec #109).
+    //
+    // Nothing is lost by skipping it: on the path where funding actually
+    // updates, `update_funding_rate` advances the TWAPs itself, and on every
+    // path where it does not this handler returns `FundingWasNotUpdated`, which
+    // reverts the whole instruction. The TWAPs also keep advancing independently
+    // via `update_amms`, perp fills, and `update_perp_bid_ask_twap`, so a market
+    // whose oracle is genuinely too volatile still recovers — relaxing its own
+    // gate is not this crank's job.
     let validity = crate::vlp::amm::refresh::compute_amm_refresh_validity(
         perp_market,
         &mm_oracle_price_data,
         &state,
     )?;
-    perp_market.update_oracle_derived_stats(&mm_oracle_price_data, validity, now, clock_slot)?;
+    perp_market.refresh_amm_quote_state(&mm_oracle_price_data, validity, clock_slot)?;
 
     validate!(
         matches!(
@@ -2887,12 +3016,16 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
 ) -> Result<()> {
     let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
 
-    // Freeze the funding-input TWAP state whenever this market's funding is
-    // paused. The `funding_not_paused` access_control already blocks the
-    // exchange-wide pause; this mirrors the market-scoped gate the direct
-    // `update_funding_rate` path enforces (`is_operation_paused(UpdateFunding)`)
-    // so a single paused market's mark/bid/ask TWAP can't keep advancing here
-    // and feed a stale jump into funding when it resumes.
+    // Stop this crank while the market's funding is paused. The `funding_not_paused`
+    // access control already blocks the exchange-wide pause.
+    //
+    // The crank estimates the book from `User` accounts that the caller supplies. The
+    // estimate moves the bid, ask and mark TWAPs.
+    // `OrderParams::get_perp_baseline_start_price_offset` reads those TWAPs to set the
+    // auction band for a different user's triggered stop-loss order (OtterSec #146).
+    // A paused market is one the administrator does not trust, so the caller-supplied
+    // input stops here. Perp fills still write the same TWAPs, because a fill is a
+    // trade with capital at risk.
     if perp_market.is_operation_paused(PerpOperation::UpdateFunding) {
         return Ok(());
     }
@@ -2943,8 +3076,14 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
 
     let depth = perp_market.get_market_depth_for_funding_rate()?;
 
-    let (bids, asks) =
-        find_bids_and_asks_from_users(perp_market, oracle_price_data, &makers, slot, now)?;
+    let (bids, asks) = find_bids_and_asks_from_users(
+        perp_market,
+        oracle_price_data,
+        &makers,
+        slot,
+        now,
+        BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS,
+    )?;
     let (bids, asks) = filter_bids_asks_by_oracle_divergence(
         bids,
         asks,
@@ -3149,70 +3288,14 @@ pub fn handle_sweep_perp_market_fees(
         Some(state.oracle_guard_rails),
     )?;
 
-    // The swept amount reserves the aggregate live user claim on the pnl pool.
-    // During Settlement expired positions settle at the market's fixed
-    // `expiry_price` (see `settle_expired_position`), NOT the live oracle, so
-    // the reserve must be valued at `expiry_price` too — mirroring the
-    // Settlement branch liquidation already uses. Reserving at a live oracle
-    // that sits below `expiry_price` for a net-long expired market
-    // under-reserves and lets the sweep drain pnl-pool value the pending
-    // expiry claims still need, making those claims later revert with
-    // InsufficientPerpPnlPool. `expiry_price` is fixed once set at settlement,
-    // so no live-oracle validity gate is needed for it. Outside Settlement,
-    // value at the live oracle and mirror the oracle-validity gates that
-    // `settle_pnl` applies, so a stale/divergent oracle can't mis-size the
-    // sweep against the user PnL pool.
-    let reserve_price = if perp_market.status == MarketStatus::Settlement {
-        perp_market.expiry_price
-    } else {
-        let oracle_price = oracle_map.get_price_data(&perp_market.oracle_id())?.price;
-
-        controller::orders::validate_market_within_price_band(perp_market, &state, oracle_price)?;
-
-        if perp_market.amm.is_curve_update_enabled() {
-            let healthy_oracle = perp_market.is_recent_oracle_valid(oracle_map.slot)?;
-
-            if !healthy_oracle {
-                let (_, oracle_validity) = oracle_map.get_price_data_and_validity(
-                    MarketType::Perp,
-                    perp_market.market_index,
-                    &perp_market.oracle_id(),
-                    perp_market
-                        .market_stats
-                        .historical_oracle_data
-                        .last_oracle_price_twap,
-                    perp_market.get_max_confidence_interval_multiplier()?,
-                    0,
-                    0,
-                    None,
-                )?;
-
-                if !is_oracle_valid_for_action(oracle_validity, Some(VelocityAction::SettlePnl))?
-                    || !perp_market.is_price_divergence_ok_for_settle_pnl(oracle_price)?
-                {
-                    validate!(
-                        perp_market.market_stats.last_oracle_valid,
-                        oracle_validity.get_error_code(),
-                        "Oracle Price detected as invalid ({}) on last perp market update for Market = {}",
-                        oracle_validity,
-                        perp_market_index
-                    )?;
-
-                    validate!(
-                        perp_market.amm.is_fresh_at(oracle_map.slot),
-                        ErrorCode::AMMNotUpdatedInSameSlot,
-                        "Market={} AMM must be updated in a prior instruction within same slot (current={} != amm={}, last_oracle_valid={})",
-                        perp_market_index,
-                        oracle_map.slot,
-                        perp_market.amm.last_update_slot(),
-                        perp_market.market_stats.last_oracle_valid
-                    )?;
-                }
-            }
-        }
-
-        oracle_price
-    };
+    // The reserve keeps the live user claim in the pnl pool. `get_pnl_pool_drain_reserve_price`
+    // picks the price and validates the oracle. The revenue-share sweep uses the same function, so
+    // both drains value the same claim at the same price.
+    let reserve_price = controller::perp_pools::get_pnl_pool_drain_reserve_price(
+        perp_market,
+        &state,
+        &mut oracle_map,
+    )?;
 
     controller::spot_balance::update_spot_market_cumulative_interest(
         spot_market,
@@ -3244,6 +3327,223 @@ pub fn handle_sweep_perp_market_fees(
         protocol_swept,
         amm_provision_tokenized
     );
+
+    Ok(())
+}
+
+/// Writes off one revenue-share row that the program cannot pay. Anyone can call this.
+///
+/// `settle_expired_market_pools_to_revenue_pool` refuses to delist a market that still owes
+/// revenue share. That value belongs to the beneficiaries, not to the revenue pool. A row that
+/// nobody can collect would block the delist forever. This instruction ends such a row.
+///
+/// The program requires proof that it cannot pay the row. One of these must be true:
+///
+///   * The beneficiary has no payout `User` account. The handler derives the address of that
+///     account from the row, so the caller cannot substitute or omit it.
+///   * The market is closed and the pool is smaller than the row.
+///   * The row names no beneficiary that the program can reach.
+///
+/// This moves no tokens. Only the row and the counter change.
+#[access_control(
+    exchange_not_paused(&ctx.accounts.state)
+)]
+pub fn handle_forfeit_revenue_share_order(
+    ctx: Context<ForfeitRevenueShareOrder>,
+    market_index: u16,
+    order_index: u32,
+) -> Result<()> {
+    let clock = Clock::get()?;
+    let state = ctx.accounts.state.load()?;
+    let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
+    let spot_market = &mut load_mut!(ctx.accounts.spot_market)?;
+    let escrow_authority = ctx.accounts.escrow_authority.key();
+
+    // The proof below compares the pool against the amount that the row owes. `get_token_amount`
+    // scales the pool by the cumulative deposit interest of the market. That interest only grows.
+    // An old value therefore makes the pool look too small, and the program could write off a row
+    // that it can pay. Accrue the interest first. The sweep does the same.
+    controller::spot_balance::update_spot_market_cumulative_interest(
+        spot_market,
+        None,
+        clock.unix_timestamp,
+        state.funding_paused()?,
+    )?;
+
+    let escrow_account_info = ctx.accounts.revenue_share_escrow.to_account_info();
+    let mut escrow: RevenueShareEscrowZeroCopyMut =
+        crate::state::revenue_share::RevenueShareEscrowLoader::load_zc_mut(&escrow_account_info)?;
+    validate!(
+        escrow.fixed.authority == escrow_authority,
+        ErrorCode::RevenueShareEscrowAuthorityMismatch,
+        "escrow header authority {} does not match the seed authority {}",
+        escrow.fixed.authority,
+        escrow_authority
+    )?;
+
+    // The proof that the program cannot pay the row. It reads the beneficiary from the escrow and
+    // derives the payout address itself, so the caller cannot substitute or omit that account.
+    let reason = controller::revenue_share::resolve_revenue_share_forfeit_reason(
+        perp_market,
+        spot_market,
+        &mut escrow,
+        market_index,
+        order_index,
+        &ctx.accounts.beneficiary_user.key(),
+        ctx.accounts.beneficiary_user.data_is_empty()
+            && *ctx.accounts.beneficiary_user.owner == anchor_lang::system_program::ID,
+        clock.unix_timestamp,
+        state.escrow_period_before_transfer()?,
+    )?;
+
+    controller::revenue_share::forfeit_revenue_share_order(
+        perp_market,
+        &mut escrow,
+        order_index,
+        reason,
+    )?;
+
+    Ok(())
+}
+
+/// Pays the accrued builder and referrer fees in one escrow for one perp market. Anyone can call
+/// this.
+///
+/// A pnl settle runs the same sweep, but only after it settles pnl. A row is therefore payable
+/// only while the escrow owner still has pnl to settle on the market. After the owner closes the
+/// position and stops trading, nobody can collect the fee. `PerpMarket.pending_revenue_share` then
+/// holds pnl-pool value against that claim forever, and the fee sweeps cannot use it. This
+/// instruction lets a beneficiary or a keeper collect without the owner.
+///
+/// `remaining_accounts` holds three groups, in this order:
+///   1. The oracle, spot market and perp market accounts that `load_maps` reads.
+///   2. `num_owner_sub_accounts` read-only `User` accounts of the escrow authority. The handler
+///      uses them to complete rows whose orders are closed. A builder row needs `Completed`.
+///   3. The `User` and `RevenueShare` accounts of the beneficiaries, writable. These go to
+///      `load_revenue_share_map`.
+#[access_control(
+    exchange_not_paused(&ctx.accounts.state)
+    settle_pnl_not_paused(&ctx.accounts.state)
+)]
+pub fn handle_settle_revenue_share<'c: 'info, 'info>(
+    ctx: Context<'info, SettleRevenueShare<'info>>,
+    market_index: u16,
+    num_owner_sub_accounts: u8,
+) -> Result<()> {
+    let clock = Clock::get()?;
+    let state = ctx.accounts.state.load()?;
+
+    validate!(
+        state.builder_codes_enabled(),
+        ErrorCode::DefaultError,
+        "builder codes feature is disabled"
+    )?;
+
+    let escrow_authority = ctx.accounts.escrow_authority.key();
+
+    // Bind the account info to a local first. `load_zc_mut` borrows from it, and a temporary
+    // value from `to_account_info()` does not live long enough.
+    let escrow_account_info = ctx.accounts.revenue_share_escrow.to_account_info();
+    // Fully qualified: `ZeroCopyLoader` also defines `load_zc_mut` for account infos.
+    let mut escrow: RevenueShareEscrowZeroCopyMut =
+        crate::state::revenue_share::RevenueShareEscrowLoader::load_zc_mut(&escrow_account_info)?;
+    validate!(
+        escrow.fixed.authority == escrow_authority,
+        ErrorCode::RevenueShareEscrowAuthorityMismatch,
+        "escrow header authority {} does not match the seed authority {}",
+        escrow.fixed.authority,
+        escrow_authority
+    )?;
+
+    let mut remaining_accounts = ctx.remaining_accounts.iter().peekable();
+    let AccountMaps {
+        perp_market_map,
+        spot_market_map,
+        mut oracle_map,
+    } = load_maps(
+        &mut remaining_accounts,
+        &get_writable_perp_market_set(market_index),
+        &get_writable_spot_market_set(QUOTE_SPOT_MARKET_INDEX),
+        clock.slot,
+        Some(state.oracle_guard_rails),
+    )?;
+
+    // The sweep pays from the market that `get_quote_spot_market_mut` returns. A perp market with
+    // a different quote market would find no balance.
+    validate!(
+        perp_market_map
+            .get_ref(&market_index)?
+            .quote_spot_market_index
+            == QUOTE_SPOT_MARKET_INDEX,
+        ErrorCode::DefaultError,
+        "perp market {} is not quoted in the quote spot market",
+        market_index
+    )?;
+
+    // Complete the rows whose orders are closed. This is the only way that a builder row gets the
+    // `Completed` flag that the sweep needs. Payment clears a row. If the program paid an `Open`
+    // row, it would remove the `order_id` and `sub_account_id` that `find_builder_order_index`
+    // reads. A third party could then stop the fees of a builder on a live order.
+    let owner_sub_accounts = load_escrow_owner_sub_accounts(
+        &mut remaining_accounts,
+        &escrow_authority,
+        num_owner_sub_accounts,
+    )?;
+    for loader in owner_sub_accounts.iter() {
+        let user = load!(loader)?;
+        escrow.revoke_completed_orders(&user)?;
+    }
+    drop(owner_sub_accounts);
+
+    // This uses `?`, not `.ok()`. The settle handlers process a batch and must continue. This
+    // instruction has one job, so a bad beneficiary account must fail the transaction.
+    let revenue_share_map = load_revenue_share_map(&mut remaining_accounts)?;
+
+    // The price that sets the `max(net_user_pnl, 0)` reserve. The settle handlers get this check
+    // from the `settle_pnl` that runs before their sweep. This instruction must do the check
+    // itself. It uses the same checks as `handle_sweep_perp_market_fees`, which values the same
+    // reserve.
+    let reserve_price = {
+        let perp_market = perp_market_map.get_ref(&market_index)?;
+
+        // A delist requires a zero liability and moves the pnl pool to the revenue pool. A
+        // delisted market therefore owes nothing and holds nothing. Report this. A silent success
+        // would look like a completed settle.
+        validate!(
+            perp_market.status != MarketStatus::Delisted,
+            ErrorCode::MarketDelisted,
+            "perp market {} is delisted; its pnl pool is drained and it owes nothing",
+            market_index
+        )?;
+
+        controller::perp_pools::get_pnl_pool_drain_reserve_price(
+            &perp_market,
+            &state,
+            &mut oracle_map,
+        )?
+    };
+
+    let discharged = controller::revenue_share::sweep_completed_revenue_share_for_market(
+        market_index,
+        &mut escrow,
+        &perp_market_map,
+        &spot_market_map,
+        &revenue_share_map,
+        clock.unix_timestamp,
+        reserve_price,
+        state.builder_codes_enabled(),
+        state.funding_paused()?,
+    )?;
+
+    msg!(
+        "settled revenue share for market {} escrow {}: {}",
+        market_index,
+        escrow_authority,
+        discharged
+    );
+
+    let spot_market = spot_market_map.get_quote_spot_market()?;
+    validate_spot_market_vault_amount(&spot_market, ctx.accounts.spot_market_vault.amount)?;
 
     Ok(())
 }
@@ -3280,6 +3580,74 @@ pub fn handle_update_spot_market_cumulative_interest(
     math::spot_withdraw::validate_spot_market_vault_amount(
         spot_market,
         ctx.accounts.spot_market_vault.amount,
+    )?;
+
+    Ok(())
+}
+
+/// Permissionless batch refresh: book the lending interest of several spot markets in one
+/// instruction. Markets and their indexes arrive through `remaining_accounts`, and each one goes
+/// through the same `update_spot_market_cumulative_interest` as the single-market crank above.
+///
+/// Written for a caller that must value several markets in one transaction, such as a program
+/// that prices a share against the markets a user holds. The single-market crank stays the
+/// instruction that keeps a market's oracle EMA fresh.
+///
+/// This instruction moves no tokens and passes no oracle, which is why it drops two of the crank's
+/// guards and its spot-vault assertion, and keeps the third:
+///
+/// - No oracle means `update_spot_market_twap_stats` leaves `historical_oracle_data` alone. A
+///   caller that reads a market's oracle TWAP after this call therefore reads a value this call
+///   did not move, and no caller can pick the sampling instant of an oracle EMA.
+/// - A market status of `Delisted` is not rejected. `deposit` and `force_delete_user` already
+///   book interest on a delisted market, so refusing here would block callers without stopping
+///   the accrual.
+/// - `exchange_not_paused` is kept. A full halt sets every `ExchangeStatus` bit, `FundingPaused`
+///   included, so no interest can accrue and the only work left is stamping the clock and the
+///   balance TWAPs. Those TWAPs size the withdraw and borrow circuit breakers, and a halt freezes
+///   them for a reason. Without this guard a caller could re-baseline a breaker mid-halt, or stamp
+///   the halted interval away so nobody is charged for it.
+/// - The spot vault holds the same tokens after this call as before it, and booking interest can
+///   only lower the depositors' claim, never raise it. Asserting the vault invariant here would
+///   let one market that is already short abort the refresh of every other market in the batch.
+#[access_control(
+    exchange_not_paused(&ctx.accounts.state)
+)]
+pub fn handle_refresh_spot_market_interest<'c: 'info, 'info>(
+    ctx: Context<'info, RefreshSpotMarketInterest<'info>>,
+    market_indexes: Vec<u16>,
+) -> Result<()> {
+    // A user holds eight spot positions, and every perp market quotes the same spot market
+    // (`initialize_perp_market` hardcodes it and no setter exists), so ten markets cover every
+    // market one user's equity can read. The cap keeps one call inside a compute budget.
+    validate!(
+        market_indexes.len() <= 16,
+        ErrorCode::DefaultError,
+        "too many markets passed, max 16, got {}",
+        market_indexes.len()
+    )?;
+
+    let state = ctx.accounts.state.load()?;
+    let clock = Clock::get()?;
+
+    let writable_spot_markets = get_writable_spot_market_set_from_many(market_indexes);
+
+    let AccountMaps {
+        spot_market_map, ..
+    } = load_maps(
+        &mut ctx.remaining_accounts.iter().peekable(),
+        &MarketSet::new(),
+        &writable_spot_markets,
+        clock.slot,
+        Some(state.oracle_guard_rails),
+    )?;
+
+    controller::spot_balance::refresh_spot_market_interest(
+        &spot_market_map,
+        None,
+        &writable_spot_markets,
+        clock.unix_timestamp,
+        state.funding_paused()?,
     )?;
 
     Ok(())
@@ -3427,8 +3795,17 @@ pub fn handle_force_delete_user<'c: 'info, 'info>(
 
     // check the user equity
 
-    let (user_equity, _) =
+    let (user_equity, all_oracles_valid) =
         calculate_user_equity(user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
+
+    // Deletion sends the user's remaining deposits to the keeper's own token
+    // account, so this must fail closed. A stale-low price understates the
+    // equity and makes a funded account look like dust.
+    validate!(
+        all_oracles_valid,
+        ErrorCode::InvalidOracle,
+        "cannot force delete user with an invalid oracle"
+    )?;
 
     let max_equity = QUOTE_PRECISION_I128 / 20;
     validate!(
@@ -3473,20 +3850,27 @@ pub fn handle_force_delete_user<'c: 'info, 'info>(
         "user must have no perp positions"
     )?;
 
+    // Book the interest of every market the user still holds before the transfers below read a
+    // token amount. Cancelling the orders above can free a position that only open orders kept
+    // alive, so the set is taken here rather than reused from the account load.
+    //
+    // The dust gate earlier in this handler still values the user through the stored indexes. An
+    // account close to the cap can therefore read below it and be deleted, which sends its
+    // deposits to the keeper. Moving that gate after this call is a separate change.
+    controller::spot_balance::refresh_spot_market_interest(
+        &spot_market_map,
+        Some(&mut oracle_map),
+        &get_market_set_for_spot_positions(&user.spot_positions),
+        now,
+        state.funding_paused()?,
+    )?;
+
     for spot_position in user.spot_positions.iter_mut() {
         if spot_position.is_available() {
             continue;
         }
 
         let spot_market = &mut spot_market_map.get_ref_mut(&spot_position.market_index)?;
-        let oracle_price_data = oracle_map.get_price_data(&spot_market.oracle_id())?;
-
-        controller::spot_balance::update_spot_market_cumulative_interest(
-            spot_market,
-            Some(oracle_price_data),
-            now,
-            state.funding_paused()?,
-        )?;
 
         let token_amount = spot_position.get_token_amount(spot_market)?;
         let balance_type = spot_position.balance_type;
@@ -3585,7 +3969,43 @@ pub fn handle_force_delete_user<'c: 'info, 'info>(
         Clock::get()?.unix_timestamp,
     )?;
 
+    // OtterSec #128: settle this subaccount's revenue-share rows before the id goes
+    // away for good. This path retires the id exactly as `delete_user` does, so it
+    // orphans a fee-bearing row the same way. See `handle_delete_user` for why the row
+    // then becomes unreachable.
+    //
+    // `cancel_orders` above closed every order of this subaccount, so each row for it
+    // becomes `Completed` (or is cleared when it carries no fees). That is the state
+    // the permissionless sweep pays out of.
+    //
+    // The escrow is pinned to the authority's PDA by `seeds`, so an empty account
+    // proves this authority has no escrow rather than signalling an omitted account.
+    if !ctx.accounts.revenue_share_escrow.data_is_empty() {
+        // `ZeroCopyLoader` is in scope for this module and also has a `load_zc_mut`, so
+        // name the trait to pick the escrow's loader.
+        use crate::state::revenue_share::RevenueShareEscrowLoader;
+
+        let mut escrow =
+            RevenueShareEscrowLoader::load_zc_mut(&*ctx.accounts.revenue_share_escrow)?;
+        escrow.revoke_completed_orders(user)?;
+
+        // Belt and braces: after the above, nothing for this subaccount may still be
+        // outstanding. If it somehow is, fail rather than retire the id over it.
+        validate!(
+            !escrow.has_outstanding_orders_for_sub_account(user.sub_account_id)?,
+            ErrorCode::UserCantBeDeleted,
+            "sub account {} still has outstanding revenue-share orders",
+            user.sub_account_id
+        )?;
+    }
+
     safe_decrement!(user_stats.number_of_sub_accounts, 1);
+
+    // Release the shared `State` borrow taken at the top of this handler. `Ref` implements `Drop`,
+    // so the borrow lives to the end of the scope and a shadowing `let` does not end it. Without
+    // this the `load_mut` below fails with `AccountBorrowFailed`, and it fails after the user's
+    // tokens have already moved to the keeper.
+    drop(state);
 
     let mut state = ctx.accounts.state.load_mut()?;
     safe_decrement!(state.number_of_sub_accounts, 1);
@@ -3754,6 +4174,7 @@ pub struct TriggerOrder<'info> {
     #[account(mut)]
     pub user: AccountLoader<'info, User>,
     #[account(
+        mut,
         constraint = is_stats_for_user(&user, &user_stats)?
     )]
     pub user_stats: AccountLoader<'info, UserStats>,
@@ -4024,6 +4445,21 @@ pub struct LiquidateSpotWithSwap<'info> {
     /// CHECK: fixed instructions sysvar account
     #[account(address = instructions::ID)]
     pub instructions: UncheckedAccount<'info>,
+    /// The liquidator's `UserStats`, read by `begin` to bar an authority whose
+    /// equity breaker is tripped.
+    ///
+    /// It sits last, not beside `liquidator` where the direct liquidation
+    /// contexts carry it, because this pair is addressed by position rather
+    /// than by name: `begin` introspects the matching `end` and compares the
+    /// two account lists index by index, and the swap accounts both forward
+    /// begin where this fixed block ends. Taking the last slot renumbered
+    /// nothing. Slotting it beside `liquidator` would have moved `user`, both
+    /// vaults and both token accounts down one, silently invalidating every
+    /// hand-built transaction that still filled the old order.
+    #[account(
+        constraint = is_stats_for_user(&liquidator, &liquidator_stats)?
+    )]
+    pub liquidator_stats: AccountLoader<'info, UserStats>,
 }
 
 #[derive(Accounts)]
@@ -4146,6 +4582,62 @@ pub struct SweepPerpMarketFees<'info> {
 }
 
 #[derive(Accounts)]
+#[instruction(market_index: u16)]
+pub struct ForfeitRevenueShareOrder<'info> {
+    pub state: AccountLoader<'info, State>,
+    #[account(
+        mut,
+        seeds = [b"perp_market", market_index.to_le_bytes().as_ref()],
+        bump,
+    )]
+    pub perp_market: AccountLoader<'info, PerpMarket>,
+    /// The quote spot market of the perp market. The PDA seeds enforce this. The handler values
+    /// the pnl pool against it. It is writable because the handler accrues interest first.
+    #[account(
+        mut,
+        seeds = [b"spot_market", perp_market.load()?.quote_spot_market_index.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub spot_market: AccountLoader<'info, SpotMarket>,
+    /// The owner of the escrow that holds the row.
+    /// CHECK: the PDA seeds below bind this key to the escrow. The handler also compares it with the authority in the escrow header.
+    pub escrow_authority: UncheckedAccount<'info>,
+    /// The escrow that holds the row to write off.
+    /// CHECK: `load_zc_mut` reads this account and validates the owner and the discriminator. The seeds fix the address.
+    #[account(
+        mut,
+        seeds = [REVENUE_SHARE_ESCROW_PDA_SEED.as_bytes(), escrow_authority.key().as_ref()],
+        bump,
+    )]
+    pub revenue_share_escrow: UncheckedAccount<'info>,
+    /// Sub-account 0 of the beneficiary of the row. This is the payout account. The handler proves
+    /// that it does not exist.
+    /// CHECK: the handler derives the required address from the beneficiary of the row and rejects any other address. Anchor `seeds` cannot express this, because the address depends on `builder_idx` and on `approved_builders`, which the handler reads at run time.
+    pub beneficiary_user: UncheckedAccount<'info>,
+}
+
+#[derive(Accounts)]
+pub struct SettleRevenueShare<'info> {
+    pub state: AccountLoader<'info, State>,
+    /// The owner of the escrow to settle.
+    /// CHECK: the PDA seeds below bind this key to the escrow. The handler also compares it with the authority in the escrow header.
+    pub escrow_authority: UncheckedAccount<'info>,
+    /// The escrow that holds the accrued builder and referrer rows.
+    /// CHECK: `load_zc_mut` reads this account and validates the owner and the discriminator. The seeds fix the address.
+    #[account(
+        mut,
+        seeds = [REVENUE_SHARE_ESCROW_PDA_SEED.as_bytes(), escrow_authority.key().as_ref()],
+        bump,
+    )]
+    pub revenue_share_escrow: UncheckedAccount<'info>,
+    #[account(
+        seeds = [b"spot_market_vault".as_ref(), 0_u16.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub spot_market_vault: Box<InterfaceAccount<'info, TokenAccount>>,
+}
+
+#[derive(Accounts)]
 pub struct UpdateSpotMarketCumulativeInterest<'info> {
     pub state: AccountLoader<'info, State>,
     #[account(mut)]
@@ -4157,6 +4649,14 @@ pub struct UpdateSpotMarketCumulativeInterest<'info> {
         bump,
     )]
     pub spot_market_vault: Box<InterfaceAccount<'info, TokenAccount>>,
+}
+
+/// The markets to refresh arrive as writable spot market accounts in `remaining_accounts`.
+/// `SpotMarketMap` reads each market's index out of the account it loads, so a market is refreshed
+/// only when its own account is passed.
+#[derive(Accounts)]
+pub struct RefreshSpotMarketInterest<'info> {
+    pub state: AccountLoader<'info, State>,
 }
 
 #[derive(Accounts)]
@@ -4245,6 +4745,18 @@ pub struct ForceDeleteUser<'info> {
     pub keeper: Signer<'info>,
     /// CHECK: forced velocity_signer
     pub velocity_signer: UncheckedAccount<'info>,
+    /// CHECK: the authority's `RevenueShareEscrow`. It may legitimately not exist,
+    /// because most users never create one. It carries the same contract as
+    /// `DeleteUser::revenue_share_escrow`: an `UncheckedAccount` pinned by `seeds`, so
+    /// the handler can tell "this authority has no escrow" (`data_is_empty()`) from "the
+    /// keeper omitted the account to skip the check". It is required rather than
+    /// `Option` for that second reason (OtterSec #128).
+    #[account(
+        mut,
+        seeds = [REVENUE_SHARE_ESCROW_PDA_SEED.as_bytes(), authority.key().as_ref()],
+        bump,
+    )]
+    pub revenue_share_escrow: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]

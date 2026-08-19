@@ -2,8 +2,13 @@
 
 [advisories]
 ignore = [
-	"RUSTSEC-2022-0013",
 	"RUSTSEC-2022-0093", # Double Public Key Signing Function Oracle Attack on `ed25519-dalek`
+	# rkyv OOB reads: rkyv is a feature-inactive optional dep of rust_decimal
+	# (via programs/pyth-lazer); it is never compiled into any artifact
+	# (`cargo tree -i rkyv` is empty in both workspaces) but Cargo.lock records
+	# optional deps unconditionally, which is all cargo-audit sees. No upgrade
+	# path: rust_decimal supports rkyv ^0.7 only, the fix is >=0.8.17.
+	"RUSTSEC-2026-0235",
 ]
 informational_warnings = ["unmaintained"] # warn for categories of informational advisories
 severity_threshold = "high" # CVSS severity ("none", "low", "medium", "high", "critical")

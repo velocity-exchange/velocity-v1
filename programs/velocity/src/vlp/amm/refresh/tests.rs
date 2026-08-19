@@ -133,6 +133,7 @@ pub fn update_amm_test() {
         &market.oracle_source,
         LogMode::ExchangeOracle,
         state.oracle_guard_rails.validity.slots_before_stale_for_amm as i8,
+        false, // exchange-oracle price, never MM-sourced
         state.oracle_guard_rails.validity.slots_before_stale_for_amm as i8,
     )
     .unwrap()
@@ -402,6 +403,7 @@ pub fn update_amm_test_bad_oracle() {
         &market.oracle_source,
         LogMode::None,
         0,
+        false, // exchange-oracle price, never MM-sourced
         0,
     )
     .unwrap()
@@ -686,7 +688,9 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
 
     let cost_of_update =
         _update_amm(&mut market, &mm_oracle_price_data, &state, now, slot).unwrap();
-    assert!(market.is_recent_oracle_valid(slot).unwrap());
+    assert!(market
+        .is_recent_oracle_valid(slot, &oracle_price_data)
+        .unwrap());
     assert_eq!(cost_of_update, -42992787); // amm wins when price increases
     assert_eq!(market.amm.sqrt_k, 64000000000);
     assert_eq!(market.amm.base_asset_reserve, 65000000000);

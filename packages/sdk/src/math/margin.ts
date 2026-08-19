@@ -332,8 +332,8 @@ export function calculateCollateralDepositRequiredForTrade(
  * (`equityFloor + equityFloorBuffer`): the first
  * `netEquity - (floor + buffer)` of the transfer carries no floor, the
  * remainder carries floor one-for-one, capped at the floor the subaccount
- * actually holds. `netEquity` is `User.getNetUsdValue()`, the metric the
- * onchain floor checks use. Returns zero when no floor is set. The result
+ * actually holds. `netEquity` is `User.getFloorNetEquity().value`, the
+ * metric the onchain floor checks use. Returns zero when no floor is set. The result
  * never exceeds `amount`, so a credited side that met its own buffered floor
  * before the transfer still meets it after. All values QUOTE_PRECISION.
  */
@@ -368,7 +368,7 @@ export type EquityFloorLevel =
 	| 'disabled';
 
 /**
- * Classifies `netEquity` (`User.getNetUsdValue()`) against the floor
+ * Classifies `netEquity` (`User.getFloorNetEquity().value`) against the floor
  * thresholds. Used by the `EquityFloorManager` and the equity-floor guard bot
  * so both report the same levels. `warningBufferMultiple` scales the warning
  * threshold above the floor (default 2: warn inside `floor + 2 * buffer`).
@@ -396,3 +396,36 @@ export function getEquityFloorLevel(
 	}
 	return 'healthy';
 }
+
+/**
+ * Net equity paired with the oracle-validity verdict of the walk that
+ * produced it, mirroring the program's `FloorNetEquity`. The onchain floor
+ * gates fail closed on the verdict: an action is authorized only when every
+ * oracle is valid AND the value clears the relevant floor, and being below
+ * the raw floor counts as force-cancel grounds only when every oracle is
+ * valid AND the value sits below it. The breaker trip uses its own walk
+ * (`TripNetEquity`), which concedes bounded value to invalid-oracle dust
+ * instead of requiring every oracle valid. Values QUOTE_PRECISION.
+ */
+export type FloorNetEquity = {
+	value: BN;
+	allOraclesValid: boolean;
+};
+
+/**
+ * Net-equity upper bound for the breaker trip, mirroring the program's
+ * `TripNetEquity`. Positions with valid oracles are valued at live prices.
+ * A position with an invalid oracle is conceded its most favorable value:
+ * a liability or a short base leg counts as zero at any size, an asset or
+ * long base leg worth no more than `EQUITY_FLOOR_TRIP_DUST_ALLOWANCE` at
+ * its own last twap counts as exactly the allowance, and a larger asset or
+ * long (or one whose twap is not positive) makes the breach unprovable
+ * (`provable` false). The zero concessions are sound at any price; the
+ * allowance concession is sound as far as the twap sizes the position
+ * honestly. Dust parked in dead-oracle markets cannot veto a material
+ * breach. Values QUOTE_PRECISION.
+ */
+export type TripNetEquity = {
+	equityUpperBound: BN;
+	provable: boolean;
+};

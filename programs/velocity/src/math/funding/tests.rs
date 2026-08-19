@@ -4,8 +4,9 @@ use {
         controller::funding::update_funding_rate,
         math::{
             constants::{
-                AMM_RESERVE_PRECISION, BPS_PRECISION, ONE_HOUR_I128, PERCENTAGE_PRECISION_U32,
-                PRICE_PRECISION, PRICE_PRECISION_U64, QUOTE_PRECISION,
+                AMM_RESERVE_PRECISION, BPS_PRECISION, ONE_HOUR, ONE_HOUR_I128, PEG_PRECISION,
+                PERCENTAGE_PRECISION_U32, PRICE_PRECISION, PRICE_PRECISION_I64,
+                PRICE_PRECISION_U64, QUOTE_PRECISION,
             },
             funding::*,
             helpers::on_the_hour_update,
@@ -410,6 +411,159 @@ fn max_funding_rates() {
     .unwrap();
 
     assert!(!did_succeed);
+}
+
+/// OtterSec #109 — the funding crank must evaluate its own oracle gate against
+/// the TWAP as it stood *before* the instruction's own refresh.
+///
+/// `handle_update_funding_rate` used to call the composed
+/// `update_oracle_derived_stats` (which advances `last_oracle_price_twap` /
+/// `last_oracle_price_twap_5min`) and only then call `update_funding_rate`, whose
+/// gate `oracle::block_operation` reads those same two fields. The refresh drags
+/// the TWAP toward the live price, so a genuinely `TooVolatile` oracle cleared its
+/// own gate inside the same instruction and went on to mutate cumulative funding.
+/// It now calls the TWAP-free `refresh_amm_quote_state` instead.
+#[test]
+fn funding_gate_not_cleared_by_own_twap_refresh() {
+    let now = 3600_i64;
+    let slot = 1_u64;
+
+    let state = State {
+        oracle_guard_rails: OracleGuardRails {
+            validity: ValidityGuardRails {
+                slots_before_stale_for_amm: 10,     // 5s
+                slots_before_stale_for_margin: 120, // 60s
+                confidence_interval_max_size: 1000,
+                too_volatile_ratio: 5,
+            },
+            ..OracleGuardRails::default()
+        },
+        ..State::default()
+    };
+
+    // Live oracle 51, mark 12, and a funding-period TWAP still sitting at a stale
+    // 8. 51 / 8 == 6 > too_volatile_ratio(5), so the oracle is `TooVolatile` and
+    // funding must not update. The 5-min TWAP sits on the mark so the divergence
+    // half of the gate stays clear and only the volatility term is in play.
+    let mut oracle_price = get_pyth_price(51, 6);
+    let oracle_price_key =
+        Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+    create_anchor_account_info!(
+        oracle_price,
+        &oracle_price_key,
+        PythLazerOracle,
+        oracle_account_info
+    );
+    let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+
+    let market = PerpMarket {
+        market_index: 0,
+        status: crate::state::market_status::MarketStatus::Active,
+        // ContractTier::C => a 50% sanitize band, wide enough for one refresh to
+        // carry the TWAP from 8 to 12 and clear the ratio.
+        contract_tier: ContractTier::C,
+        amm: AMM {
+            base_asset_reserve: 500 * AMM_RESERVE_PRECISION,
+            quote_asset_reserve: 500 * AMM_RESERVE_PRECISION,
+            sqrt_k: 500 * AMM_RESERVE_PRECISION,
+            peg_multiplier: 12_000_000,
+            ..AMM::default()
+        },
+        oracle: oracle_price_key,
+        oracle_source: crate::state::oracle::OracleSource::PythLazer,
+        market_stats: MarketStats {
+            funding_period: 3600,
+            last_mark_price_twap: 12 * PRICE_PRECISION_U64,
+            last_mark_price_twap_5min: 12 * PRICE_PRECISION_U64,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price: (51 * PRICE_PRECISION) as i64,
+                last_oracle_price_twap: (8 * PRICE_PRECISION) as i64,
+                last_oracle_price_twap_5min: (12 * PRICE_PRECISION) as i64,
+                ..HistoricalOracleData::default()
+            },
+            ..MarketStats::default()
+        },
+        ..PerpMarket::default()
+    };
+
+    let reserve_price = market.amm.reserve_price().unwrap();
+    assert_eq!(reserve_price, 12 * PRICE_PRECISION_U64);
+
+    let oracle_price_data = *oracle_map.get_price_data(&market.oracle_id()).unwrap();
+    let mm_oracle_price_data = market
+        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .unwrap();
+    let validity = crate::vlp::amm::refresh::compute_amm_refresh_validity(
+        &market,
+        &mm_oracle_price_data,
+        &state,
+    )
+    .unwrap();
+    assert_eq!(validity, Some(OracleValidity::TooVolatile));
+
+    // Baseline: the gate blocks this oracle.
+    assert!(block_operation(
+        &market,
+        &oracle_price_data,
+        &state.oracle_guard_rails,
+        reserve_price,
+        slot,
+    )
+    .unwrap());
+
+    // Pre-fix ordering: the crank's own refresh moves the TWAP 8 -> 12, and the
+    // very same oracle now passes the very same gate.
+    let mut unfixed = market;
+    unfixed
+        .update_oracle_derived_stats(&mm_oracle_price_data, validity, now, slot)
+        .unwrap();
+    assert_eq!(
+        unfixed
+            .market_stats
+            .historical_oracle_data
+            .last_oracle_price_twap,
+        (12 * PRICE_PRECISION) as i64
+    );
+    assert!(
+        !block_operation(
+            &unfixed,
+            &oracle_price_data,
+            &state.oracle_guard_rails,
+            unfixed.amm.reserve_price().unwrap(),
+            slot,
+        )
+        .unwrap(),
+        "the pre-fix ordering is expected to clear its own gate — if this trips, \
+         the test fixture no longer reproduces #109"
+    );
+
+    // Fixed ordering: the TWAP-free half leaves both gate inputs untouched, so a
+    // too-volatile oracle stays blocked.
+    let mut fixed = market;
+    fixed
+        .refresh_amm_quote_state(&mm_oracle_price_data, validity, slot)
+        .unwrap();
+    let historical = fixed.market_stats.historical_oracle_data;
+    assert_eq!(
+        historical.last_oracle_price_twap,
+        (8 * PRICE_PRECISION) as i64
+    );
+    assert_eq!(
+        historical.last_oracle_price_twap_5min,
+        (12 * PRICE_PRECISION) as i64
+    );
+    assert_eq!(historical.last_oracle_price_twap_ts, 0);
+    assert!(block_operation(
+        &fixed,
+        &oracle_price_data,
+        &state.oracle_guard_rails,
+        fixed.amm.reserve_price().unwrap(),
+        slot,
+    )
+    .unwrap());
+    // ...and it still performed its own half: `last_oracle_valid` is stamped
+    // (false here, since a TooVolatile oracle is not valid for an AMM fill).
+    assert!(!fixed.market_stats.last_oracle_valid);
 }
 
 #[test]
@@ -876,4 +1030,130 @@ mod amm_funding_payment {
             capped
         );
     }
+}
+
+/// A market that resumes after a long gap must not price funding off one quote.
+///
+/// `calculate_new_twap` weights the incoming sample by the time since the last mark
+/// TWAP write, so past a few funding periods the next sample replaces the TWAP
+/// outright. That gap is longest after a funding pause, because both funding cranks
+/// reject while the pause is set, and funding fires on the first crank after it lifts.
+/// `MarketStats::update_mark_twap` re-seeds the mark TWAPs from the oracle TWAP
+/// instead, so the resuming market pays what a market with no premium pays.
+#[test]
+fn funding_after_a_long_mark_twap_gap_charges_the_offset_alone() {
+    let now = 1_662_800_000_i64 + 4 * ONE_HOUR;
+    let slot = 1_u64;
+
+    let state = State {
+        oracle_guard_rails: OracleGuardRails {
+            validity: ValidityGuardRails {
+                slots_before_stale_for_amm: 10,
+                slots_before_stale_for_margin: 120,
+                confidence_interval_max_size: 1000,
+                too_volatile_ratio: 5,
+            },
+            ..OracleGuardRails::default()
+        },
+        ..State::default()
+    };
+
+    let mut oracle_price = get_pyth_price(1, 6);
+    let oracle_price_key =
+        Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+    create_anchor_account_info!(
+        oracle_price,
+        &oracle_price_key,
+        PythLazerOracle,
+        oracle_account_info
+    );
+
+    // `market` carries a 10% mark premium it has not written for four funding periods.
+    // `control` holds no premium and is current, so it charges the offset alone by
+    // construction. The two must reach the same funding rate.
+    // The AMM quotes 2% above the oracle, so the sample this update would otherwise
+    // blend in is distinguishable from the oracle TWAP the re-seed writes.
+    let amm = AMM {
+        peg_multiplier: PEG_PRECISION * 102 / 100,
+        ..AMM::default_test()
+    };
+
+    let market_of = |last_mark_price_twap: u64, last_mark_price_twap_ts: i64| PerpMarket {
+        market_index: 0,
+        amm,
+        oracle: oracle_price_key,
+        oracle_source: crate::state::oracle::OracleSource::PythLazer,
+        market_stats: MarketStats {
+            funding_period: ONE_HOUR,
+            last_mark_price_twap,
+            last_mark_price_twap_5min: last_mark_price_twap,
+            last_bid_price_twap: last_mark_price_twap,
+            last_ask_price_twap: last_mark_price_twap,
+            last_mark_price_twap_ts,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price: PRICE_PRECISION_I64,
+                last_oracle_price_twap: PRICE_PRECISION_I64,
+                last_oracle_price_twap_5min: PRICE_PRECISION_I64,
+                last_oracle_price_twap_ts: now - 60,
+                ..HistoricalOracleData::default()
+            },
+            ..MarketStats::default()
+        },
+        ..PerpMarket::default()
+    };
+
+    let mut market = market_of(110 * PRICE_PRECISION_U64 / 100, now - 4 * ONE_HOUR);
+    let mut control = market_of(PRICE_PRECISION_U64, now);
+
+    // Guards against a vacuous pass: the quote the re-seed discards must differ from
+    // the oracle TWAP it seeds onto.
+    let amm_quote = market.amm.reserve_price().unwrap();
+    assert_ne!(amm_quote, PRICE_PRECISION_U64);
+
+    let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+    assert!(update_funding_rate(
+        0,
+        &mut market,
+        &mut oracle_map,
+        now,
+        slot,
+        &state.oracle_guard_rails,
+        false,
+        None,
+    )
+    .unwrap());
+
+    let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+    assert!(update_funding_rate(
+        0,
+        &mut control,
+        &mut oracle_map,
+        now,
+        slot,
+        &state.oracle_guard_rails,
+        false,
+        None,
+    )
+    .unwrap());
+
+    // The stale premium is discarded, not carried into the first period after the gap.
+    assert_eq!(
+        market.market_stats.last_mark_price_twap,
+        market
+            .market_stats
+            .historical_oracle_data
+            .last_oracle_price_twap as u64
+    );
+    assert_eq!(market.market_stats.last_mark_price_twap_ts, now);
+    assert_ne!(market.market_stats.last_mark_price_twap, amm_quote);
+
+    assert_eq!(
+        market.cumulative_funding_rate_long,
+        control.cumulative_funding_rate_long
+    );
+    assert_eq!(
+        market.cumulative_funding_rate_short,
+        control.cumulative_funding_rate_short
+    );
+    assert_eq!(market.last_funding_rate, control.last_funding_rate);
 }

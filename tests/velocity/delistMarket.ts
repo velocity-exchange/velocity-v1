@@ -845,6 +845,9 @@ describe('delist market', () => {
 		const userCostBasis = market.quoteAssetAmount;
 		console.log('userCostBasis:', userCostBasis.toString());
 		assert(userCostBasis.eq(ZERO)); // ready to settle expiration
+		// The delist sweep bypasses the bankruptcy IF-fee floor, so it rejects while
+		// a bankrupt quote debt is still booked against the market.
+		assert(market.pendingBankruptcyClaims === 0);
 
 		try {
 			await velocityClient.settleExpiredMarketPoolsToRevenuePool(marketIndex);

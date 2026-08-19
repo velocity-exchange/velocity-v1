@@ -50,6 +50,7 @@ function makeOrder(overrides: Partial<Order>): Order {
 		maxTs: ZERO,
 		bitFlags: 0,
 		postedSlotTail: 0,
+		routeDigest: [0, 0, 0, 0],
 		...overrides,
 	} as Order;
 }
@@ -378,6 +379,7 @@ describe('tick size standardization parity', () => {
 					maxTs: ZERO,
 					bitFlags: 0,
 					postedSlotTail: 0,
+					routeDigest: [0, 0, 0, 0],
 				} as Order,
 				longUser.toString(),
 				1,
@@ -411,6 +413,7 @@ describe('tick size standardization parity', () => {
 					maxTs: ZERO,
 					bitFlags: 0,
 					postedSlotTail: 0,
+					routeDigest: [0, 0, 0, 0],
 				} as Order,
 				shortUser.toString(),
 				1,

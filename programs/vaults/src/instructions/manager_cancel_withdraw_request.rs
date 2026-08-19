@@ -1,18 +1,26 @@
 use {
     crate::{
         constraints::{is_manager_for_vault, is_user_for_vault, is_user_stats_for_vault},
+        refresh_velocity_spot_market,
         state::{Vault, VaultProtocolProvider},
         AccountMapProvider,
     },
     anchor_lang::prelude::*,
     velocity::{
-        instructions::optional_accounts::AccountMaps, math::casting::Cast, state::user::User,
+        instructions::optional_accounts::AccountMaps, math::casting::Cast, program::Velocity,
+        state::user::User,
     },
 };
 
 pub fn manager_cancel_withdraw_request<'info>(
     ctx: Context<'info, ManagerCancelWithdrawRequest<'info>>,
 ) -> Result<()> {
+    // Book the lending interest of every market that prices NAV BEFORE any account
+    // is borrowed and before NAV is snapshotted (OtterSec #136/#137). Must precede
+    // `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable accounts still
+    // have live borrows, and the maps must read post-refresh data.
+    refresh_velocity_spot_market!(ctx);
+
     let clock = &Clock::get()?;
     let vault = &mut ctx.accounts.vault.load_mut()?;
 
@@ -63,4 +71,7 @@ pub struct ManagerCancelWithdrawRequest<'info> {
         constraint = is_user_for_vault(&vault, &velocity_user.key())?
     )]
     pub velocity_user: AccountLoader<'info, User>,
+    /// CHECK: checked in velocity cpi
+    pub velocity_state: AccountInfo<'info>,
+    pub velocity_program: Program<'info, Velocity>,
 }

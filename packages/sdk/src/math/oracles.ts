@@ -5,6 +5,7 @@ import {
 	OracleSource,
 	OracleValidity,
 	PerpMarketAccount,
+	SpotMarketAccount,
 	isOneOfVariant,
 	isVariant,
 } from '../types';
@@ -12,6 +13,7 @@ import { OraclePriceData } from '../oracles/types';
 import {
 	BID_ASK_SPREAD_PRECISION,
 	MARGIN_PRECISION,
+	MM_ORACLE_MIN_SLOT_GAP,
 	ONE,
 	ZERO,
 	FIVE_MINUTE,
@@ -88,6 +90,10 @@ export function getMaxConfidenceIntervalMultiplier(
  * @param oracleGuardRails Protocol-wide validity thresholds (`state.oracleGuardRails`).
  * @param slot Current slot, used to compute oracle delay.
  * @param oracleStalenessBuffer Extra slots subtracted from the raw oracle delay before staleness checks (default 5) to absorb normal reporting lag.
+ * @param isMmSourcedPrice Whether `oraclePriceData` carries an MM-oracle-sourced price. Only
+ * affects the unset (`oracleSlotDelayOverride < 0`) immediate-fill threshold, which resolves to
+ * `MM_ORACLE_MIN_SLOT_GAP` for an MM-sourced price and to zero for an exchange-sourced one,
+ * mirroring `oracle_validity`'s `immediate_price_is_mm_sourced`.
  * @returns The most severe `OracleValidity` classification that applies.
  */
 export function getOracleValidity(
@@ -95,7 +101,8 @@ export function getOracleValidity(
 	oraclePriceData: OraclePriceData,
 	oracleGuardRails: OracleGuardRails,
 	slot: BN,
-	oracleStalenessBuffer = FIVE
+	oracleStalenessBuffer = FIVE,
+	isMmSourcedPrice = false
 ): OracleValidity {
 	const isNonPositive = oraclePriceData.price.lte(ZERO);
 	const isTooVolatile = BN.max(
@@ -124,10 +131,20 @@ export function getOracleValidity(
 
 	const oracleDelay = slot.sub(oraclePriceData.slot).sub(oracleStalenessBuffer);
 
+	// Mirrors `math::oracle::oracle_validity`. `0` is the explicit "never allow
+	// immediate AMM fills" sentinel. A negative override means unset, and its
+	// resolution is source-aware: MM_ORACLE_MIN_SLOT_GAP for an MM-oracle-sourced
+	// price (the program will not accept MM-oracle writes closer together than
+	// that, so a tighter threshold could never be satisfied) and the strict zero
+	// threshold for an exchange-sourced price, which can be same-slot fresh.
 	let isStaleForAmmImmediate = true;
-	if (market.oracleSlotDelayOverride != 0) {
+	if (market.oracleSlotDelayOverride < 0) {
 		isStaleForAmmImmediate = oracleDelay.gt(
-			BN.max(new BN(market.oracleSlotDelayOverride), ZERO)
+			isMmSourcedPrice ? MM_ORACLE_MIN_SLOT_GAP : ZERO
+		);
+	} else if (market.oracleSlotDelayOverride != 0) {
+		isStaleForAmmImmediate = oracleDelay.gt(
+			new BN(market.oracleSlotDelayOverride)
 		);
 	}
 
@@ -474,4 +491,101 @@ export function getMultipleBetweenOracleSources(
 	}
 
 	return { numerator: new BN(1), denominator: new BN(1) };
+}
+
+/**
+ * Per-market multiplier applied to `confidenceIntervalMaxSize` for spot oracle
+ * validity, mirroring `SpotMarket::get_max_confidence_interval_multiplier`:
+ * 1x for Collateral/Protected, 5x for Cross, 50x for Isolated/Unlisted.
+ * @param spotMarket Spot market whose `assetTier` selects the multiplier.
+ * @returns Unitless multiplier (dimensionless BN).
+ */
+export function getSpotMaxConfidenceIntervalMultiplier(
+	spotMarket: SpotMarketAccount
+): BN {
+	if (
+		isVariant(spotMarket.assetTier, 'collateral') ||
+		isVariant(spotMarket.assetTier, 'protected')
+	) {
+		return new BN(1);
+	}
+	if (isVariant(spotMarket.assetTier, 'cross')) {
+		return new BN(5);
+	}
+	return new BN(50);
+}
+
+/**
+ * Classifies a spot oracle reading's validity for the checks `MarginCalc`
+ * cares about, mirroring the spot-market parameterization of
+ * `oracle_validity` in `programs/velocity/src/math/oracle.rs` (twap from the
+ * spot market's `historicalOracleData`, confidence multiplier from the asset
+ * tier, stablecoin sources tolerate 3x margin staleness). Only the four
+ * `MarginCalc`-relevant severities are distinguished; readings that pass all
+ * four report `Valid`.
+ * @param spotMarket Spot market providing the oracle TWAP, asset tier and oracle source.
+ * @param oraclePriceData Oracle reading to validate (`price`/`confidence` PRICE_PRECISION 1e6, `slot`).
+ * @param oracleGuardRails Protocol-wide validity thresholds (`state.oracleGuardRails`).
+ * @param slot Current slot, used to compute oracle delay.
+ * @param oracleStalenessBuffer Extra slots subtracted from the raw oracle delay (default 5).
+ * @returns The most severe `MarginCalc`-relevant `OracleValidity` that applies.
+ */
+export function getSpotOracleValidity(
+	spotMarket: SpotMarketAccount,
+	oraclePriceData: OraclePriceData,
+	oracleGuardRails: OracleGuardRails,
+	slot: BN,
+	oracleStalenessBuffer = FIVE
+): OracleValidity {
+	if (oraclePriceData.price.lte(ZERO)) {
+		return OracleValidity.NonPositive;
+	}
+
+	const twap = spotMarket.historicalOracleData.lastOraclePriceTwap;
+	const isTooVolatile = BN.max(oraclePriceData.price, twap)
+		.div(BN.max(ONE, BN.min(oraclePriceData.price, twap)))
+		.gt(oracleGuardRails.validity.tooVolatileRatio);
+	if (isTooVolatile) {
+		return OracleValidity.TooVolatile;
+	}
+
+	const confPctOfPrice = oraclePriceData.confidence
+		.mul(BID_ASK_SPREAD_PRECISION)
+		.div(oraclePriceData.price);
+	const isConfTooLarge = confPctOfPrice.gt(
+		oracleGuardRails.validity.confidenceIntervalMaxSize.mul(
+			getSpotMaxConfidenceIntervalMultiplier(spotMarket)
+		)
+	);
+	if (isConfTooLarge) {
+		return OracleValidity.TooUncertain;
+	}
+
+	const oracleDelay = slot.sub(oraclePriceData.slot).sub(oracleStalenessBuffer);
+	let staleSlots = new BN(oracleGuardRails.validity.slotsBeforeStaleForMargin);
+	if (isVariant(spotMarket.oracleSource, 'pythLazerStableCoin')) {
+		staleSlots = staleSlots.muln(3);
+	}
+	if (oracleDelay.gt(staleSlots)) {
+		return OracleValidity.StaleForMargin;
+	}
+
+	return OracleValidity.Valid;
+}
+
+/**
+ * True when `validity` is acceptable for `VelocityAction::MarginCalc`,
+ * mirroring `is_oracle_valid_for_action`: rejects `NonPositive`,
+ * `TooVolatile`, `TooUncertain`, and `StaleForMargin`; every other
+ * classification passes.
+ * @param validity Classification from `getOracleValidity`/`getSpotOracleValidity`.
+ * @returns Whether the equity-floor metric may trust this oracle.
+ */
+export function isOracleValidForMarginCalc(validity: OracleValidity): boolean {
+	return !(
+		validity === OracleValidity.NonPositive ||
+		validity === OracleValidity.TooVolatile ||
+		validity === OracleValidity.TooUncertain ||
+		validity === OracleValidity.StaleForMargin
+	);
 }

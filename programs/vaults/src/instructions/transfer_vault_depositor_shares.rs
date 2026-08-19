@@ -4,12 +4,14 @@ use {
             is_authority_for_vault_depositor, is_user_for_vault, is_vault_for_vault_depositor,
         },
         error::ErrorCode,
+        refresh_velocity_spot_market,
         state::{traits::VaultDepositorBase, FeeUpdateProvider, FeeUpdateStatus},
         validate, AccountMapProvider, Vault, VaultDepositor, VaultProtocolProvider, WithdrawUnit,
     },
     anchor_lang::prelude::*,
     velocity::{
-        instructions::optional_accounts::AccountMaps, math::safe_math::SafeMath, state::user::User,
+        instructions::optional_accounts::AccountMaps, math::safe_math::SafeMath, program::Velocity,
+        state::user::User,
     },
 };
 
@@ -18,6 +20,12 @@ pub fn transfer_vault_depositor_shares<'info>(
     amount: u64,
     withdraw_unit: WithdrawUnit,
 ) -> Result<()> {
+    // Book the lending interest of every market that prices NAV BEFORE any account
+    // is borrowed and before NAV is snapshotted (OtterSec #136/#137). Must precede
+    // `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable accounts still
+    // have live borrows, and the maps must read post-refresh data.
+    refresh_velocity_spot_market!(ctx);
+
     let clock = &Clock::get()?;
 
     let mut vault = ctx.accounts.vault.load_mut()?;
@@ -133,4 +141,7 @@ pub struct TransferVaultDepositorShares<'info> {
         constraint = is_user_for_vault(&vault, &velocity_user.key())?
     )]
     pub velocity_user: AccountLoader<'info, User>,
+    /// CHECK: checked in velocity cpi
+    pub velocity_state: AccountInfo<'info>,
+    pub velocity_program: Program<'info, Velocity>,
 }

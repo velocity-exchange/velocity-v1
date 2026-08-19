@@ -6,7 +6,7 @@ use {
             is_user_stats_for_vault,
         },
         declare_vault_seeds, implement_update_user_delegate_cpi,
-        implement_update_user_reduce_only_cpi,
+        implement_update_user_reduce_only_cpi, refresh_velocity_spot_market,
         state::{Vault, VaultDepositor},
         velocity_cpi::{UpdateUserDelegateCPI, UpdateUserReduceOnlyCPI},
         AccountMapProvider, VaultProtocolProvider,
@@ -19,6 +19,12 @@ use {
 };
 
 pub fn liquidate<'info>(ctx: Context<'info, Liquidate<'info>>) -> Result<()> {
+    // Book the lending interest of every market that prices NAV BEFORE any account
+    // is borrowed and before NAV is snapshotted (OtterSec #136/#137). Must precede
+    // `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable accounts still
+    // have live borrows, and the maps must read post-refresh data.
+    refresh_velocity_spot_market!(ctx);
+
     let clock = &Clock::get()?;
     let now = Clock::get()?.unix_timestamp;
 
@@ -105,6 +111,8 @@ pub struct Liquidate<'info> {
     /// CHECK: checked in velocity cpi
     pub velocity_user: AccountLoader<'info, User>,
     pub velocity_program: Program<'info, Velocity>,
+    /// CHECK: checked in velocity cpi
+    pub velocity_state: AccountInfo<'info>,
 }
 
 impl<'info> UpdateUserDelegateCPI for Context<'info, Liquidate<'info>> {

@@ -1,10 +1,10 @@
 use {
     crate::{
-        error::ErrorCode,
+        error::{ErrorCode, VelocityResult},
         math::{casting::Cast, safe_math::SafeMath},
         state::pyth_lazer_oracle::{
-            PythLazerOracle, PYTH_LAZER_MAX_STALENESS_SECONDS, PYTH_LAZER_ORACLE_SEED,
-            PYTH_LAZER_STORAGE_ID,
+            PythLazerOracle, PYTH_LAZER_MAX_FUTURE_SECONDS, PYTH_LAZER_MAX_STALENESS_SECONDS,
+            PYTH_LAZER_ORACLE_SEED, PYTH_LAZER_STORAGE_ID,
         },
         validate,
     },
@@ -109,26 +109,46 @@ pub fn handle_update_pyth_lazer_oracle<'c: 'info, 'info>(
             continue;
         }
 
-        if next_timestamp.unwrap() < current_timestamp {
+        // The gate rejects an equal timestamp as well as an older one. A message that repeats the
+        // stored timestamp carries the same signed content, so it adds no price information, but
+        // posting it stamps `posted_slot` to the current slot. A keeper could otherwise re-post one
+        // message every slot and hold the feed at slot-fresh while the price never moves.
+        if next_timestamp.unwrap() <= current_timestamp {
             msg!(
-                "Skipping lazer price update. next_timestamp {} < current_timestamp {}",
+                "Skipping lazer price update. next_timestamp {} <= current_timestamp {}",
                 next_timestamp.unwrap(),
                 current_timestamp
             );
             continue;
         }
 
-        // Reject stale/replayed messages against the wall clock. The monotonic check above only
-        // guarantees the feed timestamp is non-decreasing versus the cached value, not that it is
-        // recent; since `posted_slot` (set to the current slot below) is the sole input to
-        // downstream staleness, an authentic-but-old message would otherwise read as slot-fresh.
+        // Bound the feed timestamp against the wall clock in both directions. The monotonic check
+        // above only guarantees the feed timestamp is above the cached value, not that it is near
+        // the present.
+        //
+        // Below: `posted_slot` (set to the current slot further down) is the sole input to
+        // downstream staleness, so an authentic-but-old message would read as slot-fresh.
+        //
+        // Above: the monotonic check skips every message at or below the stored `publish_time`, so
+        // a message stamped ahead of the wall clock stops all later messages until real time
+        // reaches that stamp. The bound holds that freeze to `PYTH_LAZER_MAX_FUTURE_SECONDS`.
         let now = Clock::get()?.unix_timestamp;
         let next_timestamp_secs = next_timestamp.unwrap().safe_div(1_000_000)?.cast::<i64>()?;
-        if now.safe_sub(next_timestamp_secs)? > PYTH_LAZER_MAX_STALENESS_SECONDS {
+        let age = now.safe_sub(next_timestamp_secs)?;
+        if age > PYTH_LAZER_MAX_STALENESS_SECONDS {
             msg!(
                 "Skipping lazer price update. message ts {}s is older than {}s (now {}s)",
                 next_timestamp_secs,
                 PYTH_LAZER_MAX_STALENESS_SECONDS,
+                now
+            );
+            continue;
+        }
+        if age < -PYTH_LAZER_MAX_FUTURE_SECONDS {
+            msg!(
+                "Skipping lazer price update. message ts {}s is more than {}s ahead (now {}s)",
+                next_timestamp_secs,
+                PYTH_LAZER_MAX_FUTURE_SECONDS,
                 now
             );
             continue;
@@ -142,26 +162,12 @@ pub fn handle_update_pyth_lazer_oracle<'c: 'info, 'info>(
 
         let exponent = exponent.ok_or(ErrorCode::InvalidPythLazerMessage)?;
 
-        // #72: never understate confidence. Confidence shares the price feed's exponent, so
-        // its mantissa is directly comparable to `price`. Take the widest of three signals:
-        //   - a 20bps-of-price floor (kept as the minimum, as before),
-        //   - the bid/ask spread (prior behaviour), and
-        //   - the SIGNED `Confidence` property carried in the Lazer message (previously
-        //     ignored entirely and fabricated as a fixed 20bps).
-        // Using the max guarantees the persisted conf is never smaller than today's value.
-        let mut conf: i64 = price.safe_div(500)?;
-        if let (Some(bid), Some(ask)) = (best_bid_price, best_ask_price) {
-            let spread = ask.mantissa_i64().safe_sub(bid.mantissa_i64())?;
-            if spread > conf {
-                conf = spread;
-            }
-        }
-        if let Some(signed_confidence) = signed_confidence {
-            let signed_confidence = signed_confidence.mantissa_i64();
-            if signed_confidence > conf {
-                conf = signed_confidence;
-            }
-        }
+        let conf = calculate_lazer_conf(
+            price,
+            best_bid_price.map(|price| price.mantissa_i64()),
+            best_ask_price.map(|price| price.mantissa_i64()),
+            signed_confidence.map(|price| price.mantissa_i64()),
+        )?;
 
         pyth_lazer_oracle.price = price;
         pyth_lazer_oracle.posted_slot = Clock::get()?.slot;
@@ -180,6 +186,42 @@ pub fn handle_update_pyth_lazer_oracle<'c: 'info, 'info>(
     Ok(())
 }
 
+/// The confidence to persist for a Lazer price update.
+///
+/// Confidence shares the price feed's exponent, so its mantissa compares directly to `price`.
+/// The result is the widest of three signals: a 20bps floor on the price, the distance between
+/// the best bid and the best ask, and the signed `Confidence` property in the message. The
+/// widest signal wins, so the stored confidence never understates what the message reports.
+///
+/// The distance between the two quotes is a magnitude. A crossed book states a disagreement of
+/// that size, and it is the state with the most uncertainty. A signed difference drops it and
+/// leaves only the floor. The subtraction runs in i128 and saturates, because two extreme
+/// mantissas overflow an i64 subtraction. One feed's overflow aborts every other feed in the
+/// same message.
+fn calculate_lazer_conf(
+    price: i64,
+    best_bid_price: Option<i64>,
+    best_ask_price: Option<i64>,
+    signed_confidence: Option<i64>,
+) -> VelocityResult<i64> {
+    let mut conf = price.safe_div(500)?;
+
+    if let (Some(bid), Some(ask)) = (best_bid_price, best_ask_price) {
+        let spread = i128::from(ask)
+            .safe_sub(i128::from(bid))?
+            .abs()
+            .min(i64::MAX.into())
+            .cast::<i64>()?;
+        conf = conf.max(spread);
+    }
+
+    if let Some(signed_confidence) = signed_confidence {
+        conf = conf.max(signed_confidence);
+    }
+
+    Ok(conf)
+}
+
 #[derive(Accounts)]
 pub struct UpdatePythLazerOracle<'info> {
     #[account(mut)]
@@ -192,4 +234,68 @@ pub struct UpdatePythLazerOracle<'info> {
     /// CHECK: checked by ed25519 verify
     #[account(address = solana_program::sysvar::instructions::ID)]
     pub ix_sysvar: UncheckedAccount<'info>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::calculate_lazer_conf;
+
+    /// A price mantissa of 100 units at a Lazer exponent of -6.
+    const PRICE: i64 = 100_000_000;
+    /// The 20bps floor on `PRICE`.
+    const FLOOR: i64 = PRICE / 500;
+
+    #[test]
+    fn floor_wins_when_the_other_signals_are_narrower() {
+        let conf = calculate_lazer_conf(
+            PRICE,
+            Some(PRICE - 50_000),
+            Some(PRICE + 50_000),
+            Some(100_000),
+        )
+        .unwrap();
+
+        assert_eq!(conf, FLOOR);
+    }
+
+    #[test]
+    fn spread_wins_when_it_is_widest() {
+        let conf = calculate_lazer_conf(PRICE, Some(PRICE - 300_000), Some(PRICE + 300_000), None)
+            .unwrap();
+
+        assert_eq!(conf, 600_000);
+    }
+
+    #[test]
+    fn signed_confidence_wins_when_it_is_widest() {
+        let conf = calculate_lazer_conf(
+            PRICE,
+            Some(PRICE - 50_000),
+            Some(PRICE + 50_000),
+            Some(900_000),
+        )
+        .unwrap();
+
+        assert_eq!(conf, 900_000);
+    }
+
+    #[test]
+    fn crossed_quotes_widen_the_confidence() {
+        // The bid sits 500_000 above the ask. The book disagrees with itself by that amount, so
+        // the confidence is 500_000 and not the narrower floor.
+        let conf = calculate_lazer_conf(PRICE, Some(PRICE + 250_000), Some(PRICE - 250_000), None)
+            .unwrap();
+
+        assert_eq!(conf, 500_000);
+        assert!(conf > FLOOR);
+    }
+
+    #[test]
+    fn extreme_quotes_saturate_and_do_not_error() {
+        // An i64 subtraction overflows here. The error would abort every other feed in the same
+        // message, so the distance saturates instead.
+        let conf = calculate_lazer_conf(PRICE, Some(i64::MIN), Some(i64::MAX), None).unwrap();
+
+        assert_eq!(conf, i64::MAX);
+    }
 }

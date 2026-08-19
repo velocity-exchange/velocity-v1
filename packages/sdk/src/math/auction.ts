@@ -90,7 +90,9 @@ export function isFallbackAvailableLiquiditySource(
 				mmOraclePriceData.hasSufficientNumberOfDataPoints,
 		},
 		state.oracleGuardRails,
-		new BN(slot)
+		new BN(slot),
+		undefined,
+		mmOraclePriceData.isMMSourcedPrice ?? false
 	);
 	if (oracleValidity <= OracleValidity.StaleForAMMLowRisk) {
 		return false;
@@ -334,13 +336,60 @@ export function deriveOracleAuctionParams({
 }
 
 /**
+ * Mirrors `PerpMarket::get_auction_end_min_max_divisors` (`state/perp_market.rs`): the tier band for
+ * a perp auction's width, as divisors of the oracle TWAP. A larger divisor gives a smaller price, so
+ * `oracleTwap / minDivisor` is the narrowest auction the tier allows and `oracleTwap / maxDivisor`
+ * the widest. Per tier the widest is 2% (A), 5% (B, C), 10% (Speculative), 20% (HighlySpeculative,
+ * Isolated).
+ * @param perpMarket Market whose `contractTier` selects the band.
+ * @returns `{ minDivisor, maxDivisor }` to divide the oracle TWAP by.
+ */
+export function getAuctionEndMinMaxDivisors(perpMarket: PerpMarketAccount): {
+	minDivisor: number;
+	maxDivisor: number;
+} {
+	switch (getPerpMarketTierNumber(perpMarket)) {
+		case 0: // A
+			return { minDivisor: 1000, maxDivisor: 50 };
+		case 1: // B
+			return { minDivisor: 1000, maxDivisor: 20 };
+		case 2: // C
+			return { minDivisor: 500, maxDivisor: 20 };
+		case 3: // Speculative
+			return { minDivisor: 100, maxDivisor: 10 };
+		default: // HighlySpeculative, Isolated
+			return { minDivisor: 50, maxDivisor: 5 };
+	}
+}
+
+/**
+ * Widest distance from the oracle TWAP that a baseline auction start offset may sit, mirroring
+ * `OrderParams::get_perp_baseline_max_price_offset` (`state/order_params.rs`). This is
+ * `oracleTwap / maxDivisor` from `getAuctionEndMinMaxDivisors`. An auction that STARTS further from
+ * oracle than the widest auction the tier permits is nonsense, so the same number bounds the start
+ * offset (OtterSec #146).
+ * @param perpMarket Market providing the oracle TWAP and the contract tier.
+ * @returns Non-negative bound, PRICE_PRECISION (1e6). The program clamps the start offset to ± this.
+ */
+export function getPerpBaselineMaxPriceOffset(
+	perpMarket: PerpMarketAccount
+): BN {
+	const { maxDivisor } = getAuctionEndMinMaxDivisors(perpMarket);
+
+	return perpMarket.marketStats.historicalOracleData.lastOraclePriceTwap
+		.abs()
+		.divn(maxDivisor);
+}
+
+/**
  * Derives a reasonable auction start price for a newly-triggered trigger order, biasing off
  * the current oracle price by an offset estimated from recent mark/oracle spread (or, if
  * mark and oracle TWAPs have recently diverged or 24h volume is thin, a coarser
- * TWAP-fraction fallback scaled by contract tier). Applies a further directional "start
- * buffer" in bps (tighter for tier A/B markets) so the auction starts slightly aggressive,
- * then clamps to `limitPrice` if one is given so the auction never starts past the user's
- * limit.
+ * TWAP-fraction fallback scaled by contract tier). Clamps that offset to
+ * ±`getPerpBaselineMaxPriceOffset`, the tier auction-width band, as the program does. Applies a
+ * further directional "start buffer" in bps (tighter for tier A/B markets) so the auction starts
+ * slightly aggressive, then clamps to `limitPrice` if one is given so the auction never starts past
+ * the user's limit.
  * @param params.perpMarket Market providing TWAP stats and contract tier.
  * @param params.direction Order side.
  * @param params.oraclePrice Current oracle price — use `OraclePriceData.price`, PRICE_PRECISION (1e6).
@@ -406,6 +455,16 @@ export function getTriggerAuctionStartPrice(params: {
 					offsetFast.add(fracOfLongSpreadInPrice)
 			  );
 	}
+
+	// OtterSec #146: the program clamps the baseline start offset to the tier auction-width band
+	// (`OrderParams::get_perp_baseline_start_price_offset`). Both TWAP inputs above are movable by a
+	// crank caller, and these offsets set the auction band for a third party's forced close. The clamp
+	// runs before the start buffer, as it does in the program.
+	const maxPriceOffset = getPerpBaselineMaxPriceOffset(perpMarket);
+	baselineStartOffset = BN.min(
+		BN.max(baselineStartOffset, maxPriceOffset.neg()),
+		maxPriceOffset
+	);
 
 	let startBuffer = -3500;
 

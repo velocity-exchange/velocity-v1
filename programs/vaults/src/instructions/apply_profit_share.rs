@@ -6,6 +6,7 @@ use {
             is_user_stats_for_vault, is_vault_for_vault_depositor,
         },
         error::ErrorCode,
+        refresh_velocity_spot_market,
         state::{FeeUpdateProvider, FeeUpdateStatus, Vault, VaultProtocolProvider},
         validate, AccountMapProvider, VaultDepositor,
     },
@@ -18,6 +19,12 @@ use {
 };
 
 pub fn apply_profit_share<'info>(ctx: Context<'info, ApplyProfitShare<'info>>) -> Result<()> {
+    // Book the lending interest of every market that prices NAV BEFORE any account
+    // is borrowed and before NAV is snapshotted (OtterSec #136/#137). Must precede
+    // `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable accounts still
+    // have live borrows, and the maps must read post-refresh data.
+    refresh_velocity_spot_market!(ctx);
+
     let clock = &Clock::get()?;
 
     let mut vault = ctx.accounts.vault.load_mut()?;

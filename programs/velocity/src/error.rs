@@ -789,6 +789,18 @@ pub enum ErrorCode {
     CannotModifyBuilderOrder,
     #[msg("Invalid account extension")]
     InvalidAccountExtension,
+    #[msg("Invalid equity breaker reset")]
+    InvalidEquityBreakerReset,
+    #[msg("Native dispatch: instruction data is malformed for this opcode")]
+    InvalidNativeInstructionData,
+    #[msg("MM oracle updates are disabled by the admin feature-bit kill switch")]
+    MmOracleUpdateDisabled,
+    #[msg("Spot market interest is too stale to value a borrow for margin")]
+    SpotMarketInterestStaleForMargin,
+    #[msg("Market still owes builder/referrer revenue share; settle it before delisting")]
+    UnsettledRevenueShareOnDelist,
+    #[msg("Revenue share order can still be paid; settle it instead of forfeiting")]
+    RevenueShareOrderNotForfeitable,
     #[msg("Quoter registry entry config is invalid")]
     InvalidQuoterConfig,
     #[msg("Signer does not control this quoter registry entry")]

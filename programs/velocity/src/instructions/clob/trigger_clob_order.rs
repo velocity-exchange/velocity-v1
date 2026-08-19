@@ -345,9 +345,24 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
                 &mut oracle_map,
             )?;
 
+            // An unverifiable floor rejects the trigger instead of cancelling:
+            // a cancel is irreversible, so an oracle blip must not destroy a
+            // resting order the account may legitimately carry. The keeper
+            // retries once the feed recovers and the gate resolves either way.
+            if let Some(net_equity) = net_equity {
+                validate!(
+                    net_equity.all_oracles_valid,
+                    ErrorCode::InvalidOracle,
+                    "cannot verify equity floor {} + buffer {} with an invalid oracle (authority {} subaccount {})",
+                    user.equity_floor,
+                    user.equity_floor_buffer,
+                    user.authority,
+                    user.sub_account_id
+                )?;
+            }
+
             if !margin_calc.meets_margin_requirement()
-                || net_equity
-                    .is_some_and(|net_equity| user.is_below_buffered_equity_floor(net_equity))
+                || net_equity.is_some_and(|net_equity| !net_equity.clears_buffered_floor(user))
                 || user_stats.is_equity_breaker_tripped()
             {
                 // The slot reads as untriggered, so cancel_order won't unwind

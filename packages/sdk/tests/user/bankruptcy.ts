@@ -1,11 +1,19 @@
 import { assert } from 'chai';
 import _ from 'lodash';
-import { PositionFlag } from '../../src/types';
+import {
+	PerpMarketAccount,
+	PositionFlag,
+	SpotBalanceType,
+	SpotMarketAccount,
+} from '../../src/types';
 import {
 	BASE_PRECISION,
 	QUOTE_PRECISION,
+	SPOT_MARKET_BALANCE_PRECISION,
+	ZERO,
 } from '../../src/constants/numericConstants';
 import { BN } from '../../src';
+import { getTokenAmount } from '../../src/math/spotBalance';
 import { mockPerpMarkets, mockSpotMarkets } from '../dlob/helpers';
 import {
 	mockUserAccount as baseMockUserAccount,
@@ -17,15 +25,31 @@ import {
 	hasIsolatedMarginBankrupt,
 } from '../../src/math/bankruptcy';
 
-async function makeUserWithAccount(account) {
-	const user = await makeMockUser(
-		_.cloneDeep(mockPerpMarkets),
-		_.cloneDeep(mockSpotMarkets),
+/**
+ * `isUserBankrupt` reads market state (deposit index, PnL pool) and not just the user
+ * account, so the value-aware vetoes can only be exercised by varying the markets too.
+ */
+async function makeUserWithMarkets(
+	account,
+	mutateMarkets: (
+		perpMarkets: Array<PerpMarketAccount>,
+		spotMarkets: Array<SpotMarketAccount>
+	) => void
+) {
+	const perpMarkets = _.cloneDeep(mockPerpMarkets);
+	const spotMarkets = _.cloneDeep(mockSpotMarkets);
+	mutateMarkets(perpMarkets, spotMarkets);
+	return await makeMockUser(
+		perpMarkets,
+		spotMarkets,
 		account,
 		[1, 1, 1, 1, 1, 1, 1, 1],
 		[1, 1, 1, 1, 1, 1, 1, 1]
 	);
-	return user;
+}
+
+async function makeUserWithAccount(account) {
+	return await makeUserWithMarkets(account, () => {});
 }
 
 describe('isUserBankrupt', () => {
@@ -55,6 +79,162 @@ describe('isUserBankrupt', () => {
 	it('user with no liability is not bankrupt', async () => {
 		const account = _.cloneDeep(baseMockUserAccount);
 		const user = await makeUserWithAccount(account);
+		assert.equal(isUserBankrupt(user), false);
+	});
+
+	// OtterSec #151. A keeper that vetoes on the row rather than its value never sends the
+	// resolver for these accounts, and the bad-debt repair stalls exactly as it did on chain
+	// — ordinary liquidation cannot unstick it either, since `liquidate_spot` rejects a zero
+	// token amount before it reaches the bankruptcy-admission check.
+	it('deposit row left worthless by socialization does not block bankruptcy', async () => {
+		const account = _.cloneDeep(baseMockUserAccount);
+
+		// a fully socialized market floors cumulativeDepositInterest at 1, leaving each
+		// wiped depositor a positive scaled row worth zero tokens
+		account.spotPositions[0].marketIndex = 1;
+		account.spotPositions[0].balanceType = SpotBalanceType.DEPOSIT;
+		account.spotPositions[0].scaledBalance = SPOT_MARKET_BALANCE_PRECISION;
+
+		// the unrelated borrow whose repair the worthless row was blocking
+		account.spotPositions[1].marketIndex = 2;
+		account.spotPositions[1].balanceType = SpotBalanceType.BORROW;
+		account.spotPositions[1].scaledBalance = SPOT_MARKET_BALANCE_PRECISION;
+
+		const user = await makeUserWithMarkets(account, (_perp, spot) => {
+			spot[1].cumulativeDepositInterest = new BN(1);
+		});
+
+		// the fixture only proves anything while the row really is worth nothing
+		assert.isTrue(
+			getTokenAmount(
+				account.spotPositions[0].scaledBalance,
+				user.velocityClient.getSpotMarketAccountOrThrow(1),
+				SpotBalanceType.DEPOSIT
+			).eq(ZERO),
+			'fixture must leave the deposit row worth zero tokens'
+		);
+
+		assert.equal(isUserBankrupt(user), true);
+	});
+
+	it('deposit worth at least one token still blocks bankruptcy', async () => {
+		const account = _.cloneDeep(baseMockUserAccount);
+
+		// same shape as above, but the market was never socialized, so the row is real
+		// collateral and must be seized by ordinary liquidation first
+		account.spotPositions[0].marketIndex = 1;
+		account.spotPositions[0].balanceType = SpotBalanceType.DEPOSIT;
+		account.spotPositions[0].scaledBalance = SPOT_MARKET_BALANCE_PRECISION;
+
+		account.spotPositions[1].marketIndex = 2;
+		account.spotPositions[1].balanceType = SpotBalanceType.BORROW;
+		account.spotPositions[1].scaledBalance = SPOT_MARKET_BALANCE_PRECISION;
+
+		const user = await makeUserWithAccount(account);
+
+		assert.isTrue(
+			getTokenAmount(
+				account.spotPositions[0].scaledBalance,
+				user.velocityClient.getSpotMarketAccountOrThrow(1),
+				SpotBalanceType.DEPOSIT
+			).gt(ZERO)
+		);
+
+		assert.equal(isUserBankrupt(user), false);
+	});
+
+	// OtterSec #145. A positive perp quote no longer vetoes unconditionally: while its
+	// market's PnL pool is empty the claim can never be settled into a deposit, so treating
+	// it as an asset strands a real loss in another market forever.
+	it('unfundable perp claim does not block bankruptcy', async () => {
+		const account = _.cloneDeep(baseMockUserAccount);
+
+		// claim on market 1, whose pool cannot pay any of it
+		account.perpPositions[0].marketIndex = 1;
+		account.perpPositions[0].baseAssetAmount = ZERO;
+		account.perpPositions[0].quoteAssetAmount = new BN(200).mul(
+			QUOTE_PRECISION
+		);
+		account.perpPositions[0].positionFlag = 0;
+
+		// larger debt on market 2, so the estate is net insolvent
+		account.perpPositions[1].marketIndex = 2;
+		account.perpPositions[1].baseAssetAmount = ZERO;
+		account.perpPositions[1].quoteAssetAmount = new BN(-500).mul(
+			QUOTE_PRECISION
+		);
+		account.perpPositions[1].positionFlag = 0;
+
+		const user = await makeUserWithMarkets(account, (perp) => {
+			perp[1].pnlPool.scaledBalance = ZERO;
+		});
+
+		assert.equal(isUserBankrupt(user), true);
+	});
+
+	/**
+	 * An estate holding `aggregateClaims` of claim on a market with `poolDollars` of pnl pool, against
+	 * a larger debt in another market.
+	 */
+	function claimEstateWithPool(aggregateClaims: number, poolDollars: number) {
+		const account = _.cloneDeep(baseMockUserAccount);
+
+		account.perpPositions[0].marketIndex = 1;
+		account.perpPositions[0].baseAssetAmount = ZERO;
+		account.perpPositions[0].quoteAssetAmount = new BN(aggregateClaims).mul(
+			QUOTE_PRECISION
+		);
+		account.perpPositions[0].positionFlag = 0;
+
+		account.perpPositions[1].marketIndex = 2;
+		account.perpPositions[1].baseAssetAmount = ZERO;
+		account.perpPositions[1].quoteAssetAmount = new BN(-500).mul(
+			QUOTE_PRECISION
+		);
+		account.perpPositions[1].positionFlag = 0;
+
+		return makeUserWithMarkets(account, (perp) => {
+			perp[1].quoteAssetAmount = new BN(aggregateClaims).mul(QUOTE_PRECISION);
+			perp[1].pnlPool.scaledBalance = new BN(poolDollars).mul(
+				SPOT_MARKET_BALANCE_PRECISION
+			);
+		});
+	}
+
+	it('pool state never blocks bankruptcy', async () => {
+		// Empty, part-funded, and funded past the claim: the answer is the same. The resolvers
+		// recover what the pool can pay and forfeit the rest, so no pool state can hold the repair
+		// open — and trading fees flow into the pool, so a pool-shaped veto would be re-armable by
+		// any market participant with a trade.
+		for (const pool of [0, 100, 400]) {
+			const user = await claimEstateWithPool(200, pool);
+			assert.equal(isUserBankrupt(user), true, `pool = ${pool}`);
+		}
+	});
+
+	it('net solvent estate is not bankrupt however unfundable its claims', async () => {
+		const account = _.cloneDeep(baseMockUserAccount);
+
+		// $5000 of genuine positive PnL against $1000 of debt: unpayability alone must not
+		// admit this account, or the resolver forfeits the whole claim to cover a fraction
+		account.perpPositions[0].marketIndex = 1;
+		account.perpPositions[0].baseAssetAmount = ZERO;
+		account.perpPositions[0].quoteAssetAmount = new BN(5000).mul(
+			QUOTE_PRECISION
+		);
+		account.perpPositions[0].positionFlag = 0;
+
+		account.perpPositions[1].marketIndex = 2;
+		account.perpPositions[1].baseAssetAmount = ZERO;
+		account.perpPositions[1].quoteAssetAmount = new BN(-1000).mul(
+			QUOTE_PRECISION
+		);
+		account.perpPositions[1].positionFlag = 0;
+
+		const user = await makeUserWithMarkets(account, (perp) => {
+			perp[1].pnlPool.scaledBalance = ZERO;
+		});
+
 		assert.equal(isUserBankrupt(user), false);
 	});
 });

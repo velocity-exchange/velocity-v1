@@ -807,14 +807,7 @@ impl User {
             if let Some(net_equity) =
                 calculate_net_equity_for_floor(self, perp_market_map, spot_market_map, oracle_map)?
             {
-                validate!(
-                    !self.is_below_buffered_equity_floor(net_equity),
-                    ErrorCode::EquityBelowFloor,
-                    "net equity {} below equity floor {} + buffer {}",
-                    net_equity,
-                    self.equity_floor,
-                    self.equity_floor_buffer
-                )?;
+                net_equity.validate_clears_buffered_floor(self)?;
             }
         }
 
@@ -861,14 +854,7 @@ impl User {
         if let Some(net_equity) =
             calculate_net_equity_for_floor(self, perp_market_map, spot_market_map, oracle_map)?
         {
-            validate!(
-                !self.is_below_buffered_equity_floor(net_equity),
-                ErrorCode::EquityBelowFloor,
-                "net equity {} below equity floor {} + buffer {}",
-                net_equity,
-                self.equity_floor,
-                self.equity_floor_buffer
-            )?;
+            net_equity.validate_clears_buffered_floor(self)?;
         }
 
         Ok(true)
@@ -918,14 +904,14 @@ impl User {
             calculation
         )?;
 
-        validate!(
-            !self.is_below_buffered_equity_floor(calculation.total_collateral),
-            ErrorCode::EquityBelowFloor,
-            "total collateral {} below equity floor {} + buffer {}",
-            calculation.total_collateral,
-            self.equity_floor,
-            self.equity_floor_buffer
-        )?;
+        // Measured as net equity, matching every other floor gate. The margin
+        // numerator never subtracts borrows, so it passes where net equity
+        // fails.
+        if let Some(net_equity) =
+            calculate_net_equity_for_floor(self, perp_market_map, spot_market_map, oracle_map)?
+        {
+            net_equity.validate_clears_buffered_floor(self)?;
+        }
 
         Ok(true)
     }
@@ -1464,6 +1450,20 @@ impl PerpPosition {
 
     pub fn is_bankrupt(&self) -> bool {
         self.position_flag & PositionFlag::Bankrupt as u8 > 0
+    }
+
+    /// True when this position's quote debt is counted in its market's
+    /// `pending_bankruptcy_claims`.
+    pub fn has_bankruptcy_claim(&self) -> bool {
+        self.position_flag & PositionFlag::BankruptcyClaim as u8 > 0
+    }
+
+    pub fn set_bankruptcy_claim(&mut self) {
+        self.position_flag |= PositionFlag::BankruptcyClaim as u8;
+    }
+
+    pub fn clear_bankruptcy_claim(&mut self) {
+        self.position_flag &= !(PositionFlag::BankruptcyClaim as u8);
     }
 
     pub fn can_transfer_isolated_position_deposit(&self) -> bool {
@@ -2029,6 +2029,12 @@ pub enum PositionFlag {
     IsolatedPosition = 0b00000001,
     BeingLiquidated = 0b00000010,
     Bankrupt = 0b00000100,
+    /// This position's quote debt is counted in its market's
+    /// `pending_bankruptcy_claims`. It marks the counter increment so a
+    /// repeated latch cannot count the same debt twice and a resolution
+    /// cannot discharge it twice. Set on cross-margin and isolated positions
+    /// alike.
+    BankruptcyClaim = 0b00001000,
 }
 
 #[derive(Clone, Copy, BorshSerialize, BorshDeserialize, PartialEq, Debug, Eq)]
@@ -2184,6 +2190,15 @@ impl UserStats {
         Ok(())
     }
 
+    /// Fold a fill into the trailing-30d maker volume. The `*_volume_30d`
+    /// fields are leaky-integrator SUMS approximating trailing-30d notional:
+    /// each update first decays the stored sum by the fraction of the 30d
+    /// window elapsed since the last update (`sum * (30d - gap)/30d`, wiped
+    /// to zero at gap >= 30d), then adds the fill. For a steady trader the
+    /// sum converges to the true trailing-30d total; a burst decays only
+    /// when the account trades again (lazy decay: the stored value does not
+    /// tick down while idle). Readers that need the live window must project
+    /// the decay themselves: see `get_total_30d_volume_at`.
     pub fn update_maker_volume_30d(&mut self, quote_asset_amount: u64, now: i64) -> VelocityResult {
         let since_last = max(1_i64, now.safe_sub(self.last_maker_volume_30d_ts)?);
 
@@ -2198,6 +2213,8 @@ impl UserStats {
         Ok(())
     }
 
+    /// Fold a fill into the trailing-30d taker volume. Same leaky-sum
+    /// mechanics as `update_maker_volume_30d`; see its doc comment.
     pub fn update_taker_volume_30d(&mut self, quote_asset_amount: u64, now: i64) -> VelocityResult {
         let since_last = max(1_i64, now.safe_sub(self.last_taker_volume_30d_ts)?);
 
@@ -2249,8 +2266,30 @@ impl UserStats {
         !self.referrer.eq(&Pubkey::default())
     }
 
-    pub fn get_total_30d_volume(&self) -> VelocityResult<u64> {
-        self.taker_volume_30d.safe_add(self.maker_volume_30d)
+    /// Trailing-30d volume (taker + maker) projected to `now`: applies the
+    /// same linear decay the next write would apply (`sum * (30d - gap)/30d`,
+    /// zero at gap >= 30d) to each component against its own last-update
+    /// timestamp, without mutating the stored values. This is what fee-tier
+    /// determination reads, so demotion tracks the live window at every fill
+    /// while promotion stays instant (the write path already lands each
+    /// fill's volume in the sum immediately).
+    pub fn get_total_30d_volume_at(&self, now: i64) -> VelocityResult<u64> {
+        let project = |volume: u64, last_ts: i64| -> VelocityResult<u64> {
+            let gap = max(0_i64, now.saturating_sub(last_ts));
+            if gap >= THIRTY_DAY {
+                return Ok(0);
+            }
+            volume
+                .cast::<u128>()?
+                .safe_mul(THIRTY_DAY.safe_sub(gap)?.cast::<u128>()?)?
+                .safe_div(THIRTY_DAY.cast::<u128>()?)?
+                .cast::<u64>()
+        };
+
+        project(self.taker_volume_30d, self.last_taker_volume_30d_ts)?.safe_add(project(
+            self.maker_volume_30d,
+            self.last_maker_volume_30d_ts,
+        )?)
     }
 
     pub fn get_age_ts(&self, now: i64) -> i64 {

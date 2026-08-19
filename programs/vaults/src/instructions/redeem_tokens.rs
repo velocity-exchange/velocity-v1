@@ -5,6 +5,7 @@ use {
             is_tokenized_depositor_for_vault, is_user_for_vault,
         },
         error::ErrorCode,
+        refresh_velocity_spot_market,
         state::{traits::VaultDepositorBase, FeeUpdateProvider, FeeUpdateStatus},
         token_cpi::{BurnTokensCPI, TokenTransferCPI},
         validate, AccountMapProvider, TokenizedVaultDepositor, Vault, VaultDepositor,
@@ -13,7 +14,8 @@ use {
     anchor_lang::prelude::*,
     anchor_spl::token::{burn, transfer, Burn, Mint, Token, TokenAccount, Transfer},
     velocity::{
-        instructions::optional_accounts::AccountMaps, math::safe_math::SafeMath, state::user::User,
+        instructions::optional_accounts::AccountMaps, math::safe_math::SafeMath, program::Velocity,
+        state::user::User,
     },
 };
 
@@ -21,6 +23,12 @@ pub fn redeem_tokens<'info>(
     ctx: Context<'info, RedeemTokens<'info>>,
     tokens_to_burn: u64,
 ) -> Result<()> {
+    // Book the lending interest of every market that prices NAV BEFORE any account
+    // is borrowed and before NAV is snapshotted (OtterSec #136/#137). Must precede
+    // `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable accounts still
+    // have live borrows, and the maps must read post-refresh data.
+    refresh_velocity_spot_market!(ctx);
+
     let clock = &Clock::get()?;
 
     let mut vault = ctx.accounts.vault.load_mut()?;
@@ -107,6 +115,18 @@ pub fn redeem_tokens<'info>(
     // #105: the transfer above moved shares out of the tokenized depositor; re-checkpoint its
     // last_vault_shares to the post-transfer balance so future tokenize_shares still works.
     tokenized_vault_depositor.checkpoint_vault_shares();
+
+    // #140: if that emptied the pool of shares and tokens, its cost basis is now orphaned with nobody
+    // behind it. Above value it is a free loss shelter for the next tokenizer; below value it is an
+    // unearned fee liability for them. Clear it.
+    //
+    // Test `tokens_to_burn == total_supply_before` rather than reading the post-burn supply: the
+    // depositor is dropped before `ctx.burn(...)` runs. The two are equivalent, given the
+    // `supply_delta == tokens_to_burn` assertion this instruction already makes.
+    if tokenized_vault_depositor.get_vault_shares() == 0 && tokens_to_burn == total_supply_before {
+        msg!("tokenized depositor emptied; clearing orphaned cost basis");
+        tokenized_vault_depositor.reset_orphaned_cost_basis();
+    }
 
     let manager_shares_after = vault.get_manager_shares(&mut vp)?;
     let protocol_shares_after = vault.get_protocol_shares(&mut vp);
@@ -207,6 +227,9 @@ pub struct RedeemTokens<'info> {
     )]
     pub velocity_user: AccountLoader<'info, User>,
     pub token_program: Program<'info, Token>,
+    /// CHECK: checked in velocity cpi
+    pub velocity_state: AccountInfo<'info>,
+    pub velocity_program: Program<'info, Velocity>,
 }
 
 impl<'info> TokenTransferCPI for Context<'info, RedeemTokens<'info>> {

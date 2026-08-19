@@ -2,9 +2,10 @@ use {
     crate::{
         error::VelocityResult,
         math::{
+            casting::Cast,
             constants::{
                 FEE_DENOMINATOR, FEE_PERCENTAGE_DENOMINATOR, LAMPORTS_PER_SOL_U64,
-                PERCENTAGE_PRECISION_U64,
+                PERCENTAGE_PRECISION_U64, TWENTY_FOUR_HOUR,
             },
             safe_math::SafeMath,
             safe_unwrap::SafeUnwrap,
@@ -93,6 +94,13 @@ pub struct State {
     /// accounts to the deployed program's size after a struct-extending
     /// upgrade).
     pub hot_account_extension: Pubkey,
+    /// Promotional fee-tier floor applied to every account: the effective
+    /// perp fee tier is `max(volume tier, promo_fee_tier)` (clamped to the
+    /// configured tier count), so nobody is downgraded by it. 0 = no-op
+    /// (disabled), also what pre-upgrade accounts read from former padding.
+    /// Reset to 0 and every account is back on its volume tier at its next
+    /// fill; no per-user state.
+    pub promo_fee_tier: u8,
     /// The retail-flow attestation key (swift's). Not a signer of any admin
     /// instruction: transactions *co-signed* by this key are attested flow —
     /// `place_clob_order` accepts a faster-than-default activation delay
@@ -101,7 +109,7 @@ pub struct State {
     /// own equivalent check. `Pubkey::default()` (unset) disables fast
     /// activation entirely rather than leaving it open.
     pub hot_flow_authority: Pubkey,
-    pub padding: [u8; 207],
+    pub padding: [u8; 206],
 }
 
 /// Purpose-specific hot role keys held on `State`. Each variant maps to one of the
@@ -182,7 +190,6 @@ impl Default for State {
             protocol_fee_recipient_perp: Pubkey::default(),
             hot_fee_withdraw: Pubkey::default(),
             hot_account_extension: Pubkey::default(),
-            hot_flow_authority: Pubkey::default(),
             protocol_fee_recipient_spot: Pubkey::default(),
             perp_fee_structure: FeeStructure::default(),
             spot_fee_structure: FeeStructure::default(),
@@ -205,12 +212,32 @@ impl Default for State {
             feature_bit_flags: 0,
             lp_pool_feature_bit_flags: 0,
             solvency_status: 0,
-            padding: [0; 207],
+            promo_fee_tier: 0,
+            hot_flow_authority: Pubkey::default(),
+            padding: [0; 206],
         }
     }
 }
 
 impl State {
+    /// The time after `PerpMarket.expiry_ts` that must pass before an expired market may move its
+    /// pools to the revenue pool and delist.
+    ///
+    /// The window has two jobs. It lets every expired position settle. It also gives a
+    /// revenue-share beneficiary time to create the payout account that `settle_revenue_share`
+    /// needs, because `forfeit_revenue_share_order` writes off a row with no such account once the
+    /// window ends. A `settlement_duration` of 1 shortens the window for tests.
+    pub fn escrow_period_before_transfer(&self) -> VelocityResult<i64> {
+        if self.settlement_duration > 1 {
+            // At least TWENTY_FOUR_HOUR, so that an operator can examine the settlement.
+            TWENTY_FOUR_HOUR
+                .safe_add(self.settlement_duration.cast()?)?
+                .safe_sub(1)
+        } else {
+            self.settlement_duration.cast::<i64>()
+        }
+    }
+
     pub fn get_exchange_status(&self) -> VelocityResult<BitFlags<ExchangeStatus>> {
         BitFlags::<ExchangeStatus>::from_bits(usize::from(self.exchange_status)).safe_unwrap()
     }
@@ -290,6 +317,10 @@ impl State {
 
     pub fn builder_codes_enabled(&self) -> bool {
         (self.feature_bit_flags & (FeatureBitFlags::BuilderCodes as u8)) > 0
+    }
+
+    pub fn vamm_maker_rebate_enabled(&self) -> bool {
+        (self.feature_bit_flags & (FeatureBitFlags::VammMakerRebate as u8)) > 0
     }
 
     pub fn allow_settle_lp_pool(&self) -> bool {
@@ -408,6 +439,7 @@ pub enum FeatureBitFlags {
     MmOracleUpdate = 0b00000001,
     MedianTriggerPrice = 0b00000010,
     BuilderCodes = 0b00000100,
+    VammMakerRebate = 0b00001000,
 }
 
 #[derive(Clone, Copy, PartialEq, Debug, Eq)]
@@ -420,10 +452,12 @@ pub enum LpPoolFeatureBitFlags {
 impl Size for State {
     // 8 (disc) + 13 Pubkey (cold + warm + pause + 10 hot, 416 B) + 8 Pubkey (mint/signer/srm
     // + protocol_fee_recipient_perp/_spot + hot_fee_withdraw + hot_account_extension, 256 B)
-    // + 2*FeeStructure + OracleGuardRails + scalars + solvency_status[1] + padding[239] = 1752 B.
+    // + 2*FeeStructure + OracleGuardRails + scalars + solvency_status[1] + promo_fee_tier[1]
+    // + hot_flow_authority[32] + padding[206] = 1752 B.
     // hot_if_rebalance was removed with the if-rebalance machinery (its 32 B went into
     // the padding); protocol_fee_recipient_spot later took 32 B back out; solvency_status
-    // took 1 B out of the padding; hot_account_extension took another 32 B out.
+    // took 1 B out of the padding; hot_account_extension took another 32 B out;
+    // promo_fee_tier took 1 B and hot_flow_authority took 32 B.
     // SIZE stays constant and (SIZE - 8) % 16 == 0 holds (1744).
     const SIZE: usize = 1752;
 }
@@ -491,7 +525,8 @@ pub struct FeeStructure {
     /// Share of the trade-fee *remainder* (taker fee after maker rebate, referral,
     /// referee discount, and filler reward are taken off the top) provisioned to
     /// the AMM as liquidity (its backstop-of-last-resort tranche, tracked in
-    /// `PerpMarket.fee_ledger.amm_protocol_fees_received`). precision:
+    /// `PerpMarket.fee_ledger.amm_protocol_fees_received` alongside the vAMM
+    /// maker rebate when that feature is enabled). precision:
     /// FEE_PERCENTAGE_DENOMINATOR. `amm_fee_numerator + if_fee_numerator` must
     /// be <= FEE_PERCENTAGE_DENOMINATOR; the protocol receives the residual
     /// (`remainder − amm − if`) into its withdrawable `protocol_fee_pool`.
@@ -550,63 +585,37 @@ pub struct OrderFillerRewardStructure {
 }
 
 impl FeeStructure {
+    /// Three volume tiers (see `determine_perp_fee_tier` for the 30d-volume
+    /// thresholds): 4bps / 3bps / 2bps taker, flat -0.25bp maker rebate.
+    /// Per-market absolute surcharges/discounts (e.g. volatile-alt add-ons)
+    /// live on `PerpMarket.taker_fee_addon_tenth_bps`, not in the tiers.
     pub fn perps_default() -> Self {
         let mut fee_tiers = [FeeTier::default(); 10];
         fee_tiers[0] = FeeTier {
-            fee_numerator: 100,
-            fee_denominator: FEE_DENOMINATOR, // 10 bps
-            maker_rebate_numerator: 20,
-            maker_rebate_denominator: FEE_DENOMINATOR, // 2bps
+            fee_numerator: 40,
+            fee_denominator: FEE_DENOMINATOR, // 4 bps
+            maker_rebate_numerator: 25,
+            maker_rebate_denominator: 10 * FEE_DENOMINATOR, // 0.25bp
             referrer_reward_numerator: 15,
             referrer_reward_denominator: FEE_PERCENTAGE_DENOMINATOR, // 15% of taker fee
             referee_fee_numerator: 5,
             referee_fee_denominator: FEE_PERCENTAGE_DENOMINATOR, // 5%
         };
         fee_tiers[1] = FeeTier {
-            fee_numerator: 90,
-            fee_denominator: FEE_DENOMINATOR, // 8 bps
-            maker_rebate_numerator: 20,
-            maker_rebate_denominator: FEE_DENOMINATOR, // 2bps
+            fee_numerator: 30,
+            fee_denominator: FEE_DENOMINATOR, // 3 bps
+            maker_rebate_numerator: 25,
+            maker_rebate_denominator: 10 * FEE_DENOMINATOR, // 0.25bp
             referrer_reward_numerator: 15,
             referrer_reward_denominator: FEE_PERCENTAGE_DENOMINATOR, // 15% of taker fee
             referee_fee_numerator: 5,
             referee_fee_denominator: FEE_PERCENTAGE_DENOMINATOR, // 5%
         };
         fee_tiers[2] = FeeTier {
-            fee_numerator: 80,
-            fee_denominator: FEE_DENOMINATOR, // 6 bps
-            maker_rebate_numerator: 20,
-            maker_rebate_denominator: FEE_DENOMINATOR, // 2bps
-            referrer_reward_numerator: 15,
-            referrer_reward_denominator: FEE_PERCENTAGE_DENOMINATOR, // 15% of taker fee
-            referee_fee_numerator: 5,
-            referee_fee_denominator: FEE_PERCENTAGE_DENOMINATOR, // 5%
-        };
-        fee_tiers[3] = FeeTier {
-            fee_numerator: 70,
-            fee_denominator: FEE_DENOMINATOR, // 5 bps
-            maker_rebate_numerator: 20,
-            maker_rebate_denominator: FEE_DENOMINATOR, // 2bps
-            referrer_reward_numerator: 15,
-            referrer_reward_denominator: FEE_PERCENTAGE_DENOMINATOR, // 15% of taker fee
-            referee_fee_numerator: 5,
-            referee_fee_denominator: FEE_PERCENTAGE_DENOMINATOR, // 5%
-        };
-        fee_tiers[4] = FeeTier {
-            fee_numerator: 60,
-            fee_denominator: FEE_DENOMINATOR, // 4 bps
-            maker_rebate_numerator: 20,
-            maker_rebate_denominator: FEE_DENOMINATOR, // 2bps
-            referrer_reward_numerator: 15,
-            referrer_reward_denominator: FEE_PERCENTAGE_DENOMINATOR, // 15% of taker fee
-            referee_fee_numerator: 5,
-            referee_fee_denominator: FEE_PERCENTAGE_DENOMINATOR, // 5%
-        };
-        fee_tiers[5] = FeeTier {
-            fee_numerator: 50,
-            fee_denominator: FEE_DENOMINATOR, // 3.5 bps
-            maker_rebate_numerator: 20,
-            maker_rebate_denominator: FEE_DENOMINATOR, // 2bps
+            fee_numerator: 20,
+            fee_denominator: FEE_DENOMINATOR, // 2 bps
+            maker_rebate_numerator: 25,
+            maker_rebate_denominator: 10 * FEE_DENOMINATOR, // 0.25bp
             referrer_reward_numerator: 15,
             referrer_reward_denominator: FEE_PERCENTAGE_DENOMINATOR, // 15% of taker fee
             referee_fee_numerator: 5,

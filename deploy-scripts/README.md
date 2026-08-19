@@ -84,6 +84,18 @@ git push origin program-velocity-2.163.0
 
 The `mainnet-beta` branch tracks what is (or is about to be) live on mainnet; `master` is active development. The tag itself is the deploy trigger — branch state doesn't gate the workflow. This assumes the program and its canonical IDL account already exist on mainnet — for the very first mainnet deploy, do [Initial deploy](#initial-deploy-create-the-idl-metadata-account) first.
 
+### Upgrades that change the default fee schedule
+
+`FeeStructure::perps_default()` runs only in `initialize`, so a program upgrade
+never rewrites the fee structure stored in `State` — but the hardcoded tier
+*thresholds* and tier count in `determine_perp_fee_tier` change the moment the
+new program is live. If an upgrade changes the default schedule (tier rates,
+thresholds, or tier count), the stored tiers and the code's thresholds disagree
+until an `update_perp_fee_structure` call lands, and fees are wrong in both
+directions in that window. Treat the admin call as part of the upgrade itself:
+stage it alongside the Squads proposal (or send it immediately after the swap
+on devnet), not as a follow-up.
+
 ### Verifying a buffer before signing the Squads proposal
 
 Before approving an upgrade in the Squads UI, confirm the staged buffer is

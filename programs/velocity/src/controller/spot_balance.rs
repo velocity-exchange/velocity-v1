@@ -4,7 +4,7 @@ use {
         math::{
             casting::Cast,
             constants::{
-                FIVE_MINUTE, IF_FACTOR_PRECISION, ONE_HOUR, ONE_MINUTE, QUOTE_SPOT_MARKET_INDEX,
+                FIVE_MINUTE, ONE_HOUR, ONE_MINUTE, QUOTE_SPOT_MARKET_INDEX,
                 SPOT_MARKET_TOKEN_TWAP_WINDOW,
             },
             oracle::{
@@ -13,8 +13,9 @@ use {
             },
             safe_math::SafeMath,
             spot_balance::{
-                calculate_accumulated_interest, calculate_utilization, get_interest_token_amount,
-                get_spot_balance, get_token_amount, InterestAccumulated,
+                calculate_accumulated_interest, calculate_spot_market_utilization,
+                calculate_utilization, get_interest_token_amount_with_dust, get_spot_balance,
+                get_token_amount, split_deposit_interest, InterestAccumulated,
             },
             stats::{calculate_new_twap, calculate_weighted_average},
         },
@@ -22,9 +23,11 @@ use {
         state::{
             events::{SpotInterestRecord, TransferFeeAndPnlPoolDirection},
             oracle::OraclePriceData,
+            oracle_map::OracleMap,
             paused_operations::SpotOperation,
             perp_market::PoolBalance,
             spot_market::{SpotBalance, SpotBalanceType, SpotMarket},
+            spot_market_map::{SpotMarketMap, SpotMarketSet},
             state::ValidityGuardRails,
             user::MarketType,
         },
@@ -134,6 +137,23 @@ pub fn update_spot_market_twap_stats(
     Ok(())
 }
 
+/// Stamp `last_interest_ts` forward to `now` **without** accruing anything.
+///
+/// Used for intervals in which no interest is charged to anyone. This is load-bearing, not
+/// bookkeeping: `calculate_accumulated_interest` bills the entire `now - last_interest_ts`
+/// span at whatever rate prevails when it finally runs, so an interval left un-stamped is
+/// billed retroactively to whoever happens to hold debt later (findings #115, #117).
+///
+/// Never moves the stamp backwards — `now` can trail the stored value (the accrual is also
+/// driven from user instructions, whose `now` comes from their own `Clock`).
+fn stamp_interest_ts_without_accrual(spot_market: &mut SpotMarket, now: i64) -> VelocityResult {
+    if now.cast::<u64>()? > spot_market.last_interest_ts {
+        spot_market.last_interest_ts = now.cast()?;
+    }
+
+    Ok(())
+}
+
 pub fn update_spot_market_cumulative_interest(
     spot_market: &mut SpotMarket,
     oracle_price_data: Option<&OraclePriceData>,
@@ -146,8 +166,17 @@ pub fn update_spot_market_cumulative_interest(
     // threaded in from callers because the global flag lives on `State`, which
     // this controller does not load. TWAP stats still advance so oracle EMAs
     // stay fresh, mirroring the dedicated `update_spot_market_cumulative_interest`
-    // crank; on resume the next accrual covers the full elapsed interval.
+    // crank.
+    //
+    // The clock is stamped forward as the pause is observed, so the paused interval is
+    // dropped rather than deferred. Previously it was left in place and the first accrual
+    // after resume applied the whole paused span to whatever balances existed at that
+    // moment: a deposit made just before the unpause collected interest for time it was not
+    // deposited, and a borrow opened during the pause was charged for time it did not exist
+    // (finding #115). A pause means interest does not accrue for that window — not that it
+    // accrues and is billed later to a different set of balances.
     if funding_paused || spot_market.is_operation_paused(SpotOperation::UpdateCumulativeInterest) {
+        stamp_interest_ts_without_accrual(spot_market, now)?;
         update_spot_market_twap_stats(spot_market, oracle_price_data, now)?;
         return Ok(());
     }
@@ -157,81 +186,127 @@ pub fn update_spot_market_cumulative_interest(
         borrow_interest,
     } = calculate_accumulated_interest(spot_market, now)?;
 
+    // An interval that is owed commits on the interval that it belongs to, as soon as it is
+    // large enough to represent on both indexes.
+    //
+    // `calculate_accumulated_interest` bills the whole span since `last_interest_ts`. It uses
+    // the rate that applies when it runs. It commits the span with an index move, and the
+    // index credits every balance that exists at that moment.
+    //
+    // Balances change between cranks. Every spot instruction that moves balances cranks this
+    // function first. An un-stamped span is therefore billed against later balances. A deposit
+    // made in the gap earns interest for time before the deposit. A borrow opened in the gap
+    // pays interest for time before the borrow. Findings #115 and #117 describe this result.
+    //
+    // Three outcomes remain. COMMIT moves both indexes, pays both carveouts, carries the
+    // remainders, and stamps the clock. DROP stamps the clock without accrual, because nobody
+    // owes anything for the interval. DEFER leaves the clock where it stands and retries the
+    // span on the next crank.
+    //
+    // DEFER covers an interval that does not reach a whole index unit on both sides.
+    // `borrow_interest` is 1 when the borrow side floors to zero, and `deposit_interest` is 0
+    // when the lender side floors to zero. A stamp would forgive that interest, and frequent
+    // cranks of this permissionless accrual would then hold every interval under the floor. A
+    // span therefore survives only while it stays under the floor, and it commits on the first
+    // crank that clears both sides.
     if deposit_interest > 0 && borrow_interest > 1 {
-        // Explicit lending-gain carveouts (replaces the old single `total_factor`
-        // skim). Two independent cuts taken off the deposit-interest gain:
-        //   - `if_fee_factor`     -> insurance fund (revenue_pool, staker-owned)
-        //   - `protocol_fee_factor`  -> withdrawable protocol fees (protocol_fee_pool)
-        // Lenders receive whatever remains.
-        let deposit_interest_for_if = deposit_interest
-            .safe_mul(spot_market.insurance_fund.if_fee_factor as u128)?
-            .safe_div(IF_FACTOR_PRECISION)?;
+        // The deposit-interest gain divides three ways. `if_fee_factor` goes to the insurance
+        // fund through `revenue_pool`. `protocol_fee_factor` goes to withdrawable protocol
+        // fees through `protocol_fee_pool`. Lenders receive the rest.
+        //
+        // `split_deposit_interest` carries the index-space remainders, so a share too small to
+        // round to a whole index unit is delayed instead of lost. It also guarantees that the
+        // two cuts never sum past the gain, so lenders never fall below zero and the split
+        // cannot hold up the commit.
+        let split = split_deposit_interest(spot_market, deposit_interest)?;
 
-        let deposit_interest_for_protocol = deposit_interest
-            .safe_mul(spot_market.protocol_fee_factor as u128)?
-            .safe_div(IF_FACTOR_PRECISION)?;
+        // Both cuts convert to tokens against the same `deposit_balance`, before either pool is
+        // credited. A credit to the first pool raises `deposit_balance`. A conversion of the
+        // second cut against the raised balance would exceed its stated factor.
+        //
+        // The conversion floors to zero on a small market, even when the index-space cut is not
+        // zero. The value is already withheld from lenders at that point, so a floored cut
+        // credits nobody. Each pool therefore carries its own token-space remainder.
+        let (if_token_amount, if_token_dust) = get_interest_token_amount_with_dust(
+            spot_market.deposit_balance,
+            spot_market,
+            split.for_insurance_fund,
+            spot_market.revenue_pool.pending_interest_dust,
+        )?;
+        let (protocol_token_amount, protocol_token_dust) = get_interest_token_amount_with_dust(
+            spot_market.deposit_balance,
+            spot_market,
+            split.for_protocol,
+            spot_market.protocol_fee_pool.pending_interest_dust,
+        )?;
 
-        let deposit_interest_for_lenders = deposit_interest
-            .safe_sub(deposit_interest_for_if)?
-            .safe_sub(deposit_interest_for_protocol)?;
+        spot_market.cumulative_deposit_interest = spot_market
+            .cumulative_deposit_interest
+            .safe_add(split.for_lenders)?;
 
-        if deposit_interest_for_lenders > 0 {
-            spot_market.cumulative_deposit_interest = spot_market
-                .cumulative_deposit_interest
-                .safe_add(deposit_interest_for_lenders)?;
+        spot_market.cumulative_borrow_interest = spot_market
+            .cumulative_borrow_interest
+            .safe_add(borrow_interest)?;
+        spot_market.last_interest_ts = now.cast()?;
 
-            spot_market.cumulative_borrow_interest = spot_market
-                .cumulative_borrow_interest
-                .safe_add(borrow_interest)?;
-            spot_market.last_interest_ts = now.cast()?;
-
-            // convert both carveouts to tokens against the SAME pre-credit
-            // deposit_balance — crediting the first pool grows deposit_balance,
-            // and converting the second cut against the grown balance would
-            // skew it above its stated factor (order-dependence)
-            let if_token_amount = get_interest_token_amount(
-                spot_market.deposit_balance,
+        // The insurance fund cut settles to the IF vault for stakers.
+        if if_token_amount > 0 {
+            update_revenue_pool_balances(
+                if_token_amount,
+                &SpotBalanceType::Deposit,
                 spot_market,
-                deposit_interest_for_if,
+                false,
             )?;
-            let protocol_token_amount = get_interest_token_amount(
-                spot_market.deposit_balance,
-                spot_market,
-                deposit_interest_for_protocol,
-            )?;
-
-            // IF cut -> revenue_pool (settles to IF vault for stakers)
-            if if_token_amount > 0 {
-                update_revenue_pool_balances(
-                    if_token_amount,
-                    &SpotBalanceType::Deposit,
-                    spot_market,
-                    false,
-                )?;
-            }
-
-            // protocol cut -> protocol_fee_pool (directly withdrawable)
-            if protocol_token_amount > 0 {
-                update_protocol_fee_pool_balances(
-                    protocol_token_amount,
-                    &SpotBalanceType::Deposit,
-                    spot_market,
-                    false,
-                )?;
-            }
-
-            emit!(SpotInterestRecord {
-                ts: now,
-                market_index: spot_market.market_index,
-                deposit_balance: spot_market.deposit_balance,
-                cumulative_deposit_interest: spot_market.cumulative_deposit_interest,
-                borrow_balance: spot_market.borrow_balance,
-                cumulative_borrow_interest: spot_market.cumulative_borrow_interest,
-                optimal_utilization: spot_market.optimal_utilization,
-                optimal_borrow_rate: spot_market.optimal_borrow_rate,
-                max_borrow_rate: spot_market.max_borrow_rate,
-            });
         }
+        spot_market.revenue_pool.pending_interest_split_dust = split.carveout_dust;
+        spot_market.revenue_pool.pending_interest_dust = if_token_dust;
+
+        // The protocol cut is directly withdrawable.
+        if protocol_token_amount > 0 {
+            update_protocol_fee_pool_balances(
+                protocol_token_amount,
+                &SpotBalanceType::Deposit,
+                spot_market,
+                false,
+            )?;
+        }
+        spot_market.protocol_fee_pool.pending_interest_split_dust = split.insurance_fund_dust;
+        spot_market.protocol_fee_pool.pending_interest_dust = protocol_token_dust;
+
+        emit!(SpotInterestRecord {
+            ts: now,
+            market_index: spot_market.market_index,
+            deposit_balance: spot_market.deposit_balance,
+            cumulative_deposit_interest: spot_market.cumulative_deposit_interest,
+            borrow_balance: spot_market.borrow_balance,
+            cumulative_borrow_interest: spot_market.cumulative_borrow_interest,
+            optimal_utilization: spot_market.optimal_utilization,
+            optimal_borrow_rate: spot_market.optimal_borrow_rate,
+            max_borrow_rate: spot_market.max_borrow_rate,
+        });
+    } else if spot_market.borrow_balance == 0
+        || calculate_spot_market_utilization(spot_market)? == 0
+    {
+        // Nobody borrows, so nobody owes interest for this interval. This is the same
+        // condition that makes `calculate_accumulated_interest` return zero. Stamp the clock
+        // to remove the idle span from the ledger.
+        //
+        // The code tests `borrow_balance == 0` first to save work. That case is the one that
+        // occurs, and one comparison answers it. The utilization arm needs two
+        // `get_token_amount` conversions and a division. The utilization arm remains because
+        // zero utilization is the exact condition that returns zero. It also covers a borrow
+        // that is very small next to deposits, where the ratio floors to zero.
+        //
+        // An un-stamped idle span stayed on the clock for the whole zero-borrow period. The
+        // first accrual after a borrow then billed that whole span at the new rate. Any lender
+        // could farm this. The lender deposits into an idle market, waits for the first
+        // borrower, cranks the accrual, and collects interest that the new debt never owed.
+        // Finding #117 describes this. Every path that creates a borrow cranks this function
+        // before it changes balances. The stamp is therefore current when debt appears, and a
+        // new borrow pays only from its own creation.
+        //
+        // This branch stays narrow. Only an interval that nobody owes anything for is stamped.
+        stamp_interest_ts_without_accrual(spot_market, now)?;
     }
 
     update_spot_market_twap_stats(spot_market, oracle_price_data, now)?;
@@ -479,25 +554,33 @@ pub fn transfer_spot_balance_to_revenue_pool(
     Ok(())
 }
 
-/// Returns the computed [`OracleValidity`] so callers can apply stricter, action-specific
-/// handling (e.g. liquidation pricing collateral protectively when the oracle is
-/// margin-invalid). The quote spot market skips validity checks and reports `Valid`.
-pub fn update_spot_market_and_check_validity(
-    spot_market: &mut SpotMarket,
+/// Outcome of [`update_spot_market_and_check_validity`], carrying both the verdict and the
+/// TWAP the verdict was reached against.
+#[derive(Clone, Copy, Debug)]
+pub struct SpotMarketOracleRefresh {
+    /// Computed validity, so callers can apply stricter, action-specific handling (e.g.
+    /// liquidation pricing collateral protectively when the oracle is margin-invalid). The
+    /// quote spot market skips validity checks and reports `Valid`.
+    pub validity: OracleValidity,
+    /// 5-minute oracle TWAP as of before the refresh below advanced it. Callers that bound a
+    /// price against this TWAP must use this snapshot, not the field, for the same reason the
+    /// verdict itself is computed first (OtterSec #109-#112, #134).
+    pub pre_refresh_twap_5min: i64,
+}
+
+/// Judges the oracle against the TWAPs as they stand, and does not advance them. The quote
+/// spot market has no oracle to judge and reports `Valid`.
+///
+/// Use this when the caller reads an oracle TWAP later in the same transaction and must not
+/// move it first. Use [`update_spot_market_and_check_validity`] when the caller also owns the
+/// refresh.
+pub fn check_spot_oracle_validity(
+    spot_market: &SpotMarket,
     oracle_price_data: &OraclePriceData,
     validity_guard_rails: &ValidityGuardRails,
-    now: i64,
     action: Option<VelocityAction>,
-    funding_paused: bool,
+    log_mode: LogMode,
 ) -> VelocityResult<OracleValidity> {
-    // update spot market EMAs with new/current data
-    update_spot_market_cumulative_interest(
-        spot_market,
-        Some(oracle_price_data),
-        now,
-        funding_paused,
-    )?;
-
     if spot_market.market_index == QUOTE_SPOT_MARKET_INDEX {
         return Ok(OracleValidity::Valid);
     }
@@ -505,7 +588,7 @@ pub fn update_spot_market_and_check_validity(
     // 1 hour EMA
     let risk_ema_price = spot_market.historical_oracle_data.last_oracle_price_twap;
 
-    let oracle_validity = oracle_validity(
+    let validity = oracle_validity(
         MarketType::Spot,
         spot_market.market_index,
         risk_ema_price,
@@ -513,13 +596,14 @@ pub fn update_spot_market_and_check_validity(
         validity_guard_rails,
         spot_market.get_max_confidence_interval_multiplier()?,
         &spot_market.oracle_source,
-        LogMode::ExchangeOracle,
+        log_mode,
         -1,
+        false, // exchange-oracle price, never MM-sourced
         0,
     )?;
 
     validate!(
-        is_oracle_valid_for_action(oracle_validity, action)?,
+        is_oracle_valid_for_action(validity, action)?,
         ErrorCode::InvalidOracle,
         "Invalid Oracle ({:?} vs ema={:?}) for spot market index={} and action={:?}",
         oracle_price_data,
@@ -528,7 +612,86 @@ pub fn update_spot_market_and_check_validity(
         action
     )?;
 
-    Ok(oracle_validity)
+    Ok(validity)
+}
+
+/// Judges the oracle against the TWAPs as they stand on entry, then advances them. An
+/// instruction must not relax a gate that reads a value it just moved: the refresh drags both
+/// oracle TWAPs toward the live price, so reading them afterwards lets a too-volatile or
+/// depressed oracle normalize away the very check meant to stop it. The direct spot
+/// liquidation lane legitimately advances these TWAPs and does gate on them, so the refresh
+/// stays and moves after the gate. Its gates then read `pre_refresh_twap_5min`.
+pub fn update_spot_market_and_check_validity(
+    spot_market: &mut SpotMarket,
+    oracle_price_data: &OraclePriceData,
+    validity_guard_rails: &ValidityGuardRails,
+    now: i64,
+    action: Option<VelocityAction>,
+    funding_paused: bool,
+) -> VelocityResult<SpotMarketOracleRefresh> {
+    let pre_refresh_twap_5min = spot_market
+        .historical_oracle_data
+        .last_oracle_price_twap_5min;
+
+    let validity = check_spot_oracle_validity(
+        spot_market,
+        oracle_price_data,
+        validity_guard_rails,
+        action,
+        LogMode::ExchangeOracle,
+    )?;
+
+    // update spot market EMAs with new/current data
+    update_spot_market_cumulative_interest(
+        spot_market,
+        Some(oracle_price_data),
+        now,
+        funding_paused,
+    )?;
+
+    Ok(SpotMarketOracleRefresh {
+        validity,
+        pre_refresh_twap_5min,
+    })
+}
+
+/// Advance the lending-interest indexes of several spot markets in one pass.
+///
+/// Every market goes through [`update_spot_market_cumulative_interest`], so a caller that
+/// refreshes many markets gets the same per-market treatment as a caller that refreshes one.
+/// Pass the same set that loaded `spot_market_map`. Each index must be writable in the map, and
+/// the map rejects a repeated index at load, so no market is refreshed twice.
+///
+/// `oracle_map` is optional, and the choice belongs to the caller. Pass `None` when the same
+/// instruction later reads a market's oracle TWAP. [`update_spot_market_twap_stats`] pulls
+/// `last_oracle_price_twap` toward the live price, so a later check against that TWAP measures
+/// against a value this call moved. Pass `Some` only from an instruction that consumes no oracle
+/// TWAP of its own.
+pub fn refresh_spot_market_interest(
+    spot_market_map: &SpotMarketMap,
+    mut oracle_map: Option<&mut OracleMap>,
+    market_indexes: &SpotMarketSet,
+    now: i64,
+    funding_paused: bool,
+) -> VelocityResult {
+    market_indexes.iter().try_for_each(|market_index| {
+        let spot_market = &mut spot_market_map.get_ref_mut(market_index)?;
+
+        // Copy the price out so the oracle map is free again before the refresh. The map is
+        // borrowed through an `Option` across loop iterations, and holding the reference would
+        // keep that borrow alive for the whole body.
+        let oracle_price_data = match &mut oracle_map {
+            Some(oracle_map) => Some(*oracle_map.get_price_data(&spot_market.oracle_id())?),
+            None => None,
+        };
+
+        update_spot_market_cumulative_interest(
+            spot_market,
+            oracle_price_data.as_ref(),
+            now,
+            funding_paused,
+        )
+    })
 }
 
 fn increase_spot_balance(

@@ -820,6 +820,64 @@ impl VelocityClient {
         }
     }
 
+    /// List the spot markets that must be cranked before these accounts can be used
+    /// on a value-releasing path.
+    ///
+    /// The program refuses to value a spot **borrow** for margin through an index
+    /// that has not accrued recently (`SpotMarketInterestStaleForMargin`). It
+    /// applies on withdraw, transfer deposit, transfer pools, swap,
+    /// isolated-position withdraw, and any perp fill, for the taker and for every
+    /// maker alike. Only borrow positions count: a stale deposit index understates
+    /// collateral and is allowed.
+    ///
+    /// Each market earns its own window from its rate ceiling, so a market that may
+    /// charge more interest must be cranked more often.
+    ///
+    /// The program also exempts a borrow whose un-booked interest is still under one
+    /// token unit, which this does not model, so the result is a superset. Cranking
+    /// every market it names always clears the check.
+    ///
+    /// A market missing from the cache is skipped, so a caller that is not
+    /// subscribed to it gets no crank for it.
+    ///
+    /// * `users` - accounts the transaction values, e.g. a fill's taker and makers
+    /// * `now` - unix seconds to measure staleness against
+    pub fn stale_spot_interest_markets(&self, users: &[&User], now: i64) -> Vec<u16> {
+        let mut stale = Vec::<u16>::new();
+
+        for user in users {
+            for position in user.spot_positions.iter() {
+                if position.balance_type != SpotBalanceType::Borrow
+                    || position.scaled_balance == 0
+                    || stale.contains(&position.market_index)
+                {
+                    continue;
+                }
+
+                let Ok(spot_market) = self.try_get_spot_market_account(position.market_index)
+                else {
+                    continue;
+                };
+
+                // A window this cannot compute falls to zero, which names the market
+                // for any staleness at all. The two outcomes are not symmetric: a
+                // market this fails to name reverts the transaction the caller is
+                // building, while one it names needlessly costs an idempotent
+                // permissionless crank.
+                let window =
+                    program::math::margin::max_spot_interest_staleness_for_margin(&spot_market)
+                        .unwrap_or(0);
+
+                if now.saturating_sub(spot_market.last_interest_ts as i64) > window {
+                    stale.push(position.market_index);
+                }
+            }
+        }
+
+        stale.sort_unstable();
+        stale
+    }
+
     /// Try to get perp market account from cache
     ///
     /// * `market_index` - spot market index
@@ -2949,6 +3007,14 @@ impl<'a> TransactionBuilder<'a> {
     /// This function handles common Jupiter-specific logic and returns a struct containing
     /// all the instructions that need to be inserted between begin and end wrapper instructions.
     ///
+    /// Of the route's instructions only the swap and a non-token cleanup (a SOL unwrap)
+    /// go in the bracket. Jupiter's compute-budget instructions are not used — the caller
+    /// budgets the whole transaction, not the swap alone — and its setup instructions are
+    /// replaced with idempotent ATA creation for the two swap token accounts, placed
+    /// before `begin_swap` rather than inside the bracket. Auxiliary instructions the
+    /// bracket could not carry (a Jito tip) are rejected when the route is parsed, so
+    /// nothing the route needs is dropped here.
+    ///
     /// # Arguments
     /// * `jupiter_swap_info` - Jupiter swap route and instructions
     /// * `in_market` - Spot market of the input token
@@ -2986,11 +3052,6 @@ impl<'a> TransactionBuilder<'a> {
         } else {
             Vec::new()
         };
-
-        // TODO: support jito bundle
-        if !jupiter_swap_ixs.other_instructions.is_empty() {
-            panic!("jupiter swap unsupported ix: Jito tip");
-        }
 
         // support SOL unwrap ixs, ignore account delete/reclaim ixs
         let cleanup_instruction = jupiter_swap_ixs.cleanup_instruction.filter(|ix| {
@@ -3548,6 +3609,40 @@ impl<'a> TransactionBuilder<'a> {
         self
     }
 
+    /// Accrue a spot market's interest up to the current slot.
+    ///
+    /// Permissionless. A value-releasing path refuses to value a spot borrow through
+    /// an index that has not accrued within `MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN`
+    /// (`SpotMarketInterestStaleForMargin`), and it receives that market read-only,
+    /// so the crank must precede it in the same transaction.
+    /// `VelocityClient::stale_spot_interest_markets` names the markets a given set
+    /// of accounts needs.
+    ///
+    /// * `market_index` - the spot market to accrue
+    pub fn update_spot_market_cumulative_interest(mut self, market_index: u16) -> Self {
+        let spot_market = self
+            .program_data
+            .spot_market_config_by_index(market_index)
+            .expect("spot markets syncd");
+
+        let accounts = program::accounts::UpdateSpotMarketCumulativeInterest {
+            state: *state_account(),
+            spot_market: derive_spot_market_account(market_index),
+            oracle: spot_market.oracle,
+            spot_market_vault: spot_market.vault,
+        }
+        .to_account_metas(None);
+
+        self.ixs.push(Instruction {
+            program_id: constants::PROGRAM_ID,
+            accounts,
+            data: InstructionData::data(
+                &program::instruction::UpdateSpotMarketCumulativeInterest {},
+            ),
+        });
+        self
+    }
+
     /// Trigger a conditional order (stop loss, take profit, etc.)
     ///
     /// This instruction allows a filler to trigger a conditional order when the specified
@@ -3818,6 +3913,7 @@ impl<'a> TransactionBuilder<'a> {
                 state: *state_account(),
                 authority: self.authority,
                 liquidator: self.sub_account,
+                liquidator_stats: Wallet::derive_stats_account(&self.owner()),
                 user: Wallet::derive_user_account(
                     &user_account.authority,
                     user_account.sub_account_id,
@@ -3893,6 +3989,7 @@ impl<'a> TransactionBuilder<'a> {
                 state: *state_account(),
                 authority: self.authority,
                 liquidator: self.sub_account,
+                liquidator_stats: Wallet::derive_stats_account(&self.owner()),
                 user: Wallet::derive_user_account(
                     &user_account.authority,
                     user_account.sub_account_id,

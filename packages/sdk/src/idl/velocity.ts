@@ -1098,6 +1098,9 @@ export type Velocity = {
       ],
       "accounts": [
         {
+          "name": "state"
+        },
+        {
           "name": "spotMarket",
           "writable": true,
           "pda": {
@@ -1142,6 +1145,40 @@ export type Velocity = {
           ]
         },
         {
+          "name": "spotMarketVault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "marketIndex"
+              }
+            ]
+          }
+        },
+        {
           "name": "insuranceFundVault",
           "writable": true,
           "pda": {
@@ -1177,6 +1214,12 @@ export type Velocity = {
               }
             ]
           }
+        },
+        {
+          "name": "velocitySigner"
+        },
+        {
+          "name": "tokenProgram"
         }
       ],
       "args": [
@@ -2230,6 +2273,44 @@ export type Velocity = {
             "user",
             "userStats"
           ]
+        },
+        {
+          "name": "revenueShareEscrow",
+          "docs": [
+            "most users never create one. Deliberately an `UncheckedAccount` **pinned by",
+            "`seeds`** rather than a typed `AccountLoader`: because the address is derived",
+            "and not caller-chosen, absence is *provable* (`data_is_empty()`), so the handler",
+            "can distinguish \"this authority has no escrow\" from \"the caller omitted it to",
+            "skip the check\". A typed loader would instead make deletion impossible for the",
+            "majority of users, who have no escrow account to pass.",
+            "",
+            "Required rather than `Option` so a caller holding fee-bearing builder rows",
+            "cannot simply leave it out (OtterSec #128)."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  82,
+                  69,
+                  86,
+                  95,
+                  69,
+                  83,
+                  67,
+                  82,
+                  79,
+                  87
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              }
+            ]
+          }
         }
       ],
       "args": []
@@ -3498,6 +3579,40 @@ export type Velocity = {
         },
         {
           "name": "velocitySigner"
+        },
+        {
+          "name": "revenueShareEscrow",
+          "docs": [
+            "because most users never create one. It carries the same contract as",
+            "`DeleteUser::revenue_share_escrow`: an `UncheckedAccount` pinned by `seeds`, so",
+            "the handler can tell \"this authority has no escrow\" (`data_is_empty()`) from \"the",
+            "keeper omitted the account to skip the check\". It is required rather than",
+            "`Option` for that second reason (OtterSec #128)."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  82,
+                  69,
+                  86,
+                  95,
+                  69,
+                  83,
+                  67,
+                  82,
+                  79,
+                  87
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              }
+            ]
+          }
         }
       ],
       "args": []
@@ -3552,6 +3667,137 @@ export type Velocity = {
         {
           "name": "velocitySignerNonce",
           "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "forfeitRevenueShareOrder",
+      "discriminator": [
+        141,
+        205,
+        148,
+        171,
+        116,
+        92,
+        53,
+        250
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "perpMarket",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  112,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "marketIndex"
+              }
+            ]
+          }
+        },
+        {
+          "name": "spotMarket",
+          "docs": [
+            "The quote spot market of the perp market. The PDA seeds enforce this. The handler values",
+            "the pnl pool against it. It is writable because the handler accrues interest first."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "perpMarket"
+              }
+            ]
+          }
+        },
+        {
+          "name": "escrowAuthority",
+          "docs": [
+            "The owner of the escrow that holds the row."
+          ]
+        },
+        {
+          "name": "revenueShareEscrow",
+          "docs": [
+            "The escrow that holds the row to write off."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  82,
+                  69,
+                  86,
+                  95,
+                  69,
+                  83,
+                  67,
+                  82,
+                  79,
+                  87
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "escrowAuthority"
+              }
+            ]
+          }
+        },
+        {
+          "name": "beneficiaryUser",
+          "docs": [
+            "Sub-account 0 of the beneficiary of the row. This is the payout account. The handler proves",
+            "that it does not exist."
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "marketIndex",
+          "type": "u16"
+        },
+        {
+          "name": "orderIndex",
+          "type": "u32"
         }
       ]
     },
@@ -6190,6 +6436,22 @@ export type Velocity = {
             "Instructions Sysvar for instruction introspection"
           ],
           "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "liquidatorStats",
+          "docs": [
+            "The liquidator's `UserStats`, read by `begin` to bar an authority whose",
+            "equity breaker is tripped.",
+            "",
+            "It sits last, not beside `liquidator` where the direct liquidation",
+            "contexts carry it, because this pair is addressed by position rather",
+            "than by name: `begin` introspects the matching `end` and compares the",
+            "two account lists index by index, and the swap accounts both forward",
+            "begin where this fixed block ends. Taking the last slot renumbered",
+            "nothing. Slotting it beside `liquidator` would have moved `user`, both",
+            "vaults and both token accounts down one, silently invalidating every",
+            "hand-built transaction that still filled the old order."
+          ]
         }
       ],
       "args": [
@@ -6323,6 +6585,22 @@ export type Velocity = {
             "Instructions Sysvar for instruction introspection"
           ],
           "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "liquidatorStats",
+          "docs": [
+            "The liquidator's `UserStats`, read by `begin` to bar an authority whose",
+            "equity breaker is tripped.",
+            "",
+            "It sits last, not beside `liquidator` where the direct liquidation",
+            "contexts carry it, because this pair is addressed by position rather",
+            "than by name: `begin` introspects the matching `end` and compares the",
+            "two account lists index by index, and the swap accounts both forward",
+            "begin where this fixed block ends. Taking the last slot renumbered",
+            "nothing. Slotting it beside `liquidator` would have moved `user`, both",
+            "vaults and both token accounts down one, silently invalidating every",
+            "hand-built transaction that still filled the old order."
+          ]
         }
       ],
       "args": [
@@ -8302,6 +8580,32 @@ export type Velocity = {
       "args": []
     },
     {
+      "name": "refreshSpotMarketInterest",
+      "discriminator": [
+        11,
+        188,
+        50,
+        141,
+        73,
+        51,
+        134,
+        78
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        }
+      ],
+      "args": [
+        {
+          "name": "marketIndexes",
+          "type": {
+            "vec": "u16"
+          }
+        }
+      ]
+    },
+    {
       "name": "removeAmmConstituentMappingData",
       "discriminator": [
         20,
@@ -10231,6 +10535,106 @@ export type Velocity = {
       ]
     },
     {
+      "name": "settleRevenueShare",
+      "discriminator": [
+        21,
+        123,
+        155,
+        221,
+        194,
+        240,
+        233,
+        76
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "escrowAuthority",
+          "docs": [
+            "The owner of the escrow to settle."
+          ]
+        },
+        {
+          "name": "revenueShareEscrow",
+          "docs": [
+            "The escrow that holds the accrued builder and referrer rows."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  82,
+                  69,
+                  86,
+                  95,
+                  69,
+                  83,
+                  67,
+                  82,
+                  79,
+                  87
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "escrowAuthority"
+              }
+            ]
+          }
+        },
+        {
+          "name": "spotMarketVault",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  0,
+                  0
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "marketIndex",
+          "type": "u16"
+        },
+        {
+          "name": "numOwnerSubAccounts",
+          "type": "u8"
+        }
+      ]
+    },
+    {
       "name": "settleRevenueToInsuranceFund",
       "discriminator": [
         200,
@@ -11558,7 +11962,8 @@ export type Velocity = {
           "writable": true
         },
         {
-          "name": "userStats"
+          "name": "userStats",
+          "writable": true
         },
         {
           "name": "triggerConditions",
@@ -12344,6 +12749,35 @@ export type Velocity = {
         3,
         22,
         58
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "enable",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "updateFeatureBitFlagsVammMakerRebate",
+      "discriminator": [
+        237,
+        132,
+        7,
+        255,
+        116,
+        155,
+        5,
+        119
       ],
       "accounts": [
         {
@@ -14468,6 +14902,38 @@ export type Velocity = {
       ]
     },
     {
+      "name": "updatePerpMarketTakerFeeAddon",
+      "discriminator": [
+        53,
+        22,
+        191,
+        15,
+        62,
+        150,
+        36,
+        203
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "perpMarket",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "takerFeeAddonTenthBps",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "updatePerpMarketUnrealizedAssetWeight",
       "discriminator": [
         135,
@@ -14596,6 +15062,35 @@ export type Velocity = {
               "name": "prelaunchOracleParams"
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "updatePromoFeeTier",
+      "discriminator": [
+        104,
+        57,
+        241,
+        162,
+        69,
+        198,
+        5,
+        175
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "promoFeeTier",
+          "type": "u8"
         }
       ]
     },
@@ -20296,91 +20791,121 @@ export type Velocity = {
     },
     {
       "code": 6368,
+      "name": "invalidEquityBreakerReset",
+      "msg": "Invalid equity breaker reset"
+    },
+    {
+      "code": 6369,
+      "name": "invalidNativeInstructionData",
+      "msg": "Native dispatch: instruction data is malformed for this opcode"
+    },
+    {
+      "code": 6370,
+      "name": "mmOracleUpdateDisabled",
+      "msg": "MM oracle updates are disabled by the admin feature-bit kill switch"
+    },
+    {
+      "code": 6371,
+      "name": "spotMarketInterestStaleForMargin",
+      "msg": "Spot market interest is too stale to value a borrow for margin"
+    },
+    {
+      "code": 6372,
+      "name": "unsettledRevenueShareOnDelist",
+      "msg": "Market still owes builder/referrer revenue share; settle it before delisting"
+    },
+    {
+      "code": 6373,
+      "name": "revenueShareOrderNotForfeitable",
+      "msg": "Revenue share order can still be paid; settle it instead of forfeiting"
+    },
+    {
+      "code": 6374,
       "name": "invalidQuoterConfig",
       "msg": "Quoter registry entry config is invalid"
     },
     {
-      "code": 6369,
+      "code": 6375,
       "name": "invalidQuoterAuthority",
       "msg": "Signer does not control this quoter registry entry"
     },
     {
-      "code": 6370,
+      "code": 6376,
       "name": "insufficientCrankReservoir",
       "msg": "CLOB crank condition account cannot cover the keeper payment"
     },
     {
-      "code": 6371,
+      "code": 6377,
       "name": "orderPlacedOnClob",
       "msg": "Order is placed on the CLOB; cancel it there (cancel_clob_order)"
     },
     {
-      "code": 6372,
+      "code": 6378,
       "name": "orderAwaitingTriggerRecross",
       "msg": "Trigger is awaiting a price recross after eviction"
     },
     {
-      "code": 6373,
+      "code": 6379,
       "name": "crossMatchImbalanced",
       "msg": "Cross match legs are imbalanced"
     },
     {
-      "code": 6374,
+      "code": 6380,
       "name": "crossMatchUnprofitable",
       "msg": "Cross match is not profitable after fees"
     },
     {
-      "code": 6375,
+      "code": 6381,
       "name": "unattestedFastActivation",
       "msg": "Faster-than-default activation requires the flow-authority attestation"
     },
     {
-      "code": 6376,
+      "code": 6382,
       "name": "invalidQuoterResponse",
       "msg": "Quoter returned a malformed quote/execute response"
     },
     {
-      "code": 6377,
+      "code": 6383,
       "name": "quoterOverfilled",
       "msg": "Quoter filled more base than the router allocated to it"
     },
     {
-      "code": 6378,
+      "code": 6384,
       "name": "quoterFillOffQuote",
       "msg": "Quoter filled at a price its quote does not support"
     },
     {
-      "code": 6379,
+      "code": 6385,
       "name": "quoterSubjectNotPermitted",
       "msg": "Quoter returned a balance change for a user it may not act against"
     },
     {
-      "code": 6380,
+      "code": 6386,
       "name": "tooManyQuoterWireUsers",
       "msg": "More loaded users than the quoter wire can carry"
     },
     {
-      "code": 6381,
+      "code": 6387,
       "name": "signedRouteMismatch",
       "msg": "Claimed route does not match the one the order was signed with"
     },
     {
-      "code": 6382,
+      "code": 6388,
       "name": "signedRouteEntryMissing",
       "msg": "A quoter the order's signed route names is absent from the fill"
     },
     {
-      "code": 6383,
+      "code": 6389,
       "name": "crossedTakerRemainderPending",
       "msg": "A crossed taker remainder must be resolved by crank_taker_origin_cross"
     },
     {
-      "code": 6384,
+      "code": 6390,
       "name": "noTakerOriginCross",
       "msg": "No resolvable taker-origin cross on this book"
     },
     {
-      "code": 6385,
+      "code": 6391,
       "name": "takerOriginCrossWorseForTaker",
       "msg": "Crossing would leave the taker worse off than its resting price"
     }
@@ -22044,17 +22569,21 @@ export type Velocity = {
           {
             "name": "ammProtocolFeesReceived",
             "docs": [
-              "cumulative fee provision granted to the AMM via `amm_fee_numerator` —",
-              "its backstop-of-last-resort tranche, drawable (and decremented) only in",
-              "bankruptcy. The AMM's own spread/trading capital beyond this provision",
-              "is never tapped. precision: QUOTE_PRECISION"
+              "cumulative fee provision granted to the AMM via `amm_fee_numerator`,",
+              "plus the vAMM maker rebate when `FeatureBitFlags::VammMakerRebate` is",
+              "enabled — its backstop-of-last-resort tranche, drawable (and",
+              "decremented) only in bankruptcy. Enabling the rebate bit therefore",
+              "grows the bankruptcy clawback cap by the rebates earned. The AMM's own",
+              "spread/trading capital beyond this provision is never tapped.",
+              "precision: QUOTE_PRECISION"
             ],
             "type": "u128"
           },
           {
             "name": "pendingAmmProvision",
             "docs": [
-              "AMM fee provision accrued at fill (already booked into the AMM's",
+              "AMM fee provision (including the vAMM maker rebate when enabled)",
+              "accrued at fill (already booked into the AMM's",
               "`total_fee_minus_distributions`) but not yet tokenized into",
               "`amm.fee_pool` by the sweep. Invariant: `<= amm_protocol_fees_received`.",
               "precision: QUOTE_PRECISION"
@@ -22103,7 +22632,8 @@ export type Velocity = {
               "Share of the trade-fee *remainder* (taker fee after maker rebate, referral,",
               "referee discount, and filler reward are taken off the top) provisioned to",
               "the AMM as liquidity (its backstop-of-last-resort tranche, tracked in",
-              "`PerpMarket.fee_ledger.amm_protocol_fees_received`). precision:",
+              "`PerpMarket.fee_ledger.amm_protocol_fees_received` alongside the vAMM",
+              "maker rebate when that feature is enabled). precision:",
               "FEE_PERCENTAGE_DENOMINATOR. `amm_fee_numerator + if_fee_numerator` must",
               "be <= FEE_PERCENTAGE_DENOMINATOR; the protocol receives the residual",
               "(`remainder − amm − if`) into its withdrawable `protocol_fee_pool`.",
@@ -22648,7 +23178,9 @@ export type Velocity = {
               "Fraction of spot deposit-interest gains carved out to the insurance fund",
               "(staker-owned). precision: IF_FACTOR_PRECISION. (Was `total_factor`; the",
               "protocol-vs-staker split was removed — the IF is now 100% staker-owned,",
-              "so this is purely the staker IF carveout.)"
+              "so this is purely the staker IF carveout.) A cut too small to reach a",
+              "whole unit is carried on `revenue_pool`, not floored away. See",
+              "`split_deposit_interest`."
             ],
             "type": "u32"
           },
@@ -25448,11 +25980,28 @@ export type Velocity = {
             "type": "u32"
           },
           {
+            "name": "takerFeeAddonTenthBps",
+            "docs": [
+              "Additive per-market taker-fee surcharge in tenth-bps (10 = 1bp),",
+              "unsigned: surcharge only (e.g. toxic-flow markets), never a discount.",
+              "A discount could push the taker fee below the maker rebate it must",
+              "fund and revert every match fill; promo discounts go through",
+              "`State.promo_fee_tier` instead. Applied on top of the tier fee before",
+              "`fee_adjustment` scales the sum:",
+              "`taker_fee = (tier_fee + add-on) * (1 +/- fee_adjustment%)`.",
+              "Taker fee only; the maker rebate and the post-only path see",
+              "`fee_adjustment` alone. Occupies 2 bytes of the former 4-byte",
+              "`_padding_buffer` (same offset/alignment on all targets), so existing",
+              "accounts read 0 = no add-on until the admin sets it."
+            ],
+            "type": "u16"
+          },
+          {
             "name": "paddingBuffer",
             "type": {
               "array": [
                 "u8",
-                4
+                2
               ]
             }
           },
@@ -25762,17 +26311,48 @@ export type Velocity = {
             "type": "i16"
           },
           {
+            "name": "pendingBankruptcyClaims",
+            "docs": [
+              "Number of unresolved bankrupt quote debts booked against this market.",
+              "A liquidation that latches a user bankrupt increments it. Both writers",
+              "of `PerpPosition.quote_asset_amount` decrement it when that debt",
+              "reaches zero: `update_quote_asset_amount` and",
+              "`update_position_and_market`. The count tracks the debt, not the latch:",
+              "an un-latched estate that still owes the market stays booked, because",
+              "the debt still resolves through the bankruptcy waterfall.",
+              "",
+              "While it is above zero the fee sweep withholds the whole",
+              "`pending_if_fee`, not just `get_bankruptcy_if_floor()` — the sweep is",
+              "permissionless, so a caller could otherwise drain the first-loss",
+              "tranche between the latch and the resolution and push the loss onto the",
+              "shared insurance fund or into socialization. The freeze is independent",
+              "of open interest and of `bankruptcy_if_floor_pct`, both of which can be",
+              "zero exactly when a bankruptcy is pending.",
+              "",
+              "Occupies 2 of the 6 bytes the Rust compiler inserts to 8-align",
+              "`last_fill_price`. The remaining 4 stay explicit padding, so every",
+              "later byte offset and the account size are unchanged and existing",
+              "accounts read 0 (no pending claim).",
+              "",
+              "`settle_expired_market_pools_to_revenue_pool` rejects while this count",
+              "is above zero, because that instruction's final sweep bypasses the",
+              "floor."
+            ],
+            "type": "u16"
+          },
+          {
             "name": "paddingAlignLfp",
             "docs": [
-              "Explicit padding so the IDL records the 6 bytes the Rust compiler",
-              "inserts to 8-align `last_fill_price`. Without this the JS borsh",
+              "Explicit padding so the IDL records the 4 bytes the Rust compiler",
+              "still inserts to 8-align `last_fill_price`. Without this the JS borsh",
               "decoder (which reads sequentially after the variable-span enum",
-              "`status`) reads every field past `fee_adjustment` 6 bytes early."
+              "`status`) reads every field past `pending_bankruptcy_claims` 4 bytes",
+              "early."
             ],
             "type": {
               "array": [
                 "u8",
-                6
+                4
               ]
             }
           },
@@ -25826,7 +26406,13 @@ export type Velocity = {
           {
             "name": "oracleSlotDelayOverride",
             "docs": [
-              "override for the per-fill slot delay required from the oracle (default -1 = use state default)"
+              "Max oracle delay, in slots, tolerated by immediate (JIT / auction-skipping)",
+              "AMM fills. Positive is an explicit threshold. `0` disables immediate AMM",
+              "fills entirely. Negative (the init default, `-1`) means unset, which",
+              "resolves by price source: `MM_ORACLE_MIN_SLOT_GAP` for an MM-oracle-sourced",
+              "price (the tightest window the crank can satisfy, since the program refuses",
+              "MM-oracle writes closer together than that) and `0` for an exchange-oracle",
+              "price, which can be same-slot fresh. See `math::oracle::oracle_validity`."
             ],
             "type": "i8"
           },
@@ -25842,16 +26428,26 @@ export type Velocity = {
             "name": "bankruptcyIfFloorPct",
             "docs": [
               "Floor on the unswept IF-fee carveout, as a percentage of open-interest",
-              "notional (PERCENTAGE_PRECISION; 0 disables). The fee sweep's IF drain",
-              "leaves `pending_if_fee` at (at least) this floor, so a standing",
-              "first-loss tranche is always available to `resolve_perp_bankruptcy` —",
-              "a permissionless sweep (or the inline sweep on any pnl settle) cannot",
-              "drain the tranche below it ahead of a bankruptcy resolution. Notional",
-              "is valued at the market's own oracle TWAP so a manipulated spot print",
-              "can't crush the floor. Occupies the former 4-byte trailing padding",
-              "before `market_stats` (same offset/alignment on all targets), so",
-              "existing accounts read 0 = disabled until the admin sets it;",
-              "new markets initialize to `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`."
+              "notional (PERCENTAGE_PRECISION). The fee sweep's IF drain leaves",
+              "`pending_if_fee` at (at least) this floor, so a standing first-loss",
+              "tranche is available to `resolve_perp_bankruptcy` before any user is",
+              "latched bankrupt — a permissionless sweep (or the inline sweep on any",
+              "pnl settle) cannot drain the tranche below it. Notional is valued at",
+              "the market's own oracle TWAP so a manipulated spot print can't crush",
+              "the floor.",
+              "",
+              "`0` means `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`, so every market created",
+              "before the field existed carries the standing tranche without an admin",
+              "call. `BANKRUPTCY_IF_FLOOR_DISABLED` turns the floor off. Read it",
+              "through `get_bankruptcy_if_floor_pct`, never directly.",
+              "",
+              "The floor sizes the tranche off market risk, which is a proxy for the",
+              "loss and can be smaller than it. `pending_bankruptcy_claims` covers",
+              "every latched bankruptcy exactly, by withholding all of",
+              "`pending_if_fee` until it resolves.",
+              "",
+              "Occupies the former 4-byte trailing padding before `market_stats`",
+              "(same offset/alignment on all targets)."
             ],
             "type": "u32"
           },
@@ -26172,12 +26768,72 @@ export type Velocity = {
           },
           {
             "name": "padding",
+            "docs": [
+              "Filler for the alignment gap before the two dust fields. Those fields must",
+              "start at offsets 20 and 24. The host layout and the SBF layout then agree,",
+              "and the packed borsh layout in the IDL reaches the same offsets. This",
+              "field shrank from 14 bytes to 2. The size of the struct and every other",
+              "field offset are unchanged. Do not reorder or resize these fields."
+            ],
             "type": {
               "array": [
                 "u8",
-                14
+                2
               ]
             }
+          },
+          {
+            "name": "pendingInterestSplitDust",
+            "docs": [
+              "Remainder of one index-space division that splits a spot market's deposit",
+              "interest between lenders and the carveout pools. The accrual carries the",
+              "remainder between intervals. A share too small to reach a whole index unit",
+              "is therefore delayed and not lost.",
+              "",
+              "The division depends on the pool. See `split_deposit_interest`.",
+              "",
+              "- On `revenue_pool` this is the lenders-vs-carveouts split. The divisor",
+              "is IF_FACTOR_PRECISION, so the value stays below IF_FACTOR_PRECISION.",
+              "- On `protocol_fee_pool` this is the insurance-fund-vs-protocol split of",
+              "the withheld amount. The divisor is",
+              "`if_fee_factor + protocol_fee_factor`, so the value stays below it. The",
+              "admin can lower that pair, which leaves a stored value at or above the",
+              "new divisor. `split_deposit_interest` reduces the value it reads below",
+              "the divisor in force, so a change of the factors costs less than one",
+              "index unit and cannot strand the market.",
+              "",
+              "That order keeps the two carveouts from taking more than the interval",
+              "gain. The first division bounds the total. The second division only",
+              "divides the amount that the first division set aside. Two independent cuts",
+              "can instead each round up and leave lenders at zero.",
+              "",
+              "precision: the numerator units of its division."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "pendingInterestDust",
+            "docs": [
+              "Remainder of the token-space division for this pool's carveout.",
+              "",
+              "A withheld index amount reaches the pool only as whole tokens, through",
+              "`deposit_balance * cut / 10^(19 - decimals)`. On a small market that",
+              "division floors to zero even when the index-space cut is not zero. Lenders",
+              "have already given up the value at that point, so a floored cut credits",
+              "nobody and leaves unattributed slack in the vault. The accrual parks the",
+              "remainder here and adds it back on the next interval.",
+              "",
+              "precision: token * 10^(19 - decimals). The value always stays below one",
+              "token, which is `10^(19 - decimals)` and at most 10^19. It therefore fits",
+              "a u64 for every supported value of `decimals`.",
+              "",
+              "Only the two lending carveout pools use these two fields. Those pools are",
+              "a spot market's `revenue_pool` and `protocol_fee_pool`. Both fields stay 0",
+              "on every other `PoolBalance`, such as a perp market's `pnl_pool` and",
+              "`fee_pool`. Both fields read 0 on markets created before the fields",
+              "existed, which is the correct starting value."
+            ],
+            "type": "u64"
           }
         ]
       }
@@ -28571,7 +29227,9 @@ export type Velocity = {
             "name": "protocolFeeFactor",
             "docs": [
               "Protocol's carveout of lending deposit-interest gains, routed to",
-              "`protocol_fee_pool`. precision: IF_FACTOR_PRECISION"
+              "`protocol_fee_pool`. precision: IF_FACTOR_PRECISION. A cut too small to",
+              "reach a whole unit is carried on the carveout pools, not floored away. See",
+              "`split_deposit_interest`."
             ],
             "type": "u32"
           },
@@ -28996,6 +29654,18 @@ export type Velocity = {
             "type": "pubkey"
           },
           {
+            "name": "promoFeeTier",
+            "docs": [
+              "Promotional fee-tier floor applied to every account: the effective",
+              "perp fee tier is `max(volume tier, promo_fee_tier)` (clamped to the",
+              "configured tier count), so nobody is downgraded by it. 0 = no-op",
+              "(disabled), also what pre-upgrade accounts read from former padding.",
+              "Reset to 0 and every account is back on its volume tier at its next",
+              "fill; no per-user state."
+            ],
+            "type": "u8"
+          },
+          {
             "name": "hotFlowAuthority",
             "docs": [
               "The retail-flow attestation key (swift's). Not a signer of any admin",
@@ -29013,7 +29683,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                207
+                206
               ]
             }
           }

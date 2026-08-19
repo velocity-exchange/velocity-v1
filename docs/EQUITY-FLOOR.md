@@ -3,12 +3,16 @@
 How the equity floor on delegated accounts works: what it enforces, what happens when it trips, and
 how to move funds between subaccounts without tripping it.
 
-This applies to accounts that Velocity creates and funds under its own authority, with the borrowing
-maker's trading key set as the `delegate` on each subaccount. The loan is deposited in USDT across
-one or more subaccounts, and each subaccount carries an `equity_floor`: a minimum account equity,
-denominated in USDT, that the subaccount must stay above. Velocity sets the floors when the accounts
-are funded; the standard arrangement is 70% of the loan amount, i.e. a maximum loss of 30% of the
-loan. On a 1,000,000 USDT loan, the floors across the subaccounts sum to 700,000 USDT.
+This applies to accounts that Velocity creates and funds under its own authority, with an external
+operator's trading key set as the `delegate` on each subaccount. The funds are deposited in USDT
+across one or more subaccounts, and each subaccount carries an `equity_floor`: a minimum account
+equity, denominated in USDT, that the subaccount must stay above. Velocity sets the floors when the
+accounts are funded; the standard configuration sets the floors at 70% of the funded amount, i.e. a
+protection target of at most 30% drawdown. On 1,000,000 USDT of funded capital, the floors across
+the subaccounts sum to 700,000 USDT. The 30% figure is a target the mechanisms below enforce, not a
+synchronous onchain cap; see
+[Timing and what the breaker does not guarantee](#timing-and-what-the-breaker-does-not-guarantee)
+for the exact loss model.
 
 Each subaccount also carries an `equity_floor_buffer`: required headroom above the floor. The floor
 itself is the trip threshold of the breaker; every risk-increasing action must clear the higher line
@@ -21,10 +25,62 @@ unrealized PnL, minus unweighted spot liability value, all at live oracle prices
 `calculate_user_equity`; the SDK mirror is `User.getNetUsdValue()`). This is what the account is
 actually worth, not the weighted margin numerator: borrows subtract their full value, deposits and
 PnL count unweighted and unclamped. Every floor check and the breaker trip use this one metric.
+Spot balances and funding are valued as of their markets' last accrual: interest or funding
+accrued since then is not applied inside the walk, the same staleness the margin engine carries,
+bounded by the permissionless interest and funding cranks.
 Floor and buffer are stored on the `User` account in `QUOTE_PRECISION` (1e6), so a 700,000 USDT
 floor is `700_000_000_000`. A floor of `0` disables both checks. Only Velocity's admin can set or
 change the floor and buffer; what the delegate controls is how the floor is split across subaccounts
 (see [Moving funds between subaccounts](#moving-funds-between-subaccounts)).
+
+When an oracle a position depends on is invalid (stale, too volatile, too uncertain), the checks
+stop trusting the equity value entirely and fail closed in the direction of the decision being
+made. A value derived from an invalid price is not bounded by anything: the live price and its own
+5-minute TWAP can share the same stale value, so no stored price can bracket the true one. Every
+gate that authorizes an action (withdrawals, risk-increasing placement and fills, transfers out,
+trigger-order activation, liquidator admission) rejects with `InvalidOracle` while any oracle the
+subaccount's positions depend on is invalid, and with `EquityBelowFloor` when a fully valid value
+sits below `floor + buffer`; a bad price can never authorize an action through the floor. On the
+maker side the rejection is resolved before matching: a floored maker with any invalid oracle has
+its risk-increasing orders pruned from the maker set (its provably reducing orders stay
+matchable), so the maker is unmatchable for new risk during the incident instead of failing the
+taker's transaction. A rejected trigger likewise leaves the resting order in place, so it
+activates normally once the feed recovers; only a trusted value below the floor cancels it. The
+force-cancel path fails closed the other way: being below the raw floor counts as grounds only
+when every oracle is valid and the trusted value sits below it, so a bad price can never make an
+account look breached to a keeper. The standalone lifecycle instructions apply the same rule: the
+reset, cure transfers, and floor-moving transfers all reject with `InvalidOracle` while any
+relevant oracle is invalid, and resume when the feed recovers. A market in settlement is valued
+at its expiry price, so its oracle is exempt from all of these validity requirements.
+
+The breaker trip is the one exception, because for the trip an all-or-nothing validity requirement
+fails open: a worthless position in a market whose oracle happens to be invalid would veto the
+only authority-wide safety transition, however deep and however provable the breach on the rest of
+the portfolio. The trip therefore uses its own walk. Positions with valid oracles are valued at
+live prices exactly as everywhere else. A position with an invalid oracle is never priced; it is
+conceded the most favorable value the trip is willing to grant. A spot liability or a short perp
+base leg counts as zero at any size, because it can only lower equity at any price. An asset or
+long base leg worth no more than the dust allowance ($100,
+`EQUITY_FLOOR_TRIP_DUST_ALLOWANCE`) at its own last twap counts as exactly the allowance; a
+larger asset or long, or one whose twap is not positive and so cannot size it, keeps the trip
+blocked with `InvalidOracle`, exactly as before. The zero concessions are sound at any price. The
+allowance concession is sound as far as the twap sizes the position honestly: a live price far
+above a stalled twap can let a leg worth more than the allowance pass as dust, and that
+understatement is bounded by the allowance's scale, not by the bad print. The concessions can add
+at most the allowance per position slot, so dust parked in dead-oracle markets cannot keep a
+material breach untrippable. The residual untrippable region is a breach smaller than the total
+conceded allowance, which the buffer absorbs by design. Deposits that create new positions are
+deliberately not gated by this: the concession makes the trip indifferent to how a dust position
+got there, so restricting deposits (a rescue path for a breached account) would buy nothing.
+
+The lazy breaker trip decides with the same predicate as the permissionless trip, and because it
+must not fail its host instruction it silently skips where the trip rejects. During an oracle
+outage a subaccount whose breach is unprovable (a material asset or long with an invalid oracle)
+stays untripped until the feed recovers, at which point the next touch (or the permissionless
+trip) arms the breaker. The exposure in that window is limited: the fail-closed gates reject
+everything risk-increasing while any oracle is invalid, and DLOB match fills carry their own
+oracle-validity rule (`FillOrderMatch`), so an oracle the program cannot do margin with blocks
+match execution the same way the AMM's fill gates block AMM execution.
 
 ## What it enforces day to day
 
@@ -58,13 +114,31 @@ the floor itself.
 The checks above only apply to actions. Equity can also fall below the floor through trading
 losses; the breaker covers that case.
 
-`tripEquityFloorBreaker` is a permissionless instruction: any keeper can call it against a
-subaccount, and the onchain proof is a net-equity calculation showing that subaccount's equity is
-below its floor (not the buffered line: the buffer gates actions, the floor arms the breaker). The
-trip additionally requires every oracle the subaccount's positions depend on to be valid, and
-rejects with `InvalidOracle` otherwise, so an authority-wide freeze can never be armed off a stale
-or degraded price. Velocity runs a guard bot that watches every floored account, so once any
-subaccount drops below its floor, expect the breaker to be tripped within seconds.
+The breaker arms in two ways, both against the same proof: a net-equity upper bound showing the
+subaccount's equity is below its raw floor (not the buffered line: the buffer gates actions, the
+floor arms the breaker). Positions with valid oracles are valued at live prices; invalid-oracle
+positions are conceded their most favorable value rather than blocking the proof, and a material
+invalid-oracle asset or long blocks it (see the oracle-validity section above), so an
+authority-wide freeze can never be armed off a stale or degraded price.
+
+1. **Lazily, on touch.** The actions that are allowed to run while a subaccount sits below its raw
+   floor set the flag inline as a side effect of succeeding: a reducing perp fill (whether the
+   subaccount is taker or maker), a strictly reducing swap, and a trigger order cancelled by the
+   below-floor check. A below-floor subaccount with resting reduce-side orders is therefore
+   frozen by the first counterparty fill against them, with no keeper involved; a delegate closing
+   the losing position freezes the authority in that same transaction. The check costs nothing on
+   subaccounts without a floor and is skipped once the breaker is set.
+2. **By the permissionless `tripEquityFloorBreaker` instruction.** Any keeper can call it against a
+   subaccount (it rejects with `InvalidOracle` when an invalid-oracle asset or long past the dust
+   allowance makes the breach unprovable, and with `SufficientCollateral` when the equity upper
+   bound is not below the floor). Velocity runs a guard bot
+   that watches every floored account and sends this trip; under normal operation expect it to
+   land within seconds of a breach, subject to RPC health and transaction inclusion. Because the
+   instruction is permissionless, the guard bot is a backstop, not a single point of failure: any
+   third party can trip a breached account.
+
+The lazy path covers every actively traded account; the keeper path covers the remaining case of a
+subaccount that breaches its floor and then sees no transactions at all.
 
 Tripping sets the `equityBreakerTripped` flag on the authority's `UserStats` account. This flag is
 authority-wide: it freezes every subaccount under the authority, not just the one that breached.
@@ -73,21 +147,84 @@ While it is set, all subaccounts reject:
 - risk-increasing fills (both as taker and as maker; resting risk-increasing trigger orders are
   cancelled instead of triggered, and the triggering keeper is paid no reward on that cancel),
 - withdrawals,
-- transfers out (deposit transfers, perp position transfers, pool transfers),
+- transfers out (deposit transfers, perp position transfers, pool transfers), except the cure
+  transfer described below,
 - swaps, except the price-bounded strictly reducing swap described above, which stays available so
   a frozen account can still repay a borrow out of its own deposits,
-- acting as the liquidator in position-acquiring liquidations.
+- acting as the liquidator in position-acquiring liquidations, and in swap-backed spot
+  liquidations (`liquidate_spot_with_swap`), where the tokens flow through the authority's wallet
+  but the liquidation fee is the same value capture the freeze exists to stop.
 
 Reduce-only activity remains allowed: the delegate can still close positions, cancel orders,
 deposit, and settle PnL. The accounts are not liquidated or seized.
+
+A frozen authority can also cure the breach itself, from internal surplus. A **cure transfer** is a
+funds-only `transferDepositByDelegate` (zero floor delta) into a subaccount whose equity is below
+its buffered floor; it stays allowed under the breaker. Eligibility is verified with the same
+oracle-validity requirement the trip and the reset use (`InvalidOracle` otherwise), so it cannot be
+decided off a stale or degraded price. The debited side must still clear its own
+`floor + buffer` after the funds leave, so a cure can never create a new breach, and once the
+credited side clears its buffered floor the exemption closes again. Partial cures compose: several
+subaccounts can each contribute what they have to spare. The SDK plans this:
+`manager.planCureTransfers()` returns the fund-only transfers that top every breached subaccount up
+to just above its gate out of the others' spare equity (deepest breach first, donors drawn down no
+further than just above their own gate), and `manager.cureBreaches()` submits them. Curing does not
+clear the flag; it makes the reset safe to grant, since no subaccount is left below its floor for a
+keeper to re-trip against.
 
 The flag does not clear itself, even if equity recovers above the floor. Only Velocity's warm admin
 can clear it, via `resetEquityFloorBreaker`, after a human has reviewed why it fired. If the
 breaker trips, contact Velocity.
 
+The reset is itself verified onchain: the instruction carries every live subaccount of the
+authority (the count is pinned to `UserStats.number_of_sub_accounts`, so none can be omitted or
+passed twice) together with their markets and oracles, and it reverts with
+`InvalidEquityBreakerReset` (6368) unless every floored subaccount shows net equity at or above its
+`floor + buffer` with all oracles valid at execution time. An approval that has gone stale, because
+a subaccount drifted back into breach after it was reviewed, fails instead of unfreezing a breached
+authority; the trip and the reset both prove their condition onchain. The reset's validity
+requirement stays all-or-nothing and does not share the trip's dust concession: the reset proves
+equity above the line, the direction in which conceding value to an unpriceable position would be
+unsound, so a dead oracle on even a dust position blocks the reset until the feed recovers. When
+resumption is the business decision even though equity does not clear the floors, or a dead dust
+oracle is blocking the reset, the admin lowers the floors first (`updateUserEquityFloor`),
+explicitly and auditably, and then resets.
+
 Because every permitted action leaves equity at or above `floor + buffer`, the breaker can only be
 armed by losses eating through the buffer. The delegate cannot trade, withdraw, or transfer a
 subaccount into a trippable state; the onchain checks reject the attempt instead.
+
+## Timing and what the breaker does not guarantee
+
+The per-subaccount gates are synchronous: an action that would breach the buffered floor reverts in
+the transaction that attempts it. The authority-wide breaker is not: a subaccount can fall below
+its raw floor through passive losses (funding, mark moves) without any transaction running, and a
+program only executes inside a transaction, so the flag is set by the next qualifying transaction
+to touch the chain, not at the moment of the breach. Between the breach and that transaction:
+
+- The breached subaccount itself is already restricted to reduce-only activity by its own gate.
+- Sibling subaccounts are not yet frozen. Each is still bounded by its own `floor + buffer` gate
+  and its own margin requirements, so the additional exposure they can add in the window is capped
+  by their own headroom, but it is not zero.
+- The window closes at the first touch on the breached subaccount (a counterparty fill against its
+  resting reduce-side orders, the delegate reducing, a keeper trigger) or at the guard bot's trip,
+  whichever lands first. For an account with resting orders or any activity this is typically the
+  next fill; for a fully idle account it is the guard bot's latency, and if the bot is down, until
+  any third party trips it.
+
+Two more things the breaker does not do:
+
+- It does not close positions. A frozen account keeps its open positions, and passive losses can
+  continue after the flag is set. Winding down is operational: Velocity's runbook uses the
+  reduce-only `user close-positions` flow, which works while frozen.
+- It does not restore equity. The floors bound losses via the gates, the trips, and the wind-down
+  procedure together; losses incurred in the window between breach and wind-down sit on the
+  account like any trading loss.
+
+The 70% floor configuration should therefore be read as: no delegate action can take a subaccount
+below its buffered floor (synchronous), any breach freezes the authority at the next touch or trip
+(asynchronous, typically fast), and the remaining exposure is passive market movement between the
+breach and the completed wind-down.
 
 ## Moving funds between subaccounts
 
@@ -111,6 +248,7 @@ manager.getStatus(); // aggregate + per-subaccount equity, floor, buffer, headro
 manager.getMaxWithdrawable(subAccountId); // most that can leave to the outside
 manager.getMaxQuoteTransferable(from, to); // most that can move between subaccounts
 await manager.rebalanceFloors(); // re-split the floor to match where the equity sits
+await manager.cureBreaches(); // top breached subaccounts back up from the others' surplus
 ```
 
 `rebalanceFloors` computes a proportional-to-equity floor split and applies it with zero-amount
@@ -220,8 +358,8 @@ back it.
 
 ## A worked session
 
-A concrete run-through, on a 1,000,000 USDT loan split across two subaccounts, with each call
-paired to the math the program actually executes. Floors sum to 700,000 (the 70% arrangement) and
+A concrete run-through, on 1,000,000 USDT funded across two subaccounts, with each call
+paired to the math the program actually executes. Floors sum to 700,000 (the 70% configuration) and
 each subaccount carries a 10,000 buffer. "Gate" below means `floor + buffer`, the line
 risk-increasing actions must clear.
 
@@ -344,11 +482,12 @@ All of the checks above enforce one rule:
 
 The program pins the sums (only the transfer instruction can move floor and buffer between
 subaccounts, and it conserves both; only Velocity's admin can change the totals), and checks net
-equity against the buffered floor per subaccount on every risk-increasing action. The aggregate consequence is that total equity
-across the subaccounts always covers the agreed total floor, e.g. 70% of the loan, with the buffers
-as working margin on top.
+equity against the buffered floor per subaccount on every risk-increasing action. The aggregate
+consequence is that no permitted action can leave total equity across the subaccounts below the
+agreed total floor, e.g. 70% of the funded amount, with the buffers as working margin on top; passive losses
+past a floor are handled by the breaker, on the timing described above.
 
-As long as the rule holds, the delegate can split the loan across subaccounts and move funds and
+As long as the rule holds, the delegate can split the funds across subaccounts and move funds and
 floor between them freely. If losses push any subaccount below its floor, the breaker trips and all
 subaccounts become reduce-only until a Velocity admin resets the flag.
 
@@ -360,7 +499,8 @@ same metric the program uses:
 | Helper                                    | What it reports                                                                |
 | ----------------------------------------- | ------------------------------------------------------------------------------ |
 | `user.getNetUsdValue()`                   | Net equity: the value every floor check compares against                       |
-| `user.isBelowEquityFloor()`               | `true` when net equity is below the floor (trip condition)                     |
+| `user.isBelowEquityFloor()`               | `true` when net equity is below the floor (point value)                        |
+| `user.provesEquityFloorBreach(slot)`      | `true` when the onchain trip would fire (concession walk, `getTripNetEquity`) |
 | `user.isBelowBufferedEquityFloor()`       | `true` when net equity is below floor + buffer (actions rejecting)             |
 | `user.getBufferedEquityFloor()`           | `floor + buffer`: the line risk-increasing actions must clear                  |
 | `user.getEquityAboveFloor()`              | Headroom above the trip threshold; `null` when no floor is set                 |
@@ -371,7 +511,10 @@ same metric the program uses:
 Alerts should fire while a subaccount is still `warning` (inside two buffers of the floor);
 `critical` means risk-increasing actions are already rejecting, and `breached` means the breaker
 can fire at any moment. The breaker is permissionless, so Velocity's guard bot is not the only
-party that can call it.
+party that can call it. The guard bot attempts the trip on either signal, the point-value
+`breached` level or `provesEquityFloorBreach`: the point value prices every position at the live
+oracle with no validity check, so an invalid oracle printing high can hide a breach the
+concession walk still proves. A keeper of its own should do the same.
 
 ## Using from Rust
 
@@ -428,7 +571,8 @@ to `transfer_deposit_by_delegate` directly and applies its own haircut when land
 The program is the only layer that enforces anything. Floor and buffer live on each `User`
 account and every risk-increasing instruction checks equity against `floor + buffer` on the
 subaccount it is already operating on; the authority-wide part is a single flag on `UserStats`,
-set by the permissionless trip and cleared only by the warm admin. The SDKs mirror those checks
+set lazily by the exempt paths themselves or by the permissionless trip, and cleared only by the
+warm admin. The SDKs mirror those checks
 rather than adding rules of their own, and every consumer that reports a level (the manager, the
 guard bot, the CLI) uses the same classifier.
 
@@ -437,10 +581,15 @@ Lifecycle:
 1. Velocity funds the subaccounts and sets floors and buffers (`user set-equity-floor`).
 2. The delegate trades and rebalances freely; every action is gated at `floor + buffer`.
 3. The guard bot watches headroom and alerts on `warning` and `critical`.
-4. If losses cross a floor, the breaker trips and every subaccount goes reduce-only.
-5. Velocity inspects (`user equity-floor-status`), winds down if needed (`user close-positions`,
+4. If losses cross a floor, the breaker trips (at the first touch on the breached subaccount, or
+   at the guard bot's trip, whichever lands first) and every subaccount goes reduce-only.
+5. The delegate cures the breach while frozen: deposits, or cure transfers from sibling
+   subaccounts' surplus (`manager.cureBreaches()`).
+6. Velocity inspects (`user equity-floor-status`), winds down if needed (`user close-positions`,
    reduce-only, so it works while frozen), and clears the flag after review
-   (`user reset-equity-breaker`).
+   (`user reset-equity-breaker`). The reset proves onchain that every subaccount clears its
+   `floor + buffer` and reverts otherwise, so a stale approval cannot unfreeze a breached
+   authority.
 
 ## Quick reference
 
@@ -449,10 +598,11 @@ Lifecycle:
 | `updateUserEquityFloor`     | Velocity admin      | Sets a subaccount's floor and buffer (changes the totals)              |
 | `transferDepositByDelegate` | The delegate        | Moves funds and floor between subaccounts, conserving the floor sum    |
 | `tripEquityFloorBreaker`    | Anyone              | Proves one subaccount is below its floor, freezes the whole authority  |
-| `resetEquityFloorBreaker`   | Velocity warm admin | Clears the breaker after review                                        |
+| `resetEquityFloorBreaker`   | Velocity warm admin | Proves every subaccount clears floor + buffer, then clears the breaker |
 
 | Error                        | Code | Meaning                                                                       |
 | ---------------------------- | ---- | ----------------------------------------------------------------------------- |
 | `EquityBelowFloor`           | 6358 | A risk-increasing action was blocked at floor + buffer, or the breaker is set |
 | `InvalidEquityFloorTransfer` | 6359 | A floor transfer broke one of the three transfer rules                        |
 | `InvalidSwap`                | 6248 | Among other swap failures: a strictly reducing swap under floor protection breached the 1% oracle value bound |
+| `InvalidEquityBreakerReset`  | 6368 | A breaker reset was refused: a subaccount is below its floor + buffer, or the subaccount set was incomplete |

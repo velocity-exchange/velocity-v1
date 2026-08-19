@@ -82,6 +82,85 @@ import { VelocityCore } from './core/VelocityCore';
 const SPOT_DLOB_TRADING_DISABLED_MSG =
 	'Spot DLOB trading is disabled; spot balances, deposits, and swaps remain available.';
 
+/**
+ * One market's entry in an `updateMmOracleBatchNative` call. `marketIndex` is written into the
+ * instruction payload as well as selecting the account, and the program rejects the instruction if
+ * the two disagree.
+ */
+export type MmOracleBatchUpdate = {
+	marketIndex: number;
+	/** New MM oracle price, PRICE_PRECISION (1e6). Must be positive. */
+	oraclePrice: BN;
+	/** Monotonically increasing sequence id for this market's MM oracle. */
+	oracleSequenceId: BN;
+	/**
+	 * Slot the price was observed at. The program skips the entry when the
+	 * landing slot is more than `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` away from this
+	 * in either direction: behind, so a late-landing transaction cannot make an
+	 * old observation read as fresh; ahead, so a wrong-unit value cannot
+	 * silently disable the check.
+	 */
+	oracleSourceSlot: BN;
+};
+
+/**
+ * Maximum markets per `updateMmOracleBatchNative` call, mirroring the program's
+ * `MM_ORACLE_BATCH_MAX_MARKETS`. Not reachable in practice: the transaction packet size and the
+ * runtime's 64 account-lock ceiling both bind well before this does.
+ */
+export const MM_ORACLE_BATCH_MAX_MARKETS = 64;
+
+/** Bytes per batch payload entry: `u16` market index + `i64` price + `u64` sequence id + `u64` source slot. */
+const MM_ORACLE_BATCH_ENTRY_LEN = 26;
+
+// Default compute budget for `updateMmOracleBatchNative`. `bun run bench:native-cu`
+// decomposes the handler into: a ~1109 CU fixed authentication prologue, ~518 CU
+// per accepted market, ~460 CU per skipped market, and ~453 CU for the reject-mask
+// log, which is emitted at most once and only when something was skipped. The
+// prologue being charged once instead of once per market is the whole reason
+// batching pays.
+//
+// The worst case is a *partially* rejected batch (~1504 + 518n): it pays for the
+// writes and the log. All-accepted is cheaper (no log, 3181 CU at 4 markets) and
+// all-rejected is cheaper still (no writes, 3402 CU), so neither bounds the
+// budget. Measured 4-market figures: 3181 accepted, 3402 rejected, 3576 mixed.
+//
+// Rounded up from the mixed case for ~31% headroom, which also covers the
+// ComputeBudget instructions' own 150 CU and the hot-key compare the bench build
+// compiles out. Priority fee is charged on the requested limit rather than on
+// consumption, so a cranker at production cadence should pass its own measured
+// `txParams.computeUnits` rather than rely on this.
+const MM_ORACLE_BATCH_BASE_CU = 1_900;
+const MM_ORACLE_BATCH_PER_MARKET_CU = 700;
+
+/**
+ * Validates one MM-oracle update's fields before serialization. BN's
+ * little-endian serialization drops the sign and truncates nothing itself, so
+ * without these checks a negative price would reach the program as its
+ * magnitude and an oversized value would throw deep inside `toArrayLike` (or,
+ * for a value above `i64::MAX` but within 8 bytes, arrive on chain as a
+ * negative price). Reject at the API boundary so the caller sees the bug.
+ */
+function validateMmOracleUpdate(
+	context: string,
+	oraclePrice: BN,
+	oracleSequenceId: BN,
+	oracleSourceSlot: BN
+): void {
+	if (oraclePrice.isNeg() || oraclePrice.isZero()) {
+		throw new Error(`${context}: non-positive price`);
+	}
+	if (oraclePrice.bitLength() > 63) {
+		throw new Error(`${context}: price does not fit in i64`);
+	}
+	if (oracleSequenceId.isNeg() || oracleSequenceId.bitLength() > 64) {
+		throw new Error(`${context}: sequence id does not fit in u64`);
+	}
+	if (oracleSourceSlot.isNeg() || oracleSourceSlot.bitLength() > 64) {
+		throw new Error(`${context}: source slot does not fit in u64`);
+	}
+}
+
 import {
 	AccountMeta,
 	AddressLookupTableAccount,
@@ -93,7 +172,6 @@ import {
 	PublicKey,
 	Signer,
 	SystemProgram,
-	SYSVAR_CLOCK_PUBKEY,
 	SYSVAR_INSTRUCTIONS_PUBKEY,
 	SYSVAR_RENT_PUBKEY,
 	Transaction,
@@ -155,7 +233,11 @@ import {
 	findDirectionToClose,
 	positionIsAvailable,
 } from './math/position';
-import { getSignedTokenAmount, getTokenAmount } from './math/spotBalance';
+import {
+	getSignedTokenAmount,
+	getTokenAmount,
+	maxSpotInterestStalenessForMargin,
+} from './math/spotBalance';
 import { decodeName, DEFAULT_USER_NAME, encodeName } from './userName';
 import { MMOraclePriceData, OraclePriceData } from './oracles/types';
 import { VelocityClientConfig } from './velocityClientConfig';
@@ -174,6 +256,7 @@ import {
 import { Velocity } from './idl/velocity';
 import { WRAPPED_SOL_MINT } from './constants/spotMarkets';
 import { UserStats } from './userStats';
+import { getPerpMarketsWithForfeitableClaims } from './math/bankruptcy';
 import { isSpotPositionAvailable } from './math/spotPosition';
 import { calculateMarketMaxAvailableInsurance } from './math/market';
 import { fetchUserStatsAccount } from './accounts/fetch';
@@ -206,6 +289,7 @@ import { RevenueShareEscrowMap } from './userMap/revenueShareEscrowMap';
 import {
 	isBuilderOrderReferral,
 	isBuilderOrderCompleted,
+	isBuilderOrderOpen,
 	escrowHasReferrer,
 	hasBuilderParams,
 } from './math/builder';
@@ -1668,10 +1752,12 @@ export class VelocityClient {
 	 * required to place orders carrying a builder fee. On creation, `escrow.referrer` is copied from
 	 * the authority's existing `UserStats.referrer`, if any, and that copy is never rewritten — so the
 	 * authority's first subaccount must already exist, since `UserStats.referrer` is only set when it
-	 * is created.
+	 * is created. No instruction re-reads the snapshot later.
 	 * @param authority - Authority the escrow is created for.
-	 * @param numOrders - Number of pending-order slots to allocate; determines account rent/size. Can
-	 * be grown later with `resizeRevenueShareEscrowOrders` (never shrunk).
+	 * @param numOrders - Number of pending-order slots to allocate; determines account rent/size.
+	 * Must be at least 1 — the program rejects a zero-capacity escrow, which could hold neither a
+	 * builder nor a referral row and would silently suppress all revenue share. Can be grown later
+	 * with `resizeRevenueShareEscrowOrders` (never shrunk).
 	 * @param txParams - Optional compute-unit/priority-fee overrides for the transaction.
 	 * @returns The transaction signature.
 	 * @throws (on-chain `UserNotFound`) if `authority` has not created a subaccount yet.
@@ -1694,7 +1780,7 @@ export class VelocityClient {
 	 * Builds the `initializeRevenueShareEscrow` instruction. See `initializeRevenueShareEscrow` for
 	 * semantics.
 	 * @param authority - Authority the escrow is created for; must already have a subaccount.
-	 * @param numOrders - Number of pending-order slots to allocate.
+	 * @param numOrders - Number of pending-order slots to allocate. Must be at least 1.
 	 * @param overrides.payer - Pays for account creation instead of `this.wallet`, if set.
 	 * @returns The initialize instruction.
 	 */
@@ -2796,6 +2882,14 @@ export class VelocityClient {
 
 	/**
 	 * Builds the `deleteUser` instruction. See `deleteUser` for on-chain preconditions.
+	 *
+	 * The authority's `RevenueShareEscrow` PDA is derived and passed automatically, so
+	 * callers need no change. It is a **required** account even when the authority has
+	 * never created an escrow: the address is pinned by seeds on chain, so an
+	 * uninitialized account proves absence rather than an omitted check. The program
+	 * uses it to settle this sub-account's builder rows before the id is retired
+	 * forever, which is what stops the builder's accrued fee being stranded
+	 * (OtterSec #128).
 	 * @param userAccountPublicKey - User account PDA to delete.
 	 * @returns The instruction.
 	 */
@@ -2806,6 +2900,10 @@ export class VelocityClient {
 				userStats: this.getUserStatsAccountPublicKey(),
 				authority: this.wallet.publicKey,
 				state: await this.getStatePublicKey(),
+				revenueShareEscrow: getRevenueShareEscrowAccountPublicKey(
+					this.program.programId,
+					this.wallet.publicKey
+				),
 			},
 		});
 
@@ -2843,9 +2941,14 @@ export class VelocityClient {
 
 	/**
 	 * Builds the keeper-only `forceDeleteUser` instruction, assembling `remaining_accounts` for the
-	 * account's non-empty spot positions, its revenue-share escrow (if any order carries a builder
-	 * fee), and every mint/token-program needed for its open spot balances. See `forceDeleteUser` for
-	 * on-chain preconditions.
+	 * account's non-empty spot positions and every mint/token-program needed for its open spot
+	 * balances. See `forceDeleteUser` for on-chain preconditions.
+	 *
+	 * The authority's `RevenueShareEscrow` PDA is derived and passed as a named account, so callers
+	 * need no change. It is **required** even when the authority has never created an escrow: the
+	 * address is pinned by seeds on chain, so an uninitialized account proves absence rather than an
+	 * omitted check. The program uses it to settle the sub-account's builder rows before the id is
+	 * retired forever, which is what stops the builder's accrued fee being stranded (OtterSec #128).
 	 * @param userAccountPublicKey - PDA of the user account to force-delete.
 	 * @param userAccount - The account's current on-chain data.
 	 * @returns The instruction.
@@ -2865,20 +2968,6 @@ export class VelocityClient {
 			userAccounts: [userAccount],
 			writableSpotMarketIndexes,
 		});
-
-		for (const order of userAccount.orders) {
-			if (hasBuilder(order)) {
-				remainingAccounts.push({
-					pubkey: getRevenueShareEscrowAccountPublicKey(
-						this.program.programId,
-						userAccount.authority
-					),
-					isWritable: true,
-					isSigner: false,
-				});
-				break;
-			}
-		}
 
 		const tokenPrograms = new Set<string>();
 		for (const spotPosition of userAccount.spotPositions) {
@@ -2930,6 +3019,10 @@ export class VelocityClient {
 				state: await this.getStatePublicKey(),
 				velocitySigner: this.getSignerPublicKey(),
 				keeper: this.wallet.publicKey,
+				revenueShareEscrow: getRevenueShareEscrowAccountPublicKey(
+					this.program.programId,
+					authority
+				),
 			},
 			remainingAccounts,
 		});
@@ -5149,7 +5242,8 @@ export class VelocityClient {
 			const fromUserAccount = fromUserClass.getUserAccountOrThrow();
 			resolvedFloorDelta = calculateEquityFloorAutoDelta(
 				amount,
-				fromUserClass.getNetUsdValue(),
+				// gate-parity pricing, matching the program-side floor checks
+				fromUserClass.getFloorNetEquity().value,
 				fromUserAccount.equityFloor,
 				fromUserAccount.equityFloorBuffer
 			);
@@ -5171,12 +5265,14 @@ export class VelocityClient {
 			)) as UserAccount;
 		};
 
-		// moving equity floor triggers an on-chain margin check of the credited
-		// side, so its markets/oracles must be in the remaining accounts too
-		const userAccounts = [await loadUserAccount(fromSubAccountId, fromUser)];
-		if (resolvedFloorDelta.gt(ZERO)) {
-			userAccounts.push(await loadUserAccount(toSubAccountId, toUser));
-		}
+		// the credited side's markets/oracles must be in the remaining accounts
+		// too: a floor delta triggers an onchain margin check of the credited
+		// side, and under a tripped breaker the cure exemption computes the
+		// credited side's net equity even with a zero delta
+		const userAccounts = [
+			await loadUserAccount(fromSubAccountId, fromUser),
+			await loadUserAccount(toSubAccountId, toUser),
+		];
 
 		const remainingAccounts = this.getRemainingAccounts({
 			userAccounts,
@@ -5558,6 +5654,10 @@ export class VelocityClient {
 	 * Deposits collateral from a token account directly into an isolated perp position's own segregated
 	 * balance (as opposed to `deposit`, which credits the sub-account's general/cross balance). The
 	 * position's quote spot market is derived from `perpMarketIndex`'s `quoteSpotMarketIndex`.
+	 *
+	 * This credits the same spot market vault as `deposit`, so the market's daily deposit cap applies.
+	 * A deposit that takes the market's resulting deposits above `calculateMaxDepositTokenAmount`
+	 * reverts with `DailyDepositLimit` (6364). Use `checkDepositLimits` to test the market first.
 	 * @param amount - Amount to deposit, in the position's quote spot market's token precision.
 	 * @param perpMarketIndex - Perp market index of the isolated position to fund.
 	 * @param userTokenAccount - Source token account for the deposit.
@@ -5805,6 +5905,17 @@ export class VelocityClient {
 	 * draws into unrealized (unsettled) PnL. Note the clamp is a build-time estimate: if the settle
 	 * realizes less than the claimable PnL (e.g. the market's PnL pool is short), the withdraw can still
 	 * fail on-chain with `InsufficientCollateral`.
+	 *
+	 * The clamp bounds the request by the position's own balance only. The on-chain handler also applies
+	 * the spot market's withdraw circuit breaker to this path, at market level and without the
+	 * small-depositor exception (an isolated position carries its own collateral, so the carve-out for a
+	 * small honest cross depositor does not apply). A withdrawal that would take the market's resulting
+	 * deposits below `minDepositAmount` from `calculateWithdrawLimit` therefore reverts with
+	 * `DailyWithdrawLimit` (6128), whatever the position holds. Read `withdrawLimit` from
+	 * `calculateWithdrawLimit` for the market's remaining room. The same handler applies the market's
+	 * withdraw status and pause gates, so it reverts with `MarketWithdrawPaused` (6149) unless the spot
+	 * market status is `active`, `reduceOnly` or `settlement` and the `Withdraw` operation is unpaused.
+	 * A wound-down market in `settlement` therefore stays exitable.
 	 * @param amount - Amount to withdraw, in the position's quote spot market's token precision. Values
 	 * exceeding the withdrawable balance are clamped to it (i.e. pass a huge value to withdraw all).
 	 * @param perpMarketIndex - Perp market index of the isolated position to withdraw from.
@@ -5989,6 +6100,133 @@ export class VelocityClient {
 				oracle: spotMarket.oracle,
 			},
 		});
+	}
+
+	/**
+	 * Permissionless batch crank: books the lending interest of several spot markets in one
+	 * instruction. Written for a caller that has to value several markets in one transaction,
+	 * such as a program pricing a share against the markets a user holds.
+	 *
+	 * Two differences from `updateSpotMarketCumulativeInterest`, which stays the crank that keeps
+	 * a market's oracle EMA fresh. This one passes no oracle, so it leaves every oracle TWAP
+	 * alone, and it accepts a market whose status is `Delisted`.
+	 * @param marketIndexes - Spot market indexes to book, at most 16.
+	 * @param txParams - Optional compute-unit/priority-fee overrides for the transaction.
+	 * @returns The transaction signature.
+	 */
+	public async refreshSpotMarketInterest(
+		marketIndexes: number[],
+		txParams?: TxParams
+	): Promise<TransactionSignature> {
+		const { txSig } = await this.sendTransaction(
+			await this.buildTransaction(
+				await this.refreshSpotMarketInterestIx(marketIndexes),
+				txParams
+			),
+			[],
+			this.opts
+		);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `refreshSpotMarketInterest` instruction. See `refreshSpotMarketInterest` for
+	 * semantics.
+	 * @param marketIndexes - Spot market indexes to book, at most 16.
+	 * @returns The instruction.
+	 */
+	public async refreshSpotMarketInterestIx(
+		marketIndexes: number[]
+	): Promise<TransactionInstruction> {
+		// `load_maps` reads oracles first, then spot markets, and stops at the first account it
+		// does not recognize. This instruction reads no price, so it passes no oracle at all and
+		// the market accounts start the list. Each is writable because velocity advances its
+		// cumulative indexes.
+		const remainingAccounts = marketIndexes.map((marketIndex) => ({
+			pubkey: this.getSpotMarketAccountOrThrow(marketIndex).pubkey,
+			isWritable: true,
+			isSigner: false,
+		}));
+
+		return await this.program.instruction.refreshSpotMarketInterest(
+			marketIndexes,
+			{
+				accounts: {
+					state: await this.getStatePublicKey(),
+				},
+				remainingAccounts,
+			}
+		);
+	}
+
+	/**
+	 * Lists the spot markets that must be cranked before the given accounts can be
+	 * used on a value-releasing path.
+	 *
+	 * The program refuses to value a spot **borrow** for margin through an index that
+	 * has not accrued recently (`SpotMarketInterestStaleForMargin`). It applies on
+	 * withdraw, transfer deposit, transfer pools, swap, isolated-position withdraw,
+	 * and any perp fill — for the taker and for every maker alike. Only borrow
+	 * positions count; a stale deposit index understates collateral and is allowed.
+	 *
+	 * Each market earns its own window from its rate ceiling
+	 * (`maxSpotInterestStalenessForMargin`), so a market that may charge more
+	 * interest must be cranked more often.
+	 *
+	 * The program also exempts a borrow whose un-booked interest is still under one
+	 * token unit, which this does not model, so the result is a superset: cranking
+	 * every market it names always clears the check.
+	 *
+	 * @param userAccounts - Accounts the transaction values, e.g. a fill's taker and makers.
+	 * @param now - Unix seconds to measure staleness against; defaults to the local clock.
+	 * @returns Ascending market indexes, deduplicated.
+	 */
+	public getStaleSpotInterestMarketIndexes(
+		userAccounts: UserAccount[],
+		now: number = Math.floor(Date.now() / 1000)
+	): number[] {
+		const stale = new Set<number>();
+		for (const userAccount of userAccounts) {
+			for (const spotPosition of userAccount.spotPositions) {
+				if (
+					!isVariant(spotPosition.balanceType, 'borrow') ||
+					spotPosition.scaledBalance.isZero()
+				) {
+					continue;
+				}
+				if (stale.has(spotPosition.marketIndex)) {
+					continue;
+				}
+				const spotMarket = this.getSpotMarketAccount(spotPosition.marketIndex);
+				if (!spotMarket) {
+					continue;
+				}
+				const staleness = new BN(now).sub(spotMarket.lastInterestTs);
+				if (staleness.gt(maxSpotInterestStalenessForMargin(spotMarket))) {
+					stale.add(spotPosition.marketIndex);
+				}
+			}
+		}
+		return Array.from(stale).sort((a, b) => a - b);
+	}
+
+	/**
+	 * Builds one `updateSpotMarketCumulativeInterest` instruction per market that
+	 * `getStaleSpotInterestMarketIndexes` names. Prepend them to a withdraw, swap,
+	 * transfer, or fill so the margin check sees a current borrow index.
+	 * @param userAccounts - Accounts the transaction values, e.g. a fill's taker and makers.
+	 * @param now - Unix seconds to measure staleness against; defaults to the local clock.
+	 * @returns The instructions, in ascending market-index order.
+	 */
+	public async getStaleSpotInterestCrankIxs(
+		userAccounts: UserAccount[],
+		now?: number
+	): Promise<TransactionInstruction[]> {
+		return await Promise.all(
+			this.getStaleSpotInterestMarketIndexes(userAccounts, now).map(
+				(marketIndex) => this.updateSpotMarketCumulativeInterestIx(marketIndex)
+			)
+		);
 	}
 
 	/**
@@ -10952,6 +11190,7 @@ export class VelocityClient {
 				inputMint: assetMarket.mint,
 				outputMint: liabilityMarket.mint,
 				amount: swapAmount,
+				userPublicKey: this.provider.wallet.publicKey,
 				slippageBps,
 				swapMode,
 				onlyDirectRoutes,
@@ -11045,8 +11284,10 @@ export class VelocityClient {
 	 * external swap (e.g. Jupiter) so a liquidator can repay a user's `liabilityMarketIndex` debt
 	 * using proceeds from selling `assetMarketIndex` collateral within the same transaction, without
 	 * pre-funding the liability token. The on-chain handler validates the liability spot market's
-	 * flash-loan balance is unwound by `endSwap`. See `getJupiterLiquidateSpotWithSwapIxV6` for the
-	 * Jupiter-specific wrapper that assembles the full instruction list around this pair.
+	 * flash-loan balance is unwound by `endSwap`. Reverts with `EquityBelowFloor` at `begin` if the
+	 * liquidator's authority-wide equity breaker is tripped, matching the other liquidator routes.
+	 * See `getJupiterLiquidateSpotWithSwapIxV6` for the Jupiter-specific wrapper that assembles the
+	 * full instruction list around this pair.
 	 * @param liabilityMarketIndex - Spot market index of the debt being repaid (swap output/buy side).
 	 * @param assetMarketIndex - Spot market index of the collateral being sold (swap input/sell side).
 	 * @param swapAmount - Amount of `assetMarketIndex` token to sell, in that market's mint precision.
@@ -11083,6 +11324,7 @@ export class VelocityClient {
 		const liquidatorAccountPublicKey = await this.getUserAccountPublicKey(
 			liquidatorSubAccountId
 		);
+		const liquidatorStatsPublicKey = this.getUserStatsAccountPublicKey();
 
 		const userAccounts = [userAccount];
 		const remainingAccounts = this.getRemainingAccounts({
@@ -11146,6 +11388,7 @@ export class VelocityClient {
 						state: await this.getStatePublicKey(),
 						user: userAccountPublicKey,
 						liquidator: liquidatorAccountPublicKey,
+						liquidatorStats: liquidatorStatsPublicKey,
 						authority: this.wallet.publicKey,
 						liabilitySpotMarketVault: liabilitySpotMarket.vault,
 						assetSpotMarketVault: assetSpotMarket.vault,
@@ -11167,6 +11410,7 @@ export class VelocityClient {
 					state: await this.getStatePublicKey(),
 					user: userAccountPublicKey,
 					liquidator: liquidatorAccountPublicKey,
+					liquidatorStats: liquidatorStatsPublicKey,
 					authority: this.wallet.publicKey,
 					liabilitySpotMarketVault: liabilitySpotMarket.vault,
 					assetSpotMarketVault: assetSpotMarket.vault,
@@ -11467,7 +11711,15 @@ export class VelocityClient {
 				this.getUserAccountOrThrow(liquidatorSubAccountId),
 				userAccount,
 			],
-			writablePerpMarketIndexes: [marketIndex],
+			// The resolver also recovers the estate's payable perp claims from those markets' pnl
+			// pools, and forfeits what is left to their insurance tranches, so those markets are
+			// written to as well. Passing one read-only makes the program revert at map load.
+			writablePerpMarketIndexes: [
+				marketIndex,
+				...getPerpMarketsWithForfeitableClaims(userAccount).filter(
+					(index) => index !== marketIndex
+				),
+			],
 			writableSpotMarketIndexes: [QUOTE_SPOT_MARKET_INDEX],
 		});
 
@@ -11559,7 +11811,14 @@ export class VelocityClient {
 				this.getUserAccountOrThrow(liquidatorSubAccountId),
 				userAccount,
 			],
-			writableSpotMarketIndexes: [marketIndex],
+			// The quote market is writable because the resolver recovers the estate's payable perp
+			// claims into its quote deposit, and the borrow being resolved may be in another market.
+			// It must be passed even when the estate holds no quote row of its own.
+			writableSpotMarketIndexes: [marketIndex, QUOTE_SPOT_MARKET_INDEX],
+			// The resolver also recovers from, and forfeits to, the markets holding those claims, so
+			// those perp markets must be writable even though the bankruptcy is a spot borrow.
+			writablePerpMarketIndexes:
+				getPerpMarketsWithForfeitableClaims(userAccount),
 		});
 
 		const spotMarket = this.getSpotMarketAccountOrThrow(marketIndex);
@@ -11699,6 +11958,13 @@ export class VelocityClient {
 	 * the calling wallet's `UserStats` (which must be the signer's own) must have
 	 * `canUpdateBidAskTwap` set and at least 1000 USDC (`QUOTE_PRECISION`, 1e6) staked in the
 	 * insurance fund (`ifStakedQuoteAssetAmount`), or the instruction reverts.
+	 *
+	 * Only orders that have rested on-chain for at least `BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS`
+	 * (24 slots, ~10s) are sampled — a quote must have been takeable by someone else before it may
+	 * move the TWAP. Orders newer than that are silently skipped, so passing only freshly-placed
+	 * makers yields no DLOB estimate and the crank falls back to the AMM's quote. Note this is
+	 * measured from the order's on-chain post slot, not from `order.slot` (which signed-message
+	 * orders back-date).
 	 * @param perpMarketIndex - Perp market index to update.
 	 * @param makers - `(maker, makerStats)` pairs whose resting orders are sampled for the estimate.
 	 * @param txParams - Optional compute-unit/priority-fee overrides.
@@ -11938,7 +12204,9 @@ export class VelocityClient {
 						hasSufficientNumberOfDataPoints: true,
 					},
 					stateAccountAndSlot.data.oracleGuardRails,
-					new BN(stateAccountAndSlot.slot)
+					new BN(stateAccountAndSlot.slot),
+					undefined,
+					true // classifying the MM oracle price itself
 			  );
 		const isMMOracleInvalidForUse =
 			mmOracleValidity === OracleValidity.NonPositive ||
@@ -11964,6 +12232,7 @@ export class VelocityClient {
 				isMMOracleEnabled,
 				isMMOracleAsRecent,
 				isMMExchangeDiffBpsHigh,
+				isMMSourcedPrice: false,
 			};
 		} else {
 			return {
@@ -11975,6 +12244,7 @@ export class VelocityClient {
 				isMMOracleEnabled,
 				isMMOracleAsRecent,
 				isMMExchangeDiffBpsHigh,
+				isMMSourcedPrice: true,
 			};
 		}
 	}
@@ -12063,14 +12333,21 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Builds the `addInsuranceFundStake` instruction, transferring `amount` of the market's token
-	 * from `collateralAccountPublicKey` into its insurance fund vault and minting the caller's
-	 * `InsuranceFundStake` the corresponding IF shares. Reverts if `amount` is zero, the spot market
-	 * is not active, insurance-fund add is paused, or a withdraw request is already in progress on
-	 * the stake account. See `addInsuranceFundStake`/`getAddInsuranceFundStakeIxs` for a wrapper that
+	 * Builds the `addInsuranceFundStake` instruction, transferring up to `amount` of the market's
+	 * token from `collateralAccountPublicKey` into its insurance fund vault and minting the caller's
+	 * `InsuranceFundStake` the corresponding IF shares. Reverts if `amount` is zero, `amount` is
+	 * below the price of a single IF share (`IFDepositMintsZeroShares`), the spot market is not
+	 * active, insurance-fund add is paused, or a withdraw request is already in progress on the
+	 * stake account. See `addInsuranceFundStake`/`getAddInsuranceFundStakeIxs` for a wrapper that
 	 * also handles account creation and funding from a sub-account.
+	 *
+	 * An IF share is indivisible, so only the portion of `amount` that prices to whole shares is
+	 * transferred — the remainder (always less than one share price) stays in the token account
+	 * rather than accruing to existing shareholders. Predict the debit with
+	 * `depositAmountAndSharesForIfStake`, or read it from the `InsuranceFundStakeRecord` event;
+	 * either way, do not assume it equals `amount`.
 	 * @param marketIndex - Spot market index whose insurance fund to stake into.
-	 * @param amount - Amount to stake, in the spot market's token (mint) precision.
+	 * @param amount - Maximum amount to stake, in the spot market's token (mint) precision.
 	 * @param collateralAccountPublicKey - Token account to debit for the stake.
 	 * @returns The instruction.
 	 */
@@ -12177,7 +12454,12 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Get instructions to add to an insurance fund stake and optionally initialize the account
+	 * Get instructions to add to an insurance fund stake and optionally initialize the account.
+	 *
+	 * `amount` is an upper bound: the program stakes only what prices to whole IF shares (see
+	 * `getAddInsuranceFundStakeIx`). Any remainder is left in `collateralAccountPublicKey` — with
+	 * `fromSubaccount` it has already been withdrawn from the sub-account, so it lands in the wallet's
+	 * token account rather than staying as collateral.
 	 */
 	public async getAddInsuranceFundStakeIxs({
 		marketIndex,
@@ -12376,6 +12658,19 @@ export class VelocityClient {
 			marketIndex
 		);
 
+		// The cancel now settles any already-due revenue into the IF vault before pricing
+		// the forfeiture (OtterSec #141), so it needs the same accounts and transfer-hook
+		// remaining accounts as `requestRemoveInsuranceFundStake`.
+		const remainingAccounts: AccountMeta[] = [];
+		this.addTokenMintToRemainingAccounts(spotMarketAccount, remainingAccounts);
+		if (this.isTransferHook(spotMarketAccount)) {
+			await this.addExtraAccountMetasToRemainingAccounts(
+				spotMarketAccount.mint,
+				remainingAccounts
+			);
+		}
+
+		const tokenProgram = this.getTokenProgramForSpotMarket(spotMarketAccount);
 		const ix = await (
 			this.program.instruction as any
 		).cancelRequestRemoveInsuranceFundStake(marketIndex, {
@@ -12388,8 +12683,12 @@ export class VelocityClient {
 					this.wallet.publicKey // only allow payer to request remove own insurance fund stake account
 				),
 				authority: this.wallet.publicKey,
+				spotMarketVault: spotMarketAccount.vault,
 				insuranceFundVault: spotMarketAccount.insuranceFund.vault,
+				velocitySigner: this.getSignerPublicKey(),
+				tokenProgram,
 			},
+			remainingAccounts,
 		});
 
 		const tx = await this.buildTransaction(ix, txParams);
@@ -12630,7 +12929,10 @@ export class VelocityClient {
 	 * fee carveouts out of the PnL pool — `pendingProtocolFee` to the market's protocol fee pool
 	 * (runs first, buffer-exempt), then `pendingIfFee` to the quote spot market's revenue pool and
 	 * `pendingAmmProvision` into the AMM's fee pool (both leave `feePoolBufferTarget` behind). Every
-	 * drain reserves `max(netUserPnl, 0)` so user claims stay backed. This runs inline on every
+	 * drain reserves `max(netUserPnl, 0)` so user claims stay backed. The `pendingIfFee` drain also
+	 * leaves the bankruptcy first-loss tranche behind: the whole counter while
+	 * `pendingBankruptcyClaims` is above zero, otherwise `bankruptcyIfFloorPct` of open-interest
+	 * notional at the oracle TWAP. This runs inline on every
 	 * `settlePNL` already — this instruction lets a keeper run it on demand without settling anyone's
 	 * PnL. Values `netUserPnl` at the market's fixed `expiryPrice` when the market is in `settlement`
 	 * status (expired positions settle at that price, not the live oracle, so no live-oracle gate is
@@ -12677,6 +12979,318 @@ export class VelocityClient {
 			}
 		);
 		return ix;
+	}
+
+	/**
+	 * Keeper instruction. Writes off one revenue-share row that the program cannot pay. The
+	 * liability counter of the market can then reach zero, and the delist is not blocked. Anyone
+	 * can call this. The market must be in settlement or delisted.
+	 *
+	 * The program requires proof that it cannot pay the row. A missing account is not proof. One of
+	 * these must be true: the beneficiary has no payout `User` account, the closed pool is smaller
+	 * than the row, or the row names no beneficiary that the program can reach. Use
+	 * `settleRevenueShare` for a row that the program can still pay. This instruction rejects it
+	 * with `RevenueShareOrderNotForfeitable`.
+	 *
+	 * This moves no tokens. Only the row and the counter change.
+	 * @param escrowAuthority - Authority owning the escrow holding the row.
+	 * @param escrow - Decoded escrow account, used to resolve the row's beneficiary.
+	 * @param marketIndex - Perp market index the row belongs to.
+	 * @param orderIndex - Index of the row within `escrow.orders`.
+	 * @param txParams - Optional compute-unit/priority-fee overrides.
+	 * @returns The transaction signature.
+	 */
+	public async forfeitRevenueShareOrder(
+		escrowAuthority: PublicKey,
+		escrow: RevenueShareEscrowAccount,
+		marketIndex: number,
+		orderIndex: number,
+		txParams?: TxParams
+	): Promise<TransactionSignature> {
+		const tx = await this.buildTransaction(
+			await this.getForfeitRevenueShareOrderIx(
+				escrowAuthority,
+				escrow,
+				marketIndex,
+				orderIndex
+			),
+			txParams
+		);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `forfeitRevenueShareOrder` instruction. See `forfeitRevenueShareOrder` for
+	 * semantics.
+	 *
+	 * This finds the beneficiary of the row in the same way as the program. A referral row uses the
+	 * referrer. Any other row uses `approvedBuilders[builderIdx]`. It then passes sub-account 0 of
+	 * that authority. The program derives the address again and rejects any other address. If the
+	 * row names no beneficiary, the program skips the check and accepts any address.
+	 * @param escrowAuthority - Authority owning the escrow holding the row.
+	 * @param escrow - Decoded escrow account.
+	 * @param marketIndex - Perp market index the row belongs to.
+	 * @param orderIndex - Index of the row within `escrow.orders`.
+	 * @returns The instruction.
+	 */
+	public async getForfeitRevenueShareOrderIx(
+		escrowAuthority: PublicKey,
+		escrow: RevenueShareEscrowAccount,
+		marketIndex: number,
+		orderIndex: number
+	): Promise<TransactionInstruction> {
+		const order = escrow.orders[orderIndex];
+		if (order === undefined) {
+			throw new Error(
+				`escrow ${escrowAuthority.toBase58()} has no order at index ${orderIndex}`
+			);
+		}
+
+		const beneficiary = isBuilderOrderReferral(order)
+			? escrowHasReferrer(escrow)
+				? escrow.referrer
+				: undefined
+			: escrow.approvedBuilders[order.builderIdx]?.authority;
+
+		const perpMarketAccount = this.getPerpMarketAccountOrThrow(marketIndex);
+		const spotMarketAccount = this.getSpotMarketAccountOrThrow(
+			perpMarketAccount.quoteSpotMarketIndex
+		);
+
+		return await this.program.instruction.forfeitRevenueShareOrder(
+			marketIndex,
+			orderIndex,
+			{
+				accounts: {
+					state: await this.getStatePublicKey(),
+					perpMarket: perpMarketAccount.pubkey,
+					spotMarket: spotMarketAccount.pubkey,
+					escrowAuthority,
+					revenueShareEscrow: getRevenueShareEscrowAccountPublicKey(
+						this.program.programId,
+						escrowAuthority
+					),
+					// A row without a beneficiary has no address to pass. The program does not read
+					// this account in that case, so any address is valid.
+					beneficiaryUser:
+						beneficiary === undefined
+							? escrowAuthority
+							: getUserAccountPublicKeySync(
+									this.program.programId,
+									beneficiary,
+									0
+							  ),
+				},
+			}
+		);
+	}
+
+	/**
+	 * Fetches and decodes an authority's `RevenueShareEscrow` account.
+	 * @param escrowAuthority - Authority the escrow PDA is derived from.
+	 * @throws if the authority has no escrow account.
+	 * @returns The decoded escrow account.
+	 */
+	public async fetchRevenueShareEscrowAccount(
+		escrowAuthority: PublicKey
+	): Promise<RevenueShareEscrowAccount> {
+		const escrowPk = getRevenueShareEscrowAccountPublicKey(
+			this.program.programId,
+			escrowAuthority
+		);
+		const accountInfo = await this.connection.getAccountInfo(escrowPk);
+		if (accountInfo === null) {
+			throw new Error(
+				`RevenueShareEscrow account not found for authority ${escrowAuthority.toBase58()}`
+			);
+		}
+		return (
+			this.program.account as any
+		).revenueShareEscrow.coder.accounts.decode(
+			'revenueShareEscrow',
+			accountInfo.data
+		) as RevenueShareEscrowAccount;
+	}
+
+	/**
+	 * Keeper instruction. Pays the accrued builder and referrer fees in one escrow for one perp
+	 * market, out of the pnl pool of that market. Anyone can call this, so a builder or a referrer
+	 * can collect without the escrow owner.
+	 *
+	 * `settlePNL` runs the same sweep, but only when it moves pnl. After the escrow owner closes
+	 * the position and stops trading, nobody can collect the rows that way. The
+	 * `pendingRevenueShare` of the market then holds pnl-pool value against that claim.
+	 *
+	 * This rejects a delisted market. A delist requires a zero liability and moves the pnl pool to
+	 * the revenue pool, so the market owes nothing and holds nothing.
+	 * @param escrowAuthority - Authority owning the `RevenueShareEscrow` to settle.
+	 * @param escrow - Decoded escrow account, used to derive which sub-accounts and beneficiaries to pass.
+	 * @param marketIndex - Perp market index whose rows to settle.
+	 * @param txParams - Optional compute-unit/priority-fee overrides.
+	 * @returns The transaction signature.
+	 */
+	public async settleRevenueShare(
+		escrowAuthority: PublicKey,
+		escrow: RevenueShareEscrowAccount,
+		marketIndex: number,
+		txParams?: TxParams
+	): Promise<TransactionSignature> {
+		const tx = await this.buildTransaction(
+			await this.getSettleRevenueShareIx(escrowAuthority, escrow, marketIndex),
+			txParams
+		);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `settleRevenueShare` instruction. See `settleRevenueShare` for semantics.
+	 *
+	 * This builds `remainingAccounts` in the order that the program reads them. First the oracle
+	 * and market accounts. Then the sub-accounts of the escrow owner, read-only. Then the `User`
+	 * and `RevenueShare` accounts of the beneficiaries, writable. The program uses the owner
+	 * sub-accounts to complete rows whose orders are closed, because a builder row needs
+	 * `Completed` before payment. Those accounts must be read-only. That marks the end of the
+	 * group.
+	 *
+	 * A sub-account a row names may no longer exist, and the program rejects an unallocated one
+	 * rather than skipping it, so the owner region is filtered to accounts that are actually on
+	 * chain. While the market is in settlement the region is dropped entirely: no fill can accrue
+	 * to a row any more, so the program pays open rows without requiring completion, and that is
+	 * what makes the liability drainable for an owner who deleted the sub-account a row names.
+	 * @param escrowAuthority - Authority owning the `RevenueShareEscrow` to settle.
+	 * @param escrow - Decoded escrow account.
+	 * @param marketIndex - Perp market index whose rows to settle.
+	 * @returns The instruction.
+	 */
+	public async getSettleRevenueShareIx(
+		escrowAuthority: PublicKey,
+		escrow: RevenueShareEscrowAccount,
+		marketIndex: number
+	): Promise<TransactionInstruction> {
+		const remainingAccounts = this.getRemainingAccounts({
+			userAccounts: [],
+			writablePerpMarketIndexes: [marketIndex],
+			writableSpotMarketIndexes: [QUOTE_SPOT_MARKET_INDEX],
+		});
+
+		const marketInSettlement = isVariant(
+			this.getPerpMarketAccountOrThrow(marketIndex).status,
+			'settlement'
+		);
+
+		// The sub-accounts that hold rows to complete for this market. The program matches a row
+		// against the sub-account that owns it, so each one needs its own account.
+		const candidateSubAccountIds = new Set<number>();
+		if (!marketInSettlement) {
+			for (const order of escrow.orders) {
+				if (
+					isBuilderOrderOpen(order) &&
+					!isBuilderOrderCompleted(order) &&
+					!isBuilderOrderReferral(order) &&
+					order.marketIndex === marketIndex
+				) {
+					candidateSubAccountIds.add(order.subAccountId);
+				}
+			}
+		}
+
+		// Keep only the sub-accounts that exist. A deleted sub-account has no account to pass, and
+		// the program fails the whole instruction on an empty entry in this group. The escrow could
+		// then never settle. Rows of a deleted sub-account stay open until the market reaches
+		// settlement, where they need no completion.
+		const candidates = Array.from(candidateSubAccountIds)
+			.sort((a, b) => a - b)
+			.map((subAccountId) => ({
+				subAccountId,
+				pubkey: getUserAccountPublicKeySync(
+					this.program.programId,
+					escrowAuthority,
+					subAccountId
+				),
+			}));
+		const ownerSubAccountIds = new Set<number>();
+		if (candidates.length > 0) {
+			const accountInfos = await this.connection.getMultipleAccountsInfo(
+				candidates.map((c) => c.pubkey)
+			);
+			candidates.forEach((candidate, i) => {
+				if (accountInfos[i] !== null) {
+					ownerSubAccountIds.add(candidate.subAccountId);
+				}
+			});
+		}
+
+		// The beneficiaries. These are the builders of the payable rows for this market. They also
+		// include the referrer if a referral row for this market still owes. The owner sub-accounts
+		// above can complete an open row in this same instruction, so its builder must be present
+		// too.
+		const builders = new Map<number, PublicKey>();
+		for (const order of escrow.orders) {
+			const payable =
+				!isBuilderOrderReferral(order) &&
+				order.feesAccrued.gt(ZERO) &&
+				order.marketIndex === marketIndex &&
+				(isBuilderOrderCompleted(order) ||
+					marketInSettlement ||
+					(isBuilderOrderOpen(order) &&
+						ownerSubAccountIds.has(order.subAccountId)));
+			const builderAuthority =
+				escrow.approvedBuilders[order.builderIdx]?.authority;
+			if (payable && builderAuthority && !builders.has(order.builderIdx)) {
+				builders.set(order.builderIdx, builderAuthority);
+			}
+		}
+		const beneficiaries = Array.from(builders.values());
+		const hasReferralForMarket = escrow.orders.some(
+			(o) =>
+				isBuilderOrderReferral(o) &&
+				o.feesAccrued.gt(ZERO) &&
+				o.marketIndex === marketIndex
+		);
+		if (hasReferralForMarket && escrowHasReferrer(escrow)) {
+			beneficiaries.push(escrow.referrer);
+		}
+		const beneficiaryUserKeys = new Set(
+			beneficiaries.map((b) =>
+				getUserAccountPublicKeySync(this.program.programId, b, 0).toBase58()
+			)
+		);
+
+		// The owner group goes first and is read-only. That marks where it ends and where the
+		// writable beneficiary group starts. An escrow owner that is also their own builder would
+		// put one account in both groups with different write flags. The runtime then makes it
+		// writable and the program rejects it. Drop the shared account instead. That row is not
+		// completed by this call, and the call still succeeds.
+		const ownerSubAccountKeys = candidates
+			.filter((c) => ownerSubAccountIds.has(c.subAccountId))
+			.map((c) => c.pubkey)
+			.filter((pk) => !beneficiaryUserKeys.has(pk.toBase58()));
+		for (const pubkey of ownerSubAccountKeys) {
+			remainingAccounts.push({ pubkey, isSigner: false, isWritable: false });
+		}
+
+		if (beneficiaries.length > 0) {
+			this.addBuilderToRemainingAccounts(beneficiaries, remainingAccounts);
+		}
+
+		return await this.program.instruction.settleRevenueShare(
+			marketIndex,
+			ownerSubAccountKeys.length,
+			{
+				accounts: {
+					state: await this.getStatePublicKey(),
+					escrowAuthority,
+					revenueShareEscrow: getRevenueShareEscrowAccountPublicKey(
+						this.program.programId,
+						escrowAuthority
+					),
+					spotMarketVault: this.getQuoteSpotMarketAccount().vault,
+				},
+				remainingAccounts,
+			}
+		);
 	}
 
 	/**
@@ -12847,7 +13461,7 @@ export class VelocityClient {
 	 * @param marketType
 	 * @param positionMarketIndex
 	 * @param user
-	 * @param orderParams When it carries a builder code, the builder fee (quoteAssetAmount * builderFeeTenthBps / 100_000) is added to takerFee.
+	 * @param orderParams When it carries a builder code, the builder fee (quoteAssetAmount * builderFeeTenthBps / 100_000) is added to takerFee. A `user` that is below initial margin pays no builder fee (see `User.isBuilderFeeCharged`), so none is added.
 	 * @returns : {takerFee: number, makerFee: number} Precision None
 	 */
 	public getMarketFees(
@@ -12878,6 +13492,14 @@ export class VelocityClient {
 				marketAccount = this.getSpotMarketAccountOrThrow(marketIndex);
 			}
 
+			// per-market additive taker-fee surcharge (tenth-bps, unsigned),
+			// applied to the tier fee BEFORE feeAdjustment scales the sum,
+			// mirroring `calculate_taker_fee` (`math/fees.rs`). Taker only;
+			// the maker rebate sees feeAdjustment alone.
+			if (isVariant(marketType, 'perp')) {
+				takerFee +=
+					(marketAccount as PerpMarketAccount).takerFeeAddonTenthBps / 100_000;
+			}
 			takerFee += (takerFee * marketAccount.feeAdjustment) / 100;
 			makerFee += (makerFee * marketAccount.feeAdjustment) / 100;
 		}
@@ -12901,7 +13523,15 @@ export class VelocityClient {
 			}
 		}
 
-		if (orderParams && hasBuilderParams(orderParams)) {
+		// The program waives the builder fee when the taker is below initial
+		// margin, because the fee is a transfer out of the taker's account. See
+		// `User.isBuilderFeeCharged`. Without a `user` there is no margin state
+		// to read, so the fee is included.
+		if (
+			orderParams &&
+			hasBuilderParams(orderParams) &&
+			(!user || user.isBuilderFeeCharged())
+		) {
 			takerFee += (orderParams.builderFeeTenthBps ?? 0) / 100_000;
 		}
 
@@ -13068,20 +13698,24 @@ export class VelocityClient {
 	 * disabled entirely via a state feature-bit-flag kill switch. See `getMMOracleDataForPerpMarket`
 	 * for how this price is subsequently gated against the primary oracle before use.
 	 * @param marketIndex - Perp market index whose MM oracle to update.
-	 * @param oraclePrice - New MM oracle price, PRICE_PRECISION (1e6). A value of `0` is a no-op.
+	 * @param oraclePrice - New MM oracle price, PRICE_PRECISION (1e6). Must be positive.
 	 * @param oracleSequenceId - Monotonically increasing sequence id for this update, used for
 	 * recency comparisons against the primary oracle.
+	 * @param oracleSourceSlot - Slot the price was observed at; the program skips the update when
+	 * it lands more than `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` from this in either direction.
 	 * @returns The transaction signature.
 	 */
 	public async updateMmOracleNative(
 		marketIndex: number,
 		oraclePrice: BN,
-		oracleSequenceId: BN
+		oracleSequenceId: BN,
+		oracleSourceSlot: BN
 	): Promise<TransactionSignature> {
 		const updateMmOracleIx = await this.getUpdateMmOracleNativeIx(
 			marketIndex,
 			oraclePrice,
-			oracleSequenceId
+			oracleSequenceId,
+			oracleSourceSlot
 		);
 
 		const tx = await this.buildTransaction(updateMmOracleIx, {
@@ -13095,23 +13729,36 @@ export class VelocityClient {
 
 	/**
 	 * Builds the `updateMmOracleNative` instruction. See `updateMmOracleNative` for semantics. Hand-
-	 * assembles the instruction (perp market, signer, clock sysvar, state) rather than going through
+	 * assembles the instruction (perp market, signer, state; the program reads the slot via the
+	 * Clock sysvar syscall so no clock account is passed) rather than going through
 	 * `this.program.instruction`, since this targets the native (non-Anchor) entrypoint.
 	 * @param marketIndex - Perp market index whose MM oracle to update.
-	 * @param oraclePrice - New MM oracle price, PRICE_PRECISION (1e6). A value of `0` is a no-op.
+	 * @param oraclePrice - New MM oracle price, PRICE_PRECISION (1e6). Must be positive: the program
+	 * hard-errors on a non-positive price, and this builder rejects it before serialization since
+	 * BN's little-endian encoding would silently drop the sign.
 	 * @param oracleSequenceId - Monotonically increasing sequence id for this update.
+	 * @param oracleSourceSlot - Slot the price was observed at; the program skips the update when
+	 * it lands more than `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` from this in either direction.
 	 * @returns The instruction.
 	 */
 	public async getUpdateMmOracleNativeIx(
 		marketIndex: number,
 		oraclePrice: BN,
-		oracleSequenceId: BN
+		oracleSequenceId: BN,
+		oracleSourceSlot: BN
 	): Promise<TransactionInstruction> {
+		validateMmOracleUpdate(
+			'getUpdateMmOracleNativeIx',
+			oraclePrice,
+			oracleSequenceId,
+			oracleSourceSlot
+		);
 		const discriminatorBuffer = createNativeInstructionDiscriminatorBuffer(0);
-		const data = Buffer.alloc(discriminatorBuffer.length + 16);
+		const data = Buffer.alloc(discriminatorBuffer.length + 24);
 		data.set(discriminatorBuffer, 0);
 		data.set(oraclePrice.toArrayLike(Buffer, 'le', 8), 5); // next 8 bytes
 		data.set(oracleSequenceId.toArrayLike(Buffer, 'le', 8), 13); // next 8 bytes
+		data.set(oracleSourceSlot.toArrayLike(Buffer, 'le', 8), 21); // next 8 bytes
 
 		// Build the instruction manually
 		return new TransactionInstruction({
@@ -13128,11 +13775,6 @@ export class VelocityClient {
 					isSigner: true,
 				},
 				{
-					pubkey: SYSVAR_CLOCK_PUBKEY,
-					isWritable: false,
-					isSigner: false,
-				},
-				{
 					pubkey: await this.getStatePublicKey(),
 					isWritable: false,
 					isSigner: false,
@@ -13140,6 +13782,134 @@ export class VelocityClient {
 			],
 			data,
 		});
+	}
+
+	/**
+	 * Updates the MM oracle for several perp markets in one native instruction (dispatch opcode 2).
+	 *
+	 * Equivalent to calling `updateMmOracleNative` once per market, but the authentication prologue
+	 * (state validation, kill-switch, hot-key compare) is paid once for the whole
+	 * batch, and one transaction covers every market so a single signature fee is amortised across
+	 * them all.
+	 *
+	 * Per-market rate-limit and sanity rejections (non-positive price, non-advancing sequence id,
+	 * slot gap below the program floor, source slot more than
+	 * `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` from the landing slot in either direction) skip that market
+	 * and leave the rest of the batch intact. A
+	 * price more than 1% from the last accepted one is clamped to the cap and written, matching
+	 * `updateMmOracleNative`. Structural problems (an account that is not a perp market, a
+	 * non-writable market, malformed data) fail the whole instruction, since those can only be
+	 * builder bugs.
+	 *
+	 * @param updates - One entry per market. Order is preserved and must match the account order,
+	 * which this builder handles. Each entry's market index is also written into the payload and
+	 * re-checked on chain against the account it was paired with, so a misordered list is a hard
+	 * error rather than a silent write to the wrong market. Duplicate market indexes are rejected:
+	 * the program would silently skip the second occurrence.
+	 * @returns The instruction.
+	 */
+	public async getUpdateMmOracleBatchNativeIx(
+		updates: MmOracleBatchUpdate[]
+	): Promise<TransactionInstruction> {
+		if (updates.length === 0) {
+			throw new Error('getUpdateMmOracleBatchNativeIx: no updates supplied');
+		}
+		if (updates.length > MM_ORACLE_BATCH_MAX_MARKETS) {
+			throw new Error(
+				`getUpdateMmOracleBatchNativeIx: ${updates.length} markets exceeds the ${MM_ORACLE_BATCH_MAX_MARKETS} per-batch maximum`
+			);
+		}
+		const seen = new Set<number>();
+		for (const {
+			marketIndex,
+			oraclePrice,
+			oracleSequenceId,
+			oracleSourceSlot,
+		} of updates) {
+			if (seen.has(marketIndex)) {
+				throw new Error(
+					`getUpdateMmOracleBatchNativeIx: duplicate market index ${marketIndex}; the program would skip the second occurrence`
+				);
+			}
+			seen.add(marketIndex);
+
+			validateMmOracleUpdate(
+				`getUpdateMmOracleBatchNativeIx (market ${marketIndex})`,
+				oraclePrice,
+				oracleSequenceId,
+				oracleSourceSlot
+			);
+		}
+
+		const discriminatorBuffer = createNativeInstructionDiscriminatorBuffer(2);
+		const data = Buffer.alloc(
+			discriminatorBuffer.length +
+				1 +
+				updates.length * MM_ORACLE_BATCH_ENTRY_LEN
+		);
+		data.set(discriminatorBuffer, 0);
+		data.writeUInt8(updates.length, discriminatorBuffer.length);
+
+		updates.forEach(
+			({ marketIndex, oraclePrice, oracleSequenceId, oracleSourceSlot }, i) => {
+				const offset =
+					discriminatorBuffer.length + 1 + i * MM_ORACLE_BATCH_ENTRY_LEN;
+				data.writeUInt16LE(marketIndex, offset);
+				data.set(oraclePrice.toArrayLike(Buffer, 'le', 8), offset + 2);
+				data.set(oracleSequenceId.toArrayLike(Buffer, 'le', 8), offset + 10);
+				data.set(oracleSourceSlot.toArrayLike(Buffer, 'le', 8), offset + 18);
+			}
+		);
+
+		return new TransactionInstruction({
+			programId: this.program.programId,
+			keys: [
+				{
+					pubkey: this.wallet.publicKey,
+					isWritable: false,
+					isSigner: true,
+				},
+				{
+					pubkey: await this.getStatePublicKey(),
+					isWritable: false,
+					isSigner: false,
+				},
+				...updates.map(({ marketIndex }) => ({
+					pubkey: this.getPerpMarketAccountOrThrow(marketIndex).pubkey,
+					isWritable: true,
+					isSigner: false,
+				})),
+			],
+			data,
+		});
+	}
+
+	/**
+	 * Sends an `updateMmOracleBatchNative` transaction. See `getUpdateMmOracleBatchNativeIx` for
+	 * semantics.
+	 * @param updates - One entry per market.
+	 * @param txParams - Optional transaction params. `computeUnits` defaults to
+	 * `MM_ORACLE_BATCH_BASE_CU + MM_ORACLE_BATCH_PER_MARKET_CU * updates.length`; note the priority
+	 * fee is charged on the requested limit, not on consumption, so a cranker should pin its own
+	 * measured value rather than pad this one.
+	 * @returns The transaction signature.
+	 */
+	public async updateMmOracleBatchNative(
+		updates: MmOracleBatchUpdate[],
+		txParams?: TxParams
+	): Promise<TransactionSignature> {
+		const ix = await this.getUpdateMmOracleBatchNativeIx(updates);
+
+		const tx = await this.buildTransaction(ix, {
+			computeUnits:
+				MM_ORACLE_BATCH_BASE_CU +
+				MM_ORACLE_BATCH_PER_MARKET_CU * updates.length,
+			computeUnitsPrice: 0,
+			...txParams,
+		});
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+
+		return txSig;
 	}
 
 	/**

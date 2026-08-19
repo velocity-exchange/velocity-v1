@@ -96,6 +96,7 @@ function insertOrderToDLOB(
 			maxTs,
 			bitFlags: 0,
 			postedSlotTail: 0,
+			routeDigest: [0, 0, 0, 0],
 		},
 		userAccount.toString(),
 		slot.toNumber(),
@@ -149,6 +150,7 @@ function insertTriggerOrderToDLOB(
 			maxTs,
 			bitFlags: 0,
 			postedSlotTail: 0,
+			routeDigest: [0, 0, 0, 0],
 		},
 		userAccount.toString(),
 		slot.toNumber(),
@@ -3977,6 +3979,7 @@ describe('DLOB Perp Tests', () => {
 					oraclePriceOffset: ZERO,
 					maxTs: ZERO,
 					postedSlotTail: 0,
+					routeDigest: [0, 0, 0, 0],
 				};
 				dlob.insertSignedMsgOrder(
 					order,
@@ -4078,6 +4081,7 @@ describe('DLOB Perp Tests', () => {
 			oraclePriceOffset: ZERO,
 			maxTs: ZERO,
 			postedSlotTail: 0,
+			routeDigest: [0, 0, 0, 0],
 		};
 		dlob.insertSignedMsgOrder(limitOrder, user0.publicKey.toString());
 
@@ -4157,6 +4161,7 @@ describe('DLOB Perp Tests', () => {
 			oraclePriceOffset: ZERO,
 			maxTs: ZERO,
 			postedSlotTail: 0,
+			routeDigest: [0, 0, 0, 0],
 		};
 		dlob.insertSignedMsgOrder(postOnlyOrder, user0.publicKey.toString());
 

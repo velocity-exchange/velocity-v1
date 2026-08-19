@@ -13,7 +13,7 @@ use std::{
 
 use arrayvec::ArrayVec;
 use dashmap::{mapref::one::RefMut, DashMap};
-use fxhash::FxBuildHasher;
+use rustc_hash::FxBuildHasher;
 use solana_pubkey::Pubkey;
 
 use crate::{
@@ -973,10 +973,10 @@ impl DLOB {
                 },
             );
 
+            // skip, don't stop: `can_order_cross_vamm` gates on the order's own size,
+            // so a non-crossing order says nothing about the ones behind it
             if !new_crosses.is_empty() {
                 all_crosses.push((taker_bid, new_crosses));
-            } else {
-                break;
             }
         }
 
@@ -999,8 +999,6 @@ impl DLOB {
 
             if !new_crosses.is_empty() {
                 all_crosses.push((taker_ask, new_crosses));
-            } else {
-                break;
             }
         }
 

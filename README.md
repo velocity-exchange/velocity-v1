@@ -105,7 +105,7 @@ crucible run amm-pricing prop_k_conserved_swap --timeout 30
 crucible run e2e-svm invariant_solvency --release --timeout 60
 ```
 
-After a program change, run `bash fuzz/sync-idls.sh` to re-sync the vendored IDL. See [`fuzz/README.md`](./fuzz/README.md) for the harness list and details.
+The SVM harnesses read `packages/sdk/src/idl/velocity.json` directly, so a program change needs no extra sync step. See [`fuzz/README.md`](./fuzz/README.md) for the harness list and details.
 
 ## Common tasks
 
@@ -209,7 +209,12 @@ not manually edit `package.json` versions; changesets and the bot own those fiel
 | [deploy-scripts/README.md](./deploy-scripts/README.md)                        | Devnet upgrade runbook (two-phase buffer deploys, wipe/reinit)                |
 | [docs/alignment-and-native-offsets.md](./docs/alignment-and-native-offsets.md) | Zero-copy struct alignment invariants; read before adding fields to accounts  |
 | [docs/ACCOUNT-EXTENSION.md](./docs/ACCOUNT-EXTENSION.md)                      | Growing zero-copy accounts past their padding: the `extend_account` crank, migration runbook, client rules |
+| [docs/EXTERNAL-DEPENDENCIES.md](./docs/EXTERNAL-DEPENDENCIES.md)             | Every external dependency of the on-chain programs — CPI targets, oracles, whitelisted venues, and the full transitive crate graph — with trust assumptions and failure modes |
 
-## Bug bounty
+## Security and bug bounty
 
-Information about the bug bounty is in [bug-bounty/README.md](./bug-bounty/README.md).
+Found a vulnerability? **Do not open a GitHub issue.** Email security@velocity.exchange — see
+[SECURITY.md](./SECURITY.md).
+
+The bug bounty program's severity tiers, payouts, and scope are documented at
+[docs.velocity.exchange/protocol/risk-and-safety/bug-bounty](https://docs.velocity.exchange/protocol/risk-and-safety/bug-bounty).

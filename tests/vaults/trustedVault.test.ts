@@ -16,6 +16,7 @@ import {
 	IDL,
 	isNormalVaultClass,
 	isTrustedVaultClass,
+	WithdrawUnit,
 } from '@velocity-exchange/vaults-sdk';
 import {
 	BulkAccountLoader,
@@ -37,7 +38,10 @@ import {
 	printTxLogs,
 } from './common/testHelpers';
 import { Keypair, LAMPORTS_PER_SOL } from '@solana/web3.js';
-import { mockOracleNoProgram } from './common/bankrunOracle';
+import {
+	mockOracleNoProgram,
+	setFeedPriceNoProgram,
+} from './common/bankrunOracle';
 import { BankrunProvider } from 'anchor-bankrun';
 import { VaultClass } from '@velocity-exchange/vaults-sdk';
 
@@ -45,6 +49,8 @@ import { VaultClass } from '@velocity-exchange/vaults-sdk';
 const mantissaSqrtScale = new BN(100_000);
 const ammInitialQuoteAssetReserve = new BN(5 * 10 ** 13).mul(mantissaSqrtScale);
 const ammInitialBaseAssetReserve = new BN(5 * 10 ** 13).mul(mantissaSqrtScale);
+
+const SIX_MONTHS = 180 * 24 * 60 * 60;
 
 describe('TestTrustedVault', () => {
 	let vaultProgram: Program<Vaults>;
@@ -417,6 +423,99 @@ describe('TestTrustedVault', () => {
 			vaultEquityBefore.toNumber() - 5000 * 1e6 * 0.1,
 			1
 		);
+	});
+
+	// A NAV snapshot books the interest of every market that prices it, not only the
+	// denomination market. A manager borrow puts a liability on a second spot market, and
+	// `calculate_user_equity` values that position through the second market's own
+	// `cumulative_borrow_interest`. Left un-booked, the liability reads low, so NAV reads
+	// high and a withdrawer is overpaid out of the vault rather than out of another
+	// depositor.
+	it('books a non-denomination market before pricing shares', async () => {
+		await adminClient.updateMarginTradingEnabled(commonVaultKey, true, {
+			noLut: true,
+		});
+		await adminClient.adminUpdateVaultClass(
+			commonVaultKey,
+			VaultClass.TRUSTED,
+			{ noLut: true }
+		);
+
+		// user1 funds market 1 so there is SOL to borrow, then joins the vault.
+		await bankrunContextWrapper.fundKeypair(
+			user1Signer,
+			100 * LAMPORTS_PER_SOL
+		);
+		await user1VelocityClient.deposit(
+			new BN(100 * LAMPORTS_PER_SOL),
+			1,
+			user1Signer.publicKey,
+			undefined,
+			undefined
+		);
+		await user1Client.deposit(
+			user1VaultDepositor,
+			usdcAmount,
+			undefined,
+			{ noLut: true },
+			user1UserUSDCAccount
+		);
+
+		// The borrow leaves the vault's velocity user holding a position in market 1.
+		// 50 of 100 SOL borrowed is 50% utilization, so the market accrues at a real rate.
+		await managerClient.managerBorrow(
+			commonVaultKey,
+			1,
+			new BN(50 * LAMPORTS_PER_SOL),
+			undefined,
+			{ noLut: true, cuPriceMicroLamports: 0 }
+		);
+
+		await adminVelocityClient.fetchAccounts();
+		const solSpotMarketKey =
+			adminVelocityClient.getSpotMarketAccount(1)!.pubkey;
+		/** Reads market 1 straight off chain, past the subscription cache. */
+		const fetchSolBorrowIndex = async (): Promise<BN> =>
+			(
+				await (adminVelocityClient.program as any).account.spotMarket.fetch(
+					solSpotMarketKey
+				)
+			).cumulativeBorrowInterest as BN;
+
+		const borrowIndexBefore = await fetchSolBorrowIndex();
+		await bankrunContextWrapper.moveTimeForward(SIX_MONTHS);
+		// Re-post the same SOL price. The warp leaves the oracle stale, and equity is
+		// gated on oracle validity, so without this the vault refuses to price at all
+		// and the test could not tell a stale index from a stale oracle.
+		await setFeedPriceNoProgram(
+			bankrunContextWrapper,
+			initialSolPerpPrice,
+			solPerpOracle
+		);
+
+		// Nothing cranked market 1 over the warp, so its index is provably stale.
+		expect(
+			(await fetchSolBorrowIndex()).eq(borrowIndexBefore),
+			'market 1 accrued without a crank; the fixture no longer isolates the refresh'
+		).to.equal(true);
+
+		// `request_withdraw` snapshots NAV and moves no tokens, so the refresh CPI is the
+		// only thing in it that can advance market 1.
+		const shares = (
+			await vaultProgram.account.vaultDepositor.fetch(user1VaultDepositor)
+		).vaultShares as BN;
+		await user1Client.syncVaultUsers();
+		await user1Client.requestWithdraw(
+			user1VaultDepositor,
+			shares,
+			WithdrawUnit.SHARES,
+			{ noLut: true }
+		);
+
+		expect(
+			(await fetchSolBorrowIndex()).gt(borrowIndexBefore),
+			'market 1 was not booked: NAV priced the borrow off a stale index'
+		).to.equal(true);
 	});
 
 	it('admin can update vault class and update borrow', async () => {

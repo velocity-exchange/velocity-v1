@@ -42,6 +42,7 @@ import {
 	BASE_PRECISION,
 	BN_MAX,
 	DUST_POSITION_SIZE,
+	EQUITY_FLOOR_TRIP_DUST_ALLOWANCE,
 	MARGIN_PRECISION,
 	MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN,
 	ONE,
@@ -106,6 +107,8 @@ import {
 	calculateCollateralDepositRequiredForTrade,
 	calculateMarginUSDCRequiredForTrade,
 	calculateWorstCaseBaseAssetAmount,
+	FloorNetEquity,
+	TripNetEquity,
 } from './math/margin';
 import { MMOraclePriceData, OraclePriceData } from './oracles/types';
 import { UserConfig } from './userConfig';
@@ -116,7 +119,12 @@ import {
 	getWorstCaseTokenAmounts,
 	isSpotPositionAvailable,
 } from './math/spotPosition';
-import { getMultipleBetweenOracleSources } from './math/oracles';
+import {
+	getMultipleBetweenOracleSources,
+	getOracleValidity,
+	getSpotOracleValidity,
+	isOracleValidForMarginCalc,
+} from './math/oracles';
 import { getPerpMarketTierNumber, getSpotMarketTierNumber } from './math/tiers';
 import { StrictOraclePrice } from './oracles/strictOraclePrice';
 
@@ -1518,19 +1526,48 @@ export class User {
 
 	/**
 	 * True when the account has an admin-set `equityFloor` and its net equity
-	 * (`getNetUsdValue`: unweighted assets and perp PnL minus unweighted spot
-	 * liabilities, at live oracle prices) is below it. This is the trip
-	 * threshold of the permissionless `tripEquityFloorBreaker`; action gating
-	 * happens at `equityFloor + equityFloorBuffer` (see
-	 * `isBelowBufferedEquityFloor`). Mirrors `User::is_below_equity_floor`
-	 * onchain.
+	 * (unweighted assets and perp PnL minus unweighted spot liabilities) is below
+	 * it. This is the trip threshold of the permissionless `tripEquityFloorBreaker`;
+	 * action gating happens at `equityFloor + equityFloorBuffer` (see
+	 * `isBelowBufferedEquityFloor`). Mirrors `User::is_below_equity_floor` onchain.
+	 *
+	 * The value always comes from `getFloorNetEquity` so it prices the
+	 * account exactly the way the gates do. Note the onchain trip decides
+	 * with its own walk, which concedes bounded value to invalid-oracle dust
+	 * (`provesEquityFloorBreach` mirrors it exactly); this predicate only
+	 * compares the point value.
 	 */
-	public isBelowEquityFloor(): boolean {
+	public isBelowEquityFloor(slot?: BN): boolean {
 		const equityFloor = this.getUserAccountOrThrow().equityFloor;
 		if (equityFloor.lte(ZERO)) {
 			return false;
 		}
-		return this.getNetUsdValue().lt(equityFloor);
+		return this.getFloorNetEquity(slot).value.lt(equityFloor);
+	}
+
+	/**
+	 * True when the equity floor authorizes a keeper to force-cancel this account's
+	 * orders. Mirrors the `force_cancel_orders` arm of the onchain gate.
+	 *
+	 * Being below the floor AUTHORIZES a third party against the account, so
+	 * this fails closed in the opposite direction from the gates: it is true
+	 * only when every oracle is valid and the trusted value sits below the
+	 * floor, so a bad price cannot manufacture that authorization.
+	 *
+	 * The onchain instruction also authorizes on a breached maintenance margin, and
+	 * that arm is independent of this one. A `false` here does not mean the keeper
+	 * cannot force-cancel.
+	 */
+	public isForceCancelAuthorizedByEquityFloor(slot: BN): boolean {
+		const equityFloor = this.getUserAccountOrThrow().equityFloor;
+		if (equityFloor.lte(ZERO)) {
+			return false;
+		}
+		const netEquity = this.getFloorNetEquity(slot);
+		if (!netEquity.allOraclesValid) {
+			return false;
+		}
+		return netEquity.value.lt(equityFloor);
 	}
 
 	/**
@@ -1546,49 +1583,67 @@ export class User {
 
 	/**
 	 * True when the account has an admin-set `equityFloor` and its net equity
-	 * (`getNetUsdValue`) is below `equityFloor + equityFloorBuffer`. While
+	 * (`getFloorNetEquity`) is below `equityFloor + equityFloorBuffer`. While
 	 * below, the program rejects risk-increasing order placement and fills,
 	 * withdrawals, and transfers out of the account (`EquityBelowFloor`);
 	 * reduce-only activity stays allowed. Mirrors
 	 * `User::is_below_buffered_equity_floor` on-chain.
 	 */
-	public isBelowBufferedEquityFloor(): boolean {
+	public isBelowBufferedEquityFloor(slot?: BN): boolean {
 		const equityFloor = this.getUserAccountOrThrow().equityFloor;
 		if (equityFloor.lte(ZERO)) {
 			return false;
 		}
-		return this.getNetUsdValue().lt(this.getBufferedEquityFloor());
-	}
-
-	/**
-	 * Net equity (`getNetUsdValue`) in excess of the admin-set `equityFloor`,
-	 * floored at zero (QUOTE_PRECISION). Unbounded (`null`) when no floor is set.
-	 * This is headroom above the trip threshold; headroom above the level
-	 * risk-increasing actions must clear is `getEquityAboveBufferedFloor`.
-	 */
-	public getEquityAboveFloor(): BN | null {
-		const equityFloor = this.getUserAccountOrThrow().equityFloor;
-		if (equityFloor.lte(ZERO)) {
-			return null;
-		}
-		return BN.max(this.getNetUsdValue().sub(equityFloor), ZERO);
-	}
-
-	/**
-	 * Net equity (`getNetUsdValue`) in excess of `equityFloor +
-	 * equityFloorBuffer`, floored at zero (QUOTE_PRECISION). Unbounded
-	 * (`null`) when no floor is set. When this reaches zero, risk-increasing
-	 * actions start rejecting.
-	 */
-	public getEquityAboveBufferedFloor(): BN | null {
-		const equityFloor = this.getUserAccountOrThrow().equityFloor;
-		if (equityFloor.lte(ZERO)) {
-			return null;
-		}
-		return BN.max(
-			this.getNetUsdValue().sub(this.getBufferedEquityFloor()),
-			ZERO
+		// With a slot, predict the gates exactly: they fail closed, so any
+		// invalid oracle rejects the same way a value below the buffered
+		// floor does. Without one, the value is priced the same way but
+		// oracles are assumed valid.
+		const netEquity = this.getFloorNetEquity(slot);
+		return (
+			!netEquity.allOraclesValid ||
+			netEquity.value.lt(this.getBufferedEquityFloor())
 		);
+	}
+
+	/**
+	 * Net equity in excess of the admin-set `equityFloor`, floored at zero
+	 * (QUOTE_PRECISION). Unbounded (`null`) when no floor is set. This is headroom
+	 * above the trip threshold; headroom above the level risk-increasing actions
+	 * must clear is `getEquityAboveBufferedFloor`.
+	 *
+	 * Pass `slot` to measure headroom the way the gates do: any invalid
+	 * oracle reports zero headroom (the gates fail closed).
+	 */
+	public getEquityAboveFloor(slot?: BN): BN | null {
+		const equityFloor = this.getUserAccountOrThrow().equityFloor;
+		if (equityFloor.lte(ZERO)) {
+			return null;
+		}
+		const netEquity = this.getFloorNetEquity(slot);
+		if (!netEquity.allOraclesValid) {
+			return ZERO;
+		}
+		return BN.max(netEquity.value.sub(equityFloor), ZERO);
+	}
+
+	/**
+	 * Net equity in excess of `equityFloor + equityFloorBuffer`, floored at zero
+	 * (QUOTE_PRECISION). Unbounded (`null`) when no floor is set. When this reaches
+	 * zero, risk-increasing actions start rejecting.
+	 *
+	 * Pass `slot` to measure headroom the way the gates do: any invalid
+	 * oracle reports zero headroom (the gates fail closed).
+	 */
+	public getEquityAboveBufferedFloor(slot?: BN): BN | null {
+		const equityFloor = this.getUserAccountOrThrow().equityFloor;
+		if (equityFloor.lte(ZERO)) {
+			return null;
+		}
+		const netEquity = this.getFloorNetEquity(slot);
+		if (!netEquity.allOraclesValid) {
+			return ZERO;
+		}
+		return BN.max(netEquity.value.sub(this.getBufferedEquityFloor()), ZERO);
 	}
 
 	/**
@@ -2244,6 +2299,352 @@ export class User {
 		const unrealizedPnl = this.getUnrealizedPNL(true, undefined, undefined);
 		const isolatedDeposits = this.getTotalIsolatedPositionDeposits();
 		return netSpotValue.add(unrealizedPnl).add(isolatedDeposits);
+	}
+
+	/**
+	 * Net equity plus the oracle-validity verdict, mirroring the program's
+	 * `calculate_net_equity_for_floor` metric (`calculate_user_equity`).
+	 * Every position is valued at its live oracle price; settled markets are
+	 * valued at their expiry price and their oracle is excluded from the
+	 * verdict.
+	 *
+	 * The onchain floor gates fail closed on the verdict: risk-increasing
+	 * actions, withdrawals and transfers out are authorized only when
+	 * `allOraclesValid` and `value` clears `equityFloor + equityFloorBuffer`;
+	 * being below the raw floor counts as force-cancel grounds only when
+	 * `allOraclesValid` and `value` sits below it. The breaker trip uses its
+	 * own walk (`getTripNetEquity`), which concedes bounded value to
+	 * invalid-oracle dust instead of requiring every oracle valid.
+	 * @param slot Current slot, for oracle staleness classification. Omit to
+	 * skip the verdict: `value` is still priced exactly as the gates price it
+	 * (live oracles, expiry price for settled markets), but `allOraclesValid`
+	 * is reported `true` unconditionally.
+	 * @returns Value and verdict, QUOTE_PRECISION.
+	 */
+	getFloorNetEquity(slot?: BN): FloorNetEquity {
+		const oracleGuardRails =
+			this.velocityClient.getStateAccount().oracleGuardRails;
+		const userAccount = this.getUserAccountOrThrow();
+
+		let value = ZERO;
+		let allOraclesValid = true;
+
+		for (const spotPosition of userAccount.spotPositions) {
+			if (isSpotPositionAvailable(spotPosition)) {
+				continue;
+			}
+
+			const spotMarket = this.velocityClient.getSpotMarketAccountOrThrow(
+				spotPosition.marketIndex
+			);
+			const oracleData = this.getOracleDataForSpotMarket(
+				spotPosition.marketIndex
+			);
+			const oracleValid = slot
+				? isOracleValidForMarginCalc(
+						getSpotOracleValidity(
+							spotMarket,
+							oracleData,
+							oracleGuardRails,
+							slot
+						)
+				  )
+				: true;
+			allOraclesValid = allOraclesValid && oracleValid;
+
+			const tokenAmount = getSignedTokenAmount(
+				getTokenAmount(
+					spotPosition.scaledBalance,
+					spotMarket,
+					spotPosition.balanceType
+				),
+				spotPosition.balanceType
+			);
+			value = value.add(
+				getTokenValue(tokenAmount, spotMarket.decimals, {
+					price: oracleData.price,
+				})
+			);
+		}
+
+		for (const perpPosition of userAccount.perpPositions) {
+			if (positionIsAvailable(perpPosition)) {
+				continue;
+			}
+
+			const market = this.velocityClient.getPerpMarketAccountOrThrow(
+				perpPosition.marketIndex
+			);
+			const quoteSpotMarket = this.velocityClient.getSpotMarketAccountOrThrow(
+				market.quoteSpotMarketIndex
+			);
+			const quoteOracleData = this.getOracleDataForSpotMarket(
+				market.quoteSpotMarketIndex
+			);
+			const quoteOracleValid = slot
+				? isOracleValidForMarginCalc(
+						getSpotOracleValidity(
+							quoteSpotMarket,
+							quoteOracleData,
+							oracleGuardRails,
+							slot
+						)
+				  )
+				: true;
+			allOraclesValid = allOraclesValid && quoteOracleValid;
+
+			// Keyed off the position flag, matching the program's `is_isolated()`.
+			if (this.isPerpPositionIsolated(perpPosition)) {
+				const isolatedTokenAmount = getTokenAmount(
+					perpPosition.isolatedPositionScaledBalance,
+					quoteSpotMarket,
+					SpotBalanceType.DEPOSIT
+				);
+				value = value.add(
+					getTokenValue(isolatedTokenAmount, quoteSpotMarket.decimals, {
+						price: quoteOracleData.price,
+					})
+				);
+			}
+
+			const oracleData = this.getOracleDataForPerpMarket(
+				perpPosition.marketIndex
+			);
+			const oracleValid = slot
+				? isOracleValidForMarginCalc(
+						getOracleValidity(market, oracleData, oracleGuardRails, slot)
+				  )
+				: true;
+
+			const settled = isVariant(market.status, 'settlement');
+			// A settled market is valued at its expiry price; its oracle does
+			// not enter the number, so its verdict must not enter the flag.
+			if (!settled) {
+				allOraclesValid = allOraclesValid && oracleValid;
+			}
+
+			const valuationPrice = settled ? market.expiryPrice : oracleData.price;
+			const pnl = calculatePositionPNL(market, perpPosition, true, {
+				price: valuationPrice,
+			});
+			value = value.add(pnl.mul(quoteOracleData.price).div(PRICE_PRECISION));
+		}
+
+		return { value, allOraclesValid };
+	}
+
+	/**
+	 * Net-equity upper bound for the breaker trip, mirroring the program's
+	 * `calculate_user_equity_for_trip`. Positions with valid oracles are
+	 * valued exactly as `getFloorNetEquity` values them. A position with an
+	 * invalid oracle is conceded its most favorable value instead of vetoing
+	 * the proof: a liability or a short base leg counts as zero at any size,
+	 * an asset or long base leg worth no more than
+	 * `EQUITY_FLOOR_TRIP_DUST_ALLOWANCE` at its own last twap counts as
+	 * exactly the allowance, and a larger asset or long, or one whose twap
+	 * is not positive (or an invalid quote oracle), makes the breach
+	 * unprovable. Both onchain trip paths (the permissionless trip and the
+	 * lazy trip) arm the breaker when `provable` and `equityUpperBound` is
+	 * below the raw floor.
+	 * @param slot Current slot, for oracle staleness classification. Omit to
+	 * treat every oracle as valid: the result equals `getFloorNetEquity` with
+	 * no concession.
+	 * @returns Upper bound and provability, QUOTE_PRECISION.
+	 */
+	getTripNetEquity(slot?: BN): TripNetEquity {
+		const oracleGuardRails =
+			this.velocityClient.getStateAccount().oracleGuardRails;
+		const userAccount = this.getUserAccountOrThrow();
+
+		const unprovable: TripNetEquity = {
+			equityUpperBound: ZERO,
+			provable: false,
+		};
+
+		let equityUpperBound = ZERO;
+
+		for (const spotPosition of userAccount.spotPositions) {
+			if (isSpotPositionAvailable(spotPosition)) {
+				continue;
+			}
+
+			const spotMarket = this.velocityClient.getSpotMarketAccountOrThrow(
+				spotPosition.marketIndex
+			);
+			const oracleData = this.getOracleDataForSpotMarket(
+				spotPosition.marketIndex
+			);
+			const oracleValid = slot
+				? isOracleValidForMarginCalc(
+						getSpotOracleValidity(
+							spotMarket,
+							oracleData,
+							oracleGuardRails,
+							slot
+						)
+				  )
+				: true;
+
+			const tokenAmount = getSignedTokenAmount(
+				getTokenAmount(
+					spotPosition.scaledBalance,
+					spotMarket,
+					spotPosition.balanceType
+				),
+				spotPosition.balanceType
+			);
+
+			if (oracleValid) {
+				equityUpperBound = equityUpperBound.add(
+					getTokenValue(tokenAmount, spotMarket.decimals, {
+						price: oracleData.price,
+					})
+				);
+				continue;
+			}
+
+			// a liability can only lower equity at any price, so its most
+			// favorable value is zero at any size and it adds nothing
+			if (tokenAmount.lte(ZERO)) {
+				continue;
+			}
+
+			// the twap only sizes the asset for the dust test; the concession
+			// below overvalues whatever passes it. A non-positive twap cannot
+			// size anything, so the asset keeps the breach unprovable at any
+			// balance
+			const twap = spotMarket.historicalOracleData.lastOraclePriceTwap;
+			if (twap.lte(ZERO)) {
+				return unprovable;
+			}
+			const twapValue = getTokenValue(tokenAmount, spotMarket.decimals, {
+				price: twap,
+			});
+			if (twapValue.gt(EQUITY_FLOOR_TRIP_DUST_ALLOWANCE)) {
+				return unprovable;
+			}
+
+			// an asset under the dust test is worth at most the allowance
+			equityUpperBound = equityUpperBound.add(EQUITY_FLOOR_TRIP_DUST_ALLOWANCE);
+		}
+
+		for (const perpPosition of userAccount.perpPositions) {
+			if (positionIsAvailable(perpPosition)) {
+				continue;
+			}
+
+			const market = this.velocityClient.getPerpMarketAccountOrThrow(
+				perpPosition.marketIndex
+			);
+			const quoteSpotMarket = this.velocityClient.getSpotMarketAccountOrThrow(
+				market.quoteSpotMarketIndex
+			);
+			const quoteOracleData = this.getOracleDataForSpotMarket(
+				market.quoteSpotMarketIndex
+			);
+
+			// the quote leg stays strict: it prices every pnl conversion, so
+			// its verdict cannot be conceded away
+			const quoteOracleValid = slot
+				? isOracleValidForMarginCalc(
+						getSpotOracleValidity(
+							quoteSpotMarket,
+							quoteOracleData,
+							oracleGuardRails,
+							slot
+						)
+				  )
+				: true;
+			if (!quoteOracleValid) {
+				return unprovable;
+			}
+
+			// Keyed off the position flag, matching the program's `is_isolated()`.
+			if (this.isPerpPositionIsolated(perpPosition)) {
+				const isolatedTokenAmount = getTokenAmount(
+					perpPosition.isolatedPositionScaledBalance,
+					quoteSpotMarket,
+					SpotBalanceType.DEPOSIT
+				);
+				equityUpperBound = equityUpperBound.add(
+					getTokenValue(isolatedTokenAmount, quoteSpotMarket.decimals, {
+						price: quoteOracleData.price,
+					})
+				);
+			}
+
+			const oracleData = this.getOracleDataForPerpMarket(
+				perpPosition.marketIndex
+			);
+			const settled = isVariant(market.status, 'settlement');
+			const perpOracleValid =
+				settled ||
+				(slot
+					? isOracleValidForMarginCalc(
+							getOracleValidity(market, oracleData, oracleGuardRails, slot)
+					  )
+					: true);
+
+			let pnl: BN;
+			if (perpOracleValid) {
+				const valuationPrice = settled ? market.expiryPrice : oracleData.price;
+				pnl = calculatePositionPNL(market, perpPosition, true, {
+					price: valuationPrice,
+				});
+			} else {
+				// only the base leg depends on the invalid oracle. Entry
+				// quote and funding come from stored numbers and count
+				// exactly; a short's base leg only subtracts at any price, so
+				// it is conceded zero at any size. A long's base leg under
+				// the dust test is worth at most the allowance; a larger
+				// long, or a non-positive twap that cannot size it, keeps the
+				// breach unprovable
+				let baseLegUpperBound = ZERO;
+				if (perpPosition.baseAssetAmount.gt(ZERO)) {
+					const twap =
+						market.marketStats.historicalOracleData.lastOraclePriceTwap;
+					if (twap.lte(ZERO)) {
+						return unprovable;
+					}
+					const twapNotional = perpPosition.baseAssetAmount
+						.mul(twap)
+						.div(BASE_PRECISION);
+					if (twapNotional.gt(EQUITY_FLOOR_TRIP_DUST_ALLOWANCE)) {
+						return unprovable;
+					}
+					baseLegUpperBound = EQUITY_FLOOR_TRIP_DUST_ALLOWANCE;
+				}
+
+				pnl = perpPosition.quoteAssetAmount
+					.add(calculateUnsettledFundingPnl(market, perpPosition))
+					.add(baseLegUpperBound);
+			}
+
+			equityUpperBound = equityUpperBound.add(
+				pnl.mul(quoteOracleData.price).div(PRICE_PRECISION)
+			);
+		}
+
+		return { equityUpperBound, provable: true };
+	}
+
+	/**
+	 * Whether the onchain breaker trip would fire for this subaccount:
+	 * `getTripNetEquity` is provable and its upper bound sits below the raw
+	 * `equityFloor`. Mirrors the program's `TripNetEquity::proves_breach`,
+	 * the single predicate both trip paths decide with.
+	 * @param slot Current slot, for oracle staleness classification.
+	 */
+	provesEquityFloorBreach(slot?: BN): boolean {
+		const userAccount = this.getUserAccountOrThrow();
+		if (userAccount.equityFloor.lte(ZERO)) {
+			return false;
+		}
+		const tripNetEquity = this.getTripNetEquity(slot);
+		return (
+			tripNetEquity.provable &&
+			tripNetEquity.equityUpperBound.lt(userAccount.equityFloor)
+		);
 	}
 
 	/**
@@ -4064,14 +4465,20 @@ export class User {
 	}
 
 	/**
-	 * Looks up the user's fee tier from the state account's fee structure.
+	 * Looks up the user's fee tier from the state account's fee structure,
+	 * mirroring the program's `determine_perp_fee_tier`.
 	 *
-	 * For perp markets, the tier is selected by the user's rolling 30-day
-	 * volume (`getUser30dRollingVolumeEstimate`, QUOTE_PRECISION) against fixed
-	 * breakpoints — $2M, $10M, $20M, $80M, $200M — picking the lowest-index
-	 * tier whose breakpoint the user's volume is still under (tier 5, the
-	 * lowest fees, if volume meets or exceeds the top breakpoint). Spot markets
-	 * always use tier 0 (no volume-based discount).
+	 * For perp markets, the tier is selected by the user's trailing 30-day
+	 * volume projected to `now` (`getUser30dRollingVolumeEstimate`,
+	 * QUOTE_PRECISION — the stored rolling sum decays lazily on-chain, so the
+	 * read applies the same decay virtually) against fixed breakpoints — $5M,
+	 * $80M — picking the lowest-index tier whose breakpoint the volume is
+	 * still under. Tiers 0/1/2 are named Regular / VIP 1 / VIP 2 (VIP 2, the
+	 * lowest fees, at or above the top breakpoint); names are presentation
+	 * only, selection is index-based.
+	 * While `state.promoFeeTier` is non-zero it floors everyone's tier at that
+	 * index (0 = disabled; nobody is downgraded by it). Spot markets always
+	 * use tier 0 (no volume-based discount).
 	 * @param marketType `MarketType.PERP` or `MarketType.SPOT`.
 	 * @param now Optional unix timestamp (seconds) to evaluate the rolling volume window as of; defaults to current time.
 	 * @returns The matching `FeeTier` (numerator/denominator fee fractions and referee-discount fractions).
@@ -4090,14 +4497,11 @@ export class User {
 			);
 
 			const volumeThresholds = [
-				new BN(2_000_000).mul(QUOTE_PRECISION),
-				new BN(10_000_000).mul(QUOTE_PRECISION),
-				new BN(20_000_000).mul(QUOTE_PRECISION),
+				new BN(5_000_000).mul(QUOTE_PRECISION),
 				new BN(80_000_000).mul(QUOTE_PRECISION),
-				new BN(200_000_000).mul(QUOTE_PRECISION),
 			];
 
-			let feeTierIndex = 5;
+			let feeTierIndex = volumeThresholds.length;
 			for (let i = 0; i < volumeThresholds.length; i++) {
 				if (total30dVolume.lt(volumeThresholds[i])) {
 					feeTierIndex = i;
@@ -4105,10 +4509,48 @@ export class User {
 				}
 			}
 
+			// promo tier floor: everyone gets at least `state.promoFeeTier`
+			// while it is set (0 = disabled/no-op), mirroring
+			// `determine_perp_fee_tier`
+			feeTierIndex = Math.max(
+				feeTierIndex,
+				Math.min(state.promoFeeTier, volumeThresholds.length)
+			);
+
 			return state.perpFeeStructure.feeTiers[feeTierIndex];
 		}
 
 		return state.spotFeeStructure.feeTiers[0];
+	}
+
+	/**
+	 * True when the program charges a builder fee on this user's perp fills.
+	 *
+	 * A builder fee is an additive debit on the taker that the builder later
+	 * claims into its own account, and the taker is the party that approves the
+	 * builder. The program therefore treats the fee as a transfer out and
+	 * charges it only when the taker meets initial margin, the gate a
+	 * withdrawal clears. A position-decreasing fill is otherwise checked
+	 * against maintenance margin alone. Mirrors the gate in
+	 * `fulfill_perp_order` (`controller/orders.rs`); when it is false the fill
+	 * still executes and the builder is paid nothing for it.
+	 *
+	 * The program applies initial margin to the bucket the order trades in and
+	 * maintenance margin to the user's other buckets. This method applies
+	 * initial margin to every bucket, so for a user with isolated positions it
+	 * can report false where the program still charges the fee.
+	 *
+	 * The program also waives the fee when any liability oracle is invalid, and
+	 * values a deposit with an invalid oracle at zero. This method does not
+	 * model oracle validity, so it can report true where the program waives the
+	 * fee. Treat the result as an estimate, not a guarantee.
+	 *
+	 * @return {boolean} Whether a builder fee applies to this user's fills
+	 */
+	public isBuilderFeeCharged(): boolean {
+		return this.getMarginCalculation('Initial', {
+			strict: true,
+		}).meetsMarginRequirement();
 	}
 
 	/**
@@ -4127,7 +4569,7 @@ export class User {
 	 * @param quoteAmount Trade size, QUOTE_PRECISION (1e6).
 	 * @param marketIndex Optional perp market to use `VelocityClient.getMarketFees` for instead of the volume-tier fee structure.
 	 * @param isReferee Optional override for whether the referee discount applies; defaults to the user's actual `UserStats` referred status. Ignored on the `marketIndex` path (which reads referee status inside `getMarketFees`).
-	 * @param builderInfo Optional builder code; when it carries `builderIdx` + `builderFeeTenthBps`, the builder fee is added on top of the tiered fee.
+	 * @param builderInfo Optional builder code; when it carries `builderIdx` + `builderFeeTenthBps`, the builder fee is added on top of the tiered fee. A user below initial margin pays no builder fee (see `isBuilderFeeCharged`), so none is added.
 	 * @returns feeForQuote : Precision QUOTE_PRECISION (1e6)
 	 */
 	public calculatePerpTakerFee(
@@ -4172,7 +4614,13 @@ export class User {
 
 			// Builder fee (M12): charged on top of the tiered fee, on the raw quote
 			// (independent of the referee discount), mirroring `builder_fee` in `math/fees.rs`.
-			if (builderInfo && hasBuilderParams(builderInfo)) {
+			// The program waives it when the taker is below initial margin — see
+			// `isBuilderFeeCharged`.
+			if (
+				builderInfo &&
+				hasBuilderParams(builderInfo) &&
+				this.isBuilderFeeCharged()
+			) {
 				fee = fee.add(
 					calculateBuilderFee(quoteAmount, builderInfo.builderFeeTenthBps!)
 				);
@@ -4189,11 +4637,15 @@ export class User {
 	 * Combines three caps: the market-wide withdraw/borrow guard
 	 * (`calculateWithdrawLimit`, a rolling-window rate limit on the spot
 	 * market), the user's own deposit balance, and how much their free
-	 * collateral supports withdrawing/borrowing. If `canBypassWithdrawLimits`
-	 * returns `canBypass: true` (see that method), the market-wide withdraw
-	 * limit floor is raised to the user's full deposit amount — letting a
-	 * small, healthy, always-net-positive depositor withdraw in full even if
-	 * the market-wide guard would otherwise throttle them.
+	 * collateral supports withdrawing/borrowing.
+	 *
+	 * If `canBypassWithdrawLimits` returns `canBypass: true` (see that method),
+	 * the market-wide withdraw limit is raised for this user. It is raised to the
+	 * user's full deposit amount, but never past `exceptionWithdrawLimit`. That
+	 * second bound is the market-level budget the program applies to the whole
+	 * eligible cohort. A small, healthy, always-net-positive depositor therefore
+	 * withdraws in full while the market-wide guard throttles larger movements,
+	 * unless other eligible accounts already spent the budget.
 	 * @param marketIndex
 	 * @param reduceOnly If true, caps the result so the withdrawal cannot open a borrow (never exceeds the user's current deposit). If false/omitted, may return an amount larger than the deposit, up to the user's max allowed new liability.
 	 * @returns withdrawalLimit : Precision is the token precision for the chosen SpotMarket
@@ -4204,10 +4656,8 @@ export class User {
 			this.velocityClient.getSpotMarketAccountOrThrow(marketIndex);
 
 		// eslint-disable-next-line prefer-const
-		let { borrowLimit, withdrawLimit } = calculateWithdrawLimit(
-			spotMarket,
-			nowTs
-		);
+		let { borrowLimit, withdrawLimit, exceptionWithdrawLimit } =
+			calculateWithdrawLimit(spotMarket, nowTs);
 
 		// the withdraw path enforces the equity floor on post-withdraw net
 		// equity, so equity above the floor caps free collateral here
@@ -4236,7 +4686,19 @@ export class User {
 		const { canBypass, depositAmount: userDepositAmount } =
 			this.canBypassWithdrawLimits(marketIndex);
 		if (canBypass) {
-			withdrawLimit = BN.max(withdrawLimit, userDepositAmount);
+			// `canBypass` only makes the account eligible. The program bounds the
+			// exception at market level in `check_withdraw_limits`: the eligible
+			// cohort can take the market one `withdrawGuardThreshold` below the
+			// breaker floor and no further. Cap the raised limit by the room that
+			// is left, or this method promises an amount that reverts on chain
+			// with `DailyWithdrawLimit`.
+			//
+			// `exceptionWithdrawLimit` is never below `withdrawLimit`, so an
+			// eligible account never loses room it already had.
+			withdrawLimit = BN.max(
+				withdrawLimit,
+				BN.min(userDepositAmount, exceptionWithdrawLimit)
+			);
 		}
 
 		const assetWeight = calculateAssetWeight(
@@ -4309,9 +4771,12 @@ export class User {
 	 *   - Their current deposit amount is below `maxDepositAmount`, i.e. 10% of
 	 *     the spot market's `withdrawGuardThreshold`.
 	 *
-	 * This lets a small, well-behaved depositor withdraw their own funds in
-	 * full even while the market-wide withdraw guard is actively throttling
-	 * larger movements. Used by `getWithdrawalLimit`.
+	 * This mirrors `check_user_exception_to_withdraw_limits` in the program. It
+	 * is an eligibility test only. `canBypass: true` does not mean the withdrawal
+	 * succeeds on chain. The program also applies a market-level budget: every
+	 * eligible account shares one `withdrawGuardThreshold` of room below the
+	 * breaker floor. Read `exceptionWithdrawLimit` from `calculateWithdrawLimit`
+	 * for that budget, or call `getWithdrawalLimit`, which applies both bounds.
 	 * @param marketIndex
 	 * @returns `canBypass`; `netDeposits` (lifetime `totalDeposits - totalWithdraws`, QUOTE_PRECISION, 1e6); `depositAmount` and `maxDepositAmount`, both in the spot market's own token decimals.
 	 */

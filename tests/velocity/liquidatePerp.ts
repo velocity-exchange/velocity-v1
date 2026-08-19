@@ -230,10 +230,10 @@ describe('liquidate perp (no open orders)', () => {
 		console.log('deltaValueToLiq:', deltaValueToLiq.toString());
 		console.log('pp.base:', pp.baseAssetAmount.toString());
 
-		const expectedLiqPrice = 0.452195;
+		const expectedLiqPrice = new BN(451563);
 		const liqPrice = velocityClientUser.liquidationPrice(0, ZERO);
 		console.log('liqPrice:', liqPrice.toString());
-		assert(liqPrice.eq(new BN(expectedLiqPrice * PRICE_PRECISION.toNumber())));
+		assert(liqPrice.eq(expectedLiqPrice));
 
 		const oracle = velocityClient.getPerpMarketAccount(0).oracle;
 		await setFeedPriceNoProgram(bankrunContextWrapper, 0.9, oracle, 10000);
@@ -256,11 +256,7 @@ describe('liquidate perp (no open orders)', () => {
 		console.log('mmr0:', mmr0.toString());
 		console.log('deltaValueToLiq0:', deltaValueToLiq0.toString());
 		console.log('pp.base0:', pp0.baseAssetAmount.toString());
-		assert(
-			liqPriceAfterPxChange.eq(
-				new BN(expectedLiqPrice * PRICE_PRECISION.toNumber())
-			)
-		);
+		assert(liqPriceAfterPxChange.eq(expectedLiqPrice));
 
 		await velocityClient.settlePNL(
 			velocityClientUser.userAccountPublicKey,
@@ -286,11 +282,7 @@ describe('liquidate perp (no open orders)', () => {
 		console.log('pp.base2:', pp2.baseAssetAmount.toString());
 
 		console.log('liqPriceAfterSettlePnl:', liqPriceAfterSettlePnl.toString());
-		assert(
-			liqPriceAfterSettlePnl.eq(
-				new BN(expectedLiqPrice * PRICE_PRECISION.toNumber())
-			)
-		);
+		assert(liqPriceAfterSettlePnl.eq(expectedLiqPrice));
 
 		await setFeedPriceNoProgram(bankrunContextWrapper, 1.1, oracle, 10000);
 		await bulkAccountLoader.load();
@@ -313,11 +305,7 @@ describe('liquidate perp (no open orders)', () => {
 			'liqPriceAfterRallySettlePnl:',
 			liqPriceAfterRallySettlePnl.toString()
 		);
-		assert(
-			liqPriceAfterRallySettlePnl.eq(
-				new BN(expectedLiqPrice * PRICE_PRECISION.toNumber())
-			)
-		);
+		assert(liqPriceAfterRallySettlePnl.eq(expectedLiqPrice));
 		await velocityClientUser.unsubscribe();
 
 		await setFeedPriceNoProgram(bankrunContextWrapper, 0.1, oracle, 10000);
@@ -426,7 +414,7 @@ describe('liquidate perp (no open orders)', () => {
 		assert(
 			velocityClient
 				.getUserAccount()
-				.perpPositions[0].quoteAssetAmount.eq(new BN(-5767726))
+				.perpPositions[0].quoteAssetAmount.eq(new BN(-5757226))
 		);
 
 		await velocityClient.updatePerpMarketContractTier(0, ContractTier.A);
@@ -479,7 +467,7 @@ describe('liquidate perp (no open orders)', () => {
 			'marketAfterBankruptcy.totalSocialLoss:',
 			marketAfterBankruptcy.totalSocialLoss.toString()
 		);
-		assert(marketAfterBankruptcy.totalSocialLoss.eq(new BN(5767726)));
+		assert(marketAfterBankruptcy.totalSocialLoss.eq(new BN(5757226)));
 
 		// assert(!velocityClient.getUserAccount().isBankrupt);
 		// assert(!velocityClient.getUserAccount().isBeingLiquidated);
@@ -500,13 +488,13 @@ describe('liquidate perp (no open orders)', () => {
 		console.log(
 			perpBankruptcyRecord.perpBankruptcy.cumulativeFundingRateDelta.toString()
 		);
-		assert(perpBankruptcyRecord.perpBankruptcy.pnl.eq(new BN(-5767726)));
+		assert(perpBankruptcyRecord.perpBankruptcy.pnl.eq(new BN(-5757226)));
 		console.log(
 			perpBankruptcyRecord.perpBankruptcy.cumulativeFundingRateDelta.toString()
 		);
 		assert(
 			perpBankruptcyRecord.perpBankruptcy.cumulativeFundingRateDelta.eq(
-				new BN(329585000)
+				new BN(328985000)
 			)
 		);
 
@@ -515,7 +503,7 @@ describe('liquidate perp (no open orders)', () => {
 			market.cumulativeFundingRateLong.toString(),
 			market.cumulativeFundingRateShort.toString()
 		);
-		assert(market.cumulativeFundingRateLong.eq(new BN(329597500)));
-		assert(market.cumulativeFundingRateShort.eq(new BN(-329572500)));
+		assert(market.cumulativeFundingRateLong.eq(new BN(328997500)));
+		assert(market.cumulativeFundingRateShort.eq(new BN(-328972500)));
 	});
 });

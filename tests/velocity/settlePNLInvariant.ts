@@ -244,22 +244,33 @@ describe('spot deposit and withdraw', () => {
 		assert(spotMarket.maintenanceAssetWeight === maintenanceAssetWeight);
 
 		console.log(spotMarket.historicalOracleData);
-		assert(spotMarket.historicalOracleData.lastOraclePriceTwapTs.eq(ZERO));
+		// OtterSec #121: initialize_spot_market now stamps last_oracle_price_twap_ts.
+		// It used to be left at zero, which made the market's first TWAP refresh replace
+		// the TWAP with the live price outright and collapse the strict-oracle price band.
+		assert(spotMarket.historicalOracleData.lastOraclePriceTwapTs.gt(ZERO));
 
 		assert(
 			spotMarket.historicalOracleData.lastOraclePrice.eq(
 				new BN(30 * PRICE_PRECISION.toNumber())
 			)
 		);
+		// OtterSec #121: the market's first oracle-TWAP refresh now runs the normal
+		// EMA instead of replacing the TWAP with the live price wholesale (the old
+		// zero-timestamp path). `calculate_weighted_average` adds its ±1 anti-
+		// stagnation bias *after* the division, and that bias fires even when the
+		// live price and the stored TWAP are identical — so a refresh at an
+		// unchanged price lands one unit off it. Allow exactly that one unit.
 		assert(
-			spotMarket.historicalOracleData.lastOraclePriceTwap.eq(
-				new BN(30 * PRICE_PRECISION.toNumber())
-			)
+			spotMarket.historicalOracleData.lastOraclePriceTwap
+				.sub(new BN(30 * PRICE_PRECISION.toNumber()))
+				.abs()
+				.lte(new BN(1))
 		);
 		assert(
-			spotMarket.historicalOracleData.lastOraclePriceTwap5Min.eq(
-				new BN(30 * PRICE_PRECISION.toNumber())
-			)
+			spotMarket.historicalOracleData.lastOraclePriceTwap5Min
+				.sub(new BN(30 * PRICE_PRECISION.toNumber()))
+				.abs()
+				.lte(new BN(1))
 		);
 
 		assert(admin.getStateAccount().numberOfSpotMarkets === 2);
@@ -342,21 +353,32 @@ describe('spot deposit and withdraw', () => {
 		const spotMarket = await admin.getSpotMarketAccount(marketIndex);
 		assert(spotMarket.depositBalance.eq(SPOT_MARKET_BALANCE_PRECISION));
 		console.log(spotMarket.historicalOracleData);
-		assert(spotMarket.historicalOracleData.lastOraclePriceTwapTs.eq(ZERO));
+		// OtterSec #121: initialize_spot_market now stamps last_oracle_price_twap_ts.
+		// It used to be left at zero, which made the market's first TWAP refresh replace
+		// the TWAP with the live price outright and collapse the strict-oracle price band.
+		assert(spotMarket.historicalOracleData.lastOraclePriceTwapTs.gt(ZERO));
 		assert(
 			spotMarket.historicalOracleData.lastOraclePrice.eq(
 				new BN(30 * PRICE_PRECISION.toNumber())
 			)
 		);
+		// OtterSec #121: the market's first oracle-TWAP refresh now runs the normal
+		// EMA instead of replacing the TWAP with the live price wholesale (the old
+		// zero-timestamp path). `calculate_weighted_average` adds its ±1 anti-
+		// stagnation bias *after* the division, and that bias fires even when the
+		// live price and the stored TWAP are identical — so a refresh at an
+		// unchanged price lands one unit off it. Allow exactly that one unit.
 		assert(
-			spotMarket.historicalOracleData.lastOraclePriceTwap.eq(
-				new BN(30 * PRICE_PRECISION.toNumber())
-			)
+			spotMarket.historicalOracleData.lastOraclePriceTwap
+				.sub(new BN(30 * PRICE_PRECISION.toNumber()))
+				.abs()
+				.lte(new BN(1))
 		);
 		assert(
-			spotMarket.historicalOracleData.lastOraclePriceTwap5Min.eq(
-				new BN(30 * PRICE_PRECISION.toNumber())
-			)
+			spotMarket.historicalOracleData.lastOraclePriceTwap5Min
+				.sub(new BN(30 * PRICE_PRECISION.toNumber()))
+				.abs()
+				.lte(new BN(1))
 		);
 
 		const vaultAmount = new BN(
@@ -423,10 +445,10 @@ describe('spot deposit and withdraw', () => {
 
 		const quoteTokenAmount = await secondUserVelocityClient.getTokenAmount(0);
 
-		assert(quoteTokenAmount.eq(new BN(-30003)));
+		assert(quoteTokenAmount.eq(new BN(-12003)));
 
 		const settlePnlRecord = eventSubscriber.getEventsArray('SettlePnlRecord');
 		assert(settlePnlRecord.length === 1);
-		assert(settlePnlRecord[0].pnl.eq(new BN(-30002)));
+		assert(settlePnlRecord[0].pnl.eq(new BN(-12002)));
 	});
 });

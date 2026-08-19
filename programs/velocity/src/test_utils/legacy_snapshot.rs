@@ -385,7 +385,7 @@ impl LegacyPoolBalance24 {
         PoolBalance {
             scaled_balance: self.scaled_balance,
             market_index: self.market_index,
-            padding: [0; 14],
+            ..PoolBalance::default()
         }
     }
 }

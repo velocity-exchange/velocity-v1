@@ -656,3 +656,396 @@ mod amm_can_fill_order_tests {
         assert!(!can_fill);
     }
 }
+
+/// OtterSec #149 — the liquidation guard must fire only in the window where a perp
+/// market has passed `expiry_ts` but has no committed settlement price yet.
+///
+/// Every ordinary user path already refuses past expiry via `is_in_settlement(now)`, but
+/// direct permissionless liquidation did not, so it kept valuing and transferring the
+/// position at the *live* oracle until a warm admin flipped the status to `Settlement`.
+///
+/// The guard deliberately does **not** reuse `is_in_settlement`: that is also true once
+/// the status *is* `Settlement`/`Delisted`, by which point `expiry_price` is committed and
+/// liquidating during the wind-down is a legitimate way to resolve bad debt. This pins the
+/// distinction, which an existing delisting test caught when the first attempt over-blocked.
+mod expired_awaiting_settlement {
+    use crate::state::{market_status::MarketStatus, perp_market::PerpMarket};
+
+    /// Mirrors the predicate used in `liquidate_perp` / `liquidate_perp_with_fill`.
+    fn expired_awaiting_settlement(market: &PerpMarket, now: i64) -> bool {
+        market.expiry_ts != 0
+            && now >= market.expiry_ts
+            && !matches!(
+                market.status,
+                MarketStatus::Settlement | MarketStatus::Delisted
+            )
+    }
+
+    fn market(status: MarketStatus, expiry_ts: i64) -> PerpMarket {
+        PerpMarket {
+            status,
+            expiry_ts,
+            ..PerpMarket::default()
+        }
+    }
+
+    #[test]
+    fn blocks_only_the_expired_but_unsettled_window() {
+        let expiry = 1_000_i64;
+
+        // Active and not yet expired: liquidation proceeds as normal.
+        let m = market(MarketStatus::Active, expiry);
+        assert!(!expired_awaiting_settlement(&m, expiry - 1));
+
+        // Expired, status not yet flipped: THIS is the window #149 describes. No expiry
+        // price exists, so a live-oracle liquidation must be refused.
+        assert!(expired_awaiting_settlement(&m, expiry));
+        assert!(expired_awaiting_settlement(&m, expiry + 10_000));
+
+        // Status flipped: `expiry_price` is committed, so wind-down liquidation is allowed
+        // again. Reusing `is_in_settlement` here would have wrongly kept blocking.
+        for status in [MarketStatus::Settlement, MarketStatus::Delisted] {
+            let m = market(status, expiry);
+            assert!(
+                !expired_awaiting_settlement(&m, expiry + 10_000),
+                "{:?} must not be blocked — the expiry price is committed",
+                status
+            );
+            assert!(
+                m.is_in_settlement(expiry + 10_000),
+                "sanity: is_in_settlement IS true here, which is why it was the wrong \
+                 predicate to gate on"
+            );
+        }
+
+        // A perpetual market (expiry_ts == 0) is never affected.
+        let perpetual = market(MarketStatus::Active, 0);
+        assert!(!expired_awaiting_settlement(&perpetual, i64::MAX));
+    }
+}
+
+mod mark_twap_reseed {
+    use crate::{
+        math::constants::{
+            MARK_TWAP_RESEED_FUNDING_PERIODS, ONE_HOUR, PRICE_PRECISION_I64, PRICE_PRECISION_U64,
+        },
+        state::{
+            oracle::{HistoricalOracleData, OraclePriceData},
+            perp_market::{MarketStats, AMM},
+        },
+    };
+
+    const ORACLE_TWAP: i64 = 100 * PRICE_PRECISION_I64;
+    const ORACLE_TWAP_5MIN: i64 = 101 * PRICE_PRECISION_I64;
+    const MARK_TWAP: u64 = 110 * PRICE_PRECISION_U64;
+    const START_TS: i64 = 1_662_800_000;
+
+    /// The mark TWAPs sit 10% above the oracle TWAP, and the two oracle TWAPs differ
+    /// from each other, so every re-seeded field shows which source it came from.
+    fn market_stats(funding_period: i64) -> MarketStats {
+        MarketStats {
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price: ORACLE_TWAP,
+                last_oracle_price_twap: ORACLE_TWAP,
+                last_oracle_price_twap_5min: ORACLE_TWAP_5MIN,
+                last_oracle_price_twap_ts: START_TS,
+                ..HistoricalOracleData::default()
+            },
+            last_mark_price_twap: MARK_TWAP,
+            last_mark_price_twap_5min: MARK_TWAP,
+            last_bid_price_twap: MARK_TWAP,
+            last_ask_price_twap: MARK_TWAP,
+            last_mark_price_twap_ts: START_TS,
+            mark_std: PRICE_PRECISION_U64,
+            funding_period,
+            ..MarketStats::default()
+        }
+    }
+
+    fn stale_ts(funding_period: i64) -> i64 {
+        START_TS + funding_period * MARK_TWAP_RESEED_FUNDING_PERIODS + 1
+    }
+
+    #[test]
+    fn reseed_replaces_every_mark_twap_past_the_threshold() {
+        let mut stats = market_stats(ONE_HOUR);
+
+        // A quote far outside the sanitize band, so a blend could not reach the oracle
+        // TWAP by accident.
+        let mid = stats
+            .update_mark_twap(
+                stale_ts(ONE_HOUR),
+                200 * PRICE_PRECISION_U64,
+                300 * PRICE_PRECISION_U64,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(stats.last_bid_price_twap, ORACLE_TWAP as u64);
+        assert_eq!(stats.last_ask_price_twap, ORACLE_TWAP as u64);
+        assert_eq!(stats.last_mark_price_twap, ORACLE_TWAP as u64);
+        assert_eq!(stats.last_mark_price_twap_5min, ORACLE_TWAP_5MIN as u64);
+        assert_eq!(stats.last_mark_price_twap_ts, stale_ts(ONE_HOUR));
+
+        // The caller reads the seeded value, so `update_funding_rate` computes a zero
+        // price spread and charges the offset alone for this period.
+        assert_eq!(mid, ORACLE_TWAP as u64);
+    }
+
+    #[test]
+    fn reseed_leaves_mark_std_untouched() {
+        let mut stats = market_stats(ONE_HOUR);
+
+        stats
+            .update_mark_twap(
+                stale_ts(ONE_HOUR),
+                200 * PRICE_PRECISION_U64,
+                300 * PRICE_PRECISION_U64,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+        // The re-seed observed no trade, so it must not record price movement against
+        // the value it just wrote.
+        assert_eq!(stats.mark_std, PRICE_PRECISION_U64);
+    }
+
+    #[test]
+    fn no_reseed_at_the_normal_funding_cadence() {
+        let mut stats = market_stats(ONE_HOUR);
+
+        stats
+            .update_mark_twap(
+                START_TS + ONE_HOUR,
+                109 * PRICE_PRECISION_U64,
+                111 * PRICE_PRECISION_U64,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert!(stats.last_bid_price_twap > ORACLE_TWAP as u64);
+        assert!(stats.last_mark_price_twap > ORACLE_TWAP as u64);
+    }
+
+    #[test]
+    fn no_reseed_at_the_on_the_hour_worst_case() {
+        // `on_the_hour_update` can stretch one legitimate interval to 5/3 of a period.
+        // A market cranked that late still holds usable history.
+        let mut stats = market_stats(ONE_HOUR);
+
+        stats
+            .update_mark_twap(
+                START_TS + ONE_HOUR * 5 / 3,
+                109 * PRICE_PRECISION_U64,
+                111 * PRICE_PRECISION_U64,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert!(stats.last_bid_price_twap > ORACLE_TWAP as u64);
+    }
+
+    #[test]
+    fn one_hour_floor_holds_when_the_funding_period_is_zero() {
+        let mut at_the_floor = market_stats(0);
+        at_the_floor
+            .update_mark_twap(
+                START_TS + ONE_HOUR,
+                109 * PRICE_PRECISION_U64,
+                111 * PRICE_PRECISION_U64,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(at_the_floor.last_bid_price_twap > ORACLE_TWAP as u64);
+
+        let mut past_the_floor = market_stats(0);
+        past_the_floor
+            .update_mark_twap(
+                START_TS + ONE_HOUR + 1,
+                109 * PRICE_PRECISION_U64,
+                111 * PRICE_PRECISION_U64,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(past_the_floor.last_bid_price_twap, ORACLE_TWAP as u64);
+    }
+
+    #[test]
+    fn a_clock_that_trails_the_stamp_does_not_reseed() {
+        // The accrual also runs from user instructions, whose `now` can trail the
+        // stored stamp.
+        let mut stats = market_stats(ONE_HOUR);
+
+        stats
+            .update_mark_twap(
+                START_TS - 10,
+                109 * PRICE_PRECISION_U64,
+                111 * PRICE_PRECISION_U64,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(stats.last_bid_price_twap, MARK_TWAP);
+    }
+
+    /// The bid/ask crank reaches the same core. A crank that lands before the funding
+    /// update must not consume the gap and leave the stale TWAPs in place.
+    #[test]
+    fn the_bid_ask_crank_reseeds_too() {
+        let mut stats = market_stats(ONE_HOUR);
+        let amm = AMM::default_test();
+        let oracle_price_data = OraclePriceData {
+            price: ORACLE_TWAP,
+            confidence: 0,
+            delay: 0,
+            has_sufficient_number_of_data_points: true,
+            sequence_id: None,
+        };
+
+        stats
+            .update_mark_twap_crank(
+                &amm,
+                stale_ts(ONE_HOUR),
+                &oracle_price_data,
+                Some(200 * PRICE_PRECISION_U64),
+                Some(300 * PRICE_PRECISION_U64),
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(stats.last_mark_price_twap, ORACLE_TWAP as u64);
+        assert_eq!(stats.last_mark_price_twap_ts, stale_ts(ONE_HOUR));
+    }
+}
+
+/// The bid/ask crank folds caller-supplied DLOB depth into the mark TWAP that
+/// funding later reads. A TWAP update weights the new sample by
+/// `elapsed / funding_period`, so after a long gap one caller-chosen sample can
+/// claim a near-full-period weight and set the funding input in a single crank.
+/// `update_mark_twap`'s `max_sample_elapsed` cap bounds that weight; these tests
+/// pin both directions: the pre-fix (uncapped) path saturates, the capped path
+/// barely moves, and the cap is inert during normal frequent cranks.
+mod mark_twap_sample_cap {
+    use crate::{
+        math::constants::PRICE_PRECISION_I64,
+        state::perp_market::{HistoricalOracleData, MarketStats},
+    };
+
+    const DOLLAR: u64 = 1_000_000;
+    const FUNDING_PERIOD: i64 = 3600;
+    // Tier-A sanitize clamp: one update's bid/ask may deviate at most 1/10 (10%)
+    // from the previous twap. This is the per-update price bound; the elapsed cap
+    // is the separate weight bound under test.
+    const SANITIZE_CLAMP: Option<i64> = Some(10);
+
+    /// TWAPs and oracle all seeded flat at $100, last advanced at t=0, so the
+    /// stale-shrink branch stays inactive and the only variable under test is how
+    /// much weight the next sample receives.
+    fn flat_stats_at_100() -> MarketStats {
+        MarketStats {
+            funding_period: FUNDING_PERIOD,
+            last_bid_price_twap: 100 * DOLLAR,
+            last_ask_price_twap: 100 * DOLLAR,
+            last_mark_price_twap: 100 * DOLLAR,
+            last_mark_price_twap_5min: 100 * DOLLAR,
+            last_mark_price_twap_ts: 0,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price: 100 * PRICE_PRECISION_I64,
+                last_oracle_price_twap: 100 * PRICE_PRECISION_I64,
+                last_oracle_price_twap_5min: 100 * PRICE_PRECISION_I64,
+                last_oracle_price_twap_ts: 0,
+                ..HistoricalOracleData::default()
+            },
+            ..MarketStats::default()
+        }
+    }
+
+    /// The exploit shape. A keeper cranks a manipulated $115 bid/ask (at the edge
+    /// of the 15% oracle band) after a two-period gap. A longer gap now belongs to
+    /// `reseed_mark_twap_from_oracle_if_stale`, which discards the sample outright,
+    /// so the cap's regime is the band between itself and the re-seed threshold.
+    /// Uncapped, the gap hands that one
+    /// sample almost the whole period of weight and the funding-input TWAP jumps
+    /// to the (sanitize-clamped) manipulated level in one shot. Capped, the sample
+    /// claims at most `funding_period / 60` of elapsed time, so the TWAP stays
+    /// next to the oracle and no single crank can set funding.
+    #[test]
+    fn cap_bounds_a_single_post_gap_crank_sample() {
+        let now = 2 * FUNDING_PERIOD; // two periods since t=0, below the re-seed threshold
+        let manipulated = 115 * DOLLAR;
+
+        let mut uncapped = flat_stats_at_100();
+        uncapped
+            .update_mark_twap(now, manipulated, manipulated, None, SANITIZE_CLAMP, None)
+            .unwrap();
+
+        let mut capped = flat_stats_at_100();
+        let cap = capped.max_mark_twap_sample_elapsed().unwrap();
+        capped
+            .update_mark_twap(
+                now,
+                manipulated,
+                manipulated,
+                None,
+                SANITIZE_CLAMP,
+                Some(cap),
+            )
+            .unwrap();
+
+        // Pre-fix: the sample is sanitize-clamped to +10% ($110) and then almost
+        // fully weighted, so the funding-input TWAP saturates toward it.
+        assert!(
+            uncapped.last_bid_price_twap > 109 * DOLLAR,
+            "uncapped twap should saturate toward the clamped sample, got {}",
+            uncapped.last_bid_price_twap
+        );
+
+        // Fixed: cap = funding_period / 60 = 60s of a 3600s window, so a +10%
+        // clamped sample moves the TWAP by at most ~10% * 60/3600 ≈ 0.167%.
+        assert_eq!(cap, 60);
+        assert!(
+            capped.last_bid_price_twap < 100 * DOLLAR + 3 * DOLLAR / 10,
+            "capped twap must stay near oracle after one crank, got {}",
+            capped.last_bid_price_twap
+        );
+        // The cap bounds influence, not signal: the sample still nudges the TWAP.
+        assert!(capped.last_bid_price_twap > 100 * DOLLAR);
+    }
+
+    /// Steady state. Cranks land seconds apart, so `since_last` is already below
+    /// the cap and capping changes nothing. Pins that the cap bites only the
+    /// anomalous post-gap sample, never the normal path.
+    #[test]
+    fn cap_is_inert_when_cranks_are_frequent() {
+        let now = 5_i64; // 5s since the last update, well under the 60s cap
+        let sample = 101 * DOLLAR;
+
+        let mut uncapped = flat_stats_at_100();
+        uncapped
+            .update_mark_twap(now, sample, sample, None, SANITIZE_CLAMP, None)
+            .unwrap();
+
+        let mut capped = flat_stats_at_100();
+        let cap = capped.max_mark_twap_sample_elapsed().unwrap();
+        capped
+            .update_mark_twap(now, sample, sample, None, SANITIZE_CLAMP, Some(cap))
+            .unwrap();
+
+        assert_eq!(capped.last_bid_price_twap, uncapped.last_bid_price_twap);
+        assert_eq!(capped.last_ask_price_twap, uncapped.last_ask_price_twap);
+    }
+}

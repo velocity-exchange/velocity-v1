@@ -240,6 +240,29 @@ jobs:
         run: cargo install cargo-audit --locked
       - name: Run cargo-audit # Using args from .cargo/audit.toml
         run: cargo audit
+  cargo-deny:
+    name: Cargo deny
+    runs-on: ubicloud
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Cache cargo-deny version
+        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+      # `sources` is the reason this job exists: a dependency may only come from
+      # crates.io or from a git remote explicitly allowlisted in deny.toml, so a
+      # new git dependency cannot land unreviewed. `licenses` and `bans` ride
+      # along. The two workspaces are deliberately not unified (see the
+      # `exclude` note in Cargo.toml), so each is checked in turn against the
+      # one shared config.
+      # `--locked` keeps the scan honest: cargo-deny resolves the graph through
+      # `cargo metadata`, which will happily re-resolve from the manifests when a
+      # lockfile is out of sync. That would check a graph nobody committed, and the
+      # new-dependency gate (which diffs lockfiles) would never see it either.
+      - name: Run cargo-deny (program workspace) # Using args from deny.toml
+        run: cargo deny --locked --manifest-path Cargo.toml --config deny.toml check
+      - name: Run cargo-deny (rust workspace) # Using args from deny.toml
+        run: cargo deny --locked --manifest-path rust/Cargo.toml --config deny.toml check
   prettier:
     runs-on: ubicloud
     steps:
@@ -254,7 +277,13 @@ jobs:
         with:
           bun-version: 1.3.14
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        # node-hid (via @ledgerhq/hw-transport-node-hid) falls back to a source
+        # build when its prebuilt-binary download fails (flaky on CI). Install
+        # the headers the fallback needs so a failed fetch cannot fail the job.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libusb-1.0-0-dev libudev-dev
+          bun install --frozen-lockfile
       - name: Print prettier version
         run: bunx prettier --version
       - name: Run prettier
@@ -273,7 +302,13 @@ jobs:
         with:
           bun-version: 1.3.14
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        # node-hid (via @ledgerhq/hw-transport-node-hid) falls back to a source
+        # build when its prebuilt-binary download fails (flaky on CI). Install
+        # the headers the fallback needs so a failed fetch cannot fail the job.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libusb-1.0-0-dev libudev-dev
+          bun install --frozen-lockfile
       - name: Run lint
         run: bun run lint
   ts-build:
@@ -302,7 +337,13 @@ jobs:
         with:
           bun-version: 1.3.14
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        # node-hid (via @ledgerhq/hw-transport-node-hid) falls back to a source
+        # build when its prebuilt-binary download fails (flaky on CI). Install
+        # the headers the fallback needs so a failed fetch cannot fail the job.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libusb-1.0-0-dev libudev-dev
+          bun install --frozen-lockfile
       # turbo builds the whole graph in topo order (sdk -> apps + cli-admin)
       - name: Build all packages + apps
         run: bunx turbo run build
@@ -332,7 +373,13 @@ jobs:
         with:
           bun-version: 1.3.14
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        # node-hid (via @ledgerhq/hw-transport-node-hid) falls back to a source
+        # build when its prebuilt-binary download fails (flaky on CI). Install
+        # the headers the fallback needs so a failed fetch cannot fail the job.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libusb-1.0-0-dev libudev-dev
+          bun install --frozen-lockfile
       # typecheck dependsOn ^build (turbo.json) so workspace .d.ts are present.
       - name: Typecheck all packages + apps
         run: bunx turbo run typecheck
@@ -362,7 +409,13 @@ jobs:
         with:
           bun-version: 1.3.14
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        # node-hid (via @ledgerhq/hw-transport-node-hid) falls back to a source
+        # build when its prebuilt-binary download fails (flaky on CI). Install
+        # the headers the fallback needs so a failed fetch cannot fail the job.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libusb-1.0-0-dev libudev-dev
+          bun install --frozen-lockfile
       # Hermetic jest unit suites: the workspace packages plus the apps/* suites
       # that run green on the @swc/jest app preset. `test` dependsOn `^build`, so
       # turbo builds each suite's deps first. @velocity-exchange/sdk runs in its
@@ -392,7 +445,13 @@ jobs:
         with:
           bun-version: 1.3.14
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        # node-hid (via @ledgerhq/hw-transport-node-hid) falls back to a source
+        # build when its prebuilt-binary download fails (flaky on CI). Install
+        # the headers the fallback needs so a failed fetch cannot fail the job.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libusb-1.0-0-dev libudev-dev
+          bun install --frozen-lockfile
       - name: Run SDK offline suites
         working-directory: packages/sdk
         run: |
@@ -577,7 +636,13 @@ jobs:
         with:
           bun-version: 1.3.14
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        # node-hid (via @ledgerhq/hw-transport-node-hid) falls back to a source
+        # build when its prebuilt-binary download fails (flaky on CI). Install
+        # the headers the fallback needs so a failed fetch cannot fail the job.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libusb-1.0-0-dev libudev-dev
+          bun install --frozen-lockfile
       - name: TypeScript strict type-check
         run: cd packages/sdk && bunx tsc --noEmit -p tsconfig.json
   anchor-tests:
@@ -646,7 +711,13 @@ jobs:
           bun-version: 1.3.14
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        # node-hid (via @ledgerhq/hw-transport-node-hid) falls back to a source
+        # build when its prebuilt-binary download fails (flaky on CI). Install
+        # the headers the fallback needs so a failed fetch cannot fail the job.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libusb-1.0-0-dev libudev-dev
+          bun install --frozen-lockfile
 
       - name: install typescript
         run: npm install typescript@5.4.5 -g
@@ -775,7 +846,13 @@ jobs:
           bun-version: 1.3.14
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        # node-hid (via @ledgerhq/hw-transport-node-hid) falls back to a source
+        # build when its prebuilt-binary download fails (flaky on CI). Install
+        # the headers the fallback needs so a failed fetch cannot fail the job.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libusb-1.0-0-dev libudev-dev
+          bun install --frozen-lockfile
 
       - name: install typescript
         run: npm install typescript@5.4.5 -g
@@ -855,7 +932,13 @@ jobs:
           bun-version: 1.3.14
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        # node-hid (via @ledgerhq/hw-transport-node-hid) falls back to a source
+        # build when its prebuilt-binary download fails (flaky on CI). Install
+        # the headers the fallback needs so a failed fetch cannot fail the job.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends libusb-1.0-0-dev libudev-dev
+          bun install --frozen-lockfile
 
       - name: Build SDK
         run: bunx turbo run build --filter=@velocity-exchange/sdk

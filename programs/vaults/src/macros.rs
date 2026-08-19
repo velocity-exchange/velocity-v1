@@ -32,6 +32,41 @@ macro_rules! declare_vault_seeds {
     };
 }
 
+/// CPI velocity to book the lending interest of every spot market that prices the vault's NAV,
+/// before the handler snapshots it.
+///
+/// The accounts struct must expose `velocity_program`, `velocity_state`, `vault` and
+/// `velocity_user`. The markets themselves travel in `remaining_accounts`. See
+/// [`crate::velocity_cpi::refresh_spot_markets_that_price_equity`] for why this runs first
+/// (OtterSec #136/#137).
+///
+/// The market list is read from the vault and its velocity user here rather than taken from the
+/// caller, so a caller cannot leave a market out and price its position off a stale index. Both
+/// reads are scoped to a block so they drop before the handler's own `load_mut` of the vault,
+/// which would otherwise panic on the second borrow. The CPI itself does not care: it is passed
+/// `state` and the remaining accounts, and neither the vault nor the velocity user is among them.
+#[macro_export]
+macro_rules! refresh_velocity_spot_market {
+    ( $ctx:expr ) => {
+        let market_indexes = {
+            let vault = $ctx.accounts.vault.load()?;
+            let user = $ctx.accounts.velocity_user.load()?;
+            $crate::velocity_cpi::spot_markets_that_price_equity(
+                &vault,
+                &user,
+                $ctx.remaining_accounts,
+                anchor_lang::prelude::Clock::get()?.slot,
+            )?
+        };
+        $crate::velocity_cpi::refresh_spot_markets_that_price_equity(
+            &$ctx.accounts.velocity_program.to_account_info(),
+            &$ctx.accounts.velocity_state.to_account_info(),
+            $ctx.remaining_accounts,
+            market_indexes,
+        )?;
+    };
+}
+
 #[macro_export]
 macro_rules! implement_update_user_delegate_cpi {
     ( $self:expr, $delegate:expr ) => {

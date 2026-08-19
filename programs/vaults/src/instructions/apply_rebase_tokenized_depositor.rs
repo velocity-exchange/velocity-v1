@@ -1,16 +1,25 @@
 use {
     crate::{
         constraints::{is_tokenized_depositor_for_vault, is_user_for_vault},
+        refresh_velocity_spot_market,
         state::traits::VaultDepositorBase,
         AccountMapProvider, TokenizedVaultDepositor, Vault, VaultProtocolProvider,
     },
     anchor_lang::prelude::*,
-    velocity::{instructions::optional_accounts::AccountMaps, state::user::User},
+    velocity::{
+        instructions::optional_accounts::AccountMaps, program::Velocity, state::user::User,
+    },
 };
 
 pub fn apply_rebase_tokenized_depositor<'info>(
     ctx: Context<'info, ApplyRebaseTokenizedDepositor<'info>>,
 ) -> Result<()> {
+    // Book the lending interest of every market that prices NAV BEFORE any account
+    // is borrowed and before NAV is snapshotted (OtterSec #136/#137). Must precede
+    // `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable accounts still
+    // have live borrows, and the maps must read post-refresh data.
+    refresh_velocity_spot_market!(ctx);
+
     let clock = &Clock::get()?;
 
     let mut vault = ctx.accounts.vault.load_mut()?;
@@ -32,10 +41,12 @@ pub fn apply_rebase_tokenized_depositor<'info>(
     let vault_equity =
         vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
 
+    // #122: the guarded variant. This instruction carries no signer, so it must not
+    // be able to floor the shared backing for a live token supply to zero.
     ctx.accounts
         .tokenized_vault_depositor
         .load_mut()?
-        .apply_rebase(&mut vault, &mut vp, vault_equity)?;
+        .apply_rebase_public(&mut vault, &mut vp, vault_equity)?;
 
     Ok(())
 }
@@ -54,4 +65,7 @@ pub struct ApplyRebaseTokenizedDepositor<'info> {
         constraint = is_user_for_vault(&vault, &velocity_user.key())?
     )]
     pub velocity_user: AccountLoader<'info, User>,
+    /// CHECK: checked in velocity cpi
+    pub velocity_state: AccountInfo<'info>,
+    pub velocity_program: Program<'info, Velocity>,
 }

@@ -289,7 +289,7 @@ describe('multiple maker orders', () => {
 
 		const takerPosition = takerVelocityClient.getUser().getPerpPosition(0);
 		assert(takerPosition.baseAssetAmount.eq(takerBaseAssetAmount));
-		assert(takerPosition.quoteAssetAmount.eq(new BN(-576576000)));
+		assert(takerPosition.quoteAssetAmount.eq(new BN(-576230400)));
 
 		const makerPosition = makerVelocityClient.getUser().getPerpPosition(0);
 		assert(
@@ -297,7 +297,7 @@ describe('multiple maker orders', () => {
 				takerBaseAssetAmount.neg().div(new BN(2))
 			)
 		);
-		assert(makerPosition.quoteAssetAmount.eq(new BN(288057600)));
+		assert(makerPosition.quoteAssetAmount.eq(new BN(288007200)));
 
 		const secondMakerPosition = secondMakerVelocityClient
 			.getUser()
@@ -307,7 +307,7 @@ describe('multiple maker orders', () => {
 				takerBaseAssetAmount.neg().div(new BN(2))
 			)
 		);
-		assert(secondMakerPosition.quoteAssetAmount.eq(new BN(288057600)));
+		assert(secondMakerPosition.quoteAssetAmount.eq(new BN(288007200)));
 
 		for (let i = 0; i < 3; i++) {
 			await makerVelocityClient.placePerpOrder({
@@ -513,6 +513,10 @@ describe('multiple maker orders', () => {
 			'takerPosition.quoteAssetAmount=',
 			takerPosition.quoteAssetAmount.toString()
 		);
+		console.log(
+			'takerPosition.baseAssetAmount=',
+			takerPosition.baseAssetAmount.toString()
+		);
 		// The three maker legs fill exactly as they do above; every unit of the
 		// difference from a plain maker-only sweep is the vAMM leg, which stops
 		// ~0.09% earlier. The increment it no longer fills prices at 674,333 —
@@ -532,7 +536,7 @@ describe('multiple maker orders', () => {
 			makerPosition.quoteAssetAmount.toString()
 		);
 		assert(makerPosition.baseAssetAmount.eq(new BN('1000000000')));
-		assert(makerPosition.quoteAssetAmount.eq(new BN('-689862')));
+		assert(makerPosition.quoteAssetAmount.eq(new BN('-689983')));
 
 		const secondMakerPosition = secondMakerVelocityClient
 			.getUser()

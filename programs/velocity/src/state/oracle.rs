@@ -72,6 +72,22 @@ pub struct HistoricalOracleData {
 }
 
 impl HistoricalOracleData {
+    /// Seed the quote spot market's historical oracle data at launch.
+    ///
+    /// Deliberately leaves `last_oracle_price_twap_ts` at zero, unlike
+    /// [`Self::default_with_current_oracle`]. `OracleSource::QuoteAsset` returns a
+    /// constant `PRICE_PRECISION`, so this market's TWAP and live price are always
+    /// the same number and its `StrictOraclePrice` band is degenerate by
+    /// construction — the collapse [`Self::default_with_current_oracle`] guards
+    /// against cannot happen here.
+    ///
+    /// Stamping it anyway is not harmless: it changes which way
+    /// `calculate_weighted_average`'s ±1 rounding bias falls on the first crank
+    /// (`999999` vs `1000001`, since a zero timestamp saturates `from_start` to 1
+    /// and flips the bias), and every collateral valuation reads that TWAP. Both
+    /// values are noise around a definitionally constant 1.0, so the correct move is
+    /// to leave this market's behavior untouched rather than trade one artifact for
+    /// another.
     pub fn default_quote_oracle() -> Self {
         HistoricalOracleData {
             last_oracle_price: PRICE_PRECISION_I64,
@@ -79,7 +95,7 @@ impl HistoricalOracleData {
             last_oracle_delay: 0,
             last_oracle_price_twap: PRICE_PRECISION_I64,
             last_oracle_price_twap_5min: PRICE_PRECISION_I64,
-            ..HistoricalOracleData::default()
+            last_oracle_price_twap_ts: 0,
         }
     }
 
@@ -94,15 +110,27 @@ impl HistoricalOracleData {
         }
     }
 
-    pub fn default_with_current_oracle(oracle_price_data: OraclePriceData) -> Self {
+    /// Seed a spot market's historical oracle data at launch.
+    ///
+    /// `now` **must** land in `last_oracle_price_twap_ts`. Left at zero, the first
+    /// `update_spot_market_twap_stats` computes `since_last = now - 0`, which
+    /// dwarfs any TWAP period, so `from_start` saturates to 0 and the new TWAP
+    /// becomes the live price *exactly*. Both `StrictOraclePrice` bounds (`min` /
+    /// `max` of current vs the 5-min TWAP) then collapse onto that single price,
+    /// leaving the first price-banded operation on the market unguarded in both
+    /// directions (OtterSec #121). The perp initializer has always stamped this;
+    /// on the spot path the assignment was commented out.
+    pub fn default_with_current_oracle(oracle_price_data: OraclePriceData, now: i64) -> Self {
         HistoricalOracleData {
             last_oracle_price: oracle_price_data.price,
             last_oracle_conf: oracle_price_data.confidence,
             last_oracle_delay: oracle_price_data.delay,
             last_oracle_price_twap: oracle_price_data.price,
             last_oracle_price_twap_5min: oracle_price_data.price,
-            // last_oracle_price_twap_ts: now,
-            ..HistoricalOracleData::default()
+            last_oracle_price_twap_ts: now,
+            // Every field is set explicitly (no `..default()`): a future field
+            // addition should be a compile error here, not a silent zero — that is
+            // exactly how the missing timestamp went unnoticed.
         }
     }
 
@@ -279,6 +307,12 @@ pub struct MMOraclePriceData {
     mm_exchange_diff_bps: u128,
     exchange_oracle_price_data: OraclePriceData,
     safe_oracle_price_data: OraclePriceData,
+    /// Whether `safe_oracle_price_data` carries the MM oracle price (true) or
+    /// fell back to the exchange oracle (false). The unset-default resolution
+    /// of the immediate-fill staleness threshold depends on it: only an
+    /// MM-oracle-sourced price is structurally unable to be fresher than
+    /// `MM_ORACLE_MIN_SLOT_GAP`.
+    safe_price_is_mm_sourced: bool,
 }
 
 impl MMOraclePriceData {
@@ -311,7 +345,7 @@ impl MMOraclePriceData {
             mm_oracle_delay > oracle_price_data.delay
         };
 
-        let safe_oracle_price_data = if exchange_oracle_is_more_recent
+        let (safe_oracle_price_data, safe_price_is_mm_sourced) = if exchange_oracle_is_more_recent
             || mm_oracle_price == 0i64
             || !is_oracle_valid_for_action(
                 mm_oracle_validity,
@@ -320,20 +354,23 @@ impl MMOraclePriceData {
             || price_diff_bps > MM_EXCHANGE_FALLBACK_THRESHOLD
         // 1% price difference
         {
-            oracle_price_data
+            (oracle_price_data, false)
         } else {
             let mm_oracle_diff_premium = mm_oracle_price.abs_diff(oracle_price_data.price);
             let adjusted_confidence = oracle_price_data
                 .confidence
                 .safe_add(mm_oracle_diff_premium)?;
 
-            OraclePriceData {
-                price: mm_oracle_price,
-                confidence: adjusted_confidence,
-                delay: mm_oracle_delay,
-                has_sufficient_number_of_data_points: true,
-                sequence_id: Some(mm_oracle_sequence_id),
-            }
+            (
+                OraclePriceData {
+                    price: mm_oracle_price,
+                    confidence: adjusted_confidence,
+                    delay: mm_oracle_delay,
+                    has_sufficient_number_of_data_points: true,
+                    sequence_id: Some(mm_oracle_sequence_id),
+                },
+                true,
+            )
         };
 
         Ok(MMOraclePriceData {
@@ -343,6 +380,7 @@ impl MMOraclePriceData {
             mm_exchange_diff_bps: price_diff_bps,
             exchange_oracle_price_data: oracle_price_data,
             safe_oracle_price_data,
+            safe_price_is_mm_sourced,
             mm_oracle_sequence_id,
         })
     }
@@ -361,6 +399,10 @@ impl MMOraclePriceData {
 
     pub fn get_safe_oracle_price_data(&self) -> OraclePriceData {
         self.safe_oracle_price_data
+    }
+
+    pub fn is_safe_price_mm_sourced(&self) -> bool {
+        self.safe_price_is_mm_sourced
     }
 
     pub fn get_exchange_oracle_price_data(&self) -> OraclePriceData {

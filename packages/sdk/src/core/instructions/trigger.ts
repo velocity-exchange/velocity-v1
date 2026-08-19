@@ -16,9 +16,10 @@ import type { VelocityProgram } from '../../config';
  * @param args.state - the global `State` PDA.
  * @param args.filler - the keeper's `User` account submitting the trigger.
  * @param args.user - the order owner's `User` account.
- * @param args.userStats - the order owner's `UserStats` account (checked for the
- *   authority-wide equity breaker; a risk-increasing trigger order is cancelled
- *   rather than activated while the breaker is tripped).
+ * @param args.userStats - the order owner's `UserStats` account, writable (checked for
+ *   the authority-wide equity breaker; a risk-increasing trigger order is cancelled
+ *   rather than activated while the breaker is tripped, and a cancel that observes the
+ *   owner below its raw equity floor arms the breaker inline).
  * @param args.authority - signer that must own or be a registered delegate of `filler`.
  * @param args.remainingAccounts - oracle/market `AccountMeta[]` for the order's market.
  * @returns the unsigned `triggerOrder` `TransactionInstruction`.

@@ -16,6 +16,11 @@ import {
 	getTokenValue,
 	getStrictTokenValue,
 	StrictOraclePrice,
+	SpotMarketAccount,
+	MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN,
+	MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN,
+	ONE_YEAR,
+	maxSpotInterestStalenessForMargin,
 } from '../../src';
 import { mockSpotMarkets } from '../dlob/helpers';
 import * as _ from 'lodash';
@@ -326,6 +331,88 @@ describe('Spot Tests', () => {
 		assert(result.borrowLimit.eq(new BN(32500)));
 	});
 
+	// exceptionWithdrawLimit mirrors `exception_floor` in the program's
+	// `check_withdraw_limits`. Accounts that pass the per-account eligibility
+	// predicate share one `withdrawGuardThreshold` of room below the breaker
+	// floor. The numbers below are the shipped USDT config: a 500_000 USDT market
+	// with a 9_500 USDT guard threshold and the default 2500 bps breaker, which
+	// floors deposits at 375_000 USDT.
+	const USDT_GUARD_THRESHOLD = new BN(9_500).mul(QUOTE_PRECISION);
+	const USDT_DEPOSIT_TWAP = new BN(500_000).mul(QUOTE_PRECISION);
+	const USDT_BREAKER_FLOOR = new BN(375_000).mul(QUOTE_PRECISION);
+
+	function buildExceptionBudgetMarket(depositTokens: BN) {
+		const mockSpot = _.cloneDeep(mockSpotMarkets[0]);
+		mockSpot.decimals = 6;
+		mockSpot.cumulativeDepositInterest = new BN(10).pow(new BN(10));
+		mockSpot.cumulativeBorrowInterest = new BN(10).pow(new BN(10));
+		// 6 decimals with cumulative interest at precision: 1000 balance units
+		// per token unit.
+		mockSpot.depositBalance = depositTokens.muln(1000);
+		mockSpot.borrowBalance = ZERO;
+		mockSpot.depositTokenTwap = USDT_DEPOSIT_TWAP;
+		mockSpot.borrowTokenTwap = ZERO;
+		mockSpot.utilizationTwap = ZERO;
+		mockSpot.optimalUtilization = 0;
+		mockSpot.withdrawGuardThreshold = USDT_GUARD_THRESHOLD;
+		mockSpot.withdrawCircuitBreakerBps = 2_500;
+		mockSpot.maxTokenBorrowsFraction = 0;
+		mockSpot.poolId = 0;
+		// lastTwapTs === now makes the projected live TWAP equal the stored TWAP,
+		// so the breaker floor is exact.
+		mockSpot.lastTwapTs = new BN(86400);
+		return mockSpot;
+	}
+
+	it('exception budget is exactly one withdrawGuardThreshold at the breaker floor', () => {
+		const mockSpot = buildExceptionBudgetMarket(USDT_BREAKER_FLOOR);
+		const result = calculateWithdrawLimit(mockSpot, new BN(86400));
+
+		// The market is on the floor, so there is no ordinary room left.
+		assert(result.minDepositAmount.eq(USDT_BREAKER_FLOOR));
+		assert(result.withdrawLimit.eq(ZERO));
+		// The exception releases one guard threshold and no more.
+		assert(
+			result.exceptionWithdrawLimit.eq(USDT_GUARD_THRESHOLD),
+			`expected ${USDT_GUARD_THRESHOLD.toString()}, got ${result.exceptionWithdrawLimit.toString()}`
+		);
+	});
+
+	it('exception budget shrinks by what the cohort already withdrew', () => {
+		// The cohort already took 9_400 USDT of the 9_500 USDT budget.
+		const spent = new BN(9_400).mul(QUOTE_PRECISION);
+		const mockSpot = buildExceptionBudgetMarket(USDT_BREAKER_FLOOR.sub(spent));
+		const result = calculateWithdrawLimit(mockSpot, new BN(86400));
+
+		assert(result.withdrawLimit.eq(ZERO));
+		assert(
+			result.exceptionWithdrawLimit.eq(new BN(100).mul(QUOTE_PRECISION)),
+			`expected 100 USDT, got ${result.exceptionWithdrawLimit.toString()}`
+		);
+	});
+
+	it('exception budget is zero once the cohort spent one guard threshold', () => {
+		const mockSpot = buildExceptionBudgetMarket(
+			USDT_BREAKER_FLOOR.sub(USDT_GUARD_THRESHOLD)
+		);
+		const result = calculateWithdrawLimit(mockSpot, new BN(86400));
+
+		assert(result.withdrawLimit.eq(ZERO));
+		assert(result.exceptionWithdrawLimit.eq(ZERO));
+	});
+
+	it('exception budget adds no room when there is no withdrawGuardThreshold', () => {
+		// A zero guard threshold removes the carve-out. The exception limit then
+		// equals the ordinary withdraw limit, so an eligible account gets nothing
+		// extra.
+		const mockSpot = buildExceptionBudgetMarket(USDT_BREAKER_FLOOR);
+		mockSpot.withdrawGuardThreshold = ZERO;
+		const result = calculateWithdrawLimit(mockSpot, new BN(86400));
+
+		assert(result.exceptionWithdrawLimit.eq(result.withdrawLimit));
+		assert(result.exceptionWithdrawLimit.eq(ZERO));
+	});
+
 	it('getTokenValue floors (rounds toward -infinity) for a negative product', () => {
 		// -3 * 5 = -15; -15/10 truncates to -1 but floors to -2
 		const value = getTokenValue(new BN(-3), 1, { price: new BN(5) });
@@ -336,5 +423,58 @@ describe('Spot Tests', () => {
 		const strictPrice = new StrictOraclePrice(new BN(5), new BN(5));
 		const value = getStrictTokenValue(new BN(-3), 1, strictPrice);
 		assert(value.eq(new BN(-2)));
+	});
+
+	it('maxSpotInterestStalenessForMargin shrinks as the rate ceiling rises', () => {
+		const withCeiling = (maxBorrowRate: number, minBorrowRate = 0) =>
+			({
+				maxBorrowRate,
+				minBorrowRate,
+			}) as SpotMarketAccount;
+
+		// A low rate earns more than an hour, and the cap keeps it at an hour.
+		assert(
+			maxSpotInterestStalenessForMargin(withCeiling(200_000)).eq(
+				MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN
+			)
+		);
+
+		// 100% APR: one basis point of the debt takes 3,153s to accrue. 1,000% APR
+		// takes a tenth of that, where a fixed hour would have hidden ten times the
+		// allowed share.
+		assert(
+			maxSpotInterestStalenessForMargin(withCeiling(1_000_000)).eq(
+				new BN(3_153)
+			)
+		);
+		assert(
+			maxSpotInterestStalenessForMargin(withCeiling(10_000_000)).eq(new BN(315))
+		);
+
+		// `calculateInterestRate` floors its result at `minBorrowRate`, so the ceiling
+		// is the larger of the two fields. `minBorrowRate` counts in half percent, so
+		// 40 is 20% APR — here above a `maxBorrowRate` of 1%.
+		assert(
+			maxSpotInterestStalenessForMargin(withCeiling(10_000, 40)).eq(
+				maxSpotInterestStalenessForMargin(withCeiling(200_000))
+			)
+		);
+
+		// A market that charges nothing cannot understate anything.
+		assert(
+			maxSpotInterestStalenessForMargin(withCeiling(0)).eq(
+				MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN
+			)
+		);
+
+		// The window is exactly the span in which the ceiling accrues the allowed
+		// share, so the hidden share at the window can never exceed it.
+		for (const maxBorrowRate of [1_000_000, 10_000_000, 123_456_789]) {
+			const window = maxSpotInterestStalenessForMargin(
+				withCeiling(maxBorrowRate)
+			);
+			const hiddenShare = new BN(maxBorrowRate).mul(window).div(ONE_YEAR);
+			assert(hiddenShare.lte(MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN));
+		}
 	});
 });

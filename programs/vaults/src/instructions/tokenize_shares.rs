@@ -6,6 +6,7 @@ use {
             is_tokenized_depositor_for_vault, is_user_for_vault,
         },
         error::ErrorCode,
+        refresh_velocity_spot_market,
         state::{traits::VaultDepositorBase, FeeUpdateProvider, FeeUpdateStatus},
         token_cpi::MintTokensCPI,
         validate, AccountMapProvider, TokenizedVaultDepositor, Vault, VaultDepositor,
@@ -14,7 +15,8 @@ use {
     anchor_lang::prelude::*,
     anchor_spl::token::{mint_to, Mint, MintTo, Token, TokenAccount},
     velocity::{
-        instructions::optional_accounts::AccountMaps, math::safe_math::SafeMath, state::user::User,
+        instructions::optional_accounts::AccountMaps, math::safe_math::SafeMath, program::Velocity,
+        state::user::User,
     },
 };
 
@@ -23,6 +25,12 @@ pub fn tokenize_shares<'info>(
     amount: u64,
     unit: WithdrawUnit,
 ) -> Result<()> {
+    // Book the lending interest of every market that prices NAV BEFORE any account
+    // is borrowed and before NAV is snapshotted (OtterSec #136/#137). Must precede
+    // `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable accounts still
+    // have live borrows, and the maps must read post-refresh data.
+    refresh_velocity_spot_market!(ctx);
+
     let clock = &Clock::get()?;
 
     let mut vault = ctx.accounts.vault.load_mut()?;
@@ -192,6 +200,9 @@ pub struct TokenizeShares<'info> {
     /// CHECK: checked in velocity cpi
     pub velocity_user: AccountLoader<'info, User>,
     pub token_program: Program<'info, Token>,
+    /// CHECK: checked in velocity cpi
+    pub velocity_state: AccountInfo<'info>,
+    pub velocity_program: Program<'info, Velocity>,
 }
 
 impl<'info> MintTokensCPI for Context<'info, TokenizeShares<'info>> {

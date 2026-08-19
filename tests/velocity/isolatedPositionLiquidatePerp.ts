@@ -340,7 +340,16 @@ describe('liquidate perp (no open orders)', () => {
 		);
 
 		await velocityClient.fetchAccounts();
-		assert(velocityClient.getUserAccount().perpPositions[0].positionFlag === 5);
+		// IsolatedPosition | Bankrupt | BankruptcyClaim: the latch books the
+		// debt against the market, which freezes its IF-fee sweep until the
+		// resolver discharges it
+		assert(
+			velocityClient.getUserAccount().perpPositions[0].positionFlag === 13
+		);
+		assert(
+			velocityClient.getPerpMarketAccount(marketIndex)
+				.pendingBankruptcyClaims === 1
+		);
 		console.log(
 			velocityClient
 				.getUserAccount()
@@ -349,7 +358,7 @@ describe('liquidate perp (no open orders)', () => {
 		assert(
 			velocityClient
 				.getUserAccount()
-				.perpPositions[0].quoteAssetAmount.eq(new BN(-5767726))
+				.perpPositions[0].quoteAssetAmount.eq(new BN(-5757226))
 		);
 
 		await velocityClient.updatePerpMarketContractTier(0, ContractTier.A);
@@ -402,11 +411,14 @@ describe('liquidate perp (no open orders)', () => {
 			'marketAfterBankruptcy.totalSocialLoss:',
 			marketAfterBankruptcy.totalSocialLoss.toString()
 		);
-		assert(marketAfterBankruptcy.totalSocialLoss.eq(new BN(5767726))); // more goes to socialised loss after removal of fee pool topping up during settlement
+		assert(marketAfterBankruptcy.totalSocialLoss.eq(new BN(5757226))); // more goes to socialised loss after removal of fee pool topping up during settlement
 
 		// assert(!velocityClient.getUserAccount().isBankrupt);
 		// assert(!velocityClient.getUserAccount().isBeingLiquidated);
+		// IsolatedPosition only: resolving the debt released the claim, so the
+		// market's IF-fee sweep is no longer frozen
 		assert(velocityClient.getUserAccount().perpPositions[0].positionFlag === 1);
+		assert(marketAfterBankruptcy.pendingBankruptcyClaims === 0);
 
 		console.log(velocityClient.getUserAccount());
 
@@ -419,13 +431,13 @@ describe('liquidate perp (no open orders)', () => {
 		console.log(
 			perpBankruptcyRecord.perpBankruptcy.cumulativeFundingRateDelta.toString()
 		);
-		assert(perpBankruptcyRecord.perpBankruptcy.pnl.eq(new BN(-5767726)));
+		assert(perpBankruptcyRecord.perpBankruptcy.pnl.eq(new BN(-5757226)));
 		console.log(
 			perpBankruptcyRecord.perpBankruptcy.cumulativeFundingRateDelta.toString()
 		);
 		assert(
 			perpBankruptcyRecord.perpBankruptcy.cumulativeFundingRateDelta.eq(
-				new BN(329585000)
+				new BN(328985000)
 			)
 		);
 
@@ -434,7 +446,7 @@ describe('liquidate perp (no open orders)', () => {
 			market.cumulativeFundingRateLong.toString(),
 			market.cumulativeFundingRateShort.toString()
 		);
-		assert(market.cumulativeFundingRateLong.eq(new BN(329597500)));
-		assert(market.cumulativeFundingRateShort.eq(new BN(-329572500)));
+		assert(market.cumulativeFundingRateLong.eq(new BN(328997500)));
+		assert(market.cumulativeFundingRateShort.eq(new BN(-328972500)));
 	});
 });

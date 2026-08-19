@@ -26,6 +26,7 @@ pub mod delisting_test {
                 position::PositionDirection,
             },
             create_anchor_account_info,
+            error::ErrorCode,
             math::{
                 constants::{
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64,
@@ -46,6 +47,7 @@ pub mod delisting_test {
                 margin_calculation::{MarginCalculation, MarginContext},
                 market_status::MarketStatus,
                 oracle::{HistoricalOracleData, OracleSource, StrictOraclePrice},
+                paused_operations::PerpOperation,
                 perp_market::{PerpMarket, PoolBalance, AMM},
                 perp_market_map::PerpMarketMap,
                 pyth_lazer_oracle::PythLazerOracle,
@@ -828,20 +830,20 @@ pub mod delisting_test {
         .unwrap();
 
         assert_eq!(taker.spot_positions[0].scaled_balance > 100000000000, true);
-        assert_eq!(taker.spot_positions[0].scaled_balance, 139450500000);
+        assert_eq!(taker.spot_positions[0].scaled_balance, 139480200000);
 
         let market = market_map.get_ref_mut(&0).unwrap();
-        assert_eq!(market.pnl_pool.scaled_balance, 960549500000);
+        assert_eq!(market.pnl_pool.scaled_balance, 960519800000);
         // #44: the permissionless expiry closeout charges a taker fee; it must
         // accrue to the market fee ledger (split IF + protocol, AMM provision
         // zeroed since there is no AMM counterparty) rather than lingering in
         // the pnl pool to be dumped into the revenue pool at delisting. With
         // the default fee structure (amm/if numerators both 0) the whole fee
         // lands in the protocol residual.
-        assert_eq!(market.fee_ledger.pending_protocol_fee, 49499);
+        assert_eq!(market.fee_ledger.pending_protocol_fee, 19799);
         assert_eq!(market.fee_ledger.pending_if_fee, 0);
         assert_eq!(market.fee_ledger.pending_amm_provision, 0);
-        assert_eq!(market.fee_ledger.total_exchange_fee, 49499);
+        assert_eq!(market.fee_ledger.total_exchange_fee, 19799);
         drop(market);
 
         assert_eq!(taker.perp_positions[0].open_orders, 0);
@@ -849,6 +851,168 @@ pub mod delisting_test {
         assert_eq!(taker.perp_positions[0].quote_asset_amount, 0);
         assert_eq!(taker.perp_positions[0].quote_entry_amount, 0);
         assert_eq!(taker.perp_positions[0].quote_break_even_amount, 0);
+    }
+
+    /// A caller with no position in an expired market settles nothing, and the
+    /// no-op returns before the market's SettlePnl pause check. The handler
+    /// gates `sweep_completed_revenue_share_for_market` on the returned flag,
+    /// so the flag must be `false` here. A `true` would let anyone move
+    /// builder/referrer fees out of the pnl pool of a market whose settlement
+    /// an operator paused.
+    #[test]
+    fn settle_expired_position_with_no_position_reports_not_settled() {
+        let slot = 0_u64;
+        let clock = Clock {
+            slot: 6893025720,
+            epoch_start_timestamp: 1662065595 - 1000,
+            epoch: 2424,
+            leader_schedule_epoch: 1662065595 - 1,
+            unix_timestamp: 1662065595,
+        };
+
+        let mut oracle_price = get_pyth_price(100, 6);
+        let oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            oracle_price,
+            &oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+
+        let mut market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                base_asset_amount_with_amm: (AMM_RESERVE_PRECISION / 2) as i128,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                max_slippage_ratio: 50,
+                max_fill_reserve_fraction: 100,
+                amm_jit_intensity: 100,
+                ..AMM::default()
+            },
+            margin_ratio_initial: 1000,
+            margin_ratio_maintenance: 500,
+            status: MarketStatus::Settlement,
+            // The market operator paused settlement of this market.
+            paused_operations: PerpOperation::SettlePnl as u8,
+            pnl_pool: PoolBalance {
+                scaled_balance: (1000 * SPOT_BALANCE_PRECISION),
+                market_index: QUOTE_SPOT_MARKET_INDEX,
+                ..PoolBalance::default()
+            },
+            expiry_ts: clock.unix_timestamp - 1000,
+            expiry_price: 99 * PRICE_PRECISION_I64,
+            base_asset_amount_long: (AMM_RESERVE_PRECISION / 2) as i128,
+            order_step_size: 10000000,
+            oracle: oracle_price_key,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            market_stats: MarketStats {
+                historical_oracle_data: HistoricalOracleData {
+                    last_oracle_price_twap: (99 * PRICE_PRECISION) as i64,
+                    last_oracle_price_twap_5min: (99 * PRICE_PRECISION) as i64,
+                    ..HistoricalOracleData::default()
+                },
+                ..MarketStats::default()
+            },
+            ..PerpMarket::default_test()
+        };
+        market.amm.max_base_asset_reserve = u128::MAX;
+        market.amm.min_base_asset_reserve = 0;
+
+        create_anchor_account_info!(market, PerpMarket, market_account_info);
+        let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        let mut spot_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+            initial_liability_weight: SPOT_WEIGHT_PRECISION,
+            maintenance_liability_weight: SPOT_WEIGHT_PRECISION,
+            deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
+            historical_oracle_data: HistoricalOracleData::default_price(QUOTE_PRECISION_I64),
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+
+        let state = State {
+            settlement_duration: 1,
+            oracle_guard_rails: OracleGuardRails {
+                validity: ValidityGuardRails {
+                    slots_before_stale_for_amm: 10,
+                    slots_before_stale_for_margin: 120,
+                    confidence_interval_max_size: 1000,
+                    too_volatile_ratio: 5,
+                },
+                ..OracleGuardRails::default()
+            },
+            ..State::default()
+        };
+
+        let (user_key, _maker_key, _filler_key) = get_user_keys();
+
+        // A user who holds no position in the expired market.
+        let mut user = User {
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+
+        let settled = settle_expired_position(
+            0,
+            &mut user,
+            &user_key,
+            &market_map,
+            &spot_market_map,
+            &mut oracle_map,
+            &clock,
+            &state,
+        )
+        .unwrap();
+
+        assert_eq!(settled, false);
+
+        // A user who does hold a position hits the pause check and reverts.
+        let mut holder = User {
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                base_asset_amount: (BASE_PRECISION_I64 / 2),
+                quote_asset_amount: -(QUOTE_PRECISION_I64 * 10),
+                ..PerpPosition::default()
+            }),
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+
+        assert_eq!(
+            settle_expired_position(
+                0,
+                &mut holder,
+                &user_key,
+                &market_map,
+                &spot_market_map,
+                &mut oracle_map,
+                &clock,
+                &state,
+            )
+            .unwrap_err(),
+            ErrorCode::InvalidMarketStatusToSettlePnl
+        );
     }
 
     #[test]
@@ -1057,10 +1221,10 @@ pub mod delisting_test {
         .unwrap();
 
         assert_eq!(taker.spot_positions[0].scaled_balance > 100000000000, true);
-        assert_eq!(taker.spot_positions[0].scaled_balance, 159450500000);
+        assert_eq!(taker.spot_positions[0].scaled_balance, 159480200000);
 
         let market = market_map.get_ref_mut(&0).unwrap();
-        assert_eq!(market.pnl_pool.scaled_balance, 940549500000);
+        assert_eq!(market.pnl_pool.scaled_balance, 940519800000);
         drop(market);
 
         assert_eq!(taker.perp_positions[0].open_orders, 0);
@@ -1265,7 +1429,7 @@ pub mod delisting_test {
         assert_eq!(taker.spot_positions[0].scaled_balance > 100000000000, true);
 
         let market = market_map.get_ref_mut(&0).unwrap();
-        assert_eq!(market.pnl_pool.scaled_balance, 39002002000); // no settle fee since base_asse_value=0 (since price is negative)
+        assert_eq!(market.pnl_pool.scaled_balance, 15602000000); // no settle fee since base_asse_value=0 (since price is negative)
         assert_eq!(market.amm.fee_pool.scaled_balance, 0);
         drop(market);
 
@@ -1587,7 +1751,7 @@ pub mod delisting_test {
 
             // shorts lose
             assert_eq!(orig_short_balance, 200000000000000);
-            assert_eq!(shorter.spot_positions[0].scaled_balance, 198980002001000);
+            assert_eq!(shorter.spot_positions[0].scaled_balance, 198992601401000);
 
             assert_eq!(
                 shorter.spot_positions[0].scaled_balance < orig_short_balance,
@@ -1595,10 +1759,10 @@ pub mod delisting_test {
             );
 
             let shorter_loss = orig_short_balance - shorter.spot_positions[0].scaled_balance;
-            assert_eq!(shorter_loss, 1019997999000); //$1020 loss
+            assert_eq!(shorter_loss, 1007398599000); //$1020 loss
 
             let market = market_map.get_ref_mut(&0).unwrap();
-            assert_eq!(market.pnl_pool.scaled_balance, 2019997999000); //$2020
+            assert_eq!(market.pnl_pool.scaled_balance, 2007398599000); //$2020
             assert_eq!(market.amm.fee_pool.scaled_balance, 0);
             drop(market);
 
@@ -1626,7 +1790,7 @@ pub mod delisting_test {
         assert_eq!(margin_requirement, 10000);
 
         let market = market_map.get_ref_mut(&0).unwrap();
-        assert_eq!(market.pnl_pool.scaled_balance, 2019997999000);
+        assert_eq!(market.pnl_pool.scaled_balance, 2007398599000);
         assert_eq!(longer.spot_positions[0].scaled_balance, 20000000000000);
         assert_eq!(longer.perp_positions[0].quote_asset_amount, -40001000000);
         drop(market);
@@ -1644,10 +1808,10 @@ pub mod delisting_test {
         .unwrap();
 
         assert_eq!(longer.spot_positions[0].scaled_balance > 100000000000, true);
-        assert_eq!(longer.spot_positions[0].scaled_balance, 21955000002000);
+        assert_eq!(longer.spot_positions[0].scaled_balance, 21980198801000);
 
         let market = market_map.get_ref_mut(&0).unwrap();
-        assert_eq!(market.pnl_pool.scaled_balance, 64997997000); //fee from settling
+        assert_eq!(market.pnl_pool.scaled_balance, 27199798000); //fee from settling
         assert_eq!(market.amm.fee_pool.scaled_balance, 0);
         drop(market);
 
@@ -2707,7 +2871,7 @@ pub mod delisting_test {
             )
             .unwrap();
 
-            assert_eq!(liquidator.spot_positions[0].scaled_balance, 20079739999000);
+            assert_eq!(liquidator.spot_positions[0].scaled_balance, 20151890000000);
             // avoid the social loss :p
             // made 79 bucks
 
@@ -2750,7 +2914,7 @@ pub mod delisting_test {
             assert_eq!(market.cumulative_funding_rate_long, 17249955000);
             assert_eq!(market.cumulative_funding_rate_short, -17249955000);
 
-            assert_eq!(market.pnl_pool.scaled_balance, 20920260001000); //$20920
+            assert_eq!(market.pnl_pool.scaled_balance, 20848110000000); //$20920
             assert_eq!(market.amm.fee_pool.scaled_balance, 0);
             drop(market);
 
@@ -2802,7 +2966,7 @@ pub mod delisting_test {
             .unwrap();
 
             let market = market_map.get_ref_mut(&0).unwrap();
-            assert_eq!(market.pnl_pool.scaled_balance, 20920260001000);
+            assert_eq!(market.pnl_pool.scaled_balance, 20848110000000);
             assert_eq!(longer.spot_positions[0].scaled_balance, 20000000000000);
             assert_eq!(longer.perp_positions[0].quote_asset_amount, 200000000);
             assert_eq!(longer.perp_positions[0].quote_asset_amount, 200000000);
@@ -2837,10 +3001,10 @@ pub mod delisting_test {
             assert_eq!(longer.perp_positions[0].last_cumulative_funding_rate, 0);
 
             assert_eq!(longer.spot_positions[0].scaled_balance > 100000000000, true);
-            assert_eq!(longer.spot_positions[0].scaled_balance, 40775959200000); //$40775
+            assert_eq!(longer.spot_positions[0].scaled_balance, 40790389200000); //$40775
 
             let market = market_map.get_ref_mut(&0).unwrap();
-            assert_eq!(market.pnl_pool.scaled_balance, 144300801000); // fees collected
+            assert_eq!(market.pnl_pool.scaled_balance, 57720800000); // fees collected
             assert_eq!(market.amm.fee_pool.scaled_balance, 0);
 
             assert_eq!(market.number_of_users_with_base, 0);

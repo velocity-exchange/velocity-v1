@@ -1,6 +1,6 @@
 {
 	"name": "@velocity-exchange/admin-cli",
-	"version": "0.10.0",
+	"version": "0.10.2",
 	"description": "Velocity v1 admin CLI: rotate authority keys, pause markets, and route operations through a Squads V4 multisig.",
 	"author": "velocity-exchange",
 	"repository": {
@@ -47,7 +47,7 @@
 		"commander": "12.1.0"
 	},
 	"devDependencies": {
-		"@types/node": "^20",
+		"@types/node": "20.19.42",
 		"@typescript-eslint/eslint-plugin": "6.21.0",
 		"@typescript-eslint/parser": "6.21.0",
 		"eslint": "8.57.0",

@@ -32,7 +32,7 @@ velocity-admin auth init-config [--initial-warm <pk>]
 
 velocity-admin perp-market set-status <market> <status>
 velocity-admin perp-market set-fee-buffer <market> <amount>
-velocity-admin perp-market set-bankruptcy-if-floor <market> <pct>
+velocity-admin perp-market set-bankruptcy-if-floor <market> <pct>  # PERCENTAGE_PRECISION (1e6); 0 selects the 10 bps default, "disabled" turns the floor off
 velocity-admin perp-market set-funding-dead-zone <market> <threshold> <slope>
 velocity-admin perp-market set-oracle-slot-delay <market> <slots>
 velocity-admin spot-market set-status <market> <status>
@@ -47,13 +47,17 @@ velocity-admin exchange set-solvency-status <bitfield>  # cold admin; gates solv
 
 velocity-admin feature-flags median-trigger-price <true|false>  # bit 2; enabling requires cold admin
 velocity-admin feature-flags builder-codes <true|false>  # bit 4; enabling requires cold admin
+velocity-admin feature-flags vamm-maker-rebate <true|false>  # bit 8; enabling requires cold admin
 
 velocity-admin fees set-recipient <pubkey> <perp|spot>           # cold admin
 velocity-admin fees set-split <ammFeeNumerator> <ifFeeNumerator> # warm/cold admin
+velocity-admin fees set-taker-addon <market> <tenthBps>          # warm/cold admin; additive taker-fee add-on, -100..100 tenth-bps
+velocity-admin fees set-promo-tier <tier>                        # warm/cold admin; promo fee-tier floor for everyone, 0 = off
 velocity-admin fees withdraw-perp <market> <amount>  # FeeWithdraw hot key; pays the recipient's ATA (created if needed)
 velocity-admin fees withdraw-spot <market> <amount>  # FeeWithdraw hot key; pays the recipient's ATA (created if needed)
 velocity-admin fees withdraw-protocol-user <market> <amount>  # FeeWithdraw hot key; drains settled crank rewards from the protocol-owned User (settle-pnl first)
 velocity-admin fees sweep <market>                               # permissionless
+velocity-admin fees settle-revenue-share <market> [escrowAuthority] [--all] # permissionless; pays accrued builder/referrer fees out of the pnl pool. --all settles every escrow still owed on the market, which delisting now requires
 velocity-admin fees transfer-fee-pnl <feePoolMarket> <pnlPoolMarket> <amount> <fee-to-pnl|pnl-to-fee> # warm/cold admin
 
 velocity-admin user init <name> [--sub-accounts <n>] [--authority <pk>] [--vault-index <i>] [--dry-run]  # authority must sign on mainnet; one proposal with --multisig, vault pays rent

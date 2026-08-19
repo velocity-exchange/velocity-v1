@@ -1,0 +1,60 @@
+name: New dependency gate
+
+# Flags packages a PR newly introduces, and existing ones it repoints at a new
+# source, then requires the `deps-reviewed` label before it can merge.
+#
+# pull_request_target runs this workflow from the base branch rather than from the
+# pull request. That matters: the collect/comment/enforce logic and the parser live
+# in velocity-exchange/dependency-gate and were already out of a PR's reach, but
+# under `pull_request` this workflow file was still the PR's own copy, so a PR could
+# empty the lockfiles input, rename the job or delete the gate in the same diff that
+# added a dependency.
+#
+# The usual pull_request_target hazard does not apply, because the PR is never
+# checked out. The action reads the head lockfiles as bytes through the contents API
+# at a pinned head SHA and parses them with the base branch's parser, so there is
+# nothing of the PR's to execute. Do not add a `ref:` to the checkout below; that
+# would reintroduce the hazard this trigger exists to avoid.
+#
+# require-pull-request-target below makes the action fail loudly if the trigger is
+# ever downgraded back to `pull_request`, so the protection cannot be removed quietly.
+#
+# `edited` is in the trigger list because retargeting a PR emits it and nothing else.
+# The head SHA does not move, so without a rerun the passing check computed against
+# the old base survives the retarget: open against a branch that already carries the
+# dependency, then repoint at master. `edited` also fires on title and body edits,
+# which is a cheap rerun, since the action only reads the lockfiles through the API.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write # v2 deletes a stale label through the issues API
+
+jobs:
+  new-dependency-gate:
+    name: New dependency gate
+    runs-on: ubicloud
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0 # required: the action diffs against the base commit
+
+      - uses: velocity-exchange/dependency-gate@e039f99f9238eafe289d9879caae848c450a1b8e # v2.0.0
+        with:
+          # The three lockfiles that actually ship: the program (SBF) workspace,
+          # the separate rust/ workspace (velocity-rs, keep-rs, swift) and the bun
+          # workspace behind the TS SDK and the dlob/keeper images.
+          #
+          # Deliberately NOT watched: fuzz/*/Cargo.lock (13),
+          # rust/velocity-rs/examples/*/Cargo.lock (9) and
+          # rust/velocity-rs/crates/*/Cargo.lock (2). Those 24 lockfiles belong to
+          # host-only fuzz harnesses, doc examples and codegen helpers that are
+          # never deployed and never published; gating them would fire on every
+          # LibAFL or example bump and train people to reach for the override label
+          # reflexively. They are not covered by anything else either.
+          lockfiles: Cargo.lock rust/Cargo.lock bun.lock
+          require-pull-request-target: true

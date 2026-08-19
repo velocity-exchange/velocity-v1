@@ -1,7 +1,7 @@
 use {
     crate::{
         constraints::{is_manager_for_vault, is_user_for_vault, is_user_stats_for_vault},
-        declare_vault_seeds,
+        declare_vault_seeds, refresh_velocity_spot_market,
         state::{FeeUpdateProvider, FeeUpdateStatus, Vault, VaultProtocolProvider},
         token_cpi::TokenTransferCPI,
         velocity_cpi::WithdrawCPI,
@@ -18,6 +18,12 @@ use {
 };
 
 pub fn manager_withdraw<'info>(ctx: Context<'info, ManagerWithdraw<'info>>) -> Result<()> {
+    // Book the lending interest of every market that prices NAV BEFORE any account
+    // is borrowed and before NAV is snapshotted (OtterSec #136/#137). Must precede
+    // `load_mut`/`load_maps`: `invoke` rejects a CPI whose writable accounts still
+    // have live borrows, and the maps must read post-refresh data.
+    refresh_velocity_spot_market!(ctx);
+
     let clock = &Clock::get()?;
     let mut vault = ctx.accounts.vault.load_mut()?;
     let now = clock.unix_timestamp;

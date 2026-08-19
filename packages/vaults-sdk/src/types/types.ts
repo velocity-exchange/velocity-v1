@@ -155,6 +155,8 @@ export type VaultDepositor = {
 	cumulativeProfitShareAmount: BN;
 	vaultSharesBase: number;
 	profitShareFeePaid: BN;
+	profitShareAtBasis: number;
+	hurdleRateAtBasis: number;
 	paddingAlign: number;
 	padding: BN[];
 };

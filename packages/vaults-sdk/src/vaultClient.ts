@@ -11,7 +11,10 @@ import {
 	unstakeSharesToAmount as depositSharesToVaultAmount,
 	ZERO,
 	getInsuranceFundVaultPublicKey,
+	isSpotPositionAvailable,
 	OracleSource,
+	PositionFlag,
+	positionIsAvailable,
 	WRAPPED_SOL_MINT,
 	SpotMarketAccount,
 	UserAccount,
@@ -130,6 +133,45 @@ export class VaultClient {
 		}
 	}
 
+	/**
+	 * The spot markets whose lending-interest index prices the vault's equity: the denomination
+	 * market, every market the vault's velocity user holds a spot position in, and the quote spot
+	 * market of every isolated perp position it holds.
+	 *
+	 * `Vault::calculate_equity` converts each held spot position through its own market's
+	 * cumulative index, and an isolated perp position's collateral through its perp market's quote
+	 * spot market, so every one of these has to be refreshed before shares are priced. The program
+	 * derives the same set on chain from the vault and its velocity user, so a caller cannot leave
+	 * one out — it can only fail to make one writable, which velocity then rejects.
+	 */
+	private getSpotMarketsThatPriceEquity(
+		userAccounts: UserAccount[],
+		vaultAccount: Vault
+	): number[] {
+		const marketIndexes = new Set<number>([vaultAccount.spotMarketIndex]);
+		for (const userAccount of userAccounts) {
+			for (const position of userAccount.spotPositions) {
+				if (!isSpotPositionAvailable(position)) {
+					marketIndexes.add(position.marketIndex);
+				}
+			}
+			for (const position of userAccount.perpPositions) {
+				const isIsolated =
+					(position.positionFlag & PositionFlag.IsolatedPosition) !== 0;
+				if (positionIsAvailable(position) || !isIsolated) {
+					continue;
+				}
+				const perpMarket = this.velocityClient.getPerpMarketAccount(
+					position.marketIndex
+				);
+				if (perpMarket) {
+					marketIndexes.add(perpMarket.quoteSpotMarketIndex);
+				}
+			}
+		}
+		return Array.from(marketIndexes);
+	}
+
 	private getRemainingAccountsForUser(
 		userAccounts: UserAccount[],
 		writableSpotMarketIndexes: number[],
@@ -138,9 +180,17 @@ export class VaultClient {
 		skipVaultProtocol = false,
 		skipFeeUpdate = false
 	) {
+		// The refresh CPI writes to every market that prices equity, so each must travel
+		// writable. A market discovered from the user account is read-only by default, and
+		// velocity fails the load with SpotMarketWrongMutability if it was asked to refresh one.
 		const remainingAccounts = this.velocityClient.getRemainingAccounts({
 			userAccounts,
-			writableSpotMarketIndexes,
+			writableSpotMarketIndexes: Array.from(
+				new Set([
+					...writableSpotMarketIndexes,
+					...this.getSpotMarketsThatPriceEquity(userAccounts, vaultAccount),
+				])
+			),
 		});
 
 		const hasVaultProtocol = vaultAccount.vaultProtocol === true;
@@ -357,6 +407,36 @@ export class VaultClient {
 		for (const user of this.vaultUsers.values()) {
 			await user.fetchAccounts();
 		}
+	}
+
+	/**
+	 * The accounts every NAV-snapshotting vault instruction needs so the vaults
+	 * program can CPI velocity's `refresh_spot_market_interest` *before* it prices
+	 * shares.
+	 *
+	 * `Vault::calculate_equity` values every held velocity spot position off that
+	 * market's STORED cumulative index; only velocity may write those accounts, so
+	 * the refresh has to be a CPI. Without it a stale index misprices NAV — entrants
+	 * overmint shares (OtterSec #136) and withdraw requests/cancellations snapshot
+	 * the wrong equity (OtterSec #137).
+	 *
+	 * The markets themselves are not named accounts. They travel in the instruction's
+	 * remaining accounts, which `getRemainingAccountsForUser` marks writable.
+	 *
+	 * ABI note: 19 vault instructions carry only `velocity_state` and
+	 * `velocity_program` for the refresh. `velocity_spot_market` and
+	 * `velocity_oracle` were removed from all of them, and `velocity_spot_market_vault`
+	 * from the thirteen that did not already need it for a deposit or withdraw CPI.
+	 * Callers that hand-roll account lists must drop the removed accounts.
+	 */
+	private async getSpotMarketRefreshAccounts(): Promise<{
+		velocityState: PublicKey;
+		velocityProgram: PublicKey;
+	}> {
+		return {
+			velocityState: await this.velocityClient.getStatePublicKey(),
+			velocityProgram: this.velocityClient.program.programId,
+		};
 	}
 
 	/**
@@ -956,6 +1036,7 @@ export class VaultClient {
 		);
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts()),
 			vault,
 			vaultTokenAccount: vaultAccount.tokenAccount,
 			velocityUser: await getUserAccountPublicKey(
@@ -1040,6 +1121,7 @@ export class VaultClient {
 		);
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts()),
 			vault,
 			velocityUser: vaultAccount.user,
 			velocityUserStats: userStatsKey,
@@ -1078,6 +1160,7 @@ export class VaultClient {
 		);
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts()),
 			manager: vaultAccount.manager,
 			vault,
 			velocityUser: vaultAccount.user,
@@ -1185,6 +1268,7 @@ export class VaultClient {
 
 		const withdrawIx = await this.program.instruction.managerWithdraw({
 			accounts: {
+				...(await this.getSpotMarketRefreshAccounts()),
 				vault,
 				manager: vaultAccount.manager,
 				vaultTokenAccount: vaultAccount.tokenAccount,
@@ -1618,6 +1702,7 @@ export class VaultClient {
 		);
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts()),
 			vault,
 			vaultDepositor,
 			manager: vaultAccount.manager,
@@ -1676,6 +1761,7 @@ export class VaultClient {
 		);
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts()),
 			vault,
 			tokenizedVaultDepositor,
 			velocityUser: await getUserAccountPublicKey(
@@ -1738,6 +1824,7 @@ export class VaultClient {
 		);
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts()),
 			vault,
 			vaultDepositor,
 			velocityUser: await getUserAccountPublicKey(
@@ -1965,6 +2052,7 @@ export class VaultClient {
 				// generator can't encode `vault.shares_base.to_string().as_bytes()`
 				// and emits broken seeds. Pass it explicitly to override.
 				.accountsPartial({
+					...(await this.getSpotMarketRefreshAccounts()),
 					authority: this.velocityClient.wallet.publicKey,
 					vault: vaultDepositorAccount.vault,
 					tokenizedVaultDepositor: getTokenizedVaultAddressSync(
@@ -2035,6 +2123,7 @@ export class VaultClient {
 				// @ts-ignore args tuple vs anchor 0.32 IDL recursion limit
 				.transferVaultDepositorShares(amount, withdrawUnit)
 				.accounts({
+					...(await this.getSpotMarketRefreshAccounts()),
 					vault: vaultDepositorAccount.vault,
 					authority: this.velocityClient.wallet.publicKey,
 					toVaultDepositor,
@@ -2112,6 +2201,7 @@ export class VaultClient {
 		return await this.program.methods
 			.redeemTokens(tokensToBurn)
 			.accounts({
+				...(await this.getSpotMarketRefreshAccounts()),
 				authority: this.velocityClient.wallet.publicKey,
 				vault: vaultDepositorAccount.vault,
 				tokenizedVaultDepositor: getTokenizedVaultAddressSync(
@@ -2213,6 +2303,7 @@ export class VaultClient {
 		);
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts()),
 			vault: vaultPubKey,
 			vaultDepositor,
 			vaultTokenAccount: vaultAccount.tokenAccount,
@@ -2365,6 +2456,7 @@ export class VaultClient {
 		);
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts()),
 			vault: vaultDepositorAccount.vault,
 			vaultDepositor,
 			velocityUser: vaultAccount.user,
@@ -2487,6 +2579,7 @@ export class VaultClient {
 		}
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts()),
 			vault: vaultDepositorAccount.vault,
 			vaultDepositor,
 			vaultTokenAccount: vaultAccount.tokenAccount,
@@ -2591,6 +2684,7 @@ export class VaultClient {
 		}
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts()),
 			manager: vaultAccount.manager,
 			vault: vaultDepositorAccount.vault,
 			vaultDepositor,
@@ -2649,6 +2743,7 @@ export class VaultClient {
 		);
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts()),
 			vault: vaultDepositorAccount.vault,
 			vaultDepositor,
 			velocityUserStats: userStatsKey,
@@ -2740,6 +2835,7 @@ export class VaultClient {
 		const velocityStateKey = await this.velocityClient.getStatePublicKey();
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts()),
 			vault,
 			vaultDepositor,
 			vaultTokenAccount: vaultAccount.tokenAccount,
@@ -2938,6 +3034,14 @@ export class VaultClient {
 
 	/**
 	 * Adds an amount to an insurance fund stake for the vault.
+	 *
+	 * An IF share is indivisible, so velocity stakes only what prices to whole shares. The
+	 * instruction transfers `amount` from the manager into the vault's IF token account and
+	 * stakes that account's whole balance, so a remainder left behind by an earlier add is
+	 * folded in and the staked amount can exceed `amount`. A balance below the price of one
+	 * share is rejected with `IFDepositMintsZeroShares`. Read the staked amount from the
+	 * `InsuranceFundStakeRecord` event rather than assuming it equals `amount`.
+	 *
 	 * @param vault vault address to update
 	 * @param spotMarketIndex spot market index of the insurance fund stake
 	 * @param amount amount to add to the insurance fund stake, in spotMarketIndex precision
@@ -3111,6 +3215,13 @@ export class VaultClient {
 				vault: vault,
 				manager: vaultAccount.manager,
 				velocityUserStats: vaultAccount.userStats,
+				// The cancel now settles already-due revenue into the IF vault before
+				// pricing the forfeiture (OtterSec #141), so it carries the same accounts as
+				// requestRemove. velocitySpotMarketVault is a PDA and auto-resolves from its
+				// seeds.
+				velocityState: await this.velocityClient.getStatePublicKey(),
+				velocitySigner: this.velocityClient.getStateAccount().signer,
+				tokenProgram: TOKEN_PROGRAM_ID,
 			})
 			.instruction();
 	}
@@ -3228,6 +3339,7 @@ export class VaultClient {
 		);
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts()),
 			vault,
 			velocityUserStats: userStatsKey,
 			velocityUser: vaultAccount.user,
@@ -3277,6 +3389,7 @@ export class VaultClient {
 		);
 
 		const accounts = {
+			...(await this.getSpotMarketRefreshAccounts()),
 			manager: vaultAccount.manager,
 			vault,
 			velocityUserStats: userStatsKey,
@@ -3363,6 +3476,7 @@ export class VaultClient {
 
 		const ix = this.program.instruction.managerWithdraw({
 			accounts: {
+				...(await this.getSpotMarketRefreshAccounts()),
 				vault,
 				manager: vaultAccount.manager,
 				vaultTokenAccount: vaultAccount.tokenAccount,
@@ -3583,23 +3697,34 @@ export class VaultClient {
 		const vaultAccount = await this.program.account.vault.fetch(vault);
 		const feeUpdate = getFeeUpdateAddressSync(this.program.programId, vault);
 
-		// protocol vaults must pass VaultProtocol so a matured update is validated
-		// against the live combined manager+protocol fee bounds
-		const remainingAccounts: AccountMeta[] = vaultAccount.vaultProtocol
-			? [
-					{
-						pubkey: getVaultProtocolAddressSync(this.program.programId, vault),
-						isSigner: false,
-						isWritable: false,
-					},
-			  ]
-			: [];
+		// Installing a matured update settles the vault's fee first, which needs vault equity:
+		// pass the spot market and its oracle. Protocol vaults also pass VaultProtocol, so the
+		// queued policy is validated against the live combined manager+protocol fee bounds.
+		const user = await this.getSubscribedVaultUser(vaultAccount.user);
+		const userStatsKey = getUserStatsAccountPublicKey(
+			this.velocityClient.program.programId,
+			vault
+		);
+		const userStats = (await (
+			this.velocityClient.program as any
+		).account.userStats.fetch(userStatsKey)) as UserStatsAccount;
+		// the FeeUpdate is a named account on this instruction, so it is not appended here
+		const remainingAccounts: AccountMeta[] = this.getRemainingAccountsForUser(
+			[user.getUserAccount()!],
+			[vaultAccount.spotMarketIndex],
+			vaultAccount,
+			userStats,
+			false,
+			true
+		);
 
 		return this.program.instruction.managerUpdateFees(params, {
 			accounts: {
+				...(await this.getSpotMarketRefreshAccounts()),
 				vault,
 				manager: vaultAccount.manager,
 				feeUpdate,
+				velocityUser: vaultAccount.user,
 			},
 			remainingAccounts,
 		});

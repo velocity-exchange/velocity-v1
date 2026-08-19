@@ -33,8 +33,8 @@ There is also a **second, separate Cargo workspace** at `rust/` (velocity-rs, ke
 **Solana programs (Rust/Anchor):** use the `program:*` scripts in the root package.json — they encode the correct feature flags so you don't have to remember them.
 
 ```bash
-bun run program:build           # program + IDL/types synced into packages/sdk/src/idl/ + vendored fuzz IDLs (devnet/test flavor)
-bun run program:idl             # IDL/types + vendored fuzz IDLs, no SBF build — fast path for layout/name changes
+bun run program:build           # program + IDL/types synced into packages/sdk/src/idl/ (devnet/test flavor)
+bun run program:idl             # IDL/types only, no SBF build — fast path for layout/name changes
 bun run program:build:devnet    # deployable devnet .so (wraps deploy-scripts/build-devnet.sh)
 bun run program:build:mainnet   # mainnet .so (default features: production gates on, devnet ixs compiled out)
 ```
@@ -54,6 +54,8 @@ bunx turbo run build --filter=@velocity-exchange/sdk # build the SDK (+ its deps
 **Update IDL after program changes:**
 
 NEVER hand-edit `packages/sdk/src/idl/velocity.json` or `packages/sdk/src/idl/velocity.ts` — they are generated artifacts. To change them, modify the Rust program and regenerate (`bun run program:build`, or `bun run program:idl` for the fast path). Manual edits will silently drift from on-chain layout and break clients. Note a full `anchor build` already emits both `target/idl/velocity.json` and `target/types/velocity.ts`; the scripts just copy them into `packages/sdk/src/idl/` — no separate `anchor idl build`/`anchor idl type` step is needed after a full build.
+
+`packages/sdk/src/idl/velocity.json` is the single copy of the IDL in the repo. The TypeScript SDK, `rust/velocity-rs`'s `build.rs`, and the `fuzz/e2e-svm*` harnesses all read that one file. Never add a second copy — a duplicate turns every IDL change into a multi-file diff and can go stale.
 
 **Keep `packages/sdk/src/types.ts` in sync with the IDL.** The TypeScript types in `packages/sdk/src/types.ts` (`UserAccount`, `PerpMarketAccount`, `SpotMarketAccount`, `StateAccount`, `AMM`, the `*Record` event types, etc.) are **hand-maintained mirrors** of the on-chain structs — they are NOT derived from the IDL automatically (the SDK does not use Anchor's `IdlAccounts`/`IdlTypes`/`IdlEvents` helpers, because the enum variant classes and SDK-only types can't be generated). Whenever a struct, account, or event changes in the IDL (a field is added, removed, renamed, reordered, or its type changes — including `BN` ↔ `number` width differences), update the corresponding type in `types.ts` in the same change so the mirror stays faithful to the regenerated IDL. The file header already states this contract; treat the IDL as the authoritative layout source and reconcile `types.ts` against it, never the reverse.
 
@@ -96,6 +98,15 @@ cargo-build-sbf --tools-version v1.54 --force-tools-install
 
 Run that once; subsequent `anchor build` invocations will use the new toolchain. Check with `cargo-build-sbf --version`.
 
+**Symptom: `could not execute process .../1.89.0-sbpf-solana-v1.52/bin/rustc (never executed)`** during an SBF build.
+The platform-tools payload is present under `~/.cache/solana/<version>/` but its rustup toolchain link is missing, and `cargo-build-sbf` picks its own default version rather than whichever one you last installed — so having v1.54 linked does not help when it wants v1.52. Link the version it is asking for:
+
+```bash
+rustup toolchain link 1.89.0-sbpf-solana-v1.52 ~/.cache/solana/v1.52/platform-tools/rust
+```
+
+Substitute the version from the error path. This is machine-level state, not repo state, so it recurs on any fresh worktree or new machine until linked.
+
 **Symptom: program panics with `Access violation in unknown section at address 0x80 of size 8`** (or similar address) at runtime, on instructions that touch types you didn't change.
 This is almost always **stale SBF build artifacts** after a Cargo.lock dep change. SBF caches compiled `.rlib`s under `target/sbpf-solana-solana/`, and the cache key doesn't catch every dep-resolution change — the resulting `.so` loads but reads/writes wrong offsets. Whenever Cargo.lock dep versions change (e.g. after `cargo update`, or after switching branches with different lockfiles), do:
 
@@ -114,6 +125,20 @@ cargo-build-sbf --tools-version v1.54 --manifest-path programs/velocity/Cargo.to
 The litesvm/bankrun suites can mask this: they exercise only the instructions each test calls, and older runtimes were lenient. `integration-tests/tests/init_probe.rs` pins the real `initialize_user_stats` path so a miscompiled `.so` fails fast.
 
 ## Testing
+
+**Local CI emulation:** `bash test-scripts/ci-local.sh` runs the gating checks from
+`.github/workflows/main.yml` locally (`--fast` = static checks only, `--full` adds the
+anchor/vault integration suites and rust-workspace tests). **Keep `test-scripts/ci-local.sh`
+in sync with the CI workflow**: whenever a gating job in `.github/workflows/main.yml` is
+added, removed, or its command changes, mirror the change in `ci-local.sh` in the same PR.
+The script also encodes two local-only traps CI never hits:
+- the SBF cache-poisoning guard (see the access-violation runbook entry above): it wipes
+`target/sbpf-solana-solana` before the integration-suite build, since `.so` files built on a
+cache that mixed feature flavors die at entry with `Access violation in unknown section`;
+- the IDL-flavor restore: the anchor suite's own build (default features = `mainnet-beta` ON)
+syncs an IDL with devnet-only instructions compiled out into `packages/sdk/src/idl/`
+(committing that breaks `wipe-devnet.ts`), so after the suites the script reruns
+`bun run program:idl` to restore the canonical flavor.
 
 **Rust unit tests:**
 
@@ -304,8 +329,12 @@ This is **Velocity Protocol v1** — a Solana perpetuals and spot trading protoc
   - `admin.rs` — admin/governance instructions
   - `lp_pool.rs`, `lp_admin.rs` — LP pool management
 - **`vaults/`** — Velocity vaults program (Anchor 1.0; program id `vAuLTsyrv…`). Depends on the `velocity` program as a host/CPI path-dep, referenced by its real crate name `velocity` (not the `program` alias velocity-rs uses — anchor's IDL build resolves dependency programs by name, so `velocity` maps to `programs/velocity`). Its TS client is `packages/vaults-sdk` (`@velocity-exchange/vaults-sdk`). Regenerate the SDK's IDL + types from the program with `bun run program:idl:vaults` (writes `packages/vaults-sdk/src/idl/vaults.json` + `src/types/vaults.ts`) — never hand-edit them.
-- **`pyth/`, `pyth-lazer/`, `switchboard/`, `switchboard-on-demand/`** — Oracle stubs/integrations (minimal, mostly `no-entrypoint` wrappers)
-- **`openbook_v2/`, `token_faucet/`** — DEX integration and test utilities
+- **`pyth-lazer/`** — Pyth Lazer message/payload/signature/storage types, linked into `velocity` as a real library dependency and used by `instructions/pyth_lazer_oracle.rs` (not a CPI target).
+- **`pyth/`** — Pyth V1 account layout types, an optional dependency of `velocity` pulled in only by the `fuzz-fixtures` feature (plus a dev-dependency for tests).
+- **`jit-proxy/`** — Just-in-time fill/arb proxy program; CPIs into `velocity` (depends on it with the `cpi` feature).
+- **`token_faucet/`** — Devnet/test token minting utility.
+
+Switchboard oracle support and external spot-fulfillment venues (Serum, Phoenix, OpenBook) were removed from the protocol; there is no `programs/switchboard*` or `programs/openbook_v2`. The `OracleSource` enum keeps `DeprecatedSwitchboard`/`DeprecatedSwitchboardOnDemand` variants only to preserve ABI discriminants — both error out in `get_oracle_price`.
 
 ### SDK (`packages/sdk/`)
 

@@ -471,6 +471,13 @@
         {
           "name": "velocity_user",
           "writable": true
+        },
+        {
+          "name": "velocity_state"
+        },
+        {
+          "name": "velocity_program",
+          "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
         }
       ],
       "args": []
@@ -499,6 +506,13 @@
         {
           "name": "velocity_user",
           "writable": true
+        },
+        {
+          "name": "velocity_state"
+        },
+        {
+          "name": "velocity_program",
+          "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
         }
       ],
       "args": []
@@ -647,8 +661,55 @@
           "writable": true
         },
         {
+          "name": "velocity_spot_market_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "market_index"
+              }
+            ],
+            "program": {
+              "kind": "account",
+              "path": "velocity_program"
+            }
+          }
+        },
+        {
+          "name": "velocity_state"
+        },
+        {
+          "name": "velocity_signer"
+        },
+        {
           "name": "velocity_program",
           "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
+        },
+        {
+          "name": "token_program"
         }
       ],
       "args": [
@@ -720,6 +781,13 @@
         },
         {
           "name": "velocity_user"
+        },
+        {
+          "name": "velocity_state"
+        },
+        {
+          "name": "velocity_program",
+          "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
         }
       ],
       "args": []
@@ -1702,6 +1770,9 @@
         {
           "name": "velocity_program",
           "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
+        },
+        {
+          "name": "velocity_state"
         }
       ],
       "args": []
@@ -2015,6 +2086,13 @@
         },
         {
           "name": "velocity_user"
+        },
+        {
+          "name": "velocity_state"
+        },
+        {
+          "name": "velocity_program",
+          "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
         }
       ],
       "args": [
@@ -2116,6 +2194,19 @@
               }
             ]
           }
+        },
+        {
+          "name": "velocity_user",
+          "docs": [
+            "Installing a matured update settles the vault's fee first, which needs vault equity."
+          ]
+        },
+        {
+          "name": "velocity_state"
+        },
+        {
+          "name": "velocity_program",
+          "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
         }
       ],
       "args": [
@@ -2245,6 +2336,13 @@
         },
         {
           "name": "velocity_user"
+        },
+        {
+          "name": "velocity_state"
+        },
+        {
+          "name": "velocity_program",
+          "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
         }
       ],
       "args": []
@@ -2279,6 +2377,13 @@
         },
         {
           "name": "velocity_user"
+        },
+        {
+          "name": "velocity_state"
+        },
+        {
+          "name": "velocity_program",
+          "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
         }
       ],
       "args": []
@@ -2313,6 +2418,13 @@
         },
         {
           "name": "velocity_user"
+        },
+        {
+          "name": "velocity_state"
+        },
+        {
+          "name": "velocity_program",
+          "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
         }
       ],
       "args": [
@@ -2504,6 +2616,13 @@
         {
           "name": "token_program",
           "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "velocity_state"
+        },
+        {
+          "name": "velocity_program",
+          "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
         }
       ],
       "args": [
@@ -2990,6 +3109,13 @@
         },
         {
           "name": "velocity_user"
+        },
+        {
+          "name": "velocity_state"
+        },
+        {
+          "name": "velocity_program",
+          "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
         }
       ],
       "args": [
@@ -3131,6 +3257,13 @@
         {
           "name": "token_program",
           "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        },
+        {
+          "name": "velocity_state"
+        },
+        {
+          "name": "velocity_program",
+          "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
         }
       ],
       "args": [
@@ -3211,6 +3344,13 @@
         },
         {
           "name": "velocity_user"
+        },
+        {
+          "name": "velocity_state"
+        },
+        {
+          "name": "velocity_program",
+          "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
         }
       ],
       "args": [
@@ -4187,7 +4327,10 @@
               "Fraction of spot deposit-interest gains carved out to the insurance fund",
               "(staker-owned). precision: IF_FACTOR_PRECISION. (Was `total_factor`; the",
               "protocol-vs-staker split was removed — the IF is now 100% staker-owned,",
-              "so this is purely the staker IF carveout.)"
+              "so this is purely the staker IF carveout.) While non-zero, an accrual",
+              "interval whose cut would convert to less than one token is deferred rather",
+              "than committed, so the cut is never floored away — see",
+              "`update_spot_market_cumulative_interest`."
             ],
             "type": "u32"
           },
@@ -5594,7 +5737,10 @@
             "name": "protocol_fee_factor",
             "docs": [
               "Protocol's carveout of lending deposit-interest gains, routed to",
-              "`protocol_fee_pool`. precision: IF_FACTOR_PRECISION"
+              "`protocol_fee_pool`. precision: IF_FACTOR_PRECISION. While non-zero, an",
+              "accrual interval whose cut would convert to less than one token is",
+              "deferred rather than committed, so the cut is never floored away — see",
+              "`update_spot_market_cumulative_interest`."
             ],
             "type": "u32"
           },
@@ -5785,7 +5931,8 @@
           {
             "name": "cumulative_profit_share_amount",
             "docs": [
-              "the token amount of gains the vault depositor has paid performance fees on"
+              "the token amount of gain, net of the profit share taken on it, that the high-water mark",
+              "already covers. `net_deposits + cumulative_profit_share_amount` is the high-water mark."
             ],
             "type": "i64"
           },
@@ -5799,6 +5946,22 @@
               "The exponent for vault_shares decimal places at the time the tokenized vault depositor was initialized.",
               "If the vault undergoes a rebase, this TokenizedVaultDepositor can no longer issue new tokens, only redeem",
               "is possible."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "profit_share_at_basis",
+            "docs": [
+              "the vault's profit share when the high-water mark was last set. Gain above the high-water",
+              "mark is priced at this rate, so a later raise never prices gain earned before it."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "hurdle_rate_at_basis",
+            "docs": [
+              "the vault's hurdle rate when the high-water mark was last set. Gain above the high-water",
+              "mark keeps this shelter, so a later cut never exposes gain earned before it."
             ],
             "type": "u32"
           },
@@ -5823,7 +5986,7 @@
             "type": {
               "array": [
                 "u64",
-                11
+                10
               ]
             }
           }
@@ -6748,7 +6911,8 @@
           {
             "name": "cumulative_profit_share_amount",
             "docs": [
-              "the token amount of gains the vault depositor has paid performance fees on"
+              "the token amount of gain, net of the profit share taken on it, that the high-water mark",
+              "already covers. `net_deposits + cumulative_profit_share_amount` is the high-water mark."
             ],
             "type": "i64"
           },
@@ -6764,6 +6928,22 @@
             "type": "u32"
           },
           {
+            "name": "profit_share_at_basis",
+            "docs": [
+              "the vault's profit share when the high-water mark was last set. Gain above the high-water",
+              "mark is priced at this rate, so a later raise never prices gain earned before it."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "hurdle_rate_at_basis",
+            "docs": [
+              "the vault's hurdle rate when the high-water mark was last set. Gain above the high-water",
+              "mark keeps this shelter, so a later cut never exposes gain earned before it."
+            ],
+            "type": "u32"
+          },
+          {
             "name": "padding_align",
             "type": "u32"
           },
@@ -6772,7 +6952,7 @@
             "type": {
               "array": [
                 "u64",
-                5
+                4
               ]
             }
           }

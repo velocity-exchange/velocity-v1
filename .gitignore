@@ -42,3 +42,5 @@ vendor
 # Never commit keypairs (program deploy keys live outside the repo,
 # e.g. ~/.config/solana/velocity-keys/). Tests only need the pubkey in declare_id.
 anchor-v2/**/*keypair*.json
+
+.ci-local-logs/

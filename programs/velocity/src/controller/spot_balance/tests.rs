@@ -2710,6 +2710,130 @@ fn spot_cumulative_interest_with_no_oracle_leaves_oracle_twaps_alone() {
     assert_eq!(unrefreshed.last_twap_ts, later as u64);
 }
 
+/// OtterSec #14 — `update_spot_market_and_check_validity` must judge the oracle, and hand
+/// back the 5-minute TWAP that protective liquidation pricing is bounded against, from the
+/// market as it stands on entry.
+///
+/// It refreshes both oracle TWAPs toward the live price. Judging afterwards let a
+/// too-volatile oracle clear its own `Liquidate` gate, and reading
+/// `last_oracle_price_twap_5min` afterwards collapsed
+/// `calculate_user_protective_{asset,liability}_price` onto the raw oracle price — the
+/// protection is a bound against an independent reference, and the refresh makes the
+/// reference a copy of the thing being bounded.
+///
+/// Unlike #110/#111, the refresh itself stays: liquidation legitimately advances these
+/// TWAPs. Moving it after the gate is the fix.
+#[test]
+fn update_and_check_validity_judges_and_snapshots_before_refreshing() {
+    let now = 0_i64;
+    let later = now + 3600;
+
+    let before = SpotMarket {
+        market_index: 1,
+        oracle_source: OracleSource::PythLazer,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        decimals: 6,
+        deposit_balance: 1000 * SPOT_BALANCE_PRECISION,
+        borrow_balance: 500 * SPOT_BALANCE_PRECISION,
+        status: MarketStatus::Active,
+        historical_oracle_data: HistoricalOracleData {
+            last_oracle_price: 40 * PRICE_PRECISION_I64,
+            last_oracle_price_twap: 40 * PRICE_PRECISION_I64,
+            last_oracle_price_twap_5min: 40 * PRICE_PRECISION_I64,
+            last_oracle_price_twap_ts: now,
+            ..HistoricalOracleData::default()
+        },
+        ..SpotMarket::default()
+    };
+
+    // 6x the stored risk EMA — over the guard rails' 5x too-volatile rail.
+    let oracle_price_data = OraclePriceData {
+        price: 240 * PRICE_PRECISION_I64,
+        confidence: 0,
+        delay: 0,
+        has_sufficient_number_of_data_points: true,
+        ..OraclePriceData::default()
+    };
+
+    let guard_rails = ValidityGuardRails {
+        slots_before_stale_for_amm: 10,
+        slots_before_stale_for_margin: 120,
+        confidence_interval_max_size: 20_000,
+        too_volatile_ratio: 5,
+    };
+
+    let verdict_against = |risk_ema_price: i64| {
+        oracle_validity(
+            MarketType::Spot,
+            before.market_index,
+            risk_ema_price,
+            &oracle_price_data,
+            &guard_rails,
+            before.get_max_confidence_interval_multiplier().unwrap(),
+            &before.oracle_source,
+            LogMode::None,
+            -1,
+            false, // exchange-oracle price, never MM-sourced
+            0,
+        )
+        .unwrap()
+    };
+
+    // Control: the refresh alone drags the risk EMA far enough that this same oracle stops
+    // reading as TooVolatile. That flip is the exploitable primitive.
+    let mut refreshed = before;
+    update_spot_market_cumulative_interest(&mut refreshed, Some(&oracle_price_data), later, false)
+        .unwrap();
+    assert_eq!(
+        verdict_against(before.historical_oracle_data.last_oracle_price_twap),
+        OracleValidity::TooVolatile
+    );
+    assert_ne!(
+        verdict_against(refreshed.historical_oracle_data.last_oracle_price_twap),
+        OracleValidity::TooVolatile,
+        "fixture no longer reproduces the flip — the refresh must be able to clear the rail"
+    );
+
+    // Fixed: the gate reads the entry EMA, so the liquidation is rejected.
+    let mut market = before;
+    assert_eq!(
+        update_spot_market_and_check_validity(
+            &mut market,
+            &oracle_price_data,
+            &guard_rails,
+            later,
+            Some(VelocityAction::Liquidate),
+            false,
+        )
+        .unwrap_err(),
+        ErrorCode::InvalidOracle
+    );
+
+    // And for an action that tolerates the verdict, the returned snapshot is the entry
+    // 5-minute TWAP while the stored one still advances.
+    let mut market = before;
+    let refresh = update_spot_market_and_check_validity(
+        &mut market,
+        &oracle_price_data,
+        &guard_rails,
+        later,
+        Some(VelocityAction::UpdateTwap),
+        false,
+    )
+    .unwrap();
+    assert_eq!(refresh.validity, OracleValidity::TooVolatile);
+    assert_eq!(
+        refresh.pre_refresh_twap_5min,
+        before.historical_oracle_data.last_oracle_price_twap_5min
+    );
+    assert!(
+        market.historical_oracle_data.last_oracle_price_twap_5min > refresh.pre_refresh_twap_5min,
+        "the refresh must still advance the stored TWAP"
+    );
+    assert_eq!(market.last_twap_ts, later as u64);
+}
+
 /// OtterSec #134 — a same-authority spot transfer must not refresh the transferred
 /// market's oracle TWAP before its own source-side margin check.
 ///

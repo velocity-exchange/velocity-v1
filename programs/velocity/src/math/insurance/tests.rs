@@ -213,3 +213,66 @@ pub fn if_shares_lost_sole_staker_full_request_test() {
         calculate_if_shares_lost(&if_stake, &spot_market_with_others, if_balance).unwrap();
     assert!(lost_shares > 0);
 }
+
+#[test]
+pub fn deposit_amount_and_shares_charges_only_whole_shares() {
+    // share price 1_000_000 (one share against a 1_000_000 vault): a request worth 1.5
+    // shares buys one share and is charged one share price, not the full request.
+    let (amount_to_deposit, n_shares) =
+        deposit_amount_and_shares_for_if_stake(1_500_000, 1, 1_000_000).unwrap();
+    assert_eq!(n_shares, 1);
+    assert_eq!(amount_to_deposit, 1_000_000);
+
+    // a request below the price of a single share buys nothing (the caller rejects it)
+    let (amount_to_deposit, n_shares) =
+        deposit_amount_and_shares_for_if_stake(999_999, 1, 1_000_000).unwrap();
+    assert_eq!(n_shares, 0);
+    assert_eq!(amount_to_deposit, 0);
+
+    // an empty fund mints 1:1, so the whole request is charged
+    let (amount_to_deposit, n_shares) =
+        deposit_amount_and_shares_for_if_stake(100 * QUOTE_PRECISION as u64, 0, 0).unwrap();
+    assert_eq!(n_shares, 100 * QUOTE_PRECISION);
+    assert_eq!(amount_to_deposit, 100 * QUOTE_PRECISION as u64);
+
+    // share price below one (post-rebase regime): shares are finer than a token unit, so
+    // every unit of the request is spendable
+    let (amount_to_deposit, n_shares) =
+        deposit_amount_and_shares_for_if_stake(7, 1000, 100).unwrap();
+    assert_eq!(n_shares, 70);
+    assert_eq!(amount_to_deposit, 7);
+}
+
+#[test]
+pub fn deposit_amount_and_shares_never_overcharges() {
+    // awkward, non-round share price so both roundings bite
+    let total_shares = 7_u128;
+    let vault_balance = 1_000_003_u64;
+
+    for amount in [
+        142_858,
+        142_857 * 2,
+        1_000_003,
+        1_000_004,
+        2_000_005,
+        7_000_021,
+        12_345_678,
+    ] {
+        let (amount_to_deposit, n_shares) =
+            deposit_amount_and_shares_for_if_stake(amount, total_shares, vault_balance).unwrap();
+
+        // never charge more than was requested
+        assert!(amount_to_deposit <= amount);
+
+        // leave behind less than the price of one share, i.e. everything that could be
+        // converted was: remainder < vault_balance / total_shares
+        assert!((amount - amount_to_deposit) as u128 * total_shares < vault_balance as u128);
+
+        // the minted shares are never worth more than what was charged for them:
+        // n_shares * (vault + deposit) / (total_shares + n_shares) <= deposit, so a
+        // deposit followed by an immediate withdraw cannot turn a profit
+        let vault_after = vault_balance as u128 + amount_to_deposit as u128;
+        let shares_after = total_shares + n_shares;
+        assert!(n_shares * vault_after <= amount_to_deposit as u128 * shares_after);
+    }
+}

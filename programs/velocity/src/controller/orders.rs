@@ -1844,6 +1844,7 @@ fn get_builder_escrow_info(
     order_id: u32,
     market_index: u16,
     order_has_builder: bool,
+    builder_fee_allowed: bool,
 ) -> (Option<u32>, Option<u32>, Option<u16>, Option<u8>) {
     if let Some(escrow) = escrow_opt {
         // Only match a builder-order row for an order that actually carries the
@@ -1870,7 +1871,16 @@ fn get_builder_escrow_info(
         let referrer_builder_order_idx = escrow.find_or_create_referral_index(market_index);
 
         let builder_order = builder_order_idx.and_then(|idx| escrow.get_order(idx).ok());
-        let builder_order_fee_bps = builder_order.map(|order| order.fee_tenth_bps);
+        // `builder_fee_allowed` is false when the taker does not meet initial
+        // margin. The row stays bound so the fill still reports its builder in
+        // the `OrderActionRecord` and `revoke_completed_orders` still closes
+        // the row, but the fee for this fill is zero. See the gate in
+        // `fulfill_perp_order` for why (OtterSec #83).
+        let builder_order_fee_bps = if builder_fee_allowed {
+            builder_order.map(|order| order.fee_tenth_bps)
+        } else {
+            None
+        };
         let builder_idx = builder_order.map(|order| order.builder_idx);
 
         (
@@ -1917,6 +1927,64 @@ fn fulfill_perp_order(
     let user_order_position_decreasing =
         determine_if_user_order_is_position_decreasing(user, market_index, user_order_index)?;
     let user_is_isolated_position = user.get_perp_position(market_index)?.is_isolated();
+
+    // A builder fee is an additive debit on the taker (the fill debits
+    // `user_fee + builder_fee`) that the builder later claims into its own
+    // account. The taker approves the builder, so the taker can approve
+    // itself. The fee is therefore a transfer out of the account, and a
+    // transfer out must clear the gate a withdrawal clears: initial margin.
+    //
+    // A position-decreasing fill is checked against maintenance margin below,
+    // not initial. Without this gate, a taker below initial margin reduces the
+    // position in slices and routes up to `MAX_BUILDER_FEE_TENTH_BPS` of each
+    // slice to itself. Each slice also lowers the maintenance requirement, so
+    // the next slice has more room and the sequence compounds. It moves value
+    // that the initial-margin gate holds in the account (OtterSec #83).
+    //
+    // The fee is waived, not the fill. The taker still closes the position and
+    // the builder is not paid for that fill. The margin state is read before
+    // the fill, so a reduction that restores initial margin still waives the
+    // fee for that fill. This is the safe direction.
+    //
+    // The gate uses the same oracle rules as the withdraw gate. It is strict,
+    // so each price is the more conservative of the live price and the TWAP.
+    // It ignores invalid deposit oracles, so a deposit with a bad oracle adds
+    // no collateral. It also requires every liability oracle to be valid. A
+    // single oracle push, or one stale oracle on an unrelated position, then
+    // cannot clear the gate for the instant the fill needs. An oracle the
+    // program cannot trust waives the fee; it does not fail the fill.
+    let builder_fee_allowed = if fill_mode.is_liquidation()
+        || !user.orders[user_order_index].is_has_builder()
+        || rev_share_escrow.is_none()
+    {
+        false
+    } else {
+        let margin_type_config = if user_is_isolated_position {
+            MarginTypeConfig::IsolatedPositionOverride {
+                market_index,
+                margin_requirement_type: MarginRequirementType::Initial,
+                default_isolated_margin_requirement_type: MarginRequirementType::Maintenance,
+                cross_margin_requirement_type: MarginRequirementType::Maintenance,
+            }
+        } else {
+            MarginTypeConfig::CrossMarginOverride {
+                margin_requirement_type: MarginRequirementType::Initial,
+                default_margin_requirement_type: MarginRequirementType::Maintenance,
+            }
+        };
+
+        let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
+            user,
+            perp_market_map,
+            spot_market_map,
+            oracle_map,
+            MarginContext::standard_with_config(margin_type_config)
+                .strict(true)
+                .ignore_invalid_deposit_oracles(true),
+        )?;
+
+        calculation.meets_margin_requirement() && calculation.all_liability_oracles_valid
+    };
 
     let perp_market = perp_market_map.get_ref(&market_index)?;
     let limit_price = fill_mode.get_limit_price(
@@ -2049,6 +2117,7 @@ fn fulfill_perp_order(
                     rev_share_escrow,
                     vamm_maker_rebate,
                     promo_fee_tier,
+                    builder_fee_allowed,
                 )?;
                 (fill_base, fill_quote)
             }
@@ -2091,6 +2160,7 @@ fn fulfill_perp_order(
                     rev_share_escrow,
                     vamm_maker_rebate,
                     promo_fee_tier,
+                    builder_fee_allowed,
                 )?;
 
                 if maker_fill_base != 0 {
@@ -2621,6 +2691,7 @@ fn settle_amm_house_fill(
     slot: u64,
     vamm_maker_rebate: bool,
     promo_fee_tier: u8,
+    builder_fee_allowed: bool,
 ) -> VelocityResult<(u64, u64)> {
     // For sole-AMM steps with a post_only taker, override the
     // fill's quote at the order's limit price (the taker, acting
@@ -2652,6 +2723,7 @@ fn settle_amm_house_fill(
             order_id,
             market.market_index,
             taker.orders[taker_order_index].is_has_builder(),
+            builder_fee_allowed,
         );
 
     let FillFees {
@@ -2918,6 +2990,7 @@ fn settle_dlob_match_fill(
     now: i64,
     slot: u64,
     promo_fee_tier: u8,
+    builder_fee_allowed: bool,
 ) -> VelocityResult<(u64, u64, u64)> {
     // DlobMatch fills only land from a Match step, which always
     // populates `match_maker_price`.
@@ -2984,6 +3057,7 @@ fn settle_dlob_match_fill(
             taker.orders[taker_order_index].order_id,
             market.market_index,
             taker.orders[taker_order_index].is_has_builder(),
+            builder_fee_allowed,
         );
 
     let filler_multiplier = if reward_filler {
@@ -3245,6 +3319,10 @@ pub fn fulfill_perp_order_step(
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
     vamm_maker_rebate: bool,
     promo_fee_tier: u8,
+    // False when the taker does not meet initial margin. The fill proceeds and
+    // charges no builder fee. `fulfill_perp_order` computes it and documents
+    // the rule.
+    builder_fee_allowed: bool,
 ) -> VelocityResult<(u64, u64, u64)> {
     // ---- 1. Capture taker order fields. ----
     let market_index = market.market_index;
@@ -3600,6 +3678,7 @@ pub fn fulfill_perp_order_step(
                     slot,
                     vamm_maker_rebate,
                     promo_fee_tier,
+                    builder_fee_allowed,
                 )?;
                 total_base_filled = total_base_filled.safe_add(base_filled)?;
                 total_quote_filled = total_quote_filled.safe_add(quote_filled)?;
@@ -3633,6 +3712,7 @@ pub fn fulfill_perp_order_step(
                     now,
                     slot,
                     promo_fee_tier,
+                    builder_fee_allowed,
                 )?;
                 total_base_filled = total_base_filled.safe_add(base_filled)?;
                 total_quote_filled = total_quote_filled.safe_add(quote_filled)?;

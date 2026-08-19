@@ -74,8 +74,8 @@ use {
             paused_operations::{PerpOperation, SpotOperation},
             perp_market_map::{get_writable_perp_market_set, MarketSet, PerpMarketMap},
             revenue_share::{
-                BuilderInfo, RevenueShare, RevenueShareEscrow, RevenueShareOrder,
-                REVENUE_SHARE_ESCROW_PDA_SEED, REVENUE_SHARE_PDA_SEED,
+                BuilderInfo, RevenueShare, RevenueShareEscrow, RevenueShareEscrowLoader,
+                RevenueShareOrder, REVENUE_SHARE_ESCROW_PDA_SEED, REVENUE_SHARE_PDA_SEED,
             },
             scale_order_params::ScaleOrderParams,
             signed_msg_user::{
@@ -3707,6 +3707,45 @@ pub fn handle_delete_user(ctx: Context<DeleteUser>) -> Result<()> {
         Clock::get()?.unix_timestamp,
     )?;
 
+    // OtterSec #128: settle this subaccount's revenue-share rows before the id goes
+    // away for good.
+    //
+    // `revoke_completed_orders` only transitions rows whose `sub_account_id` matches
+    // the `User` it is handed, and `delete_user` retires that id permanently — the
+    // allocation counter (`number_of_sub_accounts_created`) has no decrement site, so
+    // the id is never reissued and no future `User` can ever match those rows again.
+    // A row left `open && !completed` therefore became unreachable: the builder's
+    // accrued fee was stranded and the market's `pending_revenue_share` stayed
+    // inflated for the life of the market.
+    //
+    // Note the window is *not* the open-order case — `validate_user_deletion` already
+    // requires every order closed. It is the filled-but-not-yet-revoked row, which is
+    // exactly the state `revoke_completed_orders` exists to resolve.
+    //
+    // Resolve rather than block: because every order is already closed, each row for
+    // this subaccount transitions to `Completed` (or is cleared when it carries no
+    // fees), which is the state the permissionless sweep pays out of — and the sweep
+    // needs no `User`, so it still pays after the account is gone. Blocking deletion
+    // instead would punish the wrong party, holding a user's rent hostage until a
+    // keeper happened to crank.
+    //
+    // The escrow is pinned to the authority's PDA by `seeds`, so an empty account
+    // proves this authority has no escrow (nothing to orphan) rather than signalling
+    // an omitted account.
+    if !ctx.accounts.revenue_share_escrow.data_is_empty() {
+        let mut escrow = ctx.accounts.revenue_share_escrow.load_zc_mut()?;
+        escrow.revoke_completed_orders(user)?;
+
+        // Belt and braces: after the above, nothing for this subaccount may still be
+        // outstanding. If it somehow is, fail rather than retire the id over it.
+        validate!(
+            !escrow.has_outstanding_orders_for_sub_account(user.sub_account_id)?,
+            ErrorCode::UserCantBeDeleted,
+            "sub account {} still has outstanding revenue-share orders",
+            user.sub_account_id
+        )?;
+    }
+
     safe_decrement!(user_stats.number_of_sub_accounts, 1);
 
     let mut state = ctx.accounts.state.load_mut()?;
@@ -3939,10 +3978,9 @@ pub fn handle_begin_swap<'c: 'info, 'info>(
     //
     // begin_swap and end_swap are separate instructions, so there is nowhere to
     // hold an in-memory snapshot across the check the way the perp fill does for
-    // #112; not moving the value is the fix. The oracle TWAP keeps advancing on
-    // every other spot path (deposit, withdraw, liquidation) and via the
-    // dedicated permissionless `update_spot_market_cumulative_interest` crank,
-    // so the EMA is not stranded.
+    // #112. The refresh is moved instead of dropped: `end_swap` advances both
+    // markets' oracle TWAPs after its band check, so the swap still contributes
+    // to the EMA and the check still reads the pre-swap value.
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut in_spot_market,
         None,
@@ -3983,7 +4021,8 @@ pub fn handle_begin_swap<'c: 'info, 'info>(
 
     // `None` for the same reason as the in market above (OtterSec #110):
     // `validate_price_bands_for_swap` reads whichever of the two markets has a
-    // zero initial margin ratio, so both sides must stay unrefreshed.
+    // zero initial margin ratio, so both sides must stay unrefreshed until
+    // `end_swap` has run the check.
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut out_spot_market,
         None,
@@ -4242,6 +4281,10 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         0,
         Some(LogMode::Margin),
     )?;
+    // Copied out of the map, not borrowed from it: the TWAP refresh at the end of
+    // this handler needs the reading, and holding a reference would keep
+    // `oracle_map` borrowed across every margin call in between.
+    let in_oracle_data = *in_oracle_data;
     let in_oracle_price = in_oracle_data.price;
 
     let mut out_spot_market = spot_market_map.get_ref_mut(&out_market_index)?;
@@ -4265,6 +4308,7 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         0,
         Some(LogMode::Margin),
     )?;
+    let out_oracle_data = *out_oracle_data;
     let out_oracle_price = out_oracle_data.price;
 
     let in_vault = &mut ctx.accounts.in_spot_market_vault;
@@ -4669,7 +4713,7 @@ pub fn handle_end_swap<'c: 'info, 'info>(
     };
     emit!(swap_record);
 
-    let out_spot_market = spot_market_map.get_ref_mut(&out_market_index)?;
+    let mut out_spot_market = spot_market_map.get_ref_mut(&out_market_index)?;
 
     validate!(
         out_spot_market.flash_loan_initial_token_amount == 0
@@ -4678,7 +4722,7 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         "end_swap ended in invalid state"
     )?;
 
-    let in_spot_market = spot_market_map.get_ref_mut(&in_market_index)?;
+    let mut in_spot_market = spot_market_map.get_ref_mut(&in_market_index)?;
 
     validate!(
         in_spot_market.flash_loan_initial_token_amount == 0
@@ -4697,6 +4741,30 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         state
             .oracle_guard_rails
             .max_oracle_twap_5min_percent_divergence(),
+    )?;
+
+    // Advance the oracle TWAPs last, after the band check above has read them.
+    //
+    // `begin_swap` passes `None` so the swap does not refresh the very anchor
+    // `validate_price_bands_for_swap` measures the realized fill against
+    // (OtterSec #110). Skipping the refresh entirely leaves the swap lane
+    // contributing nothing to the EMA, so it happens here instead: the check is
+    // already done, and `begin_swap` forbids any Velocity instruction after
+    // `end_swap`, so nothing else in this transaction can read the new value.
+    //
+    // `begin_swap` left `last_oracle_price_twap_ts` alone, so this update still
+    // weights the full elapsed interval. The deposit/borrow/utilization TWAPs
+    // were already advanced there and `last_twap_ts` stamped, so they are a
+    // no-op here.
+    controller::spot_balance::update_spot_market_twap_stats(
+        &mut in_spot_market,
+        Some(&in_oracle_data),
+        now,
+    )?;
+    controller::spot_balance::update_spot_market_twap_stats(
+        &mut out_spot_market,
+        Some(&out_oracle_data),
+        now,
     )?;
 
     Ok(())
@@ -5546,6 +5614,22 @@ pub struct DeleteUser<'info> {
     pub state: AccountLoader<'info, State>,
     #[account(mut)]
     pub authority: Signer<'info>,
+    /// CHECK: the authority's `RevenueShareEscrow`, which may legitimately not exist —
+    /// most users never create one. Deliberately an `UncheckedAccount` **pinned by
+    /// `seeds`** rather than a typed `AccountLoader`: because the address is derived
+    /// and not caller-chosen, absence is *provable* (`data_is_empty()`), so the handler
+    /// can distinguish "this authority has no escrow" from "the caller omitted it to
+    /// skip the check". A typed loader would instead make deletion impossible for the
+    /// majority of users, who have no escrow account to pass.
+    ///
+    /// Required rather than `Option` so a caller holding fee-bearing builder rows
+    /// cannot simply leave it out (OtterSec #128).
+    #[account(
+        mut,
+        seeds = [REVENUE_SHARE_ESCROW_PDA_SEED.as_bytes(), authority.key().as_ref()],
+        bump,
+    )]
+    pub revenue_share_escrow: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]

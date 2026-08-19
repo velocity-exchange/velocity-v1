@@ -928,9 +928,15 @@ pub fn drained_stake_if_test_rebase_on_new_add() {
     assert_eq!(orig_if_stake.if_base, 0);
     assert_eq!(orig_if_stake.unchecked_if_shares(), 80000000000);
 
-    let expected_shares_for_amount =
-        vault_amount_to_if_shares(1, spot_market.insurance_fund.total_shares, if_balance).unwrap();
+    let (expected_amount_for_shares, expected_shares_for_amount) =
+        deposit_amount_and_shares_for_if_stake(
+            1,
+            spot_market.insurance_fund.total_shares,
+            if_balance,
+        )
+        .unwrap();
     assert_eq!(expected_shares_for_amount, 10);
+    assert_eq!(expected_amount_for_shares, 1);
 
     add_insurance_fund_stake(
         1,
@@ -1640,4 +1646,76 @@ pub fn cancel_request_after_rebase_floors_request_to_zero() {
     assert_eq!(if_stake_1.last_withdraw_request_shares, 0);
     assert_eq!(if_stake_1.last_withdraw_request_value, 0);
     assert!(if_stake_1.unchecked_if_shares() > 0);
+}
+
+#[test]
+pub fn add_if_stake_charges_only_what_prices_to_whole_shares() {
+    // An attacker holding the fund's only share donates into the vault to inflate the
+    // share price to 1_000_000: the next staker's deposit no longer divides evenly into
+    // shares. Only the priced portion may be taken — the rest would be pure appreciation
+    // on the attacker's share.
+    let mut if_balance = 1_000_000_u64;
+    let mut spot_market = SpotMarket {
+        insurance_fund: InsuranceFund {
+            unstaking_period: 60 * 60 * 24 * 7,
+            total_shares: 1,
+            user_shares: 1,
+            ..InsuranceFund::default()
+        },
+        ..SpotMarket::default()
+    };
+
+    let mut if_stake = InsuranceFundStake::new(Pubkey::default(), 0, 0);
+    let mut user_stats = UserStats::default();
+
+    let amount_deposited = add_insurance_fund_stake(
+        1_500_000,
+        if_balance,
+        &mut if_stake,
+        &mut user_stats,
+        &mut spot_market,
+        0,
+        false,
+    )
+    .unwrap();
+
+    // one share bought at its price of 1_000_000; the other 500_000 was never transferred
+    assert_eq!(amount_deposited, 1_000_000);
+    assert_eq!(if_stake.unchecked_if_shares(), 1);
+    assert_eq!(spot_market.insurance_fund.total_shares, 2);
+    assert_eq!(spot_market.insurance_fund.user_shares, 2);
+
+    // cost basis, staked-amount stats and the APR-cap baseline all track what was taken,
+    // not what was requested
+    assert_eq!(if_stake.cost_basis, 1_000_000);
+    assert_eq!(user_stats.if_staked_quote_asset_amount, 1_000_000);
+    assert_eq!(spot_market.if_last_settle_vault_amount, 2_000_000);
+
+    // the staker can withdraw the full value of what they paid: the deposit was not
+    // partly captured by the attacker's share
+    if_balance += amount_deposited;
+    assert_eq!(
+        if_shares_to_vault_amount(
+            if_stake.unchecked_if_shares(),
+            spot_market.insurance_fund.total_shares,
+            if_balance
+        )
+        .unwrap(),
+        1_000_000
+    );
+
+    // a request that cannot buy even one share is rejected outright rather than accepted
+    // as a donation
+    assert_eq!(
+        add_insurance_fund_stake(
+            999_999,
+            if_balance,
+            &mut if_stake,
+            &mut user_stats,
+            &mut spot_market,
+            0,
+            false,
+        ),
+        Err(ErrorCode::IFDepositMintsZeroShares)
+    );
 }

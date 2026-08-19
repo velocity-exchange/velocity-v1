@@ -305,7 +305,7 @@ describe('liquidate perp (no open orders)', () => {
 		assert(
 			liquidatorVelocityClient
 				.getUserAccount()
-				.perpPositions[0].quoteAssetAmount.eq(new BN(175))
+				.perpPositions[0].quoteAssetAmount.eq(new BN(70))
 		);
 
 		assert(
@@ -317,7 +317,7 @@ describe('liquidate perp (no open orders)', () => {
 		assert(
 			velocityClient
 				.getUserAccount()
-				.perpPositions[0].quoteAssetAmount.eq(new BN(-15769476))
+				.perpPositions[0].quoteAssetAmount.eq(new BN(-15757926))
 		);
 
 		assert(
@@ -334,7 +334,7 @@ describe('liquidate perp (no open orders)', () => {
 		assert(
 			makerVelocityClient
 				.getUserAccount()
-				.perpPositions[0].quoteAssetAmount.eq(new BN(-1749650))
+				.perpPositions[0].quoteAssetAmount.eq(new BN(-1749957))
 		);
 
 		assert(

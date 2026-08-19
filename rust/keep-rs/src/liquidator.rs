@@ -33,7 +33,7 @@ use {
             grpc_subscriber::{AccountFilter, GrpcConnectionOpts},
             TransactionUpdate,
         },
-        jupiter::{JupiterSwapApi, SwapMode},
+        jupiter::JupiterSwapApi,
         market_state::{MarketStateData, SimplifiedMarginCalculation},
         math::{
             constants::{
@@ -2948,11 +2948,9 @@ impl PrimaryLiquidationStrategy {
                 velocity.jupiter_swap_query(
                     &authority,
                     token_amount,
-                    SwapMode::ExactIn,
                     100,
                     asset_market_index,
                     liability_market_index,
-                    Some(true),
                     None,
                     None,
                 ),

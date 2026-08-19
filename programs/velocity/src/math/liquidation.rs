@@ -473,7 +473,7 @@ pub fn calculate_max_pct_to_liquidate(
     let pct_freeable = slots_elapsed
         .cast::<u128>()?
         .safe_mul(LIQUIDATION_PCT_PRECISION)?
-        .safe_div(liquidation_duration) // ~1 minute at the on-chain default
+        .safe_div(liquidation_duration) // ~1 minute at the onchain default
         .unwrap_or(LIQUIDATION_PCT_PRECISION) // if divide by zero, default to 100%
         .safe_add(initial_pct_to_liquidate)?
         .min(LIQUIDATION_PCT_PRECISION);

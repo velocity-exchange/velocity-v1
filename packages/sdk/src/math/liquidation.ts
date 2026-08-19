@@ -428,7 +428,7 @@ export function calculateAssetTransferForLiabilityTransfer(
  * @param marginShortage Total margin shortfall for the user/position, QUOTE_PRECISION (1e6).
  * @param slot Current slot.
  * @param initialPctToLiquidate Starting liquidatable fraction at slot zero of the ramp, LIQUIDATION_PCT_PRECISION (1e4).
- * @param liquidationDuration Ramp length in 400ms baseline units (~1 minute for the on-chain default).
+ * @param liquidationDuration Ramp length in 400ms baseline units (~1 minute for the onchain default).
  * @param isIsolatedPosition If true, always returns 100% (LIQUIDATION_PCT_PRECISION) regardless of the other inputs (default false).
  * @param slotDurationMs Current slot duration in ms (`State.slotDurationMs`); the measured slot delta is deflated to baseline units so the ramp's wall-clock length is slot-duration independent, mirroring `calculate_max_pct_to_liquidate`.
  * @returns Fraction of the remaining liability liquidatable now, LIQUIDATION_PCT_PRECISION (1e4).
@@ -461,7 +461,7 @@ export function calculateMaxPctToLiquidate(
 	const pctFreeable = BN.min(
 		slotsElapsed
 			.mul(LIQUIDATION_PCT_PRECISION)
-			.div(liquidationDuration) // ~1 minute at the on-chain default
+			.div(liquidationDuration) // ~1 minute at the onchain default
 			.add(initialPctToLiquidate),
 		LIQUIDATION_PCT_PRECISION
 	);

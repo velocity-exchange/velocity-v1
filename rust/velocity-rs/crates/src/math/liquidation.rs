@@ -350,7 +350,7 @@ pub fn calculate_max_pct_to_liquidate(
         (slot - user.last_active_slot).saturating_mul(slot_duration_ms.max(1)) / 400;
 
     let pct_freeable = slots_elapsed as u128 * LIQUIDATION_PCT_PRECISION
-        .checked_div(liquidation_duration) // ~1 minute at the on-chain default
+        .checked_div(liquidation_duration) // ~1 minute at the onchain default
         .unwrap_or(LIQUIDATION_PCT_PRECISION) // if divide by zero, default to 100%
         + initial_pct_to_liquidate
         .min(LIQUIDATION_PCT_PRECISION);

@@ -209,7 +209,7 @@ impl FillerBot {
                 velocity_rs::program::math::slots::sanitize_slot_duration_ms(s.slot_duration_ms)
             })
             .unwrap_or(velocity_rs::program::math::slots::BASE_SLOT_DURATION_MS);
-        // effective (actual-slot) staleness threshold: the on-chain value is in
+        // effective (actual-slot) staleness threshold: the onchain value is in
         // 400ms baseline units and inflated by slot_duration_ms, mirroring
         // `oracle_validity`
         let mut slots_before_stale_for_amm = velocity

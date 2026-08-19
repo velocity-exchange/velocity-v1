@@ -492,7 +492,11 @@ describe('equity floor fill gates', () => {
 			'the order should have survived the rejected trigger'
 		);
 
-		// feed recovers -> the same trigger goes through
+		// feed recovers -> the same trigger goes through. The slot has to move
+		// first: the retry is otherwise byte-identical to the rejected
+		// transaction, so it lands on the same blockhash and is dropped as a
+		// duplicate signature before it reaches the program.
+		await bankrunContextWrapper.moveTimeForward(1);
 		await refreshSpotOracle();
 		await fillerVelocityClient.triggerOrder(
 			userPublicKey,

@@ -335,6 +335,99 @@ export function calculateNetUserPnl(
 }
 
 /**
+ * Calculates the `pendingIfFee` floor that a pnl-pool drain must leave in the pool. This mirrors
+ * `PerpMarket::get_bankruptcy_if_floor`. The floor is `bankruptcyIfFloorPct` of the open interest
+ * notional, valued at the oracle TWAP. It uses the TWAP, not the live price, so that no party can
+ * move the floor. It returns zero when the floor is not set.
+ *
+ * @param {PerpMarketAccount} perpMarket - The perp market account
+ * @return {BN} The floor, QUOTE_PRECISION (1e6)
+ */
+export function calculateBankruptcyIfFloor(perpMarket: PerpMarketAccount): BN {
+	if (perpMarket.bankruptcyIfFloorPct === 0) {
+		return ZERO;
+	}
+
+	const oraclePriceTwap = BN.max(
+		perpMarket.marketStats.historicalOracleData.lastOraclePriceTwap,
+		ZERO
+	);
+	const openInterest = BN.max(
+		perpMarket.baseAssetAmountLong.abs(),
+		perpMarket.baseAssetAmountShort.abs()
+	);
+
+	return openInterest
+		.mul(oraclePriceTwap)
+		.div(BASE_PRECISION)
+		.muln(perpMarket.bankruptcyIfFloorPct)
+		.div(PERCENTAGE_PRECISION);
+}
+
+/**
+ * Calculates the pnl-pool tokens that a drain must leave in the pool to back the first-loss
+ * insurance-fund tranche. This mirrors `PerpMarket::get_bankruptcy_if_tranche_reservation` and
+ * equals `min(pendingIfFee, bankruptcyIfFloor)`. `resolvePerpBankruptcy` changes only the
+ * `pendingIfFee` counter, so the tokens must stay in the pool. The final delist sweep passes
+ * `force` and reserves nothing.
+ *
+ * @param {PerpMarketAccount} perpMarket - The perp market account
+ * @param {boolean} force - Delisting sweep; waives the reservation
+ * @return {BN} The reservation, QUOTE_PRECISION (1e6)
+ */
+export function calculateBankruptcyIfTrancheReservation(
+	perpMarket: PerpMarketAccount,
+	force = false
+): BN {
+	if (force) {
+		return ZERO;
+	}
+	return BN.min(
+		perpMarket.feeLedger.pendingIfFee,
+		calculateBankruptcyIfFloor(perpMarket)
+	);
+}
+
+/**
+ * Calculates the part of the pnl pool of a perp market that can pay accrued builder and referrer
+ * fees. This mirrors the reserve that `sweep_completed_revenue_share_for_market` applies. The
+ * result is `pnlPoolTokens - max(netUserPnl, 0) - bankruptcyIfTrancheReservation`, and never less
+ * than zero.
+ *
+ * The sweep pays a row only when its `feesAccrued` fits in this amount. A keeper can therefore
+ * check whether a `settleRevenueShare` call will pay before it sends the call. The sweep does not
+ * reserve `pendingRevenueShare`, because it pays that claim.
+ *
+ * In settlement the reserve uses the `expiryPrice` of the market, not the live price. Expired
+ * positions settle at `expiryPrice`. A lower live price on a net-long market would make the
+ * reserve too small.
+ *
+ * @param {PerpMarketAccount} perpMarket - The perp market account
+ * @param {SpotMarketAccount} spotMarket - The quote spot market account
+ * @param {Pick<OraclePriceData, 'price'>} oraclePriceData - Live oracle price, PRICE_PRECISION (1e6);
+ *   ignored while the market is in settlement
+ * @return {BN} Tokens available to pay revenue share, QUOTE_PRECISION (1e6)
+ */
+export function calculateRevenueShareSweepAvailable(
+	perpMarket: PerpMarketAccount,
+	spotMarket: SpotMarketAccount,
+	oraclePriceData: Pick<OraclePriceData, 'price'>
+): BN {
+	const priceToUse = isVariant(perpMarket.status, 'settlement')
+		? perpMarket.expiryPrice
+		: oraclePriceData.price;
+
+	const reserved = BN.max(
+		calculateNetUserPnl(perpMarket, { price: priceToUse }),
+		ZERO
+	).add(calculateBankruptcyIfTrancheReservation(perpMarket));
+
+	const pnlPoolTokens = calculateMarketAvailablePNL(perpMarket, spotMarket);
+
+	return BN.max(pnlPoolTokens.sub(reserved), ZERO);
+}
+
+/**
  * Calculates how far `calculateNetUserPnl` exceeds the funds already on hand to pay it out (the
  * pnl pool, plus by default a 20% slice of the AMM fee pool as a conservative haircut on funds
  * not yet swept into the pnl pool). A positive result means the market is short of pnl-pool

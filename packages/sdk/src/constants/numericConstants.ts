@@ -168,6 +168,29 @@ export const ONE_HOUR = new BN(60 * 60);
 /** 31,536,000 seconds (365 days). */
 export const ONE_YEAR = new BN(31536000);
 
+/**
+ * Mirror of the program's `MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN`: the largest
+ * share of a spot borrow that un-booked interest may hide, in
+ * `PERCENTAGE_PRECISION` (one basis point).
+ *
+ * A value-releasing path (withdraw, transfer, swap, or a perp fill) rejects with
+ * `SpotMarketInterestStaleForMargin` when a market that carries one of the account's
+ * borrows has not accrued interest recently enough to hold its omission under this
+ * share. `updateSpotMarketCumulativeInterest` is permissionless and can be bundled
+ * into the same transaction.
+ *
+ * Use `maxSpotInterestStalenessForMargin` to turn this into one market's time window.
+ */
+export const MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN =
+	PERCENTAGE_PRECISION.divn(10_000);
+
+/**
+ * Mirror of the program's `MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN`: the ceiling on
+ * the window `maxSpotInterestStalenessForMargin` derives, so a low-rate market
+ * cannot go un-cranked indefinitely.
+ */
+export const MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN = ONE_HOUR;
+
 /** Market index of the protocol's quote spot market (the protocol's quote asset on mainnet). */
 export const QUOTE_SPOT_MARKET_INDEX = 0;
 

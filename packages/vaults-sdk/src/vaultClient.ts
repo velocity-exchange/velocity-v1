@@ -3034,6 +3034,14 @@ export class VaultClient {
 
 	/**
 	 * Adds an amount to an insurance fund stake for the vault.
+	 *
+	 * An IF share is indivisible, so velocity stakes only what prices to whole shares. The
+	 * instruction transfers `amount` from the manager into the vault's IF token account and
+	 * stakes that account's whole balance, so a remainder left behind by an earlier add is
+	 * folded in and the staked amount can exceed `amount`. A balance below the price of one
+	 * share is rejected with `IFDepositMintsZeroShares`. Read the staked amount from the
+	 * `InsuranceFundStakeRecord` event rather than assuming it equals `amount`.
+	 *
 	 * @param vault vault address to update
 	 * @param spotMarketIndex spot market index of the insurance fund stake
 	 * @param amount amount to add to the insurance fund stake, in spotMarketIndex precision

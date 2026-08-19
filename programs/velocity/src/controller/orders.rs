@@ -1430,6 +1430,7 @@ pub fn fill_perp_order(
         oracle_stale_for_margin,
         rev_share_escrow,
         state.vamm_maker_rebate_enabled(),
+        state.promo_fee_tier,
     )?;
 
     if base_asset_amount != 0 {
@@ -1694,6 +1695,12 @@ fn get_maker_orders_info(
             None => false,
         };
 
+        // Candidates of an unverifiable floored maker that survive the
+        // cleanup below, as (order index, price, unfilled base). The
+        // admit/prune decision is made on the whole set after the loop, in
+        // `admit_reducing_maker_orders`.
+        let mut floor_prune_candidates: Vec<(usize, u64, u64)> = Vec::new();
+
         for (maker_order_index, maker_order_price) in maker_order_price_and_indexes.iter() {
             let maker_order_index = *maker_order_index;
             let maker_order_price = *maker_order_price;
@@ -1782,15 +1789,14 @@ fn get_maker_orders_info(
 
             // runs after the expire/reduce-only/band cleanup above so a
             // pruned maker still gets its stale orders cancelled and the
-            // filler still earns the cleanup reward
-            if maker_floor_unverifiable
-                && !is_order_position_reducing(
-                    &maker.orders[maker_order_index].direction,
-                    maker.orders[maker_order_index]
-                        .get_base_asset_amount_unfilled(Some(existing_base_asset_amount))?,
-                    existing_base_asset_amount,
-                )?
-            {
+            // filler still earns the cleanup reward. Admission is deferred:
+            // the candidates are judged together after the loop, so the
+            // reducing budget goes to the best-priced orders instead of the
+            // lowest order slots.
+            if maker_floor_unverifiable {
+                let unfilled = maker.orders[maker_order_index]
+                    .get_base_asset_amount_unfilled(Some(existing_base_asset_amount))?;
+                floor_prune_candidates.push((maker_order_index, maker_order_price, unfilled));
                 continue;
             }
 
@@ -1800,9 +1806,72 @@ fn get_maker_orders_info(
                 maker_direction,
             );
         }
+
+        if maker_floor_unverifiable {
+            let resting_base_asset_amount = maker
+                .get_perp_position(taker_order.market_index)
+                .map(|position| position.base_asset_amount)
+                .unwrap_or(0);
+
+            for (maker_order_index, maker_order_price) in admit_reducing_maker_orders(
+                floor_prune_candidates,
+                maker_direction,
+                resting_base_asset_amount,
+            )? {
+                insert_maker_order_info(
+                    &mut maker_orders_info,
+                    (*maker_key, maker_order_index, maker_order_price),
+                    maker_direction,
+                );
+            }
+        }
     }
 
     Ok(maker_orders_info)
+}
+
+/// The subset of an unverifiable floored maker's candidate orders
+/// `(order index, price, unfilled base)` that is reducing as a set against
+/// the maker's resting position, judged best price for the taker first
+/// (ascending for maker sells, descending for maker buys). Reducing is a
+/// property of the admitted set, not of one order: a maker long 1 with two
+/// resting sells of 0.75 has each order reducing against the resting
+/// position while the pair flips it short, so each candidate is judged
+/// against the position the previously admitted orders would leave behind.
+/// Judging best price first spends that budget on the orders the taker
+/// wants matched. Every admitted order's fill is exempt at the fill-time
+/// floor gate (`is_order_position_reducing` is the shared predicate), so a
+/// pruned maker can never revert the taker's transaction.
+fn admit_reducing_maker_orders(
+    mut candidates: Vec<(usize, u64, u64)>,
+    maker_direction: PositionDirection,
+    resting_base_asset_amount: i64,
+) -> VelocityResult<Vec<(usize, u64)>> {
+    match maker_direction {
+        PositionDirection::Long => candidates.sort_by(|a, b| b.1.cmp(&a.1)),
+        PositionDirection::Short => candidates.sort_by(|a, b| a.1.cmp(&b.1)),
+    }
+
+    let mut projected_base_asset_amount = resting_base_asset_amount;
+    let mut admitted = Vec::with_capacity(candidates.len());
+
+    for (order_index, order_price, unfilled) in candidates {
+        if !is_order_position_reducing(&maker_direction, unfilled, projected_base_asset_amount)? {
+            continue;
+        }
+
+        // admitted, so the next candidate is judged against what this one
+        // would leave behind
+        let signed = match maker_direction {
+            PositionDirection::Long => unfilled.cast::<i64>()?,
+            PositionDirection::Short => -unfilled.cast::<i64>()?,
+        };
+        projected_base_asset_amount = projected_base_asset_amount.safe_add(signed)?;
+
+        admitted.push((order_index, order_price));
+    }
+
+    Ok(admitted)
 }
 
 #[inline(always)]
@@ -1843,6 +1912,7 @@ fn get_builder_escrow_info(
     order_id: u32,
     market_index: u16,
     order_has_builder: bool,
+    builder_fee_allowed: bool,
 ) -> (Option<u32>, Option<u32>, Option<u16>, Option<u8>) {
     if let Some(escrow) = escrow_opt {
         // Only match a builder-order row for an order that actually carries the
@@ -1869,7 +1939,16 @@ fn get_builder_escrow_info(
         let referrer_builder_order_idx = escrow.find_or_create_referral_index(market_index);
 
         let builder_order = builder_order_idx.and_then(|idx| escrow.get_order(idx).ok());
-        let builder_order_fee_bps = builder_order.map(|order| order.fee_tenth_bps);
+        // `builder_fee_allowed` is false when the taker does not meet initial
+        // margin. The row stays bound so the fill still reports its builder in
+        // the `OrderActionRecord` and `revoke_completed_orders` still closes
+        // the row, but the fee for this fill is zero. See the gate in
+        // `fulfill_perp_order` for why (OtterSec #83).
+        let builder_order_fee_bps = if builder_fee_allowed {
+            builder_order.map(|order| order.fee_tenth_bps)
+        } else {
+            None
+        };
         let builder_idx = builder_order.map(|order| order.builder_idx);
 
         (
@@ -1909,12 +1988,71 @@ fn fulfill_perp_order(
     oracle_stale_for_margin: bool,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
     vamm_maker_rebate: bool,
+    promo_fee_tier: u8,
 ) -> VelocityResult<(u64, u64)> {
     let market_index = user.orders[user_order_index].market_index;
 
     let user_order_position_decreasing =
         determine_if_user_order_is_position_decreasing(user, market_index, user_order_index)?;
     let user_is_isolated_position = user.get_perp_position(market_index)?.is_isolated();
+
+    // A builder fee is an additive debit on the taker (the fill debits
+    // `user_fee + builder_fee`) that the builder later claims into its own
+    // account. The taker approves the builder, so the taker can approve
+    // itself. The fee is therefore a transfer out of the account, and a
+    // transfer out must clear the gate a withdrawal clears: initial margin.
+    //
+    // A position-decreasing fill is checked against maintenance margin below,
+    // not initial. Without this gate, a taker below initial margin reduces the
+    // position in slices and routes up to `MAX_BUILDER_FEE_TENTH_BPS` of each
+    // slice to itself. Each slice also lowers the maintenance requirement, so
+    // the next slice has more room and the sequence compounds. It moves value
+    // that the initial-margin gate holds in the account (OtterSec #83).
+    //
+    // The fee is waived, not the fill. The taker still closes the position and
+    // the builder is not paid for that fill. The margin state is read before
+    // the fill, so a reduction that restores initial margin still waives the
+    // fee for that fill. This is the safe direction.
+    //
+    // The gate uses the same oracle rules as the withdraw gate. It is strict,
+    // so each price is the more conservative of the live price and the TWAP.
+    // It ignores invalid deposit oracles, so a deposit with a bad oracle adds
+    // no collateral. It also requires every liability oracle to be valid. A
+    // single oracle push, or one stale oracle on an unrelated position, then
+    // cannot clear the gate for the instant the fill needs. An oracle the
+    // program cannot trust waives the fee; it does not fail the fill.
+    let builder_fee_allowed = if fill_mode.is_liquidation()
+        || !user.orders[user_order_index].is_has_builder()
+        || rev_share_escrow.is_none()
+    {
+        false
+    } else {
+        let margin_type_config = if user_is_isolated_position {
+            MarginTypeConfig::IsolatedPositionOverride {
+                market_index,
+                margin_requirement_type: MarginRequirementType::Initial,
+                default_isolated_margin_requirement_type: MarginRequirementType::Maintenance,
+                cross_margin_requirement_type: MarginRequirementType::Maintenance,
+            }
+        } else {
+            MarginTypeConfig::CrossMarginOverride {
+                margin_requirement_type: MarginRequirementType::Initial,
+                default_margin_requirement_type: MarginRequirementType::Maintenance,
+            }
+        };
+
+        let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
+            user,
+            perp_market_map,
+            spot_market_map,
+            oracle_map,
+            MarginContext::standard_with_config(margin_type_config)
+                .strict(true)
+                .ignore_invalid_deposit_oracles(true),
+        )?;
+
+        calculation.meets_margin_requirement() && calculation.all_liability_oracles_valid
+    };
 
     let perp_market = perp_market_map.get_ref(&market_index)?;
     let limit_price = fill_mode.get_limit_price(
@@ -2046,6 +2184,8 @@ fn fulfill_perp_order(
                     amm_jit_allowed,
                     rev_share_escrow,
                     vamm_maker_rebate,
+                    promo_fee_tier,
+                    builder_fee_allowed,
                 )?;
                 (fill_base, fill_quote)
             }
@@ -2087,6 +2227,8 @@ fn fulfill_perp_order(
                     amm_jit_allowed,
                     rev_share_escrow,
                     vamm_maker_rebate,
+                    promo_fee_tier,
+                    builder_fee_allowed,
                 )?;
 
                 if maker_fill_base != 0 {
@@ -2163,7 +2305,20 @@ fn fulfill_perp_order(
             }
         };
 
-        let mut context = MarginContext::standard_with_config(margin_type_config);
+        // A spot deposit whose oracle is invalid for margin contributes zero
+        // collateral instead of its stale weighted value (OtterSec #143). Crediting
+        // it let phantom collateral buy an in-band losing DLOB trade whose
+        // counterparty then settled a real profit out of the PnL pool. Every other
+        // value-releasing path already drops such a deposit —
+        // `meets_withdraw_margin_requirement` and its two siblings all set this — and
+        // a fill is the same decision.
+        //
+        // Dropping the deposit rather than rejecting the fill keeps the honest test:
+        // an account with enough *valid* collateral still fills, and an account that
+        // needs the stale deposit fails on `InsufficientCollateral`. It also covers
+        // the reducing fill, which no reject keyed on risk direction can reach.
+        let mut context = MarginContext::standard_with_config(margin_type_config)
+            .ignore_invalid_deposit_oracles(true);
 
         if oracle_stale_for_margin && !user_order_position_decreasing {
             context = context.margin_ratio_override(MARGIN_PRECISION);
@@ -2201,6 +2356,44 @@ fn fulfill_perp_order(
             );
             return Err(ErrorCode::InsufficientCollateral);
         }
+
+        // A borrow the calculation above could not value must not admit the fill
+        // (OtterSec #144 / #148). The two ways it misvalues one are a stale oracle
+        // and a stale cumulative index:
+        //   #144 — a `StaleForMargin` spot borrow was priced at its stale low value,
+        //          so an account that is insolvent at the refreshed price passes and
+        //          becomes protocol bad debt.
+        //   #148 — this handler makes no spot market refreshable, so every scaled
+        //          borrow is valued through the market's *stored* borrow index and
+        //          the interest accrued since `last_interest_ts` is simply absent.
+        // A borrow has no counterpart to the deposit treatment above: dropping it
+        // understates the debt, which is the very error being closed, so the fill
+        // must revert instead.
+        //
+        // Both apply whichever direction the fill moves the position. The two-account
+        // DLOB transfer in these findings works with both seats reducing: one seat
+        // closes into the worst in-band price and leaves bad debt, the other settles
+        // the matching profit out of the PnL pool. `meets_withdraw_margin_requirement`
+        // draws the same line and exempts no direction. Liquidations are excluded —
+        // this whole block is `if !fill_mode.is_liquidation()`.
+        //
+        // The spot-only liability flag is deliberate. `all_liability_oracles_valid` is
+        // also cleared by an invalid *perp* oracle, which `oracle_stale_for_margin`
+        // above already handles by overriding margin to 100% rather than rejecting.
+        // Reading the broader field would silently replace that design with a hard
+        // reject.
+        validate!(
+            taker_margin_calculation.all_spot_liability_oracles_valid,
+            ErrorCode::InvalidOracle,
+            "taker filling while a spot borrow oracle is invalid for margin"
+        )?;
+
+        // The crank is permissionless and can be bundled into the same transaction.
+        crate::math::margin::validate_spot_borrow_interest_fresh_for_margin(
+            user,
+            spot_market_map,
+            now,
+        )?;
 
         if !user_order_position_decreasing {
             validate!(
@@ -2262,7 +2455,12 @@ fn fulfill_perp_order(
             }
         };
 
-        let mut context = MarginContext::standard_with_config(margin_type_config);
+        // Same treatment of a stale spot deposit as the taker context above
+        // (OtterSec #143). The DLOB transfer in that finding needs two accounts, so
+        // crediting phantom collateral on the maker seat is worth exactly as much to
+        // it as on the taker seat.
+        let mut context = MarginContext::standard_with_config(margin_type_config)
+            .ignore_invalid_deposit_oracles(true);
 
         if oracle_stale_for_margin {
             validate!(
@@ -2308,6 +2506,30 @@ fn fulfill_perp_order(
                 total_collateral
             );
             return Err(ErrorCode::InsufficientCollateral);
+        }
+
+        // Same borrow-side gate as the taker (OtterSec #144 / #148), and on the same
+        // terms: it applies whichever direction the fill moves the maker's position,
+        // because the transfer these findings describe works with both seats
+        // reducing.
+        //
+        // Excluded during a liquidation, which is how the taker side treats it as
+        // well. This loop also runs for liquidation fills, so an unqualified reject
+        // here would let one maker's stale spot oracle, or one maker's un-cranked
+        // borrow market, block the liquidation of another account.
+        if !fill_mode.is_liquidation() {
+            validate!(
+                maker_margin_calculation.all_spot_liability_oracles_valid,
+                ErrorCode::InvalidOracle,
+                "maker ({}) filling while a spot borrow oracle is invalid for margin",
+                maker_key
+            )?;
+
+            crate::math::margin::validate_spot_borrow_interest_fresh_for_margin(
+                &maker,
+                spot_market_map,
+                now,
+            )?;
         }
 
         if maker_risk_increasing {
@@ -2536,6 +2758,8 @@ fn settle_amm_house_fill(
     now: i64,
     slot: u64,
     vamm_maker_rebate: bool,
+    promo_fee_tier: u8,
+    builder_fee_allowed: bool,
 ) -> VelocityResult<(u64, u64)> {
     // For sole-AMM steps with a post_only taker, override the
     // fill's quote at the order's limit price (the taker, acting
@@ -2567,6 +2791,7 @@ fn settle_amm_house_fill(
             order_id,
             market.market_index,
             taker.orders[taker_order_index].is_has_builder(),
+            builder_fee_allowed,
         );
 
     let FillFees {
@@ -2593,6 +2818,9 @@ fn settle_amm_house_fill(
         market.fee_adjustment,
         builder_order_fee_bps,
         vamm_maker_rebate,
+        market.taker_fee_addon_tenth_bps,
+        now,
+        promo_fee_tier,
     )?;
     let builder_fee = builder_fee_option.unwrap_or(0);
 
@@ -2829,6 +3057,8 @@ fn settle_dlob_match_fill(
     is_liquidation: bool,
     now: i64,
     slot: u64,
+    promo_fee_tier: u8,
+    builder_fee_allowed: bool,
 ) -> VelocityResult<(u64, u64, u64)> {
     // DlobMatch fills only land from a Match step, which always
     // populates `match_maker_price`.
@@ -2895,6 +3125,7 @@ fn settle_dlob_match_fill(
             taker.orders[taker_order_index].order_id,
             market.market_index,
             taker.orders[taker_order_index].is_has_builder(),
+            builder_fee_allowed,
         );
 
     let filler_multiplier = if reward_filler {
@@ -2931,6 +3162,9 @@ fn settle_dlob_match_fill(
         &MarketType::Perp,
         market.fee_adjustment,
         builder_order_fee_bps,
+        market.taker_fee_addon_tenth_bps,
+        now,
+        promo_fee_tier,
     )?;
     let builder_fee = builder_fee_option.unwrap_or(0);
 
@@ -3152,6 +3386,11 @@ pub fn fulfill_perp_order_step(
     amm_jit_allowed: bool,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
     vamm_maker_rebate: bool,
+    promo_fee_tier: u8,
+    // False when the taker does not meet initial margin. The fill proceeds and
+    // charges no builder fee. `fulfill_perp_order` computes it and documents
+    // the rule.
+    builder_fee_allowed: bool,
 ) -> VelocityResult<(u64, u64, u64)> {
     // ---- 1. Capture taker order fields. ----
     let market_index = market.market_index;
@@ -3347,7 +3586,13 @@ pub fn fulfill_perp_order_step(
             // override price from the FFM payload, stepped one tick inside
             // the limit. Computed at the orchestrator — the AMM Quoter
             // itself is taker-agnostic.
-            let fee_tier = determine_user_fee_tier(taker_stats, fee_structure, &MarketType::Perp)?;
+            let fee_tier = determine_user_fee_tier(
+                taker_stats,
+                fee_structure,
+                &MarketType::Perp,
+                now,
+                promo_fee_tier,
+            )?;
             let effective_taker_limit = crate::math::orders::calculate_effective_amm_taker_limit(
                 &taker.orders[taker_order_index],
                 taker_limit_price,
@@ -3500,6 +3745,8 @@ pub fn fulfill_perp_order_step(
                     now,
                     slot,
                     vamm_maker_rebate,
+                    promo_fee_tier,
+                    builder_fee_allowed,
                 )?;
                 total_base_filled = total_base_filled.safe_add(base_filled)?;
                 total_quote_filled = total_quote_filled.safe_add(quote_filled)?;
@@ -3532,6 +3779,8 @@ pub fn fulfill_perp_order_step(
                     is_liquidation,
                     now,
                     slot,
+                    promo_fee_tier,
+                    builder_fee_allowed,
                 )?;
                 total_base_filled = total_base_filled.safe_add(base_filled)?;
                 total_quote_filled = total_quote_filled.safe_add(quote_filled)?;

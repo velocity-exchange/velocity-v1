@@ -4247,14 +4247,20 @@ export class User {
 	}
 
 	/**
-	 * Looks up the user's fee tier from the state account's fee structure.
+	 * Looks up the user's fee tier from the state account's fee structure,
+	 * mirroring the program's `determine_perp_fee_tier`.
 	 *
-	 * For perp markets, the tier is selected by the user's rolling 30-day
-	 * volume (`getUser30dRollingVolumeEstimate`, QUOTE_PRECISION) against fixed
-	 * breakpoints — $2M, $10M, $20M, $80M, $200M — picking the lowest-index
-	 * tier whose breakpoint the user's volume is still under (tier 5, the
-	 * lowest fees, if volume meets or exceeds the top breakpoint). Spot markets
-	 * always use tier 0 (no volume-based discount).
+	 * For perp markets, the tier is selected by the user's trailing 30-day
+	 * volume projected to `now` (`getUser30dRollingVolumeEstimate`,
+	 * QUOTE_PRECISION — the stored rolling sum decays lazily on-chain, so the
+	 * read applies the same decay virtually) against fixed breakpoints — $5M,
+	 * $80M — picking the lowest-index tier whose breakpoint the volume is
+	 * still under. Tiers 0/1/2 are named Regular / VIP 1 / VIP 2 (VIP 2, the
+	 * lowest fees, at or above the top breakpoint); names are presentation
+	 * only, selection is index-based.
+	 * While `state.promoFeeTier` is non-zero it floors everyone's tier at that
+	 * index (0 = disabled; nobody is downgraded by it). Spot markets always
+	 * use tier 0 (no volume-based discount).
 	 * @param marketType `MarketType.PERP` or `MarketType.SPOT`.
 	 * @param now Optional unix timestamp (seconds) to evaluate the rolling volume window as of; defaults to current time.
 	 * @returns The matching `FeeTier` (numerator/denominator fee fractions and referee-discount fractions).
@@ -4273,14 +4279,11 @@ export class User {
 			);
 
 			const volumeThresholds = [
-				new BN(2_000_000).mul(QUOTE_PRECISION),
-				new BN(10_000_000).mul(QUOTE_PRECISION),
-				new BN(20_000_000).mul(QUOTE_PRECISION),
+				new BN(5_000_000).mul(QUOTE_PRECISION),
 				new BN(80_000_000).mul(QUOTE_PRECISION),
-				new BN(200_000_000).mul(QUOTE_PRECISION),
 			];
 
-			let feeTierIndex = 5;
+			let feeTierIndex = volumeThresholds.length;
 			for (let i = 0; i < volumeThresholds.length; i++) {
 				if (total30dVolume.lt(volumeThresholds[i])) {
 					feeTierIndex = i;
@@ -4288,10 +4291,48 @@ export class User {
 				}
 			}
 
+			// promo tier floor: everyone gets at least `state.promoFeeTier`
+			// while it is set (0 = disabled/no-op), mirroring
+			// `determine_perp_fee_tier`
+			feeTierIndex = Math.max(
+				feeTierIndex,
+				Math.min(state.promoFeeTier, volumeThresholds.length)
+			);
+
 			return state.perpFeeStructure.feeTiers[feeTierIndex];
 		}
 
 		return state.spotFeeStructure.feeTiers[0];
+	}
+
+	/**
+	 * True when the program charges a builder fee on this user's perp fills.
+	 *
+	 * A builder fee is an additive debit on the taker that the builder later
+	 * claims into its own account, and the taker is the party that approves the
+	 * builder. The program therefore treats the fee as a transfer out and
+	 * charges it only when the taker meets initial margin, the gate a
+	 * withdrawal clears. A position-decreasing fill is otherwise checked
+	 * against maintenance margin alone. Mirrors the gate in
+	 * `fulfill_perp_order` (`controller/orders.rs`); when it is false the fill
+	 * still executes and the builder is paid nothing for it.
+	 *
+	 * The program applies initial margin to the bucket the order trades in and
+	 * maintenance margin to the user's other buckets. This method applies
+	 * initial margin to every bucket, so for a user with isolated positions it
+	 * can report false where the program still charges the fee.
+	 *
+	 * The program also waives the fee when any liability oracle is invalid, and
+	 * values a deposit with an invalid oracle at zero. This method does not
+	 * model oracle validity, so it can report true where the program waives the
+	 * fee. Treat the result as an estimate, not a guarantee.
+	 *
+	 * @return {boolean} Whether a builder fee applies to this user's fills
+	 */
+	public isBuilderFeeCharged(): boolean {
+		return this.getMarginCalculation('Initial', {
+			strict: true,
+		}).meetsMarginRequirement();
 	}
 
 	/**
@@ -4310,7 +4351,7 @@ export class User {
 	 * @param quoteAmount Trade size, QUOTE_PRECISION (1e6).
 	 * @param marketIndex Optional perp market to use `VelocityClient.getMarketFees` for instead of the volume-tier fee structure.
 	 * @param isReferee Optional override for whether the referee discount applies; defaults to the user's actual `UserStats` referred status. Ignored on the `marketIndex` path (which reads referee status inside `getMarketFees`).
-	 * @param builderInfo Optional builder code; when it carries `builderIdx` + `builderFeeTenthBps`, the builder fee is added on top of the tiered fee.
+	 * @param builderInfo Optional builder code; when it carries `builderIdx` + `builderFeeTenthBps`, the builder fee is added on top of the tiered fee. A user below initial margin pays no builder fee (see `isBuilderFeeCharged`), so none is added.
 	 * @returns feeForQuote : Precision QUOTE_PRECISION (1e6)
 	 */
 	public calculatePerpTakerFee(
@@ -4355,7 +4396,13 @@ export class User {
 
 			// Builder fee (M12): charged on top of the tiered fee, on the raw quote
 			// (independent of the referee discount), mirroring `builder_fee` in `math/fees.rs`.
-			if (builderInfo && hasBuilderParams(builderInfo)) {
+			// The program waives it when the taker is below initial margin — see
+			// `isBuilderFeeCharged`.
+			if (
+				builderInfo &&
+				hasBuilderParams(builderInfo) &&
+				this.isBuilderFeeCharged()
+			) {
 				fee = fee.add(
 					calculateBuilderFee(quoteAmount, builderInfo.builderFeeTenthBps!)
 				);

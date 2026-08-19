@@ -122,10 +122,60 @@ pub const ONE_HOUR: i64 = 3600;
 pub const ONE_HOUR_I128: i128 = ONE_HOUR as i128;
 pub const TWENTY_FOUR_HOUR: i64 = 3600 * 24;
 pub const THIRTEEN_DAY: i64 = TWENTY_FOUR_HOUR * 13; // IF unstake default
+
+/// The largest share of a spot borrow that un-booked interest may hide before the
+/// borrow can no longer be valued for margin on a value-releasing path
+/// (OtterSec #135 / #148).
+///
+/// Margin values a scaled borrow through the market's *stored*
+/// `cumulative_borrow_interest`, so interest accrued since `last_interest_ts` is
+/// omitted and the debt is understated by `debt x borrow_rate x elapsed / year`.
+/// The quantity that must stay small is that understated share, not the elapsed
+/// time, because the borrow rate is a per-market configuration value with no upper
+/// bound: `validate_borrow_rate` constrains `max_borrow_rate` only against
+/// `optimal_borrow_rate`, so one fixed window hides an arbitrary share on a
+/// high-rate market. One basis point is far inside the initial-vs-maintenance
+/// margin gap and therefore too small to engineer bad debt with. An un-cranked
+/// market, by contrast, drifts arbitrarily far, which is the actual vector.
+///
+/// `math::margin::max_spot_interest_staleness_for_margin` turns this share into the
+/// per-market time window that enforces it.
+pub const MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN: u128 = PERCENTAGE_PRECISION / 10_000;
+
+/// Ceiling on the window `math::margin::max_spot_interest_staleness_for_margin`
+/// derives, so a low-rate market cannot go un-cranked indefinitely.
+///
+/// A market that charges little interest earns a wide window from
+/// `MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN` alone. Its rate can be raised by
+/// the admin at any time, and the raise applies to the whole un-booked interval, so
+/// the window a low rate earns is not a promise about that interval.
+///
+/// Recoverable without special privileges: `update_spot_market_cumulative_interest`
+/// is permissionless and can be bundled into the same transaction.
+pub const MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN: i64 = ONE_HOUR;
 pub const EPOCH_DURATION: i64 = TWENTY_FOUR_HOUR * 28;
 pub const THIRTY_DAY: i64 = TWENTY_FOUR_HOUR * 30;
 pub const THIRTY_DAY_I128: i128 = (TWENTY_FOUR_HOUR * 30) as i128;
 pub const ONE_YEAR: u128 = 31536000;
+
+/// How many funding periods the mark TWAP may stay unwritten. Past this many periods
+/// `MarketStats::update_mark_twap` discards the stored value and re-seeds it from the
+/// oracle TWAP.
+///
+/// `calculate_new_twap` weights the incoming sample by the time since the last write.
+/// It floors the opposing weight at 1. Past one funding period a single fill-path
+/// sample therefore replaces the TWAP almost completely, because fills pass no
+/// `max_sample_elapsed` cap. The bid/ask crank's samples are weight-capped
+/// (`MarketStats::max_mark_twap_sample_elapsed`), so there the re-seed instead
+/// replaces a slow crawl of capped samples with one exact oracle-TWAP write.
+/// A market that stops writing keeps no history either way. A funding pause makes
+/// that gap longest, because both funding cranks reject while the pause is set.
+///
+/// The multiplier must stay above 2. A market whose only writer is the funding crank
+/// writes once per funding period in the steady state. `on_the_hour_update` can also
+/// stretch one legitimate interval to about 1.67 periods. A lower bound re-seeds a
+/// market that is merely quiet or cranked late, and discards a real premium.
+pub const MARK_TWAP_RESEED_FUNDING_PERIODS: i64 = 3;
 /// Max age of the last fill before the trigger price's last-fill leg is
 /// treated as absent (oracle price substitutes).
 pub const TRIGGER_PRICE_LAST_FILL_MAX_AGE: i64 = FIVE_MINUTE as i64;
@@ -165,6 +215,16 @@ pub const FEE_PERCENTAGE_DENOMINATOR: u32 = 100;
 /// builder-fee rail can't move collateral-significant value a taker couldn't
 /// withdraw under initial margin (OtterSec #83). 1000 = 1% (100 bps). TUNABLE.
 pub const MAX_BUILDER_FEE_TENTH_BPS: u16 = 1000;
+/// Ceiling on the magnitude of `PerpMarket.taker_fee_addon_tenth_bps`, in
+/// tenth-bps (100 = 10bps). Keeps the per-market additive fee add-on within
+/// the same order of magnitude as the tier fees it adjusts. TUNABLE.
+pub const MAX_TAKER_FEE_ADDON_TENTH_BPS: u16 = 100;
+/// Highest populated perp fee-tier index: tiers `0..=this` are live, the
+/// remaining `fee_tiers` slots are zeroed spares. `determine_perp_fee_tier`
+/// clamps its result to this, and `update_promo_fee_tier` validates against
+/// it so a promo floor can never validate and then silently mean a lower
+/// tier. Move together with the schedule in `FeeStructure::perps_default`.
+pub const PERP_FEE_TIER_MAX_INDEX: usize = 2;
 pub const OPEN_ORDER_MARGIN_REQUIREMENT: u128 = QUOTE_PRECISION / 100;
 /// Max oracle-value loss a strictly reducing `end_swap` may realize while the
 /// account is under equity-floor protection (floor set or breaker tripped):
@@ -204,6 +264,29 @@ pub const MAX_MARGIN_RATIO: u32 = MARGIN_PRECISION; // 1x leverage
 pub const MIN_MARGIN_RATIO: u32 = 125; // 80x leverage
 
 pub const MAX_BID_ASK_INVENTORY_SKEW_FACTOR: u64 = 10 * BID_ASK_SPREAD_PRECISION;
+
+// SPREAD (vlp/amm/math/spread.rs)
+/// Oracle confidence above this carries full weight in the vol spread;
+/// at or below it the contribution is divided by
+/// `SPREAD_CONF_DISCOUNT_DIVISOR` (PERCENTAGE_PRECISION, 25 bp).
+pub const SPREAD_CONF_FULL_WEIGHT_THRESHOLD: u64 = PERCENTAGE_PRECISION_U64 / 400;
+/// Divisor applied to the confidence contribution at or below the
+/// full-weight threshold.
+pub const SPREAD_CONF_DISCOUNT_DIVISOR: u64 = 20;
+/// Divisor applied to the market's average std pct when it competes with
+/// the confidence for the vol spread base.
+pub const SPREAD_VOL_STD_DISCOUNT_DIVISOR: u128 = 4;
+/// The revenue retreat is capped at `max_spread` divided by this.
+pub const SPREAD_REVENUE_RETREAT_MAX_DIVISOR: u64 = 10;
+/// Reference-price-offset sign-transition smoothing: per-slot budget for the
+/// pre-division step (`|delta|` is capped at `slots_passed *` this).
+pub const REF_PRICE_OFFSET_SMOOTHING_PER_SLOT_BUDGET: i128 = 1000;
+/// Reference-price-offset sign-transition smoothing: the capped delta is
+/// divided by this to get the per-refresh step.
+pub const REF_PRICE_OFFSET_SMOOTHING_STEP_DIVISOR: i128 = 10;
+/// Reference-price-offset sign-transition smoothing: minimum per-refresh
+/// step, so a transition always makes progress.
+pub const REF_PRICE_OFFSET_SMOOTHING_MIN_STEP: i32 = 10;
 
 /// Maximum percent divergence from oracle price for bids/asks to be included in mark TWAP calculation.
 /// Bids more than this % below oracle and asks more than this % above oracle are filtered out.

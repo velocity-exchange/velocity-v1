@@ -19,6 +19,7 @@ use {
         error::{ErrorCode, VelocityResult},
         math::{
             casting::Cast,
+            oracle::{is_oracle_valid_for_action, VelocityAction},
             safe_math::SafeMath,
             spot_balance::get_token_amount,
             spot_withdraw::{
@@ -28,10 +29,13 @@ use {
         msg,
         state::{
             events::PerpMarketFeeSweepRecord,
+            market_status::MarketStatus,
+            oracle_map::OracleMap,
             paused_operations::PerpOperation,
             perp_market::PerpMarket,
             spot_market::{SpotBalance, SpotBalanceType, SpotMarket},
-            user::User,
+            state::State,
+            user::{MarketType, User},
         },
         validate,
     },
@@ -332,4 +336,90 @@ pub fn update_pnl_pool_and_user_balance(
     }
 
     Ok(pnl_to_settle_with_user)
+}
+
+/// Returns the price at which a permissionless pnl-pool drain must value `max(net_user_pnl, 0)`.
+///
+/// Every such drain keeps that amount in the pool to back the positive pnl of other users, so the
+/// price decides how much the caller may take. `sweep_market_fees` and
+/// `sweep_completed_revenue_share_for_market` both reserve against it, and they must agree. Two
+/// prices that value the same claim differently would let one path take value that the other keeps.
+///
+/// In Settlement, `settle_expired_position` pays users at `expiry_price`, so the reserve uses that
+/// price. `expiry_price` does not change after settlement, so it needs no validity check. A live
+/// price below `expiry_price` on a net-long market would make the reserve too small, and the
+/// expiry claims would later fail with `InsufficientPerpPnlPool`.
+///
+/// Outside Settlement this returns the live oracle price, and applies the same validity checks that
+/// `settle_pnl` applies. A stale or divergent price must not size the reserve.
+pub fn get_pnl_pool_drain_reserve_price(
+    perp_market: &PerpMarket,
+    state: &State,
+    oracle_map: &mut OracleMap,
+) -> VelocityResult<i64> {
+    if perp_market.status == MarketStatus::Settlement {
+        return Ok(perp_market.expiry_price);
+    }
+
+    let market_index = perp_market.market_index;
+    let oracle_price_data = *oracle_map.get_price_data(&perp_market.oracle_id())?;
+    let oracle_price = oracle_price_data.price;
+
+    crate::controller::orders::validate_market_within_price_band(perp_market, state, oracle_price)?;
+
+    if !perp_market.amm.is_curve_update_enabled() {
+        return Ok(oracle_price);
+    }
+
+    if perp_market.is_recent_oracle_valid(oracle_map.slot, &oracle_price_data)? {
+        return Ok(oracle_price);
+    }
+
+    let (_, oracle_validity) = oracle_map.get_price_data_and_validity(
+        MarketType::Perp,
+        market_index,
+        &perp_market.oracle_id(),
+        perp_market
+            .market_stats
+            .historical_oracle_data
+            .last_oracle_price_twap,
+        perp_market.get_max_confidence_interval_multiplier()?,
+        0,
+        0,
+        None,
+    )?;
+
+    if is_oracle_valid_for_action(oracle_validity, Some(VelocityAction::SettlePnl))?
+        && perp_market.is_price_divergence_ok_for_settle_pnl(oracle_price)?
+    {
+        return Ok(oracle_price);
+    }
+
+    validate!(
+        perp_market.market_stats.last_oracle_valid,
+        oracle_validity.get_error_code(),
+        "Oracle Price detected as invalid ({}) on last perp market update for Market = {}",
+        oracle_validity,
+        market_index
+    )?;
+
+    validate!(
+        perp_market.amm.is_fresh_at(oracle_map.slot),
+        ErrorCode::AMMNotUpdatedInSameSlot,
+        "Market={} AMM must be updated in a prior instruction within same slot (current={} != amm={}, last_oracle_valid={})",
+        market_index,
+        oracle_map.slot,
+        perp_market.amm.last_update_slot(),
+        perp_market.market_stats.last_oracle_valid
+    )?;
+
+    // Both cached attestations hold. `healthy_oracle` is therefore false because a write changed
+    // the oracle account after the AMM update in the same slot. The cached verdict does not cover
+    // the sample that this call reads, so reject it on its current validity.
+    msg!(
+        "Market={} oracle rewritten after same-slot AMM update; current sample is invalid ({})",
+        market_index,
+        oracle_validity
+    );
+    Err(oracle_validity.get_error_code())
 }

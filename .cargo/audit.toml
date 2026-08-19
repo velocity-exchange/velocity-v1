@@ -2,7 +2,6 @@
 
 [advisories]
 ignore = [
-	"RUSTSEC-2022-0013",
 	"RUSTSEC-2022-0093", # Double Public Key Signing Function Oracle Attack on `ed25519-dalek`
 	# rkyv OOB reads: rkyv is a feature-inactive optional dep of rust_decimal
 	# (via programs/pyth-lazer); it is never compiled into any artifact

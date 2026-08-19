@@ -1389,6 +1389,10 @@ pub mod velocity {
         handle_update_spot_fee_structure(ctx, fee_structure)
     }
 
+    pub fn update_promo_fee_tier(ctx: Context<AdminUpdateState>, promo_fee_tier: u8) -> Result<()> {
+        handle_update_promo_fee_tier(ctx, promo_fee_tier)
+    }
+
     pub fn update_initial_pct_to_liquidate(
         ctx: Context<AdminUpdateState>,
         initial_pct_to_liquidate: u16,
@@ -1524,6 +1528,13 @@ pub mod velocity {
         fee_adjustment: i16,
     ) -> Result<()> {
         handle_update_perp_market_fee_adjustment(ctx, fee_adjustment)
+    }
+
+    pub fn update_perp_market_taker_fee_addon(
+        ctx: Context<AdminUpdatePerpMarket>,
+        taker_fee_addon_tenth_bps: u16,
+    ) -> Result<()> {
+        handle_update_perp_market_taker_fee_addon(ctx, taker_fee_addon_tenth_bps)
     }
 
     pub fn update_perp_market_fee_pool_buffer_target(
@@ -1821,6 +1832,22 @@ pub mod velocity {
         add: bool,
     ) -> Result<()> {
         handle_change_approved_builder(ctx, builder, max_fee_bps, add)
+    }
+
+    pub fn settle_revenue_share<'c: 'info, 'info>(
+        ctx: Context<'info, SettleRevenueShare<'info>>,
+        market_index: u16,
+        num_owner_sub_accounts: u8,
+    ) -> Result<()> {
+        handle_settle_revenue_share(ctx, market_index, num_owner_sub_accounts)
+    }
+
+    pub fn forfeit_revenue_share_order(
+        ctx: Context<ForfeitRevenueShareOrder>,
+        market_index: u16,
+        order_index: u32,
+    ) -> Result<()> {
+        handle_forfeit_revenue_share_order(ctx, market_index, order_index)
     }
 
     #[cfg(feature = "vlp-hedge")]
@@ -2173,7 +2200,7 @@ use solana_security_txt::security_txt;
 security_txt! {
     name: "Velocity v1",
     project_url: "https://velocity.exchange",
-    contacts: "link:https://docs.drift.trade/security/bug-bounty",
+    contacts: "email:security@velocity.exchange,link:https://docs.velocity.exchange/protocol/risk-and-safety/bug-bounty",
     policy: "https://github.com/velocity-exchange/velocity-v1/blob/master/SECURITY.md",
     preferred_languages: "en",
     source_code: "https://github.com/velocity-exchange/velocity-v1/programs/velocity"

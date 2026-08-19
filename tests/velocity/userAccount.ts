@@ -302,12 +302,12 @@ describe('User Account', () => {
 
 		console.log('marketMarginRatio:', marketMarginRatio);
 
-		const expectedPNL = new BN(-50002);
-		const expectedTotalCollateral = new BN(19949998);
-		const expectedBuyingPower = new BN(49749740);
-		const expectedFreeCollateral = new BN(9949948);
-		const expectedLeverage = new BN(25062);
-		const expectedMarginRatio = new BN(3989);
+		const expectedPNL = new BN(-20002);
+		const expectedTotalCollateral = new BN(19979998);
+		const expectedBuyingPower = new BN(49899740);
+		const expectedFreeCollateral = new BN(9979948);
+		const expectedLeverage = new BN(25025);
+		const expectedMarginRatio = new BN(3995);
 
 		await assertState(
 			expectedBuyingPower,
@@ -369,12 +369,12 @@ describe('User Account', () => {
 			convertToNumber(oraclePrice2)
 		);
 
-		const expectedPNL = new BN(4949472);
+		const expectedPNL = new BN(4979472);
 		const expectedTotalCollateral = new BN(20000000);
 		const expectedBuyingPower = new BN(45000280);
 		const expectedFreeCollateral = new BN(9000056);
-		const expectedLeverage = new BN(22044);
-		const expectedMarginRatio = new BN(4536);
+		const expectedLeverage = new BN(22017);
+		const expectedMarginRatio = new BN(4541);
 
 		await assertState(
 			expectedBuyingPower,
@@ -390,7 +390,7 @@ describe('User Account', () => {
 
 		const expectedBuyingPower = new BN(100000000);
 		const expectedFreeCollateral = new BN(20000000);
-		const expectedPNL = new BN(4894473);
+		const expectedPNL = new BN(4957473);
 		const expectedTotalCollateral = new BN(20000000);
 		const expectedLeverage = new BN(0);
 		const expectedMarginRatio = new BN(Number.MAX_SAFE_INTEGER);

@@ -53,6 +53,7 @@ import { Keypair, LAMPORTS_PER_SOL, Signer } from '@solana/web3.js';
 import { expect } from 'chai';
 import {
 	VaultClient,
+	getInsuranceFundTokenVaultAddressSync,
 	getTokenizedVaultMintAddressSync,
 	getVaultAddressSync,
 	getVaultDepositorAddressSync,
@@ -1248,7 +1249,7 @@ describe('TestProtocolVaults', () => {
 		// rather than the upstream-specific constant.
 		expect(
 			withdrawAmount.toNumber() / QUOTE_PRECISION.toNumber()
-		).to.be.closeTo(1009.04, 0.01);
+		).to.be.closeTo(1009.005, 0.01);
 
 		try {
 			await vdClient.program.methods
@@ -1371,7 +1372,7 @@ describe('TestProtocolVaults', () => {
 		// velocity's slightly different fee/funding economics vs upstream velocity.
 		expect(
 			withdrawAmount.toNumber() / QUOTE_PRECISION.toNumber()
-		).to.be.closeTo(1.004114, 0.001);
+		).to.be.closeTo(1.0005, 0.001);
 
 		const totalVaultSharesBefore = vaultAccount.totalShares;
 		console.log(
@@ -2208,6 +2209,22 @@ describe('TestInsuranceFundStake', () => {
 		assert(
 			ifStakeAccount1.ifShares.eq(ifStakeAmount),
 			'Shares are not equal to amount deposited'
+		);
+
+		// The add stakes the whole balance of the vault's IF token account, so nothing is
+		// stranded there. Velocity leaves behind only what prices below one whole share,
+		// and this fund is empty at the first add, so it prices 1:1 and takes everything.
+		const vaultIfTokenAccountBalance = await getTokenBalance(
+			connection,
+			getInsuranceFundTokenVaultAddressSync(
+				VAULT_PROGRAM_ID,
+				vault,
+				marketIndex
+			)
+		);
+		assert(
+			new BN(vaultIfTokenAccountBalance.value.amount).eq(ZERO),
+			`Vault IF token account not drained by the add: ${vaultIfTokenAccountBalance.value.amount}`
 		);
 
 		// test request remove stake

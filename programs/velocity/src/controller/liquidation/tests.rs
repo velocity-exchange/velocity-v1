@@ -12233,6 +12233,10 @@ pub mod resolve_perp_bankruptcy {
             ..User::default()
         };
 
+        // The latch booked the debt against the market, which freezes its fee sweep.
+        flag_perp_bankruptcy_claim(&mut user, 0, &market_map).unwrap();
+        assert_eq!(market_map.get_ref(&0).unwrap().pending_bankruptcy_claims, 1);
+
         let mut liquidator = User::default();
         let user_key = Pubkey::default();
         let liquidator_key = Pubkey::default();
@@ -12276,6 +12280,10 @@ pub mod resolve_perp_bankruptcy {
         // The latch is gone, so the account can deposit, trade and be liquidated again.
         assert_eq!(user.status, 0);
         assert!(!user.is_cross_margin_bankrupt());
+
+        // The booking went with the debt, so the market's fee sweep runs again.
+        assert!(!user.perp_positions[0].has_bankruptcy_claim());
+        assert_eq!(market_map.get_ref(&0).unwrap().pending_bankruptcy_claims, 0);
     }
 
     /// The same full recovery keeps the latch when a liability remains elsewhere on the estate.

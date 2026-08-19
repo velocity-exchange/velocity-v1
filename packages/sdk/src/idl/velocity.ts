@@ -24164,10 +24164,18 @@ export type Velocity = {
           },
           {
             "name": "padding",
+            "docs": [
+              "244 = 236 remaining former padding + 8 bytes that were previously",
+              "*implicit* trailing padding on x86_64 (State contains a u128, so the",
+              "struct rounds up to align 16 on the host but only 8 on SBF; explicit",
+              "padding makes `size_of::<State>()` 1744 on both targets, per the",
+              "alignment invariant in docs/alignment-and-native-offsets.md). Those 8",
+              "bytes have always existed zeroed inside the 1752-byte account."
+            ],
             "type": {
               "array": [
                 "u8",
-                236
+                244
               ]
             }
           }

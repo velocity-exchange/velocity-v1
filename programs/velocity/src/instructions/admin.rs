@@ -165,7 +165,7 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         solvency_status: SolvencyStatus::active(),
         promo_fee_tier: 0,
         slot_duration_ms: 0,
-        padding: [0; 236],
+        padding: [0; 244],
     };
 
     Ok(())

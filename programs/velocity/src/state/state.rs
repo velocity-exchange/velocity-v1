@@ -110,7 +110,13 @@ pub struct State {
     /// sentinel. Settable only downward (slots never get slower again), and
     /// only to values in `math::slots::VALID_SLOT_DURATIONS_MS`.
     pub slot_duration_ms: u16,
-    pub padding: [u8; 236],
+    /// 244 = 236 remaining former padding + 8 bytes that were previously
+    /// *implicit* trailing padding on x86_64 (State contains a u128, so the
+    /// struct rounds up to align 16 on the host but only 8 on SBF; explicit
+    /// padding makes `size_of::<State>()` 1744 on both targets, per the
+    /// alignment invariant in docs/alignment-and-native-offsets.md). Those 8
+    /// bytes have always existed zeroed inside the 1752-byte account.
+    pub padding: [u8; 244],
 }
 
 /// Purpose-specific hot role keys held on `State`. Each variant maps to one of the
@@ -214,7 +220,7 @@ impl Default for State {
             solvency_status: 0,
             promo_fee_tier: 0,
             slot_duration_ms: 0,
-            padding: [0; 236],
+            padding: [0; 244],
         }
     }
 }
@@ -449,12 +455,14 @@ impl Size for State {
     // 8 (disc) + 13 Pubkey (cold + warm + pause + 10 hot, 416 B) + 8 Pubkey (mint/signer/srm
     // + protocol_fee_recipient_perp/_spot + hot_fee_withdraw + hot_account_extension, 256 B)
     // + 2*FeeStructure + OracleGuardRails + scalars + solvency_status[1] + promo_fee_tier[1]
-    // + slot_duration_ms[2] + padding[236] = 1752 B.
+    // + slot_duration_ms[2] + padding[244] = 1752 B.
     // hot_if_rebalance was removed with the if-rebalance machinery (its 32 B went into
     // the padding); protocol_fee_recipient_spot later took 32 B back out; solvency_status
     // took 1 B out of the padding; hot_account_extension took another 32 B out;
     // slot_duration_ms took 2 B out (promo_fee_tier ends at an odd offset, so the u16
-    // starts at the even byte right after it — no implicit padding, pinned below).
+    // starts at the even byte right after it — no implicit padding, pinned below), and
+    // the padding absorbed the 8 formerly-implicit trailing bytes (see the field doc)
+    // so sizeof is target-independent.
     // SIZE stays constant and (SIZE - 8) % 16 == 0 holds (1744).
     const SIZE: usize = 1752;
 }
@@ -462,7 +470,8 @@ impl Size for State {
 // `slot_duration_ms` must start exactly where the old padding began (byte 1498
 // of the struct, an even offset), so pre-upgrade accounts read `0` (= 400ms
 // baseline) out of former padding and no implicit alignment padding was
-// introduced.
+// introduced. The size assert holds on both x86_64 (u128 align 16) and SBF
+// (u128 align 8) because all padding is explicit.
 static_assertions::const_assert_eq!(std::mem::offset_of!(State, slot_duration_ms), 1498);
 static_assertions::const_assert_eq!(std::mem::size_of::<State>(), 1744);
 

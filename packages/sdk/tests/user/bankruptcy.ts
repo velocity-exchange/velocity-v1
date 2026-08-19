@@ -172,12 +172,16 @@ describe('isUserBankrupt', () => {
 		assert.equal(isUserBankrupt(user), true);
 	});
 
-	it('perp claim whose pool can still pay part of it blocks bankruptcy', async () => {
+	/**
+	 * An estate holding `aggregateClaims` of claim on a market with `poolDollars` of pnl pool, against
+	 * a larger debt in another market.
+	 */
+	function claimEstateWithPool(aggregateClaims: number, poolDollars: number) {
 		const account = _.cloneDeep(baseMockUserAccount);
 
 		account.perpPositions[0].marketIndex = 1;
 		account.perpPositions[0].baseAssetAmount = ZERO;
-		account.perpPositions[0].quoteAssetAmount = new BN(200).mul(
+		account.perpPositions[0].quoteAssetAmount = new BN(aggregateClaims).mul(
 			QUOTE_PRECISION
 		);
 		account.perpPositions[0].positionFlag = 0;
@@ -189,13 +193,23 @@ describe('isUserBankrupt', () => {
 		);
 		account.perpPositions[1].positionFlag = 0;
 
-		// even a single token of pool means part of the claim settles through the ordinary
-		// pipeline (settle -> deposit -> liquidatePerpPnlForDeposit), which needs no insurance
-		const user = await makeUserWithMarkets(account, (perp) => {
-			perp[1].pnlPool.scaledBalance = SPOT_MARKET_BALANCE_PRECISION;
+		return makeUserWithMarkets(account, (perp) => {
+			perp[1].quoteAssetAmount = new BN(aggregateClaims).mul(QUOTE_PRECISION);
+			perp[1].pnlPool.scaledBalance = new BN(poolDollars).mul(
+				SPOT_MARKET_BALANCE_PRECISION
+			);
 		});
+	}
 
-		assert.equal(isUserBankrupt(user), false);
+	it('pool state never blocks bankruptcy', async () => {
+		// Empty, part-funded, and funded past the claim: the answer is the same. The resolvers
+		// recover what the pool can pay and forfeit the rest, so no pool state can hold the repair
+		// open — and trading fees flow into the pool, so a pool-shaped veto would be re-armable by
+		// any market participant with a trade.
+		for (const pool of [0, 100, 400]) {
+			const user = await claimEstateWithPool(200, pool);
+			assert.equal(isUserBankrupt(user), true, `pool = ${pool}`);
+		}
 	});
 
 	it('net solvent estate is not bankrupt however unfundable its claims', async () => {

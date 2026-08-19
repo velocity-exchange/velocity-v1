@@ -2494,10 +2494,14 @@ pub fn handle_resolve_spot_bankruptcy<'c: 'info, 'info>(
         mut oracle_map,
     } = load_maps(
         remaining_accounts_iter,
-        // OtterSec #145: this resolver also winds up unfundable perp claims, so the markets holding
-        // them are written to even though the bankruptcy being resolved is a spot borrow.
+        // OtterSec #145: this resolver also recovers and winds up the estate's perp claims, so the
+        // markets holding them are written to even though the bankruptcy being resolved is a spot
+        // borrow.
         &get_writable_perp_market_set_from_vec(&perp_markets_with_forfeitable_claims(user)),
-        &get_writable_spot_market_set(market_index),
+        // The quote market is written too: a recovered claim lands in the estate's quote deposit,
+        // and the borrow being resolved may be in another market entirely. It was already a required
+        // account here, because the claim passes read it, but only as read-only.
+        &get_writable_spot_market_set_from_many(vec![market_index, QUOTE_SPOT_MARKET_INDEX]),
         clock.slot,
         Some(state.oracle_guard_rails),
     )?;

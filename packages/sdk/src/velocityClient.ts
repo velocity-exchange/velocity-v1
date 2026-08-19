@@ -11630,9 +11630,9 @@ export class VelocityClient {
 				this.getUserAccountOrThrow(liquidatorSubAccountId),
 				userAccount,
 			],
-			// The resolver also forfeits the estate's unfundable positive perp claims to their own
-			// markets' insurance tranches, so those markets are written to as well. Passing one
-			// read-only makes the program revert at map load.
+			// The resolver also recovers the estate's payable perp claims from those markets' pnl
+			// pools, and forfeits what is left to their insurance tranches, so those markets are
+			// written to as well. Passing one read-only makes the program revert at map load.
 			writablePerpMarketIndexes: [
 				marketIndex,
 				...getPerpMarketsWithForfeitableClaims(userAccount).filter(
@@ -11730,10 +11730,12 @@ export class VelocityClient {
 				this.getUserAccountOrThrow(liquidatorSubAccountId),
 				userAccount,
 			],
-			writableSpotMarketIndexes: [marketIndex],
-			// This resolver also winds up the estate's unfundable positive perp claims into their
-			// markets' insurance tranches, so those perp markets must be writable even though the
-			// bankruptcy being resolved is a spot borrow.
+			// The quote market is writable because the resolver recovers the estate's payable perp
+			// claims into its quote deposit, and the borrow being resolved may be in another market.
+			// It must be passed even when the estate holds no quote row of its own.
+			writableSpotMarketIndexes: [marketIndex, QUOTE_SPOT_MARKET_INDEX],
+			// The resolver also recovers from, and forfeits to, the markets holding those claims, so
+			// those perp markets must be writable even though the bankruptcy is a spot borrow.
 			writablePerpMarketIndexes:
 				getPerpMarketsWithForfeitableClaims(userAccount),
 		});

@@ -12116,6 +12116,357 @@ pub mod resolve_perp_bankruptcy {
         assert_eq!(user.status, 0);
         assert!(!user.is_cross_margin_bankrupt());
     }
+
+    /// A recovery that covers the whole debt must leave the account able to act again.
+    ///
+    /// The recovery pass caps what it draws at the debt, so a claim bigger than the debt makes a
+    /// deposit equal to the debt the designed outcome, and the setoff then zeroes both. The resolver
+    /// has nothing left to draw for, but the estate is solvent and must not keep the latch: a
+    /// deposit rejects a bankrupt user, ordinary liquidation rejects a latched one, and a second
+    /// call to this resolver reaches the same return.
+    #[test]
+    pub fn full_recovery_of_the_debt_unlatches_the_estate() {
+        let now = 0_i64;
+        let slot = 0_u64;
+
+        let mut oracle_price = get_pyth_price(100, 6);
+        let oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            oracle_price,
+            &oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+
+        // The market carrying the debt.
+        let mut debt_market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                base_asset_amount_with_amm: BASE_PRECISION_I128,
+                ..AMM::default()
+            },
+            market_index: 0,
+            status: MarketStatus::Initialized,
+            number_of_users: 1,
+            quote_asset_amount: -150 * QUOTE_PRECISION_I128,
+            base_asset_amount_long: 5 * BASE_PRECISION_I128,
+            base_asset_amount_short: -5 * BASE_PRECISION_I128,
+            oracle: oracle_price_key,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            ..PerpMarket::default()
+        };
+        create_anchor_account_info!(debt_market, PerpMarket, debt_market_account_info);
+
+        // The market carrying the claim, with a pool that can pay all of it.
+        let mut claim_market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                ..AMM::default()
+            },
+            market_index: 1,
+            status: MarketStatus::Initialized,
+            quote_asset_amount: 500 * QUOTE_PRECISION_I128,
+            pnl_pool: PoolBalance {
+                scaled_balance: 500 * SPOT_BALANCE_PRECISION,
+                market_index: QUOTE_SPOT_MARKET_INDEX,
+                ..PoolBalance::default()
+            },
+            oracle: oracle_price_key,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            ..PerpMarket::default()
+        };
+        create_anchor_account_info!(claim_market, PerpMarket, claim_market_account_info);
+
+        let market_map = PerpMarketMap::load_multiple(
+            vec![&debt_market_account_info, &claim_market_account_info],
+            true,
+        )
+        .unwrap();
+
+        let mut usdc_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            deposit_balance: 500 * SPOT_BALANCE_PRECISION,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price_twap: PRICE_PRECISION_I64,
+                last_oracle_price_twap_5min: PRICE_PRECISION_I64,
+                ..HistoricalOracleData::default()
+            },
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(usdc_market, SpotMarket, usdc_spot_market_account_info);
+        let spot_market_map =
+            SpotMarketMap::load_one(&usdc_spot_market_account_info, true).unwrap();
+
+        // A $100 debt beside a $500 claim, latched, holding no deposit of its own.
+        let mut perp_positions = [PerpPosition::default(); 8];
+        perp_positions[0] = PerpPosition {
+            market_index: 0,
+            quote_asset_amount: -100 * QUOTE_PRECISION_I64,
+            quote_entry_amount: -100 * QUOTE_PRECISION_I64,
+            quote_break_even_amount: -100 * QUOTE_PRECISION_I64,
+            ..PerpPosition::default()
+        };
+        perp_positions[1] = PerpPosition {
+            market_index: 1,
+            quote_asset_amount: 500 * QUOTE_PRECISION_I64,
+            ..PerpPosition::default()
+        };
+
+        let mut user = User {
+            perp_positions,
+            spot_positions: [SpotPosition::default(); 8],
+            status: UserStatus::Bankrupt as u8,
+            next_liquidation_id: 2,
+            ..User::default()
+        };
+
+        // The latch booked the debt against the market, which freezes its fee sweep.
+        flag_perp_bankruptcy_claim(&mut user, 0, &market_map).unwrap();
+        assert_eq!(market_map.get_ref(&0).unwrap().pending_bankruptcy_claims, 1);
+
+        let mut liquidator = User::default();
+        let user_key = Pubkey::default();
+        let liquidator_key = Pubkey::default();
+
+        let pay_from_insurance = resolve_perp_bankruptcy(
+            0,
+            &mut user,
+            &user_key,
+            &mut liquidator,
+            &liquidator_key,
+            &market_map,
+            &spot_market_map,
+            &mut oracle_map,
+            now,
+            1_000 * QUOTE_PRECISION_U64,
+            false,
+        )
+        .unwrap();
+
+        // The estate paid its own debt, so nobody else paid anything.
+        assert_eq!(pay_from_insurance, 0);
+        assert_eq!(user.total_social_loss, 0);
+        assert_eq!(user.perp_positions[0].quote_asset_amount, 0);
+
+        // Recovery took only what the debt reached. The surplus claim stays with its owner.
+        assert_eq!(
+            user.perp_positions[1].quote_asset_amount,
+            400 * QUOTE_PRECISION_I64
+        );
+        assert_eq!(
+            market_map.get_ref(&1).unwrap().pnl_pool.scaled_balance,
+            400 * SPOT_BALANCE_PRECISION,
+            "the claim market's pool paid exactly the debt"
+        );
+        assert_eq!(
+            market_map.get_ref(&0).unwrap().pnl_pool.scaled_balance,
+            100 * SPOT_BALANCE_PRECISION,
+            "the setoff put those tokens where the insurance draw would have gone"
+        );
+
+        // The latch is gone, so the account can deposit, trade and be liquidated again.
+        assert_eq!(user.status, 0);
+        assert!(!user.is_cross_margin_bankrupt());
+
+        // The booking went with the debt, so the market's fee sweep runs again.
+        assert!(!user.perp_positions[0].has_bankruptcy_claim());
+        assert_eq!(market_map.get_ref(&0).unwrap().pending_bankruptcy_claims, 0);
+    }
+
+    /// The same full recovery keeps the latch when a liability remains elsewhere on the estate.
+    ///
+    /// The re-derive on that path answers the whole admission question, not "is this market clear".
+    /// A spot borrow the recovery cannot pay still bankrupts the account, and the spot resolver needs
+    /// the latch to run.
+    #[test]
+    pub fn full_recovery_keeps_the_latch_while_a_borrow_remains() {
+        let now = 0_i64;
+        let slot = 0_u64;
+
+        let mut oracle_price = get_pyth_price(100, 6);
+        let oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            oracle_price,
+            &oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+
+        let mut debt_market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                base_asset_amount_with_amm: BASE_PRECISION_I128,
+                ..AMM::default()
+            },
+            market_index: 0,
+            status: MarketStatus::Initialized,
+            number_of_users: 1,
+            quote_asset_amount: -150 * QUOTE_PRECISION_I128,
+            base_asset_amount_long: 5 * BASE_PRECISION_I128,
+            base_asset_amount_short: -5 * BASE_PRECISION_I128,
+            oracle: oracle_price_key,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            ..PerpMarket::default()
+        };
+        create_anchor_account_info!(debt_market, PerpMarket, debt_market_account_info);
+
+        // The claim is exactly the debt, so the estate keeps no surplus and stays net insolvent.
+        let mut claim_market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                ..AMM::default()
+            },
+            market_index: 1,
+            status: MarketStatus::Initialized,
+            quote_asset_amount: 100 * QUOTE_PRECISION_I128,
+            pnl_pool: PoolBalance {
+                scaled_balance: 100 * SPOT_BALANCE_PRECISION,
+                market_index: QUOTE_SPOT_MARKET_INDEX,
+                ..PoolBalance::default()
+            },
+            oracle: oracle_price_key,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            ..PerpMarket::default()
+        };
+        create_anchor_account_info!(claim_market, PerpMarket, claim_market_account_info);
+
+        let market_map = PerpMarketMap::load_multiple(
+            vec![&debt_market_account_info, &claim_market_account_info],
+            true,
+        )
+        .unwrap();
+
+        let mut usdc_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            deposit_balance: 100 * SPOT_BALANCE_PRECISION,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price_twap: PRICE_PRECISION_I64,
+                last_oracle_price_twap_5min: PRICE_PRECISION_I64,
+                ..HistoricalOracleData::default()
+            },
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(usdc_market, SpotMarket, usdc_spot_market_account_info);
+
+        let mut sol_oracle_price = get_pyth_price(100, 6);
+        let sol_oracle_price_key =
+            Pubkey::from_str("BAtFj4kQttZRVep3UZS2aZRDixkGYgWsbqTBVDbnSsPF").unwrap();
+        create_anchor_account_info!(
+            sol_oracle_price,
+            &sol_oracle_price_key,
+            PythLazerOracle,
+            sol_oracle_account_info
+        );
+        let mut sol_market = SpotMarket {
+            market_index: 1,
+            oracle_source: OracleSource::PythLazer,
+            oracle: sol_oracle_price_key,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 9,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            borrow_balance: SPOT_BALANCE_PRECISION,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price_twap: 100 * PRICE_PRECISION_I64,
+                last_oracle_price_twap_5min: 100 * PRICE_PRECISION_I64,
+                ..HistoricalOracleData::default()
+            },
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(sol_market, SpotMarket, sol_spot_market_account_info);
+        let spot_market_map = SpotMarketMap::load_multiple(
+            Vec::from([
+                &usdc_spot_market_account_info,
+                &sol_spot_market_account_info,
+            ]),
+            true,
+        )
+        .unwrap();
+
+        let mut perp_positions = [PerpPosition::default(); 8];
+        perp_positions[0] = PerpPosition {
+            market_index: 0,
+            quote_asset_amount: -100 * QUOTE_PRECISION_I64,
+            quote_entry_amount: -100 * QUOTE_PRECISION_I64,
+            quote_break_even_amount: -100 * QUOTE_PRECISION_I64,
+            ..PerpPosition::default()
+        };
+        perp_positions[1] = PerpPosition {
+            market_index: 1,
+            quote_asset_amount: 100 * QUOTE_PRECISION_I64,
+            ..PerpPosition::default()
+        };
+
+        // Slot 0 stays the quote row; the SOL borrow goes in slot 1.
+        let mut spot_positions = [SpotPosition::default(); 8];
+        spot_positions[1] = SpotPosition {
+            market_index: 1,
+            balance_type: SpotBalanceType::Borrow,
+            scaled_balance: SPOT_BALANCE_PRECISION_U64,
+            ..SpotPosition::default()
+        };
+
+        let mut user = User {
+            perp_positions,
+            spot_positions,
+            status: UserStatus::Bankrupt as u8,
+            next_liquidation_id: 2,
+            ..User::default()
+        };
+
+        let mut liquidator = User::default();
+        let user_key = Pubkey::default();
+        let liquidator_key = Pubkey::default();
+
+        let pay_from_insurance = resolve_perp_bankruptcy(
+            0,
+            &mut user,
+            &user_key,
+            &mut liquidator,
+            &liquidator_key,
+            &market_map,
+            &spot_market_map,
+            &mut oracle_map,
+            now,
+            1_000 * QUOTE_PRECISION_U64,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(pay_from_insurance, 0);
+        assert_eq!(user.perp_positions[0].quote_asset_amount, 0);
+        assert_eq!(user.perp_positions[1].quote_asset_amount, 0);
+
+        // The borrow still bankrupts the estate, so `resolve_spot_bankruptcy` can still run.
+        assert_eq!(user.status, UserStatus::Bankrupt as u8);
+        assert!(user.is_cross_margin_bankrupt());
+    }
 }
 
 pub mod resolve_spot_bankruptcy {
@@ -16207,6 +16558,74 @@ mod liquidation_mode {
         );
     }
 
+    /// The stale-latch re-check is asked of the mode, and each mode answers about the collateral its
+    /// own debt can reach (OtterSec #130).
+    ///
+    /// An isolated position is walled off from the cross-margin book. A resolver that asked the cross
+    /// question about an isolated bankruptcy would un-latch on a deposit that can never pay that
+    /// debt, while `is_isolated_margin_bankrupt` re-admitted it on the next call. Every call would
+    /// admit, un-latch and return, and the isolated debt would never resolve. Any account holding a
+    /// quote deposit alongside an isolated position is enough to reach it.
+    #[test]
+    pub fn has_realizable_assets_is_walled_off_per_mode() {
+        let mut spot_market = SpotMarket {
+            market_index: 0,
+            decimals: 6,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            deposit_balance: 1_000_000 * SPOT_BALANCE_PRECISION,
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_ai);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_ai, true).unwrap();
+
+        let mut perp_market = PerpMarket {
+            market_index: 0,
+            quote_spot_market_index: 0,
+            ..PerpMarket::default()
+        };
+        create_anchor_account_info!(perp_market, PerpMarket, perp_market_ai);
+        let perp_market_map = PerpMarketMap::load_one(&perp_market_ai, true).unwrap();
+
+        // An isolated position with its own collateral spent, on an account that still holds a cross
+        // quote deposit.
+        let mut user = User::default();
+        user.spot_positions[0] = SpotPosition {
+            market_index: 0,
+            balance_type: SpotBalanceType::Deposit,
+            scaled_balance: 1_000 * SPOT_BALANCE_PRECISION_U64,
+            ..SpotPosition::default()
+        };
+        user.perp_positions[0] = PerpPosition {
+            market_index: 0,
+            quote_asset_amount: -1_000 * QUOTE_PRECISION_I64,
+            position_flag: PositionFlag::IsolatedPosition as u8,
+            ..PerpPosition::default()
+        };
+
+        let isolated_mode = IsolatedMarginLiquidatePerpMode::new(0);
+        assert!(
+            !isolated_mode
+                .has_realizable_assets(&user, &spot_market_map)
+                .unwrap(),
+            "a cross deposit must not un-latch an isolated bankruptcy it can never pay"
+        );
+
+        // The same deposit is exactly what un-latches a cross-margin bankruptcy.
+        let cross_mode = CrossMarginLiquidatePerpMode::new(1);
+        let mut cross_user = User::default();
+        cross_user.spot_positions[0] = user.spot_positions[0];
+        assert!(cross_mode
+            .has_realizable_assets(&cross_user, &spot_market_map)
+            .unwrap());
+
+        // Collateral the isolated position does own is reported.
+        user.perp_positions[0].isolated_position_scaled_balance = SPOT_BALANCE_PRECISION_U64;
+        assert!(isolated_mode
+            .has_realizable_assets(&user, &spot_market_map)
+            .unwrap());
+    }
+
     #[test]
     pub fn get_perp_liquidation_mode_returns_cross_margin_when_no_position() {
         let perp_positions = [PerpPosition::default(); 8];
@@ -16255,61 +16674,263 @@ mod liquidation_mode {
     }
 }
 
-/// OtterSec #145: extinguishing an unfundable perp claim moves its *creditor*, it does not destroy
-/// value.
-pub mod extinguish_unfundable_perp_claims {
+/// OtterSec #130 / #145: a bankruptcy first recovers what the estate's claims can actually be paid,
+/// then forfeits what nobody can pay — and never more than the loss it covers.
+pub mod bankruptcy_claims {
     use crate::{
-        controller::liquidation::extinguish_unfundable_perp_claims,
+        controller::liquidation::{
+            extinguish_unfundable_perp_claims, recover_perp_claims_from_pnl_pools,
+        },
         create_anchor_account_info,
-        math::constants::{
-            QUOTE_PRECISION_I128, QUOTE_PRECISION_I64, SPOT_BALANCE_PRECISION,
-            SPOT_CUMULATIVE_INTEREST_PRECISION,
+        math::{
+            constants::{
+                QUOTE_PRECISION_I128, QUOTE_PRECISION_I64, SPOT_BALANCE_PRECISION,
+                SPOT_CUMULATIVE_INTEREST_PRECISION,
+            },
+            spot_balance::get_token_amount,
         },
         state::{
-            perp_market::PerpMarket,
+            perp_market::{PerpMarket, PoolBalance},
             perp_market_map::PerpMarketMap,
-            spot_market::SpotMarket,
+            spot_market::{SpotBalanceType, SpotMarket},
             spot_market_map::SpotMarketMap,
             user::{PerpPosition, User},
         },
     };
 
-    /// The user's claim is gone, the market owes the same total, and the insurance tranche is the new
-    /// creditor.
-    ///
-    /// Equity neutrality is the invariant to protect. Zeroing the claim lowers
-    /// `market.quote_asset_amount`, and so `net_user_pnl`, which raises the market's excess by the
-    /// forfeited amount. The `pending_if_fee` credit lowers it by the same amount. If a later change
-    /// breaks that pairing, the market's balance sheet misstates without any error.
-    #[test]
-    fn unfundable_claim_moves_to_the_insurance_tranche() {
-        let mut spot_market = SpotMarket {
+    /// A quote spot market in which one token is one unit of scaled balance.
+    fn quote_spot_market() -> SpotMarket {
+        SpotMarket {
             market_index: 0,
             decimals: 6,
             cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
             cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
             deposit_balance: 1_000_000 * SPOT_BALANCE_PRECISION,
             ..SpotMarket::default()
+        }
+    }
+
+    /// A market holding `pool` tokens against `aggregate_claims` of user claims.
+    fn claim_market(market_index: u16, aggregate_claims: i128, pool: u128) -> PerpMarket {
+        PerpMarket {
+            market_index,
+            quote_spot_market_index: 0,
+            quote_asset_amount: aggregate_claims,
+            pnl_pool: PoolBalance {
+                scaled_balance: pool * SPOT_BALANCE_PRECISION,
+                market_index: 0,
+                ..PoolBalance::default()
+            },
+            ..PerpMarket::default()
+        }
+    }
+
+    fn claimant(market_index: u16, claim: i64) -> User {
+        let mut user = User::default();
+        user.perp_positions[0] = PerpPosition {
+            market_index,
+            quote_asset_amount: claim,
+            ..PerpPosition::default()
         };
+        user
+    }
+
+    fn quote_deposit(user: &User, spot_market_map: &SpotMarketMap) -> u128 {
+        let quote_spot_market = spot_market_map.get_quote_spot_market().unwrap();
+        let position = user.get_quote_spot_position();
+        assert_eq!(position.balance_type, SpotBalanceType::Deposit);
+        get_token_amount(
+            position.scaled_balance as u128,
+            &quote_spot_market,
+            &SpotBalanceType::Deposit,
+        )
+        .unwrap()
+    }
+
+    /// A cap high enough that it is not what is under test.
+    fn no_cap() -> u128 {
+        1_000_000 * QUOTE_PRECISION_I128 as u128
+    }
+
+    /// A claim the pool can pay becomes cash for the estate, not a forfeit.
+    ///
+    /// This is the move the estate is barred from making itself. `update_pool_balances` pays a
+    /// positive claim out of the pool's raw balance, and `settle_pnl` lets any keeper make that call
+    /// for a user who is being liquidated — so this value is reachable, and insurance must not cover
+    /// a debt while it sits there (OtterSec #130).
+    #[test]
+    fn a_fundable_claim_is_recovered_into_the_quote_deposit() {
+        let mut spot_market = quote_spot_market();
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_ai);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_ai, true).unwrap();
 
-        // Claim market with an empty pnl pool: the 500 claim is entirely unfundable.
-        let mut claim_market = PerpMarket {
-            market_index: 0,
-            quote_spot_market_index: 0,
-            quote_asset_amount: 500 * QUOTE_PRECISION_I128,
-            ..PerpMarket::default()
-        };
-        create_anchor_account_info!(claim_market, PerpMarket, claim_market_ai);
-        let perp_market_map = PerpMarketMap::load_one(&claim_market_ai, true).unwrap();
+        let mut market = claim_market(0, 500 * QUOTE_PRECISION_I128, 500);
+        create_anchor_account_info!(market, PerpMarket, market_ai);
+        let perp_market_map = PerpMarketMap::load_one(&market_ai, true).unwrap();
 
-        let mut user = User::default();
-        user.perp_positions[0] = PerpPosition {
-            market_index: 0,
-            quote_asset_amount: 500 * QUOTE_PRECISION_I64,
-            ..PerpPosition::default()
-        };
+        let mut user = claimant(0, 500 * QUOTE_PRECISION_I64);
+
+        let recovered = recover_perp_claims_from_pnl_pools(
+            &mut user,
+            &perp_market_map,
+            &spot_market_map,
+            500 * QUOTE_PRECISION_I128 as u128,
+            0,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(recovered, 500 * QUOTE_PRECISION_I128 as u128);
+        assert_eq!(
+            user.perp_positions[0].quote_asset_amount, 0,
+            "the claim is settled, not left outstanding"
+        );
+        assert_eq!(
+            quote_deposit(&user, &spot_market_map),
+            500 * QUOTE_PRECISION_I128 as u128,
+            "the value lands in the deposit, where the caller applies it to the debt"
+        );
+        assert_eq!(
+            perp_market_map.get_ref(&0).unwrap().pnl_pool.scaled_balance,
+            0,
+            "paid out of the pool, exactly as a settle would"
+        );
+    }
+
+    /// Only what the pool holds can be recovered. The rest is nobody's to pay.
+    #[test]
+    fn recovery_stops_at_what_the_pool_holds() {
+        let mut spot_market = quote_spot_market();
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_ai);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_ai, true).unwrap();
+
+        let mut market = claim_market(0, 500 * QUOTE_PRECISION_I128, 200);
+        create_anchor_account_info!(market, PerpMarket, market_ai);
+        let perp_market_map = PerpMarketMap::load_one(&market_ai, true).unwrap();
+
+        let mut user = claimant(0, 500 * QUOTE_PRECISION_I64);
+
+        let recovered = recover_perp_claims_from_pnl_pools(
+            &mut user,
+            &perp_market_map,
+            &spot_market_map,
+            500 * QUOTE_PRECISION_I128 as u128,
+            0,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(recovered, 200 * QUOTE_PRECISION_I128 as u128);
+        assert_eq!(
+            user.perp_positions[0].quote_asset_amount,
+            300 * QUOTE_PRECISION_I64,
+            "the unfundable remainder stays on the position for the forfeit"
+        );
+    }
+
+    /// Recovery never drains a pool past the debt it is covering. Beyond that the estate has no
+    /// claim on this resolution, and the market's other claimants keep their coverage.
+    #[test]
+    fn recovery_is_bounded_by_the_debt() {
+        let mut spot_market = quote_spot_market();
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_ai);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_ai, true).unwrap();
+
+        let mut market = claim_market(0, 500 * QUOTE_PRECISION_I128, 500);
+        create_anchor_account_info!(market, PerpMarket, market_ai);
+        let perp_market_map = PerpMarketMap::load_one(&market_ai, true).unwrap();
+
+        let mut user = claimant(0, 500 * QUOTE_PRECISION_I64);
+
+        let recovered = recover_perp_claims_from_pnl_pools(
+            &mut user,
+            &perp_market_map,
+            &spot_market_map,
+            100 * QUOTE_PRECISION_I128 as u128,
+            0,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(recovered, 100 * QUOTE_PRECISION_I128 as u128);
+        assert_eq!(
+            user.perp_positions[0].quote_asset_amount,
+            400 * QUOTE_PRECISION_I64,
+            "the estate keeps the claim it does not need to settle"
+        );
+        assert_eq!(
+            perp_market_map.get_ref(&0).unwrap().pnl_pool.scaled_balance,
+            400 * SPOT_BALANCE_PRECISION,
+            "the pool keeps what this debt did not reach"
+        );
+    }
+
+    /// A live position is not a settled claim and is never touched, by either pass.
+    #[test]
+    fn live_positions_are_never_touched() {
+        let mut spot_market = quote_spot_market();
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_ai);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_ai, true).unwrap();
+
+        let mut market = claim_market(0, 500 * QUOTE_PRECISION_I128, 500);
+        create_anchor_account_info!(market, PerpMarket, market_ai);
+        let perp_market_map = PerpMarketMap::load_one(&market_ai, true).unwrap();
+
+        for mutate in [
+            |p: &mut PerpPosition| p.base_asset_amount = 1,
+            |p: &mut PerpPosition| p.open_orders = 1,
+        ] {
+            let mut user = claimant(0, 500 * QUOTE_PRECISION_I64);
+            mutate(&mut user.perp_positions[0]);
+
+            assert_eq!(
+                recover_perp_claims_from_pnl_pools(
+                    &mut user,
+                    &perp_market_map,
+                    &spot_market_map,
+                    500 * QUOTE_PRECISION_I128 as u128,
+                    0,
+                    false,
+                )
+                .unwrap(),
+                0
+            );
+            assert_eq!(
+                extinguish_unfundable_perp_claims(
+                    &mut user,
+                    &perp_market_map,
+                    &spot_market_map,
+                    no_cap(),
+                )
+                .unwrap(),
+                0
+            );
+            assert_eq!(
+                user.perp_positions[0].quote_asset_amount,
+                500 * QUOTE_PRECISION_I64
+            );
+        }
+    }
+
+    /// The user's unfundable claim is gone, the market owes the same total, and the insurance tranche
+    /// is the new creditor.
+    ///
+    /// Equity neutrality is the invariant to protect. Zeroing the claim lowers
+    /// `market.quote_asset_amount`, and so `net_user_pnl`, which raises the market's excess. The
+    /// `pending_if_fee` credit lowers it by the same amount. If a later change breaks that pairing,
+    /// the market's balance sheet misstates without any error.
+    #[test]
+    fn an_unfundable_claim_moves_to_the_insurance_tranche() {
+        let mut spot_market = quote_spot_market();
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_ai);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_ai, true).unwrap();
+
+        // Empty pnl pool: nothing to recover, the whole 500 is forfeitable.
+        let mut market = claim_market(0, 500 * QUOTE_PRECISION_I128, 0);
+        create_anchor_account_info!(market, PerpMarket, market_ai);
+        let perp_market_map = PerpMarketMap::load_one(&market_ai, true).unwrap();
+
+        let mut user = claimant(0, 500 * QUOTE_PRECISION_I64);
 
         let market_quote_before = perp_market_map.get_ref(&0).unwrap().quote_asset_amount;
         let pending_if_before = perp_market_map
@@ -16318,9 +16939,13 @@ pub mod extinguish_unfundable_perp_claims {
             .fee_ledger
             .pending_if_fee;
 
-        let forfeited =
-            extinguish_unfundable_perp_claims(&mut user, &perp_market_map, &spot_market_map)
-                .unwrap();
+        let forfeited = extinguish_unfundable_perp_claims(
+            &mut user,
+            &perp_market_map,
+            &spot_market_map,
+            no_cap(),
+        )
+        .unwrap();
 
         assert_eq!(forfeited, 500 * QUOTE_PRECISION_I128 as u128);
         // The user no longer holds a claim to collect after insurance covers their debt.
@@ -16341,52 +16966,75 @@ pub mod extinguish_unfundable_perp_claims {
         );
     }
 
-    /// Only the part the pool cannot pay may be taken. The fundable remainder belongs in the ordinary
-    /// settle pipeline, which uses no insurance.
+    /// Only the part the pool cannot pay may be forfeited. The fundable part belongs to the recovery
+    /// pass, which turns it into cash for the estate's own debt.
     #[test]
-    fn only_the_unfundable_excess_is_taken() {
-        let mut spot_market = SpotMarket {
-            market_index: 0,
-            decimals: 6,
-            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
-            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
-            deposit_balance: 1_000_000 * SPOT_BALANCE_PRECISION,
-            ..SpotMarket::default()
-        };
+    fn only_the_unfundable_part_is_forfeited() {
+        let mut spot_market = quote_spot_market();
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_ai);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_ai, true).unwrap();
 
-        // Pool holds 200 tokens against a 500 claim -> 300 unfundable.
-        let mut claim_market = PerpMarket {
-            market_index: 0,
-            quote_spot_market_index: 0,
-            quote_asset_amount: 500 * QUOTE_PRECISION_I128,
-            ..PerpMarket::default()
-        };
-        claim_market.pnl_pool.scaled_balance = 200 * (SPOT_BALANCE_PRECISION as u128);
-        create_anchor_account_info!(claim_market, PerpMarket, claim_market_ai);
-        let perp_market_map = PerpMarketMap::load_one(&claim_market_ai, true).unwrap();
+        let mut market = claim_market(0, 500 * QUOTE_PRECISION_I128, 200);
+        create_anchor_account_info!(market, PerpMarket, market_ai);
+        let perp_market_map = PerpMarketMap::load_one(&market_ai, true).unwrap();
 
-        let mut user = User::default();
-        user.perp_positions[0] = PerpPosition {
-            market_index: 0,
-            quote_asset_amount: 500 * QUOTE_PRECISION_I64,
-            ..PerpPosition::default()
-        };
+        let mut user = claimant(0, 500 * QUOTE_PRECISION_I64);
 
-        let forfeited =
-            extinguish_unfundable_perp_claims(&mut user, &perp_market_map, &spot_market_map)
-                .unwrap();
+        let forfeited = extinguish_unfundable_perp_claims(
+            &mut user,
+            &perp_market_map,
+            &spot_market_map,
+            no_cap(),
+        )
+        .unwrap();
 
         assert_eq!(
             forfeited,
             300 * QUOTE_PRECISION_I128 as u128,
-            "only the unfundable excess may be taken"
+            "only the part the pool cannot pay may be taken"
         );
         assert_eq!(
             user.perp_positions[0].quote_asset_amount,
-            200 * QUOTE_PRECISION_I64,
-            "the fundable part must survive for the ordinary settle pipeline"
+            200 * QUOTE_PRECISION_I64
+        );
+    }
+
+    /// The forfeit never exceeds the loss the same call covers, however much the estate holds.
+    ///
+    /// This is the bound that survives a stale bankruptcy latch. An account latched against a $100
+    /// debt can go on earning keeper filler rewards, which credit a perp `quote_asset_amount` with no
+    /// bankruptcy check on the filler, and nothing re-derives the latch before a resolver runs. The
+    /// net-insolvency gate at admission cannot bound this, because the account never passes through
+    /// admission again. Only the budget can, and it leaves the surplus with its owner.
+    #[test]
+    fn the_forfeit_never_exceeds_the_loss_it_covers() {
+        let mut spot_market = quote_spot_market();
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_ai);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_ai, true).unwrap();
+
+        let mut market = claim_market(0, 500 * QUOTE_PRECISION_I128, 0);
+        create_anchor_account_info!(market, PerpMarket, market_ai);
+        let perp_market_map = PerpMarketMap::load_one(&market_ai, true).unwrap();
+
+        let mut user = claimant(0, 500 * QUOTE_PRECISION_I64);
+
+        let forfeited = extinguish_unfundable_perp_claims(
+            &mut user,
+            &perp_market_map,
+            &spot_market_map,
+            100 * QUOTE_PRECISION_I128 as u128,
+        )
+        .unwrap();
+
+        assert_eq!(
+            forfeited,
+            100 * QUOTE_PRECISION_I128 as u128,
+            "the estate pays what it owes, not what it holds"
+        );
+        assert_eq!(
+            user.perp_positions[0].quote_asset_amount,
+            400 * QUOTE_PRECISION_I64,
+            "the surplus stays with the estate"
         );
         assert_eq!(
             perp_market_map
@@ -16394,70 +17042,51 @@ pub mod extinguish_unfundable_perp_claims {
                 .unwrap()
                 .fee_ledger
                 .pending_if_fee,
-            300 * QUOTE_PRECISION_I128 as u128
+            100 * QUOTE_PRECISION_I128 as u128
         );
     }
 
-    /// A position with base exposure or a live order is not a settled claim. It must never be
-    /// forfeited, even if admission lets it through.
+    /// One cap covers the whole call, so claims in several markets share it.
     #[test]
-    fn live_positions_are_never_extinguished() {
-        let mut spot_market = SpotMarket {
-            market_index: 0,
-            decimals: 6,
-            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
-            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
-            deposit_balance: 1_000_000 * SPOT_BALANCE_PRECISION,
-            ..SpotMarket::default()
-        };
+    fn the_cap_is_shared_across_markets() {
+        let mut spot_market = quote_spot_market();
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_ai);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_ai, true).unwrap();
 
-        let mut claim_market = PerpMarket {
-            market_index: 0,
-            quote_spot_market_index: 0,
-            quote_asset_amount: 500 * QUOTE_PRECISION_I128,
-            ..PerpMarket::default()
-        };
-        create_anchor_account_info!(claim_market, PerpMarket, claim_market_ai);
-        let perp_market_map = PerpMarketMap::load_one(&claim_market_ai, true).unwrap();
+        let mut first = claim_market(0, 500 * QUOTE_PRECISION_I128, 0);
+        create_anchor_account_info!(first, PerpMarket, first_ai);
+        let mut second = claim_market(1, 500 * QUOTE_PRECISION_I128, 0);
+        create_anchor_account_info!(second, PerpMarket, second_ai);
+        let perp_market_map =
+            PerpMarketMap::load_multiple(vec![&first_ai, &second_ai], true).unwrap();
 
-        let mut with_base = User::default();
-        with_base.perp_positions[0] = PerpPosition {
-            market_index: 0,
+        let mut user = claimant(0, 500 * QUOTE_PRECISION_I64);
+        user.perp_positions[1] = PerpPosition {
+            market_index: 1,
             quote_asset_amount: 500 * QUOTE_PRECISION_I64,
-            base_asset_amount: 1,
             ..PerpPosition::default()
         };
-        assert_eq!(
-            extinguish_unfundable_perp_claims(&mut with_base, &perp_market_map, &spot_market_map)
-                .unwrap(),
-            0
-        );
-        assert_eq!(
-            with_base.perp_positions[0].quote_asset_amount,
-            500 * QUOTE_PRECISION_I64
-        );
 
-        let mut with_order = User::default();
-        with_order.perp_positions[0] = PerpPosition {
-            market_index: 0,
-            quote_asset_amount: 500 * QUOTE_PRECISION_I64,
-            open_orders: 1,
-            ..PerpPosition::default()
-        };
+        let forfeited = extinguish_unfundable_perp_claims(
+            &mut user,
+            &perp_market_map,
+            &spot_market_map,
+            600 * QUOTE_PRECISION_I128 as u128,
+        )
+        .unwrap();
+
         assert_eq!(
-            extinguish_unfundable_perp_claims(&mut with_order, &perp_market_map, &spot_market_map)
-                .unwrap(),
-            0
+            forfeited,
+            600 * QUOTE_PRECISION_I128 as u128,
+            "a second market must not get a fresh cap"
         );
         assert_eq!(
-            with_order.perp_positions[0].quote_asset_amount,
-            500 * QUOTE_PRECISION_I64
+            user.perp_positions[0].quote_asset_amount + user.perp_positions[1].quote_asset_amount,
+            400 * QUOTE_PRECISION_I64
         );
     }
 
-    /// The writable-market contract: everything this function writes to must be in
+    /// The writable-market contract: everything these passes write to must be in
     /// `perp_markets_with_forfeitable_claims`, which is what the resolve handlers declare writable.
     ///
     /// This test builds the claim market's `AccountInfo` by hand rather than through
@@ -16468,29 +17097,12 @@ pub mod extinguish_unfundable_perp_claims {
     /// account, so passing `false` here reproduces the production failure.
     #[test]
     fn only_declared_writable_markets_are_written() {
-        let mut spot_market = SpotMarket {
-            market_index: 0,
-            decimals: 6,
-            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
-            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
-            deposit_balance: 1_000_000 * SPOT_BALANCE_PRECISION,
-            ..SpotMarket::default()
-        };
+        let mut spot_market = quote_spot_market();
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_ai);
         let spot_market_map = SpotMarketMap::load_one(&spot_market_ai, true).unwrap();
 
-        // A funded pool, so this claim is NOT forfeitable and the pass writes nothing.
-        let mut funded_market = PerpMarket {
-            market_index: 0,
-            quote_spot_market_index: 0,
-            quote_asset_amount: 500 * QUOTE_PRECISION_I128,
-            pnl_pool: crate::state::perp_market::PoolBalance {
-                scaled_balance: 500 * SPOT_BALANCE_PRECISION,
-                market_index: 0,
-                ..crate::state::perp_market::PoolBalance::default()
-            },
-            ..PerpMarket::default()
-        };
+        // A pool that covers the whole claim, so the forfeit pass writes nothing.
+        let mut funded_market = claim_market(0, 500 * QUOTE_PRECISION_I128, 500);
         // Read-only on purpose: `is_writable = false`, which the macro cannot express.
         let funded_owner = <PerpMarket as anchor_lang::Owner>::owner();
         let funded_key = anchor_lang::prelude::Pubkey::default();
@@ -16504,53 +17116,48 @@ pub mod extinguish_unfundable_perp_claims {
             &funded_owner,
         );
 
-        let mut user = User::default();
-        user.perp_positions[0] = PerpPosition {
-            market_index: 0,
-            quote_asset_amount: 500 * QUOTE_PRECISION_I64,
-            ..PerpPosition::default()
-        };
+        let mut user = claimant(0, 500 * QUOTE_PRECISION_I64);
 
-        // The claim is fully fundable, so nothing is forfeited and no write borrow is needed. A
-        // read-only market therefore has to succeed: the fundability test must not take
-        // `get_ref_mut`. Against the original code this line fails with a load error.
+        // Nothing is forfeited, so no write borrow is needed and a read-only market must succeed:
+        // the payability test must not take `get_ref_mut`.
         let read_only_map = PerpMarketMap::load_multiple(vec![&funded_market_ai], false).unwrap();
         assert_eq!(
-            extinguish_unfundable_perp_claims(&mut user, &read_only_map, &spot_market_map).unwrap(),
+            extinguish_unfundable_perp_claims(
+                &mut user,
+                &read_only_map,
+                &spot_market_map,
+                no_cap(),
+            )
+            .unwrap(),
             0,
             "a fully fundable claim must not be forfeited"
         );
         assert_eq!(
             user.perp_positions[0].quote_asset_amount,
             500 * QUOTE_PRECISION_I64,
-            "a fundable claim stays with the user for the ordinary pipeline"
+            "a fundable claim belongs to the recovery pass, not the forfeit"
         );
 
-        // And the market it *would* write to is exactly the one the handlers declare writable.
-        let mut unfunded_market = PerpMarket {
-            market_index: 1,
-            quote_spot_market_index: 0,
-            quote_asset_amount: 500 * QUOTE_PRECISION_I128,
-            ..PerpMarket::default()
-        };
+        // And the market each pass *would* write to is exactly the one the handlers declare writable.
+        let mut unfunded_market = claim_market(1, 500 * QUOTE_PRECISION_I128, 0);
         create_anchor_account_info!(unfunded_market, PerpMarket, unfunded_market_ai);
         let writable_map = PerpMarketMap::load_multiple(vec![&unfunded_market_ai], true).unwrap();
 
-        let mut claimant = User::default();
-        claimant.perp_positions[0] = PerpPosition {
-            market_index: 1,
-            quote_asset_amount: 500 * QUOTE_PRECISION_I64,
-            ..PerpPosition::default()
-        };
+        let mut other = claimant(1, 500 * QUOTE_PRECISION_I64);
 
         assert_eq!(
-            crate::math::bankruptcy::perp_markets_with_forfeitable_claims(&claimant),
+            crate::math::bankruptcy::perp_markets_with_forfeitable_claims(&other),
             vec![1],
-            "the declared writable set must name every market the forfeit writes to"
+            "the declared writable set must name every market these passes write to"
         );
         assert_eq!(
-            extinguish_unfundable_perp_claims(&mut claimant, &writable_map, &spot_market_map)
-                .unwrap(),
+            extinguish_unfundable_perp_claims(
+                &mut other,
+                &writable_map,
+                &spot_market_map,
+                no_cap(),
+            )
+            .unwrap(),
             500 * QUOTE_PRECISION_I128 as u128
         );
     }

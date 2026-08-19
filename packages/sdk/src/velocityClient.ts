@@ -2841,6 +2841,14 @@ export class VelocityClient {
 
 	/**
 	 * Builds the `deleteUser` instruction. See `deleteUser` for on-chain preconditions.
+	 *
+	 * The authority's `RevenueShareEscrow` PDA is derived and passed automatically, so
+	 * callers need no change. It is a **required** account even when the authority has
+	 * never created an escrow: the address is pinned by seeds on chain, so an
+	 * uninitialized account proves absence rather than an omitted check. The program
+	 * uses it to settle this sub-account's builder rows before the id is retired
+	 * forever, which is what stops the builder's accrued fee being stranded
+	 * (OtterSec #128).
 	 * @param userAccountPublicKey - User account PDA to delete.
 	 * @returns The instruction.
 	 */
@@ -2851,6 +2859,10 @@ export class VelocityClient {
 				userStats: this.getUserStatsAccountPublicKey(),
 				authority: this.wallet.publicKey,
 				state: await this.getStatePublicKey(),
+				revenueShareEscrow: getRevenueShareEscrowAccountPublicKey(
+					this.program.programId,
+					this.wallet.publicKey
+				),
 			},
 		});
 
@@ -2888,9 +2900,14 @@ export class VelocityClient {
 
 	/**
 	 * Builds the keeper-only `forceDeleteUser` instruction, assembling `remaining_accounts` for the
-	 * account's non-empty spot positions, its revenue-share escrow (if any order carries a builder
-	 * fee), and every mint/token-program needed for its open spot balances. See `forceDeleteUser` for
-	 * on-chain preconditions.
+	 * account's non-empty spot positions and every mint/token-program needed for its open spot
+	 * balances. See `forceDeleteUser` for on-chain preconditions.
+	 *
+	 * The authority's `RevenueShareEscrow` PDA is derived and passed as a named account, so callers
+	 * need no change. It is **required** even when the authority has never created an escrow: the
+	 * address is pinned by seeds on chain, so an uninitialized account proves absence rather than an
+	 * omitted check. The program uses it to settle the sub-account's builder rows before the id is
+	 * retired forever, which is what stops the builder's accrued fee being stranded (OtterSec #128).
 	 * @param userAccountPublicKey - PDA of the user account to force-delete.
 	 * @param userAccount - The account's current on-chain data.
 	 * @returns The instruction.
@@ -2910,20 +2927,6 @@ export class VelocityClient {
 			userAccounts: [userAccount],
 			writableSpotMarketIndexes,
 		});
-
-		for (const order of userAccount.orders) {
-			if (hasBuilder(order)) {
-				remainingAccounts.push({
-					pubkey: getRevenueShareEscrowAccountPublicKey(
-						this.program.programId,
-						userAccount.authority
-					),
-					isWritable: true,
-					isSigner: false,
-				});
-				break;
-			}
-		}
 
 		const tokenPrograms = new Set<string>();
 		for (const spotPosition of userAccount.spotPositions) {
@@ -2975,6 +2978,10 @@ export class VelocityClient {
 				state: await this.getStatePublicKey(),
 				velocitySigner: this.getSignerPublicKey(),
 				keeper: this.wallet.publicKey,
+				revenueShareEscrow: getRevenueShareEscrowAccountPublicKey(
+					this.program.programId,
+					authority
+				),
 			},
 			remainingAccounts,
 		});

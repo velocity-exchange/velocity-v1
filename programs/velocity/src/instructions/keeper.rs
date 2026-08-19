@@ -60,7 +60,7 @@ use {
                 get_market_set_from_list, get_writable_perp_market_set,
                 get_writable_perp_market_set_from_vec, MarketSet, PerpMarketMap,
             },
-            revenue_share::RevenueShareEscrowZeroCopyMut,
+            revenue_share::{RevenueShareEscrowZeroCopyMut, REVENUE_SHARE_ESCROW_PDA_SEED},
             revenue_share_map::load_revenue_share_map,
             settle_pnl_mode::SettlePnlMode,
             signed_msg_user::{
@@ -3428,6 +3428,36 @@ pub fn handle_force_delete_user<'c: 'info, 'info>(
         Clock::get()?.unix_timestamp,
     )?;
 
+    // OtterSec #128: settle this subaccount's revenue-share rows before the id goes
+    // away for good. This path retires the id exactly as `delete_user` does, so it
+    // orphans a fee-bearing row the same way. See `handle_delete_user` for why the row
+    // then becomes unreachable.
+    //
+    // `cancel_orders` above closed every order of this subaccount, so each row for it
+    // becomes `Completed` (or is cleared when it carries no fees). That is the state
+    // the permissionless sweep pays out of.
+    //
+    // The escrow is pinned to the authority's PDA by `seeds`, so an empty account
+    // proves this authority has no escrow rather than signalling an omitted account.
+    if !ctx.accounts.revenue_share_escrow.data_is_empty() {
+        // `ZeroCopyLoader` is in scope for this module and also has a `load_zc_mut`, so
+        // name the trait to pick the escrow's loader.
+        use crate::state::revenue_share::RevenueShareEscrowLoader;
+
+        let mut escrow =
+            RevenueShareEscrowLoader::load_zc_mut(&*ctx.accounts.revenue_share_escrow)?;
+        escrow.revoke_completed_orders(user)?;
+
+        // Belt and braces: after the above, nothing for this subaccount may still be
+        // outstanding. If it somehow is, fail rather than retire the id over it.
+        validate!(
+            !escrow.has_outstanding_orders_for_sub_account(user.sub_account_id)?,
+            ErrorCode::UserCantBeDeleted,
+            "sub account {} still has outstanding revenue-share orders",
+            user.sub_account_id
+        )?;
+    }
+
     safe_decrement!(user_stats.number_of_sub_accounts, 1);
 
     let mut state = ctx.accounts.state.load_mut()?;
@@ -4076,6 +4106,18 @@ pub struct ForceDeleteUser<'info> {
     pub keeper: Signer<'info>,
     /// CHECK: forced velocity_signer
     pub velocity_signer: UncheckedAccount<'info>,
+    /// CHECK: the authority's `RevenueShareEscrow`. It may legitimately not exist,
+    /// because most users never create one. It carries the same contract as
+    /// `DeleteUser::revenue_share_escrow`: an `UncheckedAccount` pinned by `seeds`, so
+    /// the handler can tell "this authority has no escrow" (`data_is_empty()`) from "the
+    /// keeper omitted the account to skip the check". It is required rather than
+    /// `Option` for that second reason (OtterSec #128).
+    #[account(
+        mut,
+        seeds = [REVENUE_SHARE_ESCROW_PDA_SEED.as_bytes(), authority.key().as_ref()],
+        bump,
+    )]
+    pub revenue_share_escrow: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]

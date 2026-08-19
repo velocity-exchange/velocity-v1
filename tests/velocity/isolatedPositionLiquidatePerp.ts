@@ -340,7 +340,16 @@ describe('liquidate perp (no open orders)', () => {
 		);
 
 		await velocityClient.fetchAccounts();
-		assert(velocityClient.getUserAccount().perpPositions[0].positionFlag === 5);
+		// IsolatedPosition | Bankrupt | BankruptcyClaim: the latch books the
+		// debt against the market, which freezes its IF-fee sweep until the
+		// resolver discharges it
+		assert(
+			velocityClient.getUserAccount().perpPositions[0].positionFlag === 13
+		);
+		assert(
+			velocityClient.getPerpMarketAccount(marketIndex)
+				.pendingBankruptcyClaims === 1
+		);
 		console.log(
 			velocityClient
 				.getUserAccount()
@@ -406,7 +415,10 @@ describe('liquidate perp (no open orders)', () => {
 
 		// assert(!velocityClient.getUserAccount().isBankrupt);
 		// assert(!velocityClient.getUserAccount().isBeingLiquidated);
+		// IsolatedPosition only: resolving the debt released the claim, so the
+		// market's IF-fee sweep is no longer frozen
 		assert(velocityClient.getUserAccount().perpPositions[0].positionFlag === 1);
+		assert(marketAfterBankruptcy.pendingBankruptcyClaims === 0);
 
 		console.log(velocityClient.getUserAccount());
 

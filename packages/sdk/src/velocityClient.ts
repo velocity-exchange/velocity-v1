@@ -12846,7 +12846,10 @@ export class VelocityClient {
 	 * fee carveouts out of the PnL pool — `pendingProtocolFee` to the market's protocol fee pool
 	 * (runs first, buffer-exempt), then `pendingIfFee` to the quote spot market's revenue pool and
 	 * `pendingAmmProvision` into the AMM's fee pool (both leave `feePoolBufferTarget` behind). Every
-	 * drain reserves `max(netUserPnl, 0)` so user claims stay backed. This runs inline on every
+	 * drain reserves `max(netUserPnl, 0)` so user claims stay backed. The `pendingIfFee` drain also
+	 * leaves the bankruptcy first-loss tranche behind: the whole counter while
+	 * `pendingBankruptcyClaims` is above zero, otherwise `bankruptcyIfFloorPct` of open-interest
+	 * notional at the oracle TWAP. This runs inline on every
 	 * `settlePNL` already — this instruction lets a keeper run it on demand without settling anyone's
 	 * PnL. Values `netUserPnl` at the market's fixed `expiryPrice` when the market is in `settlement`
 	 * status (expired positions settle at that price, not the live oracle, so no live-oracle gate is

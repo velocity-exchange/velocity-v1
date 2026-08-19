@@ -120,10 +120,11 @@ export function makeFreshLazerMessageHex(
  * well ahead of wall-clock; stamping off wall-clock would look stale on-chain.
  *
  * `leadSeconds` biases the stamp into the future to survive transactions that run between building
- * the message and its post executing (the max-age check only rejects *stale* messages, so a future
- * stamp is safe there). Keep it 0 for an immediate post: a future `publish_time` is fine for a fill
- * but can wedge time-delta math in the LP-pool settle/AUM path, so only lead when the post is
- * genuinely deferred (e.g. a crank bundled into a later-sent transaction).
+ * the message and its post executing. The program rejects a stamp more than
+ * `PYTH_LAZER_MAX_FUTURE_SECONDS` ahead of the clock, so the lead must stay under that bound.
+ * Keep it 0 for an immediate post: a future `publish_time` is fine for a fill but can wedge
+ * time-delta math in the LP-pool settle/AUM path, so only lead when the post is genuinely
+ * deferred (e.g. a crank bundled into a later-sent transaction).
  */
 export function freshLazerSolHex(
 	nowSeconds: number,

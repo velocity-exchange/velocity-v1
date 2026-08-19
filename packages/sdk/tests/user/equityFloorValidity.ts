@@ -89,6 +89,57 @@ describe('equity floor fails closed on oracle validity', () => {
 		);
 	});
 
+	it('the trip walk matches the point value while every oracle is valid', async () => {
+		const user = await userWithFloor(quote(1), ZERO);
+		const slot = new BN(0);
+
+		const tripNetEquity = user.getTripNetEquity(slot);
+		assert.isTrue(tripNetEquity.provable);
+		assert.isTrue(
+			tripNetEquity.equityUpperBound.eq(user.getFloorNetEquity(slot).value),
+			'no concession is taken while every oracle is valid'
+		);
+
+		// omitting the slot treats every oracle as valid, same as the point form
+		const withoutSlot = user.getTripNetEquity();
+		assert.isTrue(withoutSlot.provable);
+		assert.isTrue(withoutSlot.equityUpperBound.eq(user.getNetUsdValue()));
+	});
+
+	it('the trip fires only on a provable breach', async () => {
+		const user = await userWithFloor(quote(100), ZERO);
+		const slot = new BN(0);
+
+		// Stub the walk to isolate the predicate: a trip needs BOTH
+		// provability and an upper bound below the raw floor.
+		const breach = (equityUpperBound: BN, provable: boolean) => {
+			user.getTripNetEquity = () => ({ equityUpperBound, provable });
+			return user.provesEquityFloorBreach(slot);
+		};
+
+		assert.isTrue(
+			breach(quote(50), true),
+			'a provable upper bound below the floor arms the breaker'
+		);
+		assert.isFalse(
+			breach(quote(50), false),
+			'a material invalid-oracle position keeps the breach unprovable'
+		);
+		assert.isFalse(
+			breach(quote(150), true),
+			'an upper bound at or above the floor must not arm the breaker'
+		);
+	});
+
+	it('the trip never fires without a floor', async () => {
+		const user = await userWithFloor(ZERO, ZERO);
+		user.getTripNetEquity = () => ({
+			equityUpperBound: quote(-1000),
+			provable: true,
+		});
+		assert.isFalse(user.provesEquityFloorBreach(new BN(0)));
+	});
+
 	it('withholds force-cancel authorization when an oracle cannot be trusted', async () => {
 		const user = await userWithFloor(quote(1), ZERO);
 		const slot = new BN(0);

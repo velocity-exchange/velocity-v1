@@ -4,6 +4,7 @@ import { assert } from 'chai';
 import { startAnchor } from 'solana-bankrun';
 import { Keypair, LAMPORTS_PER_SOL } from '@solana/web3.js';
 import {
+	BANKRUPTCY_IF_FLOOR_DISABLED,
 	BASE_PRECISION,
 	BN,
 	ContractTier,
@@ -12,6 +13,7 @@ import {
 	OracleGuardRails,
 	OracleSource,
 	PositionDirection,
+	PositionFlag,
 	QUOTE_PRECISION,
 	SpotBalanceType,
 	TestClient,
@@ -33,12 +35,12 @@ import {
 // Regression for the pending-IF-fee sweep front-run: a permissionless
 // sweepPerpMarketFees fired between a bankruptcy and its resolution must
 // not clear the pending IF fee that resolvePerpBankruptcy consumes as its
-// first-loss tranche. The market's `bankruptcyIfFloorPct` (a fraction of
-// open-interest notional at the oracle TWAP, defaulted at market init)
-// makes the sweep's IF drain leave that floor behind, so the tranche
-// survives the front-run — and revenue settlement being "not due" (the
-// quote market's revenue_settle_period is 0 here) can no longer turn the
-// sweep into extra socialized loss.
+// first-loss tranche. The latch books the debt in the market's
+// `pendingBankruptcyClaims`, and the sweep's IF drain then withholds the
+// whole counter until the debt resolves. The tranche survives the front-run
+// with the standing `bankruptcyIfFloorPct` turned off — and revenue
+// settlement being "not due" (the quote market's revenue_settle_period is 0
+// here) can no longer turn the sweep into extra socialized loss.
 describe('bankruptcy IF-fee floor', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 
@@ -208,7 +210,7 @@ describe('bankruptcy IF-fee floor', () => {
 		await liquidatorVelocityClient.unsubscribe();
 	});
 
-	it('floored sweep between bankruptcy and resolve cannot strip the tranche', async () => {
+	it('a sweep between bankruptcy and resolve cannot strip the tranche', async () => {
 		// markets initialize with the 10 bps default
 		await velocityClient.fetchAccounts();
 		assert(
@@ -217,11 +219,13 @@ describe('bankruptcy IF-fee floor', () => {
 			'new market should default to a 10 bps floor'
 		);
 
-		// raise the floor to 100% of OI notional so it covers the full (small)
-		// pending IF fee accrued by the fills in this test
+		// Turn the standing floor OFF. The latched bankruptcy alone must hold
+		// the tranche, because the floor cannot be relied on: it is sized on
+		// open-interest notional, which can be zero exactly when a bankruptcy
+		// is pending, and an operator can turn it off.
 		await velocityClient.updatePerpMarketBankruptcyIfFloorPct(
 			MARKET_INDEX,
-			PERCENTAGE_PRECISION.toNumber()
+			BANKRUPTCY_IF_FLOOR_DISABLED
 		);
 
 		// give the sweep real tokens to drain (absent the floor it WOULD
@@ -288,22 +292,32 @@ describe('bankruptcy IF-fee floor', () => {
 			loss.gt(pendingIfBefore),
 			'loss should exceed the tranche so the withholding is total'
 		);
+		// the latch booked the debt against the market
+		assert(
+			flagged.pendingBankruptcyClaims === 1,
+			`latch should book one claim, got ${flagged.pendingBankruptcyClaims}`
+		);
+		assert(
+			(velocityClient.getUserAccount().perpPositions[0].positionFlag &
+				PositionFlag.BankruptcyClaim) !==
+				0,
+			'bankrupt position should carry the claim flag'
+		);
 		const revenuePoolBefore = readTokens(
 			velocityClient.getSpotMarketAccount(0).revenuePool
 		);
 
 		// the front-run: a permissionless sweep while the bankruptcy is
 		// unresolved (and revenue settlement to the IF vault is not due —
-		// revenue_settle_period is 0). The floor (100% of OI notional)
-		// exceeds the pending IF fee, so nothing may leave for the revenue
-		// pool.
+		// revenue_settle_period is 0). The booked claim withholds the whole
+		// pending IF fee, so nothing may leave for the revenue pool.
 		await velocityClient.sweepPerpMarketFees(MARKET_INDEX);
 		await velocityClient.fetchAccounts();
 
 		const afterSweep = velocityClient.getPerpMarketAccount(MARKET_INDEX);
 		assert(
 			afterSweep.feeLedger.pendingIfFee.eq(pendingIfBefore),
-			`sweep drained the floored tranche: ${afterSweep.feeLedger.pendingIfFee} != ${pendingIfBefore}`
+			`sweep drained the frozen tranche: ${afterSweep.feeLedger.pendingIfFee} != ${pendingIfBefore}`
 		);
 		assert(
 			readTokens(velocityClient.getSpotMarketAccount(0).revenuePool).eq(
@@ -347,6 +361,17 @@ describe('bankruptcy IF-fee floor', () => {
 			(velocityClient.getUserAccount().status &
 				(UserStatus.BANKRUPT | UserStatus.BEING_LIQUIDATED)) ===
 				0
+		);
+		// the debt is discharged, so the freeze lifts
+		assert(
+			afterResolve.pendingBankruptcyClaims === 0,
+			`resolve should discharge the claim, got ${afterResolve.pendingBankruptcyClaims}`
+		);
+		assert(
+			(velocityClient.getUserAccount().perpPositions[0].positionFlag &
+				PositionFlag.BankruptcyClaim) ===
+				0,
+			'resolve should clear the claim flag'
 		);
 
 		// the sweep stays callable afterwards (nothing pending remains here)

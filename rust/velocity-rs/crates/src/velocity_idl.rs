@@ -4361,8 +4361,9 @@ pub mod types {
         pub paused_operations: u8,
         pub quote_spot_market_index: u16,
         pub fee_adjustment: i16,
+        pub pending_bankruptcy_claims: u16,
         #[serde(skip)]
-        pub _padding_align_lfp: Padding<6>,
+        pub _padding_align_lfp: Padding<4>,
         pub last_fill_price: u64,
         pub pool_id: u8,
         #[serde(skip)]
@@ -5910,8 +5911,9 @@ pub mod accounts {
         pub paused_operations: u8,
         pub quote_spot_market_index: u16,
         pub fee_adjustment: i16,
+        pub pending_bankruptcy_claims: u16,
         #[serde(skip)]
-        pub _padding_align_lfp: Padding<6>,
+        pub _padding_align_lfp: Padding<4>,
         pub last_fill_price: u64,
         pub pool_id: u8,
         #[serde(skip)]

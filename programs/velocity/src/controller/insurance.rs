@@ -47,6 +47,28 @@ use {
 #[cfg(test)]
 mod tests;
 
+/// Lower the revenue-settle cap base to the insurance-fund vault balance that an
+/// outflow leaves behind.
+///
+/// `if_last_settle_vault_amount` is the lowest balance the vault held since the last
+/// revenue settle. Every path that moves tokens out of the vault must call this.
+/// Without it, a dip inside a period is invisible at the next settle: a draw takes the
+/// vault to 100, a donation puts it back to 1000, and `min(live, snapshot)` reads 1000
+/// again. The donation then lifts the cap without staying in the fund for a period.
+///
+/// `insurance_vault_amount` is the balance before the outflow. The subtraction
+/// saturates rather than errors. A cap base of `0` only settles less revenue for the
+/// rest of the period. An error would revert a bankruptcy or deficit resolution.
+pub fn record_insurance_fund_outflow(
+    spot_market: &mut SpotMarket,
+    insurance_vault_amount: u64,
+    outflow_amount: u64,
+) {
+    spot_market.if_last_settle_vault_amount = spot_market
+        .if_last_settle_vault_amount
+        .min(insurance_vault_amount.saturating_sub(outflow_amount));
+}
+
 pub fn update_user_stats_if_stake_amount(
     if_stake_amount_delta: i64,
     insurance_vault_amount: u64,
@@ -485,6 +507,8 @@ pub fn remove_insurance_fund_stake(
     spot_market.insurance_fund.user_shares =
         spot_market.insurance_fund.user_shares.safe_sub(n_shares)?;
 
+    record_insurance_fund_outflow(spot_market, insurance_vault_amount, withdraw_amount);
+
     // reset insurance_fund_stake withdraw request info
     insurance_fund_stake.last_withdraw_request_shares = 0;
     insurance_fund_stake.last_withdraw_request_value = 0;
@@ -625,17 +649,17 @@ pub fn settle_revenue_to_insurance_fund(
     }
 
     if spot_market.insurance_fund.user_shares > 0 {
-        // Size the APR cap off the balance the fund held across the whole period,
-        // not off the live vault alone. `insurance_vault_amount` is the raw
-        // token-account balance, which anyone can inflate with a direct SPL transfer
-        // right before a settle to lift the cap toward the 1/10-of-revenue-pool
-        // bound. `if_last_settle_vault_amount` is the balance at the previous settle,
-        // so it predates any such transfer. The `min` of the two endpoints counts
-        // only capital that was present at both, which a pre-settle donation is not.
-        // Capital that does span a full period already belongs to the stakers pro
-        // rata, so counting it is correct. A `0` snapshot (never settled, or settled
-        // on an empty vault) gives a `0` cap for one period; the snapshot written
-        // below then heals it.
+        // Size the APR cap off the balance the fund held for the whole period, not off
+        // the live vault alone. `insurance_vault_amount` is the raw token-account
+        // balance, which anyone can inflate with a direct SPL transfer right before a
+        // settle to lift the cap toward the 1/10-of-revenue-pool bound.
+        // `if_last_settle_vault_amount` is the lowest balance the vault held since the
+        // last settle, so it predates any such transfer and it already carries every
+        // dip in between. The `min` of the two counts only capital that was present
+        // throughout, which a pre-settle donation is not. Capital that does span a full
+        // period already belongs to the stakers pro rata, so counting it is correct. A
+        // `0` snapshot (never settled, or settled on an empty vault) gives a `0` cap for
+        // one period; the snapshot written below then heals it.
         let cap_vault_amount = insurance_vault_amount.min(spot_market.if_last_settle_vault_amount);
 
         // only allow MAX_APR_PER_REVENUE_SETTLE_TO_INSURANCE_FUND_VAULT or 1/10th of revenue pool to be settled
@@ -664,16 +688,17 @@ pub fn settle_revenue_to_insurance_fund(
     let cap_base_was_unset =
         spot_market.insurance_fund.user_shares > 0 && spot_market.if_last_settle_vault_amount == 0;
 
-    // Record the vault balance this settle leaves behind. The caller transfers
-    // `insurance_fund_token_amount` into the vault right after this returns, so the
-    // post-settle balance is the live balance plus that amount. Write it before the
-    // invariant check: a settle that moves nothing must still leave an endpoint for
-    // the next period, and an error here would revert the write.
+    // Start a new period. The caller transfers `insurance_fund_token_amount` into the
+    // vault right after this returns, so the balance this settle leaves behind is the
+    // live balance plus that amount. `record_insurance_fund_outflow` lowers it again on
+    // each outflow, which keeps it the lowest balance of the period.
     spot_market.if_last_settle_vault_amount =
         insurance_vault_amount.safe_add(insurance_fund_token_amount)?;
 
-    // `NoRevenueToSettleToIF` tells the keeper that the settle was pointless. The
-    // settle that seeds the snapshot is expected to move nothing, so let it through.
+    // `NoRevenueToSettleToIF` tells the keeper that the settle was pointless. The settle
+    // that seeds the snapshot is expected to move nothing, so let it through — an error
+    // reverts the whole instruction, so the market would never get a snapshot and would
+    // stay capped at zero forever.
     if check_invariants && !cap_base_was_unset {
         validate!(
             insurance_fund_token_amount != 0,

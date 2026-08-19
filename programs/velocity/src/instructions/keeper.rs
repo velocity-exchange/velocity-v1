@@ -2300,6 +2300,12 @@ pub fn handle_resolve_perp_pnl_deficit<'c: 'info, 'info>(
             ErrorCode::InvalidIFDetected,
             "insurance_fund_vault.amount must remain > 0"
         )?;
+
+        controller::insurance::record_insurance_fund_outflow(
+            spot_market,
+            insurance_vault_amount,
+            pay_from_insurance,
+        );
     }
 
     // todo: validate amounts transfered and spot_market before and after are zero-sum
@@ -2386,6 +2392,8 @@ pub fn handle_resolve_perp_bankruptcy<'c: 'info, 'info>(
         )?;
     }
 
+    let insurance_vault_amount = ctx.accounts.insurance_fund_vault.amount;
+
     let pay_from_insurance = controller::liquidation::resolve_perp_bankruptcy(
         market_index,
         user,
@@ -2396,7 +2404,7 @@ pub fn handle_resolve_perp_bankruptcy<'c: 'info, 'info>(
         &spot_market_map,
         &mut oracle_map,
         now,
-        ctx.accounts.insurance_fund_vault.amount,
+        insurance_vault_amount,
         state.funding_paused()?,
     )?;
 
@@ -2437,6 +2445,11 @@ pub fn handle_resolve_perp_bankruptcy<'c: 'info, 'info>(
 
     {
         let spot_market = &mut spot_market_map.get_ref_mut(&quote_spot_market_index)?;
+        controller::insurance::record_insurance_fund_outflow(
+            spot_market,
+            insurance_vault_amount,
+            pay_from_insurance,
+        );
         // reload the spot market vault balance so it's up-to-date
         ctx.accounts.spot_market_vault.reload()?;
         math::spot_withdraw::validate_spot_market_vault_amount(
@@ -2520,6 +2533,8 @@ pub fn handle_resolve_spot_bankruptcy<'c: 'info, 'info>(
         )?;
     }
 
+    let insurance_vault_amount = ctx.accounts.insurance_fund_vault.amount;
+
     let pay_from_insurance = controller::liquidation::resolve_spot_bankruptcy(
         market_index,
         user,
@@ -2530,7 +2545,7 @@ pub fn handle_resolve_spot_bankruptcy<'c: 'info, 'info>(
         &spot_market_map,
         &mut oracle_map,
         now,
-        ctx.accounts.insurance_fund_vault.amount,
+        insurance_vault_amount,
         state.funding_paused()?,
     )?;
 
@@ -2562,6 +2577,11 @@ pub fn handle_resolve_spot_bankruptcy<'c: 'info, 'info>(
 
     {
         let spot_market = &mut spot_market_map.get_ref_mut(&market_index)?;
+        controller::insurance::record_insurance_fund_outflow(
+            spot_market,
+            insurance_vault_amount,
+            pay_from_insurance,
+        );
         // reload the spot market vault balance so it's up-to-date
         ctx.accounts.spot_market_vault.reload()?;
         math::spot_withdraw::validate_spot_market_vault_amount(

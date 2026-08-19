@@ -352,6 +352,10 @@ pub fn large_num_seeded_stake_if_test() {
     assert_eq!(amount_returned, amount);
     if_balance -= amount_returned;
 
+    // The unstake is an outflow, so it lowers the running minimum the next APR cap
+    // is sized off. A donation that restores the live balance cannot restore the cap.
+    assert_eq!(spot_market.if_last_settle_vault_amount, if_balance);
+
     assert_eq!(if_stake.unchecked_if_shares(), 0);
     assert_eq!(if_stake.cost_basis, 0);
     assert_eq!(if_stake.last_withdraw_request_shares, 0);
@@ -1756,6 +1760,61 @@ pub fn revenue_settle_cap_ignores_pre_settle_donation() {
         donated.if_last_settle_vault_amount,
         snapshot + donation + donated_flow
     );
+}
+
+/// A dip inside a settle period must outlive a later transfer into the vault. A loss
+/// draw or an unstake takes the fund below the balance the last settle left behind,
+/// and a donation that restores the live balance must not restore the cap with it.
+#[test]
+pub fn revenue_settle_cap_holds_the_period_minimum_after_a_dip() {
+    let snapshot = 1_000 * QUOTE_PRECISION as u64;
+    let draw = 900 * QUOTE_PRECISION as u64;
+
+    let mut spot_market = SpotMarket {
+        decimals: 6,
+        deposit_balance: 10_000 * SPOT_BALANCE_PRECISION,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        revenue_pool: PoolBalance {
+            market_index: 0,
+            scaled_balance: 1_000 * SPOT_BALANCE_PRECISION,
+            ..PoolBalance::default()
+        },
+        insurance_fund: InsuranceFund {
+            revenue_settle_period: (ONE_YEAR / 1_000) as i64,
+            total_shares: snapshot as u128,
+            user_shares: snapshot as u128,
+            ..InsuranceFund::default()
+        },
+        if_last_settle_vault_amount: snapshot,
+        ..SpotMarket::default()
+    };
+
+    // A loss draw mid-period takes the vault from 1000 down to 100.
+    record_insurance_fund_outflow(&mut spot_market, snapshot, draw);
+    assert_eq!(spot_market.if_last_settle_vault_amount, snapshot - draw);
+
+    // A second call with no outflow is a no-op: the field is a minimum, so nothing
+    // that arrives later in the period raises it.
+    record_insurance_fund_outflow(&mut spot_market, snapshot, 0);
+    assert_eq!(spot_market.if_last_settle_vault_amount, snapshot - draw);
+
+    // Somebody now donates the drawn amount back, so the live balance reads 1000
+    // again. The cap is sized off the dip, which is a tenth of that.
+    let spot_market_vault_amount = 10_000 * QUOTE_PRECISION as u64;
+    let flow = settle_revenue_to_insurance_fund(
+        spot_market_vault_amount,
+        snapshot,
+        &mut spot_market,
+        1,
+        false,
+        false,
+    )
+    .unwrap();
+    assert_eq!(flow, QUOTE_PRECISION as u64);
+
+    // The settle starts a new period from the balance it leaves behind, so the next
+    // period prices the donation the stakers now own.
+    assert_eq!(spot_market.if_last_settle_vault_amount, snapshot + flow);
 }
 
 /// A market that never settled revenue has no earlier endpoint. Its first settle

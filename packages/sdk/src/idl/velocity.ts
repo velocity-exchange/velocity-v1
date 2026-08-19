@@ -1501,6 +1501,44 @@ export type Velocity = {
             "user",
             "userStats"
           ]
+        },
+        {
+          "name": "revenueShareEscrow",
+          "docs": [
+            "most users never create one. Deliberately an `UncheckedAccount` **pinned by",
+            "`seeds`** rather than a typed `AccountLoader`: because the address is derived",
+            "and not caller-chosen, absence is *provable* (`data_is_empty()`), so the handler",
+            "can distinguish \"this authority has no escrow\" from \"the caller omitted it to",
+            "skip the check\". A typed loader would instead make deletion impossible for the",
+            "majority of users, who have no escrow account to pass.",
+            "",
+            "Required rather than `Option` so a caller holding fee-bearing builder rows",
+            "cannot simply leave it out (OtterSec #128)."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  82,
+                  69,
+                  86,
+                  95,
+                  69,
+                  83,
+                  67,
+                  82,
+                  79,
+                  87
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              }
+            ]
+          }
         }
       ],
       "args": []
@@ -2458,6 +2496,40 @@ export type Velocity = {
         },
         {
           "name": "velocitySigner"
+        },
+        {
+          "name": "revenueShareEscrow",
+          "docs": [
+            "because most users never create one. It carries the same contract as",
+            "`DeleteUser::revenue_share_escrow`: an `UncheckedAccount` pinned by `seeds`, so",
+            "the handler can tell \"this authority has no escrow\" (`data_is_empty()`) from \"the",
+            "keeper omitted the account to skip the check\". It is required rather than",
+            "`Option` for that second reason (OtterSec #128)."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  82,
+                  69,
+                  86,
+                  95,
+                  69,
+                  83,
+                  67,
+                  82,
+                  79,
+                  87
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              }
+            ]
+          }
         }
       ],
       "args": []
@@ -4843,6 +4915,22 @@ export type Velocity = {
             "Instructions Sysvar for instruction introspection"
           ],
           "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "liquidatorStats",
+          "docs": [
+            "The liquidator's `UserStats`, read by `begin` to bar an authority whose",
+            "equity breaker is tripped.",
+            "",
+            "It sits last, not beside `liquidator` where the direct liquidation",
+            "contexts carry it, because this pair is addressed by position rather",
+            "than by name: `begin` introspects the matching `end` and compares the",
+            "two account lists index by index, and the swap accounts both forward",
+            "begin where this fixed block ends. Taking the last slot renumbered",
+            "nothing. Slotting it beside `liquidator` would have moved `user`, both",
+            "vaults and both token accounts down one, silently invalidating every",
+            "hand-built transaction that still filled the old order."
+          ]
         }
       ],
       "args": [
@@ -4976,6 +5064,22 @@ export type Velocity = {
             "Instructions Sysvar for instruction introspection"
           ],
           "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "liquidatorStats",
+          "docs": [
+            "The liquidator's `UserStats`, read by `begin` to bar an authority whose",
+            "equity breaker is tripped.",
+            "",
+            "It sits last, not beside `liquidator` where the direct liquidation",
+            "contexts carry it, because this pair is addressed by position rather",
+            "than by name: `begin` introspects the matching `end` and compares the",
+            "two account lists index by index, and the swap accounts both forward",
+            "begin where this fixed block ends. Taking the last slot renumbered",
+            "nothing. Slotting it beside `liquidator` would have moved `user`, both",
+            "vaults and both token accounts down one, silently invalidating every",
+            "hand-built transaction that still filled the old order."
+          ]
         }
       ],
       "args": [
@@ -11445,6 +11549,38 @@ export type Velocity = {
       ]
     },
     {
+      "name": "updatePerpMarketTakerFeeAddon",
+      "discriminator": [
+        53,
+        22,
+        191,
+        15,
+        62,
+        150,
+        36,
+        203
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "perpMarket",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "takerFeeAddonTenthBps",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "updatePerpMarketUnrealizedAssetWeight",
       "discriminator": [
         135,
@@ -11573,6 +11709,35 @@ export type Velocity = {
               "name": "prelaunchOracleParams"
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "updatePromoFeeTier",
+      "discriminator": [
+        104,
+        57,
+        241,
+        162,
+        69,
+        198,
+        5,
+        175
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "promoFeeTier",
+          "type": "u8"
         }
       ]
     },
@@ -16795,11 +16960,16 @@ export type Velocity = {
     },
     {
       "code": 6371,
+      "name": "spotMarketInterestStaleForMargin",
+      "msg": "Spot market interest is too stale to value a borrow for margin"
+    },
+    {
+      "code": 6372,
       "name": "unsettledRevenueShareOnDelist",
       "msg": "Market still owes builder/referrer revenue share; settle it before delisting"
     },
     {
-      "code": 6372,
+      "code": 6373,
       "name": "revenueShareOrderNotForfeitable",
       "msg": "Revenue share order can still be paid; settle it instead of forfeiting"
     }
@@ -21437,11 +21607,28 @@ export type Velocity = {
             "type": "u32"
           },
           {
+            "name": "takerFeeAddonTenthBps",
+            "docs": [
+              "Additive per-market taker-fee surcharge in tenth-bps (10 = 1bp),",
+              "unsigned: surcharge only (e.g. toxic-flow markets), never a discount.",
+              "A discount could push the taker fee below the maker rebate it must",
+              "fund and revert every match fill; promo discounts go through",
+              "`State.promo_fee_tier` instead. Applied on top of the tier fee before",
+              "`fee_adjustment` scales the sum:",
+              "`taker_fee = (tier_fee + add-on) * (1 +/- fee_adjustment%)`.",
+              "Taker fee only; the maker rebate and the post-only path see",
+              "`fee_adjustment` alone. Occupies 2 bytes of the former 4-byte",
+              "`_padding_buffer` (same offset/alignment on all targets), so existing",
+              "accounts read 0 = no add-on until the admin sets it."
+            ],
+            "type": "u16"
+          },
+          {
             "name": "paddingBuffer",
             "type": {
               "array": [
                 "u8",
-                4
+                2
               ]
             }
           },
@@ -24161,11 +24348,23 @@ export type Velocity = {
             "type": "pubkey"
           },
           {
+            "name": "promoFeeTier",
+            "docs": [
+              "Promotional fee-tier floor applied to every account: the effective",
+              "perp fee tier is `max(volume tier, promo_fee_tier)` (clamped to the",
+              "configured tier count), so nobody is downgraded by it. 0 = no-op",
+              "(disabled), also what pre-upgrade accounts read from former padding.",
+              "Reset to 0 and every account is back on its volume tier at its next",
+              "fill; no per-user state."
+            ],
+            "type": "u8"
+          },
+          {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                239
+                238
               ]
             }
           }

@@ -4,8 +4,8 @@ use {
         math::{
             casting::Cast,
             constants::{
-                FEE_ADJUSTMENT_MAX, FEE_PERCENTAGE_DENOMINATOR, FIVE_MILLION_QUOTE,
-                ONE_HUNDRED_MILLION_QUOTE, ONE_MILLION_QUOTE, TEN_BPS, TEN_MILLION_QUOTE,
+                FEE_ADJUSTMENT_MAX, FEE_DENOMINATOR, FEE_PERCENTAGE_DENOMINATOR,
+                FIVE_MILLION_QUOTE, PERP_FEE_TIER_MAX_INDEX, TEN_BPS, TEN_MILLION_QUOTE,
             },
             helpers::get_proportion_u128,
             safe_math::SafeMath,
@@ -88,8 +88,17 @@ pub fn calculate_fee_for_fulfillment_with_amm(
     fee_adjustment: i16,
     builder_fee_bps: Option<u16>,
     vamm_maker_rebate: bool,
+    taker_fee_addon_tenth_bps: u16,
+    now: i64,
+    promo_fee_tier: u8,
 ) -> VelocityResult<FillFees> {
-    let fee_tier = determine_user_fee_tier(user_stats, fee_structure, &MarketType::Perp)?;
+    let fee_tier = determine_user_fee_tier(
+        user_stats,
+        fee_structure,
+        &MarketType::Perp,
+        now,
+        promo_fee_tier,
+    )?;
 
     // if there was a quote_asset_amount_surplus, the order was a maker order and fee_to_market comes from surplus
     if is_post_only {
@@ -140,7 +149,12 @@ pub fn calculate_fee_for_fulfillment_with_amm(
             amm_fee,
         })
     } else {
-        let fee = calculate_taker_fee(quote_asset_amount, &fee_tier, fee_adjustment)?;
+        let fee = calculate_taker_fee(
+            quote_asset_amount,
+            &fee_tier,
+            fee_adjustment,
+            taker_fee_addon_tenth_bps,
+        )?;
 
         let (fee, referee_discount, referrer_reward) = if reward_referrer {
             calculate_referee_fee_and_referrer_reward(fee, &fee_tier)?
@@ -214,16 +228,32 @@ pub fn calculate_fee_for_fulfillment_with_amm(
     }
 }
 
+/// Taker fee = `(tier fee + market add-on) * (1 +/- fee_adjustment%)`.
+/// The add-on (`PerpMarket.taker_fee_addon_tenth_bps`, tenth-bps, unsigned)
+/// is an additive per-market surcharge (an absolute markup the multiplicative
+/// `fee_adjustment` cannot express across tiers), and `fee_adjustment` then
+/// scales the whole configured fee. Surcharge only: the fee never drops below
+/// the tier fee, so it always funds the maker rebate the tier validation
+/// guarantees. The maker rebate sees `fee_adjustment` only, never the add-on.
 fn calculate_taker_fee(
     quote_asset_amount: u64,
     fee_tier: &FeeTier,
     fee_adjustment: i16,
+    taker_fee_addon_tenth_bps: u16,
 ) -> VelocityResult<u64> {
-    let mut taker_fee = quote_asset_amount
+    let tier_fee = quote_asset_amount
         .cast::<u128>()?
         .safe_mul(fee_tier.fee_numerator.cast::<u128>()?)?
-        .safe_div_ceil(fee_tier.fee_denominator.cast::<u128>()?)?
-        .cast::<u64>()?;
+        .safe_div_ceil(fee_tier.fee_denominator.cast::<u128>()?)?;
+
+    // tenth-bps against FEE_DENOMINATOR (100_000 = 100%), same unit the tier
+    // numerators use at the default denominator
+    let addon_fee = quote_asset_amount
+        .cast::<u128>()?
+        .safe_mul(taker_fee_addon_tenth_bps.cast::<u128>()?)?
+        .safe_div(FEE_DENOMINATOR.cast::<u128>()?)?;
+
+    let mut taker_fee = tier_fee.safe_add(addon_fee)?.cast::<u64>()?;
 
     if fee_adjustment < 0 {
         taker_fee = taker_fee.saturating_sub(
@@ -350,6 +380,7 @@ fn calculate_filler_reward(
     Ok(fee)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn calculate_fee_for_fulfillment_with_match(
     taker_stats: &UserStats,
     maker_stats: &Option<&mut UserStats>,
@@ -362,15 +393,24 @@ pub fn calculate_fee_for_fulfillment_with_match(
     market_type: &MarketType,
     fee_adjustment: i16,
     builder_fee_bps: Option<u16>,
+    taker_fee_addon_tenth_bps: u16,
+    now: i64,
+    promo_fee_tier: u8,
 ) -> VelocityResult<FillFees> {
-    let taker_fee_tier = determine_user_fee_tier(taker_stats, fee_structure, market_type)?;
+    let taker_fee_tier =
+        determine_user_fee_tier(taker_stats, fee_structure, market_type, now, promo_fee_tier)?;
     let maker_fee_tier = if let Some(maker_stats) = maker_stats {
-        determine_user_fee_tier(maker_stats, fee_structure, market_type)?
+        determine_user_fee_tier(maker_stats, fee_structure, market_type, now, promo_fee_tier)?
     } else {
-        determine_user_fee_tier(taker_stats, fee_structure, market_type)?
+        determine_user_fee_tier(taker_stats, fee_structure, market_type, now, promo_fee_tier)?
     };
 
-    let taker_fee = calculate_taker_fee(quote_asset_amount, &taker_fee_tier, fee_adjustment)?;
+    let taker_fee = calculate_taker_fee(
+        quote_asset_amount,
+        &taker_fee_tier,
+        fee_adjustment,
+        taker_fee_addon_tenth_bps,
+    )?;
 
     let (taker_fee, referee_discount, referrer_reward) = if reward_referrer {
         calculate_referee_fee_and_referrer_reward(taker_fee, &taker_fee_tier)?
@@ -433,36 +473,53 @@ pub fn determine_user_fee_tier(
     user_stats: &UserStats,
     fee_structure: &FeeStructure,
     market_type: &MarketType,
+    now: i64,
+    promo_fee_tier: u8,
 ) -> VelocityResult<FeeTier> {
     match market_type {
-        MarketType::Perp => determine_perp_fee_tier(user_stats, fee_structure),
+        MarketType::Perp => determine_perp_fee_tier(user_stats, fee_structure, now, promo_fee_tier),
         MarketType::Spot => Ok(*determine_spot_fee_tier(user_stats, fee_structure)?),
     }
 }
 
+/// Select the perp fee tier from the trailing-30d volume, evaluated LIVE.
+/// The populated tiers are named Regular / VIP 1 / VIP 2 (indices 0/1/2);
+/// the names are presentation only, everything onchain is index-based.
+///
+/// The volume window:
+/// the stored rolling sum decays lazily (only when the account trades; see
+/// `UserStats::update_taker_volume_30d`), so the raw value can be stale by
+/// the whole idle gap. Projecting the decay to `now` at read time makes
+/// demotion track the live 30d window at every fill, while promotion stays
+/// instant (each fill's volume lands in the sum immediately, so the next
+/// fill after crossing a threshold is already priced at the better tier).
+///
+/// `promo_fee_tier` (`State.promo_fee_tier`) forces a tier-index floor for
+/// everyone while set: the effective tier is the better of the volume tier
+/// and the promo tier, so accounts already above the promo are not
+/// downgraded. 0 is a no-op floor (= disabled, also what legacy accounts
+/// read from former padding), and resetting to 0 drops every account back
+/// to its volume tier on their next fill; no per-user state.
 fn determine_perp_fee_tier(
     user_stats: &UserStats,
     fee_structure: &FeeStructure,
+    now: i64,
+    promo_fee_tier: u8,
 ) -> VelocityResult<FeeTier> {
-    let total_30d_volume = user_stats.get_total_30d_volume()?;
+    let total_30d_volume = user_stats.get_total_30d_volume_at(now)?;
 
-    const TIER_LENGTH: usize = 5;
+    const VOLUME_THRESHOLDS: [u64; PERP_FEE_TIER_MAX_INDEX] =
+        [FIVE_MILLION_QUOTE, TEN_MILLION_QUOTE * 8];
 
-    const VOLUME_THRESHOLDS: [u64; TIER_LENGTH] = [
-        ONE_MILLION_QUOTE * 2,
-        FIVE_MILLION_QUOTE * 2,
-        TEN_MILLION_QUOTE * 2,
-        TEN_MILLION_QUOTE * 8,
-        ONE_HUNDRED_MILLION_QUOTE * 2,
-    ];
-
-    let mut fee_tier_index = TIER_LENGTH;
-    for i in 0..TIER_LENGTH {
+    let mut fee_tier_index = PERP_FEE_TIER_MAX_INDEX;
+    for i in 0..PERP_FEE_TIER_MAX_INDEX {
         if total_30d_volume < VOLUME_THRESHOLDS[i] {
             fee_tier_index = i;
             break;
         }
     }
+
+    fee_tier_index = fee_tier_index.max((promo_fee_tier as usize).min(PERP_FEE_TIER_MAX_INDEX));
 
     Ok(fee_structure.fee_tiers[fee_tier_index])
 }

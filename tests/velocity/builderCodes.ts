@@ -934,13 +934,13 @@ describe('builder codes', () => {
 			}`
 		);
 
-		// expect 9.5 bps (taker fee - discount) + 7 bps (builder fee)
+		// expect 3.8 bps (4bps tier-0 taker fee - 5% referee discount) + 7 bps (builder fee)
 		const takerFeePaidBps =
 			(takerFee.toNumber() / Math.abs(pos.quoteEntryAmount.toNumber())) *
 			10_000;
 		assert(
-			Math.round(takerFeePaidBps * 10) === 165,
-			`takerFeePaidBps ${takerFeePaidBps} !== 16.5 bps`
+			Math.round(takerFeePaidBps * 10) === 108,
+			`takerFeePaidBps ${takerFeePaidBps} !== 10.8 bps`
 		);
 
 		await bankrunContextWrapper.moveTimeForward(100);

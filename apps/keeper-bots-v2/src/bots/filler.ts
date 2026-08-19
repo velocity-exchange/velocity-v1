@@ -1424,6 +1424,32 @@ export class FillerBot extends TxThreaded implements Bot {
 		return recentBlockhash.blockhash;
 	}
 
+	/**
+	 * Builds the permissionless interest cranks a fill needs.
+	 *
+	 * The program refuses a fill when the taker, or any maker, carries a borrow in a
+	 * spot market whose interest has not accrued recently enough
+	 * (`SpotMarketInterestStaleForMargin`): the margin check values that borrow
+	 * through a stale index and understates the debt. The fill instruction receives
+	 * those markets read-only and cannot refresh them, so the crank is bundled ahead
+	 * of it.
+	 *
+	 * A market the filler misses only costs a reverted fill, so a failure here is
+	 * logged and the fill is attempted anyway.
+	 */
+	protected async getSpotInterestCrankIxs(
+		userAccounts: Array<UserAccount>
+	): Promise<TransactionInstruction[]> {
+		try {
+			return await this.velocityClient.getStaleSpotInterestCrankIxs(
+				userAccounts
+			);
+		} catch (e) {
+			logger.warn(`failed to build spot interest crank ixs: ${e}`);
+			return [];
+		}
+	}
+
 	private async getPythIxsFromNode(
 		node: NodeToFill | NodeToTrigger,
 		precedingIxs: TransactionInstruction[] = []
@@ -1517,6 +1543,12 @@ export class FillerBot extends TxThreaded implements Bot {
 						})
 					);
 				}
+				ixs.push(
+					...(await this.getSpotInterestCrankIxs([
+						takerUser,
+						...makers.map((m) => m.data.makerUserAccount),
+					]))
+				);
 				ixs.push(
 					await this.velocityClient.getFillPerpOrderIx(
 						await getUserAccountPublicKey(
@@ -1756,6 +1788,13 @@ export class FillerBot extends TxThreaded implements Bot {
 				ixs.push(...pythIxs);
 				removeLastIxPostSim = false;
 			}
+
+			ixs.push(
+				...(await this.getSpotInterestCrankIxs([
+					takerUser,
+					...makerInfos.map((m) => m.data.makerUserAccount),
+				]))
+			);
 
 			const ix = await this.velocityClient.getFillPerpOrderIx(
 				await getUserAccountPublicKey(
@@ -2051,6 +2090,16 @@ export class FillerBot extends TxThreaded implements Bot {
 			}
 
 			const velocityUser = this.velocityClient.getUser();
+
+			// Cranked once for the full maker set rather than inside `getSimResult`:
+			// that closure is retried with successively fewer makers and appends to
+			// the same `ixs`, and the full set's cranks cover every subset of it.
+			ixs.push(
+				...(await this.getSpotInterestCrankIxs([
+					user.data,
+					...makerInfos.map((m) => m.makerUserAccount),
+				]))
+			);
 
 			const getSimResult = async (makerInfos: MakerInfo[]) => {
 				const fillIx = await this.velocityClient.getFillPerpOrderIx(

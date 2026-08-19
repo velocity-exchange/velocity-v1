@@ -2,9 +2,10 @@ use {
     crate::{
         error::VelocityResult,
         math::{
+            casting::Cast,
             constants::{
                 FEE_DENOMINATOR, FEE_PERCENTAGE_DENOMINATOR, LAMPORTS_PER_SOL_U64,
-                PERCENTAGE_PRECISION_U64,
+                PERCENTAGE_PRECISION_U64, TWENTY_FOUR_HOUR,
             },
             safe_math::SafeMath,
             safe_unwrap::SafeUnwrap,
@@ -209,6 +210,24 @@ impl Default for State {
 }
 
 impl State {
+    /// The time after `PerpMarket.expiry_ts` that must pass before an expired market may move its
+    /// pools to the revenue pool and delist.
+    ///
+    /// The window has two jobs. It lets every expired position settle. It also gives a
+    /// revenue-share beneficiary time to create the payout account that `settle_revenue_share`
+    /// needs, because `forfeit_revenue_share_order` writes off a row with no such account once the
+    /// window ends. A `settlement_duration` of 1 shortens the window for tests.
+    pub fn escrow_period_before_transfer(&self) -> VelocityResult<i64> {
+        if self.settlement_duration > 1 {
+            // At least TWENTY_FOUR_HOUR, so that an operator can examine the settlement.
+            TWENTY_FOUR_HOUR
+                .safe_add(self.settlement_duration.cast()?)?
+                .safe_sub(1)
+        } else {
+            self.settlement_duration.cast::<i64>()
+        }
+    }
+
     pub fn get_exchange_status(&self) -> VelocityResult<BitFlags<ExchangeStatus>> {
         BitFlags::<ExchangeStatus>::from_bits(usize::from(self.exchange_status)).safe_unwrap()
     }

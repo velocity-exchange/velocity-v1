@@ -23,6 +23,8 @@ import {
 import { OraclePriceData } from '../oracles/types';
 import {
 	BPS_PRECISION,
+	MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN,
+	MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN,
 	PERCENTAGE_PRECISION,
 } from '../constants/numericConstants';
 import { divCeil } from './utils';
@@ -612,6 +614,37 @@ export function calculateBorrowRate(
 	currentUtilization?: BN
 ): BN {
 	return calculateInterestRate(bank, delta, currentUtilization);
+}
+
+/**
+ * Mirrors `math::margin::max_spot_interest_staleness_for_margin`: how long one spot
+ * market's interest accrual may lag before the program refuses to value a borrow in
+ * it for margin (`SpotMarketInterestStaleForMargin`).
+ *
+ * The un-booked share of a borrow is `borrowRate * elapsed / year`, so holding that
+ * share under `MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN` means
+ * `elapsed <= share * year / borrowRate`. The divisor is the ceiling the market's
+ * curve cannot exceed rather than its current rate: `calculateInterestRate` ramps up
+ * to `maxBorrowRate` and then floors the result at `minBorrowRate`, so the larger of
+ * the two bounds it. `MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN` caps the result.
+ *
+ * @param {SpotMarketAccount} bank - The spot market account
+ * @return {BN} Window in seconds
+ */
+export function maxSpotInterestStalenessForMargin(bank: SpotMarketAccount): BN {
+	const rateCeiling = BN.max(
+		new BN(bank.maxBorrowRate),
+		new BN(bank.minBorrowRate).mul(PERCENTAGE_PRECISION.divn(200))
+	);
+
+	if (rateCeiling.isZero()) {
+		return MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN;
+	}
+
+	return BN.min(
+		MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN.mul(ONE_YEAR).div(rateCeiling),
+		MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN
+	);
 }
 
 /**

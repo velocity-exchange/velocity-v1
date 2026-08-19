@@ -507,6 +507,31 @@ impl<'a> RevenueShareEscrowZeroCopyMut<'a> {
         Err(ErrorCode::RevenueShareEscrowOrdersAccountFull)
     }
 
+    /// True when any **builder** row for `sub_account_id` is still outstanding, i.e.
+    /// `open && !completed`. Only a `Completed` row is payable by the sweep, so an
+    /// outstanding one would be stranded if the subaccount id were retired
+    /// (OtterSec #128). Referral rows are keyed by market rather than order id and are
+    /// not tied to a subaccount, so they are not counted here.
+    ///
+    /// A row that cannot be read propagates its error rather than being skipped: this
+    /// guards a one-way state change (retiring a subaccount id), so an unreadable row
+    /// must abort the deletion, not read as "nothing outstanding".
+    pub fn has_outstanding_orders_for_sub_account(
+        &self,
+        sub_account_id: u16,
+    ) -> VelocityResult<bool> {
+        for i in 0..self.orders_len() {
+            let order = self.get_order(i)?;
+            if order.is_referral_order() || order.sub_account_id != sub_account_id {
+                continue;
+            }
+            if order.is_open() && !order.is_completed() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// Marks any [`RevenueShareOrder`]s as Complete if there is no longer a corresponding
     /// open order in the user's account. This is used to lazily reconcile state when
     /// in place_order and settle_pnl instead of requiring explicit updates on cancels.
@@ -821,5 +846,110 @@ mod builder_order_index_tests {
             // guards the fill path against.
             assert_eq!(escrow.find_order_index(1, 7), Some(0));
         });
+    }
+}
+
+#[cfg(test)]
+mod delete_user_orphan_tests {
+    use {
+        super::*,
+        std::cell::{RefCell, RefMut},
+    };
+
+    /// Build an escrow data buffer: `[4 padding0][4 orders len][orders...]`.
+    fn buf(orders: &[RevenueShareOrder]) -> Vec<u8> {
+        let size = std::mem::size_of::<RevenueShareOrder>();
+        let mut v = vec![0u8; 8 + orders.len() * size];
+        v[4..8].copy_from_slice(&(orders.len() as u32).to_le_bytes());
+        for (i, o) in orders.iter().enumerate() {
+            let start = 8 + i * size;
+            v[start..start + size].copy_from_slice(bytemuck::bytes_of(o));
+        }
+        v
+    }
+
+    fn open_builder_row(sub_account_id: u16, fees_accrued: u64) -> RevenueShareOrder {
+        RevenueShareOrder {
+            fees_accrued,
+            order_id: 7,
+            sub_account_id,
+            bit_flags: RevenueShareOrderBitFlag::Open as u8,
+            ..RevenueShareOrder::default()
+        }
+    }
+
+    /// OtterSec #128 — `delete_user` retires a `sub_account_id` permanently (the
+    /// allocation counter never decrements), so a builder row still `open &&
+    /// !completed` for that id becomes unreachable: `revoke_completed_orders` matches
+    /// on the id, so no future `User` can ever transition it, the builder's fee is
+    /// stranded, and the market's `pending_revenue_share` stays inflated for life.
+    #[test]
+    fn outstanding_builder_rows_are_detected_per_sub_account() {
+        // An open, fee-bearing row for subaccount 3 is outstanding for 3 — and only 3.
+        {
+            let data = RefCell::new(buf(&[open_builder_row(3, 1_000)]));
+            let fixed = RefCell::new(RevenueShareEscrowFixed::default());
+            let escrow = RevenueShareEscrowZeroCopyMut {
+                fixed: fixed.borrow_mut(),
+                data: RefMut::map(data.borrow_mut(), |v| v.as_mut_slice()),
+            };
+            assert_eq!(escrow.orders_len(), 1);
+            assert!(
+                escrow.has_outstanding_orders_for_sub_account(3).unwrap(),
+                "an open fee-bearing row must block retiring its subaccount id"
+            );
+            assert!(
+                !escrow.has_outstanding_orders_for_sub_account(4).unwrap(),
+                "a sibling subaccount must be unaffected"
+            );
+        }
+
+        // A Completed row is payable by the sweep even after the user is gone, so it
+        // must NOT block deletion — that is the whole point of resolving over blocking.
+        {
+            let mut row = open_builder_row(3, 1_000);
+            row.bit_flags =
+                RevenueShareOrderBitFlag::Open as u8 | RevenueShareOrderBitFlag::Completed as u8;
+            let data = RefCell::new(buf(&[row]));
+            let fixed = RefCell::new(RevenueShareEscrowFixed::default());
+            let escrow = RevenueShareEscrowZeroCopyMut {
+                fixed: fixed.borrow_mut(),
+                data: RefMut::map(data.borrow_mut(), |v| v.as_mut_slice()),
+            };
+            assert!(
+                !escrow.has_outstanding_orders_for_sub_account(3).unwrap(),
+                "a Completed row is sweepable post-deletion and must not block"
+            );
+        }
+
+        // A referral row is keyed by market, not subaccount, so it never blocks.
+        {
+            let row = RevenueShareOrder {
+                fees_accrued: 500,
+                sub_account_id: 3,
+                bit_flags: RevenueShareOrderBitFlag::Open as u8
+                    | RevenueShareOrderBitFlag::Referral as u8,
+                ..RevenueShareOrder::default()
+            };
+            let data = RefCell::new(buf(&[row]));
+            let fixed = RefCell::new(RevenueShareEscrowFixed::default());
+            let escrow = RevenueShareEscrowZeroCopyMut {
+                fixed: fixed.borrow_mut(),
+                data: RefMut::map(data.borrow_mut(), |v| v.as_mut_slice()),
+            };
+            assert!(!escrow.has_outstanding_orders_for_sub_account(3).unwrap());
+        }
+
+        // Empty escrow: nothing outstanding.
+        {
+            let data = RefCell::new(buf(&[]));
+            let fixed = RefCell::new(RevenueShareEscrowFixed::default());
+            let escrow = RevenueShareEscrowZeroCopyMut {
+                fixed: fixed.borrow_mut(),
+                data: RefMut::map(data.borrow_mut(), |v| v.as_mut_slice()),
+            };
+            assert_eq!(escrow.orders_len(), 0);
+            assert!(!escrow.has_outstanding_orders_for_sub_account(0).unwrap());
+        }
     }
 }

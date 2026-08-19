@@ -515,7 +515,10 @@ mod calculate_asset_transfer_for_liability_transfer {
         constants::{
             BASE_PRECISION, LIQUIDATION_FEE_PRECISION, PRICE_PRECISION_I64, QUOTE_PRECISION,
         },
-        liquidation::calculate_asset_transfer_for_liability_transfer,
+        liquidation::{
+            calculate_asset_transfer_for_liability_transfer,
+            calculate_asset_transfer_for_liability_transfer_exact,
+        },
     };
 
     #[test]
@@ -644,6 +647,49 @@ mod calculate_asset_transfer_for_liability_transfer {
         .unwrap();
 
         assert_eq!(asset_transfer, 1_000_000); // 1e5 liability = 1e6 asset
+    }
+
+    // The rounded form takes the whole deposit once the remainder is worth less
+    // than $1. The exact form takes only what the liability pays for. The gap
+    // between them is the collateral a caller gives away by choosing the rounded
+    // form.
+    #[test]
+    pub fn exact_form_does_not_round_up_to_the_whole_deposit() {
+        let asset_decimals = 6;
+        let asset_amount = 100 * QUOTE_PRECISION; // $100 deposit
+        let asset_liquidation_multiplier = LIQUIDATION_FEE_PRECISION;
+        let asset_price = PRICE_PRECISION_I64;
+        let liability_decimals = 6;
+        let liability_transfer = 993 * QUOTE_PRECISION / 10; // $99.30
+        let liability_liquidation_multiplier = LIQUIDATION_FEE_PRECISION;
+        let liability_price = PRICE_PRECISION_I64;
+
+        let exact = calculate_asset_transfer_for_liability_transfer_exact(
+            asset_liquidation_multiplier,
+            asset_decimals,
+            asset_price,
+            liability_transfer,
+            liability_liquidation_multiplier,
+            liability_decimals,
+            liability_price,
+        )
+        .unwrap();
+
+        let rounded = calculate_asset_transfer_for_liability_transfer(
+            asset_amount,
+            asset_liquidation_multiplier,
+            asset_decimals,
+            asset_price,
+            liability_transfer,
+            liability_liquidation_multiplier,
+            liability_decimals,
+            liability_price,
+        )
+        .unwrap();
+
+        assert_eq!(exact, 993 * QUOTE_PRECISION / 10);
+        assert_eq!(rounded, asset_amount);
+        assert_eq!(rounded - exact, 7 * QUOTE_PRECISION / 10); // $0.70 unpaid for
     }
 }
 

@@ -213,6 +213,10 @@ not manually edit `package.json` versions; changesets and the bot own those fiel
 | [docs/ACCOUNT-EXTENSION.md](./docs/ACCOUNT-EXTENSION.md)                      | Growing zero-copy accounts past their padding: the `extend_account` crank, migration runbook, client rules |
 | [docs/EXTERNAL-DEPENDENCIES.md](./docs/EXTERNAL-DEPENDENCIES.md)             | Every external dependency of the on-chain programs — CPI targets, oracles, whitelisted venues, and the full transitive crate graph — with trust assumptions and failure modes |
 
-## Bug bounty
+## Security and bug bounty
 
-Information about the bug bounty is in [bug-bounty/README.md](./bug-bounty/README.md).
+Found a vulnerability? **Do not open a GitHub issue.** Email security@velocity.exchange — see
+[SECURITY.md](./SECURITY.md).
+
+The bug bounty program's severity tiers, payouts, and scope are documented at
+[docs.velocity.exchange/protocol/risk-and-safety/bug-bounty](https://docs.velocity.exchange/protocol/risk-and-safety/bug-bounty).

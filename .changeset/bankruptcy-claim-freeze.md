@@ -7,7 +7,9 @@
 bankrupt quote debts. While it is above zero the program's fee sweep withholds the whole
 `feeLedger.pendingIfFee`, so a permissionless sweep cannot drain the bankruptcy first-loss tranche
 between the latch and the resolution. `PositionFlag.BankruptcyClaim` marks the position whose debt
-is counted.
+is counted. `AdminClient.settleExpiredMarketPoolsToRevenuePool` now fails while that counter is above
+zero, because the delist sweep bypasses the floor; resolve every bankruptcy in the market
+first.
 
 `bankruptcyIfFloorPct` changes meaning: `0` now selects `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT` (10 bps),
 which is what a market written before the field existed reads, and the new

@@ -117,9 +117,10 @@ pool's surplus over live user claims — the AMM is never a conduit:
         `update_perp_market_bankruptcy_if_floor_pct` sets it per market and
         `BANKRUPTCY_IF_FLOOR_DISABLED` turns it off.
 
-      The final delisting sweep (`force`) bypasses both — bankruptcies are
-      resolved before wind-down and the pnl pool is drained wholesale right
-      after.
+      The final delisting sweep (`force`) bypasses both. The delist handler
+      rejects while `pending_bankruptcy_claims` is above zero, so every
+      bankruptcy is resolved before wind-down, and the pnl pool is drained
+      wholesale right after.
    3. `pending_amm_provision` → tokenized into `amm.fee_pool` (the AMM's
       ledger was already credited at fill — this is a pure token transfer)
    Steps 2-3 additionally leave the `fee_pool_buffer_target` retention margin

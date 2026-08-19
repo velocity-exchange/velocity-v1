@@ -426,11 +426,12 @@ pub struct PerpMarket {
     /// if this is 50 and the fee is 5bps, the new fee will be 7.5bps
     pub fee_adjustment: i16,
     /// Number of unresolved bankrupt quote debts booked against this market.
-    /// A liquidation that latches a user bankrupt increments it, and
-    /// `update_quote_asset_amount` decrements it when that debt reaches zero.
-    /// The count tracks the debt, not the latch: an un-latched estate that
-    /// still owes the market stays booked, because the debt still resolves
-    /// through the bankruptcy waterfall.
+    /// A liquidation that latches a user bankrupt increments it. Both writers
+    /// of `PerpPosition.quote_asset_amount` decrement it when that debt
+    /// reaches zero: `update_quote_asset_amount` and
+    /// `update_position_and_market`. The count tracks the debt, not the latch:
+    /// an un-latched estate that still owes the market stays booked, because
+    /// the debt still resolves through the bankruptcy waterfall.
     ///
     /// While it is above zero the fee sweep withholds the whole
     /// `pending_if_fee`, not just `get_bankruptcy_if_floor()` — the sweep is
@@ -444,6 +445,10 @@ pub struct PerpMarket {
     /// `last_fill_price`. The remaining 4 stay explicit padding, so every
     /// later byte offset and the account size are unchanged and existing
     /// accounts read 0 (no pending claim).
+    ///
+    /// `settle_expired_market_pools_to_revenue_pool` rejects while this count
+    /// is above zero, because that instruction's final sweep bypasses the
+    /// floor.
     pub pending_bankruptcy_claims: u16,
     /// Explicit padding so the IDL records the 4 bytes the Rust compiler
     /// still inserts to 8-align `last_fill_price`. Without this the JS borsh
@@ -1026,7 +1031,8 @@ impl PerpMarket {
 
     /// The `pending_if_fee` the sweep's IF drain must leave behind. A latched
     /// bankruptcy holds all of it; otherwise the standing floor holds its
-    /// part. `force` (the delisting sweep) holds nothing.
+    /// part. `force` (the delisting sweep) holds nothing, because the delist
+    /// handler rejects while `pending_bankruptcy_claims` is above zero.
     /// precision: QUOTE_PRECISION
     pub fn get_pending_if_fee_floor(&self, force: bool) -> VelocityResult<u128> {
         if force {
@@ -1050,8 +1056,8 @@ impl PerpMarket {
     /// into `protocol_fee_pool`, which is not part of the insurance backstop —
     /// would leave the tranche unbacked and surviving-trader PnL short. Every
     /// permissionless pnl-pool drain reserves this on top of
-    /// `max(net_user_pnl, 0)`. `force` (delisting, once bankruptcies are
-    /// resolved) returns 0.
+    /// `max(net_user_pnl, 0)`. `force` (delisting, which the handler allows
+    /// only after every bankruptcy claim is discharged) returns 0.
     /// precision: QUOTE_PRECISION
     pub fn get_bankruptcy_if_tranche_reservation(&self, force: bool) -> VelocityResult<u128> {
         Ok(self

@@ -1231,6 +1231,24 @@ pub fn handle_settle_expired_market_pools_to_revenue_pool(
         "outstanding quote_asset_amounts must be balanced"
     )?;
 
+    // The wind-down checks above cannot see a booked bankruptcy claim. They sum the quote across
+    // the market, so a latched bankrupt's settled debt of -X nets against another user's unsettled
+    // claim of +X. Both positions hold no base, so all three checks pass with the debt still open.
+    // The final sweep below runs with `force = true` and reserves nothing, so it would drain the
+    // insurance tranche that backs that debt.
+    //
+    // The counter must therefore reach zero first. Two permissionless paths take it there.
+    // `resolve_perp_bankruptcy` absorbs the debt through the bankruptcy waterfall. `settle_pnl`
+    // releases the claim once the position's quote reaches zero. Neither needs the admin, and the
+    // market stays in Settlement while they run.
+    validate!(
+        perp_market.pending_bankruptcy_claims == 0,
+        ErrorCode::DefaultError,
+        "perp market {} still holds {} unresolved bankruptcy claims; resolve them before delisting",
+        perp_market.market_index,
+        perp_market.pending_bankruptcy_claims
+    )?;
+
     // With user base, AMM base, and net user cost basis all wound down,
     // net_user_pnl is identically 0 — no live user claim remains on the pnl
     // pool. This is what lets the final sweep below (and the full pnl-pool

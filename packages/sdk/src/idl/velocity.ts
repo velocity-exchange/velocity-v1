@@ -6442,6 +6442,32 @@ export type Velocity = {
       "args": []
     },
     {
+      "name": "refreshSpotMarketInterest",
+      "discriminator": [
+        11,
+        188,
+        50,
+        141,
+        73,
+        51,
+        134,
+        78
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        }
+      ],
+      "args": [
+        {
+          "name": "marketIndexes",
+          "type": {
+            "vec": "u16"
+          }
+        }
+      ]
+    },
+    {
       "name": "removeAmmConstituentMappingData",
       "discriminator": [
         20,

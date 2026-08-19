@@ -44,17 +44,24 @@ pub struct TokenizedVaultDepositor {
     pub total_deposits: u64,
     /// lifetime total withdraws
     pub total_withdraws: u64,
-    /// the token amount of gains the vault depositor has paid performance fees on
+    /// the token amount of gain, net of the profit share taken on it, that the high-water mark
+    /// already covers. `net_deposits + cumulative_profit_share_amount` is the high-water mark.
     pub cumulative_profit_share_amount: i64,
     pub profit_share_fee_paid: u64,
     /// The exponent for vault_shares decimal places at the time the tokenized vault depositor was initialized.
     /// If the vault undergoes a rebase, this TokenizedVaultDepositor can no longer issue new tokens, only redeem
     /// is possible.
     pub vault_shares_base: u32,
+    /// the vault's profit share when the high-water mark was last set. Gain above the high-water
+    /// mark is priced at this rate, so a later raise never prices gain earned before it.
+    pub profit_share_at_basis: u32,
+    /// the vault's hurdle rate when the high-water mark was last set. Gain above the high-water
+    /// mark keeps this shelter, so a later cut never exposes gain earned before it.
+    pub hurdle_rate_at_basis: u32,
     /// The bump for the vault pda
     pub bump: u8,
     pub padding1: [u8; 3],
-    pub padding: [u64; 11],
+    pub padding: [u64; 10],
 }
 
 impl Size for TokenizedVaultDepositor {
@@ -108,11 +115,25 @@ impl VaultDepositorBase for TokenizedVaultDepositor {
     fn set_profit_share_fee_paid(&mut self, amount: u64) {
         self.profit_share_fee_paid = amount;
     }
+
+    fn get_profit_share_at_basis(&self) -> u32 {
+        self.profit_share_at_basis
+    }
+    fn set_profit_share_at_basis(&mut self, profit_share: u32) {
+        self.profit_share_at_basis = profit_share;
+    }
+
+    fn get_hurdle_rate_at_basis(&self) -> u32 {
+        self.hurdle_rate_at_basis
+    }
+    fn set_hurdle_rate_at_basis(&mut self, hurdle_rate: u32) {
+        self.hurdle_rate_at_basis = hurdle_rate;
+    }
 }
 
 impl TokenizedVaultDepositor {
     pub fn new(
-        vault: Pubkey,
+        vault: &Vault,
         pubkey: Pubkey,
         mint: Pubkey,
         vault_shares_base: u32,
@@ -120,7 +141,7 @@ impl TokenizedVaultDepositor {
         now: i64,
     ) -> Self {
         Self {
-            vault,
+            vault: vault.pubkey,
             pubkey,
             mint,
             vault_shares: 0,
@@ -132,9 +153,11 @@ impl TokenizedVaultDepositor {
             cumulative_profit_share_amount: 0,
             profit_share_fee_paid: 0,
             vault_shares_base,
+            profit_share_at_basis: vault.profit_share,
+            hurdle_rate_at_basis: vault.hurdle_rate,
             bump,
             padding1: [0; 3],
-            padding: [0; 11],
+            padding: [0; 10],
         }
     }
 
@@ -501,14 +524,8 @@ mod tests {
     fn test_tokenize_shares() {
         let now = 1337;
         let vault = &mut Vault::default();
-        let mut tvd = TokenizedVaultDepositor::new(
-            Pubkey::default(),
-            Pubkey::default(),
-            Pubkey::default(),
-            0,
-            0,
-            now,
-        );
+        let mut tvd =
+            TokenizedVaultDepositor::new(vault, Pubkey::default(), Pubkey::default(), 0, 0, now);
         let mut shares_transferred = 100_000;
         tvd.vault_shares = tvd.last_vault_shares + shares_transferred;
 
@@ -566,14 +583,8 @@ mod tests {
     fn test_redeem_tokens() {
         let now = 1337;
         let vault = &mut Vault::default();
-        let mut tvd = TokenizedVaultDepositor::new(
-            Pubkey::default(),
-            Pubkey::default(),
-            Pubkey::default(),
-            0,
-            0,
-            now,
-        );
+        let mut tvd =
+            TokenizedVaultDepositor::new(vault, Pubkey::default(), Pubkey::default(), 0, 0, now);
         let shares_transferred = 500_000;
         tvd.vault_shares = shares_transferred;
         tvd.last_vault_shares = tvd.vault_shares;
@@ -605,14 +616,8 @@ mod tests {
     fn test_tokenize_shares_with_rebase() {
         let mut now = 1337;
         let vault = &mut Vault::default();
-        let mut tvd = TokenizedVaultDepositor::new(
-            Pubkey::default(),
-            Pubkey::default(),
-            Pubkey::default(),
-            0,
-            0,
-            now,
-        );
+        let mut tvd =
+            TokenizedVaultDepositor::new(vault, Pubkey::default(), Pubkey::default(), 0, 0, now);
         let shares_transferred = 100_000;
         tvd.vault_shares = tvd.last_vault_shares + shares_transferred;
 
@@ -672,14 +677,8 @@ mod tests {
         vault.profit_share = PERCENTAGE_PRECISION
             .safe_div(profit_share_pct as u128)
             .unwrap() as u32;
-        let mut tvd = TokenizedVaultDepositor::new(
-            Pubkey::default(),
-            Pubkey::default(),
-            Pubkey::default(),
-            0,
-            0,
-            now,
-        );
+        let mut tvd =
+            TokenizedVaultDepositor::new(vault, Pubkey::default(), Pubkey::default(), 0, 0, now);
 
         let total_supply = 0;
         let vault_equity = 1_000_000u64;
@@ -740,14 +739,8 @@ mod tests {
     fn test_redeem_then_tokenize_after_checkpoint() {
         let now = 1337;
         let vault = &mut Vault::default();
-        let mut tvd = TokenizedVaultDepositor::new(
-            Pubkey::default(),
-            Pubkey::default(),
-            Pubkey::default(),
-            0,
-            0,
-            now,
-        );
+        let mut tvd =
+            TokenizedVaultDepositor::new(vault, Pubkey::default(), Pubkey::default(), 0, 0, now);
         let shares_transferred = 500_000u128;
         tvd.vault_shares = shares_transferred;
         tvd.last_vault_shares = shares_transferred;
@@ -817,14 +810,8 @@ mod tests {
         let now = 1337;
         let vault = &mut Vault::default();
         let vp = RefCell::new(VaultProtocol::default());
-        let mut tvd = TokenizedVaultDepositor::new(
-            Pubkey::default(),
-            Pubkey::default(),
-            Pubkey::default(),
-            0,
-            0,
-            now,
-        );
+        let mut tvd =
+            TokenizedVaultDepositor::new(vault, Pubkey::default(), Pubkey::default(), 0, 0, now);
         let shares = 500_000u128;
         tvd.vault_shares = shares;
         tvd.last_vault_shares = shares;
@@ -862,14 +849,8 @@ mod tests {
     fn under_water_pool_refuses_tokenization() {
         let now = 1337;
         let vault = &mut Vault::default();
-        let mut tvd = TokenizedVaultDepositor::new(
-            Pubkey::default(),
-            Pubkey::default(),
-            Pubkey::default(),
-            0,
-            0,
-            now,
-        );
+        let mut tvd =
+            TokenizedVaultDepositor::new(vault, Pubkey::default(), Pubkey::default(), 0, 0, now);
 
         // 1000 shares tokenized when the share price was 1.
         let existing_shares = 1_000u128;
@@ -915,14 +896,8 @@ mod tests {
     fn healthy_pool_still_accepts_tokenization() {
         let now = 1337;
         let vault = &mut Vault::default();
-        let mut tvd = TokenizedVaultDepositor::new(
-            Pubkey::default(),
-            Pubkey::default(),
-            Pubkey::default(),
-            0,
-            0,
-            now,
-        );
+        let mut tvd =
+            TokenizedVaultDepositor::new(vault, Pubkey::default(), Pubkey::default(), 0, 0, now);
 
         let existing_shares = 1_000u128;
         tvd.vault_shares = existing_shares;
@@ -967,14 +942,9 @@ mod tests {
     #[test]
     fn emptied_pool_drops_its_orphaned_cost_basis() {
         let now = 1337;
-        let mut tvd = TokenizedVaultDepositor::new(
-            Pubkey::default(),
-            Pubkey::default(),
-            Pubkey::default(),
-            0,
-            0,
-            now,
-        );
+        let vault = Vault::default();
+        let mut tvd =
+            TokenizedVaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), 0, 0, now);
 
         // A pool drained at 50% down: the departing holder correctly ate the loss in their own
         // VaultDepositor, and `transfer_shares` left basis 500 against value 0.
@@ -1005,7 +975,7 @@ mod tests {
             vault.total_shares = 200_000_000;
             vault.user_shares = 200_000_000;
             let tvd = &mut TokenizedVaultDepositor::new(
-                Pubkey::default(),
+                &vault,
                 Pubkey::default(),
                 Pubkey::default(),
                 0,
@@ -1026,7 +996,7 @@ mod tests {
             vault2.total_shares = 200_000_000;
             vault2.user_shares = 200_000_000;
             let tvd2 = &mut TokenizedVaultDepositor::new(
-                Pubkey::default(),
+                &vault,
                 Pubkey::default(),
                 Pubkey::default(),
                 0,
@@ -1049,7 +1019,7 @@ mod tests {
             vault.total_shares = 200_000_000;
             vault.user_shares = 200_000_000;
             let tvd = &mut TokenizedVaultDepositor::new(
-                Pubkey::default(),
+                &vault,
                 Pubkey::default(),
                 Pubkey::default(),
                 0,

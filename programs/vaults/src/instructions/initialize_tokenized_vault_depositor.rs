@@ -17,7 +17,7 @@ pub fn initialize_tokenized_vault_depositor(
     let vault = ctx.accounts.vault.load()?;
     let mut tokenized_vault_depositor = ctx.accounts.vault_depositor.load_init()?;
     *tokenized_vault_depositor = TokenizedVaultDepositor::new(
-        ctx.accounts.vault.key(),
+        &vault,
         ctx.accounts.vault_depositor.key(),
         ctx.accounts.mint_account.key(),
         vault.shares_base,

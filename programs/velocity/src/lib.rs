@@ -716,6 +716,13 @@ pub mod velocity {
         handle_update_spot_market_cumulative_interest(ctx)
     }
 
+    pub fn refresh_spot_market_interest<'c: 'info, 'info>(
+        ctx: Context<'info, RefreshSpotMarketInterest<'info>>,
+        market_indexes: Vec<u16>,
+    ) -> Result<()> {
+        handle_refresh_spot_market_interest(ctx, market_indexes)
+    }
+
     pub fn update_amms<'c: 'info, 'info>(
         ctx: Context<'info, UpdateAMM<'info>>,
         market_indexes: Vec<u16>,

@@ -76,8 +76,7 @@ mod vault_fcn {
         let mut vp = None;
         vault.management_fee = 1000; // 10 bps
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
         assert_eq!(vault.total_shares, 0);
         assert_eq!(vault.last_fee_update_ts, 0);
 
@@ -117,8 +116,7 @@ mod vault_fcn {
         vault.management_fee = 1000000;
         vault.last_fee_update_ts = 0;
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
         assert_eq!(vault.total_shares, 0);
         assert_eq!(vault.last_fee_update_ts, 0);
 
@@ -155,8 +153,7 @@ mod vault_fcn {
         vault.management_fee = 1000000; // 100%
         vault.last_fee_update_ts = 0;
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
         assert_eq!(vault.total_shares, 0);
         assert_eq!(vault.last_fee_update_ts, 0);
 
@@ -250,8 +247,7 @@ mod vault_fcn {
         let mut vp = None;
         vault.management_fee = -2_147_483_648; // -214700% annualized (manager pays 24% hourly, .4% per minute)
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
         assert_eq!(vault.total_shares, 0);
         assert_eq!(vault.last_fee_update_ts, 0);
 
@@ -367,8 +363,7 @@ mod vault_fcn {
         assert_eq!(vault.total_shares, 100000000);
         now += 60 * 60;
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
         vd.deposit(
             amount * 20,
             vault_equity,
@@ -449,8 +444,7 @@ mod vault_fcn {
         assert_eq!(vault.total_shares, 100000000);
         now += 60 * 60;
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
         vd.deposit(
             amount * 20,
             vault_equity,
@@ -549,8 +543,7 @@ mod vault_fcn {
         assert_eq!(vault.total_shares, 100000000);
         now += 60 * 60;
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
         vd.deposit(
             amount * 20,
             vault_equity,
@@ -654,12 +647,7 @@ mod vault_fcn {
         assert_eq!(vault.total_shares, 0);
         assert_eq!(vault.shares_base, 0);
 
-        let vd = &mut VaultDepositor::new(
-            Pubkey::default(),
-            Pubkey::new_unique(),
-            Pubkey::new_unique(),
-            now,
-        );
+        let vd = &mut VaultDepositor::new(vault, Pubkey::new_unique(), Pubkey::new_unique(), now);
         vd.deposit(
             deposit_amount,
             vault_equity,
@@ -728,12 +716,7 @@ mod vault_fcn {
         assert_eq!(vault.total_shares, 0);
         assert_eq!(vault.shares_base, 0);
 
-        let vd = &mut VaultDepositor::new(
-            Pubkey::default(),
-            Pubkey::new_unique(),
-            Pubkey::new_unique(),
-            now,
-        );
+        let vd = &mut VaultDepositor::new(vault, Pubkey::new_unique(), Pubkey::new_unique(), now);
         vd.deposit(
             deposit_amount,
             vault_equity,
@@ -812,12 +795,7 @@ mod vault_fcn {
         assert_eq!(vault.total_shares, 0);
         assert_eq!(vault.shares_base, 0);
 
-        let vd = &mut VaultDepositor::new(
-            Pubkey::default(),
-            Pubkey::new_unique(),
-            Pubkey::new_unique(),
-            now,
-        );
+        let vd = &mut VaultDepositor::new(vault, Pubkey::new_unique(), Pubkey::new_unique(), now);
         vd.deposit(
             deposit_amount,
             vault_equity,
@@ -890,8 +868,7 @@ mod vault_fcn {
         let mut vault_equity: u64 = 0;
 
         let deposit_amount = 2000 * QUOTE_PRECISION_U64;
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
         vd.deposit(
             deposit_amount,
             vault_equity,
@@ -1071,7 +1048,7 @@ mod vault_v1_fcn {
         anchor_lang::prelude::Pubkey,
         std::cell::RefCell,
         velocity::math::{
-            constants::{ONE_YEAR, QUOTE_PRECISION_U64},
+            constants::{ONE_YEAR, QUOTE_PRECISION_I64, QUOTE_PRECISION_U64},
             insurance::if_shares_to_vault_amount as depositor_shares_to_vault_amount,
         },
     };
@@ -1162,8 +1139,7 @@ mod vault_v1_fcn {
         vault.management_fee = 1000; // 10 bps
         vp.borrow_mut().protocol_fee = 500; // 5 bps
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
         assert_eq!(vault.total_shares, 0);
         assert_eq!(vault.last_fee_update_ts, 0);
 
@@ -1230,8 +1206,7 @@ mod vault_v1_fcn {
         vault.management_fee = 1001; // 10.01 bps
         vp.borrow_mut().protocol_fee = 499; // 4.99 bps
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
         assert_eq!(vault.total_shares, 0);
         assert_eq!(vault.last_fee_update_ts, 0);
 
@@ -1306,8 +1281,7 @@ mod vault_v1_fcn {
         vault.management_fee = 0; // 0 bps
         vp.borrow_mut().protocol_fee = 500; // 5 bps
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
         assert_eq!(vault.total_shares, 0);
         assert_eq!(vault.last_fee_update_ts, 0);
 
@@ -1373,8 +1347,7 @@ mod vault_v1_fcn {
         vp.borrow_mut().protocol_fee = 400_000;
         vault.last_fee_update_ts = 0;
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
         assert_eq!(vault.total_shares, 0);
         assert_eq!(vault.last_fee_update_ts, 0);
 
@@ -1426,8 +1399,7 @@ mod vault_v1_fcn {
                                                 // vault.management_fee = 1_000_000; // 100%
         vault.last_fee_update_ts = 0;
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
         assert_eq!(vault.total_shares, 0);
         assert_eq!(vault.last_fee_update_ts, 0);
 
@@ -1536,8 +1508,7 @@ mod vault_v1_fcn {
         let vp = RefCell::new(VaultProtocol::default());
         vault.management_fee = -2_147_483_648; // -214700% annualized (manager pays 24% hourly, .4% per minute)
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
         assert_eq!(vault.total_shares, 0);
         assert_eq!(vault.last_fee_update_ts, 0);
 
@@ -1690,8 +1661,7 @@ mod vault_v1_fcn {
         assert_eq!(vault.total_shares, 100000000);
         now += 60 * 60;
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
         vd.deposit(
             amount * 20,
             vault_equity,
@@ -1779,8 +1749,7 @@ mod vault_v1_fcn {
         assert_eq!(vault.total_shares, 100000000);
         now += 60 * 60;
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
         vd.deposit(
             amount * 20,
             vault_equity,
@@ -1886,8 +1855,7 @@ mod vault_v1_fcn {
         assert_eq!(vault.total_shares, 100_000_000);
         now += 60 * 60;
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
         vd.deposit(
             amount * 20,
             vault_equity,
@@ -2005,8 +1973,7 @@ mod vault_v1_fcn {
         assert_eq!(vault.total_shares, 100_000_000);
         now += 60 * 60;
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
         vd.deposit(
             amount * 20,
             vault_equity,
@@ -2121,8 +2088,7 @@ mod vault_v1_fcn {
         let mut vault_equity: u64 = 0;
         let amount: u64 = 100 * QUOTE_PRECISION_U64;
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
         vd.deposit(
             amount,
             vault_equity,
@@ -2319,8 +2285,7 @@ mod vault_v1_fcn {
         vp.borrow_mut().protocol_fee = 200_000; // 20%
         vault.last_fee_update_ts = 0;
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
         let vault_equity: u64 = 100 * QUOTE_PRECISION_U64;
         let amount: u64 = 100 * QUOTE_PRECISION_U64;
         vd.deposit(
@@ -2357,33 +2322,102 @@ mod vault_v1_fcn {
         assert!(vault.get_manager_shares(&mut Some(vp.borrow_mut())).is_ok());
     }
 
-    // OtterSec #98: a matured fee update stamps last_fee_update_ts to the activation boundary so
-    // the new rate never prices the pre-activation interval.
+    // OtterSec #98: the management fee accrues over an interval, so a raised rate must install
+    // only after that interval is settled at the rate that was in force while it accrued.
     #[test]
-    fn test_fee_update_stamps_activation_boundary() {
+    fn test_fee_update_installs_only_after_settlement() {
         use crate::state::{FeeUpdate, FeeUpdateStatus};
         let mut vault = Vault::default();
-        vault.management_fee = 0;
+        vault.management_fee = 100_000; // 10%
         vault.last_fee_update_ts = 0;
         vault.fee_update_status = FeeUpdateStatus::PendingFeeUpdate as u8;
+        vault.total_shares = 200 * QUOTE_PRECISION_U64 as u128;
+        vault.user_shares = 100 * QUOTE_PRECISION_U64 as u128;
+        let vault_equity = 200 * QUOTE_PRECISION_U64;
 
         let mut fee_update = FeeUpdate::default();
-        let activation_ts = 1_000_000;
+        let activation_ts = ONE_YEAR as i64;
         fee_update.incoming_update_ts = activation_ts;
         fee_update.incoming_management_fee = 500_000; // 50%
-        fee_update.incoming_profit_share = 0;
-        fee_update.incoming_hurdle_rate = 0;
 
-        let now = activation_ts + 100; // matured
+        let now = activation_ts + ONE_YEAR as i64;
+
+        // an unsettled vault cannot install: the new rate would price the interval the old rate
+        // earned
+        assert!(fee_update.try_update_vault_fees(now, &mut vault).is_err());
+        assert_eq!(vault.management_fee, 100_000);
+
+        vault
+            .apply_fee(&mut None, &mut None, vault_equity, now)
+            .unwrap();
+
+        // two years of 10% on $100 of depositor equity, not two years of 50%
+        assert_eq!(vault.manager_total_fee, 20 * QUOTE_PRECISION_I64);
+        assert_eq!(vault.last_fee_update_ts, now);
+
         fee_update.try_update_vault_fees(now, &mut vault).unwrap();
-
         assert_eq!(vault.management_fee, 500_000);
-        assert_eq!(
-            vault.last_fee_update_ts, activation_ts,
-            "last_fee_update_ts must stamp the activation boundary, not stay before it"
-        );
         assert_eq!(vault.fee_update_status, FeeUpdateStatus::None as u8);
         assert!(!fee_update.is_pending());
+    }
+
+    // OtterSec #98: profit share is priced off a high-water mark, not a clock, so a raised rate
+    // would otherwise price the whole accumulated gain. The depositor keeps the rate that was in
+    // force when its high-water mark was last set.
+    #[test]
+    fn test_profit_share_raise_does_not_price_historical_gain() {
+        let now = 1000;
+        let mut vault = Vault::default();
+        vault.profit_share = 100_000; // 10%
+        let mut vp = None;
+
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
+
+        let amount = 100 * QUOTE_PRECISION_U64;
+        vd.deposit(amount, amount, &mut vault, &mut vp, &mut None, now, 0)
+            .unwrap();
+
+        // the vault doubles, then the manager raises the profit share
+        let vault_equity = 400 * QUOTE_PRECISION_U64;
+        vault.profit_share = 500_000; // 50%
+
+        let (manager_profit_share, _) = vd
+            .apply_profit_share(vault_equity, &mut vault, &mut vp, now)
+            .unwrap();
+
+        assert_eq!(
+            manager_profit_share,
+            10 * QUOTE_PRECISION_U64,
+            "10% of the $100 gain, the rate in force while it accrued"
+        );
+        assert_eq!(
+            vd.profit_share_at_basis, 500_000,
+            "realizing the gain moves the depositor onto the new rate"
+        );
+    }
+
+    // A rate cut reaches the depositor at once: it is never charged more than the live rate.
+    #[test]
+    fn test_profit_share_cut_applies_immediately() {
+        let now = 1000;
+        let mut vault = Vault::default();
+        vault.profit_share = 500_000; // 50%
+        let mut vp = None;
+
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
+
+        let amount = 100 * QUOTE_PRECISION_U64;
+        vd.deposit(amount, amount, &mut vault, &mut vp, &mut None, now, 0)
+            .unwrap();
+
+        let vault_equity = 400 * QUOTE_PRECISION_U64;
+        vault.profit_share = 100_000; // 10%
+
+        let (manager_profit_share, _) = vd
+            .apply_profit_share(vault_equity, &mut vault, &mut vp, now)
+            .unwrap();
+
+        assert_eq!(manager_profit_share, 10 * QUOTE_PRECISION_U64);
     }
 
     // OtterSec #97: shared bounds enforced on the fee-update path (and at maturity).
@@ -2430,8 +2464,7 @@ mod vault_v1_fcn {
         vault.last_fee_update_ts = 0;
         vault.redeem_period = 0;
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
         let vault_equity: u64 = 100 * QUOTE_PRECISION_U64;
         let amount: u64 = 100 * QUOTE_PRECISION_U64;
         vd.deposit(
@@ -2495,8 +2528,7 @@ mod vault_v1_fcn {
         vault.last_fee_update_ts = 0;
         vault.redeem_period = 1_000_000_000; // long, so we cancel rather than withdraw
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
         let vault_equity: u64 = 100 * QUOTE_PRECISION_U64;
         let amount: u64 = 100 * QUOTE_PRECISION_U64;
         vd.deposit(

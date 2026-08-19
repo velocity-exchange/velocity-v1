@@ -23,9 +23,11 @@ use {
         state::{
             events::{SpotInterestRecord, TransferFeeAndPnlPoolDirection},
             oracle::OraclePriceData,
+            oracle_map::OracleMap,
             paused_operations::SpotOperation,
             perp_market::PoolBalance,
             spot_market::{SpotBalance, SpotBalanceType, SpotMarket},
+            spot_market_map::{SpotMarketMap, SpotMarketSet},
             state::ValidityGuardRails,
             user::MarketType,
         },
@@ -684,6 +686,45 @@ pub fn update_spot_market_and_check_validity(
     Ok(SpotMarketOracleRefresh {
         validity,
         pre_refresh_twap_5min,
+    })
+}
+
+/// Advance the lending-interest indexes of several spot markets in one pass.
+///
+/// Every market goes through [`update_spot_market_cumulative_interest`], so a caller that
+/// refreshes many markets gets the same per-market treatment as a caller that refreshes one.
+/// Pass the same set that loaded `spot_market_map`. Each index must be writable in the map, and
+/// the map rejects a repeated index at load, so no market is refreshed twice.
+///
+/// `oracle_map` is optional, and the choice belongs to the caller. Pass `None` when the same
+/// instruction later reads a market's oracle TWAP. [`update_spot_market_twap_stats`] pulls
+/// `last_oracle_price_twap` toward the live price, so a later check against that TWAP measures
+/// against a value this call moved. Pass `Some` only from an instruction that consumes no oracle
+/// TWAP of its own.
+pub fn refresh_spot_market_interest(
+    spot_market_map: &SpotMarketMap,
+    mut oracle_map: Option<&mut OracleMap>,
+    market_indexes: &SpotMarketSet,
+    now: i64,
+    funding_paused: bool,
+) -> VelocityResult {
+    market_indexes.iter().try_for_each(|market_index| {
+        let spot_market = &mut spot_market_map.get_ref_mut(market_index)?;
+
+        // Copy the price out so the oracle map is free again before the refresh. The map is
+        // borrowed through an `Option` across loop iterations, and holding the reference would
+        // keep that borrow alive for the whole body.
+        let oracle_price_data = match &mut oracle_map {
+            Some(oracle_map) => Some(*oracle_map.get_price_data(&spot_market.oracle_id())?),
+            None => None,
+        };
+
+        update_spot_market_cumulative_interest(
+            spot_market,
+            oracle_price_data.as_ref(),
+            now,
+            funding_paused,
+        )
     })
 }
 

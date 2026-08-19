@@ -64,6 +64,8 @@ test_files=(
   equityFloorSwap.ts
   equityFloorLazyTrip.ts
   equityFloorOracle.ts
+  equityFloorFillGates.ts
+  equityBreakerFreeze.ts
   velocityClient.ts
   insuranceFundStake.ts
   isolatedPositionVelocityClient.ts
@@ -83,6 +85,7 @@ test_files=(
   marketOrderBaseAssetAmount.ts
   maxDeposit.ts
   maxLeverageOrderParams.ts
+  mmOracleBatchNative.ts
   modifyOrder.ts
   multipleMakerOrders.ts
   oracleDiffSources.ts

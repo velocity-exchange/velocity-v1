@@ -26,7 +26,7 @@ import { TxParams } from './types';
 /** One subaccount's standing relative to its floor. All BN values QUOTE_PRECISION. */
 export type SubaccountFloorStatus = {
 	subAccountId: number;
-	/** Net equity (`User.getNetUsdValue`, unweighted live-oracle value), what the onchain checks see. */
+	/** Net equity (`User.getFloorNetEquity().value`, unweighted gate-parity pricing), what the onchain checks see. */
 	equity: BN;
 	equityFloor: BN;
 	equityFloorBuffer: BN;
@@ -299,7 +299,8 @@ export class EquityFloorManager {
 
 	private getSubaccountStatus(user: User): SubaccountFloorStatus {
 		const userAccount = user.getUserAccountOrThrow();
-		const equity = user.getNetUsdValue();
+		// gate-parity pricing (no validity verdict without a slot)
+		const equity = user.getFloorNetEquity().value;
 		const bufferedFloor = userAccount.equityFloor.add(
 			userAccount.equityFloorBuffer
 		);
@@ -434,7 +435,9 @@ export class EquityFloorManager {
 		const fromAccount = fromUser.getUserAccountOrThrow();
 		const equityFloorDelta = calculateEquityFloorAutoDelta(
 			amount,
-			fromUser.getNetUsdValue().sub(this.collateralHaircut),
+			// gate-parity pricing; the haircut still pads for price movement
+			// between planning and execution
+			fromUser.getFloorNetEquity().value.sub(this.collateralHaircut),
 			fromAccount.equityFloor,
 			fromAccount.equityFloorBuffer
 		);

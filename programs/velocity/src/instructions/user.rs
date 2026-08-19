@@ -74,8 +74,8 @@ use {
             paused_operations::{PerpOperation, SpotOperation},
             perp_market_map::{get_writable_perp_market_set, MarketSet, PerpMarketMap},
             revenue_share::{
-                BuilderInfo, RevenueShare, RevenueShareEscrow, RevenueShareOrder,
-                REVENUE_SHARE_ESCROW_PDA_SEED, REVENUE_SHARE_PDA_SEED,
+                BuilderInfo, RevenueShare, RevenueShareEscrow, RevenueShareEscrowLoader,
+                RevenueShareOrder, REVENUE_SHARE_ESCROW_PDA_SEED, REVENUE_SHARE_PDA_SEED,
             },
             scale_order_params::ScaleOrderParams,
             signed_msg_user::{
@@ -814,18 +814,35 @@ pub fn handle_withdraw<'c: 'info, 'info>(
 
     validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
 
-    let (spot_market_is_reduce_only, refreshed_liability_twap) = {
+    let (spot_market_is_reduce_only, refreshed_liability_twaps) = {
         let spot_market = &mut spot_market_map.get_ref_mut(&market_index)?;
         let oracle_price_data = oracle_map.get_price_data(&spot_market.oracle_id())?;
 
-        // #81: snapshot the withdrawn (liability) market's risk-EMA TWAP BEFORE this
-        // in-instruction cumulative-interest update refreshes it. `TooVolatile` validity
-        // compares the live oracle price against `last_oracle_price_twap`; if the refresh
-        // dragged the TWAP toward the live price first, a too-volatile oracle could slip
-        // through the same-instruction withdraw margin check and release vault tokens. We
-        // hold the pre-refresh snapshot in the account across the margin check, then restore
-        // the refreshed value so the account still persists the up-to-date TWAP.
-        let pre_refresh_liability_twap = spot_market.historical_oracle_data.last_oracle_price_twap;
+        // #81: snapshot the withdrawn (liability) market's oracle TWAPs BEFORE this
+        // in-instruction cumulative-interest update refreshes them, hold the pre-refresh
+        // values across the margin check, then restore the refreshed ones so the account
+        // still persists the up-to-date EMA.
+        //
+        // Both fields matter, and for different gates:
+        //
+        //   `last_oracle_price_twap` (1h) — `TooVolatile` validity compares the live oracle
+        //   price against it. A refresh that drags it toward the live price first lets a
+        //   too-volatile oracle slip through the same-instruction margin check and release
+        //   vault tokens.
+        //
+        //   `last_oracle_price_twap_5min` — `StrictOraclePrice` bounds are min/max of the
+        //   live price and this field, and a liability is priced at the *upper* bound. The
+        //   margin check below runs with `Initial`, which enables strict pricing, so
+        //   dragging the 5-minute TWAP toward a temporarily depressed live price under-values
+        //   the debt and admits a withdrawal the pre-refresh value rejects. #81 restored only
+        //   the 1-hour field, so the withdraw path kept the #134-shaped hole through the
+        //   other TWAP.
+        let pre_refresh_liability_twaps = (
+            spot_market.historical_oracle_data.last_oracle_price_twap,
+            spot_market
+                .historical_oracle_data
+                .last_oracle_price_twap_5min,
+        );
 
         controller::spot_balance::update_spot_market_cumulative_interest(
             spot_market,
@@ -834,10 +851,18 @@ pub fn handle_withdraw<'c: 'info, 'info>(
             state.funding_paused()?,
         )?;
 
-        let refreshed_liability_twap = spot_market.historical_oracle_data.last_oracle_price_twap;
-        spot_market.historical_oracle_data.last_oracle_price_twap = pre_refresh_liability_twap;
+        let refreshed_liability_twaps = (
+            spot_market.historical_oracle_data.last_oracle_price_twap,
+            spot_market
+                .historical_oracle_data
+                .last_oracle_price_twap_5min,
+        );
+        spot_market.historical_oracle_data.last_oracle_price_twap = pre_refresh_liability_twaps.0;
+        spot_market
+            .historical_oracle_data
+            .last_oracle_price_twap_5min = pre_refresh_liability_twaps.1;
 
-        (spot_market.is_reduce_only(), refreshed_liability_twap)
+        (spot_market.is_reduce_only(), refreshed_liability_twaps)
     };
 
     let amount = {
@@ -891,6 +916,13 @@ pub fn handle_withdraw<'c: 'info, 'info>(
         amount
     };
 
+    // OtterSec #135: this handler cranks only the market being withdrawn, so a borrow
+    // in any *other* market is valued below through its stale stored
+    // `cumulative_borrow_interest` — the due interest is simply missing from the
+    // initial-margin check, and those markets arrive read-only so they cannot be
+    // refreshed here. Require their accrual to be recent instead.
+    math::margin::validate_spot_borrow_interest_fresh_for_margin(user, &spot_market_map, now)?;
+
     user.meets_withdraw_margin_requirement(
         &perp_market_map,
         &spot_market_map,
@@ -900,11 +932,14 @@ pub fn handle_withdraw<'c: 'info, 'info>(
 
     validate_spot_margin_trading(user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
 
-    // #81: the margin check has now been evaluated against the pre-refresh TWAP snapshot;
-    // restore the refreshed risk-EMA TWAP so the account persists the up-to-date value.
+    // #81: the margin checks have now been evaluated against the pre-refresh snapshots;
+    // restore both refreshed oracle TWAPs so the account persists the up-to-date values.
     {
         let mut spot_market = spot_market_map.get_ref_mut(&market_index)?;
-        spot_market.historical_oracle_data.last_oracle_price_twap = refreshed_liability_twap;
+        spot_market.historical_oracle_data.last_oracle_price_twap = refreshed_liability_twaps.0;
+        spot_market
+            .historical_oracle_data
+            .last_oracle_price_twap_5min = refreshed_liability_twaps.1;
     }
 
     if user.is_cross_margin_being_liquidated() {
@@ -1252,11 +1287,27 @@ fn transfer_spot_deposit(
     funding_paused: bool,
 ) -> anchor_lang::Result<()> {
     {
+        // Accrue interest, but pass `None` so this transfer does NOT advance the
+        // transferred market's *oracle* TWAPs (OtterSec #134 — the same shape as
+        // #110/#111).
+        //
+        // `meets_withdraw_margin_requirement` below values the source account through
+        // `StrictOraclePrice`, whose bounds are min/max of the live price and this
+        // market's `last_oracle_price_twap_5min`. A liability is priced at the
+        // *upper* bound, so dragging that TWAP down toward a temporarily depressed
+        // live price under-values the debt, lets the margin check pass, and frees
+        // sibling collateral for withdrawal — leaving depositor-socialized debt once
+        // the oracle recovers.
+        //
+        // Interest accrual and the deposit/borrow/utilization TWAPs still advance;
+        // only the oracle TWAP (and its timestamp) is left alone, so the next real
+        // refresh still weights the full elapsed interval. That TWAP keeps advancing
+        // on every other spot path and via the permissionless
+        // `update_spot_market_cumulative_interest` crank.
         let spot_market = &mut spot_market_map.get_ref_mut(&market_index)?;
-        let oracle_price_data = oracle_map.get_price_data(&spot_market.oracle_id())?;
         controller::spot_balance::update_spot_market_cumulative_interest(
             spot_market,
-            Some(oracle_price_data),
+            None,
             now,
             funding_paused,
         )?;
@@ -1321,6 +1372,11 @@ fn transfer_spot_deposit(
             from_user,
         )?;
     }
+
+    // OtterSec #135: same shape as `handle_withdraw`. This handler cranks only the
+    // market being transferred, and the account's other borrow markets arrive
+    // read-only, so their un-booked interest is missing from the check below.
+    math::margin::validate_spot_borrow_interest_fresh_for_margin(from_user, spot_market_map, now)?;
 
     from_user.meets_withdraw_margin_requirement(
         perp_market_map,
@@ -1609,30 +1665,49 @@ pub fn handle_transfer_pools<'c: 'info, 'info>(
     let borrow_to_oracle_price_data =
         *oracle_map.get_price_data(&borrow_to_spot_market.oracle_id())?;
 
+    // Accrue interest on all four markets, but pass `None` so this transfer does NOT
+    // advance their *oracle* TWAPs (OtterSec #134 — the same shape as #110/#111).
+    //
+    // The margin checks at the end of this handler run with `Initial`, which enables
+    // strict pricing: `StrictOraclePrice` bounds are min/max of the live price and each
+    // market's `last_oracle_price_twap_5min`, and a liability is priced at the *upper*
+    // bound. Refreshing that TWAP here, from an instruction any user can call, drags it
+    // toward a temporarily depressed live price, under-values the borrow, and admits a
+    // transfer the pre-refresh TWAP rejects — leaving socialized debt once the oracle
+    // recovers.
+    //
+    // Only pause flags gate this instruction, so the caller controls when it runs. Four
+    // markets are refreshed and both accounts are then margin-checked, so every one of
+    // them is a lever.
+    //
+    // Interest accrual and the deposit/borrow/utilization TWAPs still advance; only the
+    // oracle TWAPs (and their timestamps) are left alone, so the next real refresh still
+    // weights the full elapsed interval. Those TWAPs keep advancing on every other spot
+    // path and via the permissionless `update_spot_market_cumulative_interest` crank.
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut deposit_from_spot_market,
-        Some(&deposit_from_oracle_price_data),
+        None,
         clock.unix_timestamp,
         state.funding_paused()?,
     )?;
 
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut deposit_to_spot_market,
-        Some(&deposit_to_oracle_price_data),
+        None,
         clock.unix_timestamp,
         state.funding_paused()?,
     )?;
 
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut borrow_from_spot_market,
-        Some(&borrow_from_oracle_price_data),
+        None,
         clock.unix_timestamp,
         state.funding_paused()?,
     )?;
 
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut borrow_to_spot_market,
-        Some(&borrow_to_oracle_price_data),
+        None,
         clock.unix_timestamp,
         state.funding_paused()?,
     )?;
@@ -1868,6 +1943,22 @@ pub fn handle_transfer_pools<'c: 'info, 'info>(
     drop(deposit_to_spot_market);
     drop(borrow_from_spot_market);
     drop(borrow_to_spot_market);
+
+    // OtterSec #135: same shape as `handle_withdraw`. This handler cranks only the
+    // four markets it moves balances between, and every other borrow market of
+    // either account arrives read-only, so their un-booked interest is missing from
+    // the checks below. Both accounts are gated: the transfer moves debt onto
+    // `to_user`, so each one releases value against its own debt valuation.
+    math::margin::validate_spot_borrow_interest_fresh_for_margin(
+        from_user,
+        &spot_market_map,
+        clock.unix_timestamp,
+    )?;
+    math::margin::validate_spot_borrow_interest_fresh_for_margin(
+        to_user,
+        &spot_market_map,
+        clock.unix_timestamp,
+    )?;
 
     from_user.meets_withdraw_margin_requirement_swap(
         &perp_market_map,
@@ -2253,15 +2344,7 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
         &spot_market_map,
         &mut oracle_map,
     )? {
-        // The floor restricts the from side here, so take the lower bound.
-        validate!(
-            !from_user.is_below_buffered_equity_floor(from_user_net_equity.lower),
-            ErrorCode::EquityBelowFloor,
-            "from user net equity {} below equity floor {} + buffer {}",
-            from_user_net_equity.lower,
-            from_user.equity_floor,
-            from_user.equity_floor_buffer
-        )?;
+        from_user_net_equity.validate_clears_buffered_floor(from_user)?;
     }
 
     let to_user_margin_context = MarginContext::standard(MarginRequirementType::Initial);
@@ -2291,15 +2374,7 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
         &spot_market_map,
         &mut oracle_map,
     )? {
-        // The floor restricts the to side here, so take the lower bound.
-        validate!(
-            !to_user.is_below_buffered_equity_floor(to_user_net_equity.lower),
-            ErrorCode::EquityBelowFloor,
-            "to user net equity {} below equity floor {} + buffer {}",
-            to_user_net_equity.lower,
-            to_user.equity_floor,
-            to_user.equity_floor_buffer
-        )?;
+        to_user_net_equity.validate_clears_buffered_floor(to_user)?;
     }
 
     let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
@@ -3632,6 +3707,45 @@ pub fn handle_delete_user(ctx: Context<DeleteUser>) -> Result<()> {
         Clock::get()?.unix_timestamp,
     )?;
 
+    // OtterSec #128: settle this subaccount's revenue-share rows before the id goes
+    // away for good.
+    //
+    // `revoke_completed_orders` only transitions rows whose `sub_account_id` matches
+    // the `User` it is handed, and `delete_user` retires that id permanently — the
+    // allocation counter (`number_of_sub_accounts_created`) has no decrement site, so
+    // the id is never reissued and no future `User` can ever match those rows again.
+    // A row left `open && !completed` therefore became unreachable: the builder's
+    // accrued fee was stranded and the market's `pending_revenue_share` stayed
+    // inflated for the life of the market.
+    //
+    // Note the window is *not* the open-order case — `validate_user_deletion` already
+    // requires every order closed. It is the filled-but-not-yet-revoked row, which is
+    // exactly the state `revoke_completed_orders` exists to resolve.
+    //
+    // Resolve rather than block: because every order is already closed, each row for
+    // this subaccount transitions to `Completed` (or is cleared when it carries no
+    // fees), which is the state the permissionless sweep pays out of — and the sweep
+    // needs no `User`, so it still pays after the account is gone. Blocking deletion
+    // instead would punish the wrong party, holding a user's rent hostage until a
+    // keeper happened to crank.
+    //
+    // The escrow is pinned to the authority's PDA by `seeds`, so an empty account
+    // proves this authority has no escrow (nothing to orphan) rather than signalling
+    // an omitted account.
+    if !ctx.accounts.revenue_share_escrow.data_is_empty() {
+        let mut escrow = ctx.accounts.revenue_share_escrow.load_zc_mut()?;
+        escrow.revoke_completed_orders(user)?;
+
+        // Belt and braces: after the above, nothing for this subaccount may still be
+        // outstanding. If it somehow is, fail rather than retire the id over it.
+        validate!(
+            !escrow.has_outstanding_orders_for_sub_account(user.sub_account_id)?,
+            ErrorCode::UserCantBeDeleted,
+            "sub account {} still has outstanding revenue-share orders",
+            user.sub_account_id
+        )?;
+    }
+
     safe_decrement!(user_stats.number_of_sub_accounts, 1);
 
     let mut state = ctx.accounts.state.load_mut()?;
@@ -3853,10 +3967,23 @@ pub fn handle_begin_swap<'c: 'info, 'info>(
         "begin_swap ended in invalid state"
     )?;
 
-    let in_oracle_data = oracle_map.get_price_data(&in_spot_market.oracle_id())?;
+    // Accrue interest and advance the deposit/borrow/utilization TWAPs, but pass
+    // `None` so this swap does NOT advance the market's *oracle* TWAPs.
+    // `end_swap`'s `validate_price_bands_for_swap` measures the realized fill
+    // against `last_oracle_price_twap_5min` on this very market; refreshing it
+    // here — in the same transaction, from an instruction the swapper controls —
+    // pulls it toward the live oracle price and widens the band the swap is then
+    // checked against, letting an underpriced swap through that the pre-refresh
+    // TWAP rejects (OtterSec #110).
+    //
+    // begin_swap and end_swap are separate instructions, so there is nowhere to
+    // hold an in-memory snapshot across the check the way the perp fill does for
+    // #112. The refresh is moved instead of dropped: `end_swap` advances both
+    // markets' oracle TWAPs after its band check, so the swap still contributes
+    // to the EMA and the check still reads the pre-swap value.
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut in_spot_market,
-        Some(in_oracle_data),
+        None,
         now,
         state.funding_paused()?,
     )?;
@@ -3892,10 +4019,13 @@ pub fn handle_begin_swap<'c: 'info, 'info>(
         "begin_swap ended in invalid state"
     )?;
 
-    let out_oracle_data = oracle_map.get_price_data(&out_spot_market.oracle_id())?;
+    // `None` for the same reason as the in market above (OtterSec #110):
+    // `validate_price_bands_for_swap` reads whichever of the two markets has a
+    // zero initial margin ratio, so both sides must stay unrefreshed until
+    // `end_swap` has run the check.
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut out_spot_market,
-        Some(out_oracle_data),
+        None,
         now,
         state.funding_paused()?,
     )?;
@@ -4151,6 +4281,10 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         0,
         Some(LogMode::Margin),
     )?;
+    // Copied out of the map, not borrowed from it: the TWAP refresh at the end of
+    // this handler needs the reading, and holding a reference would keep
+    // `oracle_map` borrowed across every margin call in between.
+    let in_oracle_data = *in_oracle_data;
     let in_oracle_price = in_oracle_data.price;
 
     let mut out_spot_market = spot_market_map.get_ref_mut(&out_market_index)?;
@@ -4174,6 +4308,7 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         0,
         Some(LogMode::Margin),
     )?;
+    let out_oracle_data = *out_oracle_data;
     let out_oracle_price = out_oracle_data.price;
 
     let in_vault = &mut ctx.accounts.in_spot_market_vault;
@@ -4537,6 +4672,11 @@ pub fn handle_end_swap<'c: 'info, 'info>(
     drop(out_spot_market);
     drop(in_spot_market);
 
+    // OtterSec #135: same shape as `handle_withdraw`. This handler cranks only the
+    // two markets it swaps between, and the account's other borrow markets arrive
+    // read-only, so their un-booked interest is missing from the check below.
+    math::margin::validate_spot_borrow_interest_fresh_for_margin(&user, &spot_market_map, now)?;
+
     user.meets_withdraw_margin_requirement_swap(
         &perp_market_map,
         &spot_market_map,
@@ -4573,7 +4713,7 @@ pub fn handle_end_swap<'c: 'info, 'info>(
     };
     emit!(swap_record);
 
-    let out_spot_market = spot_market_map.get_ref_mut(&out_market_index)?;
+    let mut out_spot_market = spot_market_map.get_ref_mut(&out_market_index)?;
 
     validate!(
         out_spot_market.flash_loan_initial_token_amount == 0
@@ -4582,7 +4722,7 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         "end_swap ended in invalid state"
     )?;
 
-    let in_spot_market = spot_market_map.get_ref_mut(&in_market_index)?;
+    let mut in_spot_market = spot_market_map.get_ref_mut(&in_market_index)?;
 
     validate!(
         in_spot_market.flash_loan_initial_token_amount == 0
@@ -4601,6 +4741,30 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         state
             .oracle_guard_rails
             .max_oracle_twap_5min_percent_divergence(),
+    )?;
+
+    // Advance the oracle TWAPs last, after the band check above has read them.
+    //
+    // `begin_swap` passes `None` so the swap does not refresh the very anchor
+    // `validate_price_bands_for_swap` measures the realized fill against
+    // (OtterSec #110). Skipping the refresh entirely leaves the swap lane
+    // contributing nothing to the EMA, so it happens here instead: the check is
+    // already done, and `begin_swap` forbids any Velocity instruction after
+    // `end_swap`, so nothing else in this transaction can read the new value.
+    //
+    // `begin_swap` left `last_oracle_price_twap_ts` alone, so this update still
+    // weights the full elapsed interval. The deposit/borrow/utilization TWAPs
+    // were already advanced there and `last_twap_ts` stamped, so they are a
+    // no-op here.
+    controller::spot_balance::update_spot_market_twap_stats(
+        &mut in_spot_market,
+        Some(&in_oracle_data),
+        now,
+    )?;
+    controller::spot_balance::update_spot_market_twap_stats(
+        &mut out_spot_market,
+        Some(&out_oracle_data),
+        now,
     )?;
 
     Ok(())
@@ -5450,6 +5614,22 @@ pub struct DeleteUser<'info> {
     pub state: AccountLoader<'info, State>,
     #[account(mut)]
     pub authority: Signer<'info>,
+    /// CHECK: the authority's `RevenueShareEscrow`, which may legitimately not exist —
+    /// most users never create one. Deliberately an `UncheckedAccount` **pinned by
+    /// `seeds`** rather than a typed `AccountLoader`: because the address is derived
+    /// and not caller-chosen, absence is *provable* (`data_is_empty()`), so the handler
+    /// can distinguish "this authority has no escrow" from "the caller omitted it to
+    /// skip the check". A typed loader would instead make deletion impossible for the
+    /// majority of users, who have no escrow account to pass.
+    ///
+    /// Required rather than `Option` so a caller holding fee-bearing builder rows
+    /// cannot simply leave it out (OtterSec #128).
+    #[account(
+        mut,
+        seeds = [REVENUE_SHARE_ESCROW_PDA_SEED.as_bytes(), authority.key().as_ref()],
+        bump,
+    )]
+    pub revenue_share_escrow: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]

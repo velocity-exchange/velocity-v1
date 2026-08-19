@@ -27,6 +27,28 @@ export const MAX_LEVERAGE_ORDER_SIZE = new BN('18446744073709551615');
 export const PERCENTAGE_PRECISION_EXP = new BN(6);
 /** 1e6; precision for percentage/fraction fields (e.g. AMM concentration coefficient, funding ramp slope, LP pool volatility). */
 export const PERCENTAGE_PRECISION = new BN(10).pow(PERCENTAGE_PRECISION_EXP);
+
+/**
+ * Minimum slots the program requires between two accepted MM-oracle writes
+ * (`MM_ORACLE_MIN_SLOT_GAP` in `math/constants.rs`). Also the immediate-fill
+ * staleness threshold a perp market falls back to when
+ * `oracleSlotDelayOverride` is unset and the price is MM-oracle-sourced,
+ * since a tighter threshold than this is unsatisfiable for such a price
+ * (an exchange-sourced price keeps the strict zero threshold when unset).
+ */
+export const MM_ORACLE_MIN_SLOT_GAP = new BN(2);
+/**
+ * Max slots the program tolerates between an MM-oracle update's source
+ * observation slot (carried in the payload) and the slot it lands, enforced
+ * symmetrically in both directions (`MM_ORACLE_MAX_SOURCE_AGE_SLOTS` in
+ * `math/constants.rs`). An update landing later than this is skipped, since
+ * the stored `mmOracleSlot` is the landing slot and a late-landing update
+ * would make an old observation read as fresh; a source slot further ahead
+ * than this is skipped as a wrong-unit/wrong-scale caller bug. Pinned at or
+ * below `MM_ORACLE_MIN_SLOT_GAP` by a program-side assert, since the
+ * landing-slot stamp understates observation age by up to this bound.
+ */
+export const MM_ORACLE_MAX_SOURCE_AGE_SLOTS = new BN(2);
 /** Alias of `PERCENTAGE_PRECISION` (1e6) for the AMM's `concentrationCoef` field. */
 export const CONCENTRATION_PRECISION = PERCENTAGE_PRECISION;
 
@@ -145,6 +167,29 @@ export const TRIGGER_PRICE_LAST_FILL_MAX_AGE = FIVE_MINUTE;
 export const ONE_HOUR = new BN(60 * 60);
 /** 31,536,000 seconds (365 days). */
 export const ONE_YEAR = new BN(31536000);
+
+/**
+ * Mirror of the program's `MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN`: the largest
+ * share of a spot borrow that un-booked interest may hide, in
+ * `PERCENTAGE_PRECISION` (one basis point).
+ *
+ * A value-releasing path (withdraw, transfer, swap, or a perp fill) rejects with
+ * `SpotMarketInterestStaleForMargin` when a market that carries one of the account's
+ * borrows has not accrued interest recently enough to hold its omission under this
+ * share. `updateSpotMarketCumulativeInterest` is permissionless and can be bundled
+ * into the same transaction.
+ *
+ * Use `maxSpotInterestStalenessForMargin` to turn this into one market's time window.
+ */
+export const MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN =
+	PERCENTAGE_PRECISION.divn(10_000);
+
+/**
+ * Mirror of the program's `MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN`: the ceiling on
+ * the window `maxSpotInterestStalenessForMargin` derives, so a low-rate market
+ * cannot go un-cranked indefinitely.
+ */
+export const MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN = ONE_HOUR;
 
 /** Market index of the protocol's quote spot market (the protocol's quote asset on mainnet). */
 export const QUOTE_SPOT_MARKET_INDEX = 0;

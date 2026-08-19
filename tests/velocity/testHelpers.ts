@@ -802,6 +802,33 @@ export const setFeedPrice = async (
 	});
 };
 
+// Rewrites a mock oracle's confidence interval without touching the price,
+// re-stamping the posted slot so the feed reads fresh. A confidence wide
+// relative to the price classifies the oracle TooUncertain.
+export const setFeedConfidenceNoProgram = async (
+	context: BankrunContextWrapper,
+	newConfidence: number,
+	priceFeed: PublicKey
+) => {
+	const info = await context.connection.getAccountInfo(priceFeed);
+	const data = Buffer.from(info.data);
+
+	const currentSlot = Number(await context.connection.getSlot());
+	const exponent = data.readInt32LE(32);
+	const scaledConf = BigInt(Math.round(newConfidence * 10 ** -exponent));
+
+	data.writeBigUInt64LE(BigInt(currentSlot), 24);
+	data.writeBigUInt64LE(scaledConf, 40);
+
+	context.context.setAccount(priceFeed, {
+		executable: info.executable,
+		owner: info.owner,
+		lamports: info.lamports,
+		data: data,
+		rentEpoch: info.rentEpoch ?? 0,
+	});
+};
+
 export const setFeedPriceNoProgram = async (
 	context: BankrunContextWrapper,
 	newPrice: number,

@@ -5019,6 +5019,102 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
+	 * Sets a perp market's additive taker-fee surcharge: `taker fee = (tier fee
+	 * + add-on) * (1 +/- feeAdjustment%)`. Unsigned, surcharge only (promo
+	 * discounts go through `updatePromoFeeTier` — a discount could push the
+	 * taker fee below the maker rebate it funds); maker rebates are untouched.
+	 * Requires warm admin (`check_warm`). Throws `DefaultError` on-chain if
+	 * `takerFeeAddonTenthBps > MAX_TAKER_FEE_ADDON_TENTH_BPS` (100).
+	 * @param perpMarketIndex - Perp market to update.
+	 * @param takerFeeAddonTenthBps - Unsigned add-on in tenth-bps (10 = 1bp, 15 = 1.5bp), 0..100.
+	 * @returns Transaction signature.
+	 */
+	public async updatePerpMarketTakerFeeAddon(
+		perpMarketIndex: number,
+		takerFeeAddonTenthBps: number
+	): Promise<TransactionSignature> {
+		const updatePerpMarketTakerFeeAddonIx =
+			await this.getUpdatePerpMarketTakerFeeAddonIx(
+				perpMarketIndex,
+				takerFeeAddonTenthBps
+			);
+
+		const tx = await this.buildTransaction(updatePerpMarketTakerFeeAddonIx);
+
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+
+		return txSig;
+	}
+
+	/**
+	 * Builds the `updatePerpMarketTakerFeeAddon` instruction without sending it.
+	 * See `updatePerpMarketTakerFeeAddon`.
+	 * @returns The unsigned `updatePerpMarketTakerFeeAddon` instruction.
+	 */
+	public async getUpdatePerpMarketTakerFeeAddonIx(
+		perpMarketIndex: number,
+		takerFeeAddonTenthBps: number
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.updatePerpMarketTakerFeeAddon(
+			takerFeeAddonTenthBps,
+			{
+				accounts: {
+					admin: this.isSubscribed
+						? this.getStateAccount().coldAdmin
+						: this.wallet.publicKey,
+					state: await this.getStatePublicKey(),
+					perpMarket: await getPerpMarketPublicKey(
+						this.program.programId,
+						perpMarketIndex
+					),
+				},
+			}
+		);
+	}
+
+	/**
+	 * Sets the promotional fee-tier floor: while non-zero, every account's
+	 * effective perp fee tier is `max(volume tier, promoFeeTier)`, so nobody
+	 * is downgraded and accounts already above the floor keep their tier.
+	 * 0 disables the promo; accounts revert to their volume tier on their
+	 * next fill. Requires warm admin (`check_warm`). Throws `DefaultError`
+	 * on-chain if the tier index is out of range (>= 10).
+	 * @param promoFeeTier - Fee-tier index to floor everyone at (0 = disabled).
+	 * @returns Transaction signature.
+	 */
+	public async updatePromoFeeTier(
+		promoFeeTier: number
+	): Promise<TransactionSignature> {
+		const updatePromoFeeTierIx = await this.getUpdatePromoFeeTierIx(
+			promoFeeTier
+		);
+
+		const tx = await this.buildTransaction(updatePromoFeeTierIx);
+
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+
+		return txSig;
+	}
+
+	/**
+	 * Builds the `updatePromoFeeTier` instruction without sending it. See
+	 * `updatePromoFeeTier`.
+	 * @returns The unsigned `updatePromoFeeTier` instruction.
+	 */
+	public async getUpdatePromoFeeTierIx(
+		promoFeeTier: number
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.updatePromoFeeTier(promoFeeTier, {
+			accounts: {
+				admin: this.isSubscribed
+					? this.getStateAccount().coldAdmin
+					: this.wallet.publicKey,
+				state: await this.getStatePublicKey(),
+			},
+		});
+	}
+
+	/**
 	 * Sets the retention buffer the streaming fee sweep leaves in a perp market's pnl pool on top
 	 * of `max(netUserPnl, 0)` before the IF/AMM-provision drains take their cut (the protocol
 	 * drain is exempt and always runs). Requires warm admin (`check_warm`). See
@@ -6193,6 +6289,48 @@ export class AdminClient extends VelocityClient {
 				state: await this.getStatePublicKey(),
 			},
 		});
+	}
+
+	/**
+	 * Toggles the `VammMakerRebate` feature bit. When enabled, the vAMM earns
+	 * the maker rebate on fills it makes, carved off the taker-fee remainder
+	 * and folded into the AMM's fee provision.
+	 * @param enable - `true` to enable (cold-admin-only), `false` to disable (any `FeatureFlag`-authorised signer).
+	 * @returns Transaction signature.
+	 */
+	public async updateFeatureBitFlagsVammMakerRebate(
+		enable: boolean
+	): Promise<TransactionSignature> {
+		const updateFeatureBitFlagsVammMakerRebateIx =
+			await this.getUpdateFeatureBitFlagsVammMakerRebateIx(enable);
+
+		const tx = await this.buildTransaction(
+			updateFeatureBitFlagsVammMakerRebateIx
+		);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+
+		return txSig;
+	}
+
+	/**
+	 * Builds the `updateFeatureBitFlagsVammMakerRebate` instruction without sending it.
+	 * See `updateFeatureBitFlagsVammMakerRebate`.
+	 * @returns The unsigned `updateFeatureBitFlagsVammMakerRebate` instruction.
+	 */
+	public async getUpdateFeatureBitFlagsVammMakerRebateIx(
+		enable: boolean
+	): Promise<TransactionInstruction> {
+		return this.program.instruction.updateFeatureBitFlagsVammMakerRebate(
+			enable,
+			{
+				accounts: {
+					admin: this.useHotWalletAdmin
+						? this.wallet.publicKey
+						: this.getStateAccount().coldAdmin,
+					state: await this.getStatePublicKey(),
+				},
+			}
+		);
 	}
 
 	/**

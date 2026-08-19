@@ -19,8 +19,8 @@ use {
             },
             helpers::{get_proportion_u128, on_the_hour_update},
             insurance::{
-                calculate_if_shares_lost, calculate_rebase_info, if_shares_to_vault_amount,
-                vault_amount_to_if_shares,
+                calculate_if_shares_lost, calculate_rebase_info,
+                deposit_amount_and_shares_for_if_stake, if_shares_to_vault_amount,
             },
             safe_math::SafeMath,
             spot_balance::get_token_amount,
@@ -77,15 +77,19 @@ pub fn update_user_stats_if_stake_amount(
     Ok(())
 }
 
+/// Stake into the insurance fund, returning the amount actually staked — the caller
+/// transfers that, not `requested_amount`. See `deposit_amount_and_shares_for_if_stake`:
+/// only the portion of the request that prices to whole shares is taken, so a deposit
+/// can never be partly forfeited to existing shareholders as rounding.
 pub fn add_insurance_fund_stake(
-    amount: u64,
+    requested_amount: u64,
     insurance_vault_amount: u64,
     insurance_fund_stake: &mut InsuranceFundStake,
     user_stats: &mut UserStats,
     spot_market: &mut SpotMarket,
     now: i64,
     admin_deposit: bool,
-) -> VelocityResult {
+) -> VelocityResult<u64> {
     validate!(
         !(insurance_vault_amount == 0 && spot_market.insurance_fund.total_shares != 0),
         ErrorCode::InvalidIFForNewStakes,
@@ -108,22 +112,25 @@ pub fn add_insurance_fund_stake(
     let total_if_shares_before = spot_market.insurance_fund.total_shares;
     let user_if_shares_before = spot_market.insurance_fund.user_shares;
 
-    let n_shares = vault_amount_to_if_shares(
-        amount,
+    // `amount` is the share-aligned portion of the request; the remainder is left in the
+    // depositor's token account rather than transferred, so no part of a deposit accrues
+    // to existing shareholders as rounding. Shares are priced off the pre-transfer vault
+    // balance, which an attacker can inflate by donating into the vault — pricing the
+    // deposit exactly is what makes that inflation unprofitable.
+    let (amount, n_shares) = deposit_amount_and_shares_for_if_stake(
+        requested_amount,
         spot_market.insurance_fund.total_shares,
         insurance_vault_amount,
     )?;
 
-    // Reject deposits that mint zero shares. Shares are priced off the pre-transfer
-    // vault balance, so an attacker can donate into the vault to inflate the share
-    // price and force floor(amount * total_shares / vault) == 0, then capture the
-    // victim's full deposit as appreciation on their own shares. Mirrors the
-    // `n_shares > 0` guard the request-remove path already enforces.
+    // A request below the price of a single share buys nothing at all; reject it rather
+    // than accept a deposit of zero. Mirrors the `n_shares > 0` guard the request-remove
+    // path already enforces.
     validate!(
         n_shares > 0,
         ErrorCode::IFDepositMintsZeroShares,
-        "deposit of {} mints zero IF shares at current share price (vault {}, total_shares {})",
-        amount,
+        "deposit of {} is below the price of one IF share (vault {}, total_shares {})",
+        requested_amount,
         insurance_vault_amount,
         spot_market.insurance_fund.total_shares
     )?;
@@ -182,7 +189,7 @@ pub fn add_insurance_fund_stake(
         user_if_shares_after: spot_market.insurance_fund.user_shares,
     });
 
-    Ok(())
+    Ok(amount)
 }
 
 pub fn apply_rebase_to_insurance_fund(

@@ -83,9 +83,21 @@ pub fn deposit_into_isolated_perp_position<'c: 'info, 'info>(
         "Market is being initialized"
     )?;
 
+    // Accrue interest, but pass `None` so this instruction does NOT advance the
+    // market's *oracle* TWAPs (OtterSec #134 — the same shape as #110/#111).
+    //
+    // The `MarginRequirementType::Initial` gate later in this flow enables strict
+    // pricing: `StrictOraclePrice` bounds are min/max of the live price and
+    // `last_oracle_price_twap_5min`, and a liability is priced at the *upper* bound.
+    // Refreshing that TWAP here drags it toward a temporarily depressed live price and
+    // under-values the debt the gate is meant to catch.
+    //
+    // These instructions are compiled out of mainnet builds pending audit, so this is
+    // not currently reachable in production — it is fixed now so the feature gate can
+    // open without carrying the hole.
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut spot_market,
-        Some(&oracle_price_data),
+        None,
         now,
         state.funding_paused()?,
     )?;
@@ -239,10 +251,21 @@ pub fn transfer_isolated_perp_position_deposit<'c: 'info, 'info>(
             spot_market.pool_id
         )?;
 
-        let oracle_price_data = oracle_map.get_price_data(&spot_market.oracle_id())?;
+        // Accrue interest, but pass `None` so this instruction does NOT advance the
+        // market's *oracle* TWAPs (OtterSec #134 — the same shape as #110/#111).
+        //
+        // The `MarginRequirementType::Initial` gate later in this flow enables strict
+        // pricing: `StrictOraclePrice` bounds are min/max of the live price and
+        // `last_oracle_price_twap_5min`, and a liability is priced at the *upper* bound.
+        // Refreshing that TWAP here drags it toward a temporarily depressed live price and
+        // under-values the debt the gate is meant to catch.
+        //
+        // These instructions are compiled out of mainnet builds pending audit, so this is
+        // not currently reachable in production — it is fixed now so the feature gate can
+        // open without carrying the hole.
         controller::spot_balance::update_spot_market_cumulative_interest(
             spot_market,
-            Some(oracle_price_data),
+            None,
             now,
             funding_paused,
         )?;
@@ -413,9 +436,21 @@ pub fn withdraw_from_isolated_perp_position<'c: 'info, 'info>(
         let spot_market = &mut spot_market_map.get_ref_mut(&spot_market_index)?;
         let oracle_price_data = oracle_map.get_price_data(&spot_market.oracle_id())?;
 
+        // Accrue interest, but pass `None` so this instruction does NOT advance the
+        // market's *oracle* TWAPs (OtterSec #134 — the same shape as #110/#111).
+        //
+        // The `MarginRequirementType::Initial` gate later in this flow enables strict
+        // pricing: `StrictOraclePrice` bounds are min/max of the live price and
+        // `last_oracle_price_twap_5min`, and a liability is priced at the *upper* bound.
+        // Refreshing that TWAP here drags it toward a temporarily depressed live price and
+        // under-values the debt the gate is meant to catch.
+        //
+        // These instructions are compiled out of mainnet builds pending audit, so this is
+        // not currently reachable in production — it is fixed now so the feature gate can
+        // open without carrying the hole.
         controller::spot_balance::update_spot_market_cumulative_interest(
             spot_market,
-            Some(oracle_price_data),
+            None,
             now,
             funding_paused,
         )?;
@@ -512,6 +547,16 @@ pub fn withdraw_from_isolated_perp_position<'c: 'info, 'info>(
             spot_market_index
         )?;
     }
+
+    // OtterSec #135: same shape as `handle_withdraw`. This path cranks only the
+    // market the isolated collateral leaves from, and the account's other borrow
+    // markets arrive read-only, so their un-booked interest is missing from the
+    // check below.
+    crate::math::margin::validate_spot_borrow_interest_fresh_for_margin(
+        user,
+        spot_market_map,
+        now,
+    )?;
 
     user.meets_withdraw_margin_requirement(
         perp_market_map,

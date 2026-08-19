@@ -82,6 +82,7 @@ async function makeFeeMockUser(referrerStatus: number): Promise<User> {
 		({
 			perpFeeStructure: mockFeeStructure,
 			spotFeeStructure: mockFeeStructure,
+			promoFeeTier: 0,
 		}) as any;
 
 	const userStatsAccount = {
@@ -102,6 +103,7 @@ async function makeFeeMockUser(referrerStatus: number): Promise<User> {
 		({
 			marketIndex: 0,
 			feeAdjustment: 0,
+			takerFeeAddonTenthBps: 0,
 		}) as any;
 
 	return user;

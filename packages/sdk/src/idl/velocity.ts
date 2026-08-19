@@ -1501,6 +1501,44 @@ export type Velocity = {
             "user",
             "userStats"
           ]
+        },
+        {
+          "name": "revenueShareEscrow",
+          "docs": [
+            "most users never create one. Deliberately an `UncheckedAccount` **pinned by",
+            "`seeds`** rather than a typed `AccountLoader`: because the address is derived",
+            "and not caller-chosen, absence is *provable* (`data_is_empty()`), so the handler",
+            "can distinguish \"this authority has no escrow\" from \"the caller omitted it to",
+            "skip the check\". A typed loader would instead make deletion impossible for the",
+            "majority of users, who have no escrow account to pass.",
+            "",
+            "Required rather than `Option` so a caller holding fee-bearing builder rows",
+            "cannot simply leave it out (OtterSec #128)."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  82,
+                  69,
+                  86,
+                  95,
+                  69,
+                  83,
+                  67,
+                  82,
+                  79,
+                  87
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              }
+            ]
+          }
         }
       ],
       "args": []
@@ -2458,6 +2496,40 @@ export type Velocity = {
         },
         {
           "name": "velocitySigner"
+        },
+        {
+          "name": "revenueShareEscrow",
+          "docs": [
+            "because most users never create one. It carries the same contract as",
+            "`DeleteUser::revenue_share_escrow`: an `UncheckedAccount` pinned by `seeds`, so",
+            "the handler can tell \"this authority has no escrow\" (`data_is_empty()`) from \"the",
+            "keeper omitted the account to skip the check\". It is required rather than",
+            "`Option` for that second reason (OtterSec #128)."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  82,
+                  69,
+                  86,
+                  95,
+                  69,
+                  83,
+                  67,
+                  82,
+                  79,
+                  87
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "authority"
+              }
+            ]
+          }
         }
       ],
       "args": []
@@ -4712,6 +4784,22 @@ export type Velocity = {
             "Instructions Sysvar for instruction introspection"
           ],
           "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "liquidatorStats",
+          "docs": [
+            "The liquidator's `UserStats`, read by `begin` to bar an authority whose",
+            "equity breaker is tripped.",
+            "",
+            "It sits last, not beside `liquidator` where the direct liquidation",
+            "contexts carry it, because this pair is addressed by position rather",
+            "than by name: `begin` introspects the matching `end` and compares the",
+            "two account lists index by index, and the swap accounts both forward",
+            "begin where this fixed block ends. Taking the last slot renumbered",
+            "nothing. Slotting it beside `liquidator` would have moved `user`, both",
+            "vaults and both token accounts down one, silently invalidating every",
+            "hand-built transaction that still filled the old order."
+          ]
         }
       ],
       "args": [
@@ -4845,6 +4933,22 @@ export type Velocity = {
             "Instructions Sysvar for instruction introspection"
           ],
           "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "liquidatorStats",
+          "docs": [
+            "The liquidator's `UserStats`, read by `begin` to bar an authority whose",
+            "equity breaker is tripped.",
+            "",
+            "It sits last, not beside `liquidator` where the direct liquidation",
+            "contexts carry it, because this pair is addressed by position rather",
+            "than by name: `begin` introspects the matching `end` and compares the",
+            "two account lists index by index, and the swap accounts both forward",
+            "begin where this fixed block ends. Taking the last slot renumbered",
+            "nothing. Slotting it beside `liquidator` would have moved `user`, both",
+            "vaults and both token accounts down one, silently invalidating every",
+            "hand-built transaction that still filled the old order."
+          ]
         }
       ],
       "args": [
@@ -9185,6 +9289,35 @@ export type Velocity = {
       ]
     },
     {
+      "name": "updateFeatureBitFlagsVammMakerRebate",
+      "discriminator": [
+        237,
+        132,
+        7,
+        255,
+        116,
+        155,
+        5,
+        119
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "enable",
+          "type": "bool"
+        }
+      ]
+    },
+    {
       "name": "updateFundingRate",
       "discriminator": [
         201,
@@ -11185,6 +11318,38 @@ export type Velocity = {
       ]
     },
     {
+      "name": "updatePerpMarketTakerFeeAddon",
+      "discriminator": [
+        53,
+        22,
+        191,
+        15,
+        62,
+        150,
+        36,
+        203
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "perpMarket",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "takerFeeAddonTenthBps",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "updatePerpMarketUnrealizedAssetWeight",
       "discriminator": [
         135,
@@ -11313,6 +11478,35 @@ export type Velocity = {
               "name": "prelaunchOracleParams"
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "updatePromoFeeTier",
+      "discriminator": [
+        104,
+        57,
+        241,
+        162,
+        69,
+        198,
+        5,
+        175
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "promoFeeTier",
+          "type": "u8"
         }
       ]
     },
@@ -16522,6 +16716,21 @@ export type Velocity = {
       "code": 6368,
       "name": "invalidEquityBreakerReset",
       "msg": "Invalid equity breaker reset"
+    },
+    {
+      "code": 6369,
+      "name": "invalidNativeInstructionData",
+      "msg": "Native dispatch: instruction data is malformed for this opcode"
+    },
+    {
+      "code": 6370,
+      "name": "mmOracleUpdateDisabled",
+      "msg": "MM oracle updates are disabled by the admin feature-bit kill switch"
+    },
+    {
+      "code": 6371,
+      "name": "spotMarketInterestStaleForMargin",
+      "msg": "Spot market interest is too stale to value a borrow for margin"
     }
   ],
   "types": [
@@ -17916,17 +18125,21 @@ export type Velocity = {
           {
             "name": "ammProtocolFeesReceived",
             "docs": [
-              "cumulative fee provision granted to the AMM via `amm_fee_numerator` —",
-              "its backstop-of-last-resort tranche, drawable (and decremented) only in",
-              "bankruptcy. The AMM's own spread/trading capital beyond this provision",
-              "is never tapped. precision: QUOTE_PRECISION"
+              "cumulative fee provision granted to the AMM via `amm_fee_numerator`,",
+              "plus the vAMM maker rebate when `FeatureBitFlags::VammMakerRebate` is",
+              "enabled — its backstop-of-last-resort tranche, drawable (and",
+              "decremented) only in bankruptcy. Enabling the rebate bit therefore",
+              "grows the bankruptcy clawback cap by the rebates earned. The AMM's own",
+              "spread/trading capital beyond this provision is never tapped.",
+              "precision: QUOTE_PRECISION"
             ],
             "type": "u128"
           },
           {
             "name": "pendingAmmProvision",
             "docs": [
-              "AMM fee provision accrued at fill (already booked into the AMM's",
+              "AMM fee provision (including the vAMM maker rebate when enabled)",
+              "accrued at fill (already booked into the AMM's",
               "`total_fee_minus_distributions`) but not yet tokenized into",
               "`amm.fee_pool` by the sweep. Invariant: `<= amm_protocol_fees_received`.",
               "precision: QUOTE_PRECISION"
@@ -17975,7 +18188,8 @@ export type Velocity = {
               "Share of the trade-fee *remainder* (taker fee after maker rebate, referral,",
               "referee discount, and filler reward are taken off the top) provisioned to",
               "the AMM as liquidity (its backstop-of-last-resort tranche, tracked in",
-              "`PerpMarket.fee_ledger.amm_protocol_fees_received`). precision:",
+              "`PerpMarket.fee_ledger.amm_protocol_fees_received` alongside the vAMM",
+              "maker rebate when that feature is enabled). precision:",
               "FEE_PERCENTAGE_DENOMINATOR. `amm_fee_numerator + if_fee_numerator` must",
               "be <= FEE_PERCENTAGE_DENOMINATOR; the protocol receives the residual",
               "(`remainder − amm − if`) into its withdrawable `protocol_fee_pool`.",
@@ -18475,7 +18689,10 @@ export type Velocity = {
               "Fraction of spot deposit-interest gains carved out to the insurance fund",
               "(staker-owned). precision: IF_FACTOR_PRECISION. (Was `total_factor`; the",
               "protocol-vs-staker split was removed — the IF is now 100% staker-owned,",
-              "so this is purely the staker IF carveout.)"
+              "so this is purely the staker IF carveout.) While non-zero, an accrual",
+              "interval whose cut would convert to less than one token is deferred rather",
+              "than committed, so the cut is never floored away — see",
+              "`update_spot_market_cumulative_interest`."
             ],
             "type": "u32"
           },
@@ -21149,11 +21366,28 @@ export type Velocity = {
             "type": "u32"
           },
           {
+            "name": "takerFeeAddonTenthBps",
+            "docs": [
+              "Additive per-market taker-fee surcharge in tenth-bps (10 = 1bp),",
+              "unsigned: surcharge only (e.g. toxic-flow markets), never a discount.",
+              "A discount could push the taker fee below the maker rebate it must",
+              "fund and revert every match fill; promo discounts go through",
+              "`State.promo_fee_tier` instead. Applied on top of the tier fee before",
+              "`fee_adjustment` scales the sum:",
+              "`taker_fee = (tier_fee + add-on) * (1 +/- fee_adjustment%)`.",
+              "Taker fee only; the maker rebate and the post-only path see",
+              "`fee_adjustment` alone. Occupies 2 bytes of the former 4-byte",
+              "`_padding_buffer` (same offset/alignment on all targets), so existing",
+              "accounts read 0 = no add-on until the admin sets it."
+            ],
+            "type": "u16"
+          },
+          {
             "name": "paddingBuffer",
             "type": {
               "array": [
                 "u8",
-                4
+                2
               ]
             }
           },
@@ -21527,7 +21761,13 @@ export type Velocity = {
           {
             "name": "oracleSlotDelayOverride",
             "docs": [
-              "override for the per-fill slot delay required from the oracle (default -1 = use state default)"
+              "Max oracle delay, in slots, tolerated by immediate (JIT / auction-skipping)",
+              "AMM fills. Positive is an explicit threshold. `0` disables immediate AMM",
+              "fills entirely. Negative (the init default, `-1`) means unset, which",
+              "resolves by price source: `MM_ORACLE_MIN_SLOT_GAP` for an MM-oracle-sourced",
+              "price (the tightest window the crank can satisfy, since the program refuses",
+              "MM-oracle writes closer together than that) and `0` for an exchange-oracle",
+              "price, which can be same-slot fresh. See `math::oracle::oracle_validity`."
             ],
             "type": "i8"
           },
@@ -23439,7 +23679,10 @@ export type Velocity = {
             "name": "protocolFeeFactor",
             "docs": [
               "Protocol's carveout of lending deposit-interest gains, routed to",
-              "`protocol_fee_pool`. precision: IF_FACTOR_PRECISION"
+              "`protocol_fee_pool`. precision: IF_FACTOR_PRECISION. While non-zero, an",
+              "accrual interval whose cut would convert to less than one token is",
+              "deferred rather than committed, so the cut is never floored away — see",
+              "`update_spot_market_cumulative_interest`."
             ],
             "type": "u32"
           },
@@ -23864,11 +24107,23 @@ export type Velocity = {
             "type": "pubkey"
           },
           {
+            "name": "promoFeeTier",
+            "docs": [
+              "Promotional fee-tier floor applied to every account: the effective",
+              "perp fee tier is `max(volume tier, promo_fee_tier)` (clamped to the",
+              "configured tier count), so nobody is downgraded by it. 0 = no-op",
+              "(disabled), also what pre-upgrade accounts read from former padding.",
+              "Reset to 0 and every account is back on its volume tier at its next",
+              "fill; no per-user state."
+            ],
+            "type": "u8"
+          },
+          {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                239
+                238
               ]
             }
           }

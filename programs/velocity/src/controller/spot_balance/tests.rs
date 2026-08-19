@@ -2609,3 +2609,335 @@ fn spot_market_init_stamps_oracle_twap_ts_so_the_first_price_band_survives() {
         band.max() - band.min()
     );
 }
+
+/// OtterSec #110 / #111 — the swap-backed spot lanes must not advance the very
+/// oracle TWAP they then gate on.
+///
+/// `begin_swap` (#110) and `liquidate_spot_with_swap_begin` (#111) both used to
+/// pass `Some(oracle_price_data)` here, refreshing `last_oracle_price_twap_5min`
+/// before the price-band / divergence check that reads it. Passing `None` is the
+/// fix, so pin the contract it depends on: `None` must still accrue interest and
+/// advance the deposit/borrow/utilization TWAPs, and must leave every oracle-TWAP
+/// field — including `last_oracle_price_twap_ts`, so the next real refresh still
+/// sees the full elapsed interval — untouched.
+#[test]
+fn spot_cumulative_interest_with_no_oracle_leaves_oracle_twaps_alone() {
+    let now = 0_i64;
+
+    let before = SpotMarket {
+        market_index: 0,
+        oracle_source: OracleSource::QuoteAsset,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        decimals: 6,
+        initial_asset_weight: SPOT_WEIGHT_PRECISION,
+        deposit_balance: 1000 * SPOT_BALANCE_PRECISION,
+        borrow_balance: 500 * SPOT_BALANCE_PRECISION,
+        optimal_utilization: SPOT_UTILIZATION_PRECISION_U32 / 2,
+        optimal_borrow_rate: SPOT_RATE_PRECISION_U32 * 20,
+        max_borrow_rate: SPOT_RATE_PRECISION_U32 * 50,
+        status: MarketStatus::Active,
+        historical_oracle_data: HistoricalOracleData {
+            last_oracle_price: 100 * PRICE_PRECISION_I64,
+            last_oracle_price_twap: 40 * PRICE_PRECISION_I64,
+            last_oracle_price_twap_5min: 40 * PRICE_PRECISION_I64,
+            last_oracle_price_twap_ts: now,
+            ..HistoricalOracleData::default()
+        },
+        ..SpotMarket::default()
+    };
+
+    // A live price far above the stored TWAPs, i.e. exactly the state a caller
+    // would want to normalize away before its own band check.
+    let oracle_price_data = OraclePriceData {
+        price: 100 * PRICE_PRECISION_I64,
+        confidence: 0,
+        delay: 0,
+        has_sufficient_number_of_data_points: true,
+        ..OraclePriceData::default()
+    };
+
+    let later = now + 3600;
+
+    // Control: with `Some(..)` the oracle TWAP is dragged toward the live price —
+    // the pre-fix behavior, and the reason the band checks could be neutered.
+    let mut refreshed = before;
+    update_spot_market_cumulative_interest(&mut refreshed, Some(&oracle_price_data), later, false)
+        .unwrap();
+    assert!(
+        refreshed.historical_oracle_data.last_oracle_price_twap_5min
+            > before.historical_oracle_data.last_oracle_price_twap_5min,
+        "expected Some(..) to advance the 5min oracle TWAP — if this trips, the \
+         fixture no longer reproduces #110/#111"
+    );
+    assert_eq!(
+        refreshed.historical_oracle_data.last_oracle_price_twap_ts,
+        later
+    );
+
+    // Fixed: `None` leaves every oracle-TWAP field exactly where it was.
+    let mut unrefreshed = before;
+    update_spot_market_cumulative_interest(&mut unrefreshed, None, later, false).unwrap();
+    let historical = unrefreshed.historical_oracle_data;
+    assert_eq!(
+        historical.last_oracle_price_twap,
+        before.historical_oracle_data.last_oracle_price_twap
+    );
+    assert_eq!(
+        historical.last_oracle_price_twap_5min,
+        before.historical_oracle_data.last_oracle_price_twap_5min
+    );
+    assert_eq!(
+        historical.last_oracle_price_twap_ts,
+        before.historical_oracle_data.last_oracle_price_twap_ts,
+        "the timestamp must not move either, or the next real refresh would \
+         under-weight the elapsed interval"
+    );
+    assert_eq!(
+        historical.last_oracle_price,
+        before.historical_oracle_data.last_oracle_price
+    );
+
+    // ...while the rest of the work still happened: interest accrued and the
+    // balance TWAPs advanced.
+    assert!(
+        unrefreshed.cumulative_borrow_interest > before.cumulative_borrow_interest,
+        "interest accrual must not be skipped along with the oracle TWAP"
+    );
+    assert!(unrefreshed.cumulative_deposit_interest > before.cumulative_deposit_interest);
+    assert!(unrefreshed.deposit_token_twap > before.deposit_token_twap);
+    assert!(unrefreshed.borrow_token_twap > before.borrow_token_twap);
+    assert_eq!(unrefreshed.last_twap_ts, later as u64);
+}
+
+/// OtterSec #14 — `update_spot_market_and_check_validity` must judge the oracle, and hand
+/// back the 5-minute TWAP that protective liquidation pricing is bounded against, from the
+/// market as it stands on entry.
+///
+/// It refreshes both oracle TWAPs toward the live price. Judging afterwards let a
+/// too-volatile oracle clear its own `Liquidate` gate, and reading
+/// `last_oracle_price_twap_5min` afterwards collapsed
+/// `calculate_user_protective_{asset,liability}_price` onto the raw oracle price — the
+/// protection is a bound against an independent reference, and the refresh makes the
+/// reference a copy of the thing being bounded.
+///
+/// Unlike #110/#111, the refresh itself stays: liquidation legitimately advances these
+/// TWAPs. Moving it after the gate is the fix.
+#[test]
+fn update_and_check_validity_judges_and_snapshots_before_refreshing() {
+    let now = 0_i64;
+    let later = now + 3600;
+
+    let before = SpotMarket {
+        market_index: 1,
+        oracle_source: OracleSource::PythLazer,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        decimals: 6,
+        deposit_balance: 1000 * SPOT_BALANCE_PRECISION,
+        borrow_balance: 500 * SPOT_BALANCE_PRECISION,
+        status: MarketStatus::Active,
+        historical_oracle_data: HistoricalOracleData {
+            last_oracle_price: 40 * PRICE_PRECISION_I64,
+            last_oracle_price_twap: 40 * PRICE_PRECISION_I64,
+            last_oracle_price_twap_5min: 40 * PRICE_PRECISION_I64,
+            last_oracle_price_twap_ts: now,
+            ..HistoricalOracleData::default()
+        },
+        ..SpotMarket::default()
+    };
+
+    // 6x the stored risk EMA — over the guard rails' 5x too-volatile rail.
+    let oracle_price_data = OraclePriceData {
+        price: 240 * PRICE_PRECISION_I64,
+        confidence: 0,
+        delay: 0,
+        has_sufficient_number_of_data_points: true,
+        ..OraclePriceData::default()
+    };
+
+    let guard_rails = ValidityGuardRails {
+        slots_before_stale_for_amm: 10,
+        slots_before_stale_for_margin: 120,
+        confidence_interval_max_size: 20_000,
+        too_volatile_ratio: 5,
+    };
+
+    let verdict_against = |risk_ema_price: i64| {
+        oracle_validity(
+            MarketType::Spot,
+            before.market_index,
+            risk_ema_price,
+            &oracle_price_data,
+            &guard_rails,
+            before.get_max_confidence_interval_multiplier().unwrap(),
+            &before.oracle_source,
+            LogMode::None,
+            -1,
+            false, // exchange-oracle price, never MM-sourced
+            0,
+        )
+        .unwrap()
+    };
+
+    // Control: the refresh alone drags the risk EMA far enough that this same oracle stops
+    // reading as TooVolatile. That flip is the exploitable primitive.
+    let mut refreshed = before;
+    update_spot_market_cumulative_interest(&mut refreshed, Some(&oracle_price_data), later, false)
+        .unwrap();
+    assert_eq!(
+        verdict_against(before.historical_oracle_data.last_oracle_price_twap),
+        OracleValidity::TooVolatile
+    );
+    assert_ne!(
+        verdict_against(refreshed.historical_oracle_data.last_oracle_price_twap),
+        OracleValidity::TooVolatile,
+        "fixture no longer reproduces the flip — the refresh must be able to clear the rail"
+    );
+
+    // Fixed: the gate reads the entry EMA, so the liquidation is rejected.
+    let mut market = before;
+    assert_eq!(
+        update_spot_market_and_check_validity(
+            &mut market,
+            &oracle_price_data,
+            &guard_rails,
+            later,
+            Some(VelocityAction::Liquidate),
+            false,
+        )
+        .unwrap_err(),
+        ErrorCode::InvalidOracle
+    );
+
+    // And for an action that tolerates the verdict, the returned snapshot is the entry
+    // 5-minute TWAP while the stored one still advances.
+    let mut market = before;
+    let refresh = update_spot_market_and_check_validity(
+        &mut market,
+        &oracle_price_data,
+        &guard_rails,
+        later,
+        Some(VelocityAction::UpdateTwap),
+        false,
+    )
+    .unwrap();
+    assert_eq!(refresh.validity, OracleValidity::TooVolatile);
+    assert_eq!(
+        refresh.pre_refresh_twap_5min,
+        before.historical_oracle_data.last_oracle_price_twap_5min
+    );
+    assert!(
+        market.historical_oracle_data.last_oracle_price_twap_5min > refresh.pre_refresh_twap_5min,
+        "the refresh must still advance the stored TWAP"
+    );
+    assert_eq!(market.last_twap_ts, later as u64);
+}
+
+/// OtterSec #134 — a same-authority spot transfer must not refresh the transferred
+/// market's oracle TWAP before its own source-side margin check.
+///
+/// `transfer_spot_deposit` used to pass `Some(oracle_price_data)`, then call
+/// `meets_withdraw_margin_requirement`, which values the source through
+/// `StrictOraclePrice`. `get_strict_token_value` prices a **liability** at
+/// `strict_price.max()`, so dragging the 5-minute TWAP down toward a temporarily
+/// depressed live price lowers that upper bound, under-values the debt, and frees
+/// sibling collateral for withdrawal — leaving depositor-socialized debt when the
+/// oracle recovers. It now passes `None`.
+#[test]
+fn refreshing_oracle_twap_understates_a_liability_for_the_strict_price() {
+    use crate::{
+        math::spot_balance::get_strict_token_value,
+        state::oracle::{OraclePriceData, StrictOraclePrice},
+    };
+
+    let settled_price = 100 * PRICE_PRECISION_I64;
+    let depressed_price = 60 * PRICE_PRECISION_I64;
+    let now = 1_700_000_000_i64;
+
+    let mut market = SpotMarket {
+        market_index: 1,
+        oracle_source: OracleSource::PythLazer,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        decimals: 6,
+        initial_asset_weight: SPOT_WEIGHT_PRECISION,
+        maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+        deposit_balance: 1_000 * SPOT_BALANCE_PRECISION,
+        borrow_balance: 500 * SPOT_BALANCE_PRECISION,
+        // Non-zero rate params, else the default market has a 0% borrow rate and
+        // nothing accrues for the interest assertion at the end.
+        optimal_utilization: SPOT_UTILIZATION_PRECISION_U32 / 2,
+        optimal_borrow_rate: SPOT_RATE_PRECISION_U32 * 20,
+        max_borrow_rate: SPOT_RATE_PRECISION_U32 * 50,
+        status: MarketStatus::Active,
+        historical_oracle_data: HistoricalOracleData {
+            last_oracle_price: settled_price,
+            last_oracle_price_twap: settled_price,
+            last_oracle_price_twap_5min: settled_price,
+            last_oracle_price_twap_ts: now - 60,
+            ..HistoricalOracleData::default()
+        },
+        ..SpotMarket::default()
+    };
+
+    let depressed_oracle = OraclePriceData {
+        price: depressed_price,
+        confidence: 0,
+        delay: 0,
+        has_sufficient_number_of_data_points: true,
+        ..OraclePriceData::default()
+    };
+
+    // One unit of borrow (negative token amount => liability).
+    let liability: i128 = -(1_000_000_i128);
+
+    let value_at = |m: &SpotMarket| {
+        let strict = StrictOraclePrice::new(
+            depressed_price,
+            m.historical_oracle_data.last_oracle_price_twap_5min,
+            true,
+        );
+        get_strict_token_value(liability, m.decimals, &strict).unwrap()
+    };
+
+    // Baseline: TWAP still at the settled price, so the liability is priced at the
+    // conservative upper bound (100), not the depressed live price.
+    let before = value_at(&market);
+
+    // Pre-fix ordering: refresh first. The TWAP is pulled toward 60, so `max()` drops
+    // and the debt is valued as *smaller* (less negative) than it should be.
+    let mut refreshed = market;
+    update_spot_market_cumulative_interest(&mut refreshed, Some(&depressed_oracle), now, false)
+        .unwrap();
+    assert!(
+        refreshed.historical_oracle_data.last_oracle_price_twap_5min
+            < market.historical_oracle_data.last_oracle_price_twap_5min,
+        "the refresh must drag the 5min TWAP toward the depressed price"
+    );
+    let after_refresh = value_at(&refreshed);
+    assert!(
+        after_refresh > before,
+        "pre-fix ordering must under-value the liability (less negative): {} !> {} \
+         — if this trips, the fixture no longer reproduces #134",
+        after_refresh,
+        before
+    );
+
+    // Fixed ordering: `None` leaves the oracle TWAP (and its timestamp) alone, so the
+    // margin check still prices the debt at the conservative bound.
+    update_spot_market_cumulative_interest(&mut market, None, now, false).unwrap();
+    assert_eq!(
+        market.historical_oracle_data.last_oracle_price_twap_5min,
+        settled_price
+    );
+    assert_eq!(
+        market.historical_oracle_data.last_oracle_price_twap_ts,
+        now - 60,
+        "the timestamp must not move either, or the next real refresh under-weights \
+         the elapsed interval"
+    );
+    assert_eq!(value_at(&market), before);
+    // ...while interest still accrued.
+    assert!(market.cumulative_borrow_interest > SPOT_CUMULATIVE_INTEREST_PRECISION);
+}

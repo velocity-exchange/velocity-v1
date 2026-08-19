@@ -221,48 +221,63 @@ for any field size ≤ 48 bytes.  Once reserve drops below 16, you must check mo
 
 ## Native Instruction Byte Offsets
 
-Two instruction handlers bypass Anchor's deserializer entirely and **write directly into raw
+Three instruction handlers bypass Anchor's deserializer entirely and **write directly into raw
 account bytes** at hardcoded offsets:
 
-- `handle_update_mm_oracle_native` — writes `mm_oracle_slot`, `mm_oracle_price`,
-  `mm_oracle_sequence_id` into a `PerpMarket` account; reads `feature_bit_flags` from a `State`
-  account.
-- `handle_update_amm_spread_adjustment_native` — writes `amm_spread_adjustment` into a
-  `PerpMarket` account.
+- `handle_update_mm_oracle_native` (opcode 0) — writes `mm_oracle_slot`, `mm_oracle_price`,
+  `mm_oracle_sequence_id` into a `PerpMarket` account; reads `feature_bit_flags` and
+  `hot_mm_oracle_crank` from a `State` account.
+- `handle_update_amm_spread_adjustment_native` (opcode 1) — writes `amm_spread_adjustment` into a
+  `PerpMarket` account; reads `hot_amm_spread_adjust` from a `State` account.
+- `handle_update_mm_oracle_batch_native` (opcode 2) — the same writes as opcode 0, for up to 64
+  `PerpMarket` accounts in one instruction.
+
+Opcode 0 and opcode 2 read the `State` auth fields through the shared
+`STATE_FEATURE_BIT_FLAGS_OFFSET` / `STATE_HOT_MM_ORACLE_CRANK_OFFSET` constants in
+`instructions/admin.rs`, and opcode 1 through `STATE_HOT_AMM_SPREAD_ADJUST_OFFSET` in
+`vlp/amm/admin.rs`, so handlers cannot desync from each other; the constants still have to be kept
+in step with the layout, which is what the offset tests below are for.
 
 ### Two different encoding models — two different offset calculation methods
 
 | Account | Encoding | How to compute offset |
 |---------|----------|-----------------------|
-| `PerpMarket` / `AMM` | **Zero-copy** (`#[account(zero_copy)]`) — on-chain bytes *are* the `repr(C)` memory layout | `std::mem::offset_of!(Struct, field) + 8` (8 = discriminator) |
-| `State` | **Regular `#[account]`** — on-chain bytes are **borsh-serialised** (sequential, no alignment padding) | Borsh round-trip: serialize a sentinel value and find its byte position |
+| `PerpMarket` / `AMM` / `State` | **Zero-copy** (`#[account(zero_copy(unsafe))]` + `#[repr(C)]`) — on-chain bytes *are* the memory layout | `std::mem::offset_of!(Struct, field) + 8` (8 = discriminator) |
 
-Using `offset_of!` for a borsh-serialised account gives the **wrong answer** because borsh writes
-fields sequentially with no gaps, while `offset_of!` reflects the memory layout which includes
-alignment padding.
+`State` used to be a regular borsh `#[account]`, which needed a borsh round-trip to locate a field.
+It is zero-copy now, so `offset_of!` is correct for every account listed here.
 
-### Current hardcoded offsets (as of this fix)
+### Current hardcoded offsets
+
+The MM-oracle fields live on `PerpMarket::market_stats` (`MarketStats`), not on `AMM`; they were
+moved there in the AMM-decoupling refactor.
 
 | Field | Account | Offset | How derived |
 |-------|---------|--------|-------------|
-| `AMM::mm_oracle_slot` | `PerpMarket` (zero-copy) | 840 | `offset_of!(PerpMarket, amm) + offset_of!(AMM, mm_oracle_slot) + 8` |
-| `AMM::mm_oracle_price` | `PerpMarket` (zero-copy) | 920 | same |
-| `AMM::mm_oracle_sequence_id` | `PerpMarket` (zero-copy) | 944 | same |
-| `AMM::amm_spread_adjustment` | `PerpMarket` (zero-copy) | 942 | same |
-| `State::feature_bit_flags` | `State` (borsh) | 982 | borsh round-trip |
+| `MarketStats::mm_oracle_price` | `PerpMarket` | 800 | `offset_of!(PerpMarket, market_stats) + offset_of!(MarketStats, mm_oracle_price) + 8` |
+| `MarketStats::mm_oracle_slot` | `PerpMarket` | 808 | same |
+| `MarketStats::mm_oracle_sequence_id` | `PerpMarket` | 816 | same |
+| `AMM::amm_spread_adjustment` | `PerpMarket` | 1282 | `offset_of!(PerpMarket, amm) + offset_of!(AMM, amm_spread_adjustment) + 8` |
+| `State::hot_mm_oracle_crank` | `State` | 360..392 | `offset_of!(State, hot_mm_oracle_crank) + 8` |
+| `State::hot_amm_spread_adjust` | `State` | 392..424 | same |
+| `State::feature_bit_flags` | `State` | 1374 | same |
+
+Only the `State` offsets are read by raw index. The `PerpMarket` fields are reached through a
+`bytemuck` cast and typed field access, and are asserted here purely as layout invariants.
 
 ### Regression tests
 
-`programs/velocity/src/state/traits/tests.rs :: native_instruction_offsets` contains two tests that
-lock these values down:
+`programs/velocity/src/state/traits/tests.rs :: native_instruction_offsets` locks these values down:
 
-- **`amm_zero_copy_offsets`** — asserts each `offset_of!` value equals the literal in `admin.rs`.
-- **`state_borsh_feature_bit_flags_offset`** — serialises a `State` with `feature_bit_flags = 0xFF`
-  and asserts the byte is found at position 982 (including discriminator).
+- **`amm_zero_copy_offsets`** — asserts the `MarketStats` MM-oracle offsets and
+  `AMM::amm_spread_adjustment`.
+- **`state_feature_bit_flags_offset`**, **`state_hot_mm_oracle_crank_offset`**,
+  **`state_hot_amm_spread_adjust_offset`** — assert the `State` offsets the handlers index directly.
 
 **If you change any field in `AMM`, `PerpMarket`, or `State`, run `cargo test -p velocity
-native_instruction_offsets` and update both the test expectations and the literals in
-`handle_update_mm_oracle_native` / `handle_update_amm_spread_adjustment_native` together.**
+native_instruction_offsets` and update both the test expectations and the offset constants used by
+`handle_update_mm_oracle_native` / `handle_update_mm_oracle_batch_native` /
+`handle_update_amm_spread_adjustment_native` together.**
 
 ---
 

@@ -60,7 +60,7 @@ use {
                 get_market_set_from_list, get_writable_perp_market_set,
                 get_writable_perp_market_set_from_vec, MarketSet, PerpMarketMap,
             },
-            revenue_share::RevenueShareEscrowZeroCopyMut,
+            revenue_share::{RevenueShareEscrowZeroCopyMut, REVENUE_SHARE_ESCROW_PDA_SEED},
             revenue_share_map::load_revenue_share_map,
             settle_pnl_mode::SettlePnlMode,
             signed_msg_user::{
@@ -1434,6 +1434,28 @@ pub fn handle_liquidate_spot_with_swap_begin<'c: 'info, 'info>(
 
     let user = &mut load_mut!(ctx.accounts.user)?;
     let liquidator = &mut load_mut!(ctx.accounts.liquidator)?;
+    let liquidator_stats = load!(ctx.accounts.liquidator_stats)?;
+
+    // A swap-backed liquidation earns the liquidation fee like the other
+    // liquidator routes, the same value capture the authority-wide equity
+    // breaker freezes, even though the tokens flow through the authority's
+    // wallet accounts rather than the liquidator subaccount. Bar a tripped
+    // authority here too, before any flash-loan state opens; `end` runs in
+    // the same transaction, so checking `begin` covers the pair.
+    //
+    // Only the breaker, deliberately: the four direct routes additionally
+    // require the liquidator subaccount to clear its own buffered floor
+    // (`validate_clears_buffered_floor`), because the liquidation moves the
+    // liquidatee's position onto that subaccount. This route moves nothing
+    // onto it (both `update_spot_balances_and_cumulative_deposits` calls in
+    // `liquidate_spot_with_swap_end` target the liquidatee, and the fees go
+    // to the revenue and protocol pools), so there is no exposure for a
+    // per-subaccount floor to gate.
+    validate!(
+        !liquidator_stats.is_equity_breaker_tripped(),
+        ErrorCode::EquityBelowFloor,
+        "liquidator authority equity breaker is tripped"
+    )?;
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
     let AccountMaps {
@@ -1459,10 +1481,23 @@ pub fn handle_liquidate_spot_with_swap_begin<'c: 'info, 'info>(
         "begin_swap ended in invalid state"
     )?;
 
-    let asset_oracle_data = oracle_map.get_price_data(&asset_spot_market.oracle_id())?;
+    // Accrue interest and advance the deposit/borrow/utilization TWAPs, but pass
+    // `None` so this liquidation does NOT advance the markets' *oracle* TWAPs.
+    // `liquidate_spot_with_swap_begin` gates itself on
+    // `is_oracle_too_divergent_with_twap_5min` against the liability market's
+    // `last_oracle_price_twap_5min`; refreshing it first — in this same
+    // instruction — pulls it toward the live oracle price and lets a liquidation
+    // the band check would reject proceed and transfer collateral
+    // (OtterSec #111).
+    //
+    // The direct `liquidate_spot` lane already runs that same check with no
+    // pre-refresh, so this only brings the swap-backed lane in line with it; a
+    // band-blocked swap liquidation can still be routed through the direct path.
+    // The refresh is moved, not dropped: `liquidate_spot_with_swap_end` advances
+    // both markets' oracle TWAPs once every check in the lane is done.
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut asset_spot_market,
-        Some(asset_oracle_data),
+        None,
         now,
         state.funding_paused()?,
     )?;
@@ -1476,10 +1511,11 @@ pub fn handle_liquidate_spot_with_swap_begin<'c: 'info, 'info>(
         "begin_swap ended in invalid state"
     )?;
 
-    let liability_oracle_data = oracle_map.get_price_data(&liability_spot_market.oracle_id())?;
+    // `None` for the same reason as the asset market above (OtterSec #111) — this
+    // is the market whose 5-minute TWAP the divergence check actually reads.
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut liability_spot_market,
-        Some(liability_oracle_data),
+        None,
         now,
         state.funding_paused()?,
     )?;
@@ -1656,22 +1692,28 @@ pub fn handle_liquidate_spot_with_swap_begin<'c: 'info, 'info>(
                 "the asset_token_account passed to SwapBegin and End must match"
             )?;
 
-            // `LiquidateSpotWithSwap` has 11 fixed accounts (indexes 0..=10);
-            // remaining (swap) accounts start at index 11 and must match between
+            validate!(
+                ctx.accounts.liquidator_stats.key() == ix.accounts[11].pubkey,
+                ErrorCode::InvalidLiquidateSpotWithSwap,
+                "the liquidator_stats passed to SwapBegin and End must match"
+            )?;
+
+            // `LiquidateSpotWithSwap` has 12 fixed accounts (indexes 0..=11);
+            // remaining (swap) accounts start at index 12 and must match between
             // begin and end.
             validate!(
-                ctx.remaining_accounts.len() == ix.accounts.len() - 11,
+                ctx.remaining_accounts.len() == ix.accounts.len() - 12,
                 ErrorCode::InvalidLiquidateSpotWithSwap,
                 "begin and end ix must have the same number of accounts"
             )?;
 
-            for i in 11..ix.accounts.len() {
+            for i in 12..ix.accounts.len() {
                 validate!(
-                    *ctx.remaining_accounts[i - 11].key == ix.accounts[i].pubkey,
+                    *ctx.remaining_accounts[i - 12].key == ix.accounts[i].pubkey,
                     ErrorCode::InvalidLiquidateSpotWithSwap,
                     "begin and end ix must have the same accounts. {}th account mismatch. begin: {}, end: {}",
                     i,
-                    ctx.remaining_accounts[i - 11].key,
+                    ctx.remaining_accounts[i - 12].key,
                     ix.accounts[i].pubkey
                 )?;
             }
@@ -1880,7 +1922,7 @@ pub fn handle_liquidate_spot_with_swap_end<'c: 'info, 'info>(
         liability_vault.amount,
     )?;
 
-    let asset_spot_market = spot_market_map.get_ref_mut(&asset_market_index)?;
+    let mut asset_spot_market = spot_market_map.get_ref_mut(&asset_market_index)?;
 
     validate!(
         asset_spot_market.flash_loan_initial_token_amount == 0
@@ -1890,6 +1932,26 @@ pub fn handle_liquidate_spot_with_swap_end<'c: 'info, 'info>(
     )?;
 
     math::spot_withdraw::validate_spot_market_vault_amount(&asset_spot_market, asset_vault.amount)?;
+
+    // Advance the oracle TWAPs last, for the same reason as `end_swap`: the begin
+    // instruction passes `None` so it cannot refresh the anchor its own
+    // divergence check reads (OtterSec #111), and both this lane's checks are
+    // done by here. The begin instruction left `last_oracle_price_twap_ts` alone,
+    // so this update still weights the full elapsed interval.
+    let asset_oracle_data = *oracle_map.get_price_data(&asset_spot_market.oracle_id())?;
+    controller::spot_balance::update_spot_market_twap_stats(
+        &mut asset_spot_market,
+        Some(&asset_oracle_data),
+        now,
+    )?;
+
+    let mut liability_spot_market = spot_market_map.get_ref_mut(&liability_market_index)?;
+    let liability_oracle_data = *oracle_map.get_price_data(&liability_spot_market.oracle_id())?;
+    controller::spot_balance::update_spot_market_twap_stats(
+        &mut liability_spot_market,
+        Some(&liability_oracle_data),
+        now,
+    )?;
 
     Ok(())
 }
@@ -2546,12 +2608,28 @@ pub fn handle_update_funding_rate(
     )?;
     // Refresh PerpMarket-level oracle stats. AMM refresh happens inside
     // `update_funding_rate` via the AmmQuoter's setup phase — not here.
+    //
+    // Deliberately the TWAP-free half. `update_funding_rate`'s gate
+    // (`oracle::block_operation` -> `get_oracle_status`) reads
+    // `last_oracle_price_twap` for the too-volatile check and
+    // `last_oracle_price_twap_5min` for the mark-divergence check. Advancing
+    // either one here would pull it toward the live price and let a too-volatile
+    // or too-divergent oracle clear its own gate inside this same instruction,
+    // then go on to mutate cumulative funding (OtterSec #109).
+    //
+    // Nothing is lost by skipping it: on the path where funding actually
+    // updates, `update_funding_rate` advances the TWAPs itself, and on every
+    // path where it does not this handler returns `FundingWasNotUpdated`, which
+    // reverts the whole instruction. The TWAPs also keep advancing independently
+    // via `update_amms`, perp fills, and `update_perp_bid_ask_twap`, so a market
+    // whose oracle is genuinely too volatile still recovers — relaxing its own
+    // gate is not this crank's job.
     let validity = crate::vlp::amm::refresh::compute_amm_refresh_validity(
         perp_market,
         &mm_oracle_price_data,
         &state,
     )?;
-    perp_market.update_oracle_derived_stats(&mm_oracle_price_data, validity, now, clock_slot)?;
+    perp_market.refresh_amm_quote_state(&mm_oracle_price_data, validity, clock_slot)?;
 
     validate!(
         matches!(
@@ -3350,6 +3428,36 @@ pub fn handle_force_delete_user<'c: 'info, 'info>(
         Clock::get()?.unix_timestamp,
     )?;
 
+    // OtterSec #128: settle this subaccount's revenue-share rows before the id goes
+    // away for good. This path retires the id exactly as `delete_user` does, so it
+    // orphans a fee-bearing row the same way. See `handle_delete_user` for why the row
+    // then becomes unreachable.
+    //
+    // `cancel_orders` above closed every order of this subaccount, so each row for it
+    // becomes `Completed` (or is cleared when it carries no fees). That is the state
+    // the permissionless sweep pays out of.
+    //
+    // The escrow is pinned to the authority's PDA by `seeds`, so an empty account
+    // proves this authority has no escrow rather than signalling an omitted account.
+    if !ctx.accounts.revenue_share_escrow.data_is_empty() {
+        // `ZeroCopyLoader` is in scope for this module and also has a `load_zc_mut`, so
+        // name the trait to pick the escrow's loader.
+        use crate::state::revenue_share::RevenueShareEscrowLoader;
+
+        let mut escrow =
+            RevenueShareEscrowLoader::load_zc_mut(&*ctx.accounts.revenue_share_escrow)?;
+        escrow.revoke_completed_orders(user)?;
+
+        // Belt and braces: after the above, nothing for this subaccount may still be
+        // outstanding. If it somehow is, fail rather than retire the id over it.
+        validate!(
+            !escrow.has_outstanding_orders_for_sub_account(user.sub_account_id)?,
+            ErrorCode::UserCantBeDeleted,
+            "sub account {} still has outstanding revenue-share orders",
+            user.sub_account_id
+        )?;
+    }
+
     safe_decrement!(user_stats.number_of_sub_accounts, 1);
 
     let mut state = ctx.accounts.state.load_mut()?;
@@ -3762,6 +3870,21 @@ pub struct LiquidateSpotWithSwap<'info> {
     /// CHECK: fixed instructions sysvar account
     #[account(address = instructions::ID)]
     pub instructions: UncheckedAccount<'info>,
+    /// The liquidator's `UserStats`, read by `begin` to bar an authority whose
+    /// equity breaker is tripped.
+    ///
+    /// It sits last, not beside `liquidator` where the direct liquidation
+    /// contexts carry it, because this pair is addressed by position rather
+    /// than by name: `begin` introspects the matching `end` and compares the
+    /// two account lists index by index, and the swap accounts both forward
+    /// begin where this fixed block ends. Taking the last slot renumbered
+    /// nothing. Slotting it beside `liquidator` would have moved `user`, both
+    /// vaults and both token accounts down one, silently invalidating every
+    /// hand-built transaction that still filled the old order.
+    #[account(
+        constraint = is_stats_for_user(&liquidator, &liquidator_stats)?
+    )]
+    pub liquidator_stats: AccountLoader<'info, UserStats>,
 }
 
 #[derive(Accounts)]
@@ -3983,6 +4106,18 @@ pub struct ForceDeleteUser<'info> {
     pub keeper: Signer<'info>,
     /// CHECK: forced velocity_signer
     pub velocity_signer: UncheckedAccount<'info>,
+    /// CHECK: the authority's `RevenueShareEscrow`. It may legitimately not exist,
+    /// because most users never create one. It carries the same contract as
+    /// `DeleteUser::revenue_share_escrow`: an `UncheckedAccount` pinned by `seeds`, so
+    /// the handler can tell "this authority has no escrow" (`data_is_empty()`) from "the
+    /// keeper omitted the account to skip the check". It is required rather than
+    /// `Option` for that second reason (OtterSec #128).
+    #[account(
+        mut,
+        seeds = [REVENUE_SHARE_ESCROW_PDA_SEED.as_bytes(), authority.key().as_ref()],
+        bump,
+    )]
+    pub revenue_share_escrow: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]

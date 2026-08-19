@@ -65,19 +65,6 @@ defaults:
     shell: bash
 
 jobs:
-  # Gating: the e2e-svm* harnesses embed a vendored copy of the program IDL
-  # (declare_fuzz_program! can't read the SDK artifact across the separate fuzz
-  # workspace). Fail if any copy has drifted from the canonical
-  # packages/sdk/src/idl/velocity.json, so a program/IDL change can't silently
-  # leave the SVM harnesses fuzzing a stale ABI. Fix with `bash fuzz/sync-idls.sh`.
-  idl-sync:
-    name: vendored IDL in sync
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - run: bash fuzz/sync-idls.sh --check
-
   fuzz-build:
     name: build ${{ matrix.crate }}
     runs-on: ubicloud

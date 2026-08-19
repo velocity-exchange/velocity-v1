@@ -23,9 +23,14 @@ use crate::{
 
 /// Arms the authority-wide equity breaker if the subaccount's net equity is
 /// below its raw floor. Mirrors the permissionless trip: values the account
-/// with `calculate_user_equity` and never arms off an invalid oracle. Skips
-/// all work when the subaccount has no floor or the breaker is already set,
-/// and never fails the host instruction on its own.
+/// with `calculate_user_equity` and never arms off an invalid oracle. Where
+/// the permissionless trip rejects on an invalid oracle so the keeper can
+/// retry, this skips silently (it must not fail its host); a breach that
+/// rides out an oracle outage is armed by the next touch after the feed
+/// recovers. The gates cover the outage itself, failing closed on the same
+/// verdict, and match fills carry their own `FillOrderMatch` validity rule.
+/// Skips all work when the subaccount has no floor or the breaker is already
+/// set, and never fails the host instruction on its own.
 pub fn try_lazy_equity_breaker_trip(
     user: &User,
     user_stats: &mut UserStats,

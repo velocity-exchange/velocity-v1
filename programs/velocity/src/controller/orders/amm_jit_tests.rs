@@ -68,6 +68,7 @@ pub fn get_amm_is_available(
         &market.oracle_source,
         oracle::LogMode::SafeMMOracle,
         market.oracle_slot_delay_override,
+        mm_oracle_price_data.is_safe_price_mm_sourced(),
         market.oracle_low_risk_slot_delay_override,
     )
     .unwrap();
@@ -367,6 +368,8 @@ pub mod amm_jit {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         )
         .unwrap();
 
@@ -570,6 +573,8 @@ pub mod amm_jit {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         )
         .unwrap();
 
@@ -781,6 +786,8 @@ pub mod amm_jit {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         )
         .unwrap();
 
@@ -988,6 +995,8 @@ pub mod amm_jit {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         )
         .unwrap();
 
@@ -1187,6 +1196,8 @@ pub mod amm_jit {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         )
         .unwrap();
 
@@ -1412,6 +1423,8 @@ pub mod amm_jit {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         )
         .unwrap();
 
@@ -1620,6 +1633,8 @@ pub mod amm_jit {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         )
         .unwrap();
 
@@ -1835,6 +1850,8 @@ pub mod amm_jit {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         )
         .unwrap();
 
@@ -2036,6 +2053,8 @@ pub mod amm_jit {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         )
         .unwrap();
 
@@ -2249,6 +2268,8 @@ pub mod amm_jit {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         )
         .unwrap();
 
@@ -2500,6 +2521,8 @@ pub mod amm_jit {
                 FillMode::Fill,
                 false,
                 &mut None,
+                false,
+                0,
             )
             .unwrap();
 
@@ -2797,6 +2820,8 @@ pub mod amm_jit {
                 FillMode::Fill,
                 false,
                 &mut None,
+                false,
+                0,
             )
             .unwrap();
 
@@ -3053,6 +3078,8 @@ pub mod amm_jit {
             FillMode::Fill,
             false,
             &mut None,
+            false,
+            0,
         )
         .unwrap();
 

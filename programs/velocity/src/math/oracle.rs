@@ -3,7 +3,9 @@ use {
         error::{ErrorCode, VelocityResult},
         math::{
             casting::Cast,
-            constants::{BID_ASK_SPREAD_PRECISION, PERCENTAGE_PRECISION_U64},
+            constants::{
+                BID_ASK_SPREAD_PRECISION, MM_ORACLE_MIN_SLOT_GAP, PERCENTAGE_PRECISION_U64,
+            },
             safe_math::SafeMath,
         },
         state::{
@@ -301,6 +303,7 @@ pub fn get_oracle_status(
         &market.oracle_source,
         LogMode::None,
         slot_delay_override,
+        false, // exchange-oracle price, never MM-sourced
         slot_delay_override,
     )?;
     let oracle_reserve_price_spread_pct = market
@@ -339,6 +342,7 @@ pub fn oracle_validity(
     oracle_source: &OracleSource,
     log_mode: LogMode,
     slots_before_stale_for_amm_immdiate_override: i8,
+    immediate_price_is_mm_sourced: bool,
     oracle_low_risk_slot_delay_override: i8,
 ) -> VelocityResult<OracleValidity> {
     let OraclePriceData {
@@ -364,10 +368,50 @@ pub fn oracle_validity(
         .confidence_interval_max_size
         .safe_mul(max_confidence_interval_multiplier)?);
 
-    let is_stale_for_amm_immediate = if slots_before_stale_for_amm_immdiate_override != 0 {
-        oracle_delay.gt(&slots_before_stale_for_amm_immdiate_override.max(0).cast()?)
-    } else {
+    // Immediate (JIT / auction-skipping) AMM fills.
+    //
+    // Three cases. `0` is the explicit "never allow immediate AMM fills on this
+    // market" sentinel. A positive value is an explicit admin threshold and is
+    // used as-is.
+    //
+    // A negative value means unset, and what it resolves to depends on where
+    // the price being classified came from. It previously clamped to
+    // `max(override, 0)`, i.e. a threshold of zero, requiring the price to have
+    // been written in this exact slot. That is unsatisfiable for an MM-oracle-
+    // sourced price by construction: the program refuses any MM-oracle write
+    // closer than `MM_ORACLE_MIN_SLOT_GAP` slots to the previous one, so such a
+    // price is at best zero slots old on alternating slots and can never be
+    // fresher than that on the rest. A market left at the init default
+    // therefore could not pass this gate on roughly half of all slots no matter
+    // how aggressively it was cranked — an arithmetic contradiction between two
+    // independent constants, so unset resolves to `MM_ORACLE_MIN_SLOT_GAP` for
+    // an MM-sourced price: the tightest window the crank can actually satisfy.
+    //
+    // An exchange-oracle price has no such floor — it can be same-slot fresh
+    // every slot — so unset keeps the strict zero threshold there. Widening it
+    // too would tolerate extra staleness on immediate fills exactly when the
+    // safe-price path has fallen back to the exchange oracle (MM oracle stale
+    // or diverged), which is when latency arbitrage against the vAMM pays most.
+    //
+    // Note `oracle_delay` for an MM price measures from the *landing* slot, and
+    // the write path accepts observations up to `MM_ORACLE_MAX_SOURCE_AGE_SLOTS`
+    // older than their landing, so the true observation age this gate admits is
+    // up to the sum of the two. A `const_assert!` in `math/constants.rs` pins
+    // that bound to at most `MM_ORACLE_MIN_SLOT_GAP`, i.e. twice the gap.
+    //
+    // An explicit override still wins in both directions on both paths, so this
+    // only affects markets that never had one set.
+    let is_stale_for_amm_immediate = if slots_before_stale_for_amm_immdiate_override == 0 {
         true
+    } else if slots_before_stale_for_amm_immdiate_override < 0 {
+        let unset_threshold: i64 = if immediate_price_is_mm_sourced {
+            MM_ORACLE_MIN_SLOT_GAP.cast::<i64>()?
+        } else {
+            0
+        };
+        oracle_delay.gt(&unset_threshold)
+    } else {
+        oracle_delay.gt(&slots_before_stale_for_amm_immdiate_override.cast()?)
     };
 
     let is_stale_for_amm_low_risk = if oracle_low_risk_slot_delay_override != 0 {

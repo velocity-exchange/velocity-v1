@@ -41,6 +41,7 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
 
@@ -91,6 +92,7 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
 
@@ -140,6 +142,7 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
 
@@ -189,6 +192,7 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
 
@@ -236,6 +240,7 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
 
@@ -280,6 +285,7 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
 
@@ -317,6 +323,7 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
 
@@ -355,6 +362,7 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
 
@@ -393,6 +401,7 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
 
@@ -437,6 +446,7 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
 
@@ -474,6 +484,7 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
 
@@ -511,6 +522,7 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
 
@@ -549,6 +561,7 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
 
@@ -587,6 +600,7 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
 
@@ -649,6 +663,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             0,
             0,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
 
@@ -695,6 +710,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             0,
             0,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
 
@@ -729,6 +745,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             0,
             0,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
 
@@ -764,6 +781,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             0,
             0,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
 
@@ -799,6 +817,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             0,
             0,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
 
@@ -838,6 +857,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             15,
             0,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
         assert_eq!(user_fee, 115000);
@@ -861,6 +881,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             15,
             0,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
         assert_eq!(user_fee, 57500);
@@ -889,6 +910,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             MAX_TAKER_FEE_ADDON_TENTH_BPS,
             0,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
         // 10bps tier fee + 10bps max addon
@@ -930,6 +952,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             0,
             0,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
 
@@ -969,6 +992,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             0,
             0,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
 
@@ -1005,6 +1029,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             0,
             0,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
 
@@ -1046,6 +1071,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             0,
             0,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
 

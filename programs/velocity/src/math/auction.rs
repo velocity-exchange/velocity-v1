@@ -231,6 +231,7 @@ pub fn calculate_auction_params_for_trigger_order(
     oracle_price_data: &OraclePriceData,
     min_auction_duration: u8,
     perp_market: Option<&PerpMarket>,
+    slot_duration_ms: u64,
 ) -> VelocityResult<(u8, i64, i64)> {
     let auction_duration = min_auction_duration;
 
@@ -253,6 +254,7 @@ pub fn calculate_auction_params_for_trigger_order(
                     oracle_price_data.price,
                     None,
                     auction_start_buffer,
+                    slot_duration_ms,
                 )?
             } else {
                 OrderParams::derive_market_order_auction_params(
@@ -261,6 +263,7 @@ pub fn calculate_auction_params_for_trigger_order(
                     oracle_price_data.price,
                     order.price,
                     auction_start_buffer,
+                    slot_duration_ms,
                 )?
             };
 

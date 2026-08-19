@@ -1096,7 +1096,13 @@ mod calculate_max_spot_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+            None,
+        )
+        .unwrap();
 
         let _market_map = PerpMarketMap::empty();
 
@@ -1202,7 +1208,13 @@ mod calculate_max_spot_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+            None,
+        )
+        .unwrap();
 
         let _market_map = PerpMarketMap::empty();
 
@@ -1309,7 +1321,13 @@ mod calculate_max_spot_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+            None,
+        )
+        .unwrap();
 
         let _market_map = PerpMarketMap::empty();
 
@@ -1415,7 +1433,13 @@ mod calculate_max_spot_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+            None,
+        )
+        .unwrap();
 
         let _market_map = PerpMarketMap::empty();
 
@@ -1504,7 +1528,13 @@ mod calculate_max_spot_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+            None,
+        )
+        .unwrap();
 
         let _market_map = PerpMarketMap::empty();
 
@@ -1611,7 +1641,13 @@ mod calculate_max_spot_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+            None,
+        )
+        .unwrap();
 
         let _market_map = PerpMarketMap::empty();
 
@@ -1718,7 +1754,13 @@ mod calculate_max_spot_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+            None,
+        )
+        .unwrap();
 
         let _market_map = PerpMarketMap::empty();
 
@@ -1825,7 +1867,13 @@ mod calculate_max_spot_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+            None,
+        )
+        .unwrap();
 
         let _market_map = PerpMarketMap::empty();
 
@@ -1969,7 +2017,13 @@ mod calculate_max_perp_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2089,7 +2143,13 @@ mod calculate_max_perp_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2192,7 +2252,13 @@ mod calculate_max_perp_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2312,7 +2378,13 @@ mod calculate_max_perp_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2415,7 +2487,13 @@ mod calculate_max_perp_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2536,7 +2614,13 @@ mod calculate_max_perp_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2657,7 +2741,13 @@ mod calculate_max_perp_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2779,7 +2869,13 @@ mod calculate_max_perp_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2900,7 +2996,13 @@ mod calculate_max_perp_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -3021,7 +3123,13 @@ mod calculate_max_perp_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -3367,8 +3475,13 @@ mod calculate_max_perp_order_size {
             jup_oracle_info,
             btc_oracle_info,
         ];
-        let mut oracle_map =
-            OracleMap::load(&mut account_infos.iter().peekable(), clock_slot, None).unwrap();
+        let mut oracle_map = OracleMap::load(
+            &mut account_infos.iter().peekable(),
+            clock_slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+            None,
+        )
+        .unwrap();
 
         let user_str = String::from("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AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACOYEXJZAAAAJXJPrFDAAAA9pN6AgAAAAActHWX3////+mmH/L/////dTk4gv3///8AAAAAAAAAAJ3LyxQAAAAACCQAAAAAAABjAAAAAAEAAAAAAAEAAAAAT4VaaAAAAAAAAAAAAAAAAA==");
         let mut decoded_bytes = base64::decode(user_str).unwrap();

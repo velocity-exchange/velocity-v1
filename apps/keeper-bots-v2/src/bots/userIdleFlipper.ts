@@ -16,7 +16,11 @@ import {
 	AddressLookupTableAccount,
 	ComputeBudgetProgram,
 } from '@solana/web3.js';
-import { simulateAndGetTxWithCUs, sleepMs } from '../utils';
+import {
+	currentSlotDurationMs,
+	simulateAndGetTxWithCUs,
+	sleepMs,
+} from '../utils';
 
 const USER_IDLE_CHUNKS = 9;
 const SLEEP_MS = 1000;
@@ -112,7 +116,12 @@ export class UserIdleFlipperBot implements Bot {
 					continue;
 				}
 
-				if (user.canMakeIdle(new BN(currentSlot))) {
+				if (
+					user.canMakeIdle(
+						new BN(currentSlot),
+						currentSlotDurationMs(this.velocityClient)
+					)
+				) {
 					usersToIdle.push([
 						user.getUserAccountPublicKey(),
 						user.getUserAccountOrThrow(),

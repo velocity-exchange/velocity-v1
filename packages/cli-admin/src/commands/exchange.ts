@@ -35,6 +35,32 @@ export function registerExchange(parent: Command): void {
 
 	withGlobalOptions(
 		ex
+			.command('set-slot-duration-ms <ms>')
+			.description(
+				'Set State.slotDurationMs as each IBRL feature gate activates. Accepts only {350, 300, 250, 200} and only strictly below the current effective value (slots never slow down; 0 on chain reads as 400). Warm admin.'
+			)
+	).action(async (ms: string, _flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const ix = await client.getUpdateStateSlotDurationMsIx(
+				Number.parseInt(ms, 10)
+			);
+			const result = await sendOrPropose(
+				provider,
+				[ix],
+				opts.multisig ? new PublicKey(opts.multisig) : undefined,
+				'velocity-admin exchange set-slot-duration-ms'
+			);
+			reportDispatch(`slot duration = ${ms}ms`, result);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		ex
 			.command('set-solvency-status <bitfield>')
 			.description(
 				'Set SolvencyStatus bitfield, gating internal solvency-repair ixs (resolve bankruptcy / pnl-deficit) independently of withdrawals. Cold admin only. 0=active. Bits: 1=solvencyRepairPaused.'

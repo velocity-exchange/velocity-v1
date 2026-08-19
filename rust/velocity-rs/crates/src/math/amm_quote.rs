@@ -50,13 +50,18 @@ pub fn project_perp_market_for_quoting(
     exchange_oracle: OraclePriceData,
     guard_rails: &ValidityGuardRails,
     slot: u64,
+    slot_duration_ms: u64,
 ) -> SdkResult<PerpMarket> {
     let mm_oracle = perp_market
-        .get_mm_oracle_price_data(exchange_oracle, slot, guard_rails)
+        .get_mm_oracle_price_data(exchange_oracle, slot, guard_rails, slot_duration_ms)
         .map_err(|e| SdkError::Anchor(Box::new(e.into())))?;
-    let validity =
-        compute_amm_refresh_validity_with_guard_rails(&perp_market, &mm_oracle, guard_rails)
-            .map_err(|e| SdkError::Anchor(Box::new(e.into())))?;
+    let validity = compute_amm_refresh_validity_with_guard_rails(
+        &perp_market,
+        &mm_oracle,
+        guard_rails,
+        slot_duration_ms,
+    )
+    .map_err(|e| SdkError::Anchor(Box::new(e.into())))?;
 
     if perp_market.amm.last_update_slot < slot {
         let projection_inputs = ProjectionInputs {
@@ -80,6 +85,7 @@ pub fn project_perp_market_for_quoting(
         &mm_oracle,
         reserve_price,
         slot,
+        slot_duration_ms,
     )
     .map_err(|e| SdkError::Anchor(Box::new(e.into())))?;
 

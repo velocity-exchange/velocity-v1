@@ -9,31 +9,61 @@ mod get_auction_duration {
         let price = 100 * PRICE_PRECISION_U64;
         let contract_tier = ContractTier::C;
 
-        let duration = get_auction_duration(price_diff, price, contract_tier).unwrap();
+        let duration = get_auction_duration(
+            price_diff,
+            price,
+            contract_tier,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+        )
+        .unwrap();
         assert_eq!(duration, 1);
 
         let price_diff = PRICE_PRECISION_U64 / 10;
         let price = 100 * PRICE_PRECISION_U64;
 
-        let duration = get_auction_duration(price_diff, price, contract_tier).unwrap();
+        let duration = get_auction_duration(
+            price_diff,
+            price,
+            contract_tier,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+        )
+        .unwrap();
         assert_eq!(duration, 6);
 
         let price_diff = PRICE_PRECISION_U64 / 2;
         let price = 100 * PRICE_PRECISION_U64;
 
-        let duration = get_auction_duration(price_diff, price, contract_tier).unwrap();
+        let duration = get_auction_duration(
+            price_diff,
+            price,
+            contract_tier,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+        )
+        .unwrap();
         assert_eq!(duration, 30);
 
         let price_diff = PRICE_PRECISION_U64;
         let price = 100 * PRICE_PRECISION_U64;
 
-        let duration = get_auction_duration(price_diff, price, contract_tier).unwrap();
+        let duration = get_auction_duration(
+            price_diff,
+            price,
+            contract_tier,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+        )
+        .unwrap();
         assert_eq!(duration, 60);
 
         let price_diff = 2 * PRICE_PRECISION_U64;
         let price = 100 * PRICE_PRECISION_U64;
 
-        let duration = get_auction_duration(price_diff, price, contract_tier).unwrap();
+        let duration = get_auction_duration(
+            price_diff,
+            price,
+            contract_tier,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+        )
+        .unwrap();
         assert_eq!(duration, 120);
     }
 }
@@ -90,7 +120,12 @@ mod update_perp_auction_params {
 
         let mut order_params_after = order_params_before;
         let sanitized = order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
 
         // Spread reserves are no longer cached on AMM; the auction price
@@ -117,7 +152,12 @@ mod update_perp_auction_params {
 
         let mut order_params_after2 = order_params_before2;
         order_params_after2
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
 
         assert_eq!(order_params_after2.auction_start_price, Some(145192988)); // will never fill kek
@@ -141,7 +181,12 @@ mod update_perp_auction_params {
 
         let mut order_params_after3 = order_params_before3;
         order_params_after3
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
 
         assert_eq!(order_params_after3.auction_start_price, Some(192988));
@@ -191,7 +236,12 @@ mod update_perp_auction_params {
 
         let mut order_params_long_after = order_params_long_before;
         let sanitized = order_params_long_after
-            .update_perp_auction_params(&perp_market, oracle_price, true)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                true,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
 
         assert_eq!(order_params_long_after.auction_start_price, Some(0));
@@ -210,7 +260,12 @@ mod update_perp_auction_params {
 
         let mut order_params_long_after_not_signed = order_params_long_before_not_signed;
         let sanitized = order_params_long_after_not_signed
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
 
         assert_eq!(
@@ -239,7 +294,12 @@ mod update_perp_auction_params {
 
         let mut order_params_short_after = order_params_short_before;
         let sanitized = order_params_short_after
-            .update_perp_auction_params(&perp_market, oracle_price, true)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                true,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
 
         assert_eq!(order_params_short_after.auction_start_price, Some(100));
@@ -258,7 +318,12 @@ mod update_perp_auction_params {
 
         let mut order_params_long_after_not_signed = order_params_long_before_not_signed;
         let sanitized = order_params_long_after_not_signed
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
 
         assert_eq!(
@@ -315,7 +380,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         let sanitized = order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, true)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                true,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
 
         assert_eq!(order_params_after.auction_start_price, Some(-300000));
@@ -333,7 +403,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         let sanitized = order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, true)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                true,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
 
         assert_eq!(order_params_after.auction_start_price, Some(300000));
@@ -381,7 +456,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         let sanitized = order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, true)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                true,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
 
         assert_eq!(order_params_after.auction_start_price, Some(99700000));
@@ -399,7 +479,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         let sanitized = order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, true)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                true,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
 
         assert_eq!(order_params_after.auction_start_price, Some(100300000));
@@ -448,7 +533,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         let sanitized = order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, true)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                true,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
 
         assert_eq!(order_params_after.auction_start_price, Some(99700000));
@@ -467,7 +557,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         let sanitized = order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, true)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                true,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
 
         assert_eq!(order_params_after.auction_start_price, Some(100300000));
@@ -515,7 +610,12 @@ mod update_perp_auction_params {
 
         let mut order_params_long_after = order_params_long_before;
         let sanitized = order_params_long_after
-            .update_perp_auction_params(&perp_market, oracle_price, true)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                true,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
 
         assert_eq!(order_params_long_after.auction_start_price, Some(100000000));
@@ -534,7 +634,12 @@ mod update_perp_auction_params {
 
         let mut order_params_long_after_not_signed = order_params_long_before_not_signed;
         let sanitized = order_params_long_after_not_signed
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
 
         assert_eq!(
@@ -563,7 +668,12 @@ mod update_perp_auction_params {
 
         let mut order_params_short_after = order_params_short_before;
         let sanitized = order_params_short_after
-            .update_perp_auction_params(&perp_market, oracle_price, true)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                true,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
 
         assert_eq!(
@@ -585,7 +695,12 @@ mod update_perp_auction_params {
 
         let mut order_params_long_after_not_signed = order_params_long_before_not_signed;
         let sanitized = order_params_long_after_not_signed
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
 
         assert_eq!(
@@ -645,7 +760,12 @@ mod update_perp_auction_params {
 
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
 
         // The start offset is clamped to the tier auction-width band (OtterSec #146). The market is
@@ -695,7 +815,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_eq!(order_params_before, order_params_after);
 
@@ -707,7 +832,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_eq!(order_params_before, order_params_after);
 
@@ -720,7 +850,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_eq!(order_params_before, order_params_after);
 
@@ -734,7 +869,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_eq!(order_params_before, order_params_after);
 
@@ -749,7 +889,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_eq!(order_params_before, order_params_after);
 
@@ -765,7 +910,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_eq!(order_params_before, order_params_after);
 
@@ -781,7 +931,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_ne!(order_params_before, order_params_after);
         assert_eq!(order_params_after.auction_duration, Some(120));
@@ -806,7 +961,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_eq!(order_params_before, order_params_after);
 
@@ -828,7 +988,12 @@ mod update_perp_auction_params {
             market_stats.last_mark_price_twap_5min + 100000;
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_ne!(order_params_before, order_params_after);
         assert_eq!(
@@ -882,7 +1047,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         // assert_ne!(order_params_before, order_params_after);
 
@@ -906,7 +1076,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_eq!(order_params_before, order_params_after);
 
@@ -926,7 +1101,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_eq!(order_params_after.auction_duration, Some(7));
         assert_eq!(order_params_after.auction_start_price, Some(-100000));
@@ -946,7 +1126,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_ne!(order_params_before, order_params_after);
         assert_eq!(order_params_after.auction_start_price, Some(-100000));
@@ -969,7 +1154,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_ne!(order_params_before, order_params_after);
 
@@ -993,7 +1183,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_ne!(order_params_before, order_params_after);
         assert_eq!(order_params_after.auction_start_price, Some(100000));
@@ -1047,7 +1242,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_ne!(order_params_before, order_params_after);
         assert_eq!(order_params_after.auction_start_price.unwrap(), 99017238);
@@ -1069,7 +1269,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_ne!(order_params_before, order_params_after);
         assert_eq!(order_params_after.auction_start_price.unwrap(), 99217999);
@@ -1078,7 +1283,12 @@ mod update_perp_auction_params {
         perp_market.oracle_source = OracleSource::Prelaunch;
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_eq!(
             order_params_after.auction_start_price,
@@ -1103,7 +1313,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_eq!(
             order_params_before.auction_start_price,
@@ -1160,7 +1375,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_ne!(order_params_before, order_params_after);
         assert_eq!(order_params_after.auction_start_price.unwrap(), 17238);
@@ -1179,7 +1399,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_eq!(
             order_params_before.auction_start_price,
@@ -1209,7 +1434,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         let sanitized = order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_eq!(sanitized, false,);
     }
@@ -1260,7 +1490,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_ne!(order_params_before, order_params_after);
         assert_eq!(order_params_after.auction_start_price.unwrap(), 98769738);
@@ -1277,7 +1512,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_ne!(order_params_before, order_params_after);
         assert_eq!(
@@ -1297,7 +1537,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_eq!(
             order_params_after.auction_start_price.unwrap(),
@@ -1316,7 +1561,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_ne!(order_params_before, order_params_after);
         assert_eq!(
@@ -1336,7 +1586,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_eq!(
             order_params_after.auction_start_price.unwrap(),
@@ -1358,7 +1613,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_eq!(
             order_params_after.auction_start_price.unwrap(),
@@ -1421,7 +1681,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_ne!(order_params_before, order_params_after);
         assert_eq!(order_params_after.auction_start_price.unwrap(), -230262);
@@ -1449,7 +1714,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_ne!(order_params_before, order_params_after);
         assert_eq!(
@@ -1468,7 +1738,12 @@ mod update_perp_auction_params {
         market_stats.last_mark_price_twap_ts = 17000000 - 55;
         let mut order_params_after_2 = order_params_before;
         order_params_after_2
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_eq!(
             order_params_after.auction_start_price.unwrap(),
@@ -1490,7 +1765,12 @@ mod update_perp_auction_params {
         market_stats.last_mark_price_twap_ts = 17000000 - 65;
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_eq!(
             order_params_after.auction_start_price.unwrap(),
@@ -1508,7 +1788,12 @@ mod update_perp_auction_params {
         market_stats.volume_24h = 183953; // under $1
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_eq!(
             order_params_after.auction_start_price.unwrap(),
@@ -1529,7 +1814,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_eq!(
             order_params_after.auction_start_price.unwrap(),
@@ -1559,7 +1849,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_eq!(
             order_params_after.auction_start_price.unwrap(),
@@ -1626,7 +1921,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         let sanitized = order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, true)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                true,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_eq!(sanitized, true);
 
@@ -1658,7 +1958,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         let sanitized = order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, true)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                true,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
 
         assert_eq!(sanitized, false);
@@ -1684,7 +1989,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         let sanitized = order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, true)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                true,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_eq!(sanitized, true);
 
@@ -1701,6 +2011,7 @@ mod update_perp_auction_params {
             sanitized_spread,
             oracle_price.unsigned_abs(),
             ContractTier::C,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
         assert_eq!(
@@ -1729,7 +2040,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, true)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                true,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_eq!(order_params_after.auction_duration, Some(20));
 
@@ -1745,7 +2061,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, true)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                true,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_eq!(order_params_after.auction_duration, Some(32));
 
@@ -1761,7 +2082,12 @@ mod update_perp_auction_params {
         };
         let mut order_params_after = order_params_before;
         order_params_after
-            .update_perp_auction_params(&perp_market, oracle_price, false)
+            .update_perp_auction_params(
+                &perp_market,
+                oracle_price,
+                false,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
             .unwrap();
         assert_eq!(order_params_after.auction_duration, Some(30));
     }

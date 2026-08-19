@@ -17,6 +17,7 @@ import {
 	UserAccount,
 	decodeUser,
 	PriorityFeeSubscriberMap,
+	effectiveSlotsNum,
 } from '@velocity-exchange/sdk';
 import {
 	Connection,
@@ -54,6 +55,7 @@ import {
 	sleepMs,
 	swapFillerHardEarnedUSDCForSOL,
 	validMinimumGasAmount,
+	currentSlotDurationMs,
 } from '../../utils';
 import {
 	ExplicitBucketHistogramAggregation,
@@ -1608,7 +1610,14 @@ export class SpotFillerMultithreaded {
 			if (slotsUntilJito === undefined) {
 				return false;
 			}
-			return slotsUntilJito < SLOTS_UNTIL_JITO_LEADER_TO_SEND;
+			// baseline slot units: keep ~1.6s of wall-clock lead to build+send
+			return (
+				slotsUntilJito <
+				effectiveSlotsNum(
+					SLOTS_UNTIL_JITO_LEADER_TO_SEND,
+					currentSlotDurationMs(this.velocityClient)
+				)
+			);
 		}
 		if (!this.bundleSender?.connected()) {
 			return false;

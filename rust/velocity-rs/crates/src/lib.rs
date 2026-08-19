@@ -1065,11 +1065,15 @@ impl VelocityClient {
 
         let velocity_validity_guard_rails: program::state::state::ValidityGuardRails =
             unsafe { std::mem::transmute_copy::<_, _>(&oracle_validity_guard_rails) };
+        let slot_duration_ms = program::math::slots::sanitize_slot_duration_ms(
+            self.state_account().unwrap().slot_duration_ms,
+        );
         perp_market
             .get_mm_oracle_price_data(
                 oracle_data.data,
                 current_slot,
                 &velocity_validity_guard_rails,
+                slot_duration_ms,
             )
             .map(|x| x.get_safe_oracle_price_data())
             .map_err(|e| SdkError::Anchor(Box::new(e.into())))
@@ -1114,6 +1118,9 @@ impl VelocityClient {
             exchange_oracle,
             &velocity_validity_guard_rails,
             slot,
+            program::math::slots::sanitize_slot_duration_ms(
+                self.state_account().unwrap().slot_duration_ms,
+            ),
         )
     }
 

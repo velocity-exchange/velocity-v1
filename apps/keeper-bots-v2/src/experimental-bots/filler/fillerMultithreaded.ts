@@ -31,6 +31,7 @@ import {
 	TxSigAndSlot,
 	UserAccount,
 	UserMap,
+	effectiveSlotsNum,
 } from '@velocity-exchange/sdk';
 import { FillerMultiThreadedConfig, GlobalConfig } from '../../config';
 import { JITO_METRIC_TYPES, BundleSender } from '../../bundleSender';
@@ -71,6 +72,7 @@ import {
 	swapFillerHardEarnedUSDCForSOL,
 	validMinimumGasAmount,
 	validRebalanceSettledPnlThreshold,
+	currentSlotDurationMs,
 } from '../../utils';
 import {
 	spawnChild,
@@ -120,9 +122,11 @@ const logPrefix = '[Filler]';
 export type MakerNodeMap = Map<string, DLOBNode[]>;
 
 const FILL_ORDER_THROTTLE_BACKOFF = 1000; // the time to wait before trying to fill a throttled (error filling) node again
-// Attempt a given order at most once every this many slots. The DLOB builder
-// re-emits a still-fillable order every ~200ms; this paces re-attempts. Override
-// via FillerMultiThreadedConfig.fillAttemptSlotInterval.
+// Attempt a given order at most once every this many 400ms-baseline slot units
+// (~2s; inflated to actual slots at the current State.slotDurationMs). The DLOB
+// builder re-emits a still-fillable order every ~200ms; this paces re-attempts.
+// Override via FillerMultiThreadedConfig.fillAttemptSlotInterval (also baseline
+// units).
 const DEFAULT_FILL_ATTEMPT_SLOT_INTERVAL_SLOTS = 5;
 
 // Validate `fillAttemptSlotInterval` config: only a finite, non-negative integer
@@ -146,8 +150,10 @@ export function resolveFillAttemptSlotInterval(
 	}
 	return { value: raw };
 }
-// Backstop cap on attempts per order: ~30s market-order lifetime / ~2s (5-slot)
-// attempt interval.
+// Backstop cap on attempts per order: ~30s market-order lifetime / ~2s attempt
+// interval. Both sides hold their wall-clock meaning as slot time drops (the
+// program scales auction durations; the attempt interval is scaled here), so
+// the count needs no scaling.
 const MAX_FILL_ATTEMPTS_PER_ORDER = 15;
 // Bound the attempt map so it can't grow for the process lifetime; an order
 // lives at most one auction, so a short TTL reaps entries soon after.
@@ -174,7 +180,8 @@ const FILL_DECISION_DEDUPE_MAX = 20_000;
 // per bucket of this many slots instead. Whether a node crosses is the one
 // verdict that evolves as the Dutch auction ramps, and collapsing a ~30s auction
 // (~75 slots) to a single row would throw away exactly the signal the board is
-// read for. ~10 slots gives a handful of samples per order rather than ~150.
+// read for. ~10 baseline units (~4s, inflated to actual slots) gives a handful
+// of samples per order rather than ~150.
 const NO_CROSS_RESAMPLE_SLOTS = 10;
 
 const THROTTLED_NODE_SIZE_TO_PRUNE = 10; // Size of throttled nodes to get to before pruning the map
@@ -1570,7 +1577,14 @@ export class FillerMultithreaded {
 			if (slotsUntilJito === undefined) {
 				return false;
 			}
-			return slotsUntilJito < SLOTS_UNTIL_JITO_LEADER_TO_SEND;
+			// baseline slot units: keep ~1.6s of wall-clock lead to build+send
+			return (
+				slotsUntilJito <
+				effectiveSlotsNum(
+					SLOTS_UNTIL_JITO_LEADER_TO_SEND,
+					currentSlotDurationMs(this.velocityClient)
+				)
+			);
 		}
 		if (!this.bundleSender?.connected()) {
 			return false;
@@ -1702,7 +1716,13 @@ export class FillerMultithreaded {
 		if (action !== 'sent') {
 			const bucket =
 				action === 'skip_no_cross'
-					? `:${Math.floor(slot / NO_CROSS_RESAMPLE_SLOTS)}`
+					? `:${Math.floor(
+							slot /
+								effectiveSlotsNum(
+									NO_CROSS_RESAMPLE_SLOTS,
+									currentSlotDurationMs(this.velocityClient)
+								)
+					  )}`
 					: '';
 			const dedupeKey = `${getNodeToFillSignature(
 				nodeToFill
@@ -1960,7 +1980,11 @@ export class FillerMultithreaded {
 				}
 			} else if (
 				prior !== undefined &&
-				currentSlot - prior.lastAttemptSlot < this.fillAttemptSlotInterval
+				currentSlot - prior.lastAttemptSlot <
+					effectiveSlotsNum(
+						this.fillAttemptSlotInterval,
+						currentSlotDurationMs(this.velocityClient)
+					)
 			) {
 				// Pace non-signed re-attempts to at most once per
 				// fillAttemptSlotInterval slots.

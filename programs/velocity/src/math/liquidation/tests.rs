@@ -1179,6 +1179,7 @@ mod calculate_max_pct_to_liquidate {
             1,
             LIQUIDATION_PCT_PRECISION / 10,
             10,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
 
@@ -1197,18 +1198,39 @@ mod get_liquidation_fee {
 
         // Huge slot difference
         let curr_slot: u64 = 100000;
-        let fee = get_liquidation_fee(base_liq_fee, max_liq_fee, user_slot, curr_slot).unwrap();
+        let fee = get_liquidation_fee(
+            base_liq_fee,
+            max_liq_fee,
+            user_slot,
+            curr_slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+        )
+        .unwrap();
         assert_eq!(fee, max_liq_fee);
 
         // Small slot difference within grace period
         let curr_slot: u64 = 10;
-        let fee = get_liquidation_fee(base_liq_fee, max_liq_fee, user_slot, curr_slot).unwrap();
+        let fee = get_liquidation_fee(
+            base_liq_fee,
+            max_liq_fee,
+            user_slot,
+            curr_slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+        )
+        .unwrap();
         assert_eq!(fee, base_liq_fee);
 
         // Successful increase
         let target_liq_fee: u32 = 3 * LIQUIDATION_FEE_PRECISION / 100;
         let curr_slot: u64 = 10000;
-        let fee = get_liquidation_fee(base_liq_fee, max_liq_fee, user_slot, curr_slot).unwrap();
+        let fee = get_liquidation_fee(
+            base_liq_fee,
+            max_liq_fee,
+            user_slot,
+            curr_slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+        )
+        .unwrap();
         assert_eq!(fee, target_liq_fee);
     }
 }

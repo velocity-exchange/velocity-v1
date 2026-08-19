@@ -2293,6 +2293,16 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for UpdateStateSettlementDuration {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct UpdateStateSlotDurationMs {
+        pub slot_duration_ms: u16,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateStateSlotDurationMs {
+        const DISCRIMINATOR: &[u8] = &[122, 155, 95, 123, 0, 221, 47, 218];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateStateSlotDurationMs {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdateUserAllowDelegateTransfer {
         pub allow_delegate_transfer: bool,
     }
@@ -5139,8 +5149,9 @@ pub mod types {
         pub hot_fee_withdraw: Pubkey,
         pub hot_account_extension: Pubkey,
         pub promo_fee_tier: u8,
+        pub slot_duration_ms: u16,
         #[serde(skip)]
-        pub padding: Padding<238>,
+        pub padding: Padding<236>,
     }
     #[repr(C)]
     #[derive(
@@ -6480,8 +6491,9 @@ pub mod accounts {
         pub hot_fee_withdraw: Pubkey,
         pub hot_account_extension: Pubkey,
         pub promo_fee_tier: u8,
+        pub slot_duration_ms: u16,
         #[serde(skip)]
-        pub padding: Padding<238>,
+        pub padding: Padding<236>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for State {
@@ -23704,6 +23716,70 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for UpdateStateSettlementDuration {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct UpdateStateSlotDurationMs {
+        pub admin: Pubkey,
+        pub state: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateStateSlotDurationMs {
+        const DISCRIMINATOR: &[u8] = &[240, 232, 19, 126, 166, 94, 17, 200];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for UpdateStateSlotDurationMs {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for UpdateStateSlotDurationMs {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for UpdateStateSlotDurationMs {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateStateSlotDurationMs {}
+    #[automatically_derived]
+    impl ToAccountMetas for UpdateStateSlotDurationMs {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.admin,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: true,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for UpdateStateSlotDurationMs {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for UpdateStateSlotDurationMs {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {

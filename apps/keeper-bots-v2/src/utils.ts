@@ -43,6 +43,8 @@ import {
 	MMOraclePriceData,
 	StateAccount,
 	PythLazerSubscriber,
+	BASE_SLOT_DURATION_MS,
+	sanitizeSlotDurationMs,
 } from '@velocity-exchange/sdk';
 import {
 	NATIVE_MINT,
@@ -112,6 +114,21 @@ export async function getOrCreateAssociatedTokenAccount(
 	}
 
 	return associatedTokenAccount;
+}
+
+/**
+ * Current Solana slot duration in ms from the subscribed `State` account
+ * (`sanitizeSlotDurationMs` resolves the 0-unset sentinel to the 400ms
+ * baseline). Falls back to the baseline when state is not yet subscribed.
+ */
+export function currentSlotDurationMs(velocityClient: VelocityClient): number {
+	try {
+		return sanitizeSlotDurationMs(
+			velocityClient.getStateAccount().slotDurationMs
+		);
+	} catch {
+		return BASE_SLOT_DURATION_MS;
+	}
 }
 
 export function loadCommaDelimitToArray(str: string): number[] {

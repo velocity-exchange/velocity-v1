@@ -15,6 +15,7 @@ import { PublicKey } from '@solana/web3.js';
 import { EventEmitter } from 'events';
 import StrictEventEmitter from 'strict-event-emitter-types';
 import { VelocityClient } from './velocityClient';
+import { BASE_SLOT_DURATION_MS, baseUnitsFromSlots } from './math/slots';
 import {
 	HealthComponent,
 	HealthComponents,
@@ -4631,12 +4632,18 @@ export class User {
 	 * Determines whether the user can be marked idle (excluded from userMap
 	 * subscriptions by default, and skipped by most keeper crank passes) as of
 	 * `slot`. Requires: not already idle; inactive for the required window
-	 * since `lastActiveSlot` (1 hour / 9,000 slots if equity is under $1,000,
-	 * otherwise 1 week / 1,512,000 slots); not currently being liquidated; and
+	 * since `lastActiveSlot` (~1 hour / 9,000 baseline units if equity is under
+	 * $1,000, otherwise ~1 week / 1,512,000 baseline units — thresholds are in
+	 * 400ms baseline units and the measured slot delta is deflated to match,
+	 * mirroring `validate_user_is_idle`); not currently being liquidated; and
 	 * no open perp positions, borrows, spot open orders, or open orders of any kind.
 	 * @param slot Current slot to evaluate inactivity against.
+	 * @param slotDurationMs Current slot duration in ms (`State.slotDurationMs`).
 	 */
-	public canMakeIdle(slot: BN): boolean {
+	public canMakeIdle(
+		slot: BN,
+		slotDurationMs = BASE_SLOT_DURATION_MS
+	): boolean {
 		const userAccount = this.getUserAccountOrThrow();
 		if (userAccount.idle) {
 			return false;
@@ -4654,7 +4661,10 @@ export class User {
 		}
 
 		const userLastActiveSlot = userAccount.lastActiveSlot;
-		const slotsSinceLastActive = slot.sub(userLastActiveSlot);
+		const slotsSinceLastActive = baseUnitsFromSlots(
+			slot.sub(userLastActiveSlot),
+			slotDurationMs
+		);
 		if (slotsSinceLastActive.lt(slotsBeforeIdle)) {
 			return false;
 		}

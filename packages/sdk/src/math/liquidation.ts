@@ -1,4 +1,5 @@
 import { BN } from '../isomorphic/anchor';
+import { BASE_SLOT_DURATION_MS, baseUnitsFromSlots } from './slots';
 import {
 	PRICE_PRECISION,
 	LIQUIDATION_FEE_PRECISION,
@@ -427,8 +428,9 @@ export function calculateAssetTransferForLiabilityTransfer(
  * @param marginShortage Total margin shortfall for the user/position, QUOTE_PRECISION (1e6).
  * @param slot Current slot.
  * @param initialPctToLiquidate Starting liquidatable fraction at slot zero of the ramp, LIQUIDATION_PCT_PRECISION (1e4).
- * @param liquidationDuration Number of slots for the ramp to reach 100% (~1 minute at 400ms/slot for the on-chain default).
+ * @param liquidationDuration Ramp length in 400ms baseline units (~1 minute for the on-chain default).
  * @param isIsolatedPosition If true, always returns 100% (LIQUIDATION_PCT_PRECISION) regardless of the other inputs (default false).
+ * @param slotDurationMs Current slot duration in ms (`State.slotDurationMs`); the measured slot delta is deflated to baseline units so the ramp's wall-clock length is slot-duration independent, mirroring `calculate_max_pct_to_liquidate`.
  * @returns Fraction of the remaining liability liquidatable now, LIQUIDATION_PCT_PRECISION (1e4).
  */
 export function calculateMaxPctToLiquidate(
@@ -438,7 +440,8 @@ export function calculateMaxPctToLiquidate(
 	slot: BN,
 	initialPctToLiquidate: BN,
 	liquidationDuration: BN,
-	isIsolatedPosition = false
+	isIsolatedPosition = false,
+	slotDurationMs = BASE_SLOT_DURATION_MS
 ): BN {
 	// isolated perp positions are liquidated 100% in one shot
 	if (isIsolatedPosition) {
@@ -450,12 +453,15 @@ export function calculateMaxPctToLiquidate(
 		return LIQUIDATION_PCT_PRECISION;
 	}
 
-	const slotsElapsed = BN.max(slot.sub(userLastActiveSlot), new BN(0));
+	const slotsElapsed = baseUnitsFromSlots(
+		BN.max(slot.sub(userLastActiveSlot), new BN(0)),
+		slotDurationMs
+	);
 
 	const pctFreeable = BN.min(
 		slotsElapsed
 			.mul(LIQUIDATION_PCT_PRECISION)
-			.div(liquidationDuration) // ~ 1 minute if per slot is 400ms
+			.div(liquidationDuration) // ~1 minute at the on-chain default
 			.add(initialPctToLiquidate),
 		LIQUIDATION_PCT_PRECISION
 	);

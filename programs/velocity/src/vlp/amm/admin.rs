@@ -105,6 +105,7 @@ pub fn handle_update_initial_amm_cache_info<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         Clock::get()?.slot,
+        state.slot_duration_ms(),
         None,
     )?;
 
@@ -112,7 +113,12 @@ pub fn handle_update_initial_amm_cache_info<'c: 'info, 'info>(
     for (_, perp_market_loader) in perp_market_map.0 {
         let perp_market = perp_market_loader.load()?;
         let oracle_data = oracle_map.get_price_data(&perp_market.oracle_id())?;
-        let mm_oracle_data = perp_market.get_mm_oracle_price_data(*oracle_data, slot, &validity)?;
+        let mm_oracle_data = perp_market.get_mm_oracle_price_data(
+            *oracle_data,
+            slot,
+            &validity,
+            state.slot_duration_ms(),
+        )?;
 
         amm_cache.update_perp_market_fields(&perp_market)?;
         amm_cache.update_oracle_info(
@@ -121,6 +127,7 @@ pub fn handle_update_initial_amm_cache_info<'c: 'info, 'info>(
             &mm_oracle_data,
             &perp_market,
             &state.oracle_guard_rails,
+            state.slot_duration_ms(),
         )?;
     }
 
@@ -591,6 +598,7 @@ pub fn handle_repeg_amm_curve(ctx: Context<RepegCurve>, new_peg_candidate: u128)
         new_peg_candidate,
         clock_slot,
         &oracle_validity_rails,
+        ctx.accounts.state.load()?.slot_duration_ms(),
     )?;
 
     let peg_multiplier_after = perp_market.amm.peg_multiplier;

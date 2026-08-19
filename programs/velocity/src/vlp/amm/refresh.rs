@@ -48,6 +48,7 @@ pub fn repeg(
     new_peg_candidate: u128,
     clock_slot: u64,
     oracle_guard_rails: &OracleGuardRails,
+    slot_duration_ms: u64,
 ) -> VelocityResult<i128> {
     // for adhoc admin only repeg
 
@@ -66,6 +67,7 @@ pub fn repeg(
             terminal_price_before,
             clock_slot,
             oracle_guard_rails,
+            slot_duration_ms,
         )?;
 
     // cannot repeg if oracle is invalid
@@ -119,6 +121,7 @@ pub fn update_amms(
             *oracle_price_data,
             clock_slot,
             &state.oracle_guard_rails.validity,
+            state.slot_duration_ms(),
         )?;
 
         // Explicit two-step refresh:
@@ -129,7 +132,13 @@ pub fn update_amms(
         //      because this keeper crank is the one place that touches both.
         let validity = compute_amm_refresh_validity(market, &mm_oracle_price_data, state)?;
         snap_to_oracle(market, &mm_oracle_price_data, validity, clock_slot, now)?;
-        market.update_oracle_derived_stats(&mm_oracle_price_data, validity, now, clock_slot)?;
+        market.update_oracle_derived_stats(
+            &mm_oracle_price_data,
+            validity,
+            now,
+            clock_slot,
+            state.slot_duration_ms(),
+        )?;
     }
 
     Ok(updated)
@@ -148,6 +157,7 @@ pub fn update_amm(
         *oracle_price_data,
         clock.slot,
         &state.oracle_guard_rails.validity,
+        state.slot_duration_ms(),
     )?;
 
     // Same explicit two-step refresh as `update_amms`. See doc there.
@@ -164,6 +174,7 @@ pub fn update_amm(
         validity,
         clock.unix_timestamp,
         clock.slot,
+        state.slot_duration_ms(),
     )?;
 
     Ok(outcome)
@@ -184,7 +195,13 @@ pub fn _update_amm(
 ) -> VelocityResult<i128> {
     let validity = compute_amm_refresh_validity(market, mm_oracle_price_data, state)?;
     let outcome: i128 = snap_to_oracle(market, mm_oracle_price_data, validity, clock_slot, now)?;
-    market.update_oracle_derived_stats(mm_oracle_price_data, validity, now, clock_slot)?;
+    market.update_oracle_derived_stats(
+        mm_oracle_price_data,
+        validity,
+        now,
+        clock_slot,
+        crate::math::slots::BASE_SLOT_DURATION_MS,
+    )?;
     Ok(outcome)
 }
 
@@ -199,6 +216,7 @@ pub fn compute_amm_refresh_validity(
         market,
         mm_oracle_price_data,
         &state.oracle_guard_rails.validity,
+        state.slot_duration_ms(),
     )
 }
 
@@ -209,6 +227,7 @@ pub fn compute_amm_refresh_validity_with_guard_rails(
     market: &PerpMarket,
     mm_oracle_price_data: &MMOraclePriceData,
     validity_guard_rails: &crate::state::state::ValidityGuardRails,
+    slot_duration_ms: u64,
 ) -> VelocityResult<Option<OracleValidity>> {
     if matches!(
         market.status,
@@ -232,6 +251,7 @@ pub fn compute_amm_refresh_validity_with_guard_rails(
         market.oracle_slot_delay_override,
         mm_oracle_price_data.is_safe_price_mm_sourced(),
         market.oracle_low_risk_slot_delay_override,
+        slot_duration_ms,
     )?;
     Ok(Some(validity))
 }
@@ -348,7 +368,13 @@ pub fn update_amm_and_check_validity(
     // requested action. AMM mutation happens later in the liquidation
     // fill flow via `Quoter::setup` — not here.
     let validity = compute_amm_refresh_validity(market, mm_oracle_price_data, state)?;
-    market.update_oracle_derived_stats(mm_oracle_price_data, validity, now, clock_slot)?;
+    market.update_oracle_derived_stats(
+        mm_oracle_price_data,
+        validity,
+        now,
+        clock_slot,
+        state.slot_duration_ms(),
+    )?;
 
     // 1 hour EMA
     let risk_ema_price = market
@@ -368,6 +394,7 @@ pub fn update_amm_and_check_validity(
         market.oracle_slot_delay_override,
         mm_oracle_price_data.is_safe_price_mm_sourced(),
         market.oracle_low_risk_slot_delay_override,
+        state.slot_duration_ms(),
     )?;
 
     validate!(

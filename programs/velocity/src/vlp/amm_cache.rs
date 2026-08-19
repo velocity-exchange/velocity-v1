@@ -132,6 +132,7 @@ impl CacheInfo {
         oracle_price_data: &MMOraclePriceData,
         perp_market: &PerpMarket,
         oracle_guard_rails: &OracleGuardRails,
+        slot_duration_ms: u64,
     ) -> VelocityResult<()> {
         let safe_oracle_data = oracle_price_data.get_safe_oracle_price_data();
         let validity = oracle_validity(
@@ -149,6 +150,7 @@ impl CacheInfo {
             perp_market.oracle_slot_delay_override,
             oracle_price_data.is_safe_price_mm_sourced(),
             perp_market.oracle_low_risk_slot_delay_override,
+            slot_duration_ms,
         )?;
         if is_oracle_valid_for_action(validity, Some(VelocityAction::UpdateAmmCache))? {
             self.oracle_price = safe_oracle_data.price;
@@ -212,6 +214,7 @@ impl AmmCache {
         oracle_price_data: &MMOraclePriceData,
         perp_market: &PerpMarket,
         oracle_guard_rails: &OracleGuardRails,
+        slot_duration_ms: u64,
     ) -> VelocityResult<()> {
         let cache_info = self.cache.get_mut(market_index as usize);
         if let Some(cache_info) = cache_info {
@@ -220,6 +223,7 @@ impl AmmCache {
                 oracle_price_data,
                 perp_market,
                 oracle_guard_rails,
+                slot_duration_ms,
             )?;
         } else {
             msg!(

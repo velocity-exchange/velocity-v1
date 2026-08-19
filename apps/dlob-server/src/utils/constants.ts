@@ -10,6 +10,10 @@ export const MEASURED_ENDPOINTS = [
 	'/l3',
 ];
 
+// Auction durations below are in 400ms baseline slot units (see the SDK's
+// math/slots.ts); createMarketBasedAuctionParams inflates them to actual
+// slots at the current State.slotDurationMs so wall-clock pacing holds as
+// Solana slot time drops.
 export const DEFAULT_MARKET_AUCTION_DURATION = 20;
 // Version 3+ defaults: weight toward fast fills over price improvement.
 // Start just inside the touch so the auction becomes marketable within the
@@ -19,7 +23,7 @@ export const DEFAULT_MARKET_AUCTION_DURATION = 20;
 // slightly inside the stale touch avoids landing already-through the live one.
 export const FAST_FILL_AUCTION_DURATION = 5;
 export const FAST_FILL_AUCTION_START_PRICE_OFFSET = -0.05;
-export const DEFAULT_LIMIT_AUCTION_DURATION = 60;
+export const DEFAULT_LIMIT_AUCTION_DURATION = 60; // 400ms baseline units (currently unused)
 const DEFAULT_AUCTION_END_PRICE_OFFSET = 0.1;
 const DEFAULT_AUCTION_END_PRICE_FROM = 'worst';
 

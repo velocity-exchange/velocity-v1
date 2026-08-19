@@ -100,7 +100,17 @@ pub struct State {
     /// Reset to 0 and every account is back on its volume tier at its next
     /// fill; no per-user state.
     pub promo_fee_tier: u8,
-    pub padding: [u8; 238],
+    /// Current Solana slot duration in milliseconds, updated by the admin as
+    /// the IBRL feature gates activate (400 -> 350 -> 300 -> 250 -> 200).
+    /// `0` means unset (what pre-upgrade accounts read out of former padding)
+    /// and is interpreted as the 400ms baseline. Every slot-denominated
+    /// constant and admin field keeps its historical 400ms-calibrated value;
+    /// read paths inflate them via `math::slots`. Never read this field
+    /// directly — use [`State::slot_duration_ms`], which handles the `0`
+    /// sentinel. Settable only downward (slots never get slower again), and
+    /// only to values in `math::slots::VALID_SLOT_DURATIONS_MS`.
+    pub slot_duration_ms: u16,
+    pub padding: [u8; 236],
 }
 
 /// Purpose-specific hot role keys held on `State`. Each variant maps to one of the
@@ -203,12 +213,29 @@ impl Default for State {
             lp_pool_feature_bit_flags: 0,
             solvency_status: 0,
             promo_fee_tier: 0,
-            padding: [0; 238],
+            slot_duration_ms: 0,
+            padding: [0; 236],
         }
     }
 }
 
 impl State {
+    /// The configured slot duration in ms, with the `0` (pre-upgrade /
+    /// unset) sentinel resolved to the 400ms baseline.
+    pub fn slot_duration_ms(&self) -> u64 {
+        crate::math::slots::sanitize_slot_duration_ms(self.slot_duration_ms)
+    }
+
+    /// `min_perp_auction_duration` (400ms baseline units) inflated to actual
+    /// slots at the current slot duration, saturating at the u8 ceiling.
+    pub fn effective_min_perp_auction_duration(&self) -> u8 {
+        crate::math::slots::effective_slots(
+            self.min_perp_auction_duration as u64,
+            self.slot_duration_ms(),
+        )
+        .min(u8::MAX as u64) as u8
+    }
+
     pub fn get_exchange_status(&self) -> VelocityResult<BitFlags<ExchangeStatus>> {
         BitFlags::<ExchangeStatus>::from_bits(usize::from(self.exchange_status)).safe_unwrap()
     }
@@ -422,13 +449,22 @@ impl Size for State {
     // 8 (disc) + 13 Pubkey (cold + warm + pause + 10 hot, 416 B) + 8 Pubkey (mint/signer/srm
     // + protocol_fee_recipient_perp/_spot + hot_fee_withdraw + hot_account_extension, 256 B)
     // + 2*FeeStructure + OracleGuardRails + scalars + solvency_status[1] + promo_fee_tier[1]
-    // + padding[238] = 1752 B.
+    // + slot_duration_ms[2] + padding[236] = 1752 B.
     // hot_if_rebalance was removed with the if-rebalance machinery (its 32 B went into
     // the padding); protocol_fee_recipient_spot later took 32 B back out; solvency_status
-    // took 1 B out of the padding; hot_account_extension took another 32 B out.
+    // took 1 B out of the padding; hot_account_extension took another 32 B out;
+    // slot_duration_ms took 2 B out (promo_fee_tier ends at an odd offset, so the u16
+    // starts at the even byte right after it — no implicit padding, pinned below).
     // SIZE stays constant and (SIZE - 8) % 16 == 0 holds (1744).
     const SIZE: usize = 1752;
 }
+
+// `slot_duration_ms` must start exactly where the old padding began (byte 1498
+// of the struct, an even offset), so pre-upgrade accounts read `0` (= 400ms
+// baseline) out of former padding and no implicit alignment padding was
+// introduced.
+static_assertions::const_assert_eq!(std::mem::offset_of!(State, slot_duration_ms), 1498);
+static_assertions::const_assert_eq!(std::mem::size_of::<State>(), 1744);
 
 #[derive(Copy, AnchorSerialize, AnchorDeserialize, Clone, Debug)]
 #[repr(C)]

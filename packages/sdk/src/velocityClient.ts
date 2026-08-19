@@ -11819,7 +11819,7 @@ export class VelocityClient {
 	 * insurance fund (`ifStakedQuoteAssetAmount`), or the instruction reverts.
 	 *
 	 * Only orders that have rested on-chain for at least `BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS`
-	 * (24 slots, ~10s) are sampled — a quote must have been takeable by someone else before it may
+	 * (24 baseline slots, ~10s, inflated to actual slots at the current slot duration) are sampled — a quote must have been takeable by someone else before it may
 	 * move the TWAP. Orders newer than that are silently skipped, so passing only freshly-placed
 	 * makers yields no DLOB estimate and the crank falls back to the AMM's quote. Note this is
 	 * measured from the order's on-chain post slot, not from `order.slot` (which signed-message

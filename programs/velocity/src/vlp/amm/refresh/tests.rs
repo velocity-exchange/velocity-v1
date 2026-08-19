@@ -114,7 +114,12 @@ pub fn update_amm_test() {
     assert!(!too_diverge);
 
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+        )
         .unwrap();
     let cost_of_update =
         _update_amm(&mut market, &mm_oracle_price_data, &state, now, slot).unwrap();
@@ -133,8 +138,9 @@ pub fn update_amm_test() {
         &market.oracle_source,
         LogMode::ExchangeOracle,
         state.oracle_guard_rails.validity.slots_before_stale_for_amm as i8,
-        false, // exchange-oracle price, never MM-sourced
+        false,
         state.oracle_guard_rails.validity.slots_before_stale_for_amm as i8,
+        crate::math::slots::BASE_SLOT_DURATION_MS,
     )
     .unwrap()
         == OracleValidity::Valid;
@@ -198,6 +204,7 @@ pub fn update_amm_test() {
             &mm_oracle_price_data,
             reserve_price,
             slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
     }
@@ -304,7 +311,12 @@ pub fn reference_price_offset_smoothing_uses_spread_update_slot() {
         sequence_id: None,
     };
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &validity,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+        )
         .unwrap();
 
     {
@@ -317,6 +329,7 @@ pub fn reference_price_offset_smoothing_uses_spread_update_slot() {
             &mm_oracle_price_data,
             reserve_price,
             slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
     }
@@ -382,7 +395,12 @@ pub fn update_amm_test_bad_oracle() {
         sequence_id: None,
     };
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+        )
         .unwrap();
 
     let _cost_of_update =
@@ -403,8 +421,9 @@ pub fn update_amm_test_bad_oracle() {
         &market.oracle_source,
         LogMode::None,
         0,
-        false, // exchange-oracle price, never MM-sourced
+        false,
         0,
+        crate::math::slots::BASE_SLOT_DURATION_MS,
     )
     .unwrap()
         == OracleValidity::Valid;
@@ -446,7 +465,12 @@ pub fn update_amm_larg_conf_test() {
         sequence_id: None,
     };
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+        )
         .unwrap();
     assert_eq!(0u32, 0);
     assert_eq!(0u32, 0);
@@ -468,6 +492,7 @@ pub fn update_amm_larg_conf_test() {
             &mm_oracle_price_data,
             reserve_price_after,
             slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
     }
@@ -486,7 +511,12 @@ pub fn update_amm_larg_conf_test() {
         sequence_id: None,
     };
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+        )
         .unwrap();
 
     let cost_of_update =
@@ -504,6 +534,7 @@ pub fn update_amm_larg_conf_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
     }
@@ -551,7 +582,12 @@ pub fn update_amm_larg_conf_test() {
     assert_eq!(optimal_peg_cost, 30468749);
 
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+        )
         .unwrap();
     let cost_of_update =
         _update_amm(&mut market, &mm_oracle_price_data, &state, now, slot).unwrap();
@@ -568,6 +604,7 @@ pub fn update_amm_larg_conf_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
     }
@@ -599,7 +636,12 @@ pub fn update_amm_larg_conf_test() {
         sequence_id: None,
     };
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+        )
         .unwrap();
 
     let cost_of_update =
@@ -617,6 +659,7 @@ pub fn update_amm_larg_conf_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
     }
@@ -677,7 +720,12 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
         sequence_id: None,
     };
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+        )
         .unwrap();
     assert_eq!(0u32, 0);
     assert_eq!(0u32, 0);
@@ -720,6 +768,7 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             &mm_oracle_price_data,
             reserve_price_after,
             slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
     }
@@ -747,7 +796,12 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
         sequence_id: None,
     };
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+        )
         .unwrap();
 
     let cost_of_update =
@@ -765,6 +819,7 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
     }
@@ -795,7 +850,12 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
         sequence_id: None,
     };
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+        )
         .unwrap();
 
     let fee_budget = calculate_fee_pool(&market.amm).unwrap();
@@ -847,6 +907,7 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
     }
@@ -893,7 +954,12 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
         sequence_id: None,
     };
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+        )
         .unwrap();
 
     let cost_of_update =
@@ -911,6 +977,7 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
     }

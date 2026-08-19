@@ -203,9 +203,23 @@ impl FillerBot {
             .state_account()
             .map(|s| s.has_median_trigger_price_feature())
             .unwrap_or(false);
+        let mut slot_duration_ms = velocity
+            .state_account()
+            .map(|s| {
+                velocity_rs::program::math::slots::sanitize_slot_duration_ms(s.slot_duration_ms)
+            })
+            .unwrap_or(velocity_rs::program::math::slots::BASE_SLOT_DURATION_MS);
+        // effective (actual-slot) staleness threshold: the on-chain value is in
+        // 400ms baseline units and inflated by slot_duration_ms, mirroring
+        // `oracle_validity`
         let mut slots_before_stale_for_amm = velocity
             .state_account()
-            .map(|s| s.oracle_guard_rails.validity.slots_before_stale_for_amm)
+            .map(|s| {
+                velocity_rs::program::math::slots::effective_slots_i64(
+                    s.oracle_guard_rails.validity.slots_before_stale_for_amm,
+                    slot_duration_ms,
+                )
+            })
             .unwrap_or(10);
         let mut pyth_oracle_prices = BTreeMap::<u16, PythPriceUpdate>::new();
         // per-market consecutive perp-market/oracle cache-miss counters (see slot loop)
@@ -290,7 +304,7 @@ impl FillerBot {
                                 .unwrap_or(perp_market);
 
                             // try an immediate fill against resting liquidity
-                            match evaluate_swift_crosses(dlob, &signed_order, &perp_market, oracle_price_data.price, oracle_price_data.delay, landing_slot, slots_before_stale_for_amm) {
+                            match evaluate_swift_crosses(dlob, &signed_order, &perp_market, oracle_price_data.price, oracle_price_data.delay, landing_slot, slots_before_stale_for_amm, slot_duration_ms) {
                                 SwiftEval::Fillable(crosses) => {
                                     log::info!(target: TARGET, "found resting cross. market={market_index} oracle={} delay={} crosses={crosses:?}", oracle_price_data.price, oracle_price_data.delay);
                                     let pf = priority_fee_subscriber.priority_fee_nth(0.6);
@@ -314,7 +328,7 @@ impl FillerBot {
                                     let order_slot = signed_order.slot();
                                     let auction_duration = order_params.auction_duration.unwrap_or(0);
                                     let max_ts = order_params.max_ts.unwrap_or(0);
-                                    if swift_placement_expired(order_slot, auction_duration, max_ts, slot, now_ts) {
+                                    if swift_placement_expired(order_slot, auction_duration, max_ts, slot, now_ts, slot_duration_ms) {
                                         log::debug!(target: TARGET, "swift order past placement window, not placing. uuid={}", signed_order.order_uuid_str());
                                         metrics.swift_place_skipped.inc();
                                     } else {
@@ -602,9 +616,18 @@ impl FillerBot {
                                 .state_account()
                                 .map(|s| s.has_median_trigger_price_feature())
                                 .unwrap_or(false);
+                            slot_duration_ms = velocity
+                                .state_account()
+                                .map(|s| velocity_rs::program::math::slots::sanitize_slot_duration_ms(s.slot_duration_ms))
+                                .unwrap_or(velocity_rs::program::math::slots::BASE_SLOT_DURATION_MS);
                             slots_before_stale_for_amm = velocity
                                 .state_account()
-                                .map(|s| s.oracle_guard_rails.validity.slots_before_stale_for_amm)
+                                .map(|s| {
+                                    velocity_rs::program::math::slots::effective_slots_i64(
+                                        s.oracle_guard_rails.validity.slots_before_stale_for_amm,
+                                        slot_duration_ms,
+                                    )
+                                })
                                 .unwrap_or(10);
                         }
                     }
@@ -684,7 +707,9 @@ fn on_transaction_update_fn(
 /// thread panic doesn't stop the process — the bot would keep running with a frozen book
 /// (zombie). A transient miss is skipped and retried next slot; a persistent one exits the
 /// process so the supervisor restarts it with fresh subscriptions.
-const MAX_CONSECUTIVE_ORACLE_MISSES: u32 = 300; // ~2min of slots
+// ~2min of slot ticks at 400ms (shrinks in wall-clock as slot time drops —
+// deliberate: this is a dead-feed restart tripwire, firing sooner is fine)
+const MAX_CONSECUTIVE_ORACLE_MISSES: u32 = 300;
 
 fn on_slot_update_fn(
     velocity: VelocityClient,
@@ -801,9 +826,11 @@ fn evaluate_swift_crosses(
     oracle_delay: i64,
     landing_slot: u64,
     slots_before_stale_for_amm: i64,
+    slot_duration_ms: u64,
 ) -> SwiftEval {
     let mut order_params = signed_order.order_params();
-    let _ = order_params.update_perp_auction_params(perp_market, oracle_price, true);
+    let _ =
+        order_params.update_perp_auction_params(perp_market, oracle_price, true, slot_duration_ms);
 
     // Post-only limits are maker orders: never taker-fill them, but do place them on-chain so
     // they rest on the book (the program cancels/amends them if they'd cross on placement).
@@ -1360,7 +1387,14 @@ async fn try_auction_fill(
         // JIT leg validates the MM oracle at the landing slot (crosses were snapshotted at
         // `crosses.slot`; the fill lands ~next slot). A same-slot snapshot that looks fresh
         // routinely lands one slot stale under the immediate threshold, so measure at landing.
-        let mm_stale_immediate = mm_oracle_stale_for_amm_immediate(&perp_market, crosses.slot + 1);
+        let slot_duration_ms = velocity
+            .state_account()
+            .map(|s| {
+                velocity_rs::program::math::slots::sanitize_slot_duration_ms(s.slot_duration_ms)
+            })
+            .unwrap_or(velocity_rs::program::math::slots::BASE_SLOT_DURATION_MS);
+        let mm_stale_immediate =
+            mm_oracle_stale_for_amm_immediate(&perp_market, crosses.slot + 1, slot_duration_ms);
         let mut vamm_usable = crosses.has_vamm_cross
             && vamm_can_fill_taker(
                 drawdown,
@@ -1971,14 +2005,27 @@ fn vamm_can_fill_taker(
 /// closer together than that, so a tighter threshold is unsatisfiable). Delay is measured
 /// against the *MM* oracle slot (`market_stats.mm_oracle_slot`) at the expected landing slot,
 /// since that — not the exchange oracle — is what the JIT leg validates.
-fn mm_oracle_stale_for_amm_immediate(perp_market: &PerpMarket, landing_slot: u64) -> bool {
+fn mm_oracle_stale_for_amm_immediate(
+    perp_market: &PerpMarket,
+    landing_slot: u64,
+    slot_duration_ms: u64,
+) -> bool {
     let mm_oracle_delay =
         (landing_slot as i64).saturating_sub(perp_market.market_stats.mm_oracle_slot as i64);
+    // thresholds are 400ms baseline units, inflated like `oracle_validity` does
     let override_ = perp_market.oracle_slot_delay_override;
     if override_ > 0 {
-        mm_oracle_delay > override_ as i64
+        mm_oracle_delay
+            > velocity_rs::program::math::slots::effective_slots_i64(
+                override_ as i64,
+                slot_duration_ms,
+            )
     } else if override_ < 0 {
-        mm_oracle_delay > velocity_rs::program::math::constants::MM_ORACLE_MIN_SLOT_GAP as i64
+        mm_oracle_delay
+            > velocity_rs::program::math::slots::effective_slots(
+                velocity_rs::program::math::constants::MM_ORACLE_MIN_SLOT_GAP,
+                slot_duration_ms,
+            ) as i64
     } else {
         true
     }

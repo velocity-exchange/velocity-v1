@@ -1428,6 +1428,13 @@ pub mod velocity {
         handle_update_state_settlement_duration(ctx, settlement_duration)
     }
 
+    pub fn update_state_slot_duration_ms(
+        ctx: Context<AdminUpdateState>,
+        slot_duration_ms: u16,
+    ) -> Result<()> {
+        handle_update_state_slot_duration_ms(ctx, slot_duration_ms)
+    }
+
     pub fn update_state_max_number_of_sub_accounts(
         ctx: Context<AdminUpdateState>,
         max_number_of_sub_accounts: u16,

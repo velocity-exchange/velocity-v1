@@ -184,11 +184,15 @@ pub fn get_liquidation_fee(
     max_liquidation_fee: u32,
     last_active_user_slot: u64,
     current_slot: u64,
+    slot_duration_ms: u64,
 ) -> SdkResult<u32> {
     if current_slot < last_active_user_slot {
         return Err(SdkError::MathError("slot < user.last_active_slot"));
     }
-    let slots_elapsed = current_slot - last_active_user_slot;
+    // grace period and per-slot rate are in 400ms baseline units; deflate the
+    // measured slot delta to match (mirrors the program's get_liquidation_fee)
+    let slots_elapsed =
+        (current_slot - last_active_user_slot).saturating_mul(slot_duration_ms.max(1)) / 400;
 
     if slots_elapsed < LIQUIDATION_FEE_ADJUST_GRACE_PERIOD_SLOTS {
         return Ok(base_liquidation_fee);

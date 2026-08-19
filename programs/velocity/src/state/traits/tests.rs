@@ -140,6 +140,17 @@ mod native_instruction_offsets {
         );
     }
 
+    /// State.slot_duration_ms is read at bytes 1506..1508 by the native
+    /// MM-oracle handlers to scale the write-gap and source-age gates.
+    #[test]
+    fn state_slot_duration_ms_offset() {
+        assert_eq!(
+            std::mem::offset_of!(State, slot_duration_ms) + DISC,
+            1506,
+            "State::slot_duration_ms offset changed — update read_native_state_slot_duration_ms"
+        );
+    }
+
     /// State.hot_mm_oracle_crank is read at bytes 360..392 by the MM-oracle handler.
     #[test]
     fn state_hot_mm_oracle_crank_offset() {

@@ -104,8 +104,13 @@ mod tests {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map =
-            OracleMap::load_one(&oracle_account_info, oracle_map_slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            oracle_map_slot,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {

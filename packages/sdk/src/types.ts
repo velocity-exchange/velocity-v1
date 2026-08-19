@@ -1093,7 +1093,7 @@ export type StateAccount = {
 	spotFeeStructure: FeeStructure;
 	/** LIQUIDATION_PCT_PRECISION (1e4); fraction of a position liquidated per partial-liquidation pass */
 	initialPctToLiquidate: number;
-	/** seconds a liquidation is spread over */
+	/** liquidation ramp length in 400ms baseline units (see `math/slots.ts`), NOT seconds */
 	liquidationDuration: number;
 	/** max SOL fee `getInitUserFee` may charge to create a new sub-account, in value/100 SOL (e.g. 100 = 1 SOL); ramps from 0 to this max as account-space utilization rises from 80% to 100% of `maxNumberOfSubAccounts` */
 	maxInitializeUserFee: number;
@@ -1105,6 +1105,15 @@ export type StateAccount = {
 	solvencyStatus: number;
 	/** promotional fee-tier floor for every account: effective perp tier = max(volume tier, promoFeeTier); 0 = disabled */
 	promoFeeTier: number;
+	/**
+	 * current Solana slot duration in ms, admin-set as the IBRL feature gates
+	 * activate (400 -> 350 -> 300 -> 250 -> 200). 0 = unset (pre-upgrade
+	 * padding), meaning the 400ms baseline — resolve with
+	 * `sanitizeSlotDurationMs` from `math/slots.ts`. Every slot-denominated
+	 * constant/field keeps its 400ms-calibrated value; read paths inflate via
+	 * `effectiveSlots`/`baseUnitsFromSlots`.
+	 */
+	slotDurationMs: number;
 };
 
 /** Decoded mirror of the on-chain `PerpMarket` zero-copy account. */

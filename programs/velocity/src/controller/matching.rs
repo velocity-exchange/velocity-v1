@@ -507,6 +507,7 @@ mod tests {
             tick,
             step_size: 1,
             slot: 0,
+            slot_duration_ms: crate::math::slots::BASE_SLOT_DURATION_MS,
             base_precision: 1,
             market_status: crate::state::market_status::MarketStatus::default(),
             market_config: 0,

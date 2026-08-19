@@ -86,6 +86,10 @@ pub struct QuoteContext<'a> {
     /// (an order in active auction prices differently than the same order
     /// resting post-auction).
     pub slot: u64,
+    /// Current slot duration in ms (`State::slot_duration_ms()`). Used to
+    /// scale slot-denominated windows calibrated to the 400ms baseline (e.g.
+    /// the reference-price-offset smoothing budget).
+    pub slot_duration_ms: u64,
     /// Base-asset precision divisor: when computing `quote_amount` from a
     /// base amount filled at a price, the formula is
     /// `quote = base * price / base_precision` to convert from raw base
@@ -559,6 +563,7 @@ mod dlob_order_maker_tests {
             tick: 1,
             step_size: 1,
             slot: 100,
+            slot_duration_ms: crate::math::slots::BASE_SLOT_DURATION_MS,
             base_precision: crate::math::constants::BASE_PRECISION as u64,
             market_status: crate::state::market_status::MarketStatus::default(),
             market_config: 0,

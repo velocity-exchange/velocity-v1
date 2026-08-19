@@ -209,9 +209,20 @@ export const DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT = new BN(
 
 /** 13 days in seconds; minimum account age before an idle user account becomes eligible for keeper-initiated deletion. */
 export const ACCOUNT_AGE_DELETION_CUTOFF_SECONDS = 60 * 60 * 24 * 13; // 13 days
-/** Slots of inactivity (~1 week at `SLOT_TIME_ESTIMATE_MS`) after which a user account is eligible to be marked idle. */
+/**
+ * Inactivity threshold (accelerated tier, equity < $1,000) after which a user
+ * account is eligible to be marked idle: ~1 hour, denominated in 400ms
+ * baseline units (see `math/slots.ts`). The non-accelerated tier is 1,512,000
+ * units (~1 week).
+ */
 export const IDLE_TIME_SLOTS = 9000;
-/** Approximate Solana slot duration in milliseconds, used by the SDK to convert between slots and wall-clock time. */
+/**
+ * @deprecated Solana slot time is no longer a constant (400 -> 350 -> 300 ->
+ * 250 -> 200ms via feature gates). Read the live value from
+ * `State.slotDurationMs` (0 means unset = 400) via
+ * `sanitizeSlotDurationMs(state.slotDurationMs)` in `math/slots.ts`, and use
+ * its `effectiveSlots`/`baseUnitsFromSlots` helpers for conversions.
+ */
 export const SLOT_TIME_ESTIMATE_MS = 400;
 
 /** `QUOTE_PRECISION / 100` = $0.01; a perp position smaller than this is treated as dust (safe to ignore/close for free). */

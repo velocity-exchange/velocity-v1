@@ -55,6 +55,7 @@ export type FillerMultiThreadedConfig = BaseBotConfig & {
 
 	// Min slots between fill attempts on the same order (paces re-attempts against
 	// the DLOB builder's ~200ms re-emit). Defaults to 5.
+	/// in 400ms baseline slot units (inflated to actual slots at the current slot duration)
 	fillAttemptSlotInterval?: number;
 };
 
@@ -109,6 +110,7 @@ export type LiquidatorConfig = BaseBotConfig & {
 	maxSlippagePct?: number;
 	maxSlippageBps?: number;
 
+	/// in 400ms baseline slot units (inflated to actual slots at the current slot duration)
 	deriskAuctionDurationSlots?: number;
 	twapDurationSec?: number;
 	minDepositToLiq?: Map<number, number>;
@@ -145,7 +147,7 @@ export type PythLazerCrankerBotConfig = BaseBotConfig & {
 	/// acts as the condition poll rate rather than the post rate. Unset
 	/// preserves the legacy post-every-tick behavior.
 	crankDivergenceBps?: number;
-	/// Max time between posts per chunk in adaptive mode (default 1600ms ~ 4 slots)
+	/// Max time between posts per chunk in adaptive mode (default 4 x the live slot duration)
 	maxCrankIntervalMs?: number;
 };
 

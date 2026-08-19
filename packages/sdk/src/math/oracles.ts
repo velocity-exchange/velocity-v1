@@ -23,6 +23,7 @@ import {
 } from '../constants/numericConstants';
 import { assert } from '../assert/assert';
 import { BN } from '../isomorphic/anchor';
+import { BASE_SLOT_DURATION_MS, effectiveSlots } from './slots';
 
 /**
  * Computes a generic sanity band around the oracle price, sized by the gap between the
@@ -94,6 +95,9 @@ export function getMaxConfidenceIntervalMultiplier(
  * affects the unset (`oracleSlotDelayOverride < 0`) immediate-fill threshold, which resolves to
  * `MM_ORACLE_MIN_SLOT_GAP` for an MM-sourced price and to zero for an exchange-sourced one,
  * mirroring `oracle_validity`'s `immediate_price_is_mm_sourced`.
+ * @param slotDurationMs Current slot duration in ms (`State.slotDurationMs`, pass
+ * `sanitizeSlotDurationMs(state.slotDurationMs)`). Slot-denominated staleness thresholds are
+ * calibrated to the 400ms baseline and inflated to actual slots, mirroring `oracle_validity`.
  * @returns The most severe `OracleValidity` classification that applies.
  */
 export function getOracleValidity(
@@ -102,8 +106,10 @@ export function getOracleValidity(
 	oracleGuardRails: OracleGuardRails,
 	slot: BN,
 	oracleStalenessBuffer = FIVE,
-	isMmSourcedPrice = false
+	isMmSourcedPrice = false,
+	slotDurationMs = BASE_SLOT_DURATION_MS
 ): OracleValidity {
+	const scale = (baseSlots: BN) => effectiveSlots(baseSlots, slotDurationMs);
 	const isNonPositive = oraclePriceData.price.lte(ZERO);
 	const isTooVolatile = BN.max(
 		oraclePriceData.price,
@@ -140,31 +146,31 @@ export function getOracleValidity(
 	let isStaleForAmmImmediate = true;
 	if (market.oracleSlotDelayOverride < 0) {
 		isStaleForAmmImmediate = oracleDelay.gt(
-			isMmSourcedPrice ? MM_ORACLE_MIN_SLOT_GAP : ZERO
+			isMmSourcedPrice ? scale(MM_ORACLE_MIN_SLOT_GAP) : ZERO
 		);
 	} else if (market.oracleSlotDelayOverride != 0) {
 		isStaleForAmmImmediate = oracleDelay.gt(
-			new BN(market.oracleSlotDelayOverride)
+			scale(new BN(market.oracleSlotDelayOverride))
 		);
 	}
 
 	let isStaleForAmmLowRisk = false;
 	if (market.oracleLowRiskSlotDelayOverride != 0) {
 		isStaleForAmmLowRisk = oracleDelay.gt(
-			BN.max(new BN(market.oracleLowRiskSlotDelayOverride), ZERO)
+			scale(BN.max(new BN(market.oracleLowRiskSlotDelayOverride), ZERO))
 		);
 	} else {
 		isStaleForAmmLowRisk = oracleDelay.gt(
-			oracleGuardRails.validity.slotsBeforeStaleForAmm
+			scale(oracleGuardRails.validity.slotsBeforeStaleForAmm)
 		);
 	}
 
 	let isStaleForMargin = oracleDelay.gt(
-		new BN(oracleGuardRails.validity.slotsBeforeStaleForMargin)
+		scale(new BN(oracleGuardRails.validity.slotsBeforeStaleForMargin))
 	);
 	if (isVariant(market.oracleSource, 'pythLazerStableCoin')) {
 		isStaleForMargin = oracleDelay.gt(
-			new BN(oracleGuardRails.validity.slotsBeforeStaleForMargin).muln(3)
+			scale(new BN(oracleGuardRails.validity.slotsBeforeStaleForMargin)).muln(3)
 		);
 	}
 
@@ -204,7 +210,8 @@ export function isOracleValid(
 	market: PerpMarketAccount,
 	oraclePriceData: OraclePriceData,
 	oracleGuardRails: OracleGuardRails,
-	slot: number
+	slot: number,
+	slotDurationMs = BASE_SLOT_DURATION_MS
 ): boolean {
 	// checks if oracle is valid for an AMM only fill
 
@@ -231,7 +238,12 @@ export function isOracleValid(
 
 	const oracleIsStale = new BN(slot)
 		.sub(oraclePriceData.slot)
-		.gt(oracleGuardRails.validity.slotsBeforeStaleForAmm);
+		.gt(
+			effectiveSlots(
+				oracleGuardRails.validity.slotsBeforeStaleForAmm,
+				slotDurationMs
+			)
+		);
 
 	return !(
 		!oraclePriceData.hasSufficientNumberOfDataPoints ||
@@ -535,7 +547,8 @@ export function getSpotOracleValidity(
 	oraclePriceData: OraclePriceData,
 	oracleGuardRails: OracleGuardRails,
 	slot: BN,
-	oracleStalenessBuffer = FIVE
+	oracleStalenessBuffer = FIVE,
+	slotDurationMs = BASE_SLOT_DURATION_MS
 ): OracleValidity {
 	if (oraclePriceData.price.lte(ZERO)) {
 		return OracleValidity.NonPositive;
@@ -562,7 +575,10 @@ export function getSpotOracleValidity(
 	}
 
 	const oracleDelay = slot.sub(oraclePriceData.slot).sub(oracleStalenessBuffer);
-	let staleSlots = new BN(oracleGuardRails.validity.slotsBeforeStaleForMargin);
+	let staleSlots = effectiveSlots(
+		new BN(oracleGuardRails.validity.slotsBeforeStaleForMargin),
+		slotDurationMs
+	);
 	if (isVariant(spotMarket.oracleSource, 'pythLazerStableCoin')) {
 		staleSlots = staleSlots.muln(3);
 	}

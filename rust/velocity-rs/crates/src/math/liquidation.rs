@@ -334,6 +334,7 @@ pub fn calculate_max_pct_to_liquidate(
     slot: u64,
     initial_pct_to_liquidate: u128,
     liquidation_duration: u128,
+    slot_duration_ms: u64,
 ) -> SdkResult<u128> {
     // if margin shortage is tiny, accelerate liquidation
     if margin_shortage < 50 * QUOTE_PRECISION {
@@ -343,10 +344,13 @@ pub fn calculate_max_pct_to_liquidate(
     if slot < user.last_active_slot {
         return Err(SdkError::MathError("slot < user.last_active_slot"));
     }
-    let slots_elapsed = slot - user.last_active_slot;
+    // `liquidation_duration` is in 400ms baseline units; deflate the measured
+    // slot delta to match (mirrors the program's calculate_max_pct_to_liquidate)
+    let slots_elapsed =
+        (slot - user.last_active_slot).saturating_mul(slot_duration_ms.max(1)) / 400;
 
     let pct_freeable = slots_elapsed as u128 * LIQUIDATION_PCT_PRECISION
-        .checked_div(liquidation_duration) // ~ 1 minute if per slot is 400ms
+        .checked_div(liquidation_duration) // ~1 minute at the on-chain default
         .unwrap_or(LIQUIDATION_PCT_PRECISION) // if divide by zero, default to 100%
         + initial_pct_to_liquidate
         .min(LIQUIDATION_PCT_PRECISION);

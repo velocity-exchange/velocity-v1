@@ -2600,7 +2600,7 @@ export class AdminClient extends VelocityClient {
 	 * Sets how many slots it takes for a liquidation's max-closeable fraction to ramp
 	 * from `initialPctToLiquidate` up to 100% (see `updateInitialPctToLiquidate`).
 	 * Requires warm admin (`check_warm`).
-	 * @param liquidationDuration - Ramp duration, slots (comment in `calculate_max_pct_to_liquidate` notes ~150 slots ≈ 1 minute at 400ms/slot).
+	 * @param liquidationDuration - Ramp duration in 400ms baseline units (see `math/slots.ts`; ~150 ≈ 1 minute).
 	 * @returns Transaction signature.
 	 */
 	public async updateLiquidationDuration(
@@ -2755,6 +2755,50 @@ export class AdminClient extends VelocityClient {
 	): Promise<TransactionInstruction> {
 		return await this.program.instruction.updateStateSettlementDuration(
 			settlementDuration,
+			{
+				accounts: {
+					admin: this.isSubscribed
+						? this.getStateAccount().coldAdmin
+						: this.wallet.publicKey,
+					state: await this.getStatePublicKey(),
+				},
+			}
+		);
+	}
+
+	/**
+	 * Sets `state.slotDurationMs` — the current Solana slot duration in ms, to be
+	 * flipped as each IBRL feature gate activates (400 -> 350 -> 300 -> 250 -> 200).
+	 * The program only accepts values from the feature-gate set {350, 300, 250, 200}
+	 * and only strictly below the current effective value (slots never get slower
+	 * again), so an accidental flip back to a larger duration is unrepresentable.
+	 * Requires warm admin (`check_warm`).
+	 * @param slotDurationMs - New slot duration in milliseconds.
+	 * @returns Transaction signature.
+	 */
+	public async updateStateSlotDurationMs(
+		slotDurationMs: number
+	): Promise<TransactionSignature> {
+		const updateStateSlotDurationMsIx =
+			await this.getUpdateStateSlotDurationMsIx(slotDurationMs);
+
+		const tx = await this.buildTransaction(updateStateSlotDurationMsIx);
+
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+
+		return txSig;
+	}
+
+	/**
+	 * Builds the `updateStateSlotDurationMs` instruction without sending it. See
+	 * `updateStateSlotDurationMs`.
+	 * @returns The unsigned `updateStateSlotDurationMs` instruction.
+	 */
+	public async getUpdateStateSlotDurationMsIx(
+		slotDurationMs: number
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.updateStateSlotDurationMs(
+			slotDurationMs,
 			{
 				accounts: {
 					admin: this.isSubscribed

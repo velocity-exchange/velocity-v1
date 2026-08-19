@@ -49,7 +49,12 @@ fn calculate_oracle_valid() {
         ..PerpMarket::default()
     };
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, 10000, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            10000,
+            &state.oracle_guard_rails.validity,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
+        )
         .unwrap();
 
     let state = State {
@@ -73,6 +78,7 @@ fn calculate_oracle_valid() {
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
+        crate::math::slots::BASE_SLOT_DURATION_MS,
     )
     .unwrap();
 
@@ -104,6 +110,7 @@ fn calculate_oracle_valid() {
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
+        crate::math::slots::BASE_SLOT_DURATION_MS,
     )
     .unwrap();
     assert!(oracle_status.oracle_validity != OracleValidity::Valid);
@@ -122,6 +129,7 @@ fn calculate_oracle_valid() {
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
+        crate::math::slots::BASE_SLOT_DURATION_MS,
     )
     .unwrap();
     assert!(oracle_status.oracle_validity == OracleValidity::Valid);
@@ -136,6 +144,7 @@ fn calculate_oracle_valid() {
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
+        crate::math::slots::BASE_SLOT_DURATION_MS,
     )
     .unwrap();
     assert!(oracle_status.mark_too_divergent);
@@ -147,6 +156,7 @@ fn calculate_oracle_valid() {
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
+        crate::math::slots::BASE_SLOT_DURATION_MS,
     )
     .unwrap();
     assert!(oracle_status.mark_too_divergent);
@@ -194,6 +204,7 @@ fn immediate_staleness_threshold_by_override() {
             immediate_override,
             mm_sourced,
             0,
+            crate::math::slots::BASE_SLOT_DURATION_MS,
         )
         .unwrap();
         matches!(validity, OracleValidity::Valid)

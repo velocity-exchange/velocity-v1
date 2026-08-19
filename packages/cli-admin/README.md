@@ -43,6 +43,7 @@ velocity-admin spot-market set-withdraw-breaker <market> <pct>
 velocity-admin spot-market set-deposit-cap <market> <threshold> <pctPerDay>
 
 velocity-admin exchange set-status <bitfield>
+velocity-admin exchange set-slot-duration-ms <ms>      # warm admin; IBRL gate values only (350/300/250/200), decrease-only
 velocity-admin exchange set-solvency-status <bitfield>  # cold admin; gates solvency-repair ixs (1=solvencyRepairPaused)
 
 velocity-admin feature-flags median-trigger-price <true|false>  # bit 2; enabling requires cold admin

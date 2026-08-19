@@ -20,6 +20,8 @@ use {
 
 pub const SIGNED_MSG_PDA_SEED: &str = "SIGNED_MSG";
 pub const SIGNED_MSG_WS_PDA_SEED: &str = "SIGNED_MSG_WS";
+/// Grace past `max_slot` before a signed-msg order id is prunable, in 400ms
+/// baseline units (~4s); inflated to actual slots at the current slot duration.
 pub const SIGNED_MSG_SLOT_EVICTION_BUFFER: u64 = 10;
 
 mod tests;
@@ -137,18 +139,18 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
         &mut self,
         signed_msg_order_id: SignedMsgOrderId,
         current_slot: u64,
+        slot_duration_ms: u64,
     ) -> bool {
+        let eviction_buffer =
+            crate::math::slots::effective_slots(SIGNED_MSG_SLOT_EVICTION_BUFFER, slot_duration_ms);
         let mut uuid_exists = false;
         for i in 0..self.len() {
             let existing_signed_msg_order_id = self.get_mut(i);
             if existing_signed_msg_order_id.uuid == signed_msg_order_id.uuid
-                && existing_signed_msg_order_id.max_slot + SIGNED_MSG_SLOT_EVICTION_BUFFER
-                    >= current_slot
+                && existing_signed_msg_order_id.max_slot + eviction_buffer >= current_slot
             {
                 uuid_exists = true;
-            } else if existing_signed_msg_order_id.max_slot + SIGNED_MSG_SLOT_EVICTION_BUFFER
-                < current_slot
-            {
+            } else if existing_signed_msg_order_id.max_slot + eviction_buffer < current_slot {
                 existing_signed_msg_order_id.uuid = [0; 8];
                 existing_signed_msg_order_id.max_slot = 0;
                 existing_signed_msg_order_id.order_id = 0;

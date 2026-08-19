@@ -9,6 +9,7 @@ import { Commitment, Connection, Keypair, PublicKey } from '@solana/web3.js';
 import {
 	DLOBNode,
 	DLOBSubscriber,
+	sanitizeSlotDurationMs,
 	VelocityClient,
 	VelocityEnv,
 	SlotSubscriber,
@@ -997,7 +998,8 @@ const main = async (): Promise<void> => {
 			const inputParams = createMarketBasedAuctionParams(
 				auctionParamsInput,
 				undefined,
-				apiVersion
+				apiVersion,
+				sanitizeSlotDurationMs(velocityClient.getStateAccount().slotDurationMs)
 			);
 
 			const result = await mapToMarketOrderParams(

@@ -223,6 +223,9 @@ pub struct VelocityAccounts {
     pub oracles: Vec<(Pubkey, OwnedAccount)>,
     pub latest_slot: u64,
     pub oracle_guard_rails: Option<OracleGuardRails>,
+    /// Current slot duration in ms (`State::slot_duration_ms`); `0` means
+    /// unset and resolves to the 400ms baseline.
+    pub slot_duration_ms: u16,
 }
 
 /// Fabricate an `AccountInfo` borrowing directly into `slot`'s
@@ -266,6 +269,7 @@ pub fn calculate_margin(
     let mut oracle_map = OracleMap::load(
         &mut oracle_infos.iter().peekable(),
         accounts.latest_slot,
+        crate::math::slots::sanitize_slot_duration_ms(accounts.slot_duration_ms),
         accounts.oracle_guard_rails,
     )?;
 

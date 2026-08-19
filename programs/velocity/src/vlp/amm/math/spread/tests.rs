@@ -1980,7 +1980,15 @@ mod test {
             };
             let mm =
                 MMOraclePriceData::new(oracle_price, 0, 0, OracleValidity::Valid, opd).unwrap();
-            update_amm_quote_state(amm, stats, &mm, reserve_price, slot).unwrap();
+            update_amm_quote_state(
+                amm,
+                stats,
+                &mm,
+                reserve_price,
+                slot,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+            )
+            .unwrap();
             assert_eq!(amm.last_spread_update_slot, slot);
             (
                 amm.long_spread,

@@ -31,6 +31,7 @@ use {
             margin::calculate_user_equity,
             orders::is_multiple_of_step_size,
             safe_math::SafeMath,
+            slots::effective_slots,
             spot_balance::get_token_amount,
             spot_withdraw::{
                 validate_spot_market_vault_amount, DEFAULT_WITHDRAW_CIRCUIT_BREAKER_BPS,
@@ -163,7 +164,8 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         lp_pool_feature_bit_flags: 0,
         solvency_status: SolvencyStatus::active(),
         promo_fee_tier: 0,
-        padding: [0; 238],
+        slot_duration_ms: 0,
+        padding: [0; 236],
     };
 
     Ok(())
@@ -2611,6 +2613,39 @@ pub fn handle_update_state_settlement_duration(
     Ok(())
 }
 
+pub fn handle_update_state_slot_duration_ms(
+    ctx: Context<AdminUpdateState>,
+    slot_duration_ms: u16,
+) -> Result<()> {
+    let current = ctx.accounts.state.load()?.slot_duration_ms();
+
+    // Only values matching a real IBRL feature gate, so a typo can't set an
+    // arbitrary duration.
+    validate!(
+        crate::math::slots::VALID_SLOT_DURATIONS_MS.contains(&slot_duration_ms),
+        ErrorCode::DefaultError,
+        "slot_duration_ms {} is not one of the feature-gate values {:?}",
+        slot_duration_ms,
+        crate::math::slots::VALID_SLOT_DURATIONS_MS
+    )?;
+
+    // Monotonic decreasing: feature gates cannot deactivate, so slots never
+    // get slower. This makes an accidental flip back to a larger duration
+    // (which would silently shrink every wall-clock window) unrepresentable.
+    validate!(
+        (slot_duration_ms as u64) < current,
+        ErrorCode::DefaultError,
+        "slot_duration_ms may only decrease: {} -> {}",
+        current,
+        slot_duration_ms
+    )?;
+
+    msg!("slot_duration_ms: {} -> {}", current, slot_duration_ms);
+
+    ctx.accounts.state.load_mut()?.slot_duration_ms = slot_duration_ms;
+    Ok(())
+}
+
 pub fn handle_update_state_max_number_of_sub_accounts(
     ctx: Context<AdminUpdateState>,
     max_number_of_sub_accounts: u16,
@@ -3342,6 +3377,7 @@ pub fn handle_settle_expired_market<'c: 'info, 'info>(
         &get_writable_perp_market_set(market_index),
         &get_writable_spot_market_set(QUOTE_SPOT_MARKET_INDEX),
         clock.slot,
+        state.slot_duration_ms(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -3356,6 +3392,7 @@ pub fn handle_settle_expired_market<'c: 'info, 'info>(
             *oracle_price_data,
             clock.slot,
             &state.oracle_guard_rails.validity,
+            state.slot_duration_ms(),
         )?;
         let validity = crate::vlp::amm::refresh::compute_amm_refresh_validity(
             &perp_market,
@@ -3367,6 +3404,7 @@ pub fn handle_settle_expired_market<'c: 'info, 'info>(
             validity,
             clock.unix_timestamp,
             clock.slot,
+            state.slot_duration_ms(),
         )?;
     }
 
@@ -3408,6 +3446,7 @@ pub fn handle_admin_deposit<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set(market_index),
         clock.slot,
+        state.slot_duration_ms(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -3561,6 +3600,25 @@ const STATE_FEATURE_BIT_FLAGS_OFFSET: usize = 1374;
 #[cfg_attr(feature = "anchor-test", allow(dead_code))]
 const STATE_HOT_MM_ORACLE_CRANK_OFFSET: usize = 360;
 
+/// Byte offset of `State::slot_duration_ms` (u16 LE) from the start of the
+/// account data. Same guard as above. The native MM-oracle handlers read it to
+/// scale the write-gap and source-age gates.
+const STATE_SLOT_DURATION_MS_OFFSET: usize = 1506;
+
+/// Read `State::slot_duration_ms` from a raw (already discriminator-checked)
+/// state account, resolving the `0` sentinel to the 400ms baseline.
+fn read_native_state_slot_duration_ms(state_account: &AccountInfo) -> Result<u64> {
+    let state = state_account.try_borrow_data()?;
+    let bytes: [u8; 2] = state
+        .get(STATE_SLOT_DURATION_MS_OFFSET..STATE_SLOT_DURATION_MS_OFFSET + 2)
+        .ok_or(ErrorCode::InvalidNativeStateAccount)?
+        .try_into()
+        .map_err(|_| ErrorCode::InvalidNativeStateAccount)?;
+    Ok(crate::math::slots::sanitize_slot_duration_ms(
+        u16::from_le_bytes(bytes),
+    ))
+}
+
 pub fn handle_update_mm_oracle_native(accounts: &[AccountInfo], data: &[u8]) -> Result<()> {
     // Slot comes from the Clock sysvar syscall: no clock account, nothing for
     // a caller to forge, one account fewer per transaction.
@@ -3654,6 +3712,7 @@ fn update_mm_oracle(accounts: &[AccountInfo], data: &[u8], current_slot: u64) ->
         incoming_price,
         incoming_sequence_id,
         source_slot,
+        read_native_state_slot_duration_ms(&accounts[2])?,
     )? {
         MmOracleUpdateOutcome::Written { price } => {
             if price != incoming_price {
@@ -3890,6 +3949,7 @@ fn update_mm_oracle_batch(
 
     // Fixed prologue, paid once for the whole batch.
     let state_account = &accounts[1];
+    let slot_duration_ms = read_native_state_slot_duration_ms(state_account)?;
 
     crate::auth::require_native_account(
         state_account,
@@ -3963,6 +4023,7 @@ fn update_mm_oracle_batch(
             incoming_price,
             incoming_sequence_id,
             source_slot,
+            slot_duration_ms,
         )? {
             MmOracleUpdateOutcome::Written { price } => {
                 if price != incoming_price {
@@ -4040,6 +4101,7 @@ fn apply_mm_oracle_update(
     incoming_price: i64,
     incoming_sequence_id: u64,
     source_slot: u64,
+    slot_duration_ms: u64,
 ) -> Result<MmOracleUpdateOutcome> {
     use {MmOracleSkipReason as Skip, MmOracleUpdateOutcome as Outcome};
 
@@ -4077,8 +4139,12 @@ fn apply_mm_oracle_update(
         }));
     }
 
+    // Both gates are calibrated in 400ms baseline units; inflate to actual
+    // slots so the write rate limit and source-age bound keep their
+    // wall-clock width. Must stay consistent with the `MM_ORACLE_MIN_SLOT_GAP`
+    // fallback scaling inside `oracle_validity`.
     let gap = current_slot - stats.mm_oracle_slot;
-    if gap < MM_ORACLE_MIN_SLOT_GAP {
+    if gap < effective_slots(MM_ORACLE_MIN_SLOT_GAP, slot_duration_ms) {
         return Ok(Outcome::Skipped(Skip::RecrankGapTooSmall { gap }));
     }
 
@@ -4089,7 +4155,9 @@ fn apply_mm_oracle_update(
     // a caller bug (a wrong-unit value, e.g. a millisecond timestamp, would
     // otherwise disable this gate permanently and silently), while a small
     // forward allowance still lets a crank estimate its landing slot.
-    if current_slot.abs_diff(source_slot) > MM_ORACLE_MAX_SOURCE_AGE_SLOTS {
+    if current_slot.abs_diff(source_slot)
+        > effective_slots(MM_ORACLE_MAX_SOURCE_AGE_SLOTS, slot_duration_ms)
+    {
         return Ok(Outcome::Skipped(Skip::SourceSlotOutOfRange { source_slot }));
     }
 
@@ -4374,6 +4442,7 @@ pub fn handle_reset_equity_floor_breaker<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         Clock::get()?.slot,
+        state.slot_duration_ms(),
         Some(state.oracle_guard_rails),
     )?;
 

@@ -29,18 +29,27 @@ mod signed_msg_order_id_eviction {
         assert!(add_result.is_ok());
 
         assert_eq!(
-            signed_msg_user
-                .check_exists_and_prune_stale_signed_msg_order_ids(new_signed_msg_order_id, 11),
+            signed_msg_user.check_exists_and_prune_stale_signed_msg_order_ids(
+                new_signed_msg_order_id,
+                11,
+                crate::math::slots::BASE_SLOT_DURATION_MS
+            ),
             true
         );
         assert_eq!(
-            signed_msg_user
-                .check_exists_and_prune_stale_signed_msg_order_ids(new_signed_msg_order_id, 20),
+            signed_msg_user.check_exists_and_prune_stale_signed_msg_order_ids(
+                new_signed_msg_order_id,
+                20,
+                crate::math::slots::BASE_SLOT_DURATION_MS
+            ),
             true
         );
         assert_eq!(
-            signed_msg_user
-                .check_exists_and_prune_stale_signed_msg_order_ids(new_signed_msg_order_id, 30),
+            signed_msg_user.check_exists_and_prune_stale_signed_msg_order_ids(
+                new_signed_msg_order_id,
+                30,
+                crate::math::slots::BASE_SLOT_DURATION_MS
+            ),
             false
         );
 

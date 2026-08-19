@@ -4445,7 +4445,7 @@ fn dlob_vamm_taker_candidate_requires_fill_path_quote() {
         sequence_id: None,
     };
     let cached_market =
-        project_perp_market_for_quoting(btc_market_fixture(), stale_oracle, &rails, slot - 50)
+        project_perp_market_for_quoting(btc_market_fixture(), stale_oracle, &rails, slot - 50, 400)
             .unwrap();
 
     // Oracle has since moved above the cached curve, mirroring the incident: the
@@ -4459,7 +4459,7 @@ fn dlob_vamm_taker_candidate_requires_fill_path_quote() {
         sequence_id: None,
     };
     let projected =
-        project_perp_market_for_quoting(cached_market, exchange_oracle, &rails, slot).unwrap();
+        project_perp_market_for_quoting(cached_market, exchange_oracle, &rails, slot, 400).unwrap();
 
     let vamm_ask = |m: &PerpMarket| {
         let reserve_price = m.amm.reserve_price().unwrap();
@@ -4650,6 +4650,7 @@ fn post_trigger_price_mirrors_program_trigger_auction_params() {
         },
         20, // the program's hardcoded min duration in `controller::orders::trigger_order`
         Some(&market),
+        400,
     )
     .unwrap();
     expected_order.auction_duration = duration;

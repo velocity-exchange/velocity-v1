@@ -51,6 +51,9 @@ pub struct OracleMap<'a> {
     price_data: BTreeMap<OracleIdentifier, OraclePriceData>,
     validity: BTreeMap<OracleValidityKey, OracleValidity>,
     pub slot: u64,
+    /// Current slot duration in ms (from `State::slot_duration_ms()`), used to
+    /// inflate the 400ms-baseline staleness thresholds inside `oracle_validity`.
+    pub slot_duration_ms: u64,
     pub oracle_guard_rails: OracleGuardRails,
     pub quote_asset_price_data: OraclePriceData,
 }
@@ -146,6 +149,7 @@ impl<'a> OracleMap<'a> {
                     slots_before_stale_for_amm_override,
                     false, // exchange-oracle price, never MM-sourced
                     oracle_low_risk_slot_delay_override_override,
+                    self.slot_duration_ms,
                 )?;
                 self.validity.insert(validity_key, oracle_validity);
                 oracle_validity
@@ -178,6 +182,7 @@ impl<'a> OracleMap<'a> {
             slots_before_stale_for_amm_override,
             false, // exchange-oracle price, never MM-sourced
             oracle_low_risk_slot_delay_override_override,
+            self.slot_duration_ms,
         )?;
         self.validity.insert(validity_key, oracle_validity);
 
@@ -221,6 +226,7 @@ impl<'a> OracleMap<'a> {
     pub fn load<'c>(
         account_info_iter: &'c mut Peekable<Iter<AccountInfo<'a>>>,
         slot: u64,
+        slot_duration_ms: u64,
         oracle_guard_rails: Option<OracleGuardRails>,
     ) -> VelocityResult<OracleMap<'a>> {
         let mut oracles: BTreeMap<Pubkey, AccountInfo<'a>> = BTreeMap::new();
@@ -273,6 +279,7 @@ impl<'a> OracleMap<'a> {
             price_data: BTreeMap::new(),
             validity: BTreeMap::new(),
             slot,
+            slot_duration_ms,
             oracle_guard_rails: ogr,
             quote_asset_price_data: OraclePriceData {
                 price: PRICE_PRECISION_I64,
@@ -287,6 +294,7 @@ impl<'a> OracleMap<'a> {
     pub fn load_one<'c>(
         account_info: &'c AccountInfo<'a>,
         slot: u64,
+        slot_duration_ms: u64,
         oracle_guard_rails: Option<OracleGuardRails>,
     ) -> VelocityResult<OracleMap<'a>> {
         let mut oracles: BTreeMap<Pubkey, AccountInfo<'a>> = BTreeMap::new();
@@ -334,6 +342,7 @@ impl<'a> OracleMap<'a> {
             price_data: BTreeMap::new(),
             validity: BTreeMap::new(),
             slot,
+            slot_duration_ms,
             oracle_guard_rails: ogr,
             quote_asset_price_data: OraclePriceData {
                 price: PRICE_PRECISION_I64,
@@ -351,7 +360,15 @@ impl<'a> OracleMap<'a> {
         }
 
         validate!(
-            OracleMap::load_one(account_info, 0, None)?.oracles.len() == 1,
+            OracleMap::load_one(
+                account_info,
+                0,
+                crate::math::slots::BASE_SLOT_DURATION_MS,
+                None
+            )?
+            .oracles
+            .len()
+                == 1,
             ErrorCode::InvalidOracle,
             "oracle owner not recognizable"
         )
@@ -366,6 +383,7 @@ impl<'a> OracleMap<'a> {
             validity: BTreeMap::new(),
             price_data: BTreeMap::new(),
             slot: 0,
+            slot_duration_ms: crate::math::slots::BASE_SLOT_DURATION_MS,
             oracle_guard_rails: OracleGuardRails::default(),
             quote_asset_price_data: OraclePriceData {
                 price: PRICE_PRECISION_I64,

@@ -36,6 +36,7 @@ import {
 	PositionDirection,
 	PerpMarkets,
 	MMOraclePriceData,
+	effectiveSlotsNum,
 } from '@velocity-exchange/sdk';
 import { Mutex, tryAcquire, E_ALREADY_LOCKED } from 'async-mutex';
 
@@ -93,6 +94,7 @@ import {
 	validMinimumGasAmount,
 	validRebalanceSettledPnlThreshold,
 	isFillableByVAMMDetails,
+	currentSlotDurationMs,
 } from '../utils';
 import { selectMakers } from '../makerSelection';
 import { BundleSender, JITO_METRIC_TYPES } from '../bundleSender';
@@ -2464,7 +2466,14 @@ export class FillerBot extends TxThreaded implements Bot {
 			if (slotsUntilJito === undefined) {
 				return false;
 			}
-			return slotsUntilJito < SLOTS_UNTIL_JITO_LEADER_TO_SEND;
+			// baseline slot units: keep ~1.6s of wall-clock lead to build+send
+			return (
+				slotsUntilJito <
+				effectiveSlotsNum(
+					SLOTS_UNTIL_JITO_LEADER_TO_SEND,
+					currentSlotDurationMs(this.velocityClient)
+				)
+			);
 		}
 		if (!this.bundleSender?.connected()) {
 			return false;

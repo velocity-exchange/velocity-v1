@@ -115,6 +115,7 @@ impl AccountsListBuilder {
         }
 
         self.accounts.latest_slot = latest_oracle_slot;
+        self.accounts.slot_duration_ms = velocity_state_account.slot_duration_ms;
         self.accounts.oracle_guard_rails = Some(unsafe {
             std::mem::transmute_copy::<_, program::state::state::OracleGuardRails>(
                 &velocity_state_account.oracle_guard_rails,
@@ -198,6 +199,7 @@ impl AccountsListBuilder {
         }
 
         self.accounts.latest_slot = latest_oracle_slot;
+        self.accounts.slot_duration_ms = velocity_state_account.slot_duration_ms;
         self.accounts.oracle_guard_rails = Some(unsafe {
             std::mem::transmute_copy::<_, program::state::state::OracleGuardRails>(
                 &velocity_state_account.oracle_guard_rails,

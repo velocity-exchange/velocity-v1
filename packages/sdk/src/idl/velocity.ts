@@ -12611,6 +12611,35 @@ export type Velocity = {
       ]
     },
     {
+      "name": "updateStateSlotDurationMs",
+      "discriminator": [
+        122,
+        155,
+        95,
+        123,
+        0,
+        221,
+        47,
+        218
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "slotDurationMs",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "updateUserAllowDelegateTransfer",
       "discriminator": [
         235,
@@ -24119,11 +24148,26 @@ export type Velocity = {
             "type": "u8"
           },
           {
+            "name": "slotDurationMs",
+            "docs": [
+              "Current Solana slot duration in milliseconds, updated by the admin as",
+              "the IBRL feature gates activate (400 -> 350 -> 300 -> 250 -> 200).",
+              "`0` means unset (what pre-upgrade accounts read out of former padding)",
+              "and is interpreted as the 400ms baseline. Every slot-denominated",
+              "constant and admin field keeps its historical 400ms-calibrated value;",
+              "read paths inflate them via `math::slots`. Never read this field",
+              "directly — use [`State::slot_duration_ms`], which handles the `0`",
+              "sentinel. Settable only downward (slots never get slower again), and",
+              "only to values in `math::slots::VALID_SLOT_DURATIONS_MS`."
+            ],
+            "type": "u16"
+          },
+          {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                238
+                236
               ]
             }
           }

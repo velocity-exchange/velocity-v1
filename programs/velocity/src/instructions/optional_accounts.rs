@@ -48,9 +48,15 @@ pub fn load_maps<'a, 'b>(
     writable_perp_markets: &'b MarketSet,
     writable_spot_markets: &'b MarketSet,
     slot: u64,
+    slot_duration_ms: u64,
     oracle_guard_rails: Option<OracleGuardRails>,
 ) -> VelocityResult<AccountMaps<'a>> {
-    let oracle_map = OracleMap::load(account_info_iter, slot, oracle_guard_rails)?;
+    let oracle_map = OracleMap::load(
+        account_info_iter,
+        slot,
+        slot_duration_ms,
+        oracle_guard_rails,
+    )?;
     let spot_market_map = SpotMarketMap::load(writable_spot_markets, account_info_iter)?;
     let perp_market_map = PerpMarketMap::load(writable_perp_markets, account_info_iter)?;
 

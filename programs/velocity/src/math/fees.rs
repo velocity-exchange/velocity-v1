@@ -91,6 +91,7 @@ pub fn calculate_fee_for_fulfillment_with_amm(
     taker_fee_addon_tenth_bps: u16,
     now: i64,
     promo_fee_tier: u8,
+    slot_duration_ms: u64,
 ) -> VelocityResult<FillFees> {
     let fee_tier = determine_user_fee_tier(
         user_stats,
@@ -125,6 +126,7 @@ pub fn calculate_fee_for_fulfillment_with_amm(
                 clock_slot,
                 0,
                 &fee_structure.filler_reward_structure,
+                slot_duration_ms,
             )?
         };
         // (spread-derived) house fee net of the filler reward, split three
@@ -171,6 +173,7 @@ pub fn calculate_fee_for_fulfillment_with_amm(
                 clock_slot,
                 0,
                 &fee_structure.filler_reward_structure,
+                slot_duration_ms,
             )?
         };
 
@@ -346,6 +349,7 @@ fn calculate_filler_reward(
     clock_slot: u64,
     multiplier: u64,
     filler_reward_structure: &OrderFillerRewardStructure,
+    slot_duration_ms: u64,
 ) -> VelocityResult<u64> {
     // incentivize keepers to prioritize filling older orders (rather than just largest orders)
     // for sufficiently small-sized order, reward based on fraction of fee paid
@@ -366,7 +370,16 @@ fn calculate_filler_reward(
         )?
         .safe_div(multiplier_precision)?;
 
-    let slots_since_order = max(1, clock_slot.safe_sub(order_slot)?.cast::<u128>()?);
+    // reward curve is calibrated to 400ms baseline units; deflate the
+    // measured slot delta so the time-based reward keeps its wall-clock shape
+    let slots_since_order = max(
+        1,
+        crate::math::slots::base_units_from_slots(
+            clock_slot.safe_sub(order_slot)?,
+            slot_duration_ms,
+        )
+        .cast::<u128>()?,
+    );
     let time_filler_reward = slots_since_order
         .safe_mul(100_000_000)? // 1e8
         .nth_root(4)
@@ -396,6 +409,7 @@ pub fn calculate_fee_for_fulfillment_with_match(
     taker_fee_addon_tenth_bps: u16,
     now: i64,
     promo_fee_tier: u8,
+    slot_duration_ms: u64,
 ) -> VelocityResult<FillFees> {
     let taker_fee_tier =
         determine_user_fee_tier(taker_stats, fee_structure, market_type, now, promo_fee_tier)?;
@@ -429,6 +443,7 @@ pub fn calculate_fee_for_fulfillment_with_match(
             clock_slot,
             filler_multiplier,
             &fee_structure.filler_reward_structure,
+            slot_duration_ms,
         )?
     };
 

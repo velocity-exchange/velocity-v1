@@ -400,6 +400,7 @@ pub fn update_position_with_base_asset_amount(
         tick: market.order_tick_size,
         step_size: market.order_step_size,
         slot: 0,
+        slot_duration_ms: crate::math::slots::BASE_SLOT_DURATION_MS,
         base_precision: BASE_PRECISION_U64,
         market_status: crate::state::market_status::MarketStatus::default(),
         market_config: 0,

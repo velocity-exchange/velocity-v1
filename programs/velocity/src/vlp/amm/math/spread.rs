@@ -87,9 +87,16 @@ pub fn update_amm_quote_state(
     mm_oracle_price_data: &MMOraclePriceData,
     reserve_price: u64,
     slot: u64,
+    slot_duration_ms: u64,
 ) -> VelocityResult<()> {
-    let quote_state =
-        compute_quote_state(amm, market_stats, mm_oracle_price_data, reserve_price, slot)?;
+    let quote_state = compute_quote_state(
+        amm,
+        market_stats,
+        mm_oracle_price_data,
+        reserve_price,
+        slot,
+        slot_duration_ms,
+    )?;
     commit_quote_state(amm, &quote_state, slot)?;
     validate_amm_quote_state(amm)
 }
@@ -122,6 +129,7 @@ fn compute_quote_state(
     mm_oracle_price_data: &MMOraclePriceData,
     reserve_price: u64,
     slot: u64,
+    slot_duration_ms: u64,
 ) -> VelocityResult<QuoteState> {
     // last_oracle_reserve_price_spread_pct
     let last_oracle_reserve_price_spread_pct =
@@ -226,7 +234,12 @@ fn compute_quote_state(
         && amm.curve_update_intensity > 100;
 
     let final_reference_price_offset = if do_reference_price_smooth {
-        let slots_passed = slot.saturating_sub(amm.last_spread_update_slot);
+        // budget is per 400ms baseline unit; deflate the measured slot delta
+        // so the smoothing completes over the same wall-clock time
+        let slots_passed = crate::math::slots::base_units_from_slots(
+            slot.saturating_sub(amm.last_spread_update_slot),
+            slot_duration_ms,
+        );
         let reference_price_delta = {
             let full_offset_delta = reference_price_offset
                 .cast::<i128>()?

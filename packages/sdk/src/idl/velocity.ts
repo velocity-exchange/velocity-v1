@@ -16726,6 +16726,11 @@ export type Velocity = {
       "code": 6370,
       "name": "mmOracleUpdateDisabled",
       "msg": "MM oracle updates are disabled by the admin feature-bit kill switch"
+    },
+    {
+      "code": 6371,
+      "name": "spotMarketInterestStaleForMargin",
+      "msg": "Spot market interest is too stale to value a borrow for margin"
     }
   ],
   "types": [

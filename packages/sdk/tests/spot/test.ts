@@ -16,6 +16,11 @@ import {
 	getTokenValue,
 	getStrictTokenValue,
 	StrictOraclePrice,
+	SpotMarketAccount,
+	MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN,
+	MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN,
+	ONE_YEAR,
+	maxSpotInterestStalenessForMargin,
 } from '../../src';
 import { mockSpotMarkets } from '../dlob/helpers';
 import * as _ from 'lodash';
@@ -418,5 +423,58 @@ describe('Spot Tests', () => {
 		const strictPrice = new StrictOraclePrice(new BN(5), new BN(5));
 		const value = getStrictTokenValue(new BN(-3), 1, strictPrice);
 		assert(value.eq(new BN(-2)));
+	});
+
+	it('maxSpotInterestStalenessForMargin shrinks as the rate ceiling rises', () => {
+		const withCeiling = (maxBorrowRate: number, minBorrowRate = 0) =>
+			({
+				maxBorrowRate,
+				minBorrowRate,
+			}) as SpotMarketAccount;
+
+		// A low rate earns more than an hour, and the cap keeps it at an hour.
+		assert(
+			maxSpotInterestStalenessForMargin(withCeiling(200_000)).eq(
+				MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN
+			)
+		);
+
+		// 100% APR: one basis point of the debt takes 3,153s to accrue. 1,000% APR
+		// takes a tenth of that, where a fixed hour would have hidden ten times the
+		// allowed share.
+		assert(
+			maxSpotInterestStalenessForMargin(withCeiling(1_000_000)).eq(
+				new BN(3_153)
+			)
+		);
+		assert(
+			maxSpotInterestStalenessForMargin(withCeiling(10_000_000)).eq(new BN(315))
+		);
+
+		// `calculateInterestRate` floors its result at `minBorrowRate`, so the ceiling
+		// is the larger of the two fields. `minBorrowRate` counts in half percent, so
+		// 40 is 20% APR — here above a `maxBorrowRate` of 1%.
+		assert(
+			maxSpotInterestStalenessForMargin(withCeiling(10_000, 40)).eq(
+				maxSpotInterestStalenessForMargin(withCeiling(200_000))
+			)
+		);
+
+		// A market that charges nothing cannot understate anything.
+		assert(
+			maxSpotInterestStalenessForMargin(withCeiling(0)).eq(
+				MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN
+			)
+		);
+
+		// The window is exactly the span in which the ceiling accrues the allowed
+		// share, so the hidden share at the window can never exceed it.
+		for (const maxBorrowRate of [1_000_000, 10_000_000, 123_456_789]) {
+			const window = maxSpotInterestStalenessForMargin(
+				withCeiling(maxBorrowRate)
+			);
+			const hiddenShare = new BN(maxBorrowRate).mul(window).div(ONE_YEAR);
+			assert(hiddenShare.lte(MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN));
+		}
 	});
 });

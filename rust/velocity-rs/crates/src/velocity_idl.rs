@@ -26430,6 +26430,8 @@ pub mod errors {
         InvalidNativeInstructionData,
         #[msg("MM oracle updates are disabled by the admin feature-bit kill switch")]
         MmOracleUpdateDisabled,
+        #[msg("Spot market interest is too stale to value a borrow for margin")]
+        SpotMarketInterestStaleForMargin,
     }
 }
 pub mod events {

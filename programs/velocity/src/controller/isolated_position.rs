@@ -548,6 +548,16 @@ pub fn withdraw_from_isolated_perp_position<'c: 'info, 'info>(
         )?;
     }
 
+    // OtterSec #135: same shape as `handle_withdraw`. This path cranks only the
+    // market the isolated collateral leaves from, and the account's other borrow
+    // markets arrive read-only, so their un-booked interest is missing from the
+    // check below.
+    crate::math::margin::validate_spot_borrow_interest_fresh_for_margin(
+        user,
+        spot_market_map,
+        now,
+    )?;
+
     user.meets_withdraw_margin_requirement(
         perp_market_map,
         spot_market_map,

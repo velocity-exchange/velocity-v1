@@ -916,6 +916,13 @@ pub fn handle_withdraw<'c: 'info, 'info>(
         amount
     };
 
+    // OtterSec #135: this handler cranks only the market being withdrawn, so a borrow
+    // in any *other* market is valued below through its stale stored
+    // `cumulative_borrow_interest` — the due interest is simply missing from the
+    // initial-margin check, and those markets arrive read-only so they cannot be
+    // refreshed here. Require their accrual to be recent instead.
+    math::margin::validate_spot_borrow_interest_fresh_for_margin(user, &spot_market_map, now)?;
+
     user.meets_withdraw_margin_requirement(
         &perp_market_map,
         &spot_market_map,
@@ -1365,6 +1372,11 @@ fn transfer_spot_deposit(
             from_user,
         )?;
     }
+
+    // OtterSec #135: same shape as `handle_withdraw`. This handler cranks only the
+    // market being transferred, and the account's other borrow markets arrive
+    // read-only, so their un-booked interest is missing from the check below.
+    math::margin::validate_spot_borrow_interest_fresh_for_margin(from_user, spot_market_map, now)?;
 
     from_user.meets_withdraw_margin_requirement(
         perp_market_map,
@@ -1931,6 +1943,22 @@ pub fn handle_transfer_pools<'c: 'info, 'info>(
     drop(deposit_to_spot_market);
     drop(borrow_from_spot_market);
     drop(borrow_to_spot_market);
+
+    // OtterSec #135: same shape as `handle_withdraw`. This handler cranks only the
+    // four markets it moves balances between, and every other borrow market of
+    // either account arrives read-only, so their un-booked interest is missing from
+    // the checks below. Both accounts are gated: the transfer moves debt onto
+    // `to_user`, so each one releases value against its own debt valuation.
+    math::margin::validate_spot_borrow_interest_fresh_for_margin(
+        from_user,
+        &spot_market_map,
+        clock.unix_timestamp,
+    )?;
+    math::margin::validate_spot_borrow_interest_fresh_for_margin(
+        to_user,
+        &spot_market_map,
+        clock.unix_timestamp,
+    )?;
 
     from_user.meets_withdraw_margin_requirement_swap(
         &perp_market_map,
@@ -4643,6 +4671,11 @@ pub fn handle_end_swap<'c: 'info, 'info>(
 
     drop(out_spot_market);
     drop(in_spot_market);
+
+    // OtterSec #135: same shape as `handle_withdraw`. This handler cranks only the
+    // two markets it swaps between, and the account's other borrow markets arrive
+    // read-only, so their un-booked interest is missing from the check below.
+    math::margin::validate_spot_borrow_interest_fresh_for_margin(&user, &spot_market_map, now)?;
 
     user.meets_withdraw_margin_requirement_swap(
         &perp_market_map,

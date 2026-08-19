@@ -16720,6 +16720,11 @@
       "code": 6370,
       "name": "MmOracleUpdateDisabled",
       "msg": "MM oracle updates are disabled by the admin feature-bit kill switch"
+    },
+    {
+      "code": 6371,
+      "name": "SpotMarketInterestStaleForMargin",
+      "msg": "Spot market interest is too stale to value a borrow for margin"
     }
   ],
   "types": [

@@ -9554,6 +9554,9 @@ pub mod builder_fee_margin_gate {
     /// calculation. The widest tolerance any asset tier allows is 100% of the
     /// price, so this is twice the price.
     const WIDE_ORACLE_CONF: u64 = 2 * SOL_PRICE as u64 * PRICE_PRECISION_U64;
+    /// A second perp market the taker holds a position in. The fill never
+    /// touches it, so spoiling its oracle leaves market 0's AMM able to fill.
+    const OTHER_PERP_INDEX: u16 = 1;
 
     /// The taker's spot positions: a quote deposit that carries the margin,
     /// and a borrow in spot market 1 that the fill does not touch.
@@ -9578,6 +9581,34 @@ pub mod builder_fee_margin_gate {
         }
 
         spot_positions
+    }
+
+    /// The taker's perp positions: the one-unit long the order reduces, and a
+    /// hundredth of a unit in `OTHER_PERP_INDEX`. The second is small enough to
+    /// leave every margin verdict in these tests unchanged, and it is here only so
+    /// that market's oracle is one the account's liabilities are priced on.
+    fn taker_perp_positions() -> [PerpPosition; 8] {
+        let mut perp_positions = get_positions(PerpPosition {
+            market_index: 0,
+            base_asset_amount: BASE_PRECISION_I64,
+            quote_asset_amount: -ENTRY_PRICE * QUOTE_PRECISION_I64,
+            quote_entry_amount: -ENTRY_PRICE * QUOTE_PRECISION_I64,
+            quote_break_even_amount: -ENTRY_PRICE * QUOTE_PRECISION_I64,
+            open_orders: 1,
+            open_asks: -BASE_PRECISION_I64,
+            ..PerpPosition::default()
+        });
+
+        perp_positions[1] = PerpPosition {
+            market_index: OTHER_PERP_INDEX,
+            base_asset_amount: BASE_PRECISION_I64 / 100,
+            quote_asset_amount: -ENTRY_PRICE * QUOTE_PRECISION_I64 / 100,
+            quote_entry_amount: -ENTRY_PRICE * QUOTE_PRECISION_I64 / 100,
+            quote_break_even_amount: -ENTRY_PRICE * QUOTE_PRECISION_I64 / 100,
+            ..PerpPosition::default()
+        };
+
+        perp_positions
     }
 
     /// Fills the reducing order for a taker whose only liability is the perp
@@ -9620,13 +9651,20 @@ pub mod builder_fee_margin_gate {
     /// and $5 to clear maintenance.
     ///
     /// `sol_borrow_hundredths` gives the taker a borrow in spot market 1, a
-    /// liability that the fill does not touch. `sol_oracle_conf` is that
-    /// market's oracle confidence interval, which decides whether the oracle
-    /// on that liability is valid.
+    /// liability that the fill does not touch. `other_perp_oracle_conf` is the
+    /// confidence interval on the oracle of a second perp market the taker also
+    /// holds a position in, which decides whether the oracle on that liability
+    /// is valid.
+    ///
+    /// The spoiled oracle is a perp one because a spot borrow the calculation
+    /// cannot value fails the fill outright, well before the fee is decided. The
+    /// broad `all_liability_oracles_valid` flag the gate reads covers perp
+    /// oracles too, and a perp position the fill does not touch is the liability
+    /// that reaches the gate without reaching that reject.
     fn run_reducing_builder_fill_with_borrow(
         collateral_dollars: u64,
         sol_borrow_hundredths: u64,
-        sol_oracle_conf: u64,
+        other_perp_oracle_conf: u64,
     ) -> (u64, u64) {
         let now = 0_i64;
         let slot = 5_u64;
@@ -9641,7 +9679,6 @@ pub mod builder_fee_margin_gate {
             oracle_account_info
         );
         let mut sol_oracle_price = get_pyth_price(SOL_PRICE, 6);
-        sol_oracle_price.conf = sol_oracle_conf;
         let sol_oracle_price_key =
             Pubkey::from_str("Gnt27xtC473ZT2Mw5u8wZ68Z3gULkSTb5DuxJy7eJotD").unwrap();
         create_anchor_account_info!(
@@ -9651,7 +9688,22 @@ pub mod builder_fee_margin_gate {
             sol_oracle_account_info
         );
 
-        let oracle_account_infos = Vec::from([oracle_account_info, sol_oracle_account_info]);
+        let mut other_perp_oracle_price = get_pyth_price(ENTRY_PRICE, 6);
+        other_perp_oracle_price.conf = other_perp_oracle_conf;
+        let other_perp_oracle_price_key =
+            Pubkey::from_str("BAtFj4kQttZRVep3UZS2aZRDixkGYgWsbqTBVDbnSsPF").unwrap();
+        create_anchor_account_info!(
+            other_perp_oracle_price,
+            &other_perp_oracle_price_key,
+            PythLazerOracle,
+            other_perp_oracle_account_info
+        );
+
+        let oracle_account_infos = Vec::from([
+            oracle_account_info,
+            sol_oracle_account_info,
+            other_perp_oracle_account_info,
+        ]);
         let mut oracle_map =
             OracleMap::load(&mut oracle_account_infos.iter().peekable(), slot, None).unwrap();
 
@@ -9691,7 +9743,25 @@ pub mod builder_fee_margin_gate {
         market.amm.min_base_asset_reserve = 0;
 
         create_anchor_account_info!(market, PerpMarket, market_account_info);
-        let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        // The same market on a different oracle. The taker's position here is a
+        // perp liability the fill does not touch.
+        let mut other_perp_market = PerpMarket {
+            market_index: OTHER_PERP_INDEX,
+            oracle: other_perp_oracle_price_key,
+            ..market
+        };
+
+        create_anchor_account_info!(
+            other_perp_market,
+            PerpMarket,
+            other_perp_market_account_info
+        );
+        let market_map = PerpMarketMap::load_multiple(
+            vec![&market_account_info, &other_perp_market_account_info],
+            true,
+        )
+        .unwrap();
 
         let mut spot_market = SpotMarket {
             market_index: 0,
@@ -9740,16 +9810,7 @@ pub mod builder_fee_margin_gate {
                 bit_flags: OrderBitFlag::HasBuilder as u8,
                 ..Order::default()
             }),
-            perp_positions: get_positions(PerpPosition {
-                market_index: 0,
-                base_asset_amount: BASE_PRECISION_I64,
-                quote_asset_amount: -ENTRY_PRICE * QUOTE_PRECISION_I64,
-                quote_entry_amount: -ENTRY_PRICE * QUOTE_PRECISION_I64,
-                quote_break_even_amount: -ENTRY_PRICE * QUOTE_PRECISION_I64,
-                open_orders: 1,
-                open_asks: -BASE_PRECISION_I64,
-                ..PerpPosition::default()
-            }),
+            perp_positions: taker_perp_positions(),
             spot_positions: sol_borrow_positions(collateral_dollars, sol_borrow_hundredths),
             ..User::default()
         };
@@ -9852,9 +9913,9 @@ pub mod builder_fee_margin_gate {
     #[test]
     fn charges_builder_fee_when_a_liability_oracle_is_valid() {
         // A quarter of a unit borrowed in spot market 1, about $25 against $50
-        // of collateral. The taker still clears initial margin, and the borrow
-        // oracle is precise, so the fee is charged. Control for the invalid
-        // oracle case below.
+        // of collateral. The taker still clears initial margin, and every oracle
+        // its liabilities are priced on is precise, so the fee is charged.
+        // Control for the invalid oracle case below.
         let (base_filled, fees_accrued) = run_reducing_builder_fill_with_borrow(50, 25, 0);
 
         assert_eq!(base_filled, BASE_PRECISION_U64);
@@ -9866,9 +9927,9 @@ pub mod builder_fee_margin_gate {
 
     #[test]
     fn waives_builder_fee_when_a_liability_oracle_is_invalid() {
-        // The same taker, and the same margin state, but the borrow's oracle
-        // is too uncertain to price the liability. The reduction still fills
-        // and the fee is waived.
+        // The same taker, and the same margin state, but the oracle on the perp
+        // market the fill does not touch is too uncertain to price that position.
+        // The reduction still fills and the fee is waived.
         let (base_filled, fees_accrued) =
             run_reducing_builder_fill_with_borrow(50, 25, WIDE_ORACLE_CONF);
 
@@ -9884,5 +9945,339 @@ pub mod builder_fee_margin_gate {
 
         assert_eq!(base_filled, BASE_PRECISION_U64);
         assert_eq!(fees_accrued, 0);
+    }
+}
+
+/// OtterSec #143 / #144 / #148 — a fill that reduces the position must not be
+/// exempt from the spot-valuation gates.
+///
+/// The transfer these findings describe needs two accounts, and it works with both
+/// seats reducing: one seat closes into the worst in-band price and leaves bad debt
+/// its misvalued collateral was never able to cover, while the other settles the
+/// matching profit out of the PnL pool. A gate keyed on risk direction closes
+/// neither seat.
+///
+/// One fixture drives all three findings. The taker holds a partial-reduce order,
+/// a borrow in market 1, and its collateral as a deposit in market 2. Each test
+/// spoils one input and asserts the fill stops.
+mod fill_gates_apply_to_a_reducing_fill {
+    use {
+        crate::{
+            controller::{orders::fulfill_perp_order, position::PositionDirection},
+            create_anchor_account_info,
+            error::ErrorCode,
+            get_orders,
+            math::{
+                constants::{
+                    AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64, PEG_PRECISION,
+                    PRICE_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64, QUOTE_PRECISION_I64,
+                    SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
+                    SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+                },
+                margin::max_spot_interest_staleness_for_margin,
+            },
+            state::{
+                fill_mode::FillMode,
+                market_status::MarketStatus,
+                oracle::{HistoricalOracleData, OracleSource},
+                oracle_map::OracleMap,
+                perp_market::{MarketStats, PerpMarket, AMM},
+                perp_market_map::PerpMarketMap,
+                pyth_lazer_oracle::PythLazerOracle,
+                spot_market::{SpotBalanceType, SpotMarket},
+                spot_market_map::SpotMarketMap,
+                state::ValidityGuardRails,
+                user::{
+                    Order, OrderStatus, OrderType, PerpPosition, SpotPosition, User, UserStats,
+                },
+                user_map::{UserMap, UserStatsMap},
+            },
+            test_utils::{get_positions, get_pyth_price, get_spot_positions},
+        },
+        anchor_lang::prelude::Pubkey,
+        std::str::FromStr,
+    };
+
+    const SLOT: u64 = 200;
+    const NOW: i64 = 1_700_000_000;
+
+    /// Fills one reducing taker order against one reducing maker.
+    ///
+    /// `borrow_market_stale_by` sets how long ago market 1 — the market the taker
+    /// borrows in — last accrued interest. `collateral_oracle_slots_behind` sets how
+    /// far the oracle of market 2 — the market holding the taker's collateral — lags
+    /// the fill slot. `OracleGuardRails::default()` calls a margin price stale past
+    /// 120 slots.
+    fn reducing_fill(
+        borrow_market_stale_by: i64,
+        collateral_oracle_slots_behind: u64,
+    ) -> Result<(), ErrorCode> {
+        let mut perp_oracle_price = get_pyth_price(100, 6);
+        perp_oracle_price.posted_slot = SLOT;
+        let perp_oracle_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            perp_oracle_price,
+            &perp_oracle_key,
+            PythLazerOracle,
+            perp_oracle_info
+        );
+
+        let mut collateral_oracle_price = get_pyth_price(100, 6);
+        collateral_oracle_price.posted_slot = SLOT - collateral_oracle_slots_behind;
+        let collateral_oracle_key =
+            Pubkey::from_str("BAtFj4kQttZRVep3UZS2aZRDixkGYgWsbqTBVDbnSsPF").unwrap();
+        create_anchor_account_info!(
+            collateral_oracle_price,
+            &collateral_oracle_key,
+            PythLazerOracle,
+            collateral_oracle_info
+        );
+
+        let oracle_infos = [perp_oracle_info, collateral_oracle_info];
+        let mut oracle_map =
+            OracleMap::load(&mut oracle_infos.iter().peekable(), SLOT, None).unwrap();
+
+        let mut market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                max_slippage_ratio: 50,
+                max_fill_reserve_fraction: 100,
+                base_spread: 0,
+                ..AMM::default()
+            },
+            number_of_users_with_base: 2,
+            margin_ratio_initial: 1000,
+            margin_ratio_maintenance: 500,
+            status: MarketStatus::Initialized,
+            order_step_size: 1000,
+            order_tick_size: 1,
+            oracle: perp_oracle_key,
+            oracle_source: OracleSource::PythLazer,
+            market_stats: MarketStats {
+                historical_oracle_data: HistoricalOracleData {
+                    last_oracle_price: (100 * PRICE_PRECISION) as i64,
+                    last_oracle_price_twap: (100 * PRICE_PRECISION) as i64,
+                    last_oracle_price_twap_5min: (100 * PRICE_PRECISION) as i64,
+                    ..HistoricalOracleData::default()
+                },
+                ..MarketStats::default()
+            },
+            ..PerpMarket::default_test()
+        };
+        market.amm.max_base_asset_reserve = 200 * AMM_RESERVE_PRECISION;
+        market.amm.min_base_asset_reserve = 0;
+        create_anchor_account_info!(market, PerpMarket, market_info);
+        let market_map = PerpMarketMap::load_one(&market_info, true).unwrap();
+
+        let mut quote_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+            historical_oracle_data: HistoricalOracleData::default_price(QUOTE_PRECISION_I64),
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(quote_market, SpotMarket, quote_market_info);
+
+        // 50% utilization under a 70%/6%/100% curve, so an un-booked interval is
+        // measurable rather than rounding to nothing.
+        let mut borrow_market = SpotMarket {
+            market_index: 1,
+            oracle: perp_oracle_key,
+            oracle_source: OracleSource::PythLazer,
+            deposit_balance: 1_000 * SPOT_BALANCE_PRECISION,
+            borrow_balance: 500 * SPOT_BALANCE_PRECISION,
+            optimal_utilization: 700_000,
+            optimal_borrow_rate: 60_000,
+            max_borrow_rate: 1_000_000,
+            last_interest_ts: (NOW - borrow_market_stale_by) as u64,
+            historical_oracle_data: HistoricalOracleData::default_price(100 * PRICE_PRECISION_I64),
+            ..SpotMarket::default_base_market()
+        };
+        create_anchor_account_info!(borrow_market, SpotMarket, borrow_market_info);
+
+        let mut collateral_market = SpotMarket {
+            market_index: 2,
+            oracle: collateral_oracle_key,
+            oracle_source: OracleSource::PythLazer,
+            last_interest_ts: NOW as u64,
+            historical_oracle_data: HistoricalOracleData::default_price(100 * PRICE_PRECISION_I64),
+            ..SpotMarket::default_base_market()
+        };
+        create_anchor_account_info!(collateral_market, SpotMarket, collateral_market_info);
+
+        let spot_market_map = SpotMarketMap::load_multiple(
+            vec![
+                &quote_market_info,
+                &borrow_market_info,
+                &collateral_market_info,
+            ],
+            true,
+        )
+        .unwrap();
+
+        let mut taker_spot_positions = [SpotPosition::default(); 8];
+        taker_spot_positions[0] = SpotPosition {
+            market_index: 1,
+            balance_type: SpotBalanceType::Borrow,
+            scaled_balance: SPOT_BALANCE_PRECISION_U64,
+            ..SpotPosition::default()
+        };
+        taker_spot_positions[1] = SpotPosition {
+            market_index: 2,
+            balance_type: SpotBalanceType::Deposit,
+            scaled_balance: 5 * SPOT_BALANCE_PRECISION_U64,
+            ..SpotPosition::default()
+        };
+
+        // Long 2 base, selling 1: the fill halves the position and leaves a margin
+        // requirement the collateral still has to cover.
+        let mut taker = User {
+            orders: get_orders!(Order {
+                market_index: 0,
+                status: OrderStatus::Open,
+                order_type: OrderType::Market,
+                direction: PositionDirection::Short,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: SLOT,
+                auction_start_price: 100 * PRICE_PRECISION_I64,
+                auction_end_price: 0,
+                auction_duration: 0,
+                ..Order::default()
+            }),
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                base_asset_amount: 2 * BASE_PRECISION_I64,
+                quote_asset_amount: -200 * QUOTE_PRECISION_I64,
+                open_orders: 1,
+                open_asks: -BASE_PRECISION_I64,
+                ..PerpPosition::default()
+            }),
+            spot_positions: taker_spot_positions,
+            ..User::default()
+        };
+
+        // Short 1 base, buying 1: the maker seat closes as well.
+        let maker_key = Pubkey::default();
+        let maker_authority =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        let mut maker = User {
+            authority: maker_authority,
+            orders: get_orders!(Order {
+                market_index: 0,
+                post_only: true,
+                status: OrderStatus::Open,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Long,
+                base_asset_amount: BASE_PRECISION_U64,
+                price: 100 * PRICE_PRECISION_U64,
+                ..Order::default()
+            }),
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                base_asset_amount: -BASE_PRECISION_I64,
+                quote_asset_amount: 100 * QUOTE_PRECISION_I64,
+                open_orders: 1,
+                open_bids: BASE_PRECISION_I64,
+                ..PerpPosition::default()
+            }),
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 10_000 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+        create_anchor_account_info!(maker, User, maker_info);
+        let makers_and_referrers = UserMap::load_one(&maker_info).unwrap();
+
+        let mut maker_stats = UserStats {
+            authority: maker_authority,
+            ..UserStats::default()
+        };
+        create_anchor_account_info!(maker_stats, UserStats, maker_stats_info);
+        let maker_and_referrer_stats = UserStatsMap::load_one(&maker_stats_info).unwrap();
+
+        let mut taker_stats = UserStats::default();
+        let mut filler = User::default();
+        let mut filler_stats = UserStats::default();
+        let (taker_key, _, filler_key) = super::get_user_keys();
+
+        fulfill_perp_order(
+            &mut taker,
+            0,
+            &taker_key,
+            &mut taker_stats,
+            &makers_and_referrers,
+            &maker_and_referrer_stats,
+            &[(maker_key, 0, 100 * PRICE_PRECISION_U64)],
+            &mut Some(&mut filler),
+            &filler_key,
+            &mut Some(&mut filler_stats),
+            &spot_market_map,
+            &market_map,
+            &mut oracle_map,
+            &ValidityGuardRails::default(),
+            &super::get_fee_structure(),
+            100 * PRICE_PRECISION_U64,
+            Some(market.market_stats.historical_oracle_data.last_oracle_price),
+            NOW,
+            SLOT,
+            false,
+            false,
+            FillMode::Fill,
+            false,
+            &mut None,
+            false,
+            0,
+        )
+        .map(|_| ())
+    }
+
+    /// The window market 1 earns from its own rate ceiling.
+    fn borrow_market_window() -> i64 {
+        max_spot_interest_staleness_for_margin(&SpotMarket {
+            max_borrow_rate: 1_000_000,
+            ..SpotMarket::default_base_market()
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn every_input_current_fills() {
+        assert_eq!(reducing_fill(0, 0), Ok(()));
+    }
+
+    /// OtterSec #148: un-booked interest understates the borrow, and this handler
+    /// makes no spot market refreshable.
+    #[test]
+    fn an_un_cranked_borrow_market_stops_it() {
+        assert_eq!(
+            reducing_fill(borrow_market_window() + 1, 0),
+            Err(ErrorCode::SpotMarketInterestStaleForMargin),
+            "a reducing fill must not value a borrow through an un-cranked index"
+        );
+    }
+
+    /// OtterSec #143: a deposit whose oracle is stale for margin contributes zero
+    /// collateral, so the taker fails on what its valid collateral covers rather
+    /// than on the stale price. Its only collateral is in market 2 here, so the
+    /// fill stops for want of collateral.
+    #[test]
+    fn a_stale_collateral_oracle_is_not_credited() {
+        assert_eq!(
+            reducing_fill(0, 130),
+            Err(ErrorCode::InsufficientCollateral),
+            "a stale deposit oracle must not price the taker through its margin \
+             requirement on a reducing fill"
+        );
     }
 }

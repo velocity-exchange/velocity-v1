@@ -21932,17 +21932,48 @@
             "type": "i16"
           },
           {
+            "name": "pending_bankruptcy_claims",
+            "docs": [
+              "Number of unresolved bankrupt quote debts booked against this market.",
+              "A liquidation that latches a user bankrupt increments it. Both writers",
+              "of `PerpPosition.quote_asset_amount` decrement it when that debt",
+              "reaches zero: `update_quote_asset_amount` and",
+              "`update_position_and_market`. The count tracks the debt, not the latch:",
+              "an un-latched estate that still owes the market stays booked, because",
+              "the debt still resolves through the bankruptcy waterfall.",
+              "",
+              "While it is above zero the fee sweep withholds the whole",
+              "`pending_if_fee`, not just `get_bankruptcy_if_floor()` — the sweep is",
+              "permissionless, so a caller could otherwise drain the first-loss",
+              "tranche between the latch and the resolution and push the loss onto the",
+              "shared insurance fund or into socialization. The freeze is independent",
+              "of open interest and of `bankruptcy_if_floor_pct`, both of which can be",
+              "zero exactly when a bankruptcy is pending.",
+              "",
+              "Occupies 2 of the 6 bytes the Rust compiler inserts to 8-align",
+              "`last_fill_price`. The remaining 4 stay explicit padding, so every",
+              "later byte offset and the account size are unchanged and existing",
+              "accounts read 0 (no pending claim).",
+              "",
+              "`settle_expired_market_pools_to_revenue_pool` rejects while this count",
+              "is above zero, because that instruction's final sweep bypasses the",
+              "floor."
+            ],
+            "type": "u16"
+          },
+          {
             "name": "_padding_align_lfp",
             "docs": [
-              "Explicit padding so the IDL records the 6 bytes the Rust compiler",
-              "inserts to 8-align `last_fill_price`. Without this the JS borsh",
+              "Explicit padding so the IDL records the 4 bytes the Rust compiler",
+              "still inserts to 8-align `last_fill_price`. Without this the JS borsh",
               "decoder (which reads sequentially after the variable-span enum",
-              "`status`) reads every field past `fee_adjustment` 6 bytes early."
+              "`status`) reads every field past `pending_bankruptcy_claims` 4 bytes",
+              "early."
             ],
             "type": {
               "array": [
                 "u8",
-                6
+                4
               ]
             }
           },
@@ -22018,16 +22049,26 @@
             "name": "bankruptcy_if_floor_pct",
             "docs": [
               "Floor on the unswept IF-fee carveout, as a percentage of open-interest",
-              "notional (PERCENTAGE_PRECISION; 0 disables). The fee sweep's IF drain",
-              "leaves `pending_if_fee` at (at least) this floor, so a standing",
-              "first-loss tranche is always available to `resolve_perp_bankruptcy` —",
-              "a permissionless sweep (or the inline sweep on any pnl settle) cannot",
-              "drain the tranche below it ahead of a bankruptcy resolution. Notional",
-              "is valued at the market's own oracle TWAP so a manipulated spot print",
-              "can't crush the floor. Occupies the former 4-byte trailing padding",
-              "before `market_stats` (same offset/alignment on all targets), so",
-              "existing accounts read 0 = disabled until the admin sets it;",
-              "new markets initialize to `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`."
+              "notional (PERCENTAGE_PRECISION). The fee sweep's IF drain leaves",
+              "`pending_if_fee` at (at least) this floor, so a standing first-loss",
+              "tranche is available to `resolve_perp_bankruptcy` before any user is",
+              "latched bankrupt — a permissionless sweep (or the inline sweep on any",
+              "pnl settle) cannot drain the tranche below it. Notional is valued at",
+              "the market's own oracle TWAP so a manipulated spot print can't crush",
+              "the floor.",
+              "",
+              "`0` means `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`, so every market created",
+              "before the field existed carries the standing tranche without an admin",
+              "call. `BANKRUPTCY_IF_FLOOR_DISABLED` turns the floor off. Read it",
+              "through `get_bankruptcy_if_floor_pct`, never directly.",
+              "",
+              "The floor sizes the tranche off market risk, which is a proxy for the",
+              "loss and can be smaller than it. `pending_bankruptcy_claims` covers",
+              "every latched bankruptcy exactly, by withholding all of",
+              "`pending_if_fee` until it resolves.",
+              "",
+              "Occupies the former 4-byte trailing padding before `market_stats`",
+              "(same offset/alignment on all targets)."
             ],
             "type": "u32"
           },

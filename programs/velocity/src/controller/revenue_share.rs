@@ -70,10 +70,10 @@ pub fn sweep_completed_revenue_share_for_market<'a>(
     //     PnL, so paying revenue share out of it would leave a third party's
     //     settlement short (audit #48).
     //   * the floored IF bankruptcy tranche (`min(pending_if_fee,
-    //     get_bankruptcy_if_floor())`): `resolve_perp_bankruptcy` consumes
+    //     get_pending_if_fee_floor())`): `resolve_perp_bankruptcy` consumes
     //     `pending_if_fee` counter-only, so a revenue-share payout must not
-    //     drain the tokens backing the standing tranche the #245 floor
-    //     promises either (same class as audit #53 on the protocol sweep).
+    //     drain the tokens that back the tranche either (same class as audit
+    //     #53 on the protocol sweep).
     // This sweep does NOT reserve `pending_revenue_share` — it is the payer of
     // that claim, and decrements the counter as it pays below.
 

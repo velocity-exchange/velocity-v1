@@ -4372,9 +4372,17 @@ pub fn handle_update_special_user_status(
 /// every floored subaccount must show net equity at or above its
 /// floor + buffer with all oracles valid. An approval that has gone stale
 /// (a subaccount drifted back into breach after review) therefore fails
-/// instead of unfreezing a breached authority. The escape hatch when
-/// resumption is the business decision anyway is `update_user_equity_floor`:
-/// lower the floors first, explicitly and auditably.
+/// instead of unfreezing a breached authority.
+///
+/// The validity requirement here stays all-or-nothing, deliberately not
+/// sharing the trip's dust concession. The trip proves equity below the
+/// floor, so unknowns are conceded upward and a trip that fires is sound at
+/// any true dust price; the reset proves the opposite direction, where
+/// conceding dust upward would unfreeze off values the program cannot
+/// verify. A dead oracle on a dust position therefore blocks the reset
+/// until the feed recovers. The escape hatch, here and whenever resumption
+/// is the business decision anyway, is `update_user_equity_floor`: lower
+/// the floors first, explicitly and auditably.
 pub fn handle_reset_equity_floor_breaker<'c: 'info, 'info>(
     ctx: Context<'info, ResetEquityFloorBreaker<'info>>,
 ) -> Result<()> {

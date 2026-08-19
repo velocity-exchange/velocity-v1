@@ -216,6 +216,11 @@ export const LAMPORTS_EXP = new BN(Math.log10(LAMPORTS_PER_SOL));
 /** `QUOTE_PRECISION / 100` = $0.01; per-open-order margin requirement reserved against free collateral. */
 export const OPEN_ORDER_MARGIN_REQUIREMENT = QUOTE_PRECISION.div(new BN(100));
 
+/** $100 (`QUOTE_PRECISION`); most favorable value the breaker-trip proof concedes to a position whose oracle is invalid. A liability or short base leg counts as zero at any size, an asset or long base leg worth no more than this at its own last twap counts as exactly this much, and a larger asset or long (or one whose twap is not positive) keeps the trip blocked. Mirrors the program's `EQUITY_FLOOR_TRIP_DUST_ALLOWANCE`. */
+export const EQUITY_FLOOR_TRIP_DUST_ALLOWANCE = new BN(100).mul(
+	QUOTE_PRECISION
+);
+
 /** -$25 (`QUOTE_PRECISION`); default floor for `AMM.netRevenueSinceLastFunding` below which the funding-rate spread retreats, damping the AMM from over-widening its spread after a large one-off loss. */
 export const DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT = new BN(
 	-25

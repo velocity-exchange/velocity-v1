@@ -234,6 +234,14 @@ pub const OPEN_ORDER_MARGIN_REQUIREMENT: u128 = QUOTE_PRECISION / 100;
 /// "reducing" swap can leak through a bad route while the account is frozen.
 /// 100 = 1%. TUNABLE.
 pub const EQUITY_FLOOR_SWAP_MAX_VALUE_LOSS_BPS: u128 = 100;
+/// Most favorable value the breaker-trip proof concedes to a position whose
+/// oracle is invalid: an asset worth no more than this at its own last twap
+/// counts as exactly this much, a liability counts as zero, and a larger
+/// invalid position keeps the trip blocked. Bounds how much equity dust in
+/// dead-oracle markets can add to the trip's upper bound (allowance times
+/// the account's position slots), so dust cannot veto a material breach.
+/// $100. TUNABLE.
+pub const EQUITY_FLOOR_TRIP_DUST_ALLOWANCE: i128 = 100 * QUOTE_PRECISION_I128;
 pub const FEE_ADJUSTMENT_MAX: u64 = 100;
 pub const FEE_ADJUSTMENT_MAX_I16: i16 = FEE_ADJUSTMENT_MAX as i16;
 

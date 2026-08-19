@@ -5151,7 +5151,7 @@ pub mod types {
         pub promo_fee_tier: u8,
         pub slot_duration_ms: u16,
         #[serde(skip)]
-        pub padding: Padding<236>,
+        pub padding: Padding<244>,
     }
     #[repr(C)]
     #[derive(
@@ -6493,7 +6493,7 @@ pub mod accounts {
         pub promo_fee_tier: u8,
         pub slot_duration_ms: u16,
         #[serde(skip)]
-        pub padding: Padding<236>,
+        pub padding: Padding<244>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for State {

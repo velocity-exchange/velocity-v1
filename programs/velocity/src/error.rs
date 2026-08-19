@@ -797,6 +797,10 @@ pub enum ErrorCode {
     MmOracleUpdateDisabled,
     #[msg("Spot market interest is too stale to value a borrow for margin")]
     SpotMarketInterestStaleForMargin,
+    #[msg("Market still owes builder/referrer revenue share; settle it before delisting")]
+    UnsettledRevenueShareOnDelist,
+    #[msg("Revenue share order can still be paid; settle it instead of forfeiting")]
+    RevenueShareOrderNotForfeitable,
 }
 
 #[macro_export]

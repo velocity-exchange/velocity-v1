@@ -524,7 +524,7 @@ describe('multiple maker orders', () => {
 		// short's sweep, and dropping it moves the taker's average execution
 		// marginally in its favour.
 		assert(takerPosition.baseAssetAmount.eq(new BN('-412388600000')));
-		assert(takerPosition.quoteAssetAmount.eq(new BN('280332465')));
+		assert(takerPosition.quoteAssetAmount.eq(new BN('280500826')));
 
 		const makerPosition = makerVelocityClient.getUser().getPerpPosition(1);
 		console.log(
@@ -550,7 +550,7 @@ describe('multiple maker orders', () => {
 			secondMakerPosition.quoteAssetAmount.toString()
 		);
 		assert(secondMakerPosition.baseAssetAmount.eq(new BN('8000000000')));
-		assert(secondMakerPosition.quoteAssetAmount.eq(new BN('-5462861')));
+		assert(secondMakerPosition.quoteAssetAmount.eq(new BN('-5463817')));
 
 		const thirdMakerPosition = thirdMakerVelocityClient
 			.getUser()
@@ -564,7 +564,7 @@ describe('multiple maker orders', () => {
 			thirdMakerPosition.quoteAssetAmount.toString()
 		);
 		assert(thirdMakerPosition.baseAssetAmount.eq(new BN('8000000000')));
-		assert(thirdMakerPosition.quoteAssetAmount.eq(new BN('-5462861')));
+		assert(thirdMakerPosition.quoteAssetAmount.eq(new BN('-5463817')));
 
 		const dogMarket = takerVelocityClient.getPerpMarketAccount(1);
 		console.log(

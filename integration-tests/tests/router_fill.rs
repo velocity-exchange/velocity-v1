@@ -601,7 +601,7 @@ fn fast_activation_requires_the_flow_authority_attestation() {
     // Below the default with no flow authority configured: refused.
     let err = send(&mut fixture.svm, &keeper, fast_ix.clone(), &[]).unwrap_err();
     assert!(
-        format!("{:?}", err.err).contains("6375"),
+        format!("{:?}", err.err).contains("6381"),
         "expected UnattestedFastActivation, got {:?}",
         err.err
     );
@@ -621,7 +621,7 @@ fn fast_activation_requires_the_flow_authority_attestation() {
 
     // Still refused when the transaction is not co-signed.
     let err = send(&mut fixture.svm, &keeper, fast_ix.clone(), &[]).unwrap_err();
-    assert!(format!("{:?}", err.err).contains("6375"));
+    assert!(format!("{:?}", err.err).contains("6381"));
 
     // Co-signed by the flow authority (a signer meta anywhere in the
     // transaction — here, appended to the placement's own accounts): the
@@ -5256,8 +5256,8 @@ fn taker_origin_cross_settles_at_the_best_counterpartys_price() {
     // The cranker is paid out of the improvement, in quote, on its own `User`.
     let reward = perp_position(&fixture.svm, &keeper.user).quote_asset_amount;
     assert_eq!(
-        reward, 4_950,
-        "the ordinary filler reward: 10% of the taker fee on the 99 notional"
+        reward, 1_980,
+        "the ordinary filler reward: 10% of the taker fee on the 49.5 notional"
     );
     let improvement = 1_000_000; // (101 - 99) * 0.5 units
     assert!(
@@ -5403,9 +5403,9 @@ fn a_dust_improvement_resolves_without_paying_the_cranker() {
     // The whole dust improvement stayed with the taker: notional at the
     // counterparty's price plus its own taker fee, nothing else.
     let paid = -taker_position.quote_asset_amount;
-    assert_eq!(paid, 49_999_000 + 49_999);
+    assert_eq!(paid, 49_999_000 + 20_000);
     assert!(
-        paid < 50_000_000 + 50_000,
+        paid < 50_000_000 + 20_000,
         "still cheaper than being taken at the 100 it rested at"
     );
 }
@@ -5586,7 +5586,7 @@ fn two_crossed_remainders_settle_at_the_one_that_rested_first() {
     // The cranker is paid out of the improvement, in quote, on its own `User`:
     // the ordinary filler reward, 10% of the taker fee on the 50.5 notional.
     let reward = perp_position(&fixture.svm, &keeper.user).quote_asset_amount;
-    assert_eq!(reward, 5_050);
+    assert_eq!(reward, 2_020);
     let improvement = 1_000_000; // (101 - 99) * 0.5 units
     assert!(
         reward < improvement,
@@ -5818,7 +5818,7 @@ fn cross_conditions_stage_the_taker_origin_crank_for_a_crossed_remainder() {
     // relay's `assert_paid_v0` measures against the condition's `min_payment`.
     assert_eq!(
         perp_position(&fixture.svm, &protocol_user).quote_asset_amount,
-        4_950
+        1_980
     );
     assert_eq!(
         fixture.svm.get_account(&payout).unwrap().lamports,

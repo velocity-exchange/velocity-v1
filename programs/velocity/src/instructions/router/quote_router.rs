@@ -8,7 +8,8 @@
 //!   its `User`'s margin supports before it leaves this instruction (the same
 //!   `calculate_max_perp_order_size` bound the fill applies), so phantom depth
 //!   never reaches a router's selection or a UI's depth chart. CLOB depth
-//!   needs no clamp — it was margin-gated at placement.
+//!   stands as quoted: it was margin-gated at placement. The fill applies one
+//!   further cut this view does not — see the clamp below.
 //! - **Quoted as the fill will quote.** The sources are not independent: the
 //!   vAMM shades its ladder against rival books (last look), so a vAMM book
 //!   quoted in isolation prices better than the same vAMM inside a real fill.
@@ -169,7 +170,17 @@ pub fn handle_quote_router<'c: 'info, 'info>(
 
         // Verification: a Custom quoter's depth is never margin-reserved, so
         // clamp it to what its user can actually support. CLOB depth was
-        // gated at placement, so it stands as quoted.
+        // gated at placement, so it stands as quoted here.
+        //
+        // The fill cuts a CLOB book once more, at the first order resting
+        // under a maker whose equity floor it cannot verify
+        // (`clob_unverifiable_floor_depth`). This view does not reproduce
+        // that cut: it would have to load every resting maker's `User`, and
+        // this instruction carries only the Custom quoters' accounts. The
+        // divergence is bounded — a floor is admin-set and only bites while
+        // one of that maker's oracles is invalid — and it errs by showing
+        // depth the fill routes elsewhere, not by hiding depth that exists.
+        // Loading the makers is what it would take to close it.
         let mut clamped = false;
         if quoter_type == QuoterType::Custom {
             let cap = margin_cap(

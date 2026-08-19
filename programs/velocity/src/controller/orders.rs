@@ -2172,6 +2172,106 @@ fn fulfill_perp_order(
     )
 }
 
+/// Depth on a CLOB book ahead of the first resting order whose fill
+/// `fulfill_perp_order_post_checks` would refuse, or `None` when the whole
+/// sweep is clear.
+///
+/// Mirrors the floor prune `get_maker_orders_info` runs over DLOB makers: a
+/// maker whose equity floor cannot be verified — any oracle it touches
+/// invalid for margin — may not take a risk-increasing fill, while its
+/// reducing orders stay matchable. Reducing is a property of the admitted
+/// set, so each of that maker's orders is judged against the position the
+/// ones ahead of it would leave behind, best price first (which the book's
+/// own order already is).
+///
+/// Only the unverifiable case is held back, exactly as on the DLOB. A maker
+/// that is provably below its floor, or whose authority-wide breaker is
+/// tripped, still reverts the fill — those are real breaches and are meant
+/// to be loud.
+///
+/// The answer is advisory. The pre-execute `subjects` read at the settle loop
+/// stays the authority on who a response may touch; this only decides how
+/// much size the split is allowed to send here.
+#[allow(clippy::too_many_arguments)]
+fn clob_unverifiable_floor_depth(
+    resting: &[crate::state::prop_amm::ClobRestingOrderV0],
+    resolve_user: impl Fn(&crate::state::prop_amm::ClobUserRefV0) -> VelocityResult<Pubkey>,
+    makers_and_referrer: &UserMap,
+    perp_market_map: &PerpMarketMap,
+    spot_market_map: &SpotMarketMap,
+    oracle_map: &mut OracleMap,
+    market_index: u16,
+    maker_direction: PositionDirection,
+) -> VelocityResult<Option<u64>> {
+    /// What the walk has settled about one maker in the run. A short vector
+    /// with a linear scan, not a map: a sweep is a handful of orders, and
+    /// this way the walk allocates once.
+    struct MakerFloor {
+        key: Pubkey,
+        /// The maker's floor is set and one of its oracles is invalid.
+        unverifiable: bool,
+        /// Position this market would hold after the orders admitted so far.
+        projected: i64,
+    }
+
+    let mut seen: Vec<MakerFloor> = Vec::with_capacity(resting.len());
+    let mut ahead = 0_u64;
+
+    for order in resting {
+        let key = resolve_user(&order.user)?;
+        let index = match seen.iter().position(|maker| maker.key == key) {
+            Some(index) => index,
+            None => {
+                let maker = makers_and_referrer.get_ref(&key)?;
+                let unverifiable = match calculate_net_equity_for_floor(
+                    &maker,
+                    perp_market_map,
+                    spot_market_map,
+                    oracle_map,
+                )? {
+                    Some(net_equity) => !net_equity.all_oracles_valid,
+                    None => false,
+                };
+                let projected = maker
+                    .get_perp_position(market_index)
+                    .map(|position| position.base_asset_amount)
+                    .unwrap_or(0);
+                seen.push(MakerFloor {
+                    key,
+                    unverifiable,
+                    projected,
+                });
+                seen.len() - 1
+            }
+        };
+
+        if !seen[index].unverifiable {
+            ahead = ahead.safe_add(order.base_asset_amount)?;
+            continue;
+        }
+
+        if !is_order_position_reducing(
+            &maker_direction,
+            order.base_asset_amount,
+            seen[index].projected,
+        )? {
+            // The first order the post-fill check refuses. Everything behind
+            // it is unreachable without sweeping through it, so the depth in
+            // front is all this book can safely take.
+            return Ok(Some(ahead));
+        }
+
+        let signed = match maker_direction {
+            PositionDirection::Long => order.base_asset_amount.cast::<i64>()?,
+            PositionDirection::Short => -order.base_asset_amount.cast::<i64>()?,
+        };
+        seen[index].projected = seen[index].projected.safe_add(signed)?;
+        ahead = ahead.safe_add(order.base_asset_amount)?;
+    }
+
+    Ok(None)
+}
+
 /// Post-fill invariants the router pass runs after it settles its allocations:
 /// fill-amount coherence, the taker's fill-margin + equity-floor/breaker
 /// check, per-maker margin + equity-floor checks over the accumulated
@@ -3704,40 +3804,117 @@ fn fulfill_perp_order_router_pass(
         return Ok((0, 0));
     }
 
-    // ---- Pre-execute margin clamp for Custom external books. ----
-    // A Custom PropAMM's depth is never margin-reserved, so cap each of its
-    // books at what the quoted user's account supports right now —
-    // truncating before the split keeps it from routing size the post-fill
-    // margin check would reject by failing the whole fill. CLOB books skip
-    // the clamp: their orders are margin-reserved at placement, so the
-    // shared post-fill check is the edge, not the primary defense. Runs
-    // before this market's RefMut is taken because the margin walk loads
+    // True when any loaded account carries an equity floor. Gates the CLOB
+    // depth clamp below, whose cost is otherwise paid on every fill for a
+    // condition almost no account is ever in.
+    let any_loaded_floor = makers_and_referrer
+        .0
+        .values()
+        .try_fold(false, |found, loader| -> VelocityResult<bool> {
+            Ok(found || load!(loader)?.equity_floor > 0)
+        })?;
+
+    // Resolves a wire user reference against the loaded set. Built here
+    // rather than at the settle loop below because the CLOB depth clamp
+    // needs it too, and the index is a snapshot of identities that no fill
+    // changes.
+    let user_ref_index = makers_and_referrer.user_ref_index()?;
+    let taker_ref = crate::state::prop_amm::ClobUserRefV0 {
+        authority: taker.authority,
+        sub_account_id: taker.sub_account_id.into(),
+    };
+    let resolve_user = |user: &crate::state::prop_amm::ClobUserRefV0| -> VelocityResult<Pubkey> {
+        user_ref_index
+            .get(&(user.authority, user.sub_account_id))
+            .copied()
+            .ok_or_else(|| {
+                msg!(
+                    "quoter returned a balance change for an unloaded user {}/{}",
+                    user.authority,
+                    user.sub_account_id
+                );
+                ErrorCode::DefaultError
+            })
+    };
+
+    // ---- Pre-execute depth clamps on external books. ----
+    // Both clamps answer one problem: size the split routes to a book that
+    // the post-fill checks then refuse fails the whole fill, taking the
+    // taker and every other maker in the transaction with it. Both cut a
+    // prefix off the book's own quoted ladder, so what survives is still
+    // depth that quoter promised and the `ext_base == allocation.base` bound
+    // below still holds.
+    //
+    // Custom: a PropAMM's depth is never margin-reserved, so the cap is what
+    // the quoted user's account supports right now.
+    //
+    // Clob: an order is margin-reserved at placement, so its size is backed.
+    // The maker's equity floor is not: once one of its oracles goes invalid,
+    // `fulfill_perp_order_post_checks` refuses a risk-increasing fill
+    // against it, and `get_maker_orders_info` prunes exactly those orders on
+    // the DLOB for the same reason. A book cannot be pruned order by order —
+    // execute sweeps best-first, and dropping one maker from the forwarded
+    // user set is `StaleUserSet` past the grace window, which fails the whole
+    // call instead of skipping the order. So the cap is the depth ahead of
+    // the first such order and the router fills the rest of the taker's size
+    // elsewhere.
+    //
+    // Runs before this market's `RefMut` is taken, because both walks value
     // every market the maker touches.
     let clamped_books: Vec<Option<Vec<PriceLevel>>> = (0..external_books.len())
         .map(|i| -> VelocityResult<Option<Vec<PriceLevel>>> {
-            if router.executor.quoter_type(i) != QuoterType::Custom {
-                return Ok(None);
-            }
-            let quoter_user_key = router.executor.quoter_user(i);
-            // A quoter quoting for the taker themselves is a self-trade.
-            if quoter_user_key == *taker_key {
-                return Ok(Some(vec![]));
-            }
-            let position_index = {
-                let mut maker = makers_and_referrer.get_ref_mut(&quoter_user_key)?;
-                get_position_index(&maker.perp_positions, market_index)
-                    .or_else(|_| add_new_position(&mut maker.perp_positions, market_index))?
+            let cap = match router.executor.quoter_type(i) {
+                QuoterType::Custom => {
+                    let quoter_user_key = router.executor.quoter_user(i);
+                    // A quoter quoting for the taker themselves is a self-trade.
+                    if quoter_user_key == *taker_key {
+                        return Ok(Some(vec![]));
+                    }
+                    let position_index = {
+                        let mut maker = makers_and_referrer.get_ref_mut(&quoter_user_key)?;
+                        get_position_index(&maker.perp_positions, market_index).or_else(|_| {
+                            add_new_position(&mut maker.perp_positions, market_index)
+                        })?
+                    };
+                    let maker = makers_and_referrer.get_ref(&quoter_user_key)?;
+                    crate::math::orders::calculate_max_perp_order_size(
+                        &maker,
+                        position_index,
+                        market_index,
+                        maker_direction,
+                        perp_market_map,
+                        spot_market_map,
+                        oracle_map,
+                    )?
+                }
+                QuoterType::Clob => {
+                    // Nothing to hold back unless some loaded account carries
+                    // a floor at all. Floors are admin-set and rare, so this
+                    // keeps the book read and the per-order resolution off
+                    // the ordinary fill.
+                    if !any_loaded_floor {
+                        return Ok(None);
+                    }
+                    let resting = match router.executor.subjects(i, direction, target_size)? {
+                        crate::state::prop_amm::QuoterSubjects::Book(resting) => resting,
+                        crate::state::prop_amm::QuoterSubjects::Account(_) => return Ok(None),
+                    };
+                    match clob_unverifiable_floor_depth(
+                        &resting,
+                        &resolve_user,
+                        makers_and_referrer,
+                        perp_market_map,
+                        spot_market_map,
+                        oracle_map,
+                        market_index,
+                        maker_direction,
+                    )? {
+                        Some(cap) => cap,
+                        None => return Ok(None),
+                    }
+                }
+                QuoterType::Vamm => return Ok(None),
             };
-            let maker = makers_and_referrer.get_ref(&quoter_user_key)?;
-            let cap = crate::math::orders::calculate_max_perp_order_size(
-                &maker,
-                position_index,
-                market_index,
-                maker_direction,
-                perp_market_map,
-                spot_market_map,
-                oracle_map,
-            )?;
             let depth = external_books[i]
                 .levels
                 .iter()
@@ -4169,24 +4346,6 @@ fn fulfill_perp_order_router_pass(
     // transaction), and the subject (a user this quoter is allowed to act
     // against — the loaded set is far wider than that, and it holds the taker
     // and every rival quoter's makers).
-    let user_ref_index = makers_and_referrer.user_ref_index()?;
-    let taker_ref = crate::state::prop_amm::ClobUserRefV0 {
-        authority: taker.authority,
-        sub_account_id: taker.sub_account_id.into(),
-    };
-    let resolve_user = |user: &crate::state::prop_amm::ClobUserRefV0| -> VelocityResult<Pubkey> {
-        user_ref_index
-            .get(&(user.authority, user.sub_account_id))
-            .copied()
-            .ok_or_else(|| {
-                msg!(
-                    "quoter returned a balance change for an unloaded user {}/{}",
-                    user.authority,
-                    user.sub_account_id
-                );
-                ErrorCode::DefaultError
-            })
-    };
     for (i, allocation) in allocations[..externals_end].iter().enumerate() {
         if allocation.base == 0 {
             continue;

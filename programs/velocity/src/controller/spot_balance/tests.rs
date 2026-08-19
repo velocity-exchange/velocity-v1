@@ -2514,6 +2514,61 @@ fn large_carveouts_never_leave_an_interval_unstamped() {
 }
 
 #[test]
+fn lowering_the_factors_does_not_strand_a_market() {
+    // The insurance-fund-vs-protocol split divides by `if_fee_factor +
+    // protocol_fee_factor`, and its remainder is only valid below the divisor that stored
+    // it. `update_spot_market_if_factor` accepts any pair below 100% at any time, so a
+    // stored remainder can end up at or above a smaller divisor. It would then raise the
+    // insurance fund cut above the withheld amount and underflow the protocol residual.
+    // The accrual runs first on nearly every spot instruction, so the market would take no
+    // deposit, withdrawal, borrow or repayment until the factors went back up.
+    let mut market = carveout_test_market(400_000, 500_000);
+
+    // Crank until a carry is in flight that the lower pair below cannot divide.
+    let mut now = 0_i64;
+    let carried = loop {
+        now += 1;
+        assert!(now <= 60, "no carry reached 100_000 to test against");
+        update_spot_market_cumulative_interest(&mut market, None, now, false).unwrap();
+
+        let carried = market.protocol_fee_pool.pending_interest_split_dust;
+        if carried >= 100_000 {
+            break carried;
+        }
+    };
+
+    market.insurance_fund.if_fee_factor = 100_000;
+    market.protocol_fee_factor = 0;
+
+    // The accrual reduces the carry below the divisor in force, so it keeps committing.
+    let protocol_pool_balance = market.protocol_fee_pool.scaled_balance;
+    let insurance_fund_balance = market.revenue_pool.scaled_balance;
+
+    for i in now + 1..=now + 600 {
+        update_spot_market_cumulative_interest(&mut market, None, i, false).unwrap();
+
+        assert_eq!(
+            market.last_interest_ts, i as u64,
+            "interval {i} was left un-stamped after the factors were lowered"
+        );
+        assert!(
+            market.protocol_fee_pool.pending_interest_split_dust < 100_000,
+            "the carry stayed at or above the divisor in force"
+        );
+    }
+
+    // The reduction costs less than one index unit and nothing else. The insurance fund
+    // keeps taking its cut under the new pair, and the protocol pool takes nothing, because
+    // its factor is now zero.
+    assert!(carried >= 100_000);
+    assert!(market.revenue_pool.scaled_balance > insurance_fund_balance);
+    assert_eq!(
+        market.protocol_fee_pool.scaled_balance,
+        protocol_pool_balance
+    );
+}
+
+#[test]
 fn carveout_dust_never_defers_across_a_balance_change() {
     // This is why the accrual carries the cut and does not delay the interval. An un-stamped
     // span does not keep its own terms. `calculate_accumulated_interest` bills the whole span

@@ -1557,7 +1557,11 @@ pub struct PoolBalance {
     ///     is IF_FACTOR_PRECISION, so the value stays below IF_FACTOR_PRECISION.
     ///   - On `protocol_fee_pool` this is the insurance-fund-vs-protocol split of
     ///     the withheld amount. The divisor is
-    ///     `if_fee_factor + protocol_fee_factor`, so the value stays below it.
+    ///     `if_fee_factor + protocol_fee_factor`, so the value stays below it. The
+    ///     admin can lower that pair, which leaves a stored value at or above the
+    ///     new divisor. `split_deposit_interest` reduces the value it reads below
+    ///     the divisor in force, so a change of the factors costs less than one
+    ///     index unit and cannot strand the market.
     ///
     /// That order keeps the two carveouts from taking more than the interval
     /// gain. The first division bounds the total. The second division only

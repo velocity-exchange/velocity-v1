@@ -135,6 +135,9 @@ pub struct InterestSplit {
 ///
 /// `update_spot_market_if_factor` holds `if_fee_factor + protocol_fee_factor`
 /// below `IF_FACTOR_PRECISION`. That bound limits the first split's numerator.
+/// The same instruction can lower the pair at any time, so the second split's
+/// divisor is not a constant. The carry it stored under a larger divisor is
+/// reduced below the divisor in force before it is used.
 pub fn split_deposit_interest(
     spot_market: &SpotMarket,
     deposit_interest: u128,
@@ -150,6 +153,19 @@ pub fn split_deposit_interest(
         .protocol_fee_pool
         .pending_interest_split_dust
         .cast::<u128>()?;
+
+    // The second split divides by the combined factor, and the admin can lower that
+    // factor at any time. A remainder is only valid below the divisor that stored
+    // it. Under a smaller divisor the stored remainder raises the insurance fund cut
+    // above the withheld amount, and the protocol residual then underflows. The
+    // accrual runs first on nearly every spot instruction, so the market would take
+    // no deposit, withdrawal, borrow or repayment until the factors went back up.
+    //
+    // The carry is therefore reduced below the divisor in force. Each change of the
+    // factors forfeits less than one index unit. A combined factor of zero drops the
+    // carry, because the split that it belongs to no longer exists. The first split
+    // needs no reduction, because its divisor is the constant `IF_FACTOR_PRECISION`.
+    let carried_if = carried_if.min(combined_factor.saturating_sub(1));
 
     // Nothing configured and nothing in flight: lenders take the whole interval.
     // Most markets run this way and this runs on nearly every spot instruction.
@@ -178,9 +194,14 @@ pub fn split_deposit_interest(
 
     // Split two: the insurance fund's share of what was withheld, with the
     // protocol taking the exact residual so the pair always sums back to
-    // `withheld`. Bounded the same way, so `for_insurance_fund <= withheld`.
+    // `withheld`. `if_factor <= combined_factor` and `carried_if <
+    // combined_factor` hold the numerator below `(withheld + 1) *
+    // combined_factor`, so `for_insurance_fund <= withheld` and the residual never
+    // underflows.
     let (for_insurance_fund, insurance_fund_dust) = if combined_factor == 0 {
-        (0, carried_if.cast::<u32>()?)
+        // No carveout is configured, so this split has no divisor. The reduction
+        // above already dropped the carry.
+        (0, 0)
     } else {
         let if_numerator = withheld.safe_mul(if_factor)?.safe_add(carried_if)?;
         let for_insurance_fund = if_numerator.safe_div(combined_factor)?;

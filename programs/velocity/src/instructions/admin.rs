@@ -1905,6 +1905,12 @@ pub fn handle_update_spot_market_if_factor(
     // The bound does not by itself keep the lender share above zero. A carried
     // remainder can raise the cuts to the whole gain on a short interval. The
     // accrual commits anyway in that case, so a zero lender share is safe.
+    //
+    // A lower pair can leave a carried remainder at or above the new combined
+    // factor, which is the divisor of the insurance-fund-vs-protocol split.
+    // `split_deposit_interest` reduces that remainder below the divisor in force, so
+    // this handler does not have to settle or rescale it. The reduction costs less
+    // than one index unit.
     validate!(
         if_fee_factor.safe_add(protocol_fee_factor)? < IF_FACTOR_PRECISION.cast()?,
         ErrorCode::DefaultError,

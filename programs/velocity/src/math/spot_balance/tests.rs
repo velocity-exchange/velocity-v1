@@ -148,6 +148,55 @@ mod test {
     }
 
     #[test]
+    fn a_lower_factor_pair_reduces_the_carry_it_cannot_divide() {
+        // The second split divides by `if_fee_factor + protocol_fee_factor`. A remainder is
+        // only valid below the divisor that stored it, and the admin can lower the pair. A
+        // stale remainder would raise the insurance fund cut above the withheld amount and
+        // underflow the protocol residual, which fails every spot instruction on the market.
+        let mut market = carveout_market(400_000, 500_000);
+        let (_, _, _) = run_splits(&mut market, 13, 1);
+
+        let carried = market.protocol_fee_pool.pending_interest_split_dust;
+        assert!(carried > 0);
+
+        // Lower the pair below the carry that the old pair stored.
+        market.insurance_fund.if_fee_factor = 100_000;
+        market.protocol_fee_factor = 0;
+        assert!(carried as u128 >= 100_000);
+
+        let split = split_deposit_interest(&market, 1).unwrap();
+        assert_eq!(
+            split.for_lenders + split.for_insurance_fund + split.for_protocol,
+            1
+        );
+        assert!((split.insurance_fund_dust as u128) < 100_000);
+
+        // The market keeps accruing under the new pair.
+        market.protocol_fee_pool.pending_interest_split_dust = split.insurance_fund_dust;
+        market.revenue_pool.pending_interest_split_dust = split.carveout_dust;
+        let (lenders, insurance_fund, protocol) = run_splits(&mut market, 13, 5000);
+        assert_eq!(lenders + insurance_fund + protocol, 5000 * 13);
+        assert!(insurance_fund > 0);
+        assert_eq!(protocol, 0);
+    }
+
+    #[test]
+    fn turning_the_carveout_off_drops_the_carry() {
+        let mut market = carveout_market(400_000, 500_000);
+        run_splits(&mut market, 13, 1);
+        assert!(market.protocol_fee_pool.pending_interest_split_dust > 0);
+
+        // With no carveout configured the second split has no divisor, so its carry cannot be
+        // divided later. Holding it would strand it against a divisor that no longer exists.
+        market.insurance_fund.if_fee_factor = 0;
+        market.protocol_fee_factor = 0;
+
+        let split = split_deposit_interest(&market, 13).unwrap();
+        assert_eq!(split.for_lenders, 13);
+        assert_eq!(split.insurance_fund_dust, 0);
+    }
+
+    #[test]
     fn token_conversion_carries_dust_into_whole_tokens() {
         // A $1 market. One index unit of withheld interest is worth far less than one token, so
         // every single conversion floors to zero and only the carried remainder ever pays.

@@ -159,6 +159,8 @@ export const PRICE_TIMES_AMM_TO_QUOTE_PRECISION_RATIO = PRICE_PRECISION.mul(
 	AMM_TO_QUOTE_PRECISION_RATIO
 );
 
+/** 60 seconds. */
+export const ONE_MINUTE = new BN(60);
 /** 300 seconds. */
 export const FIVE_MINUTE = new BN(60 * 5);
 /** Max age of the last fill before the trigger price's last-fill leg is treated as absent (oracle price substitutes). */
@@ -167,6 +169,18 @@ export const TRIGGER_PRICE_LAST_FILL_MAX_AGE = FIVE_MINUTE;
 export const ONE_HOUR = new BN(60 * 60);
 /** 31,536,000 seconds (365 days). */
 export const ONE_YEAR = new BN(31536000);
+
+/**
+ * Mirror of the program's `MARK_TWAP_RESEED_FUNDING_PERIODS`.
+ *
+ * How many funding periods the mark TWAP may go unwritten before the program discards
+ * its stored value and re-seeds it from the oracle TWAP. The weight an incoming
+ * fill-path sample receives grows with the time since the last write (crank samples
+ * are weight-capped on-chain), so past this many periods the stored TWAP holds no
+ * usable history. The threshold is floored at {@link ONE_HOUR}, because a market's
+ * funding period can be zero.
+ */
+export const MARK_TWAP_RESEED_FUNDING_PERIODS = new BN(3);
 
 /**
  * Mirror of the program's `MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN`: the largest

@@ -1854,6 +1854,65 @@ impl MarketStats {
         Ok(())
     }
 
+    /// Discard the mark TWAPs and re-seed them from the oracle TWAPs. This runs when
+    /// the mark TWAPs stay unwritten for so long that they keep no usable history.
+    ///
+    /// `calculate_new_twap` weights an incoming sample by the time since the last
+    /// write. The opposing weight floors at 1. Past a few funding periods the next
+    /// fill-path sample replaces the TWAP outright, because fills pass no
+    /// `max_sample_elapsed` cap. One quote then sets that period's funding premium.
+    /// The bid/ask crank's samples are capped ([`Self::max_mark_twap_sample_elapsed`]),
+    /// so on that path the re-seed instead replaces a slow crawl of capped samples
+    /// with one exact write of the oracle TWAP.
+    ///
+    /// A funding pause makes that gap longest. `handle_update_funding_rate` and
+    /// `handle_update_perp_bid_ask_twap` both reject while the pause is set. A market
+    /// that does not trade then has no writer at all. `on_the_hour_update` makes
+    /// funding fire on the first crank after the pause lifts. The moment of that write
+    /// is therefore predictable.
+    ///
+    /// The oracle TWAP is the correct replacement. It advances during a pause through
+    /// `update_amms` and perp fills. Every caller of `update_mark_twap` also refreshes
+    /// it earlier in the same instruction. The re-seed makes the premium zero for one
+    /// period. The market relearns its real premium from the samples that follow.
+    ///
+    /// Returns whether the re-seed ran. The caller uses this to skip work that the
+    /// re-seed makes moot.
+    fn reseed_mark_twap_from_oracle_if_stale(
+        &mut self,
+        now: i64,
+    ) -> crate::error::VelocityResult<bool> {
+        use crate::math::{
+            casting::Cast,
+            constants::{MARK_TWAP_RESEED_FUNDING_PERIODS, ONE_HOUR},
+            safe_math::SafeMath,
+        };
+
+        // `funding_period` is 0 on some test markets, which would make every write a
+        // re-seed. The floor also keeps a market with a short funding period from
+        // re-seeding on an ordinary quiet hour.
+        let max_staleness = self
+            .funding_period
+            .safe_mul(MARK_TWAP_RESEED_FUNDING_PERIODS)?
+            .max(ONE_HOUR);
+
+        if now.safe_sub(self.last_mark_price_twap_ts)? <= max_staleness {
+            return Ok(false);
+        }
+
+        let oracle_twap = self.historical_oracle_data.last_oracle_price_twap;
+        self.last_bid_price_twap = oracle_twap.cast()?;
+        self.last_ask_price_twap = oracle_twap.cast()?;
+        self.last_mark_price_twap = oracle_twap.cast()?;
+        self.last_mark_price_twap_5min = self
+            .historical_oracle_data
+            .last_oracle_price_twap_5min
+            .cast()?;
+        self.last_mark_price_twap_ts = now;
+
+        Ok(true)
+    }
+
     /// Ceiling on the elapsed time a single mark-TWAP sample may be weighted by.
     ///
     /// A mark-TWAP update weights the new sample by `elapsed / funding_period`,
@@ -1885,6 +1944,10 @@ impl MarketStats {
     /// callers compute `bid_price` / `ask_price` from whichever liquidity
     /// source produced the fill (vAMM quote, DLOB, JIT participant).
     ///
+    /// A market that does not write these TWAPs for several funding periods keeps no
+    /// usable history. [`Self::reseed_mark_twap_from_oracle_if_stale`] then re-seeds
+    /// them from the oracle TWAPs, and this sample lands on the next call.
+    ///
     /// `max_sample_elapsed` caps the elapsed time credited to this sample (see
     /// [`MarketStats::max_mark_twap_sample_elapsed`]). Fills and the AMM re-blend
     /// pass `None` (their samples are AMM/trade-derived, not caller-curated); the
@@ -1914,6 +1977,17 @@ impl MarketStats {
             },
             core::cmp::max,
         };
+
+        // A re-seed stamps the clock to `now`. Every weighted average below then sees a
+        // zero interval and returns the value the re-seed wrote. The blend reaches the
+        // same answer at a cost. The sanitize step clamps this sample against the TWAP
+        // that the re-seed just wrote. `update_mark_std` also measures the seeded price
+        // across a one second interval that it did not observe. This must run before
+        // `sample_last_ts` below, so a post-gap sample is measured against the stamp
+        // the re-seed wrote, not against the gap it just consumed.
+        if self.reseed_mark_twap_from_oracle_if_stale(now)? {
+            return Ok(self.last_mark_price_twap);
+        }
 
         // Timestamp the new sample is weighted against. `calculate_new_twap`
         // credits the sample `now - last_ts` of elapsed time; capping that span

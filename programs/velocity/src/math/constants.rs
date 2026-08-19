@@ -157,6 +157,25 @@ pub const EPOCH_DURATION: i64 = TWENTY_FOUR_HOUR * 28;
 pub const THIRTY_DAY: i64 = TWENTY_FOUR_HOUR * 30;
 pub const THIRTY_DAY_I128: i128 = (TWENTY_FOUR_HOUR * 30) as i128;
 pub const ONE_YEAR: u128 = 31536000;
+
+/// How many funding periods the mark TWAP may stay unwritten. Past this many periods
+/// `MarketStats::update_mark_twap` discards the stored value and re-seeds it from the
+/// oracle TWAP.
+///
+/// `calculate_new_twap` weights the incoming sample by the time since the last write.
+/// It floors the opposing weight at 1. Past one funding period a single fill-path
+/// sample therefore replaces the TWAP almost completely, because fills pass no
+/// `max_sample_elapsed` cap. The bid/ask crank's samples are weight-capped
+/// (`MarketStats::max_mark_twap_sample_elapsed`), so there the re-seed instead
+/// replaces a slow crawl of capped samples with one exact oracle-TWAP write.
+/// A market that stops writing keeps no history either way. A funding pause makes
+/// that gap longest, because both funding cranks reject while the pause is set.
+///
+/// The multiplier must stay above 2. A market whose only writer is the funding crank
+/// writes once per funding period in the steady state. `on_the_hour_update` can also
+/// stretch one legitimate interval to about 1.67 periods. A lower bound re-seeds a
+/// market that is merely quiet or cranked late, and discards a real premium.
+pub const MARK_TWAP_RESEED_FUNDING_PERIODS: i64 = 3;
 /// Max age of the last fill before the trigger price's last-fill leg is
 /// treated as absent (oracle price substitutes).
 pub const TRIGGER_PRICE_LAST_FILL_MAX_AGE: i64 = FIVE_MINUTE as i64;

@@ -2184,7 +2184,7 @@ use solana_security_txt::security_txt;
 security_txt! {
     name: "Velocity v1",
     project_url: "https://velocity.exchange",
-    contacts: "link:https://docs.drift.trade/security/bug-bounty",
+    contacts: "email:security@velocity.exchange,link:https://docs.velocity.exchange/protocol/risk-and-safety/bug-bounty",
     policy: "https://github.com/velocity-exchange/velocity-v1/blob/master/SECURITY.md",
     preferred_languages: "en",
     source_code: "https://github.com/velocity-exchange/velocity-v1/programs/velocity"

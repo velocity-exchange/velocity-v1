@@ -5,7 +5,9 @@ use {
         math::{
             casting::Cast,
             constants::{
-                MARGIN_PRECISION_U128, MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN, PRICE_PRECISION,
+                MARGIN_PRECISION_U128, MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN,
+                MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN,
+                MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN, ONE_YEAR, PRICE_PRECISION,
                 PRICE_PRECISION_I128, PRICE_PRECISION_I64, SPOT_IMF_PRECISION_U128,
                 SPOT_WEIGHT_PRECISION, SPOT_WEIGHT_PRECISION_U128,
             },
@@ -16,7 +18,10 @@ use {
                 calculate_base_asset_value_and_pnl_with_oracle_price,
             },
             safe_math::SafeMath,
-            spot_balance::{get_strict_token_value, get_token_value},
+            spot_balance::{
+                calculate_accumulated_interest, get_interest_token_amount, get_strict_token_value,
+                get_token_value, InterestAccumulated,
+            },
         },
         msg,
         state::{
@@ -28,7 +33,7 @@ use {
             oracle_map::OracleMap,
             perp_market::{ContractTier, PerpMarket},
             perp_market_map::PerpMarketMap,
-            spot_market::{AssetTier, SpotBalanceType},
+            spot_market::{AssetTier, SpotBalanceType, SpotMarket},
             spot_market_map::SpotMarketMap,
             user::{MarketType, OrderFillSimulation, PerpPosition, User},
         },
@@ -241,6 +246,115 @@ pub fn calculate_user_safest_position_tiers(
     Ok((safest_tier_spot_liablity, safest_tier_perp_liablity))
 }
 
+/// Reject valuing a user's spot **borrows** for margin when the market's interest
+/// accrual is too stale (OtterSec #135 / #148).
+///
+/// Margin values a scaled borrow through the market's *stored*
+/// `cumulative_borrow_interest`. Interest accrued since `last_interest_ts` is not in
+/// that index, so the debt is understated by exactly the un-booked amount — and
+/// nothing on these paths refreshes the market: `handle_withdraw` only cranks the
+/// market being withdrawn (#135) and the perp-fill handler cranks none at all
+/// (#148), while the user's *other* borrow markets arrive read-only. A borrower can
+/// therefore release tokens, or take an adverse in-band DLOB fill, against debt the
+/// check never fully saw, leaving bad debt once that market is finally cranked.
+///
+/// Only **borrow** positions are gated. A stale *deposit* index understates
+/// collateral, which errs in the protocol's favour, so there is nothing to protect
+/// against there — and gating deposits would strand withdrawals for no gain.
+///
+/// Mirrors the perp side's existing freshness precondition (`amm.is_fresh_at`).
+/// Recovery needs no privileges: `update_spot_market_cumulative_interest` is
+/// permissionless and may be bundled into the same transaction.
+///
+/// A market whose interval cannot be booked yet is exempt. The clock is the cheap
+/// test, not the property that matters: `update_spot_market_cumulative_interest`
+/// *defers* an interval whose split or configured carveout rounds below one token,
+/// and it leaves `last_interest_ts` where it is while it does. On a dust-sized
+/// market that deferral can outlast the staleness bound, and no amount of cranking
+/// moves the clock. Measuring the omission itself instead keeps such a market
+/// fillable: when the un-booked index applied to this borrow converts to less than
+/// one token, the debt is understated by less than the smallest unit the account
+/// can be charged.
+pub fn validate_spot_borrow_interest_fresh_for_margin(
+    user: &User,
+    spot_market_map: &SpotMarketMap,
+    now: i64,
+) -> VelocityResult {
+    for spot_position in &user.spot_positions {
+        if spot_position.is_available()
+            || spot_position.balance_type != SpotBalanceType::Borrow
+            || spot_position.scaled_balance == 0
+        {
+            continue;
+        }
+
+        let spot_market = spot_market_map.get_ref(&spot_position.market_index)?;
+        let staleness = now.safe_sub(spot_market.last_interest_ts.cast()?)?;
+        let max_staleness = max_spot_interest_staleness_for_margin(&spot_market)?;
+
+        if staleness <= max_staleness {
+            continue;
+        }
+
+        let InterestAccumulated {
+            borrow_interest, ..
+        } = calculate_accumulated_interest(&spot_market, now)?;
+
+        let unbooked_debt = get_interest_token_amount(
+            spot_position.scaled_balance.cast()?,
+            &spot_market,
+            borrow_interest,
+        )?;
+
+        validate!(
+            unbooked_debt == 0,
+            ErrorCode::SpotMarketInterestStaleForMargin,
+            "spot market {} interest is {}s stale (max {}s) and hides {} of this borrow — crank \
+             update_spot_market_cumulative_interest before valuing it",
+            spot_position.market_index,
+            staleness,
+            max_staleness,
+            unbooked_debt
+        )?;
+    }
+
+    Ok(())
+}
+
+/// The time window `validate_spot_borrow_interest_fresh_for_margin` allows one
+/// market, derived from what that market may charge.
+///
+/// The un-booked share of a borrow is `borrow_rate x elapsed / year`, so holding
+/// that share under `MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN` means
+/// `elapsed <= share x year / borrow_rate`. A fixed window would instead let the
+/// hidden share scale with the rate, and the rate is configuration:
+/// `validate_borrow_rate` bounds `max_borrow_rate` only from below, so a market may
+/// carry a rate high enough to hide a material share of the debt within any fixed
+/// window.
+///
+/// The divisor is the ceiling the market's own curve cannot exceed, not its current
+/// rate, so the window costs two divisions rather than a utilization and rate
+/// computation on every borrow of every margin check. `calculate_borrow_rate`
+/// interpolates up to `max_borrow_rate` and then raises the result to
+/// `min_borrow_rate`, so the larger of the two bounds it.
+pub fn max_spot_interest_staleness_for_margin(spot_market: &SpotMarket) -> VelocityResult<i64> {
+    let rate_ceiling = spot_market
+        .max_borrow_rate
+        .max(spot_market.get_min_borrow_rate()?)
+        .cast::<u128>()?;
+
+    if rate_ceiling == 0 {
+        return Ok(MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN);
+    }
+
+    let window = MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN
+        .safe_mul(ONE_YEAR)?
+        .safe_div(rate_ceiling)?
+        .cast::<i64>()?;
+
+    Ok(window.min(MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN))
+}
+
 pub fn calculate_margin_requirement_and_total_collateral_and_liability_info(
     user: &User,
     perp_market_map: &PerpMarketMap,
@@ -365,7 +479,7 @@ pub fn calculate_margin_requirement_and_total_collateral_and_liability_info(
 
                     calculation.add_spot_liability()?;
 
-                    calculation.update_all_liability_oracles_valid(oracle_valid);
+                    calculation.update_all_spot_liability_oracles_valid(oracle_valid);
 
                     #[cfg(feature = "velocity-rs")]
                     calculation.add_spot_liability_value(token_value)?;
@@ -456,7 +570,7 @@ pub fn calculate_margin_requirement_and_total_collateral_and_liability_info(
                         spot_market.asset_tier == AssetTier::Isolated,
                     );
 
-                    calculation.update_all_liability_oracles_valid(oracle_valid);
+                    calculation.update_all_spot_liability_oracles_valid(oracle_valid);
 
                     #[cfg(feature = "velocity-rs")]
                     calculation.add_spot_liability_value(worst_case_token_value.unsigned_abs())?;
@@ -464,7 +578,7 @@ pub fn calculate_margin_requirement_and_total_collateral_and_liability_info(
                 Ordering::Equal => {
                     if spot_position.has_open_order() {
                         calculation.add_spot_liability()?;
-                        calculation.update_all_liability_oracles_valid(oracle_valid);
+                        calculation.update_all_spot_liability_oracles_valid(oracle_valid);
                         calculation.update_with_spot_isolated_liability(
                             spot_market.asset_tier == AssetTier::Isolated,
                         );

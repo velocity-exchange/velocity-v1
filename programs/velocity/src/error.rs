@@ -795,6 +795,8 @@ pub enum ErrorCode {
     InvalidNativeInstructionData,
     #[msg("MM oracle updates are disabled by the admin feature-bit kill switch")]
     MmOracleUpdateDisabled,
+    #[msg("Spot market interest is too stale to value a borrow for margin")]
+    SpotMarketInterestStaleForMargin,
 }
 
 #[macro_export]

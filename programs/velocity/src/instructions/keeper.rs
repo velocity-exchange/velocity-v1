@@ -3288,6 +3288,74 @@ pub fn handle_update_spot_market_cumulative_interest(
     Ok(())
 }
 
+/// Permissionless batch refresh: book the lending interest of several spot markets in one
+/// instruction. Markets and their indexes arrive through `remaining_accounts`, and each one goes
+/// through the same `update_spot_market_cumulative_interest` as the single-market crank above.
+///
+/// Written for a caller that must value several markets in one transaction, such as a program
+/// that prices a share against the markets a user holds. The single-market crank stays the
+/// instruction that keeps a market's oracle EMA fresh.
+///
+/// This instruction moves no tokens and passes no oracle, which is why it drops two of the crank's
+/// guards and its spot-vault assertion, and keeps the third:
+///
+/// - No oracle means `update_spot_market_twap_stats` leaves `historical_oracle_data` alone. A
+///   caller that reads a market's oracle TWAP after this call therefore reads a value this call
+///   did not move, and no caller can pick the sampling instant of an oracle EMA.
+/// - A market status of `Delisted` is not rejected. `deposit` and `force_delete_user` already
+///   book interest on a delisted market, so refusing here would block callers without stopping
+///   the accrual.
+/// - `exchange_not_paused` is kept. A full halt sets every `ExchangeStatus` bit, `FundingPaused`
+///   included, so no interest can accrue and the only work left is stamping the clock and the
+///   balance TWAPs. Those TWAPs size the withdraw and borrow circuit breakers, and a halt freezes
+///   them for a reason. Without this guard a caller could re-baseline a breaker mid-halt, or stamp
+///   the halted interval away so nobody is charged for it.
+/// - The spot vault holds the same tokens after this call as before it, and booking interest can
+///   only lower the depositors' claim, never raise it. Asserting the vault invariant here would
+///   let one market that is already short abort the refresh of every other market in the batch.
+#[access_control(
+    exchange_not_paused(&ctx.accounts.state)
+)]
+pub fn handle_refresh_spot_market_interest<'c: 'info, 'info>(
+    ctx: Context<'info, RefreshSpotMarketInterest<'info>>,
+    market_indexes: Vec<u16>,
+) -> Result<()> {
+    // A user holds eight spot positions, and every perp market quotes the same spot market
+    // (`initialize_perp_market` hardcodes it and no setter exists), so ten markets cover every
+    // market one user's equity can read. The cap keeps one call inside a compute budget.
+    validate!(
+        market_indexes.len() <= 16,
+        ErrorCode::DefaultError,
+        "too many markets passed, max 16, got {}",
+        market_indexes.len()
+    )?;
+
+    let state = ctx.accounts.state.load()?;
+    let clock = Clock::get()?;
+
+    let writable_spot_markets = get_writable_spot_market_set_from_many(market_indexes);
+
+    let AccountMaps {
+        spot_market_map, ..
+    } = load_maps(
+        &mut ctx.remaining_accounts.iter().peekable(),
+        &MarketSet::new(),
+        &writable_spot_markets,
+        clock.slot,
+        Some(state.oracle_guard_rails),
+    )?;
+
+    controller::spot_balance::refresh_spot_market_interest(
+        &spot_market_map,
+        None,
+        &writable_spot_markets,
+        clock.unix_timestamp,
+        state.funding_paused()?,
+    )?;
+
+    Ok(())
+}
+
 #[access_control(
     exchange_not_paused(&ctx.accounts.state)
 )]
@@ -3485,20 +3553,27 @@ pub fn handle_force_delete_user<'c: 'info, 'info>(
         "user must have no perp positions"
     )?;
 
+    // Book the interest of every market the user still holds before the transfers below read a
+    // token amount. Cancelling the orders above can free a position that only open orders kept
+    // alive, so the set is taken here rather than reused from the account load.
+    //
+    // The dust gate earlier in this handler still values the user through the stored indexes. An
+    // account close to the cap can therefore read below it and be deleted, which sends its
+    // deposits to the keeper. Moving that gate after this call is a separate change.
+    controller::spot_balance::refresh_spot_market_interest(
+        &spot_market_map,
+        Some(&mut oracle_map),
+        &get_market_set_for_spot_positions(&user.spot_positions),
+        now,
+        state.funding_paused()?,
+    )?;
+
     for spot_position in user.spot_positions.iter_mut() {
         if spot_position.is_available() {
             continue;
         }
 
         let spot_market = &mut spot_market_map.get_ref_mut(&spot_position.market_index)?;
-        let oracle_price_data = oracle_map.get_price_data(&spot_market.oracle_id())?;
-
-        controller::spot_balance::update_spot_market_cumulative_interest(
-            spot_market,
-            Some(oracle_price_data),
-            now,
-            state.funding_paused()?,
-        )?;
 
         let token_amount = spot_position.get_token_amount(spot_market)?;
         let balance_type = spot_position.balance_type;
@@ -3628,6 +3703,12 @@ pub fn handle_force_delete_user<'c: 'info, 'info>(
     }
 
     safe_decrement!(user_stats.number_of_sub_accounts, 1);
+
+    // Release the shared `State` borrow taken at the top of this handler. `Ref` implements `Drop`,
+    // so the borrow lives to the end of the scope and a shadowing `let` does not end it. Without
+    // this the `load_mut` below fails with `AccountBorrowFailed`, and it fails after the user's
+    // tokens have already moved to the keeper.
+    drop(state);
 
     let mut state = ctx.accounts.state.load_mut()?;
     safe_decrement!(state.number_of_sub_accounts, 1);
@@ -4243,6 +4324,14 @@ pub struct UpdateSpotMarketCumulativeInterest<'info> {
         bump,
     )]
     pub spot_market_vault: Box<InterfaceAccount<'info, TokenAccount>>,
+}
+
+/// The markets to refresh arrive as writable spot market accounts in `remaining_accounts`.
+/// `SpotMarketMap` reads each market's index out of the account it loads, so a market is refreshed
+/// only when its own account is passed.
+#[derive(Accounts)]
+pub struct RefreshSpotMarketInterest<'info> {
+    pub state: AccountLoader<'info, State>,
 }
 
 #[derive(Accounts)]

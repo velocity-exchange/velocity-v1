@@ -35,7 +35,7 @@ use {
             perp_market_map::PerpMarketMap,
             pyth_lazer_oracle::PythLazerOracle,
             spot_market::{InsuranceFund, SpotBalanceType, SpotMarket},
-            spot_market_map::SpotMarketMap,
+            spot_market_map::{get_writable_spot_market_set_from_many, SpotMarketMap},
             user::{Order, PerpPosition, PositionFlag, SpotPosition, User},
         },
         test_utils::{get_pyth_price, get_spot_positions, *},
@@ -2940,4 +2940,183 @@ fn refreshing_oracle_twap_understates_a_liability_for_the_strict_price() {
     assert_eq!(value_at(&market), before);
     // ...while interest still accrued.
     assert!(market.cumulative_borrow_interest > SPOT_CUMULATIVE_INTEREST_PRECISION);
+}
+
+/// A market that borrows at half its optimal utilization, so an hour of accrual moves both
+/// indexes by a comfortable margin. `market_index` picks the slot in a map.
+fn batch_refresh_test_market(market_index: u16) -> SpotMarket {
+    SpotMarket {
+        market_index,
+        oracle_source: OracleSource::QuoteAsset,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        decimals: 6,
+        deposit_balance: 1000 * SPOT_BALANCE_PRECISION,
+        borrow_balance: 500 * SPOT_BALANCE_PRECISION,
+        optimal_utilization: SPOT_UTILIZATION_PRECISION_U32 / 2,
+        optimal_borrow_rate: SPOT_RATE_PRECISION_U32 * 20,
+        max_borrow_rate: SPOT_RATE_PRECISION_U32 * 50,
+        status: MarketStatus::Active,
+        ..SpotMarket::default()
+    }
+}
+
+/// The batch refresh must book every market it is handed, and book each one exactly as a
+/// single-market refresh would. A helper that stopped after the first market, or that treated a
+/// later market differently, is the failure this pins.
+#[test]
+fn batch_refresh_books_every_market_it_is_given() {
+    let later = 3600_i64;
+
+    let mut market_zero = batch_refresh_test_market(0);
+    let mut market_one = batch_refresh_test_market(1);
+
+    let mut control_zero = market_zero;
+    let mut control_one = market_one;
+    update_spot_market_cumulative_interest(&mut control_zero, None, later, false).unwrap();
+    update_spot_market_cumulative_interest(&mut control_one, None, later, false).unwrap();
+    assert!(control_zero.cumulative_borrow_interest > SPOT_CUMULATIVE_INTEREST_PRECISION);
+
+    create_anchor_account_info!(market_zero, SpotMarket, market_zero_info);
+    create_anchor_account_info!(market_one, SpotMarket, market_one_info);
+    let spot_market_map =
+        SpotMarketMap::load_multiple(vec![&market_zero_info, &market_one_info], true).unwrap();
+
+    let market_indexes = get_writable_spot_market_set_from_many(vec![0, 1]);
+    refresh_spot_market_interest(&spot_market_map, None, &market_indexes, later, false).unwrap();
+
+    for (market_index, control) in [(0_u16, control_zero), (1_u16, control_one)] {
+        let refreshed = spot_market_map.get_ref(&market_index).unwrap();
+        assert_eq!(
+            refreshed.cumulative_deposit_interest,
+            control.cumulative_deposit_interest
+        );
+        assert_eq!(
+            refreshed.cumulative_borrow_interest,
+            control.cumulative_borrow_interest
+        );
+        assert_eq!(refreshed.last_interest_ts, control.last_interest_ts);
+    }
+}
+
+/// A repeated index must not book the interval twice. The set the map is loaded from is the same
+/// set the refresh walks, so a repeat collapses before either sees it.
+#[test]
+fn batch_refresh_cannot_double_book_a_repeated_index() {
+    let later = 3600_i64;
+
+    let mut market = batch_refresh_test_market(0);
+
+    let mut control = market;
+    update_spot_market_cumulative_interest(&mut control, None, later, false).unwrap();
+
+    create_anchor_account_info!(market, SpotMarket, market_info);
+    let spot_market_map = SpotMarketMap::load_multiple(vec![&market_info], true).unwrap();
+
+    let market_indexes = get_writable_spot_market_set_from_many(vec![0, 0, 0]);
+    refresh_spot_market_interest(&spot_market_map, None, &market_indexes, later, false).unwrap();
+
+    let refreshed = spot_market_map.get_ref(&0).unwrap();
+    assert_eq!(
+        refreshed.cumulative_borrow_interest,
+        control.cumulative_borrow_interest
+    );
+}
+
+/// A paused exchange reaches the batch through `funding_paused`, not through an access control,
+/// so the batch must stamp the interval without accruing. A full exchange halt sets every
+/// `ExchangeStatus` bit, `FundingPaused` included, which is what makes that sufficient.
+#[test]
+fn batch_refresh_stamps_without_accruing_when_funding_is_paused() {
+    let later = 3600_i64;
+
+    let mut market = batch_refresh_test_market(0);
+
+    create_anchor_account_info!(market, SpotMarket, market_info);
+    let spot_market_map = SpotMarketMap::load_multiple(vec![&market_info], true).unwrap();
+
+    let market_indexes = get_writable_spot_market_set_from_many(vec![0]);
+    refresh_spot_market_interest(&spot_market_map, None, &market_indexes, later, true).unwrap();
+
+    let refreshed = spot_market_map.get_ref(&0).unwrap();
+    assert_eq!(
+        refreshed.cumulative_deposit_interest,
+        SPOT_CUMULATIVE_INTEREST_PRECISION
+    );
+    assert_eq!(
+        refreshed.cumulative_borrow_interest,
+        SPOT_CUMULATIVE_INTEREST_PRECISION
+    );
+    assert_eq!(
+        refreshed.last_interest_ts, later as u64,
+        "the paused interval must leave the clock, or it is billed later to whoever holds debt"
+    );
+}
+
+/// A delisted market keeps accruing. Its lenders cannot withdraw
+/// (`update_spot_balances_and_cumulative_deposits_with_limits` admits only Active, ReduceOnly and
+/// Settlement) while its borrowers can still repay, so stopping the accrual would leave the
+/// lenders locked in and uncompensated. `deposit` and `force_delete_user` book interest on such a
+/// market too, so a refresh that refused would block callers without stopping the accrual.
+#[test]
+fn batch_refresh_books_interest_on_a_delisted_market() {
+    let later = 3600_i64;
+
+    let mut market = SpotMarket {
+        status: MarketStatus::Delisted,
+        ..batch_refresh_test_market(0)
+    };
+
+    create_anchor_account_info!(market, SpotMarket, market_info);
+    let spot_market_map = SpotMarketMap::load_multiple(vec![&market_info], true).unwrap();
+
+    let market_indexes = get_writable_spot_market_set_from_many(vec![0]);
+    refresh_spot_market_interest(&spot_market_map, None, &market_indexes, later, false).unwrap();
+
+    let refreshed = spot_market_map.get_ref(&0).unwrap();
+    assert!(refreshed.cumulative_borrow_interest > SPOT_CUMULATIVE_INTEREST_PRECISION);
+    assert!(refreshed.cumulative_deposit_interest > SPOT_CUMULATIVE_INTEREST_PRECISION);
+}
+
+/// Without an oracle map the batch must leave every oracle-TWAP field alone. The vault share
+/// pricing that drives this instruction reads `last_oracle_price_twap` for its own volatility
+/// check, so a refresh that advanced it would move the value that check measures against.
+#[test]
+fn batch_refresh_without_an_oracle_leaves_the_oracle_twaps_alone() {
+    let now = 0_i64;
+    let later = 3600_i64;
+
+    let historical_oracle_data = HistoricalOracleData {
+        last_oracle_price: 100 * PRICE_PRECISION_I64,
+        last_oracle_price_twap: 40 * PRICE_PRECISION_I64,
+        last_oracle_price_twap_5min: 40 * PRICE_PRECISION_I64,
+        last_oracle_price_twap_ts: now,
+        ..HistoricalOracleData::default()
+    };
+    let mut market = SpotMarket {
+        historical_oracle_data,
+        ..batch_refresh_test_market(0)
+    };
+
+    create_anchor_account_info!(market, SpotMarket, market_info);
+    let spot_market_map = SpotMarketMap::load_multiple(vec![&market_info], true).unwrap();
+
+    let market_indexes = get_writable_spot_market_set_from_many(vec![0]);
+    refresh_spot_market_interest(&spot_market_map, None, &market_indexes, later, false).unwrap();
+
+    let refreshed = spot_market_map.get_ref(&0).unwrap();
+    assert_eq!(
+        refreshed.historical_oracle_data.last_oracle_price_twap,
+        historical_oracle_data.last_oracle_price_twap
+    );
+    assert_eq!(
+        refreshed.historical_oracle_data.last_oracle_price_twap_5min,
+        historical_oracle_data.last_oracle_price_twap_5min
+    );
+    assert_eq!(
+        refreshed.historical_oracle_data.last_oracle_price_twap_ts,
+        historical_oracle_data.last_oracle_price_twap_ts
+    );
+    // ...while the interest work still happened.
+    assert!(refreshed.cumulative_borrow_interest > SPOT_CUMULATIVE_INTEREST_PRECISION);
 }

@@ -468,4 +468,23 @@ describe('equity floor oracle validity', () => {
 
 		await refreshSolOracle(100);
 	});
+
+	// The handler binds `State` with a shared `load()` at the top and a `load_mut()` at the
+	// bottom. `Ref` implements `Drop`, so the first borrow lives to the end of the scope and
+	// the shadowing `let` does not end it: every call reverted with `AccountBorrowFailed`
+	// after the deposits had already moved to the keeper. Nothing covered the success path,
+	// so the revert went unnoticed.
+	it('force delete user succeeds once the oracle is valid', async () => {
+		await dustVelocityClient.fetchAccounts();
+
+		await adminVelocityClient.forceDeleteUser(
+			dustUserPublicKey,
+			dustVelocityClient.getUserAccount()
+		);
+
+		const deleted = await bankrunContextWrapper.connection.getAccountInfo(
+			dustUserPublicKey
+		);
+		assert(deleted === null, 'the user account should have been deleted');
+	});
 });

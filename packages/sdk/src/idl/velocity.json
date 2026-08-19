@@ -6436,6 +6436,32 @@
       "args": []
     },
     {
+      "name": "refresh_spot_market_interest",
+      "discriminator": [
+        11,
+        188,
+        50,
+        141,
+        73,
+        51,
+        134,
+        78
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        }
+      ],
+      "args": [
+        {
+          "name": "market_indexes",
+          "type": {
+            "vec": "u16"
+          }
+        }
+      ]
+    },
+    {
       "name": "remove_amm_constituent_mapping_data",
       "discriminator": [
         20,

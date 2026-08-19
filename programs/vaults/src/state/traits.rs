@@ -43,6 +43,32 @@ pub trait VaultDepositorBase {
     fn get_profit_share_fee_paid(&self) -> u64;
     fn set_profit_share_fee_paid(&mut self, amount: u64);
 
+    fn get_profit_share_at_basis(&self) -> u32;
+    fn set_profit_share_at_basis(&mut self, profit_share: u32);
+
+    fn get_hurdle_rate_at_basis(&self) -> u32;
+    fn set_hurdle_rate_at_basis(&mut self, hurdle_rate: u32);
+
+    /// The profit-share policy that applies to this depositor's unpriced gain.
+    ///
+    /// A fee policy installs for the whole vault at one instant, but the vault cannot settle every
+    /// depositor at that instant. A raised rate would therefore price gain that was earned before
+    /// the raise existed. The depositor keeps the policy that was in force when its high-water
+    /// mark was last set, until it realizes that gain. The manager advances a depositor to a new
+    /// policy with the `apply_profit_share` instruction, which realizes the gain at the old
+    /// policy first.
+    ///
+    /// A policy that is better for the depositor applies at once. `update_vault` therefore keeps
+    /// its immediate effect, because it can only lower the profit share and only raise the hurdle
+    /// rate. The protocol profit share needs no equivalent, because `update_vault_protocol` can
+    /// only lower it.
+    fn effective_profit_share_policy(&self, vault: &Vault) -> (u32, u32) {
+        (
+            vault.profit_share.min(self.get_profit_share_at_basis()),
+            vault.hurdle_rate.max(self.get_hurdle_rate_at_basis()),
+        )
+    }
+
     fn validate_base(&self, vault: &Vault) -> Result<()> {
         validate!(
             self.get_vault_shares_base() == vault.shares_base,
@@ -96,9 +122,11 @@ pub trait VaultDepositorBase {
             .cast::<i64>()?
             .safe_sub(cumulative_profit_share_amount)?;
 
-        let profit_beyond_hurdle = if vault.hurdle_rate > 0 {
+        let (profit_share, hurdle_rate) = self.effective_profit_share_policy(vault);
+
+        let profit_beyond_hurdle = if hurdle_rate > 0 {
             cumulative_profit_share_amount
-                .safe_mul(vault.hurdle_rate as i64)?
+                .safe_mul(hurdle_rate as i64)?
                 .safe_div(PERCENTAGE_PRECISION_I64)?
         } else {
             0
@@ -108,7 +136,7 @@ pub trait VaultDepositorBase {
             let profit_u128 = profit.cast::<u128>()?;
 
             let manager_profit_share_amount = profit_u128
-                .safe_mul(vault.profit_share.cast()?)?
+                .safe_mul(profit_share.cast()?)?
                 .safe_div(PERCENTAGE_PRECISION)?;
             let protocol_profit_share_amount = match vault_protocol {
                 None => 0,
@@ -205,6 +233,22 @@ pub trait VaultDepositorBase {
                 .protocol_profit_and_fee_shares
                 .saturating_add(protocol_profit_share_shares);
             msg!("vp shares after: {}", vp.protocol_profit_and_fee_shares);
+        }
+
+        // Switch depositor to the vault's new profit share/hurdle rate only when we passed the hurdle
+        // and took fees.
+        // Temptation here is to do profit_share > 0 but on markets where profit share is always 0
+        // the hurdle rate never actually changes. Instead, compare the high water mark value to the basis,
+        // if they're equal that means we raised the basis to the watermark.
+        // Tradeoff here: this is built to protect depositors, but may be annoying for vault managers,
+        // as now the hurdle can't be lowered until you pass the previous hurdle. If this becomes an issue we can add
+        // a new endpoint that allows managers to forfeit profit in order to put everyone on the same new basis
+        let basis = self
+            .get_net_deposits()
+            .safe_add(self.get_cumulative_profit_share_amount())?;
+        if total_amount.cast::<i64>()?.safe_sub(profit_share.cast()?)? <= basis {
+            self.set_profit_share_at_basis(vault.profit_share);
+            self.set_hurdle_rate_at_basis(vault.hurdle_rate);
         }
 
         Ok((manager_profit_share, protocol_profit_share))

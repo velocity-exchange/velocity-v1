@@ -6067,6 +6067,63 @@ export class VelocityClient {
 	}
 
 	/**
+	 * Permissionless batch crank: books the lending interest of several spot markets in one
+	 * instruction. Written for a caller that has to value several markets in one transaction,
+	 * such as a program pricing a share against the markets a user holds.
+	 *
+	 * Two differences from `updateSpotMarketCumulativeInterest`, which stays the crank that keeps
+	 * a market's oracle EMA fresh. This one passes no oracle, so it leaves every oracle TWAP
+	 * alone, and it accepts a market whose status is `Delisted`.
+	 * @param marketIndexes - Spot market indexes to book, at most 16.
+	 * @param txParams - Optional compute-unit/priority-fee overrides for the transaction.
+	 * @returns The transaction signature.
+	 */
+	public async refreshSpotMarketInterest(
+		marketIndexes: number[],
+		txParams?: TxParams
+	): Promise<TransactionSignature> {
+		const { txSig } = await this.sendTransaction(
+			await this.buildTransaction(
+				await this.refreshSpotMarketInterestIx(marketIndexes),
+				txParams
+			),
+			[],
+			this.opts
+		);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `refreshSpotMarketInterest` instruction. See `refreshSpotMarketInterest` for
+	 * semantics.
+	 * @param marketIndexes - Spot market indexes to book, at most 16.
+	 * @returns The instruction.
+	 */
+	public async refreshSpotMarketInterestIx(
+		marketIndexes: number[]
+	): Promise<TransactionInstruction> {
+		// `load_maps` reads oracles first, then spot markets, and stops at the first account it
+		// does not recognize. This instruction reads no price, so it passes no oracle at all and
+		// the market accounts start the list. Each is writable because velocity advances its
+		// cumulative indexes.
+		const remainingAccounts = marketIndexes.map((marketIndex) => ({
+			pubkey: this.getSpotMarketAccountOrThrow(marketIndex).pubkey,
+			isWritable: true,
+			isSigner: false,
+		}));
+
+		return await this.program.instruction.refreshSpotMarketInterest(
+			marketIndexes,
+			{
+				accounts: {
+					state: await this.getStatePublicKey(),
+				},
+				remainingAccounts,
+			}
+		);
+	}
+
+	/**
 	 * Lists the spot markets that must be cranked before the given accounts can be
 	 * used on a value-releasing path.
 	 *

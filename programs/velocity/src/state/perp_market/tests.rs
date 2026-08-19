@@ -779,6 +779,7 @@ mod mark_twap_reseed {
                 300 * PRICE_PRECISION_U64,
                 None,
                 None,
+                None,
             )
             .unwrap();
 
@@ -804,6 +805,7 @@ mod mark_twap_reseed {
                 300 * PRICE_PRECISION_U64,
                 None,
                 None,
+                None,
             )
             .unwrap();
 
@@ -821,6 +823,7 @@ mod mark_twap_reseed {
                 START_TS + ONE_HOUR,
                 109 * PRICE_PRECISION_U64,
                 111 * PRICE_PRECISION_U64,
+                None,
                 None,
                 None,
             )
@@ -843,6 +846,7 @@ mod mark_twap_reseed {
                 111 * PRICE_PRECISION_U64,
                 None,
                 None,
+                None,
             )
             .unwrap();
 
@@ -859,6 +863,7 @@ mod mark_twap_reseed {
                 111 * PRICE_PRECISION_U64,
                 None,
                 None,
+                None,
             )
             .unwrap();
         assert!(at_the_floor.last_bid_price_twap > ORACLE_TWAP as u64);
@@ -869,6 +874,7 @@ mod mark_twap_reseed {
                 START_TS + ONE_HOUR + 1,
                 109 * PRICE_PRECISION_U64,
                 111 * PRICE_PRECISION_U64,
+                None,
                 None,
                 None,
             )
@@ -887,6 +893,7 @@ mod mark_twap_reseed {
                 START_TS - 10,
                 109 * PRICE_PRECISION_U64,
                 111 * PRICE_PRECISION_U64,
+                None,
                 None,
                 None,
             )
@@ -922,5 +929,123 @@ mod mark_twap_reseed {
 
         assert_eq!(stats.last_mark_price_twap, ORACLE_TWAP as u64);
         assert_eq!(stats.last_mark_price_twap_ts, stale_ts(ONE_HOUR));
+    }
+}
+
+/// The bid/ask crank folds caller-supplied DLOB depth into the mark TWAP that
+/// funding later reads. A TWAP update weights the new sample by
+/// `elapsed / funding_period`, so after a long gap one caller-chosen sample can
+/// claim a near-full-period weight and set the funding input in a single crank.
+/// `update_mark_twap`'s `max_sample_elapsed` cap bounds that weight; these tests
+/// pin both directions: the pre-fix (uncapped) path saturates, the capped path
+/// barely moves, and the cap is inert during normal frequent cranks.
+mod mark_twap_sample_cap {
+    use crate::{
+        math::constants::PRICE_PRECISION_I64,
+        state::perp_market::{HistoricalOracleData, MarketStats},
+    };
+
+    const DOLLAR: u64 = 1_000_000;
+    const FUNDING_PERIOD: i64 = 3600;
+    // Tier-A sanitize clamp: one update's bid/ask may deviate at most 1/10 (10%)
+    // from the previous twap. This is the per-update price bound; the elapsed cap
+    // is the separate weight bound under test.
+    const SANITIZE_CLAMP: Option<i64> = Some(10);
+
+    /// TWAPs and oracle all seeded flat at $100, last advanced at t=0, so the
+    /// stale-shrink branch stays inactive and the only variable under test is how
+    /// much weight the next sample receives.
+    fn flat_stats_at_100() -> MarketStats {
+        MarketStats {
+            funding_period: FUNDING_PERIOD,
+            last_bid_price_twap: 100 * DOLLAR,
+            last_ask_price_twap: 100 * DOLLAR,
+            last_mark_price_twap: 100 * DOLLAR,
+            last_mark_price_twap_5min: 100 * DOLLAR,
+            last_mark_price_twap_ts: 0,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price: 100 * PRICE_PRECISION_I64,
+                last_oracle_price_twap: 100 * PRICE_PRECISION_I64,
+                last_oracle_price_twap_5min: 100 * PRICE_PRECISION_I64,
+                last_oracle_price_twap_ts: 0,
+                ..HistoricalOracleData::default()
+            },
+            ..MarketStats::default()
+        }
+    }
+
+    /// The exploit shape. A keeper cranks a manipulated $115 bid/ask (at the edge
+    /// of the 15% oracle band) after a two-period gap. A longer gap now belongs to
+    /// `reseed_mark_twap_from_oracle_if_stale`, which discards the sample outright,
+    /// so the cap's regime is the band between itself and the re-seed threshold.
+    /// Uncapped, the gap hands that one
+    /// sample almost the whole period of weight and the funding-input TWAP jumps
+    /// to the (sanitize-clamped) manipulated level in one shot. Capped, the sample
+    /// claims at most `funding_period / 60` of elapsed time, so the TWAP stays
+    /// next to the oracle and no single crank can set funding.
+    #[test]
+    fn cap_bounds_a_single_post_gap_crank_sample() {
+        let now = 2 * FUNDING_PERIOD; // two periods since t=0, below the re-seed threshold
+        let manipulated = 115 * DOLLAR;
+
+        let mut uncapped = flat_stats_at_100();
+        uncapped
+            .update_mark_twap(now, manipulated, manipulated, None, SANITIZE_CLAMP, None)
+            .unwrap();
+
+        let mut capped = flat_stats_at_100();
+        let cap = capped.max_mark_twap_sample_elapsed().unwrap();
+        capped
+            .update_mark_twap(
+                now,
+                manipulated,
+                manipulated,
+                None,
+                SANITIZE_CLAMP,
+                Some(cap),
+            )
+            .unwrap();
+
+        // Pre-fix: the sample is sanitize-clamped to +10% ($110) and then almost
+        // fully weighted, so the funding-input TWAP saturates toward it.
+        assert!(
+            uncapped.last_bid_price_twap > 109 * DOLLAR,
+            "uncapped twap should saturate toward the clamped sample, got {}",
+            uncapped.last_bid_price_twap
+        );
+
+        // Fixed: cap = funding_period / 60 = 60s of a 3600s window, so a +10%
+        // clamped sample moves the TWAP by at most ~10% * 60/3600 ≈ 0.167%.
+        assert_eq!(cap, 60);
+        assert!(
+            capped.last_bid_price_twap < 100 * DOLLAR + 3 * DOLLAR / 10,
+            "capped twap must stay near oracle after one crank, got {}",
+            capped.last_bid_price_twap
+        );
+        // The cap bounds influence, not signal: the sample still nudges the TWAP.
+        assert!(capped.last_bid_price_twap > 100 * DOLLAR);
+    }
+
+    /// Steady state. Cranks land seconds apart, so `since_last` is already below
+    /// the cap and capping changes nothing. Pins that the cap bites only the
+    /// anomalous post-gap sample, never the normal path.
+    #[test]
+    fn cap_is_inert_when_cranks_are_frequent() {
+        let now = 5_i64; // 5s since the last update, well under the 60s cap
+        let sample = 101 * DOLLAR;
+
+        let mut uncapped = flat_stats_at_100();
+        uncapped
+            .update_mark_twap(now, sample, sample, None, SANITIZE_CLAMP, None)
+            .unwrap();
+
+        let mut capped = flat_stats_at_100();
+        let cap = capped.max_mark_twap_sample_elapsed().unwrap();
+        capped
+            .update_mark_twap(now, sample, sample, None, SANITIZE_CLAMP, Some(cap))
+            .unwrap();
+
+        assert_eq!(capped.last_bid_price_twap, uncapped.last_bid_price_twap);
+        assert_eq!(capped.last_ask_price_twap, uncapped.last_ask_price_twap);
     }
 }

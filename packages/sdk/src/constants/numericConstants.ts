@@ -169,15 +169,41 @@ export const ONE_HOUR = new BN(60 * 60);
 export const ONE_YEAR = new BN(31536000);
 
 /**
+<<<<<<< HEAD
  * Mirror of the program's `MARK_TWAP_RESEED_FUNDING_PERIODS`.
  *
  * How many funding periods the mark TWAP may go unwritten before the program discards
- * its stored value and re-seeds it from the oracle TWAP. The weight an incoming sample
- * receives grows with the time since the last write, so past this many periods the
- * stored TWAP holds no usable history. The threshold is floored at {@link ONE_HOUR},
- * because a market's funding period can be zero.
+ * its stored value and re-seeds it from the oracle TWAP. The weight an incoming
+ * fill-path sample receives grows with the time since the last write (crank samples
+ * are weight-capped on-chain), so past this many periods the stored TWAP holds no
+ * usable history. The threshold is floored at {@link ONE_HOUR}, because a market's
+ * funding period can be zero.
  */
 export const MARK_TWAP_RESEED_FUNDING_PERIODS = new BN(3);
+||||||| 79d3ea7c3
+=======
+ * Mirror of the program's `MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN`: the largest
+ * share of a spot borrow that un-booked interest may hide, in
+ * `PERCENTAGE_PRECISION` (one basis point).
+ *
+ * A value-releasing path (withdraw, transfer, swap, or a perp fill) rejects with
+ * `SpotMarketInterestStaleForMargin` when a market that carries one of the account's
+ * borrows has not accrued interest recently enough to hold its omission under this
+ * share. `updateSpotMarketCumulativeInterest` is permissionless and can be bundled
+ * into the same transaction.
+ *
+ * Use `maxSpotInterestStalenessForMargin` to turn this into one market's time window.
+ */
+export const MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN =
+	PERCENTAGE_PRECISION.divn(10_000);
+
+/**
+ * Mirror of the program's `MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN`: the ceiling on
+ * the window `maxSpotInterestStalenessForMargin` derives, so a low-rate market
+ * cannot go un-cranked indefinitely.
+ */
+export const MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN = ONE_HOUR;
+>>>>>>> origin/master
 
 /** Market index of the protocol's quote spot market (the protocol's quote asset on mainnet). */
 export const QUOTE_SPOT_MARKET_INDEX = 0;

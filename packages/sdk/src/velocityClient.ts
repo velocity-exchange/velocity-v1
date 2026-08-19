@@ -231,7 +231,11 @@ import {
 	findDirectionToClose,
 	positionIsAvailable,
 } from './math/position';
-import { getSignedTokenAmount, getTokenAmount } from './math/spotBalance';
+import {
+	getSignedTokenAmount,
+	getTokenAmount,
+	maxSpotInterestStalenessForMargin,
+} from './math/spotBalance';
 import { decodeName, DEFAULT_USER_NAME, encodeName } from './userName';
 import { MMOraclePriceData, OraclePriceData } from './oracles/types';
 import { VelocityClientConfig } from './velocityClientConfig';
@@ -2841,6 +2845,14 @@ export class VelocityClient {
 
 	/**
 	 * Builds the `deleteUser` instruction. See `deleteUser` for on-chain preconditions.
+	 *
+	 * The authority's `RevenueShareEscrow` PDA is derived and passed automatically, so
+	 * callers need no change. It is a **required** account even when the authority has
+	 * never created an escrow: the address is pinned by seeds on chain, so an
+	 * uninitialized account proves absence rather than an omitted check. The program
+	 * uses it to settle this sub-account's builder rows before the id is retired
+	 * forever, which is what stops the builder's accrued fee being stranded
+	 * (OtterSec #128).
 	 * @param userAccountPublicKey - User account PDA to delete.
 	 * @returns The instruction.
 	 */
@@ -2851,6 +2863,10 @@ export class VelocityClient {
 				userStats: this.getUserStatsAccountPublicKey(),
 				authority: this.wallet.publicKey,
 				state: await this.getStatePublicKey(),
+				revenueShareEscrow: getRevenueShareEscrowAccountPublicKey(
+					this.program.programId,
+					this.wallet.publicKey
+				),
 			},
 		});
 
@@ -2888,9 +2904,14 @@ export class VelocityClient {
 
 	/**
 	 * Builds the keeper-only `forceDeleteUser` instruction, assembling `remaining_accounts` for the
-	 * account's non-empty spot positions, its revenue-share escrow (if any order carries a builder
-	 * fee), and every mint/token-program needed for its open spot balances. See `forceDeleteUser` for
-	 * on-chain preconditions.
+	 * account's non-empty spot positions and every mint/token-program needed for its open spot
+	 * balances. See `forceDeleteUser` for on-chain preconditions.
+	 *
+	 * The authority's `RevenueShareEscrow` PDA is derived and passed as a named account, so callers
+	 * need no change. It is **required** even when the authority has never created an escrow: the
+	 * address is pinned by seeds on chain, so an uninitialized account proves absence rather than an
+	 * omitted check. The program uses it to settle the sub-account's builder rows before the id is
+	 * retired forever, which is what stops the builder's accrued fee being stranded (OtterSec #128).
 	 * @param userAccountPublicKey - PDA of the user account to force-delete.
 	 * @param userAccount - The account's current on-chain data.
 	 * @returns The instruction.
@@ -2910,20 +2931,6 @@ export class VelocityClient {
 			userAccounts: [userAccount],
 			writableSpotMarketIndexes,
 		});
-
-		for (const order of userAccount.orders) {
-			if (hasBuilder(order)) {
-				remainingAccounts.push({
-					pubkey: getRevenueShareEscrowAccountPublicKey(
-						this.program.programId,
-						userAccount.authority
-					),
-					isWritable: true,
-					isSigner: false,
-				});
-				break;
-			}
-		}
 
 		const tokenPrograms = new Set<string>();
 		for (const spotPosition of userAccount.spotPositions) {
@@ -2975,6 +2982,10 @@ export class VelocityClient {
 				state: await this.getStatePublicKey(),
 				velocitySigner: this.getSignerPublicKey(),
 				keeper: this.wallet.publicKey,
+				revenueShareEscrow: getRevenueShareEscrowAccountPublicKey(
+					this.program.programId,
+					authority
+				),
 			},
 			remainingAccounts,
 		});
@@ -6052,6 +6063,76 @@ export class VelocityClient {
 				oracle: spotMarket.oracle,
 			},
 		});
+	}
+
+	/**
+	 * Lists the spot markets that must be cranked before the given accounts can be
+	 * used on a value-releasing path.
+	 *
+	 * The program refuses to value a spot **borrow** for margin through an index that
+	 * has not accrued recently (`SpotMarketInterestStaleForMargin`). It applies on
+	 * withdraw, transfer deposit, transfer pools, swap, isolated-position withdraw,
+	 * and any perp fill — for the taker and for every maker alike. Only borrow
+	 * positions count; a stale deposit index understates collateral and is allowed.
+	 *
+	 * Each market earns its own window from its rate ceiling
+	 * (`maxSpotInterestStalenessForMargin`), so a market that may charge more
+	 * interest must be cranked more often.
+	 *
+	 * The program also exempts a borrow whose un-booked interest is still under one
+	 * token unit, which this does not model, so the result is a superset: cranking
+	 * every market it names always clears the check.
+	 *
+	 * @param userAccounts - Accounts the transaction values, e.g. a fill's taker and makers.
+	 * @param now - Unix seconds to measure staleness against; defaults to the local clock.
+	 * @returns Ascending market indexes, deduplicated.
+	 */
+	public getStaleSpotInterestMarketIndexes(
+		userAccounts: UserAccount[],
+		now: number = Math.floor(Date.now() / 1000)
+	): number[] {
+		const stale = new Set<number>();
+		for (const userAccount of userAccounts) {
+			for (const spotPosition of userAccount.spotPositions) {
+				if (
+					!isVariant(spotPosition.balanceType, 'borrow') ||
+					spotPosition.scaledBalance.isZero()
+				) {
+					continue;
+				}
+				if (stale.has(spotPosition.marketIndex)) {
+					continue;
+				}
+				const spotMarket = this.getSpotMarketAccount(spotPosition.marketIndex);
+				if (!spotMarket) {
+					continue;
+				}
+				const staleness = new BN(now).sub(spotMarket.lastInterestTs);
+				if (staleness.gt(maxSpotInterestStalenessForMargin(spotMarket))) {
+					stale.add(spotPosition.marketIndex);
+				}
+			}
+		}
+		return Array.from(stale).sort((a, b) => a - b);
+	}
+
+	/**
+	 * Builds one `updateSpotMarketCumulativeInterest` instruction per market that
+	 * `getStaleSpotInterestMarketIndexes` names. Prepend them to a withdraw, swap,
+	 * transfer, or fill so the margin check sees a current borrow index.
+	 * @param userAccounts - Accounts the transaction values, e.g. a fill's taker and makers.
+	 * @param now - Unix seconds to measure staleness against; defaults to the local clock.
+	 * @returns The instructions, in ascending market-index order.
+	 */
+	public async getStaleSpotInterestCrankIxs(
+		userAccounts: UserAccount[],
+		now?: number
+	): Promise<TransactionInstruction[]> {
+		return await Promise.all(
+			this.getStaleSpotInterestMarketIndexes(userAccounts, now).map(
+				(marketIndex) => this.updateSpotMarketCumulativeInterestIx(marketIndex)
+			)
+		);
 	}
 
 	/**
@@ -11064,8 +11145,10 @@ export class VelocityClient {
 	 * external swap (e.g. Jupiter) so a liquidator can repay a user's `liabilityMarketIndex` debt
 	 * using proceeds from selling `assetMarketIndex` collateral within the same transaction, without
 	 * pre-funding the liability token. The on-chain handler validates the liability spot market's
-	 * flash-loan balance is unwound by `endSwap`. See `getJupiterLiquidateSpotWithSwapIxV6` for the
-	 * Jupiter-specific wrapper that assembles the full instruction list around this pair.
+	 * flash-loan balance is unwound by `endSwap`. Reverts with `EquityBelowFloor` at `begin` if the
+	 * liquidator's authority-wide equity breaker is tripped, matching the other liquidator routes.
+	 * See `getJupiterLiquidateSpotWithSwapIxV6` for the Jupiter-specific wrapper that assembles the
+	 * full instruction list around this pair.
 	 * @param liabilityMarketIndex - Spot market index of the debt being repaid (swap output/buy side).
 	 * @param assetMarketIndex - Spot market index of the collateral being sold (swap input/sell side).
 	 * @param swapAmount - Amount of `assetMarketIndex` token to sell, in that market's mint precision.
@@ -11102,6 +11185,7 @@ export class VelocityClient {
 		const liquidatorAccountPublicKey = await this.getUserAccountPublicKey(
 			liquidatorSubAccountId
 		);
+		const liquidatorStatsPublicKey = this.getUserStatsAccountPublicKey();
 
 		const userAccounts = [userAccount];
 		const remainingAccounts = this.getRemainingAccounts({
@@ -11165,6 +11249,7 @@ export class VelocityClient {
 						state: await this.getStatePublicKey(),
 						user: userAccountPublicKey,
 						liquidator: liquidatorAccountPublicKey,
+						liquidatorStats: liquidatorStatsPublicKey,
 						authority: this.wallet.publicKey,
 						liabilitySpotMarketVault: liabilitySpotMarket.vault,
 						assetSpotMarketVault: assetSpotMarket.vault,
@@ -11186,6 +11271,7 @@ export class VelocityClient {
 					state: await this.getStatePublicKey(),
 					user: userAccountPublicKey,
 					liquidator: liquidatorAccountPublicKey,
+					liquidatorStats: liquidatorStatsPublicKey,
 					authority: this.wallet.publicKey,
 					liabilitySpotMarketVault: liabilitySpotMarket.vault,
 					assetSpotMarketVault: assetSpotMarket.vault,
@@ -12106,14 +12192,21 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Builds the `addInsuranceFundStake` instruction, transferring `amount` of the market's token
-	 * from `collateralAccountPublicKey` into its insurance fund vault and minting the caller's
-	 * `InsuranceFundStake` the corresponding IF shares. Reverts if `amount` is zero, the spot market
-	 * is not active, insurance-fund add is paused, or a withdraw request is already in progress on
-	 * the stake account. See `addInsuranceFundStake`/`getAddInsuranceFundStakeIxs` for a wrapper that
+	 * Builds the `addInsuranceFundStake` instruction, transferring up to `amount` of the market's
+	 * token from `collateralAccountPublicKey` into its insurance fund vault and minting the caller's
+	 * `InsuranceFundStake` the corresponding IF shares. Reverts if `amount` is zero, `amount` is
+	 * below the price of a single IF share (`IFDepositMintsZeroShares`), the spot market is not
+	 * active, insurance-fund add is paused, or a withdraw request is already in progress on the
+	 * stake account. See `addInsuranceFundStake`/`getAddInsuranceFundStakeIxs` for a wrapper that
 	 * also handles account creation and funding from a sub-account.
+	 *
+	 * An IF share is indivisible, so only the portion of `amount` that prices to whole shares is
+	 * transferred — the remainder (always less than one share price) stays in the token account
+	 * rather than accruing to existing shareholders. Predict the debit with
+	 * `depositAmountAndSharesForIfStake`, or read it from the `InsuranceFundStakeRecord` event;
+	 * either way, do not assume it equals `amount`.
 	 * @param marketIndex - Spot market index whose insurance fund to stake into.
-	 * @param amount - Amount to stake, in the spot market's token (mint) precision.
+	 * @param amount - Maximum amount to stake, in the spot market's token (mint) precision.
 	 * @param collateralAccountPublicKey - Token account to debit for the stake.
 	 * @returns The instruction.
 	 */
@@ -12220,7 +12313,12 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Get instructions to add to an insurance fund stake and optionally initialize the account
+	 * Get instructions to add to an insurance fund stake and optionally initialize the account.
+	 *
+	 * `amount` is an upper bound: the program stakes only what prices to whole IF shares (see
+	 * `getAddInsuranceFundStakeIx`). Any remainder is left in `collateralAccountPublicKey` — with
+	 * `fromSubaccount` it has already been withdrawn from the sub-account, so it lands in the wallet's
+	 * token account rather than staying as collateral.
 	 */
 	public async getAddInsuranceFundStakeIxs({
 		marketIndex,
@@ -12907,7 +13005,7 @@ export class VelocityClient {
 	 * @param marketType
 	 * @param positionMarketIndex
 	 * @param user
-	 * @param orderParams When it carries a builder code, the builder fee (quoteAssetAmount * builderFeeTenthBps / 100_000) is added to takerFee.
+	 * @param orderParams When it carries a builder code, the builder fee (quoteAssetAmount * builderFeeTenthBps / 100_000) is added to takerFee. A `user` that is below initial margin pays no builder fee (see `User.isBuilderFeeCharged`), so none is added.
 	 * @returns : {takerFee: number, makerFee: number} Precision None
 	 */
 	public getMarketFees(
@@ -12969,7 +13067,15 @@ export class VelocityClient {
 			}
 		}
 
-		if (orderParams && hasBuilderParams(orderParams)) {
+		// The program waives the builder fee when the taker is below initial
+		// margin, because the fee is a transfer out of the taker's account. See
+		// `User.isBuilderFeeCharged`. Without a `user` there is no margin state
+		// to read, so the fee is included.
+		if (
+			orderParams &&
+			hasBuilderParams(orderParams) &&
+			(!user || user.isBuilderFeeCharged())
+		) {
 			takerFee += (orderParams.builderFeeTenthBps ?? 0) / 100_000;
 		}
 

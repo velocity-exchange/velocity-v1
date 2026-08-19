@@ -493,9 +493,10 @@ fn regr_266_cancel_after_rebase(
 // can't unback the floored first-loss IF bankruptcy tranche. The reservation
 // helper does not exist on master, but `get_bankruptcy_if_floor` — the value it
 // caps against — does. This harness exercises genuine properties of the REAL
-// `get_bankruptcy_if_floor()`: it is 0 iff the floor pct is 0, monotone
-// non-decreasing in the floor pct, and never exceeds the open-interest notional
-// (equalling it exactly at pct == PERCENTAGE_PRECISION). NOTE: the full stateful
+// `get_bankruptcy_if_floor()`: it is 0 only at the disable sentinel (a stored 0
+// selects the default pct), monotone non-decreasing in the effective floor pct,
+// and never exceeds the open-interest notional (equalling it exactly at
+// pct == PERCENTAGE_PRECISION). NOTE: the full stateful
 // sweep-vs-resolve reservation invariant (drain the pool below the reservation,
 // then observe under-backed PnL at `resolve_perp_bankruptcy`) is SVM (P8).
 #[cfg(feature = "regr_255_floored_if_tranche")]
@@ -510,11 +511,22 @@ fn regr_255_floored_if_tranche(
 ) {
     let _ = &fixture.ctx;
     use velocity::{
-        math::constants::{BASE_PRECISION, PERCENTAGE_PRECISION},
+        math::constants::{
+            BANKRUPTCY_IF_FLOOR_DISABLED, BASE_PRECISION, DEFAULT_BANKRUPTCY_IF_FLOOR_PCT,
+            PERCENTAGE_PRECISION,
+        },
         state::perp_market::PerpMarket,
     };
 
-    let (pct_lo, pct_hi) = if pct_lo <= pct_hi {
+    // A stored 0 selects the default pct, so order by the EFFECTIVE pct.
+    let effective = |pct: u64| -> u64 {
+        if pct == 0 {
+            DEFAULT_BANKRUPTCY_IF_FLOOR_PCT as u64
+        } else {
+            pct
+        }
+    };
+    let (pct_lo, pct_hi) = if effective(pct_lo) <= effective(pct_hi) {
         (pct_lo, pct_hi)
     } else {
         (pct_hi, pct_lo)
@@ -547,11 +559,15 @@ fn regr_255_floored_if_tranche(
         .saturating_mul(twap as u128)
         .saturating_div(BASE_PRECISION);
 
-    // pct == 0 => no floor.
-    if pct_lo == 0 {
-        fuzz_assert_eq!(floor_lo, 0u128);
-    }
-    // Monotone non-decreasing in the floor pct.
+    // Only the sentinel removes the floor. A stored 0 is what every market
+    // written before the field existed holds, so it must still reserve.
+    market.bankruptcy_if_floor_pct = BANKRUPTCY_IF_FLOOR_DISABLED;
+    let floor_disabled = match market.get_bankruptcy_if_floor() {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    fuzz_assert_eq!(floor_disabled, 0u128);
+    // Monotone non-decreasing in the effective floor pct.
     fuzz_assert_le!(floor_lo, floor_hi);
     // Never reserves more than the full OI notional.
     fuzz_assert_le!(floor_hi, notional);

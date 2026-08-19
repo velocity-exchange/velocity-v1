@@ -4,10 +4,10 @@ use {
         math::{
             bn,
             constants::{
-                AMM_RESERVE_PRECISION, BASE_PRECISION_I128, MAX_CONCENTRATION_COEFFICIENT,
-                MAX_SQRT_K, PERCENTAGE_PRECISION_U32, PRICE_PRECISION_I64, QUOTE_PRECISION,
-                QUOTE_SPOT_MARKET_INDEX, SPOT_BALANCE_PRECISION,
-                SPOT_CUMULATIVE_INTEREST_PRECISION,
+                AMM_RESERVE_PRECISION, BANKRUPTCY_IF_FLOOR_DISABLED, BASE_PRECISION_I128,
+                MAX_CONCENTRATION_COEFFICIENT, MAX_SQRT_K, PERCENTAGE_PRECISION_U32,
+                PRICE_PRECISION_I64, QUOTE_PRECISION, QUOTE_SPOT_MARKET_INDEX,
+                SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
             },
         },
         state::{
@@ -1116,11 +1116,138 @@ fn sweep_market_fees_leaves_bankruptcy_if_floor() {
     assert_eq!(if_swept, 0);
     assert_eq!(market.fee_ledger.pending_if_fee, 8 * QUOTE_PRECISION);
 
-    // pct = 0 disables the floor (legacy accounts read 0)
+    // pct = 0 is what every legacy account holds, so it means the default
+    // floor (10 bps of the 500 QUOTE notional = 0.5 QUOTE), NOT no floor
     market.bankruptcy_if_floor_pct = 0;
+    assert_eq!(
+        market.get_bankruptcy_if_floor().unwrap(),
+        QUOTE_PRECISION / 2
+    );
+    let (if_swept, _, _) = sweep_market_fees(&mut market, &mut spot_market, 0, 0, false).unwrap();
+    assert_eq!(if_swept, 8 * QUOTE_PRECISION - QUOTE_PRECISION / 2);
+    assert_eq!(market.fee_ledger.pending_if_fee, QUOTE_PRECISION / 2);
+
+    // only the sentinel turns the floor off
+    market.bankruptcy_if_floor_pct = BANKRUPTCY_IF_FLOOR_DISABLED;
+    assert_eq!(market.get_bankruptcy_if_floor().unwrap(), 0);
+    let (if_swept, _, _) = sweep_market_fees(&mut market, &mut spot_market, 0, 0, false).unwrap();
+    assert_eq!(if_swept, QUOTE_PRECISION / 2);
+    assert_eq!(market.fee_ledger.pending_if_fee, 0);
+}
+
+#[test]
+fn sweep_market_fees_freezes_if_drain_while_bankruptcy_claim_pending() {
+    // A latched bankruptcy withholds the WHOLE pending_if_fee, not just the
+    // OI-notional floor. The sweep is permissionless (and runs inline on
+    // every pnl settle), so anything it can drain between the latch and
+    // `resolve_perp_bankruptcy` is value the resolver's first-loss tranche
+    // loses, pushing the loss onto the shared insurance fund or into
+    // socialization. The floor cannot cover this on its own: it is a
+    // proportion of open interest, and a bankrupt estate's positions are
+    // closed before the debt is resolved, so open interest can be zero
+    // exactly when the tranche is needed.
+    let mut spot_market = SpotMarket {
+        deposit_balance: 400 * QUOTE_PRECISION * SPOT_BALANCE_PRECISION,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        revenue_pool: PoolBalance::default(),
+        ..SpotMarket::default()
+    };
+
+    // no open interest, so the floor is 0 whatever the pct is
+    let mut market = PerpMarket {
+        bankruptcy_if_floor_pct: PERCENTAGE_PRECISION_U32 / 100, // 1%
+        pending_bankruptcy_claims: 1,
+        market_stats: MarketStats {
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price_twap: 100 * PRICE_PRECISION_I64,
+                ..HistoricalOracleData::default()
+            },
+            ..MarketStats::default()
+        },
+        pnl_pool: PoolBalance {
+            scaled_balance: 100 * QUOTE_PRECISION * SPOT_BALANCE_PRECISION,
+            market_index: QUOTE_SPOT_MARKET_INDEX,
+            ..PoolBalance::default()
+        },
+        fee_ledger: FeeLedger {
+            pending_protocol_fee: 4 * QUOTE_PRECISION,
+            pending_if_fee: 8 * QUOTE_PRECISION,
+            pending_amm_provision: QUOTE_PRECISION,
+            amm_protocol_fees_received: QUOTE_PRECISION,
+            ..FeeLedger::default()
+        },
+        ..PerpMarket::default()
+    };
+    assert_eq!(market.get_bankruptcy_if_floor().unwrap(), 0);
+
+    // the whole tranche stays; the other two drains are not frozen
+    let (if_swept, protocol_swept, provision_tokenized) =
+        sweep_market_fees(&mut market, &mut spot_market, 0, 0, false).unwrap();
+    assert_eq!(if_swept, 0);
+    assert_eq!(protocol_swept, 4 * QUOTE_PRECISION);
+    assert_eq!(provision_tokenized, QUOTE_PRECISION);
+    assert_eq!(market.fee_ledger.pending_if_fee, 8 * QUOTE_PRECISION);
+
+    // the freeze does not depend on the floor being configured
+    market.bankruptcy_if_floor_pct = BANKRUPTCY_IF_FLOOR_DISABLED;
+    let (if_swept, _, _) = sweep_market_fees(&mut market, &mut spot_market, 0, 0, false).unwrap();
+    assert_eq!(if_swept, 0);
+    assert_eq!(market.fee_ledger.pending_if_fee, 8 * QUOTE_PRECISION);
+
+    // the delisting sweep still bypasses it
+    let (if_swept, _, _) = sweep_market_fees(&mut market, &mut spot_market, 0, 0, true).unwrap();
+    assert_eq!(if_swept, 8 * QUOTE_PRECISION);
+    assert_eq!(market.fee_ledger.pending_if_fee, 0);
+
+    // and the drain resumes once the claim resolves
+    market.fee_ledger.pending_if_fee = 8 * QUOTE_PRECISION;
+    market.decrement_pending_bankruptcy_claims();
     let (if_swept, _, _) = sweep_market_fees(&mut market, &mut spot_market, 0, 0, false).unwrap();
     assert_eq!(if_swept, 8 * QUOTE_PRECISION);
     assert_eq!(market.fee_ledger.pending_if_fee, 0);
+}
+
+#[test]
+fn sweep_market_fees_reserves_frozen_if_tranche_backing() {
+    // The freeze also holds the pnl-pool tokens that back the counter: the
+    // resolver consumes `pending_if_fee` counter-only, so a protocol drain
+    // that moved the value to `protocol_fee_pool` would leave the frozen
+    // tranche unbacked.
+    let mut spot_market = SpotMarket {
+        deposit_balance: 400 * QUOTE_PRECISION * SPOT_BALANCE_PRECISION,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        revenue_pool: PoolBalance::default(),
+        ..SpotMarket::default()
+    };
+
+    // pnl pool holds 8, exactly the frozen tranche: the protocol drain gets
+    // nothing even though it is exempt from the retention buffer
+    let mut market = PerpMarket {
+        bankruptcy_if_floor_pct: BANKRUPTCY_IF_FLOOR_DISABLED,
+        pending_bankruptcy_claims: 1,
+        pnl_pool: PoolBalance {
+            scaled_balance: 8 * QUOTE_PRECISION * SPOT_BALANCE_PRECISION,
+            market_index: QUOTE_SPOT_MARKET_INDEX,
+            ..PoolBalance::default()
+        },
+        fee_ledger: FeeLedger {
+            pending_protocol_fee: 4 * QUOTE_PRECISION,
+            pending_if_fee: 8 * QUOTE_PRECISION,
+            ..FeeLedger::default()
+        },
+        ..PerpMarket::default()
+    };
+
+    let (if_swept, protocol_swept, _) =
+        sweep_market_fees(&mut market, &mut spot_market, 0, 0, false).unwrap();
+    assert_eq!(if_swept, 0);
+    assert_eq!(protocol_swept, 0);
+    assert_eq!(
+        market.pnl_pool.scaled_balance,
+        8 * QUOTE_PRECISION * SPOT_BALANCE_PRECISION
+    );
 }
 
 #[test]

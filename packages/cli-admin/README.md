@@ -32,7 +32,7 @@ velocity-admin auth init-config [--initial-warm <pk>]
 
 velocity-admin perp-market set-status <market> <status>
 velocity-admin perp-market set-fee-buffer <market> <amount>
-velocity-admin perp-market set-bankruptcy-if-floor <market> <pct>
+velocity-admin perp-market set-bankruptcy-if-floor <market> <pct>  # PERCENTAGE_PRECISION (1e6); 0 selects the 10 bps default, "disabled" turns the floor off
 velocity-admin perp-market set-funding-dead-zone <market> <threshold> <slope>
 velocity-admin perp-market set-oracle-slot-delay <market> <slots>
 velocity-admin spot-market set-status <market> <status>

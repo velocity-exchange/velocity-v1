@@ -74,6 +74,12 @@ type TrackedUserState = {
  * `critical` (below floor + buffer, risk-increasing actions rejecting),
  * `warning` (inside `warningBufferMultiple` buffers of the floor), `healthy`.
  *
+ * The trip attempt itself is gated on the point-value level OR the SDK's
+ * `provesEquityFloorBreach` mirror of the onchain trip proof: the point value
+ * prices every position at the live oracle with no validity check, so an
+ * invalid oracle printing high can hide a breach the program's concession
+ * walk still proves.
+ *
  * Detection and escalation only: this bot holds no privileged key. The
  * per-subaccount enforcement is automatic inside the program, and position
  * unwind / floor reset are multisig operations handled by humans.
@@ -289,6 +295,8 @@ export class EquityFloorGuardBot implements Bot {
 
 	private async checkFlooredUsers() {
 		try {
+			// slot for oracle staleness classification in the trip-proof mirror
+			const slot = new BN(await this.velocityClient.connection.getSlot());
 			const seen = new Set<string>();
 			for (const user of this.userMap.values()) {
 				const userAccount = user.getUserAccountOrThrow();
@@ -371,9 +379,18 @@ export class EquityFloorGuardBot implements Bot {
 
 				this.trackedUsers.set(userKey, { level, headroom });
 
-				if (level === 'breached') {
+				// The trip decision mirrors the onchain predicate, not the point
+				// value alone: an invalid oracle printing high can make the point
+				// value look healthy while the program's concession walk still
+				// proves the breach. Either signal attempts the trip; the
+				// simulation classifies the chain's answer.
+				const provesBreach = user.provesEquityFloorBreach(slot);
+				if (level === 'breached' || provesBreach) {
 					logger.error(
-						`${this.name}: BREACH user ${userKey} (authority ${authorityKey}) below equity floor ${userAccount.equityFloor}`
+						`${this.name}: BREACH user ${userKey} (authority ${authorityKey}) ` +
+							(level === 'breached'
+								? `below equity floor ${userAccount.equityFloor}`
+								: `provable breach of equity floor ${userAccount.equityFloor} despite a healthy point value (invalid oracle conceded)`)
 					);
 					await this.tryTripBreaker(user, authorityKey);
 				}

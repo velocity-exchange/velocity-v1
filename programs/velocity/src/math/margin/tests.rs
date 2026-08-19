@@ -4588,6 +4588,515 @@ mod floor_net_equity {
     }
 }
 
+mod trip_net_equity {
+    use {
+        crate::{
+            create_anchor_account_info,
+            math::{
+                constants::{
+                    AMM_RESERVE_PRECISION, BASE_PRECISION_I64, EQUITY_FLOOR_TRIP_DUST_ALLOWANCE,
+                    PEG_PRECISION, PRICE_PRECISION, QUOTE_PRECISION_I64, QUOTE_PRECISION_U64,
+                    SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
+                    SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+                },
+                margin::{calculate_user_equity, calculate_user_equity_for_trip, TripNetEquity},
+            },
+            state::{
+                market_status::MarketStatus,
+                oracle::{HistoricalOracleData, OracleSource},
+                oracle_map::OracleMap,
+                perp_market::{MarketStats, PerpMarket, AMM},
+                perp_market_map::PerpMarketMap,
+                pyth_lazer_oracle::PythLazerOracle,
+                spot_market::{SpotBalanceType, SpotMarket},
+                spot_market_map::SpotMarketMap,
+                user::{Order, PerpPosition, SpotPosition, User},
+            },
+            test_utils::{get_positions, get_pyth_price},
+            LIQUIDATION_FEE_PRECISION, PRICE_PRECISION_I64,
+        },
+        solana_program::pubkey::Pubkey,
+        std::str::FromStr,
+    };
+
+    /// 10,000 USDC deposit plus a SOL spot position priced by a Pyth Lazer
+    /// oracle at 100 (twap `sol_twap`). `slot` far past the posted slot
+    /// makes the SOL oracle invalid; the USDC market has a quote-asset
+    /// oracle, which is always valid.
+    fn run_spot_scenario(
+        balance_type: SpotBalanceType,
+        sol_scaled_balance: u64,
+        sol_twap: i64,
+        slot: u64,
+        equity_floor: u64,
+    ) -> (TripNetEquity, User, i128, bool) {
+        let mut sol_oracle_price = get_pyth_price(100, 6);
+        let sol_oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            sol_oracle_price,
+            &sol_oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+
+        let market_map = PerpMarketMap::empty();
+
+        let mut usdc_spot_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+            deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
+            liquidator_fee: 0,
+            historical_oracle_data: HistoricalOracleData::default_quote_oracle(),
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
+
+        let mut sol_spot_market = SpotMarket {
+            market_index: 1,
+            oracle_source: OracleSource::PythLazer,
+            oracle: sol_oracle_price_key,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 9,
+            initial_asset_weight: 8 * SPOT_WEIGHT_PRECISION / 10,
+            maintenance_asset_weight: 9 * SPOT_WEIGHT_PRECISION / 10,
+            initial_liability_weight: 12 * SPOT_WEIGHT_PRECISION / 10,
+            maintenance_liability_weight: 11 * SPOT_WEIGHT_PRECISION / 10,
+            liquidator_fee: LIQUIDATION_FEE_PRECISION / 1000,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price_twap: sol_twap,
+                last_oracle_price_twap_5min: sol_twap,
+                ..HistoricalOracleData::default()
+            },
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(sol_spot_market, SpotMarket, sol_spot_market_account_info);
+
+        let spot_market_account_infos = Vec::from([
+            &usdc_spot_market_account_info,
+            &sol_spot_market_account_info,
+        ]);
+        let spot_market_map =
+            SpotMarketMap::load_multiple(spot_market_account_infos, true).unwrap();
+
+        let mut spot_positions = [SpotPosition::default(); 8];
+        spot_positions[0] = SpotPosition {
+            market_index: 0,
+            balance_type: SpotBalanceType::Deposit,
+            scaled_balance: 10000 * SPOT_BALANCE_PRECISION_U64,
+            ..SpotPosition::default()
+        };
+        spot_positions[1] = SpotPosition {
+            market_index: 1,
+            balance_type,
+            scaled_balance: sol_scaled_balance,
+            ..SpotPosition::default()
+        };
+        let user = User {
+            orders: [Order::default(); 32],
+            perp_positions: [PerpPosition::default(); 8],
+            spot_positions,
+            equity_floor,
+            ..User::default()
+        };
+
+        let trip_equity =
+            calculate_user_equity_for_trip(&user, &market_map, &spot_market_map, &mut oracle_map)
+                .unwrap();
+        let (live_equity, live_valid) =
+            calculate_user_equity(&user, &market_map, &spot_market_map, &mut oracle_map).unwrap();
+
+        (trip_equity, user, live_equity, live_valid)
+    }
+
+    /// 10 USDC deposit plus a perp position priced by a Pyth Lazer oracle at
+    /// 100 (twap `perp_twap`). `slot` far past the posted slot makes the
+    /// perp oracle invalid; the quote market oracle is always valid.
+    fn run_perp_scenario(
+        base_asset_amount: i64,
+        quote_asset_amount: i64,
+        perp_twap: i64,
+        slot: u64,
+        equity_floor: u64,
+    ) -> (TripNetEquity, User) {
+        let mut oracle_price = get_pyth_price(100, 6);
+        let oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            oracle_price,
+            &oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+
+        let mut market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                max_slippage_ratio: 50,
+                max_fill_reserve_fraction: 100,
+                ..AMM::default()
+            },
+            margin_ratio_initial: 2000,
+            margin_ratio_maintenance: 1000,
+            status: MarketStatus::Initialized,
+            order_step_size: 1000,
+            order_tick_size: 1,
+            oracle: oracle_price_key,
+            oracle_source: OracleSource::PythLazer,
+            market_stats: MarketStats {
+                historical_oracle_data: HistoricalOracleData {
+                    last_oracle_price: (100 * PRICE_PRECISION) as i64,
+                    last_oracle_price_twap: perp_twap,
+                    last_oracle_price_twap_5min: perp_twap,
+                    ..HistoricalOracleData::default()
+                },
+                ..MarketStats::default()
+            },
+            ..PerpMarket::default_test()
+        };
+        create_anchor_account_info!(market, PerpMarket, market_account_info);
+        let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        let mut usdc_spot_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+            deposit_balance: 10000 * SPOT_BALANCE_PRECISION,
+            historical_oracle_data: HistoricalOracleData {
+                last_oracle_price_twap: PRICE_PRECISION_I64,
+                last_oracle_price_twap_5min: PRICE_PRECISION_I64,
+                ..HistoricalOracleData::default()
+            },
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(usdc_spot_market, SpotMarket, usdc_spot_market_account_info);
+        let spot_market_map =
+            SpotMarketMap::load_one(&usdc_spot_market_account_info, true).unwrap();
+
+        let mut spot_positions = [SpotPosition::default(); 8];
+        spot_positions[0] = SpotPosition {
+            market_index: 0,
+            balance_type: SpotBalanceType::Deposit,
+            scaled_balance: 10 * SPOT_BALANCE_PRECISION_U64,
+            ..SpotPosition::default()
+        };
+        let user = User {
+            orders: [Order::default(); 32],
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                base_asset_amount,
+                quote_asset_amount,
+                ..PerpPosition::default()
+            }),
+            spot_positions,
+            equity_floor,
+            ..User::default()
+        };
+
+        let trip_equity =
+            calculate_user_equity_for_trip(&user, &market_map, &spot_market_map, &mut oracle_map)
+                .unwrap();
+
+        (trip_equity, user)
+    }
+
+    const SOL_TWAP: i64 = 100 * PRICE_PRECISION_I64;
+
+    #[test]
+    fn valid_oracles_match_the_trusted_walk() {
+        // 10,000 USDC - 90 SOL at 100 = 1,000 USDC, no concession needed
+        let (trip_equity, _, live_equity, live_valid) = run_spot_scenario(
+            SpotBalanceType::Borrow,
+            90 * SPOT_BALANCE_PRECISION_U64,
+            SOL_TWAP,
+            0,
+            QUOTE_PRECISION_U64,
+        );
+
+        assert!(live_valid);
+        assert!(trip_equity.provable);
+        assert_eq!(trip_equity.equity_upper_bound, live_equity);
+        assert_eq!(trip_equity.equity_upper_bound, 1_000_000_000);
+    }
+
+    #[test]
+    fn stale_dust_asset_is_conceded_the_allowance() {
+        // 0.5 SOL is worth 50 at its twap, within the allowance, so the
+        // asset counts as the full allowance instead of blocking the proof
+        let (trip_equity, _, _, live_valid) = run_spot_scenario(
+            SpotBalanceType::Deposit,
+            SPOT_BALANCE_PRECISION_U64 / 2,
+            SOL_TWAP,
+            100_000,
+            QUOTE_PRECISION_U64,
+        );
+
+        assert!(!live_valid);
+        assert!(trip_equity.provable);
+        assert_eq!(
+            trip_equity.equity_upper_bound,
+            10_000 * QUOTE_PRECISION_I64 as i128 + EQUITY_FLOOR_TRIP_DUST_ALLOWANCE
+        );
+    }
+
+    #[test]
+    fn stale_dust_liability_is_conceded_zero() {
+        // a liability can only lower equity, so its most favorable value
+        // adds nothing to the upper bound
+        let (trip_equity, _, _, _) = run_spot_scenario(
+            SpotBalanceType::Borrow,
+            SPOT_BALANCE_PRECISION_U64 / 2,
+            SOL_TWAP,
+            100_000,
+            QUOTE_PRECISION_U64,
+        );
+
+        assert!(trip_equity.provable);
+        assert_eq!(
+            trip_equity.equity_upper_bound,
+            10_000 * QUOTE_PRECISION_I64 as i128
+        );
+    }
+
+    #[test]
+    fn stale_material_asset_keeps_the_breach_unprovable() {
+        // 90 SOL at twap 100 is far past the allowance: real exposure the
+        // trip cannot value, so no floor makes the breach provable
+        let (trip_equity, user, _, _) = run_spot_scenario(
+            SpotBalanceType::Deposit,
+            90 * SPOT_BALANCE_PRECISION_U64,
+            SOL_TWAP,
+            100_000,
+            u64::MAX,
+        );
+
+        assert!(!trip_equity.provable);
+        assert!(!trip_equity.proves_breach(&user));
+    }
+
+    #[test]
+    fn stale_material_borrow_is_conceded_zero() {
+        // a borrow can only lower equity at any price, so it is conceded
+        // zero at any size instead of vetoing the proof: the valid 10,000
+        // USDC alone proves the breach of an 11,000 floor. Gating the
+        // borrow on the dust test would hand the veto back to whoever can
+        // hold a large borrow in a dead-oracle market.
+        let (trip_equity, user, _, _) = run_spot_scenario(
+            SpotBalanceType::Borrow,
+            90 * SPOT_BALANCE_PRECISION_U64,
+            SOL_TWAP,
+            100_000,
+            11_000 * QUOTE_PRECISION_U64,
+        );
+
+        assert!(trip_equity.provable);
+        assert_eq!(
+            trip_equity.equity_upper_bound,
+            10_000 * QUOTE_PRECISION_I64 as i128
+        );
+        assert!(trip_equity.proves_breach(&user));
+    }
+
+    #[test]
+    fn non_positive_twap_asset_keeps_the_breach_unprovable() {
+        // a zero twap sizes every balance at zero, so the dust test cannot
+        // bound the asset; conceding the allowance to an unsizeable asset
+        // could understate equity and trip a solvent account
+        let (trip_equity, user, _, _) = run_spot_scenario(
+            SpotBalanceType::Deposit,
+            SPOT_BALANCE_PRECISION_U64 / 2,
+            0,
+            100_000,
+            u64::MAX,
+        );
+
+        assert!(!trip_equity.provable);
+        assert!(!trip_equity.proves_breach(&user));
+    }
+
+    #[test]
+    fn dust_cannot_veto_a_material_breach() {
+        // 10,000 USDC of valid equity against an 11,000 floor is a real
+        // breach; the stale dust position is conceded the allowance and the
+        // trip still proves it
+        let (trip_equity, user, _, _) = run_spot_scenario(
+            SpotBalanceType::Deposit,
+            SPOT_BALANCE_PRECISION_U64 / 2,
+            SOL_TWAP,
+            100_000,
+            11_000 * QUOTE_PRECISION_U64,
+        );
+
+        assert!(trip_equity.proves_breach(&user));
+    }
+
+    #[test]
+    fn the_concession_covers_a_breach_smaller_than_the_allowance() {
+        // valid equity 10,000 against a 10,050 floor: the dust's allowance
+        // lifts the upper bound to 10,100, so the breach is not provable at
+        // every true dust price and the trip must not fire
+        let (trip_equity, user, _, _) = run_spot_scenario(
+            SpotBalanceType::Deposit,
+            SPOT_BALANCE_PRECISION_U64 / 2,
+            SOL_TWAP,
+            100_000,
+            10_050 * QUOTE_PRECISION_U64,
+        );
+
+        assert!(trip_equity.provable);
+        assert!(!trip_equity.proves_breach(&user));
+    }
+
+    #[test]
+    fn stale_long_dust_perp_bounds_the_base_leg_at_the_allowance() {
+        // long 0.5 base entered at -45 quote: entry quote counts exactly,
+        // the base leg is conceded the allowance. 10 + (-45 + 100) = 65
+        let (trip_equity, _) = run_perp_scenario(
+            BASE_PRECISION_I64 / 2,
+            -45 * QUOTE_PRECISION_I64,
+            SOL_TWAP,
+            100_000,
+            QUOTE_PRECISION_U64,
+        );
+
+        assert!(trip_equity.provable);
+        assert_eq!(
+            trip_equity.equity_upper_bound,
+            10 * QUOTE_PRECISION_I64 as i128 - 45 * QUOTE_PRECISION_I64 as i128
+                + EQUITY_FLOOR_TRIP_DUST_ALLOWANCE
+        );
+    }
+
+    #[test]
+    fn stale_short_dust_perp_bounds_the_base_leg_at_zero() {
+        // short 0.5 base entered at +55 quote: the base leg only subtracts
+        // at any positive price, so the bound is entry quote alone.
+        // 10 + 55 = 65
+        let (trip_equity, _) = run_perp_scenario(
+            -BASE_PRECISION_I64 / 2,
+            55 * QUOTE_PRECISION_I64,
+            SOL_TWAP,
+            100_000,
+            QUOTE_PRECISION_U64,
+        );
+
+        assert!(trip_equity.provable);
+        assert_eq!(
+            trip_equity.equity_upper_bound,
+            10 * QUOTE_PRECISION_I64 as i128 + 55 * QUOTE_PRECISION_I64 as i128
+        );
+    }
+
+    #[test]
+    fn stale_material_short_perp_is_conceded_zero() {
+        // short 90 base entered at +9,000 quote, far past the allowance at
+        // its twap: the base leg still only subtracts at any positive
+        // price, so the size does not matter and the bound is entry quote
+        // alone. 10 + 9,000 = 9,010 proves the breach of a 100,000 floor.
+        let (trip_equity, user) = run_perp_scenario(
+            -90 * BASE_PRECISION_I64,
+            9_000 * QUOTE_PRECISION_I64,
+            SOL_TWAP,
+            100_000,
+            100_000 * QUOTE_PRECISION_U64,
+        );
+
+        assert!(trip_equity.provable);
+        assert_eq!(
+            trip_equity.equity_upper_bound,
+            10 * QUOTE_PRECISION_I64 as i128 + 9_000 * QUOTE_PRECISION_I64 as i128
+        );
+        assert!(trip_equity.proves_breach(&user));
+    }
+
+    #[test]
+    fn zero_base_position_is_priced_exactly_despite_the_stale_oracle() {
+        // unsettled quote pnl does not depend on the perp oracle at all, so
+        // a stale oracle neither blocks the proof nor shrinks the value to
+        // the allowance. Crediting only the allowance here would understate
+        // equity and trip an account that is above its floor.
+        let (trip_equity, user) = run_perp_scenario(
+            0,
+            50_000 * QUOTE_PRECISION_I64,
+            SOL_TWAP,
+            100_000,
+            25_000 * QUOTE_PRECISION_U64,
+        );
+
+        assert!(trip_equity.provable);
+        assert_eq!(
+            trip_equity.equity_upper_bound,
+            10 * QUOTE_PRECISION_I64 as i128 + 50_000 * QUOTE_PRECISION_I64 as i128
+        );
+        assert!(!trip_equity.proves_breach(&user));
+    }
+
+    #[test]
+    fn stale_material_long_perp_keeps_the_breach_unprovable() {
+        // 2 base long at twap 100 is a 200 notional, past the allowance
+        let (trip_equity, user) = run_perp_scenario(
+            2 * BASE_PRECISION_I64,
+            -180 * QUOTE_PRECISION_I64,
+            SOL_TWAP,
+            100_000,
+            u64::MAX,
+        );
+
+        assert!(!trip_equity.provable);
+        assert!(!trip_equity.proves_breach(&user));
+    }
+
+    #[test]
+    fn non_positive_twap_long_perp_keeps_the_breach_unprovable() {
+        // a zero twap sizes any long at zero notional, so the dust test
+        // cannot bound it. Conceding the allowance to a 10,000 base long
+        // with -1,000,000 stored quote would collapse the upper bound and
+        // trip a solvent account.
+        let (trip_equity, user) = run_perp_scenario(
+            10_000 * BASE_PRECISION_I64,
+            -1_000_000 * QUOTE_PRECISION_I64,
+            0,
+            100_000,
+            100_000 * QUOTE_PRECISION_U64,
+        );
+
+        assert!(!trip_equity.provable);
+        assert!(!trip_equity.proves_breach(&user));
+    }
+
+    #[test]
+    fn non_positive_twap_short_perp_is_still_conceded_zero() {
+        // the short's zero concession does not depend on the twap at all,
+        // so a broken twap does not block the proof. 10 + 180 = 190.
+        let (trip_equity, _) = run_perp_scenario(
+            -2 * BASE_PRECISION_I64,
+            180 * QUOTE_PRECISION_I64,
+            -1,
+            100_000,
+            QUOTE_PRECISION_U64,
+        );
+
+        assert!(trip_equity.provable);
+        assert_eq!(
+            trip_equity.equity_upper_bound,
+            10 * QUOTE_PRECISION_I64 as i128 + 180 * QUOTE_PRECISION_I64 as i128
+        );
+    }
+}
+
 #[cfg(test)]
 mod pools {
     use {

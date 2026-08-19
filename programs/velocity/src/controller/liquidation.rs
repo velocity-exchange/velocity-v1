@@ -631,6 +631,7 @@ pub fn liquidate_perp(
         liquidation_mode.exit_liquidation(user)?;
     } else if liquidation_mode.should_user_enter_bankruptcy(user, spot_market_map)? {
         liquidation_mode.enter_bankruptcy(user)?;
+        flag_perp_bankruptcy_claim(user, market_index, perp_market_map)?;
     }
 
     let liquidator_meets_initial_margin_requirement =
@@ -1258,6 +1259,7 @@ pub fn liquidate_perp_with_fill(
         liquidation_mode.exit_liquidation(&mut user)?;
     } else if liquidation_mode.should_user_enter_bankruptcy(&user, spot_market_map)? {
         liquidation_mode.enter_bankruptcy(&mut user)?;
+        flag_perp_bankruptcy_claim(&mut user, market_index, perp_market_map)?;
     }
 
     let user_position_delta = get_position_delta_for_fill(
@@ -3114,6 +3116,7 @@ pub fn liquidate_borrow_for_perp_pnl(
         user.exit_cross_margin_liquidation();
     } else if is_cross_margin_bankrupt(user, spot_market_map)? {
         user.enter_cross_margin_bankruptcy();
+        flag_perp_bankruptcy_claim(user, perp_market_index, perp_market_map)?;
     }
 
     let liquidator_meets_initial_margin_requirement =
@@ -3721,6 +3724,7 @@ pub fn liquidate_perp_pnl_for_deposit(
         liquidation_mode.exit_liquidation(user)?;
     } else if liquidation_mode.should_user_enter_bankruptcy(user, spot_market_map)? {
         liquidation_mode.enter_bankruptcy(user)?;
+        flag_perp_bankruptcy_claim(user, perp_market_index, perp_market_map)?;
     }
 
     let liquidator_meets_initial_margin_requirement =
@@ -3866,6 +3870,55 @@ fn recover_perp_claims_from_pnl_pools(
     }
 
     Ok(total_recovered)
+}
+
+/// Book the user's quote debt in `market_index` against that market's
+/// `pending_bankruptcy_claims`, so the fee sweep withholds the whole
+/// `pending_if_fee` until the debt resolves. Without it, the sweep — which is
+/// permissionless, and also runs inline on every pnl settle — can drain the
+/// first-loss tranche between the latch and the resolution, and the loss falls
+/// through to the shared insurance fund or into socialization.
+///
+/// Call this at every point that latches a user bankrupt while `market_index`
+/// is writable. It is idempotent: the position flag records the booking, so a
+/// repeated latch counts the debt once. `update_quote_asset_amount` releases
+/// the booking when the quote debt is gone.
+///
+/// Only a SETTLED debt is booked: `base_asset_amount == 0` and
+/// `quote_asset_amount < 0`. That is exactly what `resolve_perp_bankruptcy`
+/// can absorb, and it is what makes the release condition sound — a position
+/// that still holds base can carry a negative quote through ordinary trading
+/// (a partly closed short does), and its quote swings either way on the next
+/// fill. Booking one would let an ordinary fill release the freeze. Both
+/// bankruptcy predicates already require a zero base, so this only restates
+/// the admission rule locally instead of trusting each call site to hold it.
+///
+/// A cross-margin latch can leave a debt in a market the latching instruction
+/// did not declare writable, which cannot be booked here. The standing
+/// `get_bankruptcy_if_floor()` tranche covers that market instead.
+fn flag_perp_bankruptcy_claim(
+    user: &mut User,
+    market_index: u16,
+    perp_market_map: &PerpMarketMap,
+) -> VelocityResult<()> {
+    let Ok(position_index) = get_position_index(&user.perp_positions, market_index) else {
+        return Ok(());
+    };
+
+    let position = &mut user.perp_positions[position_index];
+    if position.has_bankruptcy_claim()
+        || position.base_asset_amount != 0
+        || position.quote_asset_amount >= 0
+    {
+        return Ok(());
+    }
+
+    position.set_bankruptcy_claim();
+    perp_market_map
+        .get_ref_mut(&market_index)?
+        .increment_pending_bankruptcy_claims();
+
+    Ok(())
 }
 
 /// Forfeit the estate's unfundable positive perp claims to their markets' insurance tranches, and

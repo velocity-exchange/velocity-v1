@@ -1147,8 +1147,10 @@ export type PerpMarketAccount = {
 	takerFeeAddonTenthBps: number;
 	/** QUOTE_PRECISION (1e6); pnl-pool retention buffer the fee-sweep leaves untouched above `max(net_user_pnl, 0)` */
 	feePoolBufferTarget: BN;
-	/** PERCENTAGE_PRECISION (1e6 = 100%); fraction of OI notional (at the oracle TWAP) the sweep leaves behind in `feeLedger.pendingIfFee` as a standing bankruptcy first-loss tranche; 0 disables */
+	/** PERCENTAGE_PRECISION (1e6 = 100%); fraction of OI notional (at the oracle TWAP) the sweep leaves behind in `feeLedger.pendingIfFee` as a standing bankruptcy first-loss tranche. 0 means `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT` (10 bps), `BANKRUPTCY_IF_FLOOR_DISABLED` turns the floor off */
 	bankruptcyIfFloorPct: number;
+	/** count of unresolved bankrupt quote debts booked against this market; while it is above zero the fee sweep withholds the whole `feeLedger.pendingIfFee` so a permissionless sweep cannot drain the first-loss tranche before `resolvePerpBankruptcy` consumes it */
+	pendingBankruptcyClaims: number;
 	/** QUOTE_PRECISION (1e6); aggregate builder/referrer revenue share accrued but not yet paid out of this market's pnl pool. The fee sweep reserves it (like `max(net_user_pnl, 0)` and the floored IF tranche) so a protocol-fee drain can't leave accrued revenue-share claims temporarily unpayable */
 	pendingRevenueShare: BN;
 	/** MARGIN_PRECISION (1e4); scales margin ratio up for large positions */
@@ -1830,6 +1832,8 @@ export class PositionFlag {
 	static readonly IsolatedPosition = 1;
 	static readonly BeingLiquidated = 2;
 	static readonly Bankruptcy = 4;
+	/** this position's quote debt is counted in its market's `pendingBankruptcyClaims`, which freezes that market's IF-fee sweep until the debt resolves */
+	static readonly BankruptcyClaim = 8;
 }
 
 /** The subset of `OrderParams` an SDK caller must always supply; everything else can be defaulted. */

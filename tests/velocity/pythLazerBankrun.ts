@@ -152,6 +152,71 @@ describe('pyth lazer oracles', () => {
 		);
 	});
 
+	it('skips a message stamped too far in the future', async () => {
+		const oracleKey = getPythLazerOraclePublicKey(
+			velocityClient.program.programId,
+			6
+		);
+		const before = (await velocityClient.program.account.pythLazerOracle.fetch(
+			oracleKey
+		)) as any;
+
+		// A stamp past PYTH_LAZER_MAX_FUTURE_SECONDS is skipped. Posting it would raise
+		// publish_time above the wall clock, and the monotonic gate would then skip every
+		// later message until real time reached that stamp.
+		await velocityClient.postPythLazerOracleUpdate(
+			[6],
+			freshLazerSolHex(bankrunContextWrapper.connection.getTime(), 3600)
+		);
+
+		const after = (await velocityClient.program.account.pythLazerOracle.fetch(
+			oracleKey
+		)) as any;
+		assert(
+			after.publishTime.eq(before.publishTime),
+			'a far-future message must not advance publish_time'
+		);
+		assert(
+			after.postedSlot.eq(before.postedSlot),
+			'a far-future message must not refresh posted_slot'
+		);
+	});
+
+	it('skips a message that repeats the stored timestamp', async () => {
+		const oracleKey = getPythLazerOraclePublicKey(
+			velocityClient.program.programId,
+			6
+		);
+		const before = (await velocityClient.program.account.pythLazerOracle.fetch(
+			oracleKey
+		)) as any;
+		// The lead keeps the stamp above the stored publish_time, so the first post lands. It
+		// stays under PYTH_LAZER_MAX_FUTURE_SECONDS, so the future bound does not reject it.
+		const hex = freshLazerSolHex(bankrunContextWrapper.connection.getTime(), 5);
+
+		await velocityClient.postPythLazerOracleUpdate([6], hex);
+		const first = (await velocityClient.program.account.pythLazerOracle.fetch(
+			oracleKey
+		)) as any;
+		assert(
+			first.publishTime.gt(before.publishTime),
+			'the first post must land, or the repeat proves nothing'
+		);
+
+		// The same message carries the same signed content, so it adds no price information.
+		// Posting it again would refresh posted_slot and hold the feed at slot-fresh while the
+		// price never moves.
+		await velocityClient.postPythLazerOracleUpdate([6], hex);
+		const second = (await velocityClient.program.account.pythLazerOracle.fetch(
+			oracleKey
+		)) as any;
+
+		assert(
+			second.postedSlot.eq(first.postedSlot),
+			'a repeated timestamp must not refresh posted_slot'
+		);
+	});
+
 	it('crank multi', async () => {
 		// MULTI stays a frozen Pyth-signed fixture: it still verifies (Pyth's signer is kept
 		// trusted) but its stale feeds are skipped by the max-age check, so the crank is a

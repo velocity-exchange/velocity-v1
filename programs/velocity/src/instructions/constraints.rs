@@ -26,15 +26,23 @@ pub fn can_sign_for_user(user: &AccountLoader<User>, signer: &Signer) -> anchor_
     })
 }
 
-/// A `User` owned by the protocol itself: its authority is the velocity
-/// signer PDA, which no one can sign for. Creatable through the normal
-/// `initialize_user` path (the authority there is unchecked); the crank
-/// rewards accrue to it and only the hot-role withdraw can take value out.
+/// A `User` owned by the protocol itself: the velocity signer PDA's
+/// sub-account 0, which no one can sign for. The crank rewards and the
+/// cross-match surplus accrue to it and only the hot-role withdraw can take
+/// value out.
+///
+/// Both halves are load-bearing. `initialize_user` takes its authority
+/// unchecked, so anyone can pay to create the signer PDA's sub-account 1, 2,
+/// … as well. An authority-only test would accept those, and the paths that
+/// waive the signature for the protocol `User` would then credit a
+/// sub-account the protocol does not track. Every `User` lives at the PDA of
+/// `(authority, sub_account_id)`, so the pair names exactly one account.
 pub fn is_protocol_user(
     user: &AccountLoader<User>,
     state: &AccountLoader<State>,
 ) -> anchor_lang::Result<bool> {
-    Ok(user.load()?.authority.eq(&state.load()?.signer))
+    let user = user.load()?;
+    Ok(user.sub_account_id == 0 && user.authority.eq(&state.load()?.signer))
 }
 
 /// `can_sign_for_user`, relaxed for the dual-mode cranks: the caller signs
@@ -223,4 +231,68 @@ pub fn get_vault_len(mint: &InterfaceAccount<Mint>) -> anchor_lang::Result<usize
     };
 
     Ok(len)
+}
+
+#[cfg(test)]
+mod tests {
+    use {
+        super::*,
+        crate::{create_account_info, create_anchor_account_info, state::state::State},
+        anchor_lang::prelude::AccountLoader,
+        std::str::FromStr,
+    };
+
+    /// `initialize_user` takes its authority unchecked and derives the `User`
+    /// PDA from `(authority, sub_account_id)`. Anyone can therefore pay to
+    /// create the velocity signer's sub-account 1. It must not read as the
+    /// protocol `User`, because the crank paths waive the caller's signature
+    /// for that identity and credit it the reward and the cross-match surplus.
+    #[test]
+    fn only_sub_account_zero_is_the_protocol_user() {
+        let signer = Pubkey::from_str("JCNCMFXo5M5qwUPg2Utu1u6YWp3MbygxqBsBeXXJfrw").unwrap();
+        let mut state = State {
+            signer,
+            ..State::default()
+        };
+        create_anchor_account_info!(state, State, state_loader);
+        let state_loader: AccountLoader<State> = AccountLoader::try_from(&state_loader).unwrap();
+
+        let mut protocol = User {
+            authority: signer,
+            sub_account_id: 0,
+            ..User::default()
+        };
+        create_anchor_account_info!(protocol, User, protocol_info);
+        let protocol_loader: AccountLoader<User> = AccountLoader::try_from(&protocol_info).unwrap();
+        assert!(is_protocol_user(&protocol_loader, &state_loader).unwrap());
+
+        let mut impostor = User {
+            authority: signer,
+            sub_account_id: 1,
+            ..User::default()
+        };
+        create_anchor_account_info!(impostor, User, impostor_info);
+        let impostor_loader: AccountLoader<User> = AccountLoader::try_from(&impostor_info).unwrap();
+        assert!(
+            !is_protocol_user(&impostor_loader, &state_loader).unwrap(),
+            "a sibling sub-account of the signer PDA is not the protocol user"
+        );
+
+        // And an unsigned caller cannot crank for it.
+        let authority_key = Pubkey::default();
+        let mut lamports = 0;
+        let authority_info = AccountInfo::new(
+            &authority_key,
+            false,
+            false,
+            &mut lamports,
+            &mut [],
+            &crate::ID,
+            false,
+        );
+        assert!(
+            !can_crank_for_filler(&impostor_loader, &authority_info, &state_loader).unwrap(),
+            "an impostor filler still needs a signature"
+        );
+    }
 }

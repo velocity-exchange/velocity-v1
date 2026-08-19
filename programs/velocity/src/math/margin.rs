@@ -1169,28 +1169,34 @@ pub fn calculate_net_equity_for_floor(
 /// Net-equity upper bound for the breaker trip. Positions with valid oracles
 /// are valued at live prices, exactly as [`calculate_user_equity`] values
 /// them. A position with an invalid oracle is never priced; it is conceded
-/// the most favorable value the trip is willing to grant: an asset worth no
-/// more than [`EQUITY_FLOOR_TRIP_DUST_ALLOWANCE`] at its own last twap
-/// counts as exactly the allowance, a liability counts as zero, and a larger
-/// invalid position makes the breach unprovable (`provable` false), which
-/// keeps the rule that a freeze never arms over real exposure the program
-/// cannot value.
+/// the most favorable value the trip is willing to grant: a spot liability
+/// or a short base leg counts as zero at any size (it can only lower equity,
+/// at any price), an asset or long base leg worth no more than
+/// [`EQUITY_FLOOR_TRIP_DUST_ALLOWANCE`] at its own last twap counts as
+/// exactly the allowance, and a larger asset or long, or one whose twap is
+/// not positive and so cannot size it, makes the breach unprovable
+/// (`provable` false), which keeps the rule that a freeze never arms over
+/// real exposure the program cannot value.
 ///
-/// Two properties follow, and both trip paths depend on them. Every unknown
-/// is resolved in the user's favor, so a trip that fires would fire at any
-/// true price of the conceded positions; an invalid oracle still cannot arm
-/// the freeze by itself. And the concessions can add at most the allowance
-/// per position slot, so dust parked in dead-oracle markets cannot veto a
-/// material breach; suppressing the trip requires holding more than the
-/// allowance in a market whose oracle is invalid, and refusing to freeze
-/// over that is intended.
+/// Two properties follow, and both trip paths depend on them. The zero
+/// concessions are sound unconditionally. The allowance concession is sound
+/// as far as the twap sizes the position honestly: the dust test reads
+/// `last_oracle_price_twap`, so a live price far above a stalled twap can
+/// let a leg worth more than the allowance pass as dust, and that
+/// understatement scales with the allowance (which is tunable), not with
+/// the bad print. And the concessions can add at most the allowance per
+/// position slot, so dust parked in dead-oracle markets cannot veto a
+/// material breach; suppressing the trip requires holding an asset or long
+/// worth more than the allowance in a market whose oracle is invalid, and
+/// refusing to freeze over that is intended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TripNetEquity {
     /// Upper bound of net equity: trusted values exact, conceded values at
     /// their ceiling. Meaningless when `provable` is false.
     pub equity_upper_bound: i128,
-    /// False when a position with an invalid oracle exceeds the dust
-    /// allowance at its own last twap, or the quote oracle is invalid.
+    /// False when an invalid-oracle asset or long base leg exceeds the dust
+    /// allowance at its own last twap (or that twap is not positive), or
+    /// the quote oracle is invalid.
     pub provable: bool,
 }
 
@@ -1252,24 +1258,31 @@ pub fn calculate_user_equity_for_trip(
             continue;
         }
 
-        // The twap is not trusted as a price here; it only sizes the
-        // position for the dust test, and the concession below overvalues
-        // whatever passes it.
+        // A liability can only lower equity at any price, so its most
+        // favorable value is zero at any size and it adds nothing.
+        if token_amount <= 0 {
+            continue;
+        }
+
+        // The twap is not trusted as a price here; it only sizes the asset
+        // for the dust test, and the concession below overvalues whatever
+        // passes it. A non-positive twap cannot size anything, so the asset
+        // keeps the breach unprovable at any balance.
+        if spot_market.historical_oracle_data.last_oracle_price_twap <= 0 {
+            return Ok(unprovable);
+        }
+
         let twap_value = get_token_value(
             token_amount,
             spot_market.decimals,
             spot_market.historical_oracle_data.last_oracle_price_twap,
         )?;
-        if twap_value.unsigned_abs() > EQUITY_FLOOR_TRIP_DUST_ALLOWANCE.unsigned_abs() {
+        if twap_value > EQUITY_FLOOR_TRIP_DUST_ALLOWANCE {
             return Ok(unprovable);
         }
 
-        // An asset is worth at most the allowance under the dust test; a
-        // liability can only lower equity, so its most favorable value is
-        // zero and it adds nothing.
-        if token_amount > 0 {
-            equity_upper_bound = equity_upper_bound.safe_add(EQUITY_FLOOR_TRIP_DUST_ALLOWANCE)?;
-        }
+        // An asset under the dust test is worth at most the allowance.
+        equity_upper_bound = equity_upper_bound.safe_add(EQUITY_FLOOR_TRIP_DUST_ALLOWANCE)?;
     }
 
     for market_position in user.perp_positions.iter() {
@@ -1373,21 +1386,32 @@ pub fn calculate_user_equity_for_trip(
             // Only the base leg depends on the invalid oracle. Entry quote
             // and funding come from stored numbers and count exactly; a
             // position with zero base is fully priced with no concession at
-            // all. The base leg of a dust long is worth at most the
-            // allowance; a short's base leg only subtracts, so its most
-            // favorable value is zero.
-            let twap_notional = calculate_base_asset_value_with_oracle_price(
-                market_position.base_asset_amount.cast()?,
-                market
+            // all. A short's base leg only subtracts at any price, so its
+            // most favorable value is zero at any size. A long's base leg
+            // under the dust test is worth at most the allowance; a larger
+            // long, or a non-positive twap that cannot size it, keeps the
+            // breach unprovable.
+            let base_leg_upper_bound = if market_position.base_asset_amount > 0 {
+                if market
                     .market_stats
                     .historical_oracle_data
-                    .last_oracle_price_twap,
-            )?;
-            if twap_notional > EQUITY_FLOOR_TRIP_DUST_ALLOWANCE.unsigned_abs() {
-                return Ok(unprovable);
-            }
+                    .last_oracle_price_twap
+                    <= 0
+                {
+                    return Ok(unprovable);
+                }
 
-            let base_leg_upper_bound = if market_position.base_asset_amount > 0 {
+                let twap_notional = calculate_base_asset_value_with_oracle_price(
+                    market_position.base_asset_amount.cast()?,
+                    market
+                        .market_stats
+                        .historical_oracle_data
+                        .last_oracle_price_twap,
+                )?;
+                if twap_notional > EQUITY_FLOOR_TRIP_DUST_ALLOWANCE.unsigned_abs() {
+                    return Ok(unprovable);
+                }
+
                 EQUITY_FLOOR_TRIP_DUST_ALLOWANCE
             } else {
                 0

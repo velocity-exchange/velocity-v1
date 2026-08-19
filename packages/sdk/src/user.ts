@@ -2438,10 +2438,11 @@ export class User {
 	 * `calculate_user_equity_for_trip`. Positions with valid oracles are
 	 * valued exactly as `getFloorNetEquity` values them. A position with an
 	 * invalid oracle is conceded its most favorable value instead of vetoing
-	 * the proof: an asset worth no more than
+	 * the proof: a liability or a short base leg counts as zero at any size,
+	 * an asset or long base leg worth no more than
 	 * `EQUITY_FLOOR_TRIP_DUST_ALLOWANCE` at its own last twap counts as
-	 * exactly the allowance, a liability counts as zero, and a larger
-	 * invalid position (or an invalid quote oracle) makes the breach
+	 * exactly the allowance, and a larger asset or long, or one whose twap
+	 * is not positive (or an invalid quote oracle), makes the breach
 	 * unprovable. Both onchain trip paths (the permissionless trip and the
 	 * lazy trip) arm the breaker when `provable` and `equityUpperBound` is
 	 * below the raw floor.
@@ -2502,22 +2503,29 @@ export class User {
 				continue;
 			}
 
-			// the twap only sizes the position for the dust test; the
-			// concession below overvalues whatever passes it
+			// a liability can only lower equity at any price, so its most
+			// favorable value is zero at any size and it adds nothing
+			if (tokenAmount.lte(ZERO)) {
+				continue;
+			}
+
+			// the twap only sizes the asset for the dust test; the concession
+			// below overvalues whatever passes it. A non-positive twap cannot
+			// size anything, so the asset keeps the breach unprovable at any
+			// balance
+			const twap = spotMarket.historicalOracleData.lastOraclePriceTwap;
+			if (twap.lte(ZERO)) {
+				return unprovable;
+			}
 			const twapValue = getTokenValue(tokenAmount, spotMarket.decimals, {
-				price: spotMarket.historicalOracleData.lastOraclePriceTwap,
+				price: twap,
 			});
-			if (twapValue.abs().gt(EQUITY_FLOOR_TRIP_DUST_ALLOWANCE)) {
+			if (twapValue.gt(EQUITY_FLOOR_TRIP_DUST_ALLOWANCE)) {
 				return unprovable;
 			}
 
-			// an asset is worth at most the allowance under the dust test; a
-			// liability can only lower equity, so it adds nothing
-			if (tokenAmount.gt(ZERO)) {
-				equityUpperBound = equityUpperBound.add(
-					EQUITY_FLOOR_TRIP_DUST_ALLOWANCE
-				);
-			}
+			// an asset under the dust test is worth at most the allowance
+			equityUpperBound = equityUpperBound.add(EQUITY_FLOOR_TRIP_DUST_ALLOWANCE);
 		}
 
 		for (const perpPosition of userAccount.perpPositions) {
@@ -2586,19 +2594,26 @@ export class User {
 			} else {
 				// only the base leg depends on the invalid oracle. Entry
 				// quote and funding come from stored numbers and count
-				// exactly; the base leg of a dust long is worth at most the
-				// allowance, a short's base leg only subtracts
-				const twapNotional = perpPosition.baseAssetAmount
-					.abs()
-					.mul(market.marketStats.historicalOracleData.lastOraclePriceTwap)
-					.div(BASE_PRECISION);
-				if (twapNotional.gt(EQUITY_FLOOR_TRIP_DUST_ALLOWANCE)) {
-					return unprovable;
+				// exactly; a short's base leg only subtracts at any price, so
+				// it is conceded zero at any size. A long's base leg under
+				// the dust test is worth at most the allowance; a larger
+				// long, or a non-positive twap that cannot size it, keeps the
+				// breach unprovable
+				let baseLegUpperBound = ZERO;
+				if (perpPosition.baseAssetAmount.gt(ZERO)) {
+					const twap =
+						market.marketStats.historicalOracleData.lastOraclePriceTwap;
+					if (twap.lte(ZERO)) {
+						return unprovable;
+					}
+					const twapNotional = perpPosition.baseAssetAmount
+						.mul(twap)
+						.div(BASE_PRECISION);
+					if (twapNotional.gt(EQUITY_FLOOR_TRIP_DUST_ALLOWANCE)) {
+						return unprovable;
+					}
+					baseLegUpperBound = EQUITY_FLOOR_TRIP_DUST_ALLOWANCE;
 				}
-
-				const baseLegUpperBound = perpPosition.baseAssetAmount.gt(ZERO)
-					? EQUITY_FLOOR_TRIP_DUST_ALLOWANCE
-					: ZERO;
 
 				pnl = perpPosition.quoteAssetAmount
 					.add(calculateUnsettledFundingPnl(market, perpPosition))

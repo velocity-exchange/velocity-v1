@@ -25,10 +25,11 @@ use crate::{
 /// provably below its raw floor. Decides with the same
 /// `TripNetEquity::proves_breach` predicate as the permissionless trip:
 /// invalid-oracle positions are conceded a bounded most-favorable value
-/// rather than vetoing the proof, and a position past the dust allowance
-/// keeps the breach unprovable. Where the permissionless trip rejects on an
-/// unprovable breach so the keeper can retry, this skips silently (it must
-/// not fail its host); a breach that rides out such an outage is armed by
+/// rather than vetoing the proof, and an asset or long past the dust
+/// allowance keeps the breach unprovable. Where the permissionless trip
+/// rejects on an unprovable breach so the keeper can retry, this skips
+/// silently (it must not fail its host); a breach that rides out such an
+/// outage is armed by
 /// the next touch after the feed recovers. The gates cover the outage
 /// itself, failing closed on the strict verdict, and match fills carry
 /// their own `FillOrderMatch` validity rule. Skips all work when the

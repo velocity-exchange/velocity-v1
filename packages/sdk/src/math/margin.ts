@@ -416,13 +416,14 @@ export type FloorNetEquity = {
  * Net-equity upper bound for the breaker trip, mirroring the program's
  * `TripNetEquity`. Positions with valid oracles are valued at live prices.
  * A position with an invalid oracle is conceded its most favorable value:
- * an asset worth no more than `EQUITY_FLOOR_TRIP_DUST_ALLOWANCE` at its own
- * last twap counts as exactly the allowance, a liability counts as zero,
- * and a larger invalid position makes the breach unprovable (`provable`
- * false). Every unknown is resolved in the user's favor, so a trip that
- * fires would fire at any true price of the conceded dust, while dust
- * parked in dead-oracle markets cannot veto a material breach. Values
- * QUOTE_PRECISION.
+ * a liability or a short base leg counts as zero at any size, an asset or
+ * long base leg worth no more than `EQUITY_FLOOR_TRIP_DUST_ALLOWANCE` at
+ * its own last twap counts as exactly the allowance, and a larger asset or
+ * long (or one whose twap is not positive) makes the breach unprovable
+ * (`provable` false). The zero concessions are sound at any price; the
+ * allowance concession is sound as far as the twap sizes the position
+ * honestly. Dust parked in dead-oracle markets cannot veto a material
+ * breach. Values QUOTE_PRECISION.
  */
 export type TripNetEquity = {
 	equityUpperBound: BN;

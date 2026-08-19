@@ -4620,12 +4620,13 @@ mod trip_net_equity {
     };
 
     /// 10,000 USDC deposit plus a SOL spot position priced by a Pyth Lazer
-    /// oracle at 100 (twap 100). `slot` far past the posted slot makes the
-    /// SOL oracle invalid; the USDC market has a quote-asset oracle, which
-    /// is always valid.
+    /// oracle at 100 (twap `sol_twap`). `slot` far past the posted slot
+    /// makes the SOL oracle invalid; the USDC market has a quote-asset
+    /// oracle, which is always valid.
     fn run_spot_scenario(
         balance_type: SpotBalanceType,
         sol_scaled_balance: u64,
+        sol_twap: i64,
         slot: u64,
         equity_floor: u64,
     ) -> (TripNetEquity, User, i128, bool) {
@@ -4669,8 +4670,8 @@ mod trip_net_equity {
             maintenance_liability_weight: 11 * SPOT_WEIGHT_PRECISION / 10,
             liquidator_fee: LIQUIDATION_FEE_PRECISION / 1000,
             historical_oracle_data: HistoricalOracleData {
-                last_oracle_price_twap: 100 * PRICE_PRECISION_I64,
-                last_oracle_price_twap_5min: 100 * PRICE_PRECISION_I64,
+                last_oracle_price_twap: sol_twap,
+                last_oracle_price_twap_5min: sol_twap,
                 ..HistoricalOracleData::default()
             },
             ..SpotMarket::default()
@@ -4715,11 +4716,12 @@ mod trip_net_equity {
     }
 
     /// 10 USDC deposit plus a perp position priced by a Pyth Lazer oracle at
-    /// 100 (twap 100). `slot` far past the posted slot makes the perp oracle
-    /// invalid; the quote market oracle is always valid.
+    /// 100 (twap `perp_twap`). `slot` far past the posted slot makes the
+    /// perp oracle invalid; the quote market oracle is always valid.
     fn run_perp_scenario(
         base_asset_amount: i64,
         quote_asset_amount: i64,
+        perp_twap: i64,
         slot: u64,
         equity_floor: u64,
     ) -> (TripNetEquity, User) {
@@ -4754,8 +4756,8 @@ mod trip_net_equity {
             market_stats: MarketStats {
                 historical_oracle_data: HistoricalOracleData {
                     last_oracle_price: (100 * PRICE_PRECISION) as i64,
-                    last_oracle_price_twap: (100 * PRICE_PRECISION) as i64,
-                    last_oracle_price_twap_5min: (100 * PRICE_PRECISION) as i64,
+                    last_oracle_price_twap: perp_twap,
+                    last_oracle_price_twap_5min: perp_twap,
                     ..HistoricalOracleData::default()
                 },
                 ..MarketStats::default()
@@ -4811,12 +4813,15 @@ mod trip_net_equity {
         (trip_equity, user)
     }
 
+    const SOL_TWAP: i64 = 100 * PRICE_PRECISION_I64;
+
     #[test]
     fn valid_oracles_match_the_trusted_walk() {
         // 10,000 USDC - 90 SOL at 100 = 1,000 USDC, no concession needed
         let (trip_equity, _, live_equity, live_valid) = run_spot_scenario(
             SpotBalanceType::Borrow,
             90 * SPOT_BALANCE_PRECISION_U64,
+            SOL_TWAP,
             0,
             QUOTE_PRECISION_U64,
         );
@@ -4834,6 +4839,7 @@ mod trip_net_equity {
         let (trip_equity, _, _, live_valid) = run_spot_scenario(
             SpotBalanceType::Deposit,
             SPOT_BALANCE_PRECISION_U64 / 2,
+            SOL_TWAP,
             100_000,
             QUOTE_PRECISION_U64,
         );
@@ -4853,6 +4859,7 @@ mod trip_net_equity {
         let (trip_equity, _, _, _) = run_spot_scenario(
             SpotBalanceType::Borrow,
             SPOT_BALANCE_PRECISION_U64 / 2,
+            SOL_TWAP,
             100_000,
             QUOTE_PRECISION_U64,
         );
@@ -4865,12 +4872,53 @@ mod trip_net_equity {
     }
 
     #[test]
-    fn stale_material_position_keeps_the_breach_unprovable() {
+    fn stale_material_asset_keeps_the_breach_unprovable() {
         // 90 SOL at twap 100 is far past the allowance: real exposure the
         // trip cannot value, so no floor makes the breach provable
         let (trip_equity, user, _, _) = run_spot_scenario(
+            SpotBalanceType::Deposit,
+            90 * SPOT_BALANCE_PRECISION_U64,
+            SOL_TWAP,
+            100_000,
+            u64::MAX,
+        );
+
+        assert!(!trip_equity.provable);
+        assert!(!trip_equity.proves_breach(&user));
+    }
+
+    #[test]
+    fn stale_material_borrow_is_conceded_zero() {
+        // a borrow can only lower equity at any price, so it is conceded
+        // zero at any size instead of vetoing the proof: the valid 10,000
+        // USDC alone proves the breach of an 11,000 floor. Gating the
+        // borrow on the dust test would hand the veto back to whoever can
+        // hold a large borrow in a dead-oracle market.
+        let (trip_equity, user, _, _) = run_spot_scenario(
             SpotBalanceType::Borrow,
             90 * SPOT_BALANCE_PRECISION_U64,
+            SOL_TWAP,
+            100_000,
+            11_000 * QUOTE_PRECISION_U64,
+        );
+
+        assert!(trip_equity.provable);
+        assert_eq!(
+            trip_equity.equity_upper_bound,
+            10_000 * QUOTE_PRECISION_I64 as i128
+        );
+        assert!(trip_equity.proves_breach(&user));
+    }
+
+    #[test]
+    fn non_positive_twap_asset_keeps_the_breach_unprovable() {
+        // a zero twap sizes every balance at zero, so the dust test cannot
+        // bound the asset; conceding the allowance to an unsizeable asset
+        // could understate equity and trip a solvent account
+        let (trip_equity, user, _, _) = run_spot_scenario(
+            SpotBalanceType::Deposit,
+            SPOT_BALANCE_PRECISION_U64 / 2,
+            0,
             100_000,
             u64::MAX,
         );
@@ -4887,6 +4935,7 @@ mod trip_net_equity {
         let (trip_equity, user, _, _) = run_spot_scenario(
             SpotBalanceType::Deposit,
             SPOT_BALANCE_PRECISION_U64 / 2,
+            SOL_TWAP,
             100_000,
             11_000 * QUOTE_PRECISION_U64,
         );
@@ -4902,6 +4951,7 @@ mod trip_net_equity {
         let (trip_equity, user, _, _) = run_spot_scenario(
             SpotBalanceType::Deposit,
             SPOT_BALANCE_PRECISION_U64 / 2,
+            SOL_TWAP,
             100_000,
             10_050 * QUOTE_PRECISION_U64,
         );
@@ -4917,6 +4967,7 @@ mod trip_net_equity {
         let (trip_equity, _) = run_perp_scenario(
             BASE_PRECISION_I64 / 2,
             -45 * QUOTE_PRECISION_I64,
+            SOL_TWAP,
             100_000,
             QUOTE_PRECISION_U64,
         );
@@ -4937,6 +4988,7 @@ mod trip_net_equity {
         let (trip_equity, _) = run_perp_scenario(
             -BASE_PRECISION_I64 / 2,
             55 * QUOTE_PRECISION_I64,
+            SOL_TWAP,
             100_000,
             QUOTE_PRECISION_U64,
         );
@@ -4949,6 +5001,28 @@ mod trip_net_equity {
     }
 
     #[test]
+    fn stale_material_short_perp_is_conceded_zero() {
+        // short 90 base entered at +9,000 quote, far past the allowance at
+        // its twap: the base leg still only subtracts at any positive
+        // price, so the size does not matter and the bound is entry quote
+        // alone. 10 + 9,000 = 9,010 proves the breach of a 100,000 floor.
+        let (trip_equity, user) = run_perp_scenario(
+            -90 * BASE_PRECISION_I64,
+            9_000 * QUOTE_PRECISION_I64,
+            SOL_TWAP,
+            100_000,
+            100_000 * QUOTE_PRECISION_U64,
+        );
+
+        assert!(trip_equity.provable);
+        assert_eq!(
+            trip_equity.equity_upper_bound,
+            10 * QUOTE_PRECISION_I64 as i128 + 9_000 * QUOTE_PRECISION_I64 as i128
+        );
+        assert!(trip_equity.proves_breach(&user));
+    }
+
+    #[test]
     fn zero_base_position_is_priced_exactly_despite_the_stale_oracle() {
         // unsettled quote pnl does not depend on the perp oracle at all, so
         // a stale oracle neither blocks the proof nor shrinks the value to
@@ -4957,6 +5031,7 @@ mod trip_net_equity {
         let (trip_equity, user) = run_perp_scenario(
             0,
             50_000 * QUOTE_PRECISION_I64,
+            SOL_TWAP,
             100_000,
             25_000 * QUOTE_PRECISION_U64,
         );
@@ -4970,17 +5045,55 @@ mod trip_net_equity {
     }
 
     #[test]
-    fn stale_material_perp_keeps_the_breach_unprovable() {
-        // 2 base at twap 100 is a 200 notional, past the allowance
+    fn stale_material_long_perp_keeps_the_breach_unprovable() {
+        // 2 base long at twap 100 is a 200 notional, past the allowance
         let (trip_equity, user) = run_perp_scenario(
             2 * BASE_PRECISION_I64,
             -180 * QUOTE_PRECISION_I64,
+            SOL_TWAP,
             100_000,
             u64::MAX,
         );
 
         assert!(!trip_equity.provable);
         assert!(!trip_equity.proves_breach(&user));
+    }
+
+    #[test]
+    fn non_positive_twap_long_perp_keeps_the_breach_unprovable() {
+        // a zero twap sizes any long at zero notional, so the dust test
+        // cannot bound it. Conceding the allowance to a 10,000 base long
+        // with -1,000,000 stored quote would collapse the upper bound and
+        // trip a solvent account.
+        let (trip_equity, user) = run_perp_scenario(
+            10_000 * BASE_PRECISION_I64,
+            -1_000_000 * QUOTE_PRECISION_I64,
+            0,
+            100_000,
+            100_000 * QUOTE_PRECISION_U64,
+        );
+
+        assert!(!trip_equity.provable);
+        assert!(!trip_equity.proves_breach(&user));
+    }
+
+    #[test]
+    fn non_positive_twap_short_perp_is_still_conceded_zero() {
+        // the short's zero concession does not depend on the twap at all,
+        // so a broken twap does not block the proof. 10 + 180 = 190.
+        let (trip_equity, _) = run_perp_scenario(
+            -2 * BASE_PRECISION_I64,
+            180 * QUOTE_PRECISION_I64,
+            -1,
+            100_000,
+            QUOTE_PRECISION_U64,
+        );
+
+        assert!(trip_equity.provable);
+        assert_eq!(
+            trip_equity.equity_upper_bound,
+            10 * QUOTE_PRECISION_I64 as i128 + 180 * QUOTE_PRECISION_I64 as i128
+        );
     }
 }
 

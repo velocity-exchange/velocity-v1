@@ -342,14 +342,15 @@ pub fn handle_trip_equity_floor_breaker<'c: 'info, 'info>(
         calculate_user_equity_for_trip(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
 
     // An authority-wide freeze must not arm over exposure the program cannot
-    // value: an invalid-oracle position past the dust allowance blocks the
-    // proof. The floor gates on withdrawals/fills still hold independently
-    // of the breaker. The two validates decompose
-    // `TripNetEquity::proves_breach` so each failure keeps its error code.
+    // value: an invalid-oracle asset or long past the dust allowance (or one
+    // whose twap cannot size it) blocks the proof. The floor gates on
+    // withdrawals/fills still hold independently of the breaker. The two
+    // validates decompose `TripNetEquity::proves_breach` so each failure
+    // keeps its error code.
     validate!(
         trip_equity.provable,
         ErrorCode::InvalidOracle,
-        "cannot trip equity floor breaker: invalid oracle on a position above the dust allowance"
+        "cannot trip equity floor breaker: invalid oracle on a position the dust test cannot bound"
     )?;
 
     validate!(

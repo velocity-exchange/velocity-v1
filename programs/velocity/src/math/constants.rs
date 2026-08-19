@@ -122,10 +122,60 @@ pub const ONE_HOUR: i64 = 3600;
 pub const ONE_HOUR_I128: i128 = ONE_HOUR as i128;
 pub const TWENTY_FOUR_HOUR: i64 = 3600 * 24;
 pub const THIRTEEN_DAY: i64 = TWENTY_FOUR_HOUR * 13; // IF unstake default
+
+/// The largest share of a spot borrow that un-booked interest may hide before the
+/// borrow can no longer be valued for margin on a value-releasing path
+/// (OtterSec #135 / #148).
+///
+/// Margin values a scaled borrow through the market's *stored*
+/// `cumulative_borrow_interest`, so interest accrued since `last_interest_ts` is
+/// omitted and the debt is understated by `debt x borrow_rate x elapsed / year`.
+/// The quantity that must stay small is that understated share, not the elapsed
+/// time, because the borrow rate is a per-market configuration value with no upper
+/// bound: `validate_borrow_rate` constrains `max_borrow_rate` only against
+/// `optimal_borrow_rate`, so one fixed window hides an arbitrary share on a
+/// high-rate market. One basis point is far inside the initial-vs-maintenance
+/// margin gap and therefore too small to engineer bad debt with. An un-cranked
+/// market, by contrast, drifts arbitrarily far, which is the actual vector.
+///
+/// `math::margin::max_spot_interest_staleness_for_margin` turns this share into the
+/// per-market time window that enforces it.
+pub const MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN: u128 = PERCENTAGE_PRECISION / 10_000;
+
+/// Ceiling on the window `math::margin::max_spot_interest_staleness_for_margin`
+/// derives, so a low-rate market cannot go un-cranked indefinitely.
+///
+/// A market that charges little interest earns a wide window from
+/// `MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN` alone. Its rate can be raised by
+/// the admin at any time, and the raise applies to the whole un-booked interval, so
+/// the window a low rate earns is not a promise about that interval.
+///
+/// Recoverable without special privileges: `update_spot_market_cumulative_interest`
+/// is permissionless and can be bundled into the same transaction.
+pub const MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN: i64 = ONE_HOUR;
 pub const EPOCH_DURATION: i64 = TWENTY_FOUR_HOUR * 28;
 pub const THIRTY_DAY: i64 = TWENTY_FOUR_HOUR * 30;
 pub const THIRTY_DAY_I128: i128 = (TWENTY_FOUR_HOUR * 30) as i128;
 pub const ONE_YEAR: u128 = 31536000;
+
+/// How many funding periods the mark TWAP may stay unwritten. Past this many periods
+/// `MarketStats::update_mark_twap` discards the stored value and re-seeds it from the
+/// oracle TWAP.
+///
+/// `calculate_new_twap` weights the incoming sample by the time since the last write.
+/// It floors the opposing weight at 1. Past one funding period a single fill-path
+/// sample therefore replaces the TWAP almost completely, because fills pass no
+/// `max_sample_elapsed` cap. The bid/ask crank's samples are weight-capped
+/// (`MarketStats::max_mark_twap_sample_elapsed`), so there the re-seed instead
+/// replaces a slow crawl of capped samples with one exact oracle-TWAP write.
+/// A market that stops writing keeps no history either way. A funding pause makes
+/// that gap longest, because both funding cranks reject while the pause is set.
+///
+/// The multiplier must stay above 2. A market whose only writer is the funding crank
+/// writes once per funding period in the steady state. `on_the_hour_update` can also
+/// stretch one legitimate interval to about 1.67 periods. A lower bound re-seeds a
+/// market that is merely quiet or cranked late, and discards a real premium.
+pub const MARK_TWAP_RESEED_FUNDING_PERIODS: i64 = 3;
 /// Max age of the last fill before the trigger price's last-fill leg is
 /// treated as absent (oracle price substitutes).
 pub const TRIGGER_PRICE_LAST_FILL_MAX_AGE: i64 = FIVE_MINUTE as i64;

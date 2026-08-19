@@ -1,8 +1,9 @@
 import { PublicKey, RpcResponseAndContext } from '@solana/web3.js';
 import { VelocityClient } from '../velocityClient';
-import { RevenueShareEscrowAccount } from '../types';
+import { isVariant, RevenueShareEscrowAccount } from '../types';
 import { getRevenueShareEscrowAccountPublicKey } from '../addresses/pda';
 import { getRevenueShareEscrowFilter } from '../memcmp';
+import { ZERO } from '../constants/numericConstants';
 
 /** In-memory cache mapping each authority to their `RevenueShareEscrow` account (builder/referral fee accrual escrow). */
 export class RevenueShareEscrowMap {
@@ -280,6 +281,35 @@ export class RevenueShareEscrowMap {
 		const result = new Map<string, RevenueShareEscrowAccount>();
 		for (const [authority, escrow] of this.authorityEscrowMap) {
 			if (escrow.approvedBuilders && escrow.approvedBuilders.length > 0) {
+				result.set(authority, escrow);
+			}
+		}
+		return result;
+	}
+
+	/**
+	 * Gets the `RevenueShareEscrow` accounts that still owe builder or referrer fees on
+	 * `marketIndex`. Such an account holds a row for that perp market with a non-zero
+	 * `feesAccrued`.
+	 *
+	 * These rows are the work list for `settleRevenueShare`. Together they sum to the
+	 * `pendingRevenueShare` of the market. That counter reserves pnl-pool value until the program
+	 * pays the rows, and `settle_expired_market_pools_to_revenue_pool` requires it to be zero
+	 * before it delists the market. Call `syncAll()` first. This method reads the cache, and a
+	 * partial cache reports too few accounts.
+	 */
+	public getEscrowsOwingRevenueShare(
+		marketIndex: number
+	): Map<string, RevenueShareEscrowAccount> {
+		const result = new Map<string, RevenueShareEscrowAccount>();
+		for (const [authority, escrow] of this.authorityEscrowMap) {
+			const owes = escrow.orders?.some(
+				(o) =>
+					o.marketIndex === marketIndex &&
+					isVariant(o.marketType, 'perp') &&
+					o.feesAccrued.gt(ZERO)
+			);
+			if (owes) {
 				result.set(authority, escrow);
 			}
 		}

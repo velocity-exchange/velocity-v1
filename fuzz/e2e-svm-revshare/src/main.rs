@@ -231,12 +231,14 @@ fn build_perp_market(pubkey: Pubkey, quote_spot_index: u16) -> PerpMarket {
 // `.ok()`, so a rejected map means the sweep is skipped and fees stay accrued.
 //
 // Setup (all via injection): builder codes enabled; a Settlement-status perp
-// market with a funded pnl_pool; a trader `User` (authority T, sub 0) with NO
-// position (so `settle_expired_position` returns Ok immediately and the sweep
-// runs); a `RevenueShareEscrow` (authority T) holding one Completed builder
-// order with `fees_accrued > 0` and one approved builder B; and — passed to the
-// revenue-share map — a *sibling* builder `User` at `sub_account_id = 1`
-// (authority B) plus B's `RevenueShare` account.
+// market with a funded pnl_pool; a trader `User` (authority T, sub 0) that holds
+// a pure-PnL expired position (base == 0, quote > 0); a `RevenueShareEscrow`
+// (authority T) holding one Completed builder order with `fees_accrued > 0` and
+// one approved builder B; and — passed to the revenue-share map — a *sibling*
+// builder `User` at `sub_account_id = 1` (authority B) plus B's `RevenueShare`
+// account. The position makes `settle_expired_position` settle for real, which
+// is what lets the sweep run: a caller with no position settles nothing, and
+// the handler skips the sweep on that signal.
 //
 // The harness drives a REAL `settle_multiple_pnls([0], MustSettle)` and asserts
 // the sibling recipient's quote spot balance is UNCHANGED (== 0). On fixed
@@ -343,7 +345,10 @@ mod regr_273 {
             perp_market.pnl_pool.scaled_balance = pnl_pool_scaled;
             inject(&mut ctx, perp_market_pda, &mut perp_market);
 
-            // Trader (settle caller): authority T, sub 0, pool_id 0, NO position.
+            // Trader (settle caller): authority T, sub 0, pool_id 0, holding a
+            // pure-PnL expired position (base == 0, quote > 0). The zero base
+            // skips the margin calc, and the claim is small next to the
+            // pnl_pool, so the settle succeeds and the sweep is reached.
             let trader_kp = Rc::new(Keypair::new());
             ctx.create_account()
                 .pubkey(trader_kp.pubkey())
@@ -356,6 +361,9 @@ mod regr_273 {
             trader.authority = anchor_pk(trader_kp.pubkey());
             trader.sub_account_id = 0;
             trader.pool_id = 0;
+            trader.perp_positions[0].market_index = 0;
+            trader.perp_positions[0].base_asset_amount = 0;
+            trader.perp_positions[0].quote_asset_amount = 1_000_000; // +$1 claim
             inject(&mut ctx, trader_pda, &mut trader);
 
             // Builder authority B and its NON-canonical sibling recipient (sub 1).

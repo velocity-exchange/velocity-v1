@@ -185,8 +185,13 @@ pub fn calculate_liability_transfer_implied_by_asset_amount(
         .safe_div_ceil(denominator_scale)
 }
 
-pub fn calculate_asset_transfer_for_liability_transfer(
-    asset_amount: u128,
+/// The asset amount that pays for `liability_amount` at the liquidation exchange
+/// rate, with no rounding to the user's whole deposit. Use this where the result
+/// is a bound on how much collateral may be taken, or where the caller must know
+/// that every unit seized is paid for.
+/// `calculate_asset_transfer_for_liability_transfer` wraps this with the
+/// round-to-whole-deposit step.
+pub fn calculate_asset_transfer_for_liability_transfer_exact(
     asset_liquidation_multiplier: u32,
     asset_decimals: u32,
     asset_price: i64,
@@ -201,7 +206,7 @@ pub fn calculate_asset_transfer_for_liability_transfer(
         (1, 10_u128.pow(liability_decimals - asset_decimals))
     };
 
-    let mut asset_transfer = liability_amount
+    Ok(liability_amount
         .safe_mul(numerator_scale)?
         .safe_mul(liability_price.cast()?)?
         .safe_mul(asset_liquidation_multiplier.cast()?)?
@@ -211,7 +216,33 @@ pub fn calculate_asset_transfer_for_liability_transfer(
                 .safe_mul(liability_liquidation_multiplier.cast()?)?,
         )?
         .safe_div(denominator_scale)?
-        .max(1);
+        .max(1))
+}
+
+/// The exact asset amount, rounded to the user's whole deposit when the two are
+/// within $1 of each other. The round-up leaves no dust deposit behind, but it
+/// takes up to $1 of collateral that `liability_amount` does not pay for. A
+/// caller that cannot give that value away must use
+/// `calculate_asset_transfer_for_liability_transfer_exact` instead.
+pub fn calculate_asset_transfer_for_liability_transfer(
+    asset_amount: u128,
+    asset_liquidation_multiplier: u32,
+    asset_decimals: u32,
+    asset_price: i64,
+    liability_amount: u128,
+    liability_liquidation_multiplier: u32,
+    liability_decimals: u32,
+    liability_price: i64,
+) -> VelocityResult<u128> {
+    let mut asset_transfer = calculate_asset_transfer_for_liability_transfer_exact(
+        asset_liquidation_multiplier,
+        asset_decimals,
+        asset_price,
+        liability_amount,
+        liability_liquidation_multiplier,
+        liability_decimals,
+        liability_price,
+    )?;
 
     // Need to check if asset_transfer should be rounded to asset amount
     let (asset_value_numerator_scale, asset_value_denominator_scale) = if asset_decimals > 6 {

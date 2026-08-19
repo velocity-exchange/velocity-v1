@@ -9,7 +9,7 @@ const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
 use tokio::sync::OnceCell;
 use velocity_rs::{
     event_subscriber::RpcClient,
-    jupiter::{JupiterSwapApi, SwapMode},
+    jupiter::JupiterSwapApi,
     types::{accounts::User, Context, MarketId},
     utils::test_envs::{mainnet_endpoint, mainnet_test_keypair},
     TransactionBuilder, VelocityClient, Wallet,
@@ -35,7 +35,7 @@ async fn velocity_client() -> VelocityClient {
 
 #[ignore = "LIVE_INFRA: mainnet swap test — needs mainnet RPC + funded keypair + swap API key"]
 #[tokio::test]
-async fn jupiter_swap_exact_in_udsc_to_sol() {
+async fn jupiter_swap_usdc_to_sol() {
     let _ = env_logger::try_init();
     let client = velocity_client().await;
     let wallet = client.wallet();
@@ -52,11 +52,9 @@ async fn jupiter_swap_exact_in_udsc_to_sol() {
         .jupiter_swap_query(
             wallet.authority(),
             10_000_000,
-            SwapMode::ExactIn,
             10,
             token_in.index(),
             token_out.index(),
-            Some(true),
             None,
             None,
         )
@@ -96,156 +94,6 @@ async fn jupiter_swap_exact_in_udsc_to_sol() {
     let result = client.simulate_tx(tx).await;
     dbg!(&result);
     let err = result.expect("sim ok").err;
-    match err {
-        Some(err) => {
-            assert_eq!(
-                err,
-                TransactionError::InstructionError(4, InstructionError::Custom(6157)).into()
-            )
-        }
-        None => assert!(true),
-    }
-}
-
-#[ignore = "LIVE_INFRA: mainnet swap test — needs mainnet RPC + funded keypair + swap API key"]
-#[tokio::test]
-async fn jupiter_swap_exact_out_udsc_to_sol() {
-    let _ = env_logger::try_init();
-    let client = velocity_client().await;
-    let wallet = client.wallet();
-
-    let token_in = MarketId::QUOTE_SPOT;
-    let token_out = MarketId::spot(1);
-
-    let user: User = client
-        .get_user_account(&wallet.default_sub_account())
-        .await
-        .expect("exists");
-
-    let jupiter_swap_info = client
-        .jupiter_swap_query(
-            wallet.authority(),
-            LAMPORTS_PER_SOL / 10,
-            SwapMode::ExactOut,
-            10,
-            token_in.index(),
-            token_out.index(),
-            Some(true),
-            None,
-            None,
-        )
-        .await
-        .expect("got jup swap ixs");
-
-    let in_market = client
-        .program_data()
-        .spot_market_config_by_index(token_in.index())
-        .unwrap();
-    let out_market = client
-        .program_data()
-        .spot_market_config_by_index(token_out.index())
-        .unwrap();
-
-    let in_token_account = Wallet::derive_associated_token_address(&wallet.authority(), &in_market);
-    let out_token_account =
-        Wallet::derive_associated_token_address(&wallet.authority(), &out_market);
-
-    let tx = TransactionBuilder::new(
-        client.program_data(),
-        wallet.default_sub_account(),
-        std::borrow::Cow::Borrowed(&user),
-        false,
-    )
-    .jupiter_swap(
-        jupiter_swap_info,
-        &in_market,
-        &out_market,
-        &in_token_account,
-        &out_token_account,
-        None,
-        None,
-    )
-    .build();
-
-    let result = client.simulate_tx(tx).await;
-    dbg!(&result);
-    // either swap OK or it would incur borrow which is fine (test account missing 'token in' amount)
-    let err = result.expect("sim ok").err;
-    match err {
-        Some(err) => {
-            assert_eq!(
-                err,
-                TransactionError::InstructionError(2, InstructionError::Custom(6157)).into()
-            )
-        }
-        None => assert!(true),
-    }
-}
-
-#[ignore = "LIVE_INFRA: mainnet swap test — needs mainnet RPC + funded keypair + swap API key"]
-#[tokio::test]
-async fn jupiter_swap_exact_out_udsc_jto() {
-    let _ = env_logger::try_init();
-    let client = velocity_client().await;
-    let wallet = client.wallet();
-
-    let token_in = MarketId::QUOTE_SPOT;
-    let token_out = client.market_lookup("JTO").unwrap();
-
-    let in_market = client
-        .program_data()
-        .spot_market_config_by_index(token_in.index())
-        .unwrap();
-    let out_market = client
-        .program_data()
-        .spot_market_config_by_index(token_out.index())
-        .unwrap();
-
-    let user: User = client
-        .get_user_account(&wallet.default_sub_account())
-        .await
-        .expect("exists");
-
-    let jupiter_swap_info = client
-        .jupiter_swap_query(
-            wallet.authority(),
-            5 * 10_u64.pow(out_market.decimals),
-            SwapMode::ExactOut,
-            10,
-            token_in.index(),
-            token_out.index(),
-            Some(true),
-            None,
-            None,
-        )
-        .await
-        .expect("got jup swap ixs");
-
-    let in_token_account = Wallet::derive_associated_token_address(&wallet.authority(), &in_market);
-    let out_token_account =
-        Wallet::derive_associated_token_address(&wallet.authority(), &out_market);
-
-    let tx = TransactionBuilder::new(
-        client.program_data(),
-        wallet.default_sub_account(),
-        std::borrow::Cow::Borrowed(&user),
-        false,
-    )
-    .jupiter_swap(
-        jupiter_swap_info,
-        &in_market,
-        &out_market,
-        &in_token_account,
-        &out_token_account,
-        None,
-        None,
-    )
-    .build();
-
-    let result = client.simulate_tx(tx).await;
-    dbg!(&result);
-    let err = result.expect("sim ok").err;
-    // either swap OK or it would incur borrow which is fine (test account missing 'token in' amount)
     match err {
         Some(err) => {
             assert_eq!(
@@ -285,11 +133,9 @@ async fn jupiter_swap_sol_unwrap() {
         .jupiter_swap_query(
             wallet.authority(),
             LAMPORTS_PER_SOL / 10,
-            SwapMode::ExactIn,
             10,
             token_in.index(),
             token_out.index(),
-            Some(true),
             None,
             None,
         )

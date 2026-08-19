@@ -2,7 +2,13 @@ import { Command } from 'commander';
 import { BN } from '@coral-xyz/anchor';
 import { PublicKey } from '@solana/web3.js';
 import {
+	escrowHasReferrer,
+	getRevenueShareAccountPublicKey,
+	isBuilderOrderReferral,
+	isVariant,
 	MarketType,
+	RevenueShareEscrowAccount,
+	RevenueShareEscrowMap,
 	TransferFeeAndPnlPoolDirection,
 } from '@velocity-exchange/sdk';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
@@ -167,6 +173,217 @@ export function registerFees(parent: Command): void {
 			await client.unsubscribe();
 		}
 	});
+
+	withGlobalOptions(
+		fees
+			.command('settle-revenue-share <market> [escrowAuthority]')
+			.description(
+				'Settle accrued builder/referrer revenue share for a perp market out of its pnl pool (permissionless). Pays beneficiaries without the escrow owner having to settle pnl. Pass an escrow authority for one escrow, or --all to scan for and settle every escrow still owed on the market — which is what `settle_expired_market_pools_to_revenue_pool` requires before it will delist.'
+			)
+			.option(
+				'--all',
+				'settle every escrow still owed on the market (scans all escrow accounts)'
+			)
+	).action(
+		async (
+			market: string,
+			escrowAuthority: string | undefined,
+			flags: { all?: boolean },
+			cmd: Command
+		) => {
+			const opts = readGlobalOpts(cmd);
+			const provider = buildProvider(opts);
+			const client = await buildAdminClient(opts);
+			const marketIndex = Number.parseInt(market, 10);
+			try {
+				if (!flags.all && !escrowAuthority) {
+					throw new Error('pass an <escrowAuthority> or --all');
+				}
+
+				const targets = new Map<string, RevenueShareEscrowAccount>();
+				if (flags.all) {
+					const escrowMap = new RevenueShareEscrowMap(client);
+					await escrowMap.syncAll();
+					for (const [
+						authority,
+						escrow,
+					] of escrowMap.getEscrowsOwingRevenueShare(marketIndex)) {
+						targets.set(authority, escrow);
+					}
+					if (targets.size === 0) {
+						console.log(
+							`perp-market[${market}] has no escrows owing revenue share`
+						);
+						return;
+					}
+					console.log(
+						`perp-market[${market}] settling ${targets.size} escrow(s) owing revenue share`
+					);
+				} else {
+					const authority = new PublicKey(escrowAuthority!);
+					targets.set(
+						authority.toBase58(),
+						await client.fetchRevenueShareEscrowAccount(authority)
+					);
+				}
+
+				let failed = 0;
+
+				// The sweep needs both the User and the RevenueShare account of a beneficiary. It
+				// skips the row when either is absent. The program also refuses to forfeit that
+				// row, because it can still pay it. The row would then block the delist. Anyone can
+				// create a RevenueShare account, so create it here.
+				if (flags.all) {
+					const beneficiaries = new Set<string>();
+					for (const escrow of targets.values()) {
+						for (const order of escrow.orders) {
+							if (
+								order.marketIndex !== marketIndex ||
+								!isVariant(order.marketType, 'perp') ||
+								order.feesAccrued.isZero()
+							) {
+								continue;
+							}
+							const beneficiary = isBuilderOrderReferral(order)
+								? escrowHasReferrer(escrow)
+									? escrow.referrer
+									: undefined
+								: escrow.approvedBuilders[order.builderIdx]?.authority;
+							if (beneficiary) {
+								beneficiaries.add(beneficiary.toBase58());
+							}
+						}
+					}
+					for (const beneficiary of beneficiaries) {
+						const revenueSharePk = getRevenueShareAccountPublicKey(
+							client.program.programId,
+							new PublicKey(beneficiary)
+						);
+						if (
+							(await client.connection.getAccountInfo(revenueSharePk)) !== null
+						) {
+							continue;
+						}
+						try {
+							const ix = await client.getInitializeRevenueShareIx(
+								new PublicKey(beneficiary)
+							);
+							const result = await sendOrPropose(
+								provider,
+								[ix],
+								opts.multisig ? new PublicKey(opts.multisig) : undefined,
+								'velocity-admin fees settle-revenue-share (init beneficiary)'
+							);
+							reportDispatch(
+								`created RevenueShare for beneficiary ${beneficiary}`,
+								result
+							);
+						} catch (e) {
+							failed += 1;
+							console.error(
+								`failed to create RevenueShare for beneficiary ${beneficiary}: ${
+									(e as Error).message
+								}`
+							);
+						}
+					}
+				}
+
+				// One transaction for each escrow. Each escrow carries its own beneficiary accounts,
+				// and one transaction cannot hold them all. Report each failure and continue, so
+				// that one bad escrow does not stop the others.
+				for (const [authority, escrow] of targets) {
+					try {
+						const ix = await client.getSettleRevenueShareIx(
+							new PublicKey(authority),
+							escrow,
+							marketIndex
+						);
+						const result = await sendOrPropose(
+							provider,
+							[ix],
+							opts.multisig ? new PublicKey(opts.multisig) : undefined,
+							'velocity-admin fees settle-revenue-share'
+						);
+						reportDispatch(
+							`perp-market[${market}] revenue-share settle for ${authority}`,
+							result
+						);
+					} catch (e) {
+						failed += 1;
+						console.error(
+							`perp-market[${market}] revenue-share settle FAILED for ${authority}: ${
+								(e as Error).message
+							}`
+						);
+					}
+				}
+
+				// A row that still owes after the settle pass is one that the program will not pay.
+				// The beneficiary has no payout account, the pool is too small, or the row names
+				// nobody. The delist needs a zero counter, so write those rows off here. The
+				// program proves each reason again and rejects a payable row with
+				// RevenueShareOrderNotForfeitable.
+				//
+				// Only for a closing market. On a live market the program refuses every forfeit, so
+				// this pass would report failures after a successful settle pass.
+				const marketStatus =
+					client.getPerpMarketAccountOrThrow(marketIndex).status;
+				const marketWindingDown =
+					isVariant(marketStatus, 'settlement') ||
+					isVariant(marketStatus, 'delisted');
+				if (flags.all && marketWindingDown) {
+					const escrowMap = new RevenueShareEscrowMap(client);
+					await escrowMap.syncAll();
+					const stragglers = escrowMap.getEscrowsOwingRevenueShare(marketIndex);
+					for (const [authority, escrow] of stragglers) {
+						for (const [orderIndex, order] of escrow.orders.entries()) {
+							if (
+								order.marketIndex !== marketIndex ||
+								!isVariant(order.marketType, 'perp') ||
+								order.feesAccrued.isZero()
+							) {
+								continue;
+							}
+							try {
+								const ix = await client.getForfeitRevenueShareOrderIx(
+									new PublicKey(authority),
+									escrow,
+									marketIndex,
+									orderIndex
+								);
+								const result = await sendOrPropose(
+									provider,
+									[ix],
+									opts.multisig ? new PublicKey(opts.multisig) : undefined,
+									'velocity-admin fees forfeit-revenue-share-order'
+								);
+								reportDispatch(
+									`perp-market[${market}] revenue-share forfeit for ${authority} order ${orderIndex}`,
+									result
+								);
+							} catch (e) {
+								failed += 1;
+								console.error(
+									`perp-market[${market}] revenue-share forfeit FAILED for ${authority} order ${orderIndex}: ${
+										(e as Error).message
+									}`
+								);
+							}
+						}
+					}
+				}
+
+				if (failed > 0) {
+					throw new Error(
+						`${failed} revenue-share operation(s) failed on perp-market[${market}]`
+					);
+				}
+			} finally {
+				await client.unsubscribe();
+			}
+		}
+	);
 
 	withGlobalOptions(
 		fees

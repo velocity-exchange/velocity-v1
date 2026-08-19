@@ -184,7 +184,8 @@ pub fn update_spot_market_cumulative_interest(
         borrow_interest,
     } = calculate_accumulated_interest(spot_market, now)?;
 
-    // An interval that is owed commits on the interval that it belongs to.
+    // An interval that is owed commits on the interval that it belongs to, as soon as it is
+    // large enough to represent on both indexes.
     //
     // `calculate_accumulated_interest` bills the whole span since `last_interest_ts`. It uses
     // the rate that applies when it runs. It commits the span with an index move, and the
@@ -195,9 +196,17 @@ pub fn update_spot_market_cumulative_interest(
     // made in the gap earns interest for time before the deposit. A borrow opened in the gap
     // pays interest for time before the borrow. Findings #115 and #117 describe this result.
     //
-    // Two outcomes remain. COMMIT moves both indexes, pays both carveouts, carries the
+    // Three outcomes remain. COMMIT moves both indexes, pays both carveouts, carries the
     // remainders, and stamps the clock. DROP stamps the clock without accrual, because nobody
-    // owes anything for the interval.
+    // owes anything for the interval. DEFER leaves the clock where it stands and retries the
+    // span on the next crank.
+    //
+    // DEFER covers an interval that does not reach a whole index unit on both sides.
+    // `borrow_interest` is 1 when the borrow side floors to zero, and `deposit_interest` is 0
+    // when the lender side floors to zero. A stamp would forgive that interest, and frequent
+    // cranks of this permissionless accrual would then hold every interval under the floor. A
+    // span therefore survives only while it stays under the floor, and it commits on the first
+    // crank that clears both sides.
     if deposit_interest > 0 && borrow_interest > 1 {
         // The deposit-interest gain divides three ways. `if_fee_factor` goes to the insurance
         // fund through `revenue_pool`. `protocol_fee_factor` goes to withdrawable protocol
@@ -205,8 +214,8 @@ pub fn update_spot_market_cumulative_interest(
         //
         // `split_deposit_interest` carries the index-space remainders, so a share too small to
         // round to a whole index unit is delayed instead of lost. It also guarantees that the
-        // two cuts never sum past the gain, so lenders never fall below zero and the interval
-        // always commits.
+        // two cuts never sum past the gain, so lenders never fall below zero and the split
+        // cannot hold up the commit.
         let split = split_deposit_interest(spot_market, deposit_interest)?;
 
         // Both cuts convert to tokens against the same `deposit_balance`, before either pool is

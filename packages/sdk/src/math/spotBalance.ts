@@ -660,8 +660,10 @@ export function maxSpotInterestStalenessForMargin(bank: SpotMarketAccount): BN {
  * pause) is set, and while utilization is zero. So a projection from `bank.lastInterestTs` never
  * spans a paused or zero-borrow window; those intervals are dropped on chain rather than billed
  * later to whatever balances exist at the time (findings #115, #117). Every other interval that is
- * owed commits on the interval it belongs to, so a projection from `bank.lastInterestTs` never spans
- * a window during which balances changed. Borrow interest
+ * owed commits on the interval it belongs to, once it reaches a whole index unit on both sides. An
+ * interval under that floor (`borrowInterest` of 1, or `depositInterest` of 0) stays on the clock
+ * and is retried on the next crank, so a projection from `bank.lastInterestTs` spans a window in
+ * which balances changed only by that sub-unit remainder. Borrow interest
  * is always rounded up by 1 (added unconditionally), matching the program's lender-favoring
  * rounding, and is credited to `cumulativeBorrowInterest` in full. **`depositInterest` here is the
  * gross pre-carveout amount** — on-chain, `insuranceFund.ifFeeFactor` and `protocolFeeFactor`
@@ -676,7 +678,7 @@ export function maxSpotInterestStalenessForMargin(bank: SpotMarketAccount): BN {
  * `pendingInterestSplitDust` and `pendingInterestDust`, and the program adds them back on the next
  * interval (finding #127). A market with a configured carveout therefore pays its pools in steps
  * rather than on every interval, while `cumulativeDepositInterest` and `lastInterestTs` still
- * advance on every interval.
+ * advance on every interval that clears the floor above.
  *
  * `depositInterest` is subject to the program's conservation clamp: it is scaled down if the tokens
  * it would credit to `depositBalance` exceed the tokens `borrowInterest` charges `borrowBalance`.

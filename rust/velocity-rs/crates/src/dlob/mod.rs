@@ -13,7 +13,7 @@ use std::{
 
 use arrayvec::ArrayVec;
 use dashmap::{mapref::one::RefMut, DashMap};
-use fxhash::FxBuildHasher;
+use rustc_hash::FxBuildHasher;
 use solana_pubkey::Pubkey;
 
 use crate::{

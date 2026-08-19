@@ -151,7 +151,9 @@ While it is set, all subaccounts reject:
   transfer described below,
 - swaps, except the price-bounded strictly reducing swap described above, which stays available so
   a frozen account can still repay a borrow out of its own deposits,
-- acting as the liquidator in position-acquiring liquidations.
+- acting as the liquidator in position-acquiring liquidations, and in swap-backed spot
+  liquidations (`liquidate_spot_with_swap`), where the tokens flow through the authority's wallet
+  but the liquidation fee is the same value capture the freeze exists to stop.
 
 Reduce-only activity remains allowed: the delegate can still close positions, cancel orders,
 deposit, and settle PnL. The accounts are not liquidated or seized.

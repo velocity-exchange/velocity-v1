@@ -3911,10 +3911,9 @@ pub fn handle_begin_swap<'c: 'info, 'info>(
     //
     // begin_swap and end_swap are separate instructions, so there is nowhere to
     // hold an in-memory snapshot across the check the way the perp fill does for
-    // #112; not moving the value is the fix. The oracle TWAP keeps advancing on
-    // every other spot path (deposit, withdraw, liquidation) and via the
-    // dedicated permissionless `update_spot_market_cumulative_interest` crank,
-    // so the EMA is not stranded.
+    // #112. The refresh is moved instead of dropped: `end_swap` advances both
+    // markets' oracle TWAPs after its band check, so the swap still contributes
+    // to the EMA and the check still reads the pre-swap value.
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut in_spot_market,
         None,
@@ -3955,7 +3954,8 @@ pub fn handle_begin_swap<'c: 'info, 'info>(
 
     // `None` for the same reason as the in market above (OtterSec #110):
     // `validate_price_bands_for_swap` reads whichever of the two markets has a
-    // zero initial margin ratio, so both sides must stay unrefreshed.
+    // zero initial margin ratio, so both sides must stay unrefreshed until
+    // `end_swap` has run the check.
     controller::spot_balance::update_spot_market_cumulative_interest(
         &mut out_spot_market,
         None,
@@ -4214,6 +4214,10 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         0,
         Some(LogMode::Margin),
     )?;
+    // Copied out of the map, not borrowed from it: the TWAP refresh at the end of
+    // this handler needs the reading, and holding a reference would keep
+    // `oracle_map` borrowed across every margin call in between.
+    let in_oracle_data = *in_oracle_data;
     let in_oracle_price = in_oracle_data.price;
 
     let mut out_spot_market = spot_market_map.get_ref_mut(&out_market_index)?;
@@ -4237,6 +4241,7 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         0,
         Some(LogMode::Margin),
     )?;
+    let out_oracle_data = *out_oracle_data;
     let out_oracle_price = out_oracle_data.price;
 
     let in_vault = &mut ctx.accounts.in_spot_market_vault;
@@ -4636,7 +4641,7 @@ pub fn handle_end_swap<'c: 'info, 'info>(
     };
     emit!(swap_record);
 
-    let out_spot_market = spot_market_map.get_ref_mut(&out_market_index)?;
+    let mut out_spot_market = spot_market_map.get_ref_mut(&out_market_index)?;
 
     validate!(
         out_spot_market.flash_loan_initial_token_amount == 0
@@ -4645,7 +4650,7 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         "end_swap ended in invalid state"
     )?;
 
-    let in_spot_market = spot_market_map.get_ref_mut(&in_market_index)?;
+    let mut in_spot_market = spot_market_map.get_ref_mut(&in_market_index)?;
 
     validate!(
         in_spot_market.flash_loan_initial_token_amount == 0
@@ -4664,6 +4669,30 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         state
             .oracle_guard_rails
             .max_oracle_twap_5min_percent_divergence(),
+    )?;
+
+    // Advance the oracle TWAPs last, after the band check above has read them.
+    //
+    // `begin_swap` passes `None` so the swap does not refresh the very anchor
+    // `validate_price_bands_for_swap` measures the realized fill against
+    // (OtterSec #110). Skipping the refresh entirely leaves the swap lane
+    // contributing nothing to the EMA, so it happens here instead: the check is
+    // already done, and `begin_swap` forbids any Velocity instruction after
+    // `end_swap`, so nothing else in this transaction can read the new value.
+    //
+    // `begin_swap` left `last_oracle_price_twap_ts` alone, so this update still
+    // weights the full elapsed interval. The deposit/borrow/utilization TWAPs
+    // were already advanced there and `last_twap_ts` stamped, so they are a
+    // no-op here.
+    controller::spot_balance::update_spot_market_twap_stats(
+        &mut in_spot_market,
+        Some(&in_oracle_data),
+        now,
+    )?;
+    controller::spot_balance::update_spot_market_twap_stats(
+        &mut out_spot_market,
+        Some(&out_oracle_data),
+        now,
     )?;
 
     Ok(())

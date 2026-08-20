@@ -223,8 +223,10 @@ pub struct VelocityAccounts {
     pub oracles: Vec<(Pubkey, OwnedAccount)>,
     pub latest_slot: u64,
     pub oracle_guard_rails: Option<OracleGuardRails>,
-    /// Current slot duration in ms (`State::slot_duration`); `0` means
-    /// unset and resolves to the 400ms baseline.
+    /// Live slot duration in ms, already resolved by the caller through
+    /// `State::active_slot_duration_ms` so a staged switch is applied. `0`
+    /// means unset and resolves to the 400ms baseline. This is not the raw
+    /// `State.slot_duration_ms` field, which lags a staged switch.
     pub slot_duration_ms: u16,
 }
 

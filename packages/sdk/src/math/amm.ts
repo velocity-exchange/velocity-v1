@@ -40,7 +40,6 @@ import {
 	SlotDurationMs,
 	SLOT_DURATION_BASELINE,
 	MILLIS_UNIT,
-	divPeriods,
 	millisFromSlots,
 } from './time';
 
@@ -1541,22 +1540,20 @@ export function calculateSpreadReserves(
 		amm.curveUpdateIntensity > 100;
 
 	if (doReferencePricOffsetSmooth) {
-		// mirror the program: elapsed time in whole 400ms periods (not raw
-		// slots), measured from lastSpreadUpdateSlot, times the per-period budget
-		const periodsPassed =
+		// mirror the program: elapsed milliseconds measured from
+		// lastSpreadUpdateSlot, times the per-400ms budget prorated by that
+		// elapsed time. Counting whole periods would floor to zero for any gap
+		// under 400ms and pin the step to the minimum.
+		const elapsedMs =
 			latestSlot != null
-				? divPeriods(
-						millisFromSlots(
-							BN.max(latestSlot.sub(amm.lastSpreadUpdateSlot), ZERO),
-							slotDuration
-						),
-						MILLIS_UNIT
+				? millisFromSlots(
+						BN.max(latestSlot.sub(amm.lastSpreadUpdateSlot), ZERO),
+						slotDuration
 				  ).toNumber()
 				: 0;
+		const budget = Math.trunc((elapsedMs * 1000) / MILLIS_UNIT.toNumber());
 		const fullOffsetDelta = referencePriceOffset - lastReferencePriceOffset;
-		const raw = Math.trunc(
-			Math.min(Math.abs(fullOffsetDelta), periodsPassed * 1000) / 10
-		);
+		const raw = Math.trunc(Math.min(Math.abs(fullOffsetDelta), budget) / 10);
 		const maxAllowed =
 			Math.abs(lastReferencePriceOffset) || Math.abs(referencePriceOffset);
 

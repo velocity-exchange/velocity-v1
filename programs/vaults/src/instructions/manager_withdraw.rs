@@ -49,7 +49,7 @@ pub fn manager_withdraw<'info>(ctx: Context<'info, ManagerWithdraw<'info>>) -> R
         Some(spot_market_index),
         vp.is_some(),
         has_fee_update,
-        Some(&ctx.accounts.velocity_state),
+        &ctx.accounts.velocity_state,
     )?;
 
     let vault_equity =

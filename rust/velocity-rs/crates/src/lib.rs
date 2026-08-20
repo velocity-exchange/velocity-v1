@@ -1052,6 +1052,27 @@ impl VelocityClient {
     /// * `market_index` - perp market index
     /// * `current_slot` - current solana slot
     ///
+    /// The live slot duration at `now_slot`, applying a staged switch once its
+    /// effective slot has passed. Mirrors the program's
+    /// `State::active_slot_duration_ms`. The raw `State.slot_duration_ms` field
+    /// lags a staged switch for as long as the gate after it is unstaged, so
+    /// resolve through here rather than reading that field. Falls back to the
+    /// 400ms baseline when `State` is not cached.
+    pub fn slot_duration_at(&self, now_slot: Slot) -> program::math::time::SlotDuration {
+        self.state_account()
+            .map(|s| {
+                program::math::time::SlotDuration::from_state_ms(
+                    program::math::time::active_slot_duration_ms(
+                        s.slot_duration_ms,
+                        s.pending_slot_duration_ms,
+                        s.slot_duration_effective_slot,
+                        now_slot,
+                    ),
+                )
+            })
+            .unwrap_or(program::math::time::SlotDuration::BASELINE)
+    }
+
     pub fn try_get_mmoracle_for_perp_market(
         &self,
         market_index: u16,
@@ -1065,9 +1086,7 @@ impl VelocityClient {
 
         let velocity_validity_guard_rails: program::state::state::ValidityGuardRails =
             unsafe { std::mem::transmute_copy::<_, _>(&oracle_validity_guard_rails) };
-        let slot_duration = program::math::time::SlotDuration::from_state_ms(
-            self.state_account().unwrap().slot_duration_ms,
-        );
+        let slot_duration = self.slot_duration_at(current_slot);
         perp_market
             .get_mm_oracle_price_data(
                 oracle_data.data,
@@ -1118,9 +1137,7 @@ impl VelocityClient {
             exchange_oracle,
             &velocity_validity_guard_rails,
             slot,
-            program::math::time::SlotDuration::from_state_ms(
-                self.state_account().unwrap().slot_duration_ms,
-            ),
+            self.slot_duration_at(slot),
         )
     }
 

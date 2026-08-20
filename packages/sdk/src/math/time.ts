@@ -1,4 +1,4 @@
-import { BN } from '@coral-xyz/anchor';
+import { BN } from '../isomorphic/anchor';
 
 /**
  * Wall-clock durations and the live slot length — the TypeScript mirror of the

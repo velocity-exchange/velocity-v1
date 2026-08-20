@@ -24,7 +24,6 @@ import {
 	getVersionedTransaction,
 	simulateAndGetTxWithCUs,
 	sleepMs,
-	currentSlotDuration,
 } from '../utils';
 import { Agent, setGlobalDispatcher } from 'undici';
 import { Channel } from '@pythnetwork/pyth-lazer-sdk';
@@ -38,9 +37,10 @@ setGlobalDispatcher(
 
 const SIM_CU_ESTIMATE_MULTIPLIER = 1.5;
 const DEFAULT_INTEVAL_MS = 30000;
-// ~4 slots; ceiling between posts when adaptive cranking is on. Computed from
-// the live State.slotDurationMs so the posting cadence tracks slot time.
-const DEFAULT_MAX_CRANK_INTERVAL_SLOTS = 4;
+// Ceiling between posts when adaptive cranking is on. A wall-clock interval:
+// no program-side gate for Pyth Lazer is slot-denominated, so this must not
+// scale with slot time or the post rate (and the fee spend) doubles at each gate.
+const DEFAULT_MAX_CRANK_INTERVAL_MS = 1600;
 // A chunk with an unresolved send is not re-gated until this long has passed,
 // so a hung sendTransaction cannot permanently wedge the chunk
 const IN_FLIGHT_EXPIRY_MS = 10_000;
@@ -55,9 +55,6 @@ export class PythLazerCrankerBot implements Bot {
 
 	private blockhashSubscriber: BlockhashSubscriber;
 	private health: boolean = true;
-	// live chain slot, refreshed each crank loop; drives the slot-duration used
-	// for the adaptive-crank pacing. 0 until the first loop => 400ms baseline.
-	private currentSlot = 0;
 	// Metrics
 	private txRecorder: TxRecorder;
 
@@ -269,8 +266,7 @@ export class PythLazerCrankerBot implements Bot {
 		if (this.crankConfigs.crankDivergenceBps !== undefined) {
 			const maxCrankIntervalMs =
 				this.crankConfigs.maxCrankIntervalMs ??
-				DEFAULT_MAX_CRANK_INTERVAL_SLOTS *
-					currentSlotDuration(this.velocityClient, this.currentSlot);
+				DEFAULT_MAX_CRANK_INTERVAL_MS;
 			logger.info(
 				`Adaptive cranking enabled: posting at most every ${maxCrankIntervalMs}ms or on >=${this.crankConfigs.crankDivergenceBps}bps divergence`
 			);
@@ -356,8 +352,7 @@ export class PythLazerCrankerBot implements Bot {
 
 		const maxCrankIntervalMs =
 			this.crankConfigs.maxCrankIntervalMs ??
-			DEFAULT_MAX_CRANK_INTERVAL_SLOTS *
-				currentSlotDuration(this.velocityClient, this.currentSlot);
+			DEFAULT_MAX_CRANK_INTERVAL_MS;
 		if (nowMs - lastPostMs >= maxCrankIntervalMs) {
 			return `max interval (${
 				nowMs - lastPostMs
@@ -402,13 +397,6 @@ export class PythLazerCrankerBot implements Bot {
 		if (!this.pythLazerClient) {
 			logger.warn('pythLazerClient not initialized, skipping crank loop');
 			return;
-		}
-
-		// refresh the live slot so the pacing tracks a staged slot-duration switch
-		try {
-			this.currentSlot = await this.velocityClient.connection.getSlot();
-		} catch (e) {
-			logger.warn(`failed to refresh slot for crank pacing: ${e}`);
 		}
 
 		for (const [

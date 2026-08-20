@@ -235,24 +235,29 @@ fn compute_quote_state(
         && amm.curve_update_intensity > 100;
 
     let final_reference_price_offset = if do_reference_price_smooth {
-        // budget accrues per whole 400ms period (its historical calibration)
-        // so the smoothing completes over the same wall-clock time
-        let periods_passed = Millis::from_slots(
+        // The budget is calibrated per 400ms but accrues in proportion to the
+        // elapsed milliseconds, so the smoothing completes over the same wall
+        // clock at any slot duration. Counting whole 400ms periods instead would
+        // floor to zero for every gap under 400ms, which is what a
+        // consecutive-slot crank becomes once slots are faster than that; the
+        // step would then pin to the minimum and converge slower the more often
+        // the market is cranked.
+        let elapsed_ms = Millis::from_slots(
             slot.saturating_sub(amm.last_spread_update_slot),
             slot_duration,
-        )
-        .div_periods(Millis::UNIT);
+        );
         let reference_price_delta = {
             let full_offset_delta = reference_price_offset
                 .cast::<i128>()?
                 .saturating_sub(last_reference_price_offset.cast::<i128>()?);
+            let budget = elapsed_ms
+                .as_ms()
+                .cast::<i128>()?
+                .safe_mul(REF_PRICE_OFFSET_SMOOTHING_PER_PERIOD_BUDGET)?
+                .safe_div(Millis::UNIT.as_ms().cast::<i128>()?)?;
             let raw = full_offset_delta
                 .abs()
-                .min(
-                    periods_passed
-                        .cast::<i128>()?
-                        .safe_mul(REF_PRICE_OFFSET_SMOOTHING_PER_PERIOD_BUDGET)?,
-                )
+                .min(budget)
                 .safe_div(REF_PRICE_OFFSET_SMOOTHING_STEP_DIVISOR)?
                 .cast::<i32>()?;
 

@@ -2745,15 +2745,31 @@ fn feature_gate_effective_slot(account: &AccountInfo, expected: &Pubkey) -> Resu
     Ok(activated_at.saturating_add(FEATURE_WARMUP_SLOTS))
 }
 
+/// What [`prepare_slot_duration_stage`] concluded about the request.
+enum StagePreparation {
+    /// The schedule is exhausted. The promotion this call performed is the whole
+    /// job and the caller must commit it without staging anything further.
+    PromotedOnly,
+    /// `slot_duration_ms` is now the effective base and the requested value is
+    /// its exact successor, so the caller may stage the switch.
+    ReadyToStage { current_ms: u64 },
+}
+
 /// Normalize the staged state before accepting another gate. Promotion must
 /// happen before the pending check and successor check: at the exact effective
 /// slot, the old pending value is the current base and the following gate may be
 /// staged; one slot earlier, overwriting it must still be rejected.
+///
+/// A promotion only reaches the account if the whole instruction succeeds, so the
+/// terminal gate returns [`StagePreparation::PromotedOnly`] rather than failing
+/// the successor check. Failing there would roll the promotion back and leave
+/// `slot_duration_ms` one step behind `slot_duration()` forever, since this
+/// handler is the only writer of these fields.
 fn prepare_slot_duration_stage(
     state: &mut State,
     now_slot: u64,
     slot_duration_ms: u16,
-) -> Result<u64> {
+) -> Result<StagePreparation> {
     if state.pending_slot_duration_ms != 0 && now_slot >= state.slot_duration_effective_slot {
         state.slot_duration_ms = state.pending_slot_duration_ms;
         state.pending_slot_duration_ms = 0;
@@ -2768,18 +2784,25 @@ fn prepare_slot_duration_stage(
         state.slot_duration_effective_slot
     )?;
 
-    let current = SlotDuration::from_state_ms(state.slot_duration_ms).as_ms();
-    let expected_next = crate::math::time::next_slot_duration_ms(current);
+    let current_ms = SlotDuration::from_state_ms(state.slot_duration_ms).as_ms();
+    let Some(expected_next) = crate::math::time::next_slot_duration_ms(current_ms) else {
+        msg!(
+            "slot_duration_ms: {} is the last value on the schedule; ignoring the requested {} and committing the promotion only",
+            current_ms,
+            slot_duration_ms
+        );
+        return Ok(StagePreparation::PromotedOnly);
+    };
     validate!(
-        expected_next == Some(slot_duration_ms),
+        expected_next == slot_duration_ms,
         ErrorCode::DefaultError,
-        "slot_duration_ms must step {} -> {:?}, got {}",
-        current,
+        "slot_duration_ms must step {} -> {}, got {}",
+        current_ms,
         expected_next,
         slot_duration_ms
     )?;
 
-    Ok(current)
+    Ok(StagePreparation::ReadyToStage { current_ms })
 }
 
 pub fn handle_update_state_slot_duration_ms(
@@ -2787,19 +2810,25 @@ pub fn handle_update_state_slot_duration_ms(
     slot_duration_ms: u16,
 ) -> Result<()> {
     let now_slot = Clock::get()?.slot;
-    let feature_account = ctx
-        .remaining_accounts
-        .first()
-        .ok_or(ErrorCode::DefaultError)?;
-
     let mut state = ctx.accounts.state.load_mut()?;
 
-    let current = prepare_slot_duration_stage(&mut state, now_slot, slot_duration_ms)?;
+    // The gate account is read only when there is something to stage, so a
+    // promote-only call at the end of the schedule needs no remaining accounts.
+    let current = match prepare_slot_duration_stage(&mut state, now_slot, slot_duration_ms)? {
+        // Commit the promotion and stop: the schedule is exhausted, so there is
+        // no gate account to read and nothing to stage.
+        StagePreparation::PromotedOnly => return Ok(()),
+        StagePreparation::ReadyToStage { current_ms } => current_ms,
+    };
 
     // Read the switch slot from the matching IBRL feature gate (activation +
     // warmup). Staged during the warmup, State then flips itself at exactly that
     // slot, in lockstep with the chain — no second transaction, and no window
     // where State and the chain disagree. Not a hot path, so the read is fine.
+    let feature_account = ctx
+        .remaining_accounts
+        .first()
+        .ok_or(ErrorCode::DefaultError)?;
     let feature_gate = ibrl_feature_gate(slot_duration_ms).ok_or(ErrorCode::DefaultError)?;
     let effective_slot = feature_gate_effective_slot(feature_account, &feature_gate)?;
 
@@ -4346,7 +4375,8 @@ fn apply_mm_oracle_update(
     let gap = current_slot - stats.mm_oracle_slot;
     // rate limiter: round the min accepted interval UP so the wall-clock gap is
     // never shorter than intended (floor would loosen the slew cap at intermediate
-    // gates). the immediate-fill staleness fallback on the same constant stays floor.
+    // gates). The immediate-fill staleness fallback in `oracle_validity` ceils the
+    // same constant, so the accept threshold there matches this write gate exactly.
     let min_gap = MM_ORACLE_MIN_WRITE_GAP.to_slots_ceil(slot_duration);
     if gap < min_gap {
         return Ok(Outcome::Skipped(Skip::RecrankGapTooSmall { gap, min_gap }));
@@ -4359,6 +4389,9 @@ fn apply_mm_oracle_update(
     // a caller bug (a wrong-unit value, e.g. a millisecond timestamp, would
     // otherwise disable this gate permanently and silently), while a small
     // forward allowance still lets a crank estimate its landing slot.
+    // This bound floors while the write gate above ceils, so the true observation
+    // age this admits is `ceil(gap) + floor(age)` slots, not twice the gap. The two
+    // are equal only at the 400ms baseline; at 350ms the bound is 5 slots (1750ms).
     if current_slot.abs_diff(source_slot) > MM_ORACLE_MAX_SOURCE_AGE.to_slots(slot_duration) {
         return Ok(Outcome::Skipped(Skip::SourceSlotOutOfRange { source_slot }));
     }
@@ -6859,7 +6892,8 @@ mod feature_gate_tests {
     use {
         super::{
             feature_gate_effective_slot, ibrl_feature_gate, prepare_slot_duration_stage,
-            read_native_state_slot_duration, FEATURE_GATE_PROGRAM, FEATURE_WARMUP_SLOTS,
+            read_native_state_slot_duration, StagePreparation, FEATURE_GATE_PROGRAM,
+            FEATURE_WARMUP_SLOTS,
         },
         crate::state::state::State,
         anchor_lang::prelude::*,
@@ -6921,13 +6955,46 @@ mod feature_gate_tests {
 
         // At the boundary, promotion runs first, then 300 is recognized as the
         // exact successor of the newly-current 350ms value.
-        assert_eq!(
+        assert!(matches!(
             prepare_slot_duration_stage(&mut state, 1_000, 300).unwrap(),
-            350
-        );
+            StagePreparation::ReadyToStage { current_ms: 350 }
+        ));
         assert_eq!(state.slot_duration_ms, 350);
         assert_eq!(state.pending_slot_duration_ms, 0);
         assert_eq!(state.slot_duration_effective_slot, 0);
+    }
+
+    /// The last gate has no successor, so the promotion must be reported as the
+    /// whole job. Returning an error here would roll the promotion back with the
+    /// instruction and strand `slot_duration_ms` one step behind forever.
+    #[test]
+    fn stage_preparation_commits_the_promotion_at_the_terminal_gate() {
+        let mut state = State {
+            slot_duration_ms: 250,
+            pending_slot_duration_ms: 200,
+            slot_duration_effective_slot: 1_000,
+            ..State::default()
+        };
+
+        assert!(matches!(
+            prepare_slot_duration_stage(&mut state, 1_000, 200).unwrap(),
+            StagePreparation::PromotedOnly
+        ));
+        assert_eq!(state.slot_duration_ms, 200);
+        assert_eq!(state.pending_slot_duration_ms, 0);
+        assert_eq!(state.slot_duration_effective_slot, 0);
+
+        // Already at the terminal value with nothing staged: still a no-op success,
+        // so a repeat call is harmless.
+        assert!(matches!(
+            prepare_slot_duration_stage(&mut state, 2_000, 200).unwrap(),
+            StagePreparation::PromotedOnly
+        ));
+        assert_eq!(state.slot_duration_ms, 200);
+
+        // The base and the resolved live value now agree, which is what every
+        // consumer that reads the raw field depends on.
+        assert_eq!(state.active_slot_duration_ms(2_000), 200);
     }
 
     #[test]
@@ -6945,10 +7012,10 @@ mod feature_gate_tests {
             ..State::default()
         };
         assert!(prepare_slot_duration_stage(&mut state, 0, 400).is_err());
-        assert_eq!(
+        assert!(matches!(
             prepare_slot_duration_stage(&mut state, 0, 300).unwrap(),
-            350
-        );
+            StagePreparation::ReadyToStage { current_ms: 350 }
+        ));
     }
 
     #[test]

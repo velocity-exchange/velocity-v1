@@ -2365,6 +2365,7 @@ export class VelocityClient {
 				accounts: {
 					user: userAccountPublicKeyToUse,
 					authority: this.wallet.publicKey,
+					state: await this.getStatePublicKey(),
 				},
 				remainingAccounts,
 			}
@@ -2651,6 +2652,7 @@ export class VelocityClient {
 						subAccountId
 					),
 					authority: this.wallet.publicKey,
+					state: await this.getStatePublicKey(),
 				},
 			}
 		);

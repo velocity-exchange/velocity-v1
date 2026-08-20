@@ -73,6 +73,9 @@ pub struct State {
     pub signer_nonce: u8,
     /// Compact wall-clock duration encoded in historical 400ms slot quanta.
     pub min_perp_auction_duration: LegacySlotDurationU8,
+    /// Default time-in-force for market orders, in seconds. `Order.max_ts` is a
+    /// unix timestamp, so this never converts through the slot length and stays
+    /// a raw integer. It currently has no on-chain reader.
     pub default_market_order_time_in_force: u8,
     /// An actual slot-count setting, not a wall-clock duration. It currently has
     /// no on-chain reader (spot DLOB trading is disabled), so it intentionally
@@ -579,7 +582,9 @@ impl Size for State {
     // 8 (disc) + 13 Pubkey (cold + warm + pause + 10 hot, 416 B) + 8 Pubkey (mint/signer/srm
     // + protocol_fee_recipient_perp/_spot + hot_fee_withdraw + hot_account_extension, 256 B)
     // + 2*FeeStructure + OracleGuardRails + scalars + solvency_status[1] + promo_fee_tier[1]
-    // + slot_duration_ms[2] + padding[244] = 1752 B.
+    // + slot_duration_ms[2] + pending_slot_duration_ms[2] + slot_duration_pad[2]
+    // + slot_duration_effective_slot[8] + padding[232] = 1752 B.
+    // The padding starts at struct offset 1512, not 1500 — carve new fields from there.
     // hot_if_rebalance was removed with the if-rebalance machinery (its 32 B went into
     // the padding); protocol_fee_recipient_spot later took 32 B back out; solvency_status
     // took 1 B out of the padding; hot_account_extension took another 32 B out;

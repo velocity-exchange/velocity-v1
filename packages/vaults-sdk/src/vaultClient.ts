@@ -839,6 +839,7 @@ export class VaultClient {
 		const accounts = {
 			vault: vault,
 			velocityUser: vaultAccount.user,
+			velocityState: await this.velocityClient.getStatePublicKey(),
 			velocityProgram: this.velocityClient.program.programId,
 		};
 
@@ -913,6 +914,7 @@ export class VaultClient {
 		const accounts = {
 			vault: vault,
 			velocityUser: vaultAccount.user,
+			velocityState: await this.velocityClient.getStatePublicKey(),
 			velocityProgram: this.velocityClient.program.programId,
 		};
 
@@ -1572,6 +1574,7 @@ export class VaultClient {
 		const vaultAccount = await this.program.account.vault.fetch(vault);
 
 		const user = await this.getSubscribedVaultUser(vaultAccount.user);
+		const velocityStateKey = await this.velocityClient.getStatePublicKey();
 		const userStatsKey = getUserStatsAccountPublicKey(
 			this.velocityClient.program.programId,
 			vault
@@ -1594,6 +1597,7 @@ export class VaultClient {
 				manager: vaultAccount.manager,
 				velocityUserStats: userStatsKey,
 				velocityUser: vaultAccount.user,
+				velocityState: velocityStateKey,
 			},
 			remainingAccounts,
 		});

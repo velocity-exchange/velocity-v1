@@ -530,7 +530,13 @@ accounts/events with the previous TS shapes should note:
   offset moved — existing accounts read it as 0 (nothing owed), but custom (non-IDL)
   decoders must replace the padding with the field. It is a per-market aggregate of accrued
   builder/referrer revenue share owed out of the pnl pool, maintained by the program and
-  reserved by the fee sweep. `PerpMarketAccount.pendingRevenueShare` added.
+  reserved by the fee sweep. `PerpMarketAccount.pendingRevenueShare` added. As of
+  `revshare-settle-liveness` `settle_expired_market_pools_to_revenue_pool` refuses outright to
+  delist a market whose counter is non-zero (`UnsettledRevenueShareOnDelist`), so a `Delisted`
+  market always reads 0 and indexers must not treat a delisted market's `pendingRevenueShare` as an
+  outstanding liability. There is no time-based escape: every row is terminally resolvable by the
+  permissionless `settle_revenue_share` (pays) or `forfeit_revenue_share_order` (writes off, on
+  proof it cannot be paid).
 - **`State` slot-duration fields** (slot-duration-scaling) were carved in place from the
   padding after `promo_fee_tier`: `slot_duration_ms: u16` (bytes 1506..1508),
   `pending_slot_duration_ms: u16` (1508..1510), `slot_duration_pad: [u8; 2]` (1510..1512), and
@@ -552,14 +558,19 @@ accounts/events with the previous TS shapes should note:
   it accepts only the exact next value on the 400 -> 350 -> 300 -> 250 -> 200 schedule and reads the
   effective slot from the gate's feature account (passed as a remaining account; the SDK/CLI fill it
   in from the target value). `StateAccount.slotDurationMs`, `pendingSlotDurationMs`,
-  `slotDurationEffectiveSlot` added.
-  reserved by the fee sweep. `PerpMarketAccount.pendingRevenueShare` added. As of
-  `revshare-settle-liveness` `settle_expired_market_pools_to_revenue_pool` refuses outright to
-  delist a market whose counter is non-zero (`UnsettledRevenueShareOnDelist`), so a `Delisted`
-  market always reads 0 and indexers must not treat a delisted market's `pendingRevenueShare` as an
-  outstanding liability. There is no time-based escape: every row is terminally resolvable by the
-  permissionless `settle_revenue_share` (pays) or `forfeit_revenue_share_order` (writes off, on
-  proof it cannot be paid).
+  `slotDurationEffectiveSlot` added. Calling it once the schedule is exhausted is a no-op
+  success that only promotes an already-effective staged value, so `slot_duration_ms` never
+  stays behind the live value.
+- **Three instructions gained a required `State` account** (slot-duration-scaling), because they
+  load market/oracle maps and so need the live slot duration: velocity's
+  `update_user_margin_trading_enabled` and `update_user_pool_id` (now on a separate
+  `UpdateUserWithMarkets` accounts struct; the other `update_user_*` handlers are unchanged),
+  and `jit-proxy`'s `check_order_constraints`. In the vaults program,
+  `manager_update_borrow`, `update_margin_trading_enabled`, and `update_pool_id` gained
+  `velocity_state` for the same reason. Each new account is appended after the existing ones and
+  is read-only. Hand-built transactions must add it; the SDKs and CLI fill it in. Without it
+  those paths sized their oracle staleness windows off the 400ms baseline, which on a faster
+  chain rejects oracles the rest of the protocol accepts.
 - **Error codes are ABI-stable**: removed variants were renamed to `Deprecated*` stubs
   in place (numeric codes preserved); new variants are appended at the end. The tail of the
   enum is now `SpotDlobTradingDisabled` (6350), `InvalidAdminTier` (6351),

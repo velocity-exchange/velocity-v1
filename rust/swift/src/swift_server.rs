@@ -327,7 +327,7 @@ pub async fn process_order(
         signed_msg,
         &taker_authority,
         current_slot,
-        server_slot_duration(&server_params.velocity),
+        server_slot_duration(&server_params.velocity, current_slot),
     )?;
 
     log::info!(
@@ -553,7 +553,7 @@ pub async fn deposit_trade(
         &req.swift_order.order(),
         &req.swift_order.taker_authority,
         current_slot,
-        server_slot_duration(&server_params.velocity),
+        server_slot_duration(&server_params.velocity, current_slot),
     ) {
         Ok((_info, max_margin_ratio, _is_isolated)) => max_margin_ratio,
         Err((_status, err)) => return (StatusCode::BAD_REQUEST, Json(err)),
@@ -1530,7 +1530,7 @@ impl ServerParams {
         let max_staleness = velocity_rs::program::math::time::Millis::from_stored_units(
             self.config.auction_oracle_max_staleness_slots,
         )
-        .to_slots(server_slot_duration(&self.velocity));
+        .to_slots(server_slot_duration(&self.velocity, current_slot));
         let oracle_stale = max_staleness != 0 && oracle_staleness_slots > max_staleness;
         if slot_subscriber_stale || oracle_stale {
             record(if slot_subscriber_stale {
@@ -1659,7 +1659,8 @@ impl ServerParams {
 
         // Mirrors the on-chain `place_perp_order` sanitize step: returns true
         // when the program would adjust the auction params at placement time.
-        let slot_duration = server_slot_duration(&self.velocity);
+        let slot_duration =
+            server_slot_duration(&self.velocity, self.slot_subscriber.current_slot());
         let mut params = order_params.clone();
         match params.update_perp_auction_params(
             &perp_market,
@@ -1828,15 +1829,17 @@ fn validate_order(
     Ok(())
 }
 
-/// Current slot duration from the subscribed velocity `State` account,
-/// falling back to the 400ms baseline when state is unavailable.
+/// Live slot duration from the subscribed velocity `State` account at
+/// `now_slot`, applying a staged switch once its effective slot has passed.
+/// Falls back to the 400ms baseline when state is unavailable. Pass a current
+/// chain slot: the raw base field lags a staged switch, and sizing these windows
+/// off the pre-switch value makes the server reject orders the program accepts
+/// and, for the auction band check, skip the guard entirely.
 fn server_slot_duration(
     velocity: &velocity_rs::VelocityClient,
+    now_slot: Slot,
 ) -> velocity_rs::program::math::time::SlotDuration {
-    velocity
-        .state_account()
-        .map(|s| velocity_rs::program::math::time::SlotDuration::from_state_ms(s.slot_duration_ms))
-        .unwrap_or(velocity_rs::program::math::time::SlotDuration::BASELINE)
+    velocity.slot_duration_at(now_slot)
 }
 
 fn extract_signed_message_info(

@@ -39,7 +39,7 @@ pub fn apply_rebase<'info>(ctx: Context<'info, ApplyRebase<'info>>) -> Result<()
         Some(spot_market_index),
         vp.is_some(),
         false,
-        Some(&ctx.accounts.velocity_state),
+        &ctx.accounts.velocity_state,
     )?;
 
     let vault_equity =

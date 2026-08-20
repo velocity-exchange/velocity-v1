@@ -52,7 +52,7 @@ pub fn withdraw<'info>(ctx: Context<'info, Withdraw<'info>>) -> Result<()> {
         Some(spot_market_index),
         vp.is_some(),
         has_fee_update,
-        Some(&ctx.accounts.velocity_state),
+        &ctx.accounts.velocity_state,
     )?;
 
     let vault_equity =

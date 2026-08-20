@@ -289,10 +289,12 @@ pub const SPREAD_CONF_DISCOUNT_DIVISOR: u64 = 20;
 pub const SPREAD_VOL_STD_DISCOUNT_DIVISOR: u128 = 4;
 /// The revenue retreat is capped at `max_spread` divided by this.
 pub const SPREAD_REVENUE_RETREAT_MAX_DIVISOR: u64 = 10;
-/// Reference-price-offset sign-transition smoothing: per-slot budget for the
-/// pre-division step (`|delta|` is capped at `slots_passed *` this).
-/// Budget per [`crate::math::time::Millis::UNIT`] (400ms) of elapsed time;
-/// `compute_quote_state` counts whole periods before applying it.
+/// Reference-price-offset sign-transition smoothing: the budget for the
+/// pre-division step, calibrated per [`crate::math::time::Millis::UNIT`] (400ms)
+/// of elapsed time. `compute_quote_state` prorates it by the elapsed
+/// milliseconds, so the convergence rate per wall-clock second is the same at
+/// every slot duration and identical to the historical per-slot behavior at
+/// 400ms.
 pub const REF_PRICE_OFFSET_SMOOTHING_PER_PERIOD_BUDGET: i128 = 1000;
 /// Reference-price-offset sign-transition smoothing: the capped delta is
 /// divided by this to get the per-refresh step.
@@ -396,9 +398,11 @@ pub const MM_ORACLE_MAX_STEP_PCT_PRECISION: i128 = PERCENTAGE_PRECISION_I128 / 1
 /// Must stay at or below `MM_ORACLE_MIN_WRITE_GAP` (asserted below): the
 /// landing-slot stamp makes `oracle_delay` understate true observation age by
 /// up to this bound, so the immediate-fill gate's unset threshold of
-/// `MM_ORACLE_MIN_WRITE_GAP` only bounds true age to twice the
-/// gap while the two constants are equal. Widening this widens what
-/// "slot-fresh" means everywhere downstream.
+/// `MM_ORACLE_MIN_WRITE_GAP` bounds true age to the sum of the two.
+/// The write gate ceils and this bound floors, so that sum is
+/// `ceil(gap / d) + floor(age / d)` slots: exactly twice the gap only at the
+/// 400ms baseline, and one slot more at 350ms and 250ms. Widening this widens
+/// what "slot-fresh" means everywhere downstream.
 pub const MM_ORACLE_MAX_SOURCE_AGE: Millis = Millis::from_ms(800);
 static_assertions::const_assert!(
     MM_ORACLE_MAX_SOURCE_AGE.as_ms() <= MM_ORACLE_MIN_WRITE_GAP.as_ms()

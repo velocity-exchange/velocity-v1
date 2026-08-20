@@ -1,6 +1,8 @@
 import { Command } from 'commander';
 import { PublicKey } from '@solana/web3.js';
+import { BN } from '@coral-xyz/anchor';
 import {
+	activeSlotDurationFromState,
 	getIbrlFeatureGate,
 	IBRL_FEATURE_WARMUP_SLOTS,
 } from '@velocity-exchange/sdk';
@@ -58,17 +60,21 @@ export function registerExchange(parent: Command): void {
 				);
 			}
 			const newMs = Number.parseInt(ms.trim(), 10);
-			const currentMs = client.getStateAccount().slotDurationMs || 400;
+			const currentSlot = await provider.connection.getSlot();
+			// The live value, not the raw base field: a staged switch that is
+			// already effective is the duration the program steps from, so the base
+			// field alone would preview the wrong starting point.
+			const currentMs = activeSlotDurationFromState(
+				client.getStateAccount(),
+				new BN(currentSlot)
+			);
 			console.log(`slot duration ${currentMs}ms -> ${newMs}ms`);
 			// Preview the switch slot from the target IBRL gate account (the same
 			// account the program reads): activation slot + one-epoch warmup =
 			// effective slot at which State auto-switches.
 			const featureGate = getIbrlFeatureGate(newMs);
 			if (featureGate) {
-				const [acct, currentSlot] = await Promise.all([
-					provider.connection.getAccountInfo(featureGate),
-					provider.connection.getSlot(),
-				]);
+				const acct = await provider.connection.getAccountInfo(featureGate);
 				if (acct && acct.data.length === 9 && acct.data[0] === 1) {
 					const activation = Number(acct.data.readBigUInt64LE(1));
 					const effective = activation + IBRL_FEATURE_WARMUP_SLOTS;

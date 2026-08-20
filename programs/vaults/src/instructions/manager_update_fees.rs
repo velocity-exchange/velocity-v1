@@ -68,7 +68,7 @@ pub fn manager_update_fees<'info>(
             Some(vault.spot_market_index),
             vp.is_some(),
             false,
-            Some(&ctx.accounts.velocity_state),
+            &ctx.accounts.velocity_state,
         )?;
 
         let vault_equity = {

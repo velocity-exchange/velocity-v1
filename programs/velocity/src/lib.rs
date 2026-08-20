@@ -397,7 +397,7 @@ pub mod velocity {
     }
 
     pub fn update_user_margin_trading_enabled<'c: 'info, 'info>(
-        ctx: Context<'info, UpdateUser<'info>>,
+        ctx: Context<'info, UpdateUserWithMarkets<'info>>,
         _sub_account_id: u16,
         margin_trading_enabled: bool,
     ) -> Result<()> {
@@ -405,7 +405,7 @@ pub mod velocity {
     }
 
     pub fn update_user_pool_id<'c: 'info, 'info>(
-        ctx: Context<'info, UpdateUser<'info>>,
+        ctx: Context<'info, UpdateUserWithMarkets<'info>>,
         _sub_account_id: u16,
         pool_id: u8,
     ) -> Result<()> {

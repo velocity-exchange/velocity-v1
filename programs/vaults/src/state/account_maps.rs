@@ -16,7 +16,7 @@ pub trait AccountMapProvider<'a> {
         writable_spot_market: Option<u16>,
         has_vault_protocol: bool,
         has_fee_update: bool,
-        velocity_state: Option<&AccountInfo>,
+        velocity_state: &AccountInfo,
     ) -> VelocityResult<AccountMaps<'a>>;
 }
 
@@ -27,27 +27,24 @@ impl<'info, T: anchor_lang::Bumps> AccountMapProvider<'info> for Context<'info, 
         writable_spot_market_index: Option<u16>,
         has_vault_protocol: bool,
         has_fee_update: bool,
-        velocity_state: Option<&AccountInfo>,
+        velocity_state: &AccountInfo,
     ) -> VelocityResult<AccountMaps<'info>> {
         // if [`VaultProtocol`] exists it will be the last index in the remaining_accounts, so we need to skip it.
         let mut end_index = self.remaining_accounts.len() - (has_vault_protocol as usize);
         // if there is a [`FeeUpdate`], we need to skip one more account
         end_index -= has_fee_update as usize;
 
-        // Track the real slot duration when the caller has velocity's State in
-        // scope (validated + read by `slot_duration_from_account_info`); the one
-        // path that doesn't (`manager_update_borrow`) passes None and stays on the
-        // 400ms baseline (stricter at faster slots, the safe direction).
-        let slot_duration = match velocity_state {
-            Some(state) => {
-                velocity::state::state::State::slot_duration_from_account_info(state, slot)
-                    .map_err(|error| {
-                        msg!("invalid velocity State account: {}", error);
-                        velocity::error::ErrorCode::DefaultError
-                    })?
-            }
-            None => velocity::math::time::SlotDuration::BASELINE,
-        };
+        // Every vault path that loads maps carries velocity's State, so the live
+        // slot duration is always available. Taking it unconditionally keeps a
+        // 400ms baseline fallback unrepresentable: on a faster chain the baseline
+        // shrinks every oracle staleness window, which would fail this
+        // instruction on an oracle the rest of the protocol accepts.
+        let slot_duration =
+            velocity::state::state::State::slot_duration_from_account_info(velocity_state, slot)
+                .map_err(|error| {
+                    msg!("invalid velocity State account: {}", error);
+                    velocity::error::ErrorCode::DefaultError
+                })?;
 
         let remaining_accounts_iter = &mut self.remaining_accounts[..end_index].iter().peekable();
         load_maps(

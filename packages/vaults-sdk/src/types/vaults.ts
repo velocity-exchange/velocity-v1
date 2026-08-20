@@ -1843,6 +1843,14 @@ export type Vaults = {
 					name: 'velocityUser';
 					writable: true;
 				},
+				{
+					name: 'velocityState';
+					docs: [
+						"Velocity's `State`, read only for the live slot duration so this",
+						"instruction's oracle staleness windows match every other vault path.",
+						'`State::slot_duration_from_account_info`',
+					];
+				},
 			];
 			args: [
 				{
@@ -2960,6 +2968,13 @@ export type Vaults = {
 					writable: true;
 				},
 				{
+					name: 'velocityState';
+					docs: [
+						"Velocity's `State`, forwarded so the CPI resolves the live slot duration",
+						'for its oracle staleness windows.',
+					];
+				},
+				{
 					name: 'velocityProgram';
 					address: 'vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P';
 				},
@@ -2986,6 +3001,13 @@ export type Vaults = {
 				{
 					name: 'velocityUser';
 					writable: true;
+				},
+				{
+					name: 'velocityState';
+					docs: [
+						"Velocity's `State`, forwarded so the CPI resolves the live slot duration",
+						'for its oracle staleness windows.',
+					];
 				},
 				{
 					name: 'velocityProgram';

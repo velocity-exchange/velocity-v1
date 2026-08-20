@@ -5,7 +5,7 @@ use {
     velocity::{
         instructions::optional_accounts::{load_maps, AccountMaps},
         math::{casting::Cast, safe_math::SafeMath},
-        state::user::User,
+        state::{state::State, user::User},
     },
 };
 
@@ -28,9 +28,7 @@ pub fn check_order_constraints<'c: 'info, 'info>(
         &BTreeSet::new(),
         &BTreeSet::new(),
         slot,
-        // no State account in this ctx; the maps run on default guard rails,
-        // so they keep the 400ms baseline too
-        velocity::math::time::SlotDuration::BASELINE,
+        ctx.accounts.state.load()?.slot_duration(),
         None,
     )?;
 
@@ -70,6 +68,9 @@ pub fn check_order_constraints<'c: 'info, 'info>(
 
 #[derive(Accounts)]
 pub struct CheckOrderConstraints<'info> {
+    /// Velocity's `State`, read for the live slot duration so the oracle
+    /// staleness windows here match the ones velocity itself applies.
+    pub state: AccountLoader<'info, State>,
     pub user: AccountLoader<'info, User>,
 }
 

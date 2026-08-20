@@ -73,7 +73,7 @@ pub fn tokenize_shares<'info>(
         Some(spot_market_index),
         vp.is_some(),
         has_fee_update,
-        Some(&ctx.accounts.velocity_state),
+        &ctx.accounts.velocity_state,
     )?;
 
     let vault_equity =

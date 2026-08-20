@@ -3603,7 +3603,7 @@ pub fn handle_update_user_perp_position_custom_margin_ratio(
 }
 
 pub fn handle_update_user_margin_trading_enabled<'c: 'info, 'info>(
-    ctx: Context<'info, UpdateUser<'info>>,
+    ctx: Context<'info, UpdateUserWithMarkets<'info>>,
     _sub_account_id: u16,
     margin_trading_enabled: bool,
 ) -> Result<()> {
@@ -3618,9 +3618,7 @@ pub fn handle_update_user_margin_trading_enabled<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         Clock::get()?.slot,
-        // `UpdateUser` carries no State account; this path already runs on
-        // default guard rails, so it keeps the 400ms baseline too.
-        crate::math::time::SlotDuration::BASELINE,
+        ctx.accounts.state.load()?.slot_duration(),
         None,
     )?;
 
@@ -3634,7 +3632,7 @@ pub fn handle_update_user_margin_trading_enabled<'c: 'info, 'info>(
 }
 
 pub fn handle_update_user_pool_id<'c: 'info, 'info>(
-    ctx: Context<'info, UpdateUser<'info>>,
+    ctx: Context<'info, UpdateUserWithMarkets<'info>>,
     _sub_account_id: u16,
     pool_id: u8,
 ) -> Result<()> {
@@ -3649,9 +3647,7 @@ pub fn handle_update_user_pool_id<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         Clock::get()?.slot,
-        // `UpdateUser` carries no State account; this path already runs on
-        // default guard rails, so it keeps the 400ms baseline too.
-        crate::math::time::SlotDuration::BASELINE,
+        ctx.accounts.state.load()?.slot_duration(),
         None,
     )?;
 
@@ -5614,6 +5610,22 @@ pub struct UpdateUser<'info> {
     )]
     pub user: AccountLoader<'info, User>,
     pub authority: Signer<'info>,
+}
+
+/// `UpdateUser` plus `State`, for the two handlers that load market/oracle maps
+/// and therefore need the live slot duration. Kept separate so the other
+/// `UpdateUser` handlers, which touch no oracle, keep their account list.
+#[derive(Accounts)]
+#[instruction(sub_account_id: u16)]
+pub struct UpdateUserWithMarkets<'info> {
+    #[account(
+        mut,
+        seeds = [b"user", authority.key.as_ref(), sub_account_id.to_le_bytes().as_ref()],
+        bump,
+    )]
+    pub user: AccountLoader<'info, User>,
+    pub authority: Signer<'info>,
+    pub state: AccountLoader<'info, State>,
 }
 
 #[derive(Accounts)]

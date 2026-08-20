@@ -38,7 +38,7 @@ pub fn protocol_cancel_withdraw_request<'info>(
         None,
         vp.is_some(),
         false,
-        Some(&ctx.accounts.velocity_state),
+        &ctx.accounts.velocity_state,
     )?;
 
     let vault_equity =

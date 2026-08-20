@@ -389,26 +389,40 @@ pub enum DelayOverride {
     Fixed(Millis),
 }
 
+/// The storage codec both override fields share: an `i8` in
+/// [`STORED_UNIT_MS`] quanta, the same encoding
+/// `StoredSlotDuration<i8, STORED_UNIT_MS>` would express. The overrides cannot
+/// use that type because their raw values carry sentinels, so the quantum is
+/// named here instead. The same migration rule applies: changing it reinterprets
+/// every stored byte and needs an admin rewrite, never a type edit alone.
+type DelayOverrideStored = StoredSlotDuration<i8, STORED_UNIT_MS>;
+
 impl DelayOverride {
+    /// Decode a positive override's raw units. Callers branch on the sentinels
+    /// first, so only strictly positive values reach this.
+    fn decode_positive(raw: i8) -> Millis {
+        DelayOverrideStored::from_raw_units(raw).to_millis()
+    }
+
     /// Decode `PerpMarket.oracle_slot_delay_override`.
-    pub const fn from_immediate(raw: i8) -> Self {
+    pub fn from_immediate(raw: i8) -> Self {
         if raw == 0 {
             DelayOverride::Never
         } else if raw < 0 {
             DelayOverride::Unset
         } else {
-            DelayOverride::Fixed(Millis::from_stored_units(raw as u64))
+            DelayOverride::Fixed(Self::decode_positive(raw))
         }
     }
 
     /// Decode `PerpMarket.oracle_low_risk_slot_delay_override`.
-    pub const fn from_low_risk(raw: i8) -> Self {
+    pub fn from_low_risk(raw: i8) -> Self {
         if raw == 0 {
             DelayOverride::Unset
         } else if raw < 0 {
             DelayOverride::Fixed(Millis::ZERO)
         } else {
-            DelayOverride::Fixed(Millis::from_stored_units(raw as u64))
+            DelayOverride::Fixed(Self::decode_positive(raw))
         }
     }
 }

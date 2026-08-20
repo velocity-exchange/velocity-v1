@@ -13161,6 +13161,9 @@
         {
           "name": "authority",
           "signer": true
+        },
+        {
+          "name": "state"
         }
       ],
       "args": [
@@ -13311,6 +13314,9 @@
         {
           "name": "authority",
           "signer": true
+        },
+        {
+          "name": "state"
         }
       ],
       "args": [
@@ -19484,10 +19490,21 @@
           },
           {
             "name": "target_oracle_delay_fee_bps_per_10_slots",
+            "docs": [
+              "Bps of fee charged per 10 whole 400ms periods of oracle delay past the",
+              "staleness threshold, so one step is 4 seconds of wall clock. The `_slots`",
+              "suffix is the historical name from when a slot was 400ms; `step_fee`",
+              "receives period counts, so the rate no longer scales with slot time.",
+              "Renaming the field would change the IDL, so the unit lives here."
+            ],
             "type": "u8"
           },
           {
             "name": "target_position_delay_fee_bps_per_10_slots",
+            "docs": [
+              "Bps of fee charged per 10 whole 400ms periods of position delay past the",
+              "staleness threshold. Same units as the oracle sibling above."
+            ],
             "type": "u8"
           },
           {
@@ -24420,6 +24437,11 @@
           },
           {
             "name": "default_market_order_time_in_force",
+            "docs": [
+              "Default time-in-force for market orders, in seconds. `Order.max_ts` is a",
+              "unix timestamp, so this never converts through the slot length and stays",
+              "a raw integer. It currently has no on-chain reader."
+            ],
             "type": "u8"
           },
           {

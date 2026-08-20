@@ -42,7 +42,13 @@ pub fn manager_update_borrow<'info>(
         perp_market_map,
         spot_market_map,
         mut oracle_map,
-    } = ctx.load_maps(clock.slot, None, vp.is_some(), has_fee_update, None)?;
+    } = ctx.load_maps(
+        clock.slot,
+        None,
+        vp.is_some(),
+        has_fee_update,
+        &ctx.accounts.velocity_state,
+    )?;
 
     let user = ctx.accounts.velocity_user.load()?;
 
@@ -95,4 +101,9 @@ pub struct ManagerUpdateBorrow<'info> {
     )]
     /// CHECK: checked in velocity cpi
     pub velocity_user: AccountLoader<'info, User>,
+    /// Velocity's `State`, read only for the live slot duration so this
+    /// instruction's oracle staleness windows match every other vault path.
+    /// CHECK: owner, discriminator, and PDA address checked by
+    /// `State::slot_duration_from_account_info`
+    pub velocity_state: AccountInfo<'info>,
 }

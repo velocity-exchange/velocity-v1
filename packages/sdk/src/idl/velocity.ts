@@ -13167,6 +13167,9 @@ export type Velocity = {
         {
           "name": "authority",
           "signer": true
+        },
+        {
+          "name": "state"
         }
       ],
       "args": [
@@ -13317,6 +13320,9 @@ export type Velocity = {
         {
           "name": "authority",
           "signer": true
+        },
+        {
+          "name": "state"
         }
       ],
       "args": [
@@ -19490,10 +19496,21 @@ export type Velocity = {
           },
           {
             "name": "targetOracleDelayFeeBpsPer10Slots",
+            "docs": [
+              "Bps of fee charged per 10 whole 400ms periods of oracle delay past the",
+              "staleness threshold, so one step is 4 seconds of wall clock. The `_slots`",
+              "suffix is the historical name from when a slot was 400ms; `step_fee`",
+              "receives period counts, so the rate no longer scales with slot time.",
+              "Renaming the field would change the IDL, so the unit lives here."
+            ],
             "type": "u8"
           },
           {
             "name": "targetPositionDelayFeeBpsPer10Slots",
+            "docs": [
+              "Bps of fee charged per 10 whole 400ms periods of position delay past the",
+              "staleness threshold. Same units as the oracle sibling above."
+            ],
             "type": "u8"
           },
           {
@@ -24426,6 +24443,11 @@ export type Velocity = {
           },
           {
             "name": "defaultMarketOrderTimeInForce",
+            "docs": [
+              "Default time-in-force for market orders, in seconds. `Order.max_ts` is a",
+              "unix timestamp, so this never converts through the slot length and stays",
+              "a raw integer. It currently has no on-chain reader."
+            ],
             "type": "u8"
           },
           {

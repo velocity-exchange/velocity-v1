@@ -24400,6 +24400,7 @@ pub mod accounts {
     pub struct UpdateUserMarginTradingEnabled {
         pub user: Pubkey,
         pub authority: Pubkey,
+        pub state: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdateUserMarginTradingEnabled {
@@ -24425,6 +24426,11 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.authority,
                     is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
                     is_writable: false,
                 },
             ]
@@ -24592,6 +24598,7 @@ pub mod accounts {
     pub struct UpdateUserPoolId {
         pub user: Pubkey,
         pub authority: Pubkey,
+        pub state: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdateUserPoolId {
@@ -24617,6 +24624,11 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.authority,
                     is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
                     is_writable: false,
                 },
             ]

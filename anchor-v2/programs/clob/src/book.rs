@@ -685,12 +685,6 @@ impl ClobBook for ClobMarketV0 {
         // then decline is a quote that lied, and the caller cannot tell.
         let max_fills = self.max_execute_fills.min(EXECUTE_FILLS_CEILING) as usize;
         let max_users = self.max_execute_users.min(EXECUTE_USERS_CEILING) as usize;
-        // The other half of that budget is `execute`'s distinct-user cap. Every
-        // fill belongs to the caller's set, so a restricted quote cannot exceed
-        // it as long as the set itself fits — refuse a wider set rather than
-        // quote depth that cannot settle. An unrestricted (discovery) quote has
-        // no set to bound it and is advisory, not a promise to fill.
-        require!(users.len() <= max_users, ClobError::StaleUserSet);
         let grace_slots = self.unknown_user_grace_slots;
         let mut writer = ResponseWriter::new();
         let count_offset = writer.reserve_count(self)?;
@@ -710,6 +704,25 @@ impl ClobBook for ClobMarketV0 {
         // Spent by this walk exactly as `execute` spends it, so the ladder
         // stands only on orders the fill can settle.
         let mut budget = UserBudget::new(caps, side, reference_price);
+        // The other half of that budget: `execute` writes one balance-change
+        // record per distinct user filled and stops when the next one would
+        // not fit, so a quote that walked past that point would promise depth
+        // the fill declines. Counted the same way and stopped in the same
+        // place, by set index rather than by user ref — a ref is 34 bytes and
+        // this frame has no room for a table of them.
+        //
+        // Bounding the walk rather than the caller's set is what keeps a busy
+        // book fillable. A set wider than this cap is not an error: the extra
+        // users are ordinary loaded accounts (makers on other venues, a
+        // referrer) that this book may never fill, and refusing them would
+        // leave a book holding more distinct makers than the cap with no
+        // assembly that works at all — pass them and the call is refused, omit
+        // one and its aged order is a stale set.
+        //
+        // An unrestricted (discovery) quote has no set to index and stays
+        // advisory, exactly as it was.
+        let mut seen_users = [0u8; USER_EXCLUSION_BITMAP_BYTES];
+        let mut distinct_users = 0usize;
 
         walk_side(self, side, |book, _, node| {
             // Mirrors `execute`'s own stop, in the same place in the walk, so
@@ -730,6 +743,16 @@ impl ClobBook for ClobMarketV0 {
                 // Out of room: this owner's remaining orders cannot settle,
                 // and the depth behind them still can.
                 return Ok(Walk::Continue);
+            }
+            if let Some(index) = owner.filter(|index| *index < USER_SET_CAPACITY) {
+                let (byte, bit) = (index / 8, 1u8 << (index % 8));
+                if seen_users[byte] & bit == 0 {
+                    if distinct_users == max_users {
+                        return Ok(Walk::Stop);
+                    }
+                    seen_users[byte] |= bit;
+                    distinct_users += 1;
+                }
             }
             fills += 1;
             match open {

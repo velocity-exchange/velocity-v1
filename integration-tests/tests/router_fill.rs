@@ -705,6 +705,160 @@ fn fast_activation_requires_the_flow_authority_attestation() {
     send(&mut fixture.svm, &keeper, ix, &[&flow]).unwrap();
 }
 
+/// A keeper cannot quietly cut the book out of a fill by leaving its makers'
+/// accounts at home.
+///
+/// This is the shape of the attack: whoever assembles the transaction also
+/// runs liquidity of their own — a registered quoter, or a maker on the DLOB —
+/// and wants more of the fill than the book would leave them. Carrying the
+/// CLOB's registry entry satisfies both `require_baseline` and the signed
+/// route, because both check that an entry is *present*. Presence is not what
+/// decides whether a book can trade: `clob_resting_prefix` intersects the
+/// book's resting run with the users the transaction loaded, and a maker who
+/// is not loaded is simply passed over. A live book with no maker accounts
+/// would otherwise be indistinguishable from a dead one.
+///
+/// What stops it is the CLOB's own grace rule. An order whose owner is absent
+/// from the caller's user set is skipped while it is younger than
+/// `unknown_user_grace_slots` — the keeper could not have known about it — and
+/// fails the call once it is older. This test holds velocity to that: the
+/// quote CPI's error has to reach the top rather than be swallowed into
+/// "that quoter had nothing to say".
+#[test]
+fn a_fill_that_leaves_out_a_book_makers_accounts_fails() {
+    let mut fixture = setup();
+
+    // Aged past the 2-slot grace window by the time the fill runs.
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 1);
+
+    // The assembler's own liquidity, and the reason the user set is not
+    // empty: an empty set is unrestricted, which is a different refusal.
+    let dlob_maker_authority = Keypair::new();
+    let dlob_maker_user = Pubkey::new_unique();
+    let dlob_maker_stats = Pubkey::new_unique();
+    let mut dlob_order = Order::default();
+    dlob_order.order_id = 1;
+    dlob_order.status = OrderStatus::Open;
+    dlob_order.order_type = OrderType::Limit;
+    dlob_order.market_type = MarketType::Perp;
+    dlob_order.market_index = 0;
+    dlob_order.direction = PositionDirection::Short;
+    dlob_order.post_only = true;
+    dlob_order.base_asset_amount = UNIT / 2;
+    dlob_order.price = 100 * PRICE;
+    set_user_account(
+        &mut fixture.svm,
+        dlob_maker_user,
+        &trading_user(
+            &dlob_maker_authority.pubkey(),
+            10_000 * SPOT_BALANCE_PRECISION_U64,
+            Some(dlob_order),
+        ),
+    );
+    set_user_stats_account(
+        &mut fixture.svm,
+        dlob_maker_stats,
+        &dlob_maker_authority.pubkey(),
+    );
+
+    let taker_authority = Keypair::new();
+    let taker_user = Pubkey::new_unique();
+    let taker_stats = Pubkey::new_unique();
+    let mut taker_order = Order::default();
+    taker_order.order_id = 1;
+    taker_order.status = OrderStatus::Open;
+    taker_order.order_type = OrderType::Market;
+    taker_order.market_type = MarketType::Perp;
+    taker_order.market_index = 0;
+    taker_order.direction = PositionDirection::Long;
+    taker_order.base_asset_amount = UNIT;
+    taker_order.price = 105 * PRICE;
+    taker_order.auction_end_price = (105 * PRICE) as i64;
+    set_user_account(
+        &mut fixture.svm,
+        taker_user,
+        &trading_user(
+            &taker_authority.pubkey(),
+            100 * SPOT_BALANCE_PRECISION_U64,
+            Some(taker_order),
+        ),
+    );
+    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
+
+    let filler_user = Pubkey::new_unique();
+    let filler_stats = Pubkey::new_unique();
+    set_user_account(
+        &mut fixture.svm,
+        filler_user,
+        &trading_user(&fixture.keeper.pubkey(), 0, None),
+    );
+    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
+
+    // Well past the grace window: the book order was placed at slot 10, so by
+    // now no keeper can claim it had not heard about it.
+    fixture.svm.warp_to_slot(30);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        30,
+    );
+
+    let (quoter_signer, _) = quoter_signer_pda();
+    let mut accounts = velocity::accounts::FillOrder {
+        state: state_pda(),
+        authority: fixture.keeper.pubkey(),
+        filler: filler_user,
+        filler_stats,
+        user: taker_user,
+        user_stats: taker_stats,
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    // The whole attack: the DLOB maker is loaded, the book's maker is not.
+    accounts.push(AccountMeta::new(dlob_maker_user, false));
+    accounts.push(AccountMeta::new(dlob_maker_stats, false));
+    // Carried, exactly as `require_baseline` and a signed route demand.
+    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(quoter_signer, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::FillPerpOrder {
+            order_id: Some(1),
+            _maker_order_id: None,
+            signed_route: vec![],
+        }
+        .data(),
+    };
+    let failed = send(&mut fixture.svm, &fixture.keeper, ix, &[])
+        .expect_err("a fill that starves the book of its makers must not land");
+
+    // The book's refusal, not some later symptom: velocity must let the
+    // quote CPI's error through rather than treat the book as quiet.
+    // `ClobError::StaleUserSet`. Its numeric code is its on-chain identity —
+    // that enum is append-only for exactly this reason — and a code is all a
+    // CPI failure carries, so the code is what this asserts. Velocity must
+    // report the book's own refusal rather than treat the book as quiet.
+    const STALE_USER_SET: &str = "custom program error: 0x177e";
+    let logs = format!("{:?}", failed.meta.logs);
+    assert!(
+        logs.contains(STALE_USER_SET),
+        "expected the CLOB's StaleUserSet to reach the top, got: {logs}"
+    );
+
+    // Nothing moved.
+    let taker: User = read_zero_copy(&fixture.svm, &taker_user);
+    assert_eq!(taker.perp_positions[0].base_asset_amount, 0);
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 1);
+}
+
 #[test]
 fn router_fill_splits_across_clob_dlob_and_vamm_sources() {
     let mut fixture = setup();

@@ -284,6 +284,78 @@ fn a_fill_that_pays_the_maker_spends_no_budget() {
     assert_eq!(filled, 5 * UNIT);
 }
 
+/// A book holding more distinct makers than `max_execute_users` still fills.
+///
+/// This is the deadlock the cap used to create. `execute` writes one balance
+/// change per distinct user and stops when the next one will not fit, so the
+/// response buffer is safe whatever the caller passes. `quote` used to protect
+/// the same buffer by refusing a wider *set* instead, and the two are not the
+/// same quantity: the set also carries makers on other venues and a referrer,
+/// none of whom this book will fill.
+///
+/// The consequence was that a book with more makers in reach than the cap had
+/// no assembly that worked. Pass them all and quote refuses the set; leave one
+/// out and its aged order is a stale set. Both answers are the same error, and
+/// the order could not be filled by anyone.
+#[test]
+fn a_set_wider_than_the_user_cap_still_quotes() {
+    let mut config = crate::tests::market::test_config();
+    config.max_execute_users = 2;
+    let market = TestMarket::new_with(8, config);
+    let mut book = market.book();
+    let first = user(1);
+    let second = user(2);
+    let third = user(3);
+    place(&mut book, Side::Ask, 100, 5, first);
+    place(&mut book, Side::Ask, 101, 5, second);
+    place(&mut book, Side::Ask, 102, 5, third);
+
+    // All three named, which is one more than the cap. The old rule failed
+    // the call here.
+    let users = [first, second, third];
+    let pointer = book
+        .quote(
+            Direction::Long,
+            15,
+            &users,
+            &UserCapsV0::EMPTY,
+            0,
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    assert_eq!(
+        levels(&mut book, pointer),
+        vec![(100, 5), (101, 5)],
+        "quoted up to the cap and stopped, rather than refusing the set"
+    );
+
+    // And execute delivers exactly that — the promise the cap exists to keep.
+    let outcome = book
+        .execute(
+            Direction::Long,
+            15,
+            &users,
+            &UserCapsV0::EMPTY,
+            0,
+            None,
+            0,
+            0,
+        )
+        .unwrap();
+    let filled: u64 = outcome.fills.iter().map(|fill| fill.base_size).sum();
+    assert_eq!(
+        filled, 10,
+        "the third maker is out of the cap, not the book"
+    );
+    assert_eq!(outcome.fills.len(), 2, "one order from each of the two");
+
+    // The third maker's order is untouched and still resting, so a later
+    // fill that names a different set can reach it.
+    assert_eq!(book.node_count(Side::Ask), 1);
+}
+
 #[test]
 fn a_link_out_of_the_arena_fails_every_walk() {
     // Just past the arena, and just short of the sentinel.

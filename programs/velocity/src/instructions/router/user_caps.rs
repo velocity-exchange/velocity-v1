@@ -31,6 +31,26 @@
 //! free collateral at the tier the fill judges by and equity above
 //! `floor + buffer`.
 //!
+//! # Which price
+//!
+//! The live exchange oracle, and not a twap, a confidence bound or a strict
+//! price. The budget exists to predict one thing — whether
+//! `fulfill_perp_order_post_checks` accepts the fill — so it has to be
+//! measured in that check's own terms. That check values a perp position at
+//! `oracle_price_data.price`, straight from the oracle map, and
+//! `calculate_net_equity_for_floor` values it the same way. Neither applies a
+//! twap or a confidence band to it.
+//!
+//! Two nearby prices are deliberately not used. The strict quote price scales
+//! the *requirement*, and a fill leaves the requirement where it was. The
+//! settlement `expiry_price` replaces the oracle in the margin walk, but a
+//! market in settlement refuses fills before this runs.
+//!
+//! A safer price would not be conservative here, it would be wrong in an
+//! unknown direction: too low a mark understates what a resting ask costs its
+//! owner and overstates what a bid costs, so the budget would be loose on one
+//! side and tight on the other.
+//!
 //! Room is measured at the tier the fill will judge by, not the tier a
 //! placement would. `select_margin_type_for_perp_maker` answers `Fill` for a
 //! maker taking on risk, so that is what a budget is sized against; asking at

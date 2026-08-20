@@ -10838,6 +10838,16 @@ pub mod clob_floor_depth_clamp {
         resting: &[(usize, u64, u64)],
         makers: [(i64, u64); 2],
     ) -> (Option<u64>, Vec<Pubkey>) {
+        cap_and_clear_with(resting, makers, &[])
+    }
+
+    /// `taker_origin` names the indexes in `resting` that rest as migrated
+    /// taker remainders.
+    fn cap_and_clear_with(
+        resting: &[(usize, u64, u64)],
+        makers: [(i64, u64); 2],
+        taker_origin: &[usize],
+    ) -> (Option<u64>, Vec<Pubkey>) {
         // far past the oracle's posted slot, so a floored maker's equity
         // cannot be verified and the clamp engages
         let slot = 100_000_u64;
@@ -10938,13 +10948,15 @@ pub mod clob_floor_depth_clamp {
 
         let run: Vec<ClobRestingOrderV0> = resting
             .iter()
-            .map(|(maker, base, price)| ClobRestingOrderV0 {
+            .enumerate()
+            .map(|(index, (maker, base, price))| ClobRestingOrderV0 {
                 user: ClobUserRefV0 {
                     authority: authorities[*maker],
                     sub_account_id: 0,
                 },
                 price: *price,
                 base_asset_amount: *base,
+                is_taker_origin: taker_origin.contains(&index),
             })
             .collect();
 
@@ -11025,6 +11037,32 @@ pub mod clob_floor_depth_clamp {
             [(BASE_PRECISION_I64, FLOOR), (0, 0)],
         );
         assert_eq!(cap, Some(3 * BASE_PRECISION_U64 / 4));
+    }
+
+    #[test]
+    fn depth_the_book_may_pass_over_does_not_extend_the_cut() {
+        // A migrated taker remainder rests ahead of the doomed maker. The
+        // CLOB passes one over while a counterparty crosses it, so its base
+        // is not depth an allocation can count on burning first. Counting it
+        // would size the sweep to walk straight through it and fill the very
+        // maker the cut exists to keep out.
+        let run = [
+            (1, BASE_PRECISION_U64, PRICE),
+            (0, BASE_PRECISION_U64, PRICE),
+        ];
+        let makers = [(-BASE_PRECISION_I64, FLOOR), (BASE_PRECISION_I64, 0)];
+
+        // Control: an ordinary order ahead is real depth, so the cut keeps it.
+        let (ordinary, _) = cap_and_clear_with(&run, makers, &[]);
+        assert_eq!(ordinary, Some(BASE_PRECISION_U64));
+
+        // The same order as a taker remainder buys the book nothing.
+        let (taker_origin, _) = cap_and_clear_with(&run, makers, &[0]);
+        assert_eq!(
+            taker_origin,
+            Some(0),
+            "depth the book may pass over cannot be routed through"
+        );
     }
 
     #[test]

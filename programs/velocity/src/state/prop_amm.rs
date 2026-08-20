@@ -1003,6 +1003,11 @@ pub struct ClobRestingOrderV0 {
     pub user: ClobUserRefV0,
     pub price: u64,
     pub base_asset_amount: u64,
+    /// A migrated taker remainder, which the CLOB passes over while a
+    /// counterparty crosses it. Its base is therefore not depth a caller can
+    /// count on execute consuming — see the sweep accounting in
+    /// [`clob_resting_prefix`].
+    pub is_taker_origin: bool,
 }
 
 /// First-allocation size for a resting-prefix read. Not a cap — a deeper sweep
@@ -1063,6 +1068,7 @@ pub fn clob_resting_prefix(
                 user,
                 price: node.price,
                 base_asset_amount: node.base_asset_amount,
+                is_taker_origin: node.is_taker_origin,
             });
             // A taker-origin order's base does not count toward the sweep.
             //

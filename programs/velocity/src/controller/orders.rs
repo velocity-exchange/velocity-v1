@@ -2239,6 +2239,23 @@ fn clob_unverifiable_floor_depth(
         projected: i64,
     }
 
+    /// Depth ahead of the cut that execute is *certain* to consume.
+    ///
+    /// A taker-origin order is passed over while a counterparty crosses it,
+    /// so its base is not depth the allocation can rely on burning before it
+    /// reaches the cut. Counting it would let a sweep sized at the cap walk
+    /// straight through the order the cut exists to protect and fill the very
+    /// maker the post-fill check refuses. Not counting it under-routes
+    /// instead, which is the safe direction and mirrors exactly what the
+    /// CLOB's own walk counts.
+    fn reachable_depth(order: &crate::state::prop_amm::ClobRestingOrderV0) -> u64 {
+        if order.is_taker_origin {
+            0
+        } else {
+            order.base_asset_amount
+        }
+    }
+
     let mut seen: Vec<MakerFloor> = Vec::with_capacity(resting.len());
     let mut clear: Vec<Pubkey> = Vec::new();
     let mut ahead = 0_u64;
@@ -2281,7 +2298,7 @@ fn clob_unverifiable_floor_depth(
         };
 
         if !seen[index].unverifiable && !seen[index].doomed {
-            ahead = ahead.safe_add(order.base_asset_amount)?;
+            ahead = ahead.safe_add(reachable_depth(order))?;
             continue;
         }
 
@@ -2304,7 +2321,7 @@ fn clob_unverifiable_floor_depth(
             PositionDirection::Short => -order.base_asset_amount.cast::<i64>()?,
         };
         seen[index].projected = seen[index].projected.safe_add(signed)?;
-        ahead = ahead.safe_add(order.base_asset_amount)?;
+        ahead = ahead.safe_add(reachable_depth(order))?;
     }
 
     Ok(ClobBookVerdict { cap: None, clear })

@@ -109,6 +109,7 @@ fn the_taker_is_never_a_subject() {
         user: taker,
         price: 100,
         base_asset_amount: 5,
+        is_taker_origin: false,
     }])
     .permits(&taker, &key(7), &taker));
 }
@@ -122,6 +123,7 @@ fn a_clob_quoter_may_only_move_the_makers_on_its_book() {
         user: user_ref(1, 0),
         price: 100,
         base_asset_amount: 5,
+        is_taker_origin: false,
     }]);
     assert!(subjects.permits(&user_ref(1, 0), &key(1), &taker));
     assert!(!subjects.permits(&user_ref(2, 0), &key(2), &taker));
@@ -137,11 +139,13 @@ fn a_books_resting_run_reads_back_as_price_levels() {
             user: user_ref(1, 0),
             price: 100,
             base_asset_amount: 5,
+            is_taker_origin: false,
         },
         ClobRestingOrderV0 {
             user: user_ref(2, 0),
             price: 101,
             base_asset_amount: 7,
+            is_taker_origin: false,
         },
     ]);
     assert_eq!(

@@ -385,6 +385,7 @@ pub mod amm_jit {
                         user: self.user_ref,
                         price: self.price,
                         base_asset_amount: size,
+                        is_taker_origin: false,
                     },
                 ]))
             }
@@ -721,6 +722,7 @@ pub mod amm_jit {
                     user: self.resting,
                     price: self.price,
                     base_asset_amount: size,
+                    is_taker_origin: false,
                 }]))
             }
             fn execute(

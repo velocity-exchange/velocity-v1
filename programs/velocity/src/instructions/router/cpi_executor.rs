@@ -10,7 +10,8 @@ use {
         error::{ErrorCode, VelocityResult},
         msg,
         state::prop_amm::{
-            clob_resting_prefix, find_account, read_clob_u16, ClobUserRefV0, Direction,
+            clob_resting_prefix, find_account, read_clob_u16, ClobCancelAllArgsV0,
+            ClobCancelAllOutcomeV0, ClobCancelSides, ClobMarket, ClobUserRefV0, Direction,
             ExecuteArgsV0, ExternalQuoterExecutor, QuoterSubjects, QuoterType, QuoterUserSetRef,
             ResponseLocationV0, CLOB_MARKET_INDEX_OFFSET,
         },
@@ -102,6 +103,80 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
             self.slot,
             self.now,
         )))
+    }
+
+    fn with_book(&self, index: usize, f: &mut dyn FnMut(&[u8])) -> VelocityResult<bool> {
+        if self.quoter_type(index) != QuoterType::Clob {
+            return Ok(false);
+        }
+        let book_key = self
+            .quoted
+            .get(index)
+            .map(|quoted| &quoted.response_account)
+            .ok_or(ErrorCode::DefaultError)?;
+        let book = find_account(self.accounts, book_key).ok_or(ErrorCode::DefaultError)?;
+        let data = book.try_borrow_data().map_err(|_| {
+            msg!("clob book {} is already borrowed", book_key);
+            ErrorCode::DefaultError
+        })?;
+        f(&data);
+        Ok(true)
+    }
+
+    fn cancel_all(
+        &mut self,
+        index: usize,
+        user: ClobUserRefV0,
+        sides: ClobCancelSides,
+    ) -> VelocityResult<Option<ClobCancelAllOutcomeV0>> {
+        if self.quoter_type(index) != QuoterType::Clob {
+            return Ok(None);
+        }
+        let loader = self
+            .quoted
+            .get(index)
+            .map(|quoted| &quoted.entry)
+            .ok_or_else(|| {
+                msg!("router executor index {} out of range", index);
+                ErrorCode::DefaultError
+            })?;
+        let quoter = loader.load().map_err(|_| {
+            msg!("router executor failed to load quoter {}", index);
+            ErrorCode::DefaultError
+        })?;
+        let book = find_account(self.accounts, &quoter.response_account).ok_or_else(|| {
+            msg!(
+                "clob book {} missing from the account map",
+                quoter.response_account
+            );
+            ErrorCode::DefaultError
+        })?;
+        let program = find_account(self.accounts, &quoter.program_id).ok_or_else(|| {
+            msg!(
+                "clob program {} missing from the account map",
+                quoter.program_id
+            );
+            ErrorCode::DefaultError
+        })?;
+        let signer = find_account(self.accounts, &self.quoter_signer).ok_or_else(|| {
+            msg!("quoter signer missing from the account map");
+            ErrorCode::DefaultError
+        })?;
+        let clob = ClobMarket::from_quoter(
+            &quoter,
+            self.market_index,
+            book,
+            program,
+            signer,
+            self.quoter_signer_nonce,
+        )
+        .map_err(|_| ErrorCode::DefaultError)?;
+        clob.cancel_all(ClobCancelAllArgsV0 { user, sides })
+            .map(Some)
+            .map_err(|e| {
+                msg!("clob cancel_all failed: {}", e);
+                ErrorCode::DefaultError
+            })
     }
 
     fn execute(

@@ -413,29 +413,21 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
                 ErrorCode::DefaultError,
                 "clob swept orders for a different user"
             )?;
-            for direction in [PositionDirection::Long, PositionDirection::Short] {
-                decrease_open_bids_and_asks(
-                    &mut user.perp_positions[position_index],
-                    &direction,
-                    swept.base_for(direction),
-                    true,
-                )?;
-            }
-            let orders = swept.orders();
-            user.perp_positions[position_index].open_orders = user.perp_positions[position_index]
-                .open_orders
-                .saturating_sub(orders.min(u8::MAX as u32) as u8);
-            (0..orders).for_each(|_| user.decrement_open_orders(false));
+            let book = ctx.accounts.clob_market.try_borrow_data()?;
+            let orders = crate::state::prop_amm::unwind_swept_orders(
+                user,
+                &book,
+                market_index,
+                sides,
+                &swept,
+            )?;
+            drop(book);
             total_fee = total_fee.safe_add(
                 state
                     .perp_fee_structure
                     .flat_filler_fee
                     .safe_mul(orders.into())?,
             )?;
-
-            let book = ctx.accounts.clob_market.try_borrow_data()?;
-            crate::state::prop_amm::release_swept_trigger_shadows(user, &book, market_index, sides);
-            drop(book);
             if !swept.exhaustive {
                 // The CLOB stopped at its per-call cap. Everything unwound
                 // here is real; the caller repeats to take the rest.

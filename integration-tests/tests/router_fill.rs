@@ -3184,6 +3184,121 @@ fn place_and_take_v1_fills_a_retail_taker_off_the_clob() {
     assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
 }
 
+/// A fill clears a latched maker off the book on its way through, so the
+/// next one is not cut short by the same orders.
+///
+/// Relay proves a subaccount below its floor and trips the authority-wide
+/// latch. From then on that authority may not rest risk-increasing orders
+/// anywhere, so the fill routes around them — and, having proven it, takes
+/// them off. No keeper prefix, no relay round trip: the fill that would have
+/// been blocked is the thing that unblocks the book.
+#[test]
+fn a_fill_clears_a_latched_makers_orders_on_its_way_through() {
+    use velocity::state::order_params::{OrderParams, PostOnlyParam};
+
+    let mut fixture = setup();
+    let maker_stats = maker_stats_address(&fixture);
+    // Latched: the account is otherwise solvent, and flat, so every order it
+    // rests is risk-increasing.
+    set_tripped_user_stats(
+        &mut fixture.svm,
+        maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 4);
+    place_clob_ask(&mut fixture, 100 * PRICE, UNIT / 4);
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 2);
+
+    let taker_authority = Keypair::new();
+    fixture
+        .svm
+        .airdrop(&taker_authority.pubkey(), 10_000_000_000)
+        .unwrap();
+    let taker_user = Pubkey::new_unique();
+    let taker_stats = Pubkey::new_unique();
+    let mut taker_state = trading_user(
+        &taker_authority.pubkey(),
+        10_000 * SPOT_BALANCE_PRECISION_U64,
+        None,
+    );
+    taker_state.next_order_id = 1;
+    set_user_account(&mut fixture.svm, taker_user, &taker_state);
+    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
+
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    let (quoter_signer, _) = quoter_signer_pda();
+    let mut accounts = velocity::accounts::PlaceAndTakeV1 {
+        state: state_pda(),
+        user: taker_user,
+        user_stats: taker_stats,
+        authority: taker_authority.pubkey(),
+        quoter: fixture.quoter,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+        quoter_signer,
+        crank_conditions: None,
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    // The latched maker's pair: the clamp reads it, and the clear writes it.
+    accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
+    accounts.push(AccountMeta::new(maker_stats, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(quoter_signer, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::PlaceAndTakePerpOrderV1 {
+            params: OrderParams {
+                order_type: OrderType::Limit,
+                market_type: MarketType::Perp,
+                direction: PositionDirection::Long,
+                base_asset_amount: UNIT / 2,
+                price: 99 * PRICE,
+                market_index: 0,
+                post_only: PostOnlyParam::None,
+                ..OrderParams::default()
+            },
+            success_condition: None,
+        }
+        .data(),
+    };
+    // Lands rather than reverting on the latched maker.
+    send_with_ixs(
+        &mut fixture.svm,
+        &taker_authority,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .expect("the fill routes around the latched maker instead of reverting");
+
+    // And the orders that would have blocked it are gone.
+    assert_eq!(
+        clob_ask_count(&fixture.svm, &fixture.clob_market),
+        0,
+        "the latched maker's whole side came off in the one call"
+    );
+    let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(
+        maker.perp_positions[0].base_asset_amount, 0,
+        "cleared, not filled against"
+    );
+    assert_eq!(maker.perp_positions[0].open_asks, 0, "reserve unwound");
+    assert_eq!(maker.perp_positions[0].open_orders, 0);
+}
+
 /// A partially-filled place-and-take limit rests its remainder on the CLOB
 /// when the caller passes the CLOB accounts: the taker fills half against a
 /// DLOB maker, the leftover half leaves `User.orders` and becomes a resting

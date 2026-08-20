@@ -1089,6 +1089,43 @@ pub fn clob_resting_prefix(
     prefix
 }
 
+/// Unwind one user's reserve for everything a bulk sweep took, and report how
+/// many orders that was.
+///
+/// One `decrease_open_bids_and_asks` per side by the summed base the sweep
+/// reported: identical arithmetic to N per-order unwinds — each placement
+/// reserved its own amount, so the sum can never exceed what is reserved — at
+/// a cost that does not grow with the count. Both directions regardless of
+/// which sides were asked for, so the reserve moves by exactly what left the
+/// book rather than by what the caller intended to take.
+pub fn unwind_swept_orders(
+    user: &mut crate::state::user::User,
+    book: &[u8],
+    market_index: u16,
+    sides: ClobCancelSides,
+    swept: &ClobCancelAllOutcomeV0,
+) -> crate::error::VelocityResult<u32> {
+    use crate::controller::position::{
+        decrease_open_bids_and_asks, get_position_index, PositionDirection,
+    };
+    let position_index = get_position_index(&user.perp_positions, market_index)?;
+    for direction in [PositionDirection::Long, PositionDirection::Short] {
+        decrease_open_bids_and_asks(
+            &mut user.perp_positions[position_index],
+            &direction,
+            swept.base_for(direction),
+            true,
+        )?;
+    }
+    let orders = swept.orders();
+    user.perp_positions[position_index].open_orders = user.perp_positions[position_index]
+        .open_orders
+        .saturating_sub(orders.min(u8::MAX as u32) as u8);
+    (0..orders).for_each(|_| user.decrement_open_orders(false));
+    release_swept_trigger_shadows(user, book, market_index, sides);
+    Ok(orders)
+}
+
 /// Free the placed-trigger shadows on `sides` whose live orders a bulk sweep
 /// took, and report how many were freed.
 ///
@@ -1283,6 +1320,33 @@ pub trait ExternalQuoterExecutor<'info> {
         direction: Direction,
         size: u64,
     ) -> crate::error::VelocityResult<QuoterSubjects>;
+
+    /// Lend quoter `index`'s book bytes to `f`, answering whether there was a
+    /// book to lend. The borrow cannot outlive the call, so the caller gets a
+    /// closure rather than a guard — the same reason a quoter's response is
+    /// read in place.
+    fn with_book(
+        &self,
+        _index: usize,
+        _f: &mut dyn FnMut(&[u8]),
+    ) -> crate::error::VelocityResult<bool> {
+        Ok(false)
+    }
+
+    /// CPI a whole-side cancel on quoter `index` for one of its makers.
+    ///
+    /// Only book-backed entries can honour this; a `Custom` quoter has no
+    /// orders and answers `None`. Used to clear a maker the fill has proven
+    /// may not rest risk-increasing orders, once the fill it would have
+    /// broken has settled.
+    fn cancel_all(
+        &mut self,
+        _index: usize,
+        _user: ClobUserRefV0,
+        _sides: ClobCancelSides,
+    ) -> crate::error::VelocityResult<Option<ClobCancelAllOutcomeV0>> {
+        Ok(None)
+    }
 
     /// CPI `execute_v0` on quoter `index` with the routed allocation. The
     /// response is untrusted: the router pass validates overfill, the

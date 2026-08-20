@@ -10810,7 +10810,7 @@ pub mod clob_floor_depth_clamp {
                 spot_market::{SpotBalanceType, SpotMarket},
                 spot_market_map::SpotMarketMap,
                 user::{SpotPosition, User},
-                user_map::UserMap,
+                user_map::{UserMap, UserStatsMap},
             },
             test_utils::{get_positions, get_pyth_price, get_spot_positions},
         },
@@ -10829,6 +10829,15 @@ pub mod clob_floor_depth_clamp {
     ///
     /// Returns the depth the clamp will let the router send to this book.
     fn cap(resting: &[(usize, u64, u64)], makers: [(i64, u64); 2]) -> Option<u64> {
+        cap_and_clear(resting, makers).0
+    }
+
+    /// The clamp's full verdict: how much depth stays routable, and which
+    /// makers the fill will clear off the book afterwards.
+    fn cap_and_clear(
+        resting: &[(usize, u64, u64)],
+        makers: [(i64, u64); 2],
+    ) -> (Option<u64>, Vec<Pubkey>) {
         // far past the oracle's posted slot, so a floored maker's equity
         // cannot be verified and the clamp engages
         let slot = 100_000_u64;
@@ -10939,10 +10948,12 @@ pub mod clob_floor_depth_clamp {
             })
             .collect();
 
-        clob_unverifiable_floor_depth(
+        let stats_map = UserStatsMap::empty();
+        let verdict = clob_unverifiable_floor_depth(
             &run,
             resolve,
             &makers_and_referrers,
+            &stats_map,
             &market_map,
             &spot_market_map,
             &mut oracle_map,
@@ -10950,7 +10961,8 @@ pub mod clob_floor_depth_clamp {
             // the taker buys, so the resting side is short
             PositionDirection::Short,
         )
-        .unwrap()
+        .unwrap();
+        (verdict.cap, verdict.clear)
     }
 
     const FLOOR: u64 = 100 * QUOTE_PRECISION_I64 as u64;
@@ -11013,6 +11025,22 @@ pub mod clob_floor_depth_clamp {
             [(BASE_PRECISION_I64, FLOOR), (0, 0)],
         );
         assert_eq!(cap, Some(3 * BASE_PRECISION_U64 / 4));
+    }
+
+    #[test]
+    fn an_unverifiable_maker_is_routed_around_but_never_cleared() {
+        // The oracle is what cannot be read, not the account. Cancelling on a
+        // value the program cannot compute would destroy a maker's book on an
+        // oracle blip, so the fill routes around and leaves the orders.
+        let (cap, clear) = cap_and_clear(
+            &[(0, BASE_PRECISION_U64, PRICE)],
+            [(-BASE_PRECISION_I64, FLOOR), (0, 0)],
+        );
+        assert_eq!(cap, Some(0), "still routed around");
+        assert!(
+            clear.is_empty(),
+            "an unverifiable floor is never grounds to cancel"
+        );
     }
 
     #[test]

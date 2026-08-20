@@ -191,6 +191,9 @@ describe('scale orders', () => {
 							0
 						),
 						authority: bankrunContextWrapper.provider.wallet.publicKey,
+						// the low-level `instruction` namespace validates the account
+						// list as given and resolves no PDAs, so `state` is explicit
+						state: await velocityClient.getStatePublicKey(),
 					},
 					remainingAccounts: [],
 				}

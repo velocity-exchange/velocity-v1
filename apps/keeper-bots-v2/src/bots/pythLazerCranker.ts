@@ -265,8 +265,7 @@ export class PythLazerCrankerBot implements Bot {
 		logger.info(`Starting ${this.name} bot with interval ${intervalMs} ms`);
 		if (this.crankConfigs.crankDivergenceBps !== undefined) {
 			const maxCrankIntervalMs =
-				this.crankConfigs.maxCrankIntervalMs ??
-				DEFAULT_MAX_CRANK_INTERVAL_MS;
+				this.crankConfigs.maxCrankIntervalMs ?? DEFAULT_MAX_CRANK_INTERVAL_MS;
 			logger.info(
 				`Adaptive cranking enabled: posting at most every ${maxCrankIntervalMs}ms or on >=${this.crankConfigs.crankDivergenceBps}bps divergence`
 			);
@@ -351,8 +350,7 @@ export class PythLazerCrankerBot implements Bot {
 		}
 
 		const maxCrankIntervalMs =
-			this.crankConfigs.maxCrankIntervalMs ??
-			DEFAULT_MAX_CRANK_INTERVAL_MS;
+			this.crankConfigs.maxCrankIntervalMs ?? DEFAULT_MAX_CRANK_INTERVAL_MS;
 		if (nowMs - lastPostMs >= maxCrankIntervalMs) {
 			return `max interval (${
 				nowMs - lastPostMs

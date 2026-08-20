@@ -47,6 +47,28 @@ use {
 #[cfg(test)]
 mod tests;
 
+/// Lower the revenue-settle cap base to the insurance-fund vault balance that an
+/// outflow leaves behind.
+///
+/// `if_last_settle_vault_amount` is the lowest balance the vault held since the last
+/// revenue settle. Every path that moves tokens out of the vault must call this.
+/// Without it, a dip inside a period is invisible at the next settle: a draw takes the
+/// vault to 100, a donation puts it back to 1000, and `min(live, snapshot)` reads 1000
+/// again. The donation then lifts the cap without staying in the fund for a period.
+///
+/// `insurance_vault_amount` is the balance before the outflow. The subtraction
+/// saturates rather than errors. A cap base of `0` only settles less revenue for the
+/// rest of the period. An error would revert a bankruptcy or deficit resolution.
+pub fn record_insurance_fund_outflow(
+    spot_market: &mut SpotMarket,
+    insurance_vault_amount: u64,
+    outflow_amount: u64,
+) {
+    spot_market.if_last_settle_vault_amount = spot_market
+        .if_last_settle_vault_amount
+        .min(insurance_vault_amount.saturating_sub(outflow_amount));
+}
+
 pub fn update_user_stats_if_stake_amount(
     if_stake_amount_delta: i64,
     insurance_vault_amount: u64,
@@ -149,16 +171,6 @@ pub fn add_insurance_fund_stake(
 
     spot_market.insurance_fund.user_shares =
         spot_market.insurance_fund.user_shares.safe_add(n_shares)?;
-
-    // Grow the donation-proof accounted vault balance by this deposit so legitimate
-    // stakes lift the revenue-settle APR cap (unlike a raw SPL donation, which never
-    // runs this path). `insurance_vault_amount` is the pre-deposit vault, so the seed
-    // (first-touch) captures any pre-existing balance plus this deposit.
-    spot_market.if_last_settle_vault_amount = if spot_market.if_last_settle_vault_amount == 0 {
-        insurance_vault_amount.safe_add(amount)?
-    } else {
-        spot_market.if_last_settle_vault_amount.safe_add(amount)?
-    };
 
     update_user_stats_if_stake_amount(
         amount.cast()?,
@@ -353,7 +365,7 @@ pub fn request_remove_insurance_fund_stake(
 /// escrow window is forfeited to the remaining stakers (`if_shares_lost`), while a cancel
 /// with no appreciation leaves the stake untouched. See `calculate_if_shares_lost` for the
 /// exact share math and why bounding the withdraw leg by the request-time snapshot makes
-/// this donation-immune without reading the accounted `if_last_settle_vault_amount`.
+/// this donation-immune without reading `if_last_settle_vault_amount`.
 pub fn cancel_request_remove_insurance_fund_stake(
     insurance_vault_amount: u64,
     insurance_fund_stake: &mut InsuranceFundStake,
@@ -495,12 +507,7 @@ pub fn remove_insurance_fund_stake(
     spot_market.insurance_fund.user_shares =
         spot_market.insurance_fund.user_shares.safe_sub(n_shares)?;
 
-    // Shrink the donation-proof accounted vault balance by this withdrawal so it tracks
-    // real outflows (keeping the revenue-settle APR cap base honest). Saturating: if the
-    // field is still uninitialized (0) it stays 0 and the next settle/add seeds it.
-    spot_market.if_last_settle_vault_amount = spot_market
-        .if_last_settle_vault_amount
-        .saturating_sub(withdraw_amount);
+    record_insurance_fund_outflow(spot_market, insurance_vault_amount, withdraw_amount);
 
     // reset insurance_fund_stake withdraw request info
     insurance_fund_stake.last_withdraw_request_shares = 0;
@@ -642,21 +649,18 @@ pub fn settle_revenue_to_insurance_fund(
     }
 
     if spot_market.insurance_fund.user_shares > 0 {
-        // Size the APR cap off a donation-proof base rather than the live vault
-        // balance. `insurance_vault_amount` is the raw token-account balance, which
-        // anyone can inflate with a direct SPL transfer right before a settle to
-        // lift the cap toward the 1/10-of-revenue-pool bound. `if_last_settle_vault_amount`
-        // is the accounted balance (grown only by stakes + settled revenue, shrunk by
-        // withdrawals), so a raw donation is not reflected in it; taking the min means a
-        // pre-settle donation spike cannot lift the cap, while legitimate stakes (which
-        // do update the accounted balance) still do. A `0` value means the field is
-        // uninitialized (existing account pre-upgrade) — seed it from the live balance
-        // for this first settle.
-        let cap_vault_amount = if spot_market.if_last_settle_vault_amount == 0 {
-            insurance_vault_amount
-        } else {
-            insurance_vault_amount.min(spot_market.if_last_settle_vault_amount)
-        };
+        // Size the APR cap off the balance the fund held for the whole period, not off
+        // the live vault alone. `insurance_vault_amount` is the raw token-account
+        // balance, which anyone can inflate with a direct SPL transfer right before a
+        // settle to lift the cap toward the 1/10-of-revenue-pool bound.
+        // `if_last_settle_vault_amount` is the lowest balance the vault held since the
+        // last settle, so it predates any such transfer and it already carries every
+        // dip in between. The `min` of the two counts only capital that was present
+        // throughout, which a pre-settle donation is not. Capital that does span a full
+        // period already belongs to the stakers pro rata, so counting it is correct. A
+        // `0` snapshot (never settled, or settled on an empty vault) gives a `0` cap for
+        // one period; the snapshot written below then heals it.
+        let cap_vault_amount = insurance_vault_amount.min(spot_market.if_last_settle_vault_amount);
 
         // only allow MAX_APR_PER_REVENUE_SETTLE_TO_INSURANCE_FUND_VAULT or 1/10th of revenue pool to be settled
         let capped_apr_amount = cap_vault_amount
@@ -679,7 +683,23 @@ pub fn settle_revenue_to_insurance_fund(
     )?
     .cast::<u64>()?;
 
-    if check_invariants {
+    // True when the cap above collapsed to `0` only because this market has no
+    // snapshot yet. Read it before the write below replaces the snapshot.
+    let cap_base_was_unset =
+        spot_market.insurance_fund.user_shares > 0 && spot_market.if_last_settle_vault_amount == 0;
+
+    // Start a new period. The caller transfers `insurance_fund_token_amount` into the
+    // vault right after this returns, so the balance this settle leaves behind is the
+    // live balance plus that amount. `record_insurance_fund_outflow` lowers it again on
+    // each outflow, which keeps it the lowest balance of the period.
+    spot_market.if_last_settle_vault_amount =
+        insurance_vault_amount.safe_add(insurance_fund_token_amount)?;
+
+    // `NoRevenueToSettleToIF` tells the keeper that the settle was pointless. The settle
+    // that seeds the snapshot is expected to move nothing, so let it through — an error
+    // reverts the whole instruction, so the market would never get a snapshot and would
+    // stay capped at zero forever.
+    if check_invariants && !cap_base_was_unset {
         validate!(
             insurance_fund_token_amount != 0,
             ErrorCode::NoRevenueToSettleToIF,
@@ -688,18 +708,6 @@ pub fn settle_revenue_to_insurance_fund(
     }
 
     spot_market.insurance_fund.last_revenue_settle_ts = now;
-
-    // Grow the donation-proof accounted vault balance by the amount just settled in
-    // (see the `cap_vault_amount` note above). We add the delta rather than re-reading
-    // the live vault, so a raw SPL donation sitting in the vault is never folded into
-    // the accounted balance. Seed from the live vault on the first post-upgrade settle.
-    spot_market.if_last_settle_vault_amount = if spot_market.if_last_settle_vault_amount == 0 {
-        insurance_vault_amount.safe_add(insurance_fund_token_amount)?
-    } else {
-        spot_market
-            .if_last_settle_vault_amount
-            .safe_add(insurance_fund_token_amount)?
-    };
 
     // The insurance fund is staker-owned: once stakers exist, the entire settled
     // amount accrues to them as share-price appreciation (no protocol shares

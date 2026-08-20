@@ -64,10 +64,10 @@ use {
             CancelAllOutcome, CancelSidesV0, CancelledRemainderV0, ClobDirectionExt, ClobHeaderV0,
             ClobMarketV0, ClobSideExt, CompletedOrderV0, Direction, ExecuteOutcome, MarketConfigV0,
             OrderBitFlag, OrderNodeV0, OrderRefV0, PlaceOrderParams, RemovedOrder,
-            ResponsePointerV0, Side, UserCapsV0, UserRefV0, CANCEL_ALL_ORDERS_CEILING,
-            CHANGE_MIN_BYTES, EXECUTE_FILLS_CEILING, EXECUTE_USERS_CEILING, QUOTE_LEVELS_CEILING,
-            USER_CAPS_CAPACITY, USER_EXCLUSION_BITMAP_BYTES, USER_REF_BYTES, USER_SET_CAPACITY,
-            ZERO_ADDRESS,
+            ResponsePointerV0, Side, UserCapsV0, UserRefV0, BASE_PRECISION,
+            CANCEL_ALL_ORDERS_CEILING, CHANGE_MIN_BYTES, EXECUTE_FILLS_CEILING,
+            EXECUTE_USERS_CEILING, QUOTE_LEVELS_CEILING, USER_CAPS_CAPACITY,
+            USER_EXCLUSION_BITMAP_BYTES, USER_REF_BYTES, USER_SET_CAPACITY, ZERO_ADDRESS,
         },
     },
     anchor_lang_v2::{address_eq, prelude::*},
@@ -127,6 +127,7 @@ pub trait ClobBook {
         size: u64,
         users: &[UserRefV0],
         caps: &UserCapsV0,
+        reference_price: i64,
         taker: Option<&UserRefV0>,
         slot: u64,
         now: i64,
@@ -138,6 +139,7 @@ pub trait ClobBook {
         size: u64,
         users: &[UserRefV0],
         caps: &UserCapsV0,
+        reference_price: i64,
         taker: Option<&UserRefV0>,
         slot: u64,
         now: i64,
@@ -668,6 +670,7 @@ impl ClobBook for ClobMarketV0 {
         size: u64,
         users: &[UserRefV0],
         caps: &UserCapsV0,
+        reference_price: i64,
         taker: Option<&UserRefV0>,
         slot: u64,
         now: i64,
@@ -706,7 +709,7 @@ impl ClobBook for ClobMarketV0 {
         let mut gate = TakerOriginGate::new(side, slot, now);
         // Spent by this walk exactly as `execute` spends it, so the ladder
         // stands only on orders the fill can settle.
-        let mut budget = UserBudget::new(caps, side);
+        let mut budget = UserBudget::new(caps, side, reference_price);
 
         walk_side(self, side, |book, _, node| {
             // Mirrors `execute`'s own stop, in the same place in the walk, so
@@ -722,7 +725,7 @@ impl ClobBook for ClobMarketV0 {
             {
                 return Ok(Walk::Continue);
             }
-            let take = budget.allow(owner, remaining.min(node.base_asset_amount));
+            let take = budget.allow(owner, remaining.min(node.base_asset_amount), node.price);
             if take == 0 {
                 // Out of room: this owner's remaining orders cannot settle,
                 // and the depth behind them still can.
@@ -792,6 +795,7 @@ impl ClobBook for ClobMarketV0 {
         size: u64,
         users: &[UserRefV0],
         caps: &UserCapsV0,
+        reference_price: i64,
         taker: Option<&UserRefV0>,
         slot: u64,
         now: i64,
@@ -826,7 +830,7 @@ impl ClobBook for ClobMarketV0 {
         let mut swept = 0u128;
         let mut paid = 0u128;
         let mut gate = TakerOriginGate::new(side, slot, now);
-        let mut budget = UserBudget::new(caps, side);
+        let mut budget = UserBudget::new(caps, side, reference_price);
 
         walk_side(self, side, |book, index, node| {
             if remaining == 0 || fills.len() == max_fills {
@@ -840,7 +844,7 @@ impl ClobBook for ClobMarketV0 {
             {
                 return Ok(Walk::Continue);
             }
-            let take = budget.allow(owner, remaining.min(node.base_asset_amount));
+            let take = budget.allow(owner, remaining.min(node.base_asset_amount), node.price);
             if take == 0 {
                 return Ok(Walk::Continue);
             }
@@ -1146,45 +1150,59 @@ fn is_matchable(
 /// names. A ref is 34 bytes and this lives on a walk's frame inside a 4 KB
 /// SBF stack that the fixed-width args have already spent most of — copying
 /// them in overflowed it.
+/// The caller's per-user budgets, spent as the walk fills.
+///
+/// A budget is quote the user may lose, not base it may take, because the
+/// caller cannot convert one into the other without knowing the price each
+/// order fills at. This walk knows those prices, so it does the conversion.
 struct UserBudget {
     excluded: [u8; USER_EXCLUSION_BITMAP_BYTES],
     any_excluded: bool,
-    /// `(index into the caller's set, base still available)` for the users
+    /// `(index into the caller's set, quote still available)` for the users
     /// with *some* room. Indices rather than refs: a ref is 34 bytes and this
     /// lives on a walk's frame inside a 4 KB SBF stack the fixed-width args
     /// have already spent most of.
     entries: [(u8, u64); USER_CAPS_CAPACITY],
     len: usize,
+    /// The side these orders rest on, which decides which way a price has to
+    /// move for the fill to cost their owner anything.
+    side: Side,
+    reference_price: u64,
 }
 
 impl UserBudget {
-    fn new(caps: &UserCapsV0, side: Side) -> Self {
-        let excluded = match side {
-            Side::Bid => caps.excluded_bid,
-            Side::Ask => caps.excluded_ask,
-        };
+    fn new(caps: &UserCapsV0, side: Side, reference_price: i64) -> Self {
         let mut budget = UserBudget {
-            excluded,
-            any_excluded: excluded.iter().any(|byte| *byte != 0),
+            excluded: caps.excluded,
+            any_excluded: caps.any_excluded(),
             entries: [(0, 0); USER_CAPS_CAPACITY],
             len: 0,
+            side,
+            reference_price: reference_price.max(0) as u64,
         };
         for cap in caps.as_slice() {
-            let room = match side {
-                Side::Bid => cap.bid_base,
-                Side::Ask => cap.ask_base,
-            };
-            budget.entries[budget.len] = (cap.index, room);
+            budget.entries[budget.len] = (cap.index, cap.budget);
             budget.len += 1;
         }
         budget
     }
 
-    /// How much of `want` the user at `index` may still take, spending it.
+    /// What one base of an order at `price` costs its owner: the distance the
+    /// fill puts between what they pay and what the mark says they hold. A
+    /// price in the owner's favour costs nothing.
+    fn cost_per_base(&self, price: u64) -> u64 {
+        match self.side {
+            Side::Bid => price.saturating_sub(self.reference_price),
+            Side::Ask => self.reference_price.saturating_sub(price),
+        }
+    }
+
+    /// How much of `want` the user at `index` may still take from an order at
+    /// `price`, spending their budget for it.
     ///
     /// `index` is the position the membership scan already resolved, so the
     /// bitmap costs a bit test rather than a second walk of the set.
-    fn allow(&mut self, index: Option<usize>, want: u64) -> u64 {
+    fn allow(&mut self, index: Option<usize>, want: u64, price: u64) -> u64 {
         if !self.any_excluded && self.len == 0 {
             return want;
         }
@@ -1200,8 +1218,22 @@ impl UserBudget {
             if named as usize != index {
                 continue;
             }
-            let allowed = want.min(room);
-            self.entries[slot].1 = room - allowed;
+            if room == u64::MAX {
+                return want;
+            }
+            let cost_per_base = self.cost_per_base(price);
+            if cost_per_base == 0 {
+                // The fill does not move against this owner, so it draws on
+                // nothing and the whole order is available.
+                return want;
+            }
+            // Round the affordable base down and the spend back up, so a long
+            // run of orders cannot creep past the budget one remainder at a
+            // time.
+            let affordable = (room as u128 * BASE_PRECISION as u128) / cost_per_base as u128;
+            let allowed = want.min(affordable.min(u64::MAX as u128) as u64);
+            let spent = (allowed as u128 * cost_per_base as u128).div_ceil(BASE_PRECISION as u128);
+            self.entries[slot].1 = room.saturating_sub(spent.min(u64::MAX as u128) as u64);
             return allowed;
         }
         want

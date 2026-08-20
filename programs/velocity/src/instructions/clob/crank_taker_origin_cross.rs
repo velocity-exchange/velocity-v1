@@ -471,6 +471,8 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
                 market_index,
                 ExecuteArgsV0 {
                     caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
+                    // No budgets to price, so nothing reads this.
+                    reference_price: 0,
                     direction,
                     size,
                     users: QuoterUserSetRef(&users),

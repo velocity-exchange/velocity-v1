@@ -3297,6 +3297,120 @@ fn a_fill_skips_a_latched_maker_instead_of_reverting() {
     );
 }
 
+/// A maker with room for part of its resting depth fills exactly that far.
+///
+/// The maker rests 0.5 of asks at 99 while the oracle reads 100, so every base
+/// it sells costs it 1 of collateral it never reserved — the placement priced
+/// the order as though it would fill at the oracle. An equity floor 0.4 below
+/// its equity leaves 0.36 to spend after the haircut, which buys 0.36 base.
+/// The first ask goes whole, the second goes part way, and what is left of it
+/// stays on the book.
+#[test]
+fn a_maker_fills_as_far_as_its_collateral_reaches() {
+    use velocity::state::order_params::{OrderParams, PostOnlyParam};
+
+    let mut fixture = setup();
+    let maker_stats = maker_stats_address(&fixture);
+    set_user_stats_account(
+        &mut fixture.svm,
+        maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 4);
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 4);
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 2);
+
+    // Read back after placing, so the reserve the placements took is kept.
+    let mut maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    let equity = 10_000 * QUOTE_PRECISION_I64 as u64;
+    maker.equity_floor = equity - 400_000;
+    set_user_account(&mut fixture.svm, fixture.clob_maker_user, &maker);
+
+    let taker_authority = Keypair::new();
+    fixture
+        .svm
+        .airdrop(&taker_authority.pubkey(), 10_000_000_000)
+        .unwrap();
+    let taker_user = Pubkey::new_unique();
+    let taker_stats = Pubkey::new_unique();
+    let mut taker_state = trading_user(
+        &taker_authority.pubkey(),
+        10_000 * SPOT_BALANCE_PRECISION_U64,
+        None,
+    );
+    taker_state.next_order_id = 1;
+    set_user_account(&mut fixture.svm, taker_user, &taker_state);
+    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
+
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    let (quoter_signer, _) = quoter_signer_pda();
+    let mut accounts = velocity::accounts::PlaceAndTakeV1 {
+        state: state_pda(),
+        user: taker_user,
+        user_stats: taker_stats,
+        authority: taker_authority.pubkey(),
+        quoter: fixture.quoter,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+        quoter_signer,
+        crank_conditions: None,
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
+    accounts.push(AccountMeta::new(maker_stats, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(quoter_signer, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::PlaceAndTakePerpOrderV1 {
+            params: OrderParams {
+                order_type: OrderType::Limit,
+                market_type: MarketType::Perp,
+                direction: PositionDirection::Long,
+                base_asset_amount: UNIT / 2,
+                price: 99 * PRICE,
+                market_index: 0,
+                post_only: PostOnlyParam::None,
+                ..OrderParams::default()
+            },
+            success_condition: None,
+        }
+        .data(),
+    };
+    send_with_ixs(
+        &mut fixture.svm,
+        &taker_authority,
+        &[compute_unit_limit_ix(800_000), ix],
+        &[],
+    )
+    .expect("the fill takes the room the maker has and stops");
+
+    let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(
+        maker.perp_positions[0].base_asset_amount, -360_000_000,
+        "0.4 of headroom, less the haircut, buys 0.36 base at a gap of 1"
+    );
+    assert_eq!(
+        clob_ask_count(&fixture.svm, &fixture.clob_market),
+        1,
+        "the second ask is filled part way and its remainder still rests"
+    );
+}
+
 /// A partially-filled place-and-take limit rests its remainder on the CLOB
 /// when the caller passes the CLOB accounts: the taker fills half against a
 /// DLOB maker, the leftover half leaves `User.orders` and becomes a resting

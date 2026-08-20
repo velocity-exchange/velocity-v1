@@ -12,7 +12,8 @@ use {
         error::ClobError,
         state::{
             CancelAllOutcome, CancelSidesV0, ClobMarketV0, Direction, OrderBitFlag,
-            PlaceOrderParams, Side, UserCapsV0, UserRefV0, CANCEL_ALL_ORDERS_CEILING,
+            PlaceOrderParams, Side, UserCapsV0, UserRefV0, BASE_PRECISION,
+            CANCEL_ALL_ORDERS_CEILING,
         },
     },
     anchor_lang_v2::prelude::*,
@@ -177,18 +178,27 @@ fn a_user_with_no_room_is_skipped_mid_book() {
 
     let users = [broke, healthy];
     let mut caps = UserCapsV0::EMPTY;
-    caps.excluded_ask[0] |= 1; // index 0 == broke
+    caps.excluded[0] |= 1; // index 0 == broke
 
     // Control: unconstrained, both levels quote.
     let pointer = book
-        .quote(Direction::Long, 12, &users, &UserCapsV0::EMPTY, None, 0, 0)
+        .quote(
+            Direction::Long,
+            12,
+            &users,
+            &UserCapsV0::EMPTY,
+            0,
+            None,
+            0,
+            0,
+        )
         .unwrap();
     assert_eq!(levels(&mut book, pointer), vec![(100, 5), (101, 7)]);
 
     // Capped: the front order is gone and the one behind it survives — not
     // truncated away with it.
     let pointer = book
-        .quote(Direction::Long, 12, &users, &caps, None, 0, 0)
+        .quote(Direction::Long, 12, &users, &caps, 0, None, 0, 0)
         .unwrap();
     assert_eq!(
         levels(&mut book, pointer),
@@ -198,7 +208,7 @@ fn a_user_with_no_room_is_skipped_mid_book() {
 
     // And execute spends the same budget, so the fill matches the ladder.
     let outcome = book
-        .execute(Direction::Long, 12, &users, &caps, None, 0, 0)
+        .execute(Direction::Long, 12, &users, &caps, 0, None, 0, 0)
         .unwrap();
     let filled: u64 = outcome.fills.iter().map(|fill| fill.base_size).sum();
     assert_eq!(filled, 7);
@@ -209,38 +219,69 @@ fn a_user_with_no_room_is_skipped_mid_book() {
     );
 }
 
-/// A partial cap truncates one maker without ending the walk.
+/// A budget truncates one maker without ending the walk, and the book is the
+/// one that turns quote into base.
+///
+/// The tight maker's ask sits 2 below the reference, so every base it sells
+/// costs it 2. A budget of 4 therefore buys 2 base of it, and the depth
+/// behind it is untouched.
 #[test]
 fn a_user_with_some_room_is_filled_only_that_far() {
+    const UNIT: u64 = BASE_PRECISION;
     let market = TestMarket::new(8);
     let mut book = market.book();
     let tight = user(1);
     let healthy = user(2);
-    place(&mut book, Side::Ask, 100, 5, tight);
-    place(&mut book, Side::Ask, 101, 7, healthy);
+    place(&mut book, Side::Ask, 100, 5 * UNIT, tight);
+    place(&mut book, Side::Ask, 101, 7 * UNIT, healthy);
 
     let users = [tight, healthy];
     let mut caps = UserCapsV0::EMPTY;
     caps.len = 1;
     caps.caps[0] = crate::state::UserCapV0 {
         index: 0,
-        bid_base: 0,
-        ask_base: 2,
+        budget: 4,
     };
 
     let pointer = book
-        .quote(Direction::Long, 12, &users, &caps, None, 0, 0)
+        .quote(Direction::Long, 12 * UNIT, &users, &caps, 102, None, 0, 0)
         .unwrap();
     assert_eq!(
         levels(&mut book, pointer),
-        vec![(100, 2), (101, 7)],
-        "capped to its room, and the rest of the book follows"
+        vec![(100, 2 * UNIT), (101, 7 * UNIT)],
+        "capped to what its budget buys, and the rest of the book follows"
     );
     let outcome = book
-        .execute(Direction::Long, 12, &users, &caps, None, 0, 0)
+        .execute(Direction::Long, 12 * UNIT, &users, &caps, 102, None, 0, 0)
         .unwrap();
     let filled: u64 = outcome.fills.iter().map(|fill| fill.base_size).sum();
-    assert_eq!(filled, 9);
+    assert_eq!(filled, 9 * UNIT);
+}
+
+/// An order priced in its owner's favour draws on nothing, so a budget never
+/// truncates it however small the budget is.
+#[test]
+fn a_fill_that_pays_the_maker_spends_no_budget() {
+    const UNIT: u64 = BASE_PRECISION;
+    let market = TestMarket::new(8);
+    let mut book = market.book();
+    let maker = user(1);
+    place(&mut book, Side::Ask, 100, 5 * UNIT, maker);
+
+    let users = [maker];
+    let mut caps = UserCapsV0::EMPTY;
+    caps.len = 1;
+    caps.caps[0] = crate::state::UserCapV0 {
+        index: 0,
+        budget: 1,
+    };
+
+    // Selling at 100 against a reference of 98 is a gain, not a loss.
+    let outcome = book
+        .execute(Direction::Long, 5 * UNIT, &users, &caps, 98, None, 0, 0)
+        .unwrap();
+    let filled: u64 = outcome.fills.iter().map(|fill| fill.base_size).sum();
+    assert_eq!(filled, 5 * UNIT);
 }
 
 #[test]
@@ -256,11 +297,11 @@ fn a_link_out_of_the_arena_fails_every_walk() {
             .unwrap();
 
         assert_err(
-            book.quote(Direction::Long, 10, &[], &UserCapsV0::EMPTY, None, 0, 0),
+            book.quote(Direction::Long, 10, &[], &UserCapsV0::EMPTY, 0, None, 0, 0),
             ClobError::NodeIndexOutOfRange,
         );
         assert_err(
-            book.execute(Direction::Long, 10, &[], &UserCapsV0::EMPTY, None, 0, 0),
+            book.execute(Direction::Long, 10, &[], &UserCapsV0::EMPTY, 0, None, 0, 0),
             ClobError::NodeIndexOutOfRange,
         );
         // The placement scan walks the same list.
@@ -287,6 +328,7 @@ fn a_cycled_link_cannot_spin_the_walk() {
             u64::MAX,
             &[],
             &UserCapsV0::EMPTY,
+            0,
             None,
             0,
             0,

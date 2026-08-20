@@ -266,6 +266,10 @@ fn fill_order<'c: 'info, 'info>(
         )
     };
     let (quoter_signer, quoter_signer_nonce) = crate::signer::find_quoter_signer();
+    let route_reference_price = {
+        let oracle_id = perp_market_map.get_ref(&market_index)?.oracle_id();
+        oracle_map.get_price_data(&oracle_id)?.price
+    };
     let inputs =
         crate::instructions::QuoteInputs {
             // Filled in below: sizing the makers needs the inputs, and the
@@ -282,6 +286,7 @@ fn fill_order<'c: 'info, 'info>(
                     },
                 ),
             )?,
+            reference_price: route_reference_price,
             taker: taker_ref,
             quoter_signer,
             quoter_signer_nonce,

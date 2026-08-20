@@ -428,6 +428,58 @@ mod tests {
 
     /// The record layout is the wire. Pin the offsets so a reordered field
     /// fails here rather than redefining what the other program reads.
+    /// Nine constrained users against eight slots. The eight tightest keep
+    /// their exact number; the ninth is excluded rather than dropped, because
+    /// dropping it would read as "unconstrained" — the opposite of what its
+    /// budget says.
+    #[test]
+    fn a_budget_that_does_not_fit_becomes_an_exclusion() {
+        let caps = (0..9).map(|index| UserCapV0 {
+            index,
+            budget: 1_000 - index as u64,
+        });
+        let set = UserCapsV0::from_caps(caps);
+
+        assert_eq!(set.len as usize, USER_CAPS_CAPACITY);
+        // Index 0 has the loosest budget of the nine, so it is the one evicted.
+        assert!(set.is_excluded(0));
+        for index in 1..9 {
+            assert!(!set.is_excluded(index), "index {index}");
+            assert_eq!(
+                set.as_slice()
+                    .iter()
+                    .find(|cap| cap.index == index as u8)
+                    .map(|cap| cap.budget),
+                Some(1_000 - index as u64)
+            );
+        }
+    }
+
+    /// No room never spends a slot. It is the whole point of the bitmap, and
+    /// it leaves the eight for users who can still fill.
+    #[test]
+    fn no_room_costs_no_slot() {
+        let set = UserCapsV0::from_caps((0..20).map(|index| UserCapV0 { index, budget: 0 }));
+
+        assert_eq!(set.len, 0);
+        for index in 0..20 {
+            assert!(set.is_excluded(index));
+        }
+    }
+
+    /// An unbounded budget is the same as saying nothing, so it costs neither
+    /// a slot nor a bit.
+    #[test]
+    fn an_unbounded_budget_is_not_carried() {
+        let set = UserCapsV0::from_caps((0..20).map(|index| UserCapV0 {
+            index,
+            budget: u64::MAX,
+        }));
+
+        assert_eq!(set.len, 0);
+        assert!(!set.any_excluded());
+    }
+
     #[test]
     fn layout_is_pinned() {
         let change = UserBalanceChangeV0 {
@@ -503,13 +555,41 @@ pub enum SideV0 {
     Ask,
 }
 
-/// What one named user may still take on, per side, in base.
+/// Base units in one whole base asset. The denominator that turns a base
+/// amount and a price difference into a quote amount, and the reason a budget
+/// can be spent identically by every quoter.
+pub const BASE_PRECISION: u64 = 1_000_000_000;
+
+/// What one named user may still lose on the side this call sweeps, in quote.
 ///
-/// Two numbers rather than one keyed off the call's direction: a maker's room
-/// genuinely differs by side — the direction that reduces its position
-/// answers to a looser requirement than the one that adds to it — and one set
-/// has to serve a cross-match that sweeps both sides of a book in the same
-/// transaction.
+/// A budget rather than a base amount, because the caller cannot convert the
+/// one into the other. What a fill costs a maker is collateral, and the
+/// conversion needs the price each order fills at — which the caller does not
+/// have and the quoter does. So the caller sends what it knows and the quoter
+/// spends it:
+///
+/// ```text
+/// cost = base * |price - reference_price| / BASE_PRECISION
+/// ```
+///
+/// counted only where the fill moves against the owner: an order resting on
+/// the bid side costs its owner when it fills *above* the reference, an ask
+/// when it fills *below*. An order priced in the owner's favour costs nothing
+/// and is filled whole. Once the budget is spent, that user's remaining
+/// orders are passed over and the depth behind them is still filled.
+///
+/// Why this is the cost that matters: a resting order is normally already
+/// collateralized against the position it would become, priced at the
+/// reference. Filling it converts that reservation into the position it stood
+/// for. What the reservation does not price is the owner paying its own limit
+/// price for a position marked at the reference, and that difference scales
+/// with size.
+///
+/// One number, not one per side, because a call sweeps one side of the book:
+/// [`QuoteArgsV0::direction`] says which, and the budget is for that side.
+///
+/// `u64::MAX` means unbounded. Zero means the user is excluded outright, and
+/// belongs in the bitmap rather than here.
 #[repr(C)]
 #[cfg_attr(
     feature = "anchor-derive",
@@ -517,30 +597,30 @@ pub enum SideV0 {
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, SchemaRead, SchemaWrite)]
 pub struct UserCapV0 {
-    /// Base this user may take resting on the bid side (going long).
-    pub bid_base: u64,
-    /// Base this user may take resting on the ask side (going short).
-    pub ask_base: u64,
+    /// Quote this user may lose filling on the swept side.
+    pub budget: u64,
     /// Index into the accompanying user set.
     pub index: u8,
 }
 
 /// Per-user room, parallel to the caller's user set.
 ///
-/// A user absent from all of this is unconstrained. A zero cap means their
-/// orders are passed over entirely — the caller has said it cannot settle a
+/// A user absent from all of this is unconstrained. An excluded user has
+/// their orders passed over entirely — the caller has said it cannot settle a
 /// fill against them, so quoting depth standing on their orders would promise
 /// depth the fill declines.
 ///
 /// Distinct from membership of the user set: absent from *that* means the
 /// caller's account set is stale and, past the grace window, the whole call
-/// fails. A zero cap is a deliberate constraint, not a mistake, and never
+/// fails. An exclusion is a deliberate constraint, not a mistake, and never
 /// fails the call.
 ///
 /// **Not a trust boundary.** A quoter that ignores these leaves its caller
 /// exactly where it stands without them — the caller's own post-fill checks
 /// still refuse the fill. What honouring them buys is that the honest case
-/// stops reverting.
+/// stops reverting. The exclusions are firmer than the budgets: a caller may
+/// also refuse a response that names an excluded user, while a budget it
+/// cannot reprice is left to those post-fill checks.
 #[repr(C)]
 #[cfg_attr(
     feature = "anchor-derive",
@@ -548,11 +628,9 @@ pub struct UserCapV0 {
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
 pub struct UserCapsV0 {
-    /// One bit per index in the set: set means no room resting on the bid
-    /// side, so pass that user's bids over.
-    pub excluded_bid: [u8; USER_EXCLUSION_BITMAP_BYTES],
-    /// The same for the ask side.
-    pub excluded_ask: [u8; USER_EXCLUSION_BITMAP_BYTES],
+    /// One bit per index in the set: set means no room on the swept side, so
+    /// pass that user's orders over.
+    pub excluded: [u8; USER_EXCLUSION_BITMAP_BYTES],
     /// Live entries at the head of `caps`; the tail is undefined.
     pub len: u8,
     pub caps: [UserCapV0; USER_CAPS_CAPACITY],
@@ -560,8 +638,7 @@ pub struct UserCapsV0 {
 
 /// Encoded width of a [`UserCapsV0`]. One constant rather than an assertion
 /// per program, which is the point of declaring the shape once.
-pub const USER_CAPS_BYTES: usize =
-    2 * USER_EXCLUSION_BITMAP_BYTES + 1 + USER_CAPS_CAPACITY * (8 + 8 + 1);
+pub const USER_CAPS_BYTES: usize = USER_EXCLUSION_BITMAP_BYTES + 1 + USER_CAPS_CAPACITY * (8 + 1);
 
 impl Default for UserCapsV0 {
     fn default() -> Self {
@@ -571,13 +648,11 @@ impl Default for UserCapsV0 {
 
 impl UserCapsV0 {
     pub const EMPTY: Self = Self {
-        excluded_bid: [0; USER_EXCLUSION_BITMAP_BYTES],
-        excluded_ask: [0; USER_EXCLUSION_BITMAP_BYTES],
+        excluded: [0; USER_EXCLUSION_BITMAP_BYTES],
         len: 0,
         caps: [UserCapV0 {
             index: 0,
-            bid_base: 0,
-            ask_base: 0,
+            budget: 0,
         }; USER_CAPS_CAPACITY],
     };
 
@@ -587,71 +662,76 @@ impl UserCapsV0 {
         &self.caps[..(self.len as usize).min(USER_CAPS_CAPACITY)]
     }
 
-    fn bitmap(&self, side: SideV0) -> &[u8; USER_EXCLUSION_BITMAP_BYTES] {
-        match side {
-            SideV0::Bid => &self.excluded_bid,
-            SideV0::Ask => &self.excluded_ask,
-        }
-    }
-
-    /// Mark the user at `index` as having no room on `side`.
-    pub fn exclude(&mut self, index: usize, side: SideV0) {
+    /// Mark the user at `index` as having no room.
+    pub fn exclude(&mut self, index: usize) {
         if index >= USER_SET_CAPACITY {
             return;
         }
-        let map = match side {
-            SideV0::Bid => &mut self.excluded_bid,
-            SideV0::Ask => &mut self.excluded_ask,
-        };
-        map[index / 8] |= 1 << (index % 8);
+        self.excluded[index / 8] |= 1 << (index % 8);
     }
 
-    /// Whether the user at `index` has no room on `side`. An index past the
-    /// set is the caller disagreeing with itself, and constrains nobody.
-    pub fn is_excluded(&self, index: usize, side: SideV0) -> bool {
-        index < USER_SET_CAPACITY && self.bitmap(side)[index / 8] & (1 << (index % 8)) != 0
+    /// Whether the user at `index` has no room. An index past the set is the
+    /// caller disagreeing with itself, and constrains nobody.
+    pub fn is_excluded(&self, index: usize) -> bool {
+        index < USER_SET_CAPACITY && self.excluded[index / 8] & (1 << (index % 8)) != 0
     }
 
-    /// Whether anyone is excluded on `side` — the check that keeps an
-    /// ordinary walk from paying for a lookup it never needs.
-    pub fn any_excluded(&self, side: SideV0) -> bool {
-        self.bitmap(side).iter().any(|byte| *byte != 0)
+    /// Whether anyone is excluded — the check that keeps an ordinary walk
+    /// from paying for a lookup it never needs.
+    pub fn any_excluded(&self) -> bool {
+        self.excluded.iter().any(|byte| *byte != 0)
     }
 
-    /// Build from per-user room. No room on a side becomes a bitmap bit,
-    /// which never overflows; the rest take the scarce partial slots,
-    /// tightest first, so an overflow drops the entries with the most room.
+    /// Build from per-user budgets. No room becomes a bitmap bit, which never
+    /// overflows; the rest take the scarce slots, tightest first, so an
+    /// overflow drops the entries with the most room.
     pub fn from_caps(caps: impl IntoIterator<Item = UserCapV0>) -> Self {
         let mut set = Self::EMPTY;
         let mut partial: [UserCapV0; USER_CAPS_CAPACITY] =
             [UserCapV0::default(); USER_CAPS_CAPACITY];
         let mut partial_len = 0usize;
         for cap in caps {
-            if cap.bid_base == 0 {
-                set.exclude(cap.index as usize, SideV0::Bid);
-            }
-            if cap.ask_base == 0 {
-                set.exclude(cap.index as usize, SideV0::Ask);
-            }
-            if cap.bid_base == 0 && cap.ask_base == 0 {
+            // An unbounded budget says nothing and an empty one is a bitmap
+            // bit, so neither is worth a slot.
+            if cap.budget == 0 {
+                set.exclude(cap.index as usize);
                 continue;
             }
-            let room = cap.bid_base.saturating_add(cap.ask_base);
+            if cap.budget == u64::MAX {
+                continue;
+            }
             // Insertion sort into a fixed array: the list is eight long and
-            // this runs on a frame that cannot afford a heap round trip.
-            let mut slot = partial_len.min(USER_CAPS_CAPACITY - 1);
-            while slot > 0
-                && partial[slot - 1]
-                    .bid_base
-                    .saturating_add(partial[slot - 1].ask_base)
-                    > room
-            {
-                partial[slot] = partial[slot - 1];
+            // this runs on a frame that cannot afford a heap round trip. The
+            // tightest budgets are the ones worth a slot, so a full array
+            // evicts its loosest.
+            let mut slot = partial_len;
+            while slot > 0 && partial[slot - 1].budget > cap.budget {
                 slot -= 1;
             }
-            if slot < USER_CAPS_CAPACITY {
+            // A budget that cannot be carried becomes an exclusion rather
+            // than a drop. Dropping it would offer the user its whole resting
+            // depth, which is the reading the budget exists to correct;
+            // excluding it offers none, which costs liquidity and nothing
+            // else.
+            if partial_len < USER_CAPS_CAPACITY {
+                let mut index = partial_len;
+                while index > slot {
+                    partial[index] = partial[index - 1];
+                    index -= 1;
+                }
                 partial[slot] = cap;
-                partial_len = (partial_len + 1).min(USER_CAPS_CAPACITY);
+                partial_len += 1;
+            } else if slot < USER_CAPS_CAPACITY {
+                let evicted = partial[USER_CAPS_CAPACITY - 1];
+                let mut index = USER_CAPS_CAPACITY - 1;
+                while index > slot {
+                    partial[index] = partial[index - 1];
+                    index -= 1;
+                }
+                partial[slot] = cap;
+                set.exclude(evicted.index as usize);
+            } else {
+                set.exclude(cap.index as usize);
             }
         }
         set.caps = partial;
@@ -740,6 +820,10 @@ pub struct QuoteArgsV0 {
     pub size: u64,
     pub users: UserSetV0,
     pub caps: UserCapsV0,
+    /// The price the caller marks a filled position at, in PRICE_PRECISION.
+    /// Only [`UserCapV0`] budgets are spent against it; it does not bound
+    /// what a quoter may fill at.
+    pub reference_price: i64,
     /// The taker's own user, whose resting liquidity is skipped
     /// unconditionally (self-trade prevention).
     pub taker: Option<UserRefV0>,
@@ -761,5 +845,9 @@ pub struct ExecuteArgsV0 {
     pub size: u64,
     pub users: UserSetV0,
     pub caps: UserCapsV0,
+    /// The same mark the quote was taken against. A quoter that spends
+    /// budgets must be handed the identical price here, or it passes over a
+    /// different set of orders than the one it quoted.
+    pub reference_price: i64,
     pub taker: Option<UserRefV0>,
 }

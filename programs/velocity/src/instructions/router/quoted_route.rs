@@ -88,6 +88,10 @@ pub struct QuoteInputs<'a> {
     /// it cannot be given different numbers: the executor is built from these
     /// same inputs, so the two walks skip identically by construction.
     pub caps: crate::state::prop_amm::QuoterUserCapsV0,
+    /// The mark a quoter prices a capped maker's loss against. The quote and
+    /// the execute must be handed the same one, or a quoter that spends
+    /// budgets passes over a different set of orders than it quoted.
+    pub reference_price: i64,
     pub taker: ClobUserRefV0,
     pub quoter_signer: Pubkey,
     pub quoter_signer_nonce: u8,
@@ -159,6 +163,7 @@ impl<'info> QuotedRoute<'info> {
                     inputs.market_index,
                     QuoteArgsV0 {
                         caps: inputs.caps,
+                        reference_price: inputs.reference_price,
                         direction: inputs.direction,
                         size: inputs.size,
                         users: QuoterUserSetRef(inputs.users),
@@ -267,6 +272,7 @@ impl<'info> QuotedRoute<'info> {
     ) -> CpiQuoterExecutor<'a, 'info> {
         CpiQuoterExecutor {
             caps: inputs.caps,
+            reference_price: inputs.reference_price,
             quoted: &self.quoted,
             market_index: inputs.market_index,
             accounts: self.accounts,

@@ -35,8 +35,13 @@ pub const VELOCITY_STATE: Address =
     Address::from_str_const("2etx5NvPNxeMZ7EfHE6GjJfW2imRYEUANehNS1WB4CVW");
 
 /// Byte offset of `State.hot_flow_authority` in the account's data: 8 bytes of
-/// anchor discriminator plus the field's 1497-byte offset within the struct.
-pub const STATE_HOT_FLOW_AUTHORITY_OFFSET: usize = 8 + 1497;
+/// anchor discriminator plus the field's 1498-byte offset within the struct.
+///
+/// A field added to `State` ahead of this one moves it, and this program
+/// reads the live account at this offset — a stale number reads 32 bytes that
+/// are not the authority. `hot_flow_authority_offset_matches_velocitys_idl`
+/// walks the IDL and fails when the two disagree.
+pub const STATE_HOT_FLOW_AUTHORITY_OFFSET: usize = 8 + 1498;
 
 /// Velocity's current retail-flow attestation key, or `None` when the role is
 /// unassigned (`Pubkey::default()`), which fails the gate closed rather than

@@ -484,7 +484,11 @@ export type QuoterCrossConditionsV0Account = {
 	padding: number[];
 };
 
-/** Book side of a resting CLOB order, as the CLOB encodes it on its wire. */
+/**
+ * Book side of a resting CLOB order, as the CLOB encodes it on its wire.
+ * `SideV0` in the IDL, which is where `quoter-spec` declares it; the variants
+ * serialize by position, so the name differs and the encoding does not.
+ */
 export class ClobSide {
 	static readonly BID = { bid: {} };
 	static readonly ASK = { ask: {} };

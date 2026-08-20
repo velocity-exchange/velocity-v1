@@ -412,7 +412,7 @@ pub use quoter_spec::UserRefV0;
 /// spends before its first maker, minus one for the `UserStats` those makers
 /// share in the best case.
 pub use quoter_spec::{
-    UserCapV0, UserCapsV0, UserSetV0, USER_CAPS_BYTES, USER_CAPS_CAPACITY,
+    UserCapV0, UserCapsV0, UserSetV0, BASE_PRECISION, USER_CAPS_BYTES, USER_CAPS_CAPACITY,
     USER_EXCLUSION_BITMAP_BYTES, USER_SET_BYTES, USER_SET_CAPACITY,
 };
 

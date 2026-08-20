@@ -24,19 +24,16 @@ pub struct QuoteV0 {
     pub velocity_state: UncheckedAccount,
 }
 
-#[derive(Clone, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct QuoteArgsV0 {
-    pub direction: Direction,
-    pub size: u64,
-    /// `User`s the caller can settle balance changes for. The midpoint
-    /// settles against exactly one user — if it is absent from a non-empty
-    /// set, the book is empty (not an error: the caller simply can't
-    /// settle us, so we have nothing for them).
-    pub users: UserSetV0,
-    /// The taker's `User`: quoting yourself is a wash trade, so the quoted
-    /// user's own flow sees an empty book.
-    pub taker: Option<UserRefV0>,
-}
+/// Declared by `quoter-spec`, which owns every shape on this wire. A local
+/// mirror is not a convenience here: the args are a fixed-offset layout, so a
+/// mirror that is missing a field reads every field after it from the wrong
+/// place and reports nothing wrong.
+///
+/// The midpoint reads `users` and `taker`. It ignores `caps` and
+/// `reference_price`: it settles against one standing-intent user and holds
+/// no orders, so there is no per-user budget to spend and nothing to skip
+/// mid-book.
+pub use quoter_spec::QuoteArgsV0;
 
 /// Whether this quoter has anything to say to this caller: settleability,
 /// self-trade, and (when configured) flow attestation. The mid-staleness /

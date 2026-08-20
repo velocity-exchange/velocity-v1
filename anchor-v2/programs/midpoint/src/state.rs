@@ -47,13 +47,9 @@ pub const RESPONSE_BUFFER_BYTES: usize = 2048;
 
 pub const ZERO_ADDRESS: Address = Address::new_from_array([0u8; 32]);
 
-/// Taker direction, as passed through the quoter interface (same wire enum
-/// as the CLOB's).
-#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
-pub enum Direction {
-    Long,
-    Short,
-}
+/// Taker direction, as passed through the quoter interface. Declared once by
+/// `quoter-spec`, which owns every shape on this wire.
+pub use quoter_spec::DirectionV0 as Direction;
 
 /// Which sides a `cancel_all_v0` withdraws. The same wire enum (and the same
 /// borsh tags) as the CLOB's, so a client speaks one shape to either quoter
@@ -97,52 +93,19 @@ pub struct CancelAllOutcomeV0 {
     pub mid_cleared: bool,
 }
 
+/// Per-user budgets, also declared by `quoter-spec`. The midpoint does not
+/// spend them — it settles against one standing-intent user and holds no
+/// orders to skip — but the args carry them, and the args are one layout.
+pub use quoter_spec::UserCapsV0;
 /// A velocity user in its derivable form — see the CLOB's `UserRefV0` for
 /// why identity is stored as `(authority, sub_account_id)` rather than the
 /// `User` account key.
 pub use quoter_spec::UserRefV0;
-
-/// Capacity of [`UserSetV0`] — see the CLOB's `USER_SET_CAPACITY` for where
-/// the number comes from. Every program on the quoter wire must agree on it.
-pub const USER_SET_CAPACITY: usize = 48;
-
-/// The caller's settleable-user set as velocity's `QuoterUserSetV0` puts it on
-/// the wire: a live count then a fixed-width array, so decoding it costs no
-/// allocation and the encoding is pinned rather than negotiated. Empty means
-/// unrestricted.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct UserSetV0 {
-    pub len: u8,
-    pub users: [UserRefV0; USER_SET_CAPACITY],
-}
-
-/// Encoded width of a [`UserSetV0`]: 32-byte authority + u16 sub-account each,
-/// behind a one-byte count.
-pub const USER_SET_BYTES: usize = 1 + USER_SET_CAPACITY * (32 + 2);
-
-impl UserSetV0 {
-    pub const EMPTY: Self = Self {
-        len: 0,
-        users: [UserRefV0::ZERO; USER_SET_CAPACITY],
-    };
-
-    /// The live prefix. `len` arrives from a foreign caller, so it is clamped
-    /// rather than trusted.
-    pub fn as_slice(&self) -> &[UserRefV0] {
-        &self.users[..(self.len as usize).min(USER_SET_CAPACITY)]
-    }
-
-    /// Build from at most [`USER_SET_CAPACITY`] refs; `None` past capacity.
-    pub fn from_refs(refs: &[UserRefV0]) -> Option<Self> {
-        if refs.len() > USER_SET_CAPACITY {
-            return None;
-        }
-        let mut set = Self::EMPTY;
-        set.users[..refs.len()].copy_from_slice(refs);
-        set.len = refs.len() as u8;
-        Some(set)
-    }
-}
+/// The caller's settleable-user set, its capacity, and its encoded width, as
+/// `quoter-spec` declares them. Every program on this wire reads the one
+/// declaration: a mirror that drifts by a field decodes the args at the wrong
+/// offsets and reports it as nothing at all.
+pub use quoter_spec::{UserSetV0, USER_SET_BYTES, USER_SET_CAPACITY};
 
 /// Declared by `quoter-spec`; the alias keeps this program's name for it.
 pub type PriceLevel = quoter_spec::PriceLevelV0;

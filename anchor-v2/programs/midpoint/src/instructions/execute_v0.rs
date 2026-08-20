@@ -23,13 +23,9 @@ pub struct ExecuteV0 {
     pub velocity_state: UncheckedAccount,
 }
 
-#[derive(Clone, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct ExecuteArgsV0 {
-    pub direction: Direction,
-    pub size: u64,
-    pub users: UserSetV0,
-    pub taker: Option<UserRefV0>,
-}
+/// Declared by `quoter-spec`; see [`crate::instructions::quote_v0`] for why
+/// this program does not keep its own.
+pub use quoter_spec::ExecuteArgsV0;
 
 /// Quoter interface: commit a fill against the spline. The response carries
 /// exactly one balance change (the quoted user) and never cancels anything

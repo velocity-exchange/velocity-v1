@@ -36,6 +36,7 @@ pub fn handle_execute_v0(
         args.size,
         args.users.as_slice(),
         &args.caps,
+        args.reference_price,
         args.taker.as_ref(),
         clock.slot,
         clock.unix_timestamp,

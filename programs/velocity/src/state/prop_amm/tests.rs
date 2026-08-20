@@ -314,6 +314,91 @@ fn the_resting_walk_skips_the_taker_and_unsettleable_makers() {
     assert_eq!(prefix[0].user, loaded);
 }
 
+/// A partial budget is the book's business, not this walk's. Velocity leaves
+/// it alone so the prefix stays a *superset* of what execute fills: spending
+/// a budget here could retire a maker's room before the book retires it, and
+/// the walk would stop short of a maker execute still reaches — whose balance
+/// change velocity would then refuse.
+#[test]
+fn a_partial_budget_does_not_shorten_the_permitted_set() {
+    let capped = user_ref(1, 0);
+    let behind = user_ref(2, 0);
+    let data = book_bytes(
+        ClobSide::Ask,
+        &[
+            TestNode::live(capped, 100, 10, 1),
+            TestNode::live(behind, 101, 10, CLOB_NIL),
+        ],
+    );
+    let users = quoter_wire_users([capped, behind]).unwrap();
+    let caps = QuoterUserCapsV0::from_caps([QuoterUserCapV0 {
+        index: 0,
+        budget: 4,
+    }]);
+    let prefix = clob_resting_prefix(
+        &data,
+        ClobSide::Ask,
+        10,
+        &users,
+        &caps,
+        &user_ref(9, 0),
+        0,
+        0,
+    );
+
+    assert_eq!(prefix.len(), 1, "the first order already covers the sweep");
+    assert_eq!(prefix[0].user, capped);
+
+    // And when the budget does cut the first maker short on the book, the
+    // maker behind them is already in the set to receive the rest.
+    let deeper = clob_resting_prefix(
+        &data,
+        ClobSide::Ask,
+        20,
+        &users,
+        &caps,
+        &user_ref(9, 0),
+        0,
+        0,
+    );
+    assert_eq!(deeper.len(), 2);
+    assert_eq!(deeper[1].user, behind);
+}
+
+/// An exclusion is the stronger case: the maker is absent from the permitted
+/// set entirely, so a book that filled them anyway returns a change velocity
+/// refuses.
+#[test]
+fn no_room_keeps_a_maker_out_of_the_permitted_set() {
+    let excluded = user_ref(1, 0);
+    let behind = user_ref(2, 0);
+    let data = book_bytes(
+        ClobSide::Ask,
+        &[
+            TestNode::live(excluded, 100, 10, 1),
+            TestNode::live(behind, 101, 10, CLOB_NIL),
+        ],
+    );
+    let users = quoter_wire_users([excluded, behind]).unwrap();
+    let caps = QuoterUserCapsV0::from_caps([QuoterUserCapV0 {
+        index: 0,
+        budget: 0,
+    }]);
+    let prefix = clob_resting_prefix(
+        &data,
+        ClobSide::Ask,
+        10,
+        &users,
+        &caps,
+        &user_ref(9, 0),
+        0,
+        0,
+    );
+
+    assert_eq!(prefix.len(), 1);
+    assert_eq!(prefix[0].user, behind);
+}
+
 /// A hostile or corrupted link list must terminate: the walk is bounded by
 /// what the arena can hold, whatever the links say.
 #[test]
@@ -360,7 +445,7 @@ fn the_cap_list_puts_no_ceiling_on_exclusions() {
     }
     assert_eq!(MAX_CONSTRAINED_WIRE_USERS, 8);
     assert_eq!(USER_EXCLUSION_BITMAP_BYTES, 6);
-    assert_eq!(QUOTER_USER_CAPS_BYTES, 149);
+    assert_eq!(QUOTER_USER_CAPS_BYTES, 79);
     assert_eq!(
         encode(&QuoterUserCapsV0::EMPTY).len(),
         QUOTER_USER_CAPS_BYTES
@@ -369,47 +454,44 @@ fn the_cap_list_puts_no_ceiling_on_exclusions() {
     // A user with no room takes a bit, not one of the scarce slots.
     let partial = QuoterUserCapV0 {
         index: 0,
-        bid_base: 500,
-        ask_base: 500,
+        budget: 500,
     };
     let excluded = QuoterUserCapV0 {
         index: 1,
-        bid_base: 0,
-        ask_base: 0,
+        budget: 0,
     };
     let caps = QuoterUserCapsV0::from_caps(vec![partial, excluded]);
     assert_eq!(caps.len, 1, "only the partial spends a slot");
     assert_eq!(caps.as_slice()[0], partial);
-    assert!(caps.is_excluded(1, ClobSide::Bid));
-    assert!(caps.is_excluded(1, ClobSide::Ask));
-    assert!(!caps.is_excluded(0, ClobSide::Bid));
+    assert!(caps.is_excluded(1));
+    assert!(!caps.is_excluded(0));
     assert_eq!(encode(&caps).len(), QUOTER_USER_CAPS_BYTES);
 
     // The case that scales: every user in the set can be excluded at once,
     // which is what a sharp move produces. None of them touches the slots.
     let all: Vec<QuoterUserCapV0> = (0..MAX_QUOTER_WIRE_USERS as u8)
-        .map(|index| QuoterUserCapV0 {
-            index,
-            bid_base: 0,
-            ask_base: 0,
-        })
+        .map(|index| QuoterUserCapV0 { index, budget: 0 })
         .collect();
     let caps = QuoterUserCapsV0::from_caps(all);
     assert_eq!(caps.len, 0);
-    assert!((0..MAX_QUOTER_WIRE_USERS).all(|i| caps.is_excluded(i, ClobSide::Ask)));
+    assert!((0..MAX_QUOTER_WIRE_USERS).all(|i| caps.is_excluded(i)));
     assert_eq!(encode(&caps).len(), QUOTER_USER_CAPS_BYTES);
 
-    // Partials past the ceiling drop the roomiest, keeping the tightest.
+    // Budgets past the ceiling drop the roomiest, keeping the tightest, and
+    // the dropped ones fall back to an exclusion rather than to nothing.
     let many: Vec<QuoterUserCapV0> = (0..MAX_CONSTRAINED_WIRE_USERS as u8 + 4)
         .map(|index| QuoterUserCapV0 {
             index,
-            bid_base: 1_000 * (index as u64 + 1),
-            ask_base: 0,
+            budget: 1_000 * (index as u64 + 1),
         })
         .collect();
     let caps = QuoterUserCapsV0::from_caps(many);
     assert_eq!(caps.len as usize, MAX_CONSTRAINED_WIRE_USERS);
-    assert_eq!(caps.as_slice()[0].bid_base, 1_000, "the tightest is kept");
+    assert_eq!(caps.as_slice()[0].budget, 1_000, "the tightest is kept");
+    assert!(
+        caps.is_excluded(MAX_CONSTRAINED_WIRE_USERS + 3),
+        "the roomiest is excluded, never left unconstrained"
+    );
 }
 
 #[test]
@@ -529,4 +611,43 @@ fn the_reader_agrees_with_the_specs_writer() {
     assert_eq!(response.completed_for(0).collect::<Vec<_>>(), vec![9]);
     assert_eq!(response.completed_for(1).collect::<Vec<_>>(), vec![10]);
     assert_eq!(response.completed_count(0), 1);
+}
+
+/// The CPI buffer is reserved once, at exactly the width the args serialize
+/// to. A field added to the args without being counted in the reservation
+/// makes the `Vec` double instead, and a doubling leaks its old buffer on a
+/// heap that never gives memory back — the fill runs out of memory rather
+/// than merely slowing down. So the two are pinned to each other here.
+#[test]
+fn the_cpi_buffer_holds_exactly_what_the_args_serialize_to() {
+    fn encode<T: AnchorSerialize>(value: &T) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        value.serialize(&mut bytes).unwrap();
+        bytes
+    }
+    // The widest each field can be: a full user set and a taker present.
+    let users: Vec<ClobUserRefV0> = (0..MAX_QUOTER_WIRE_USERS)
+        .map(|index| user_ref(index as u8, 0))
+        .collect();
+    let taker = Some(user_ref(0xFF, 0));
+    let quote = encode(&QuoteArgsV0 {
+        direction: Direction::Long,
+        size: u64::MAX,
+        users: QuoterUserSetRef(&users),
+        caps: QuoterUserCapsV0::EMPTY,
+        reference_price: i64::MAX,
+        taker,
+    });
+    let execute = encode(&ExecuteArgsV0 {
+        direction: Direction::Long,
+        size: u64::MAX,
+        users: QuoterUserSetRef(&users),
+        caps: QuoterUserCapsV0::EMPTY,
+        reference_price: i64::MAX,
+        taker,
+    });
+
+    // Eight for the anchor discriminator the caller writes ahead of the args.
+    assert_eq!(quote.len() + 8, QUOTER_CPI_DATA_CAPACITY);
+    assert_eq!(execute.len() + 8, QUOTER_CPI_DATA_CAPACITY);
 }

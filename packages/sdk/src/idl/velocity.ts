@@ -1512,7 +1512,7 @@ export type Velocity = {
           "name": "side",
           "type": {
             "defined": {
-              "name": "clobSide"
+              "name": "sideV0"
             }
           }
         }
@@ -21850,23 +21850,6 @@ export type Velocity = {
       }
     },
     {
-      "name": "clobSide",
-      "docs": [
-        "The CLOB's book side, as encoded on its wire (borsh enum tag)."
-      ],
-      "type": {
-        "kind": "enum",
-        "variants": [
-          {
-            "name": "bid"
-          },
-          {
-            "name": "ask"
-          }
-        ]
-      }
-    },
-    {
       "name": "constituent",
       "serialization": "bytemuckunsafe",
       "repr": {
@@ -22506,12 +22489,13 @@ export type Velocity = {
       }
     },
     {
-      "name": "direction",
+      "name": "directionV0",
       "docs": [
-        "Taker direction, from the taker's perspective. Borsh wire encoding",
-        "(Long = 0, Short = 1) deliberately matches",
-        "[`crate::controller::position::PositionDirection`], but the CPI ABI gets",
-        "its own enum so it can never drift with internal refactors."
+        "Taker direction, from the taker's perspective.",
+        "",
+        "Encoded as its discriminant, `Long = 0`, and every program on this wire",
+        "reads the same declaration — a taker direction inverted across the",
+        "boundary would fill the wrong side of a book."
       ],
       "type": {
         "kind": "enum",
@@ -22733,7 +22717,7 @@ export type Velocity = {
             "name": "side",
             "type": {
               "defined": {
-                "name": "clobSide"
+                "name": "sideV0"
               }
             }
           }
@@ -27154,7 +27138,7 @@ export type Velocity = {
             "name": "direction",
             "type": {
               "defined": {
-                "name": "direction"
+                "name": "directionV0"
               }
             }
           },
@@ -28255,6 +28239,23 @@ export type Velocity = {
                 "name": "settlePnlExplanation"
               }
             }
+          }
+        ]
+      }
+    },
+    {
+      "name": "sideV0",
+      "docs": [
+        "Which side an order rests on: a bid makes its owner long, an ask short."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "bid"
+          },
+          {
+            "name": "ask"
           }
         ]
       }

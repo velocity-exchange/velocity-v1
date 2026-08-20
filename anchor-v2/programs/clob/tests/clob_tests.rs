@@ -283,6 +283,7 @@ fn quote_meta_users(
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
             caps: UserCapsV0::EMPTY,
+            reference_price: 0,
             direction,
             size,
             users: user_set(users),
@@ -318,6 +319,7 @@ fn execute_meta_users(
     let ix = instruction::ExecuteV0 {
         args: ExecuteArgsV0 {
             caps: UserCapsV0::EMPTY,
+            reference_price: 0,
             direction,
             size,
             users: user_set(users),
@@ -684,6 +686,7 @@ fn execute_rejects_unauthorized_caller() {
 
     let args = || ExecuteArgsV0 {
         caps: UserCapsV0::EMPTY,
+        reference_price: 0,
         direction: Direction::Long,
         size: 5,
         users: UserSetV0::EMPTY,
@@ -1087,6 +1090,7 @@ fn cu_benchmarks() {
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
             caps: UserCapsV0::EMPTY,
+            reference_price: 0,
             direction: Direction::Short,
             size: u64::MAX,
             users: UserSetV0::EMPTY,
@@ -1303,6 +1307,7 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
     let ix = instruction::ExecuteV0 {
         args: ExecuteArgsV0 {
             caps: UserCapsV0::EMPTY,
+            reference_price: 0,
             direction: Direction::Long,
             size: fills as u64,
             users: UserSetV0::EMPTY,
@@ -1402,6 +1407,7 @@ fn quote_taker(ctx: &mut Ctx, direction: Direction, size: u64, taker: Address) -
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
             caps: UserCapsV0::EMPTY,
+            reference_price: 0,
             direction,
             size,
             users: UserSetV0::EMPTY,
@@ -1424,6 +1430,7 @@ fn execute_taker(
     let ix = instruction::ExecuteV0 {
         args: ExecuteArgsV0 {
             caps: UserCapsV0::EMPTY,
+            reference_price: 0,
             direction,
             size,
             users: UserSetV0::EMPTY,
@@ -1710,6 +1717,7 @@ fn cu_benchmark_quote_with_a_taker_origin_head() {
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
             caps: UserCapsV0::EMPTY,
+            reference_price: 0,
             direction: Direction::Short,
             size: u64::MAX,
             users: UserSetV0::EMPTY,

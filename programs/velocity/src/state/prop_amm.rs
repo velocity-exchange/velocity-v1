@@ -275,8 +275,13 @@ pub use quoter_spec::{
 /// busier of the two.
 pub const CLOB_CPI_DATA_CAPACITY: usize = 8 + 1 + 8 + 8 + 5 + 8 + CLOB_USER_REF_BYTES + 1;
 
+/// Discriminator, direction, size, the user set, the caps, the reference
+/// price, and the taker behind its option tag. Every field the args
+/// serializer writes has to be counted here: one byte short and the `Vec`
+/// doubles, which on this heap means the fill runs out of memory rather than
+/// slowing down.
 pub const QUOTER_CPI_DATA_CAPACITY: usize =
-    8 + 1 + 8 + QUOTER_USER_SET_BYTES + QUOTER_USER_CAPS_BYTES + 1 + CLOB_USER_REF_BYTES;
+    8 + 1 + 8 + QUOTER_USER_SET_BYTES + QUOTER_USER_CAPS_BYTES + 8 + 1 + CLOB_USER_REF_BYTES;
 
 /// The loaded-user set as velocity holds it: a heap slice, capped at the
 /// wire's capacity, serialized to the wire's fixed width by
@@ -350,9 +355,12 @@ pub struct QuoteArgsV0<'a> {
     /// Quoters must not fill anyone else (velocity rejects the response
     /// otherwise). Empty = unrestricted, for off-chain quote discovery.
     pub users: QuoterUserSetRef<'a>,
-    /// How much of `users` each named one may still take, per side. Anyone
-    /// absent is unconstrained; a zero cap means skip that user's orders.
+    /// How much quote each named user may still lose on the swept side.
+    /// Anyone absent is unconstrained; an excluded one is skipped entirely.
     pub caps: QuoterUserCapsV0,
+    /// The mark a quoter prices a capped user's loss against. Velocity sends
+    /// the market's oracle price. It constrains nothing but the budgets.
+    pub reference_price: i64,
     /// The taker's `User`: quoters must skip the taker's own resting
     /// liquidity (self-trade prevention) — a balance change for this user
     /// is rejected.
@@ -388,6 +396,9 @@ pub struct ExecuteArgsV0<'a> {
     /// quote was taken with: the two walks skip identically or the executed
     /// prices fall outside the prefix the split bound them to.
     pub caps: QuoterUserCapsV0,
+    /// Same contract as [`QuoteArgsV0::reference_price`], and the same value
+    /// the quote was taken with for the same reason.
+    pub reference_price: i64,
     /// Same contract as [`QuoteArgsV0::taker`].
     pub taker: Option<ClobUserRefV0>,
 }
@@ -398,6 +409,7 @@ impl AnchorSerialize for QuoteArgsV0<'_> {
         self.size.serialize(writer)?;
         self.users.serialize(writer)?;
         self.caps.serialize(writer)?;
+        self.reference_price.serialize(writer)?;
         self.taker.serialize(writer)
     }
 }
@@ -408,6 +420,7 @@ impl AnchorSerialize for ExecuteArgsV0<'_> {
         self.size.serialize(writer)?;
         self.users.serialize(writer)?;
         self.caps.serialize(writer)?;
+        self.reference_price.serialize(writer)?;
         self.taker.serialize(writer)
     }
 }
@@ -992,10 +1005,11 @@ pub fn clob_resting_prefix(
     size: u64,
     // The set forwarded to the quoter; empty = unrestricted.
     users: &[ClobUserRefV0],
-    // The caps forwarded with it. Applied here as well as on the book, and
-    // that is what makes a zero cap enforced rather than requested: a user
-    // with no room is absent from the permitted-subject set, so a book that
-    // filled them anyway returns a change for a user velocity refuses.
+    // The caps forwarded with it. Only the exclusions are applied here, and
+    // that is what makes an exclusion enforced rather than requested: an
+    // excluded user is absent from the permitted-subject set, so a book that
+    // filled them anyway returns a change for a user velocity refuses. The
+    // budgets are advisory and the post-fill checks answer for them.
     caps: &QuoterUserCapsV0,
     taker: &ClobUserRefV0,
     slot: u64,
@@ -1012,21 +1026,12 @@ pub fn clob_resting_prefix(
     // handful of orders is the common sweep, and this covers it in one
     // allocation.
     let mut prefix = Vec::with_capacity(CLOB_RESTING_PREFIX_RESERVE);
-    // The same budget the book spends, spent in the same order, so the two
-    // walks admit the same orders.
-    let mut budget: Vec<(ClobUserRefV0, u64)> = caps
-        .as_slice()
-        .iter()
-        .filter_map(|cap| {
-            let user = users.get(cap.index as usize)?;
-            let room = match side {
-                ClobSide::Bid => cap.bid_base,
-                ClobSide::Ask => cap.ask_base,
-            };
-            Some((*user, room))
-        })
-        .collect();
-    let any_excluded = caps.any_excluded(side);
+    // Exclusions only. A partial budget is left to the book: this walk has to
+    // stay a *superset* of what execute fills, and spending a budget here
+    // could retire a user's room before the book retires it, which would stop
+    // the walk short of a maker execute really fills. Ignoring one only makes
+    // the walk go deeper.
+    let any_excluded = caps.any_excluded();
     let mut index = match read_clob_u32(data, head_offset) {
         Some(index) => index,
         None => return prefix,
@@ -1041,27 +1046,14 @@ pub fn clob_resting_prefix(
         };
         let user = node.user_ref();
         let settleable = users.is_empty() || users.contains(&user);
-        // A named user out of room is passed over here exactly as the book
-        // passes it over, so it never reaches the permitted set.
-        // Same order as the book: the bitmap first, then the partial caps.
+        // An excluded user is passed over here exactly as the book passes it
+        // over, so it never reaches the permitted set.
         let excluded = any_excluded
             && users
                 .iter()
                 .position(|named| *named == user)
-                .is_some_and(|index| caps.is_excluded(index, side));
-        let allowed = if excluded {
-            0
-        } else {
-            match budget.iter_mut().find(|(named, _)| *named == user) {
-                Some(entry) => {
-                    let take = node.base_asset_amount.min(entry.1);
-                    entry.1 -= take;
-                    take
-                }
-                None => node.base_asset_amount,
-            }
-        };
-        if node.is_matchable(slot, now) && settleable && user != *taker && allowed > 0 {
+                .is_some_and(|index| caps.is_excluded(index));
+        if node.is_matchable(slot, now) && settleable && user != *taker && !excluded {
             prefix.push(ClobRestingOrderV0 {
                 user,
                 price: node.price,

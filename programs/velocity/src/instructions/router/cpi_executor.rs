@@ -38,6 +38,10 @@ pub struct CpiQuoterExecutor<'a, 'info> {
     pub users: &'a [ClobUserRefV0],
     /// The same caps the quote was taken with.
     pub caps: crate::state::prop_amm::QuoterUserCapsV0,
+    /// The mark those caps were priced against, and the same one the quote
+    /// carried: a quoter that spends budgets skips a different set of orders
+    /// under a different mark.
+    pub reference_price: i64,
     /// The taker — forwarded so quoters skip the taker's own resting
     /// liquidity (self-trade prevention).
     pub taker: ClobUserRefV0,
@@ -205,6 +209,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                 self.market_index,
                 ExecuteArgsV0 {
                     caps: self.caps,
+                    reference_price: self.reference_price,
                     direction,
                     size,
                     users: QuoterUserSetRef(self.users),

@@ -1506,7 +1506,7 @@
           "name": "side",
           "type": {
             "defined": {
-              "name": "ClobSide"
+              "name": "SideV0"
             }
           }
         }
@@ -21844,23 +21844,6 @@
       }
     },
     {
-      "name": "ClobSide",
-      "docs": [
-        "The CLOB's book side, as encoded on its wire (borsh enum tag)."
-      ],
-      "type": {
-        "kind": "enum",
-        "variants": [
-          {
-            "name": "Bid"
-          },
-          {
-            "name": "Ask"
-          }
-        ]
-      }
-    },
-    {
       "name": "Constituent",
       "serialization": "bytemuckunsafe",
       "repr": {
@@ -22500,12 +22483,13 @@
       }
     },
     {
-      "name": "Direction",
+      "name": "DirectionV0",
       "docs": [
-        "Taker direction, from the taker's perspective. Borsh wire encoding",
-        "(Long = 0, Short = 1) deliberately matches",
-        "[`crate::controller::position::PositionDirection`], but the CPI ABI gets",
-        "its own enum so it can never drift with internal refactors."
+        "Taker direction, from the taker's perspective.",
+        "",
+        "Encoded as its discriminant, `Long = 0`, and every program on this wire",
+        "reads the same declaration — a taker direction inverted across the",
+        "boundary would fill the wrong side of a book."
       ],
       "type": {
         "kind": "enum",
@@ -22727,7 +22711,7 @@
             "name": "side",
             "type": {
               "defined": {
-                "name": "ClobSide"
+                "name": "SideV0"
               }
             }
           }
@@ -27148,7 +27132,7 @@
             "name": "direction",
             "type": {
               "defined": {
-                "name": "Direction"
+                "name": "DirectionV0"
               }
             }
           },
@@ -28249,6 +28233,23 @@
                 "name": "SettlePnlExplanation"
               }
             }
+          }
+        ]
+      }
+    },
+    {
+      "name": "SideV0",
+      "docs": [
+        "Which side an order rests on: a bid makes its owner long, an ask short."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Bid"
+          },
+          {
+            "name": "Ask"
           }
         ]
       }

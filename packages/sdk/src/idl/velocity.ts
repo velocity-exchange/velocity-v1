@@ -13169,7 +13169,36 @@ export type Velocity = {
           "signer": true
         },
         {
-          "name": "state"
+          "name": "state",
+          "docs": [
+            "Read only for the live slot duration. The seed constraint both locks",
+            "the account to the singleton `State` and lets clients resolve it from",
+            "the IDL, so callers that built this instruction before the account",
+            "existed keep working."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  101,
+                  108,
+                  111,
+                  99,
+                  105,
+                  116,
+                  121,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -13322,7 +13351,36 @@ export type Velocity = {
           "signer": true
         },
         {
-          "name": "state"
+          "name": "state",
+          "docs": [
+            "Read only for the live slot duration. The seed constraint both locks",
+            "the account to the singleton `State` and lets clients resolve it from",
+            "the IDL, so callers that built this instruction before the account",
+            "existed keep working."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  101,
+                  108,
+                  111,
+                  99,
+                  105,
+                  116,
+                  121,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              }
+            ]
+          }
         }
       ],
       "args": [

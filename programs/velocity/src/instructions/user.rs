@@ -5625,6 +5625,14 @@ pub struct UpdateUserWithMarkets<'info> {
     )]
     pub user: AccountLoader<'info, User>,
     pub authority: Signer<'info>,
+    /// Read only for the live slot duration. The seed constraint both locks
+    /// the account to the singleton `State` and lets clients resolve it from
+    /// the IDL, so callers that built this instruction before the account
+    /// existed keep working.
+    #[account(
+        seeds = [b"velocity_state".as_ref()],
+        bump,
+    )]
     pub state: AccountLoader<'info, State>,
 }
 

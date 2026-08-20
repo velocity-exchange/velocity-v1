@@ -2764,13 +2764,18 @@ enum StagePreparation {
 /// terminal gate returns [`StagePreparation::PromotedOnly`] rather than failing
 /// the successor check. Failing there would roll the promotion back and leave
 /// `slot_duration_ms` one step behind `slot_duration()` forever, since this
-/// handler is the only writer of these fields.
+/// handler is the only writer of these fields. A rejected request anywhere else
+/// on the schedule also discards its promotion, but that state is transient: the
+/// next correct call promotes again and stages, so only the terminal gate needed
+/// the separate outcome.
 fn prepare_slot_duration_stage(
     state: &mut State,
     now_slot: u64,
     slot_duration_ms: u16,
 ) -> Result<StagePreparation> {
-    if state.pending_slot_duration_ms != 0 && now_slot >= state.slot_duration_effective_slot {
+    let promoted =
+        state.pending_slot_duration_ms != 0 && now_slot >= state.slot_duration_effective_slot;
+    if promoted {
         state.slot_duration_ms = state.pending_slot_duration_ms;
         state.pending_slot_duration_ms = 0;
         state.slot_duration_effective_slot = 0;
@@ -2786,10 +2791,20 @@ fn prepare_slot_duration_stage(
 
     let current_ms = SlotDuration::from_state_ms(state.slot_duration_ms).as_ms();
     let Some(expected_next) = crate::math::time::next_slot_duration_ms(current_ms) else {
-        msg!(
-            "slot_duration_ms: {} is the last value on the schedule; ignoring the requested {} and committing the promotion only",
+        // The schedule is exhausted. Succeed only when this call actually
+        // promoted something, so the promotion is committed rather than reverted;
+        // with nothing to promote there is no work to do and the request is not a
+        // valid step, so it is rejected rather than silently accepted.
+        validate!(
+            promoted,
+            ErrorCode::DefaultError,
+            "slot_duration_ms is already {}, the last value on the schedule; cannot step to {}",
             current_ms,
             slot_duration_ms
+        )?;
+        msg!(
+            "slot_duration_ms: promoted to {}, the last value on the schedule; nothing left to stage",
+            current_ms
         );
         return Ok(StagePreparation::PromotedOnly);
     };
@@ -6984,17 +6999,15 @@ mod feature_gate_tests {
         assert_eq!(state.pending_slot_duration_ms, 0);
         assert_eq!(state.slot_duration_effective_slot, 0);
 
-        // Already at the terminal value with nothing staged: still a no-op success,
-        // so a repeat call is harmless.
-        assert!(matches!(
-            prepare_slot_duration_stage(&mut state, 2_000, 200).unwrap(),
-            StagePreparation::PromotedOnly
-        ));
-        assert_eq!(state.slot_duration_ms, 200);
-
         // The base and the resolved live value now agree, which is what every
         // consumer that reads the raw field depends on.
         assert_eq!(state.active_slot_duration_ms(2_000), 200);
+
+        // Already at the terminal value with nothing left to promote: there is no
+        // work to do, so the call is rejected rather than silently accepted.
+        assert!(prepare_slot_duration_stage(&mut state, 2_000, 200).is_err());
+        assert!(prepare_slot_duration_stage(&mut state, 2_000, 350).is_err());
+        assert_eq!(state.slot_duration_ms, 200);
     }
 
     #[test]

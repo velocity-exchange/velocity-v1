@@ -69,7 +69,13 @@ pub fn check_order_constraints<'c: 'info, 'info>(
 #[derive(Accounts)]
 pub struct CheckOrderConstraints<'info> {
     /// Velocity's `State`, read for the live slot duration so the oracle
-    /// staleness windows here match the ones velocity itself applies.
+    /// staleness windows here match the ones velocity itself applies. The PDA
+    /// belongs to the velocity program, so the derivation names it explicitly.
+    #[account(
+        seeds = [b"velocity_state".as_ref()],
+        bump,
+        seeds::program = velocity::id(),
+    )]
     pub state: AccountLoader<'info, State>,
     pub user: AccountLoader<'info, User>,
 }

@@ -3748,12 +3748,8 @@ fn update_mm_oracle(accounts: &[AccountInfo], data: &[u8], current_slot: u64) ->
                 stored_slot
             );
         }
-        MmOracleUpdateOutcome::Skipped(MmOracleSkipReason::RecrankGapTooSmall { gap }) => {
-            msg!(
-                "mm oracle reject: re-crank gap {} < {}",
-                gap,
-                MM_ORACLE_MIN_WRITE_GAP.as_ms()
-            );
+        MmOracleUpdateOutcome::Skipped(MmOracleSkipReason::RecrankGapTooSmall { gap, min_gap }) => {
+            msg!("mm oracle reject: re-crank gap {} slots < {} slots", gap, min_gap);
         }
         MmOracleUpdateOutcome::Skipped(MmOracleSkipReason::SourceSlotOutOfRange {
             source_slot,
@@ -4067,7 +4063,7 @@ enum MmOracleSkipReason {
     /// Current slot not strictly greater than the stored slot.
     SlotNotAdvanced { stored_slot: u64 },
     /// Fewer slots since the last accepted write than `MM_ORACLE_MIN_WRITE_GAP` allows.
-    RecrankGapTooSmall { gap: u64 },
+    RecrankGapTooSmall { gap: u64, min_gap: u64 },
     /// Source slot more than `MM_ORACLE_MAX_SOURCE_AGE` from the current
     /// slot in either direction.
     SourceSlotOutOfRange { source_slot: u64 },
@@ -4161,8 +4157,9 @@ fn apply_mm_oracle_update(
     // rate limiter: round the min accepted interval UP so the wall-clock gap is
     // never shorter than intended (floor would loosen the slew cap at intermediate
     // gates). the immediate-fill staleness fallback on the same constant stays floor.
-    if gap < MM_ORACLE_MIN_WRITE_GAP.to_slots_ceil(slot_duration) {
-        return Ok(Outcome::Skipped(Skip::RecrankGapTooSmall { gap }));
+    let min_gap = MM_ORACLE_MIN_WRITE_GAP.to_slots_ceil(slot_duration);
+    if gap < min_gap {
+        return Ok(Outcome::Skipped(Skip::RecrankGapTooSmall { gap, min_gap }));
     }
 
     // Source-observation freshness, symmetric around the landing slot.

@@ -38,6 +38,23 @@ jobs:
       bin: ${{ steps.parse.outputs.bin }}
       ecr: ${{ steps.parse.outputs.ecr }}
     steps:
+      # Release tags must point at reviewed code: fail unless the tagged commit
+      # is already on master. Branch protection covers branches only — without
+      # this, a tag on any unreviewed branch would be built AND cosign-signed
+      # with the trusted CI identity. Gating here in `route` covers both build
+      # jobs (they `needs: route`). Uses the compare API — no history needed.
+      - name: Require tagged commit to be on master
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          status=$(curl -sf -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/compare/master...${GITHUB_SHA}" | jq -r '.status')
+          if [ "$status" != "identical" ] && [ "$status" != "behind" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} points at ${GITHUB_SHA}, which is not on master (compare status: ${status}). Release tags must point at reviewed master commits."
+            exit 1
+          fi
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - id: parse
         run: |

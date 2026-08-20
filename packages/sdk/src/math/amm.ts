@@ -36,6 +36,13 @@ import {
 } from './repeg';
 
 import { calculateLiveOracleStd, getNewOracleConfPct } from './oracles';
+import {
+	SlotDurationMs,
+	SLOT_DURATION_BASELINE,
+	MILLIS_UNIT,
+	divPeriods,
+	millisFromSlots,
+} from './time';
 
 /**
  * Solves for the `pegMultiplier` that would make the AMM's constant-product price equal
@@ -284,7 +291,8 @@ export function calculateUpdatedAMMSpreadReserves(
 	marketStats: MarketStats,
 	direction: PositionDirection,
 	mmOraclePriceData?: Pick<MMOraclePriceData, 'price' | 'confidence'>,
-	latestSlot?: BN
+	latestSlot?: BN,
+	slotDuration: SlotDurationMs = SLOT_DURATION_BASELINE
 ): { baseAssetReserve: BN; quoteAssetReserve: BN; sqrtK: BN; newPeg: BN } {
 	const newAmm = calculateUpdatedAMM(amm, mmOraclePriceData);
 	const [shortReserves, longReserves] = calculateSpreadReserves(
@@ -292,7 +300,8 @@ export function calculateUpdatedAMMSpreadReserves(
 		marketStats,
 		mmOraclePriceData,
 		undefined,
-		latestSlot
+		latestSlot,
+		slotDuration
 	);
 
 	const dirReserves = isVariant(direction, 'long')
@@ -324,7 +333,8 @@ export function calculateBidAskPrice(
 	marketStats: MarketStats,
 	mmOraclePriceData?: Pick<MMOraclePriceData, 'price' | 'confidence'>,
 	withUpdate = true,
-	latestSlot?: BN
+	latestSlot?: BN,
+	slotDuration: SlotDurationMs = SLOT_DURATION_BASELINE
 ): [BN, BN] {
 	let newAmm: AMM;
 	if (withUpdate) {
@@ -338,7 +348,8 @@ export function calculateBidAskPrice(
 		marketStats,
 		mmOraclePriceData,
 		undefined,
-		latestSlot
+		latestSlot,
+		slotDuration
 	);
 
 	const askPrice = calculatePrice(
@@ -1407,7 +1418,8 @@ export function calculateSpreadReserves(
 	marketStats: MarketStats,
 	mmOraclePriceData?: Pick<MMOraclePriceData, 'price' | 'confidence'>,
 	now?: BN,
-	latestSlot?: BN
+	latestSlot?: BN,
+	slotDuration: SlotDurationMs = SLOT_DURATION_BASELINE
 ) {
 	function calculateSpreadReserve(
 		spread: number,
@@ -1526,13 +1538,21 @@ export function calculateSpreadReserves(
 		amm.curveUpdateIntensity > 100;
 
 	if (doReferencePricOffsetSmooth) {
-		const slotsPassed =
+		// mirror the program: elapsed time in whole 400ms periods (not raw
+		// slots), measured from lastSpreadUpdateSlot, times the per-period budget
+		const periodsPassed =
 			latestSlot != null
-				? BN.max(latestSlot.sub(amm.lastUpdateSlot), ZERO).toNumber()
+				? divPeriods(
+						millisFromSlots(
+							BN.max(latestSlot.sub(amm.lastSpreadUpdateSlot), ZERO),
+							slotDuration
+						),
+						MILLIS_UNIT
+				  ).toNumber()
 				: 0;
 		const fullOffsetDelta = referencePriceOffset - lastReferencePriceOffset;
 		const raw = Math.trunc(
-			Math.min(Math.abs(fullOffsetDelta), slotsPassed * 1000) / 10
+			Math.min(Math.abs(fullOffsetDelta), periodsPassed * 1000) / 10
 		);
 		const maxAllowed =
 			Math.abs(lastReferencePriceOffset) || Math.abs(referencePriceOffset);

@@ -753,8 +753,11 @@ impl LPPool {
             self.target_oracle_delay_fee_bps_per_10_slots,
         )?;
         let position_uncertainty_fee = step_fee(
+            // threshold is in 400ms baseline units like its oracle sibling;
+            // convert to the period domain `target_position_slot_delay` is in.
+            // (the raw const stays u64 for the same-slot `==` check elsewhere.)
             target_position_slot_delay,
-            MAX_STALENESS_FOR_TARGET_CALC,
+            Millis::from_stored_units(MAX_STALENESS_FOR_TARGET_CALC).div_periods(Millis::UNIT),
             self.target_position_delay_fee_bps_per_10_slots,
         )?;
 

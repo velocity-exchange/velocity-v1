@@ -2585,10 +2585,26 @@ pub fn handle_update_liquidation_margin_buffer_ratio(
     Ok(())
 }
 
+/// Sane ceiling (in 400ms baseline units) on the oracle staleness windows.
+/// ~4.6 days of tolerance, absurd as a real config but far below the point
+/// where `Millis::from_stored_units` would saturate; keeps a fat-fingered
+/// value from turning the staleness gate into a global never-stale.
+const MAX_STALENESS_STORED_UNITS: i64 = 1_000_000;
+
 pub fn handle_update_oracle_guard_rails(
     ctx: Context<AdminUpdateState>,
     oracle_guard_rails: OracleGuardRails,
 ) -> Result<()> {
+    validate!(
+        (0..=MAX_STALENESS_STORED_UNITS)
+            .contains(&oracle_guard_rails.validity.slots_before_stale_for_amm)
+            && (0..=MAX_STALENESS_STORED_UNITS)
+                .contains(&oracle_guard_rails.validity.slots_before_stale_for_margin),
+        ErrorCode::DefaultError,
+        "oracle staleness windows out of range [0, {}]",
+        MAX_STALENESS_STORED_UNITS
+    )?;
+
     msg!(
         "oracle_guard_rails: {:?} -> {:?}",
         ctx.accounts.state.load()?.oracle_guard_rails,
@@ -3945,15 +3961,15 @@ fn update_mm_oracle_batch(
         ErrorCode::InvalidNativeInstructionData
     );
 
-    // Fixed prologue, paid once for the whole batch.
+    // Fixed prologue, paid once for the whole batch. Authenticate the state
+    // account before any raw byte read (auth.rs invariant).
     let state_account = &accounts[1];
-    let slot_duration = read_native_state_slot_duration(state_account)?;
-
     crate::auth::require_native_account(
         state_account,
         State::DISCRIMINATOR,
         ErrorCode::InvalidNativeStateAccount,
     )?;
+    let slot_duration = read_native_state_slot_duration(state_account)?;
 
     {
         let state = state_account.try_borrow_data()?;
@@ -4142,7 +4158,10 @@ fn apply_mm_oracle_update(
     // duration. Must stay consistent with the `MM_ORACLE_MIN_WRITE_GAP`
     // fallback inside `oracle_validity`.
     let gap = current_slot - stats.mm_oracle_slot;
-    if gap < MM_ORACLE_MIN_WRITE_GAP.to_slots(slot_duration) {
+    // rate limiter: round the min accepted interval UP so the wall-clock gap is
+    // never shorter than intended (floor would loosen the slew cap at intermediate
+    // gates). the immediate-fill staleness fallback on the same constant stays floor.
+    if gap < MM_ORACLE_MIN_WRITE_GAP.to_slots_ceil(slot_duration) {
         return Ok(Outcome::Skipped(Skip::RecrankGapTooSmall { gap }));
     }
 

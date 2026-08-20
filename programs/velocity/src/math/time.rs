@@ -67,13 +67,13 @@ impl Millis {
     }
 
     pub const fn from_secs(secs: u64) -> Self {
-        Millis(secs * 1_000)
+        Millis(secs.saturating_mul(1_000))
     }
 
     /// Decode a legacy stored value denominated in [`STORED_UNIT_MS`] units.
     /// Storage codec only; never use for new values.
     pub const fn from_stored_units(units: u64) -> Self {
-        Millis(units * STORED_UNIT_MS)
+        Millis(units.saturating_mul(STORED_UNIT_MS))
     }
 
     /// The exact wall-clock time a measured slot delta represents at the
@@ -237,6 +237,21 @@ mod tests {
             Millis::from_slots(3, SlotDuration::from_state_ms(200)).div_periods(Millis::UNIT),
             1
         );
+    }
+
+    #[test]
+    fn valid_slot_durations_are_the_gate_values_only() {
+        // pins the admin-settable set: exactly the four IBRL gate values, and
+        // neither 0 (unset sentinel) nor 400 (baseline) is settable.
+        assert_eq!(VALID_SLOT_DURATIONS_MS, [350, 300, 250, 200]);
+        assert!(!VALID_SLOT_DURATIONS_MS.contains(&0));
+        assert!(!VALID_SLOT_DURATIONS_MS.contains(&400));
+        // every settable value is strictly below the 400ms baseline, so the
+        // first flip from unset (which resolves to 400) always passes the
+        // handler's monotonic-decrease guard.
+        for v in VALID_SLOT_DURATIONS_MS {
+            assert!((v as u64) < SlotDuration::BASELINE.as_ms());
+        }
     }
 
     #[test]

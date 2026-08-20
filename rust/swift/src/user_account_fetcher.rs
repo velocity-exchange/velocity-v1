@@ -12,7 +12,7 @@ use {
 /// slot time drops — deliberate, a tighter cache tolerance only costs extra
 /// RPC fallbacks) of a redis-cached user account before it's treated as too
 /// stale to simulate against. This is a swift-side freshness tolerance, not a
-/// program constant (cf. velocity's `SIGNED_MSG_SLOT_EVICTION_BUFFER = 10`,
+/// program constant (cf. velocity's `SIGNED_MSG_EVICTION_BUFFER (Millis, 4000ms)`,
 /// which governs onchain order-id eviction, not user-account caching).
 const MAX_CACHED_USER_AGE_SLOTS: u64 = 225;
 

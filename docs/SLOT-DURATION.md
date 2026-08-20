@@ -215,6 +215,19 @@ compared a raw slot count against the seconds value (a unit mismatch that silent
 faster slots); the gate now holds its current wall-clock width (~40% of the funding period) at
 every slot duration.
 
+### Paths that run on the baseline (no `State` in scope)
+
+A few instruction paths load oracle validity without a velocity `State` account and so decode the
+guard-rail staleness windows at the 400ms baseline regardless of the live slot duration: the
+`vaults` program's margin/equity map loads, `jit-proxy`'s `check_order_constraints`, and the two
+`UpdateUser` handlers (margin-trading toggle, pool-id). These already ran on default guard rails,
+and floor-tightening is the safe direction (a 4s window becomes 2s at 200ms, stricter, never more
+permissive), so it is a liveness note, not a safety gap: at 200ms these paths want an oracle
+cranked within ~2s. Threading velocity `State` into the vaults CPI path would lift them to the
+live duration and is the one worth doing if that tightening ever bites. Similarly, keep-rs's
+liquidator worker samples the slot duration once at spawn, so a process spanning a gate activation
+keeps the old rate limit until restart; it is an internal pacing knob, not a correctness gate.
+
 ## Writing new code
 
 The rules reduce to one decision: is the value about wall-clock time, or about slots as slots?

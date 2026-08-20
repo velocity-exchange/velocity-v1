@@ -311,7 +311,7 @@ pub struct MMOraclePriceData {
     /// fell back to the exchange oracle (false). The unset-default resolution
     /// of the immediate-fill staleness threshold depends on it: only an
     /// MM-oracle-sourced price is structurally unable to be fresher than
-    /// `MM_ORACLE_MIN_SLOT_GAP`.
+    /// `MM_ORACLE_MIN_WRITE_GAP`.
     safe_price_is_mm_sourced: bool,
 }
 

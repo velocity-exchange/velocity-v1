@@ -773,7 +773,7 @@ impl OrderParams {
     /// TWAPs a caller can influence: `update_perp_bid_ask_twap` samples the book from
     /// caller-supplied `User` accounts, and past 50bps of fast/slow divergence this function uses
     /// `last_mark_price_twap_5min` alone. These offsets set the auction band for a THIRD PARTY's
-    /// forced close, so a moved TWAP prices a stranger's exit. `BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS`
+    /// forced close, so a moved TWAP prices a stranger's exit. `BID_ASK_TWAP_MIN_QUOTE_REST`
     /// raises the cost of moving those TWAPs; this clamp bounds the damage if one still moves.
     ///
     /// The sibling `get_perp_baseline_start_end_price_offset` clamps its END buffer to the same tier

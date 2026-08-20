@@ -263,20 +263,24 @@ pub fn place_perp_order(
         market.order_tick_size,
         state
             .min_perp_auction_duration_ms()
-            .to_slots(state.slot_duration())
+            .to_slots_ceil(state.slot_duration())
             .min(u8::MAX as u64) as u8,
     )?;
 
     let max_ts = match params.max_ts {
         Some(max_ts) => max_ts,
         None => match params.order_type {
-            // default TIF: at least 30s, else half the auction's wall-clock
-            // length in seconds plus 10s of pad
+            // default TIF: at least 30s, else the auction's wall-clock length
+            // plus a quarter again plus 10s of pad, so the default always
+            // outlives the auction. The /800 reproduces the historical
+            // `auction_duration_slots / 2 + 10` exactly at the 400ms baseline
+            // (a slot was 400ms, so slots/2 == ms/800) and holds that
+            // wall-clock shape at every slot duration.
             OrderType::Market | OrderType::Oracle => now.safe_add(
                 30_i64.max(
                     Millis::from_slots(auction_duration as u64, state.slot_duration())
                         .as_ms()
-                        .safe_div(2_000)?
+                        .safe_div(800)?
                         .cast::<i64>()?
                         .safe_add(10_i64)?,
                 ),
@@ -4011,7 +4015,7 @@ pub fn trigger_order(
             slot,
             // ~8s minimum, expressed in actual slots
             Millis::from_secs(8)
-                .to_slots(state.slot_duration())
+                .to_slots_ceil(state.slot_duration())
                 .min(u8::MAX as u64) as u8,
             Some(&perp_market),
             state.slot_duration(),

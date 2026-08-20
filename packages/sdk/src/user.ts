@@ -129,6 +129,7 @@ import {
 	getSpotOracleValidity,
 	isOracleValidForMarginCalc,
 } from './math/oracles';
+import { slotDurationFromState } from './math/time';
 import { getPerpMarketTierNumber, getSpotMarketTierNumber } from './math/tiers';
 import { StrictOraclePrice } from './oracles/strictOraclePrice';
 
@@ -2324,8 +2325,9 @@ export class User {
 	 * @returns Value and verdict, QUOTE_PRECISION.
 	 */
 	getFloorNetEquity(slot?: BN): FloorNetEquity {
-		const oracleGuardRails =
-			this.velocityClient.getStateAccount().oracleGuardRails;
+		const stateAccount = this.velocityClient.getStateAccount();
+		const oracleGuardRails = stateAccount.oracleGuardRails;
+		const slotDuration = slotDurationFromState(stateAccount.slotDurationMs);
 		const userAccount = this.getUserAccountOrThrow();
 
 		let value = ZERO;
@@ -2348,7 +2350,9 @@ export class User {
 							spotMarket,
 							oracleData,
 							oracleGuardRails,
-							slot
+							slot,
+							undefined,
+							slotDuration
 						)
 				  )
 				: true;
@@ -2389,7 +2393,9 @@ export class User {
 							quoteSpotMarket,
 							quoteOracleData,
 							oracleGuardRails,
-							slot
+							slot,
+							undefined,
+							slotDuration
 						)
 				  )
 				: true;
@@ -2414,7 +2420,15 @@ export class User {
 			);
 			const oracleValid = slot
 				? isOracleValidForMarginCalc(
-						getOracleValidity(market, oracleData, oracleGuardRails, slot)
+						getOracleValidity(
+							market,
+							oracleData,
+							oracleGuardRails,
+							slot,
+							undefined,
+							undefined,
+							slotDuration
+						)
 				  )
 				: true;
 

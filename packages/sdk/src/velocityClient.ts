@@ -269,6 +269,7 @@ import { getOrderParams } from './orderParams';
 import { numberToSafeBN } from './math/utils';
 import { TransactionParamProcessor } from './tx/txParamProcessor';
 import { isOracleValid, getOracleValidity } from './math/oracles';
+import { slotDurationFromState } from './math/time';
 import { TxHandler } from './tx/txHandler';
 import { createMinimalEd25519VerifyIx } from './util/ed25519Utils';
 import {
@@ -10152,7 +10153,8 @@ export class VelocityClient {
 					perpMarketAccount,
 					oraclePriceData,
 					oracleGuardRails,
-					stateAccountAndSlot.slot
+					stateAccountAndSlot.slot,
+					slotDurationFromState(stateAccountAndSlot.data.slotDurationMs)
 				);
 
 				if (isValid) {
@@ -11818,7 +11820,7 @@ export class VelocityClient {
 	 * `canUpdateBidAskTwap` set and at least 1000 USDC (`QUOTE_PRECISION`, 1e6) staked in the
 	 * insurance fund (`ifStakedQuoteAssetAmount`), or the instruction reverts.
 	 *
-	 * Only orders that have rested on-chain for at least `BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS`
+	 * Only orders that have rested on-chain for at least `BID_ASK_TWAP_MIN_QUOTE_REST`
 	 * (24 baseline slots, ~10s, inflated to actual slots at the current slot duration) are sampled — a quote must have been takeable by someone else before it may
 	 * move the TWAP. Orders newer than that are silently skipped, so passing only freshly-placed
 	 * makers yields no DLOB estimate and the crank falls back to the AMM's quote. Note this is
@@ -12065,7 +12067,8 @@ export class VelocityClient {
 					stateAccountAndSlot.data.oracleGuardRails,
 					new BN(stateAccountAndSlot.slot),
 					undefined,
-					true // classifying the MM oracle price itself
+					true, // classifying the MM oracle price itself
+					slotDurationFromState(stateAccountAndSlot.data.slotDurationMs)
 			  );
 		const isMMOracleInvalidForUse =
 			mmOracleValidity === OracleValidity.NonPositive ||

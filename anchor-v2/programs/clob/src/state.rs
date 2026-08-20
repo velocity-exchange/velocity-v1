@@ -125,23 +125,34 @@ const_assert!(
         <= RESPONSE_BUFFER_BYTES
 );
 
-/// Taker direction, as passed through the quoter interface.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
-pub enum Direction {
-    Long,
-    Short,
+/// Taker direction and book side, declared in `quoter-spec` with the rest of
+/// the request half of this wire.
+pub use quoter_spec::{DirectionV0 as Direction, SideV0 as Side};
+
+/// What this program reads into the wire's side beyond its shape. An inherent
+/// impl is not available on a foreign type, and a trait keeps every call site
+/// reading as it did.
+pub trait ClobSideExt {
+    fn to_u8(self) -> u8;
+    fn is_worse_price(self, resting: u64, candidate: u64) -> bool;
+    fn side_bit(self) -> u8;
+    fn opposite(self) -> Side;
+    fn is_crossed_by(self, price: u64, opposite: u64) -> bool;
 }
 
-impl Direction {
+/// The same for the direction.
+pub trait ClobDirectionExt {
+    fn book_side(self) -> Side;
+    fn to_u8(self) -> u8;
+}
+
+impl ClobDirectionExt for Direction {
     /// The book side this taker direction consumes.
-    pub fn book_side(self) -> Side {
-        match self {
-            Direction::Long => Side::Ask,
-            Direction::Short => Side::Bid,
-        }
+    fn book_side(self) -> Side {
+        self.side()
     }
 
-    pub fn to_u8(self) -> u8 {
+    fn to_u8(self) -> u8 {
         match self {
             Direction::Long => 0,
             Direction::Short => 1,
@@ -149,14 +160,8 @@ impl Direction {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
-pub enum Side {
-    Bid,
-    Ask,
-}
-
-impl Side {
-    pub fn to_u8(self) -> u8 {
+impl ClobSideExt for Side {
+    fn to_u8(self) -> u8 {
         match self {
             Side::Bid => 0,
             Side::Ask => 1,
@@ -166,7 +171,7 @@ impl Side {
     /// Whether `resting` is a worse price for this side's makers than
     /// `candidate` — i.e. the point a new order at `candidate` cuts in front
     /// of. Bids rank high-to-low, asks low-to-high.
-    pub fn is_worse_price(self, resting: u64, candidate: u64) -> bool {
+    fn is_worse_price(self, resting: u64, candidate: u64) -> bool {
         match self {
             Side::Bid => resting < candidate,
             Side::Ask => resting > candidate,
@@ -175,14 +180,14 @@ impl Side {
 
     /// The node bit that marks membership of this side (bids carry none —
     /// `OrderBitFlag::Ask` clear means bid).
-    pub fn side_bit(self) -> u8 {
+    fn side_bit(self) -> u8 {
         match self {
             Side::Bid => 0,
             Side::Ask => OrderBitFlag::Ask as u8,
         }
     }
 
-    pub fn opposite(self) -> Side {
+    fn opposite(self) -> Side {
         match self {
             Side::Bid => Side::Ask,
             Side::Ask => Side::Bid,
@@ -192,7 +197,7 @@ impl Side {
     /// Whether an order of this side resting at `price` is crossed by an order
     /// on the opposite side at `opposite`: a bid is crossed by an ask at or
     /// below it, an ask by a bid at or above it.
-    pub fn is_crossed_by(self, price: u64, opposite: u64) -> bool {
+    fn is_crossed_by(self, price: u64, opposite: u64) -> bool {
         match self {
             Side::Bid => opposite <= price,
             Side::Ask => opposite >= price,

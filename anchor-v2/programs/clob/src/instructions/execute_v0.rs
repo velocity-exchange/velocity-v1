@@ -3,7 +3,7 @@ use {
         book::ClobBook,
         emit::emit_execute_record,
         error::ClobError,
-        state::{ClobMarketV0, Direction, ResponsePointerV0, UserCapsV0, UserRefV0, UserSetV0},
+        state::{ClobDirectionExt, ClobMarketV0, ResponsePointerV0},
     },
     anchor_lang_v2::prelude::*,
 };
@@ -16,22 +16,9 @@ pub struct ExecuteV0 {
     pub place_authority: Signer,
 }
 
-#[derive(Clone, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct ExecuteArgsV0 {
-    pub direction: Direction,
-    pub size: u64,
-    /// `User`s velocity has loaded and can settle. Empty = unrestricted
-    /// (tests; velocity always passes the loaded set).
-    pub users: UserSetV0,
-    /// How much of `users` each named one may still take, per side. Anyone
-    /// absent is unconstrained; a zero cap passes their orders over. Quote
-    /// and execute must be given the same caps — the ladder is a promise
-    /// about what the fill will deliver.
-    pub caps: UserCapsV0,
-    /// The taker's `User`: their own resting orders are skipped
-    /// unconditionally (self-trade prevention).
-    pub taker: Option<UserRefV0>,
-}
+/// Declared in `quoter-spec`: velocity writes these bytes and this program
+/// reads them, so the shape lives in the crate both compile against.
+pub use quoter_spec::ExecuteArgsV0;
 
 /// Quoter interface: commit a fill; balance changes (merged by user) are
 /// streamed into the market's response tail as the book is consumed, located

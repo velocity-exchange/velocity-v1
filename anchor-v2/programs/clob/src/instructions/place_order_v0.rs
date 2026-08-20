@@ -4,7 +4,7 @@ use {
         emit::emit_pod,
         error::ClobError,
         events::OrderPlaceRecordV0,
-        state::{ClobMarketV0, OrderRefV0, PlaceOrderParams, Side, UserRefV0},
+        state::{ClobMarketV0, ClobSideExt, OrderRefV0, PlaceOrderParams, Side, UserRefV0},
     },
     anchor_lang_v2::prelude::*,
 };

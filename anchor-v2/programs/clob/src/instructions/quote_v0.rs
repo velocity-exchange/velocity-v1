@@ -1,7 +1,7 @@
 use {
     crate::{
         book::ClobBook,
-        state::{ClobMarketV0, Direction, ResponsePointerV0, UserCapsV0, UserRefV0, UserSetV0},
+        state::{ClobMarketV0, ResponsePointerV0},
     },
     anchor_lang_v2::prelude::*,
 };
@@ -13,23 +13,9 @@ pub struct QuoteV0 {
     pub market: ClobMarketV0,
 }
 
-#[derive(Clone, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct QuoteArgsV0 {
-    pub direction: Direction,
-    pub size: u64,
-    /// `User`s the caller can settle balance changes for (loaded in its tx).
-    /// Empty = unrestricted (off-chain discovery). Orders for absent users
-    /// are skipped within the market's grace window, fail the call past it.
-    pub users: UserSetV0,
-    /// How much of `users` each named one may still take, per side. Anyone
-    /// absent is unconstrained; a zero cap passes their orders over. Quote
-    /// and execute must be given the same caps — the ladder is a promise
-    /// about what the fill will deliver.
-    pub caps: UserCapsV0,
-    /// The taker's `User`: their own resting orders are skipped
-    /// unconditionally (self-trade prevention).
-    pub taker: Option<UserRefV0>,
-}
+/// Declared in `quoter-spec`: velocity writes these bytes and this program
+/// reads them, so the shape lives in the crate both compile against.
+pub use quoter_spec::QuoteArgsV0;
 
 /// Quoter interface: price levels for a taker of `direction`/`size`, streamed
 /// into the market's response tail as they are aggregated; the returned

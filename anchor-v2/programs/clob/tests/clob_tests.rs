@@ -13,9 +13,10 @@ use {
         events::{ExecuteRecordV0, FillSlimV0, OrdersCancelRecordV0},
         instruction,
         state::{
-            CancelSidesV0, ClobHeaderV0, ClobMarketV0, Direction, MarketConfigV0, OrderBitFlag,
-            OrderNodeV0, OrderRefV0, Side, UserCapsV0, UserRefV0, UserSetV0,
-            CANCEL_ALL_ORDERS_CEILING, EXECUTE_FILLS_CEILING, ORDERS_OFFSET, REMOVED_ORDER_BYTES,
+            CancelSidesV0, ClobDirectionExt, ClobHeaderV0, ClobMarketV0, ClobSideExt, Direction,
+            MarketConfigV0, OrderBitFlag, OrderNodeV0, OrderRefV0, Side, UserCapsV0, UserRefV0,
+            UserSetV0, CANCEL_ALL_ORDERS_CEILING, EXECUTE_FILLS_CEILING, ORDERS_OFFSET,
+            REMOVED_ORDER_BYTES,
         },
         CancelAllArgsV0, CancelOrderArgsV0, EvictWorstArgsV0, ExecuteArgsV0, PlaceOrderArgsV0,
         QuoteArgsV0, RemoveExpiredArgsV0, ResizeMarketArgsV0, UpdateMarketArgsV0,

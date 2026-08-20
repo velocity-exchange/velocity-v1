@@ -7,8 +7,8 @@ use {
         book::{ClobBook, NodeArena, NIL},
         error::ClobError,
         state::{
-            ClobHeaderV0, ClobMarketV0, MarketConfigV0, OrderBitFlag, OrderRefV0, PlaceOrderParams,
-            Side, UserRefV0,
+            ClobHeaderV0, ClobMarketV0, ClobSideExt, MarketConfigV0, OrderBitFlag, OrderRefV0,
+            PlaceOrderParams, Side, UserRefV0,
         },
     },
     anchor_lang_v2::{

@@ -2926,6 +2926,91 @@ fn force_cancel_passes_over_a_risk_reducing_order() {
     );
 }
 
+/// A maker cannot outrun its own cleanup by resting more orders than one call
+/// can name. Orders cost `OPEN_ORDER_MARGIN_REQUIREMENT` — a cent each — so a
+/// few dollars buys the per-position ceiling of 255, and at the eight refs a
+/// call carries that would be 32 transactions the keeper pays for and an
+/// insolvent account may never repay. The side that cannot be reducing goes in
+/// one sweep instead, so the count stops mattering.
+#[test]
+fn a_maker_cannot_outrun_cleanup_by_resting_more_orders() {
+    let mut fixture = setup();
+
+    // More than `MAX_FORCE_CANCEL_CLOB_ORDERS`, so per-order refs alone could
+    // not clear this in one call.
+    const RESTED: usize = 12;
+    let mut total_base = 0u64;
+    for i in 0..RESTED {
+        place_clob_ask(&mut fixture, (99 + i as u64) * PRICE, UNIT / 8);
+        total_base += UNIT / 8;
+    }
+    assert_eq!(
+        clob_ask_count(&fixture.svm, &fixture.clob_market),
+        RESTED as u32
+    );
+
+    // Flat and broke: with no open position no ask can be reducing, so the
+    // whole side is reclaimable.
+    let mut broke = trading_user(&fixture.clob_maker_authority.pubkey(), 1_000, None);
+    broke.perp_positions[0].open_asks = -(total_base as i64);
+    broke.perp_positions[0].open_orders = RESTED as u8;
+    broke.open_orders = RESTED as u8;
+    broke.has_open_order = true;
+    broke.next_order_id = RESTED as u32 + 1;
+    set_user_account(&mut fixture.svm, fixture.clob_maker_user, &broke);
+
+    let filler_user = Pubkey::new_unique();
+    let filler_stats = Pubkey::new_unique();
+    set_user_account(
+        &mut fixture.svm,
+        filler_user,
+        &trading_user(&fixture.keeper.pubkey(), 0, None),
+    );
+    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
+    let maker_stats = maker_stats_address(&fixture);
+    set_user_stats_account(
+        &mut fixture.svm,
+        maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+
+    // No refs at all: the sweep is the whole job.
+    let keeper = fixture.keeper.insecure_clone();
+    let ix = force_cancel_clob_ix(
+        &fixture,
+        filler_user,
+        filler_stats,
+        maker_stats,
+        fixture.keeper.pubkey(),
+        vec![],
+    );
+    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+
+    assert_eq!(
+        clob_ask_count(&fixture.svm, &fixture.clob_market),
+        0,
+        "every order went in the one call, however many there were"
+    );
+    let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(
+        maker.perp_positions[0].open_asks, 0,
+        "reserve unwound in full"
+    );
+    assert_eq!(maker.perp_positions[0].open_orders, 0);
+    assert_eq!(maker.open_orders, 0);
+    // The sweep still pays the keeper. The per-order rate is the handler's
+    // arithmetic — both paths add to the same accumulator — so what this pins
+    // is that a bulk removal is not unpaid work.
+    let filler: User = read_zero_copy(&fixture.svm, &filler_user);
+    assert!(filler.spot_positions[0].scaled_balance > 0);
+    let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(
+        maker.spot_positions[0].balance_type,
+        SpotBalanceType::Borrow,
+        "the fee came out of the maker, dust deposit and then some"
+    );
+}
+
 /// The declared side is what the risk-reducing test is run against before the
 /// CPI, so a caller that declares it wrong had its order judged on the wrong
 /// rule. That is the caller being wrong about what it passed, and unlike a

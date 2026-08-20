@@ -30,7 +30,7 @@ use {
     crate::{
         controller::{
             orders::pay_keeper_flat_reward_for_spot,
-            position::{decrease_open_bids_and_asks, get_position_index},
+            position::{decrease_open_bids_and_asks, get_position_index, PositionDirection},
         },
         error::ErrorCode,
         instructions::{
@@ -54,8 +54,9 @@ use {
             margin_calculation::MarginContext,
             perp_market_map::MarketSet,
             prop_amm::{
-                clob_hint_scan, read_clob_node, ClobCancelOrderArgsV0, ClobMarket, ClobOrderRefV0,
-                ClobRemovedOrderV0, ClobSide, ClobUserRefV0, QuoterV0,
+                clob_hint_scan, read_clob_node, ClobCancelAllArgsV0, ClobCancelOrderArgsV0,
+                ClobCancelSides, ClobMarket, ClobOrderRefV0, ClobRemovedOrderV0, ClobSide,
+                ClobUserRefV0, QuoterV0,
             },
             spot_market_map::get_writable_spot_market_set,
             state::State,
@@ -153,9 +154,9 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
     )?;
 
     validate!(
-        !order_refs.is_empty() && order_refs.len() <= MAX_FORCE_CANCEL_CLOB_ORDERS,
+        order_refs.len() <= MAX_FORCE_CANCEL_CLOB_ORDERS,
         ErrorCode::DefaultError,
-        "pass 1..={} order refs, got {}",
+        "pass at most {} order refs, got {}",
         MAX_FORCE_CANCEL_CLOB_ORDERS,
         order_refs.len()
     )?;
@@ -184,7 +185,11 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
     // ---- Gate: the account must actually be failing, same as the DLOB
     // force-cancel, and the refs must be this user's risk-increasing
     // orders. ----
-    let (user_ref, cancellable): (ClobUserRefV0, Vec<ForceCancelClobRefV0>) = {
+    let (user_ref, cancellable, sweep): (
+        ClobUserRefV0,
+        Vec<ForceCancelClobRefV0>,
+        Option<ClobCancelSides>,
+    ) = {
         let user = &mut load_mut!(ctx.accounts.user)?;
         validate!(
             !user.is_being_liquidated(),
@@ -247,10 +252,39 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
             authority: user.authority,
             sub_account_id: user.sub_account_id.into(),
         };
-        let position_base = user
-            .get_perp_position(market_index)
-            .map(|position| position.base_asset_amount)
-            .unwrap_or(0);
+        let position = user.get_perp_position(market_index).ok();
+        let position_base = position.map(|p| p.base_asset_amount).unwrap_or(0);
+
+        // One whole side is always beyond saving, and often both, so it goes
+        // in a single sweep instead of one CPI per order. `is_order_position_reducing`
+        // only ever answers yes to an order facing an open position, so every
+        // order on the side that *adds* to the position is risk-increasing
+        // whatever its size — and a flat account has no reducing side at all.
+        //
+        // This is what stops a maker outrunning its own cleanup. Resting
+        // orders cost `OPEN_ORDER_MARGIN_REQUIREMENT` each, so a few dollars
+        // buys the per-position ceiling of 255, and clearing those eight at a
+        // time is 32 transactions the keeper pays for and an insolvent
+        // account may never repay. The sweep takes them in one CPI, and the
+        // per-order refs are left to the tail of the reducing side, which is
+        // bounded by how far past flat that side's orders reach.
+        let (bids_swept, asks_swept) = match position_base.cmp(&0) {
+            core::cmp::Ordering::Greater => (true, false),
+            core::cmp::Ordering::Less => (false, true),
+            core::cmp::Ordering::Equal => (true, true),
+        };
+        // A zero aggregate proves this side rests nothing on the book (it
+        // counts the DLOB too, so only the zero direction is conclusive), and
+        // skipping the call keeps a one-sided account from paying for a CPI
+        // that can remove nothing.
+        let bids_swept = bids_swept && position.is_some_and(|p| p.open_bids != 0);
+        let asks_swept = asks_swept && position.is_some_and(|p| p.open_asks != 0);
+        let sweep = match (bids_swept, asks_swept) {
+            (true, true) => Some(ClobCancelSides::Both),
+            (true, false) => Some(ClobCancelSides::Bids),
+            (false, true) => Some(ClobCancelSides::Asks),
+            (false, false) => None,
+        };
 
         // Read each hinted node off the book. A hint that no longer holds a
         // live order is dropped — relay or a fill got there first, which is
@@ -281,6 +315,12 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
                     node.user_ref().authority,
                     node.user_ref().sub_account_id
                 )?;
+                // The sweep is taking this whole side; a per-order CPI for it
+                // would be a second call for work already done.
+                if sweep.is_some_and(|sides| sides.includes(order_ref.side.to_position_direction()))
+                {
+                    return Ok(None);
+                }
                 let reducing = is_order_position_reducing(
                     &order_ref.side.to_position_direction(),
                     node.base_asset_amount,
@@ -292,15 +332,18 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
             .into_iter()
             .flatten()
             .collect::<Vec<_>>();
-        (user_ref, cancellable)
+        (user_ref, cancellable, sweep)
     };
 
-    if cancellable.is_empty() {
-        msg!("no passed ref is a live risk-increasing order of this user");
+    if cancellable.is_empty() && sweep.is_none() {
+        msg!("nothing of this user's is reclaimable on this book");
         return Ok(());
     }
 
     // ---- Cancel CPIs while no user borrows are held. ----
+    // Per-order first, while the node indices read above are still current:
+    // the sweep below moves the book and would invalidate them. The sweep
+    // itself names no index, so it is safe to run second.
     let removed_orders: Vec<ClobRemovedOrderV0> = cancellable
         .iter()
         .map(|order_ref| {
@@ -310,6 +353,14 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    let swept = sweep
+        .map(|sides| {
+            clob.cancel_all(ClobCancelAllArgsV0 {
+                user: user_ref,
+                sides,
+            })
+        })
+        .transpose()?;
 
     // ---- Unwind, skip-filter risk-reducing, fee. ----
     let mut total_fee = 0u64;
@@ -349,6 +400,47 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
             // must not re-arm.
             user.release_placed_trigger_slot(market_index, removed.order_id, OrderStatus::Canceled);
             total_fee = total_fee.safe_add(state.perp_fee_structure.flat_filler_fee)?;
+        }
+
+        // The sweep unwinds by its per-side totals: identical arithmetic to
+        // one unwind per order (each placement reserved its own amount, so
+        // the sum cannot exceed what is reserved) at a fixed cost. Both
+        // directions regardless of which sides were asked for, so the reserve
+        // moves by exactly what left the book.
+        if let (Some(sides), Some(swept)) = (sweep, swept) {
+            validate!(
+                swept.user == user_ref,
+                ErrorCode::DefaultError,
+                "clob swept orders for a different user"
+            )?;
+            for direction in [PositionDirection::Long, PositionDirection::Short] {
+                decrease_open_bids_and_asks(
+                    &mut user.perp_positions[position_index],
+                    &direction,
+                    swept.base_for(direction),
+                    true,
+                )?;
+            }
+            let orders = swept.orders();
+            user.perp_positions[position_index].open_orders = user.perp_positions[position_index]
+                .open_orders
+                .saturating_sub(orders.min(u8::MAX as u32) as u8);
+            (0..orders).for_each(|_| user.decrement_open_orders(false));
+            total_fee = total_fee.safe_add(
+                state
+                    .perp_fee_structure
+                    .flat_filler_fee
+                    .safe_mul(orders.into())?,
+            )?;
+
+            let book = ctx.accounts.clob_market.try_borrow_data()?;
+            crate::state::prop_amm::release_swept_trigger_shadows(user, &book, market_index, sides);
+            drop(book);
+            if !swept.exhaustive {
+                // The CLOB stopped at its per-call cap. Everything unwound
+                // here is real; the caller repeats to take the rest.
+                msg!("sweep hit the clob's per-call cap; orders remain");
+            }
         }
 
         pay_keeper_flat_reward_for_spot(

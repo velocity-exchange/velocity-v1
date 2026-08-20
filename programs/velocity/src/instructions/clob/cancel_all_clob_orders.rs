@@ -182,39 +182,17 @@ pub fn handle_cancel_all_clob_orders(
         (0..orders).for_each(|_| user.decrement_open_orders(false));
 
         // Free the placed-trigger shadows whose live orders the sweep took.
-        //
-        // Driven off the *book* rather than off a list of removed ids: a shadow
-        // is released exactly when the node it points at no longer holds its
-        // order, which is true whether the sweep was capped or not, and is
-        // strictly more robust than matching ids — a shadow whose order left the
-        // book by any route reads as released here. The scan is over
-        // `User.orders`, so it is bounded by that array, not by the book.
         let book = ctx.accounts.clob_market.try_borrow_data()?;
-        let stale: Vec<usize> = user
-            .orders
-            .iter()
-            .enumerate()
-            .filter(|(_, order)| {
-                order.status == OrderStatus::Open
-                    && order.is_placed_on_clob()
-                    && order.market_type == MarketType::Perp
-                    && order.market_index == params.market_index
-                    && params.sides.includes(order.direction)
-            })
-            .filter(|(_, order)| {
-                let (node_index, clob_order_id) = order.clob_order_ref();
-                // No live node with this id: the sweep took it. An unreadable
-                // node index counts as gone for the same reason the CLOB treats
-                // an out-of-range hint as stale rather than as corruption.
-                !read_clob_node(&book, node_index)
-                    .is_some_and(|node| node.is_open && node.order_id == clob_order_id)
-            })
-            .map(|(index, _)| index)
-            .collect();
+        let shadows = crate::state::prop_amm::release_swept_trigger_shadows(
+            &mut user,
+            &book,
+            params.market_index,
+            params.sides,
+        );
         drop(book);
-        stale
-            .iter()
-            .for_each(|index| user.orders[*index].status = OrderStatus::Canceled);
+        if shadows > 0 {
+            msg!("released {} placed-trigger shadows", shadows);
+        }
 
         user.update_last_active_slot(clock.slot);
     }

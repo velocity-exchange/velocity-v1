@@ -1089,6 +1089,49 @@ pub fn clob_resting_prefix(
     prefix
 }
 
+/// Free the placed-trigger shadows on `sides` whose live orders a bulk sweep
+/// took, and report how many were freed.
+///
+/// Driven off the *book* rather than off a list of removed ids: a shadow is
+/// released exactly when the node it points at no longer holds its order,
+/// which is true whether the sweep was capped or not, and is strictly more
+/// robust than matching ids — a shadow whose order left the book by any route
+/// reads as released here. The scan is over `User.orders`, so it is bounded by
+/// that array, not by the book.
+pub fn release_swept_trigger_shadows(
+    user: &mut crate::state::user::User,
+    book: &[u8],
+    market_index: u16,
+    sides: ClobCancelSides,
+) -> usize {
+    use crate::state::user::{MarketType, OrderStatus};
+    let stale: Vec<usize> = user
+        .orders
+        .iter()
+        .enumerate()
+        .filter(|(_, order)| {
+            order.status == OrderStatus::Open
+                && order.is_placed_on_clob()
+                && order.market_type == MarketType::Perp
+                && order.market_index == market_index
+                && sides.includes(order.direction)
+        })
+        .filter(|(_, order)| {
+            let (node_index, clob_order_id) = order.clob_order_ref();
+            // No live node with this id: the sweep took it. An unreadable node
+            // index counts as gone for the same reason the CLOB treats an
+            // out-of-range hint as stale rather than as corruption.
+            !read_clob_node(book, node_index)
+                .is_some_and(|node| node.is_open && node.order_id == clob_order_id)
+        })
+        .map(|(index, _)| index)
+        .collect();
+    stale
+        .iter()
+        .for_each(|index| user.orders[*index].status = OrderStatus::Canceled);
+    stale.len()
+}
+
 /// Who a quoter's `execute_v0` response is allowed to move balances for.
 /// Every registry type answers this from its own state, never from the
 /// response: a quoter that could name any loaded user could mint a position

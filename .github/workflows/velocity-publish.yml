@@ -10,10 +10,11 @@ name: Publish Velocity ECR (docker tag)
 # (gitops/<env>/platform/policy-controller/) only accepts signatures minted by
 # a `velocity-publish.yml` workflow in a velocity-exchange repo on a tag ref,
 # which is why this file is named velocity-publish.yml. The non-prod image is
-# signed by the build's digest; the prod copy is signed by the digest of the
-# PROD tag (imagetools create can rewrite the index, so the digests may
-# differ). cosign is pinned to v2: v3 writes the new bundle format the
-# policy-controller verifier can't see.
+# DIGEST-END-TO-END: the prod copy sources the non-prod image BY THE BUILT
+# DIGEST (never the mutable tag) and both signatures sign that same digest, so
+# what gets signed is provably what this run built — a tag-resolved read
+# between build and sign would be a TOCTOU window. cosign is pinned to v2: v3
+# writes the new bundle format the policy-controller verifier can't see.
 on:
   push:
     tags:
@@ -109,19 +110,16 @@ jobs:
           aws-region: eu-west-1
       - id: login-ecr-prod
         uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2
+      # Copy BY THE BUILT DIGEST, not the tag — a tag read here would be a
+      # TOCTOU window; a single digest source also preserves the digest, so the
+      # prod tag points at exactly the manifest this run built.
       - name: Copy image to prod ECR
         run: |
           docker buildx imagetools create \
             --tag ${{ steps.login-ecr-prod.outputs.registry }}/${{ needs.route.outputs.ecr }}:${{ needs.route.outputs.version }} \
-            ${{ steps.login-ecr.outputs.registry }}/${{ needs.route.outputs.ecr }}:${{ needs.route.outputs.version }}
-      # Sign the digest the PROD tag actually points at — imagetools create can
-      # rewrite the index, so it may differ from the non-prod build digest.
+            ${{ steps.login-ecr.outputs.registry }}/${{ needs.route.outputs.ecr }}@${{ steps.build.outputs.digest }}
       - name: Sign image (prod)
-        run: |
-          set -euo pipefail
-          ref="${{ steps.login-ecr-prod.outputs.registry }}/${{ needs.route.outputs.ecr }}:${{ needs.route.outputs.version }}"
-          digest=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')
-          cosign sign --yes "${{ steps.login-ecr-prod.outputs.registry }}/${{ needs.route.outputs.ecr }}@${digest}"
+        run: cosign sign --yes "${{ steps.login-ecr-prod.outputs.registry }}/${{ needs.route.outputs.ecr }}@${{ steps.build.outputs.digest }}"
 
   build-rust:
     needs: route
@@ -172,16 +170,13 @@ jobs:
           aws-region: eu-west-1
       - id: login-ecr-prod
         uses: aws-actions/amazon-ecr-login@d539f0932e70871a027e9d5a9d8fc38589180a64 # v2
+      # Copy BY THE BUILT DIGEST, not the tag — a tag read here would be a
+      # TOCTOU window; a single digest source also preserves the digest, so the
+      # prod tag points at exactly the manifest this run built.
       - name: Copy image to prod ECR
         run: |
           docker buildx imagetools create \
             --tag ${{ steps.login-ecr-prod.outputs.registry }}/${{ needs.route.outputs.ecr }}:${{ needs.route.outputs.version }} \
-            ${{ steps.login-ecr.outputs.registry }}/${{ needs.route.outputs.ecr }}:${{ needs.route.outputs.version }}
-      # Sign the digest the PROD tag actually points at — imagetools create can
-      # rewrite the index, so it may differ from the non-prod build digest.
+            ${{ steps.login-ecr.outputs.registry }}/${{ needs.route.outputs.ecr }}@${{ steps.build.outputs.digest }}
       - name: Sign image (prod)
-        run: |
-          set -euo pipefail
-          ref="${{ steps.login-ecr-prod.outputs.registry }}/${{ needs.route.outputs.ecr }}:${{ needs.route.outputs.version }}"
-          digest=$(docker buildx imagetools inspect "$ref" --format '{{.Manifest.Digest}}')
-          cosign sign --yes "${{ steps.login-ecr-prod.outputs.registry }}/${{ needs.route.outputs.ecr }}@${digest}"
+        run: cosign sign --yes "${{ steps.login-ecr-prod.outputs.registry }}/${{ needs.route.outputs.ecr }}@${{ steps.build.outputs.digest }}"

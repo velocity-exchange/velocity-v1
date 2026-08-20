@@ -1,5 +1,12 @@
 import { BN } from '../isomorphic/anchor';
-import { BASE_SLOT_DURATION_MS, baseUnitsFromSlots } from './slots';
+import {
+	Millis,
+	MILLIS_UNIT,
+	SlotDurationMs,
+	SLOT_DURATION_BASELINE,
+	divPeriods,
+	millisFromSlots,
+} from './time';
 import {
 	PRICE_PRECISION,
 	LIQUIDATION_FEE_PRECISION,
@@ -428,9 +435,9 @@ export function calculateAssetTransferForLiabilityTransfer(
  * @param marginShortage Total margin shortfall for the user/position, QUOTE_PRECISION (1e6).
  * @param slot Current slot.
  * @param initialPctToLiquidate Starting liquidatable fraction at slot zero of the ramp, LIQUIDATION_PCT_PRECISION (1e4).
- * @param liquidationDuration Ramp length in 400ms baseline units (~1 minute for the onchain default).
+ * @param liquidationDuration Ramp length as a wall-clock duration; decode the onchain field with `millisFromStoredUnits(state.liquidationDuration)` (~1 minute for the onchain default).
  * @param isIsolatedPosition If true, always returns 100% (LIQUIDATION_PCT_PRECISION) regardless of the other inputs (default false).
- * @param slotDurationMs Current slot duration in ms (`State.slotDurationMs`); the measured slot delta is deflated to baseline units so the ramp's wall-clock length is slot-duration independent, mirroring `calculate_max_pct_to_liquidate`.
+ * @param slotDuration Current slot duration (`slotDurationFromState(state.slotDurationMs)`); the ramp's wall-clock length is slot-duration independent, mirroring `calculate_max_pct_to_liquidate`.
  * @returns Fraction of the remaining liability liquidatable now, LIQUIDATION_PCT_PRECISION (1e4).
  */
 export function calculateMaxPctToLiquidate(
@@ -439,9 +446,9 @@ export function calculateMaxPctToLiquidate(
 	marginShortage: BN,
 	slot: BN,
 	initialPctToLiquidate: BN,
-	liquidationDuration: BN,
+	liquidationDuration: Millis,
 	isIsolatedPosition = false,
-	slotDurationMs = BASE_SLOT_DURATION_MS
+	slotDuration: SlotDurationMs = SLOT_DURATION_BASELINE
 ): BN {
 	// isolated perp positions are liquidated 100% in one shot
 	if (isIsolatedPosition) {
@@ -453,15 +460,21 @@ export function calculateMaxPctToLiquidate(
 		return LIQUIDATION_PCT_PRECISION;
 	}
 
-	const slotsElapsed = baseUnitsFromSlots(
-		BN.max(slot.sub(userLastActiveSlot), new BN(0)),
-		slotDurationMs
+	// ratio of elapsed wall-clock time to the ramp length, both counted in
+	// whole 400ms periods (the ramp's historical granularity)
+	const elapsedPeriods = divPeriods(
+		millisFromSlots(
+			BN.max(slot.sub(userLastActiveSlot), new BN(0)),
+			slotDuration
+		),
+		MILLIS_UNIT
 	);
+	const durationPeriods = divPeriods(liquidationDuration, MILLIS_UNIT);
 
 	const pctFreeable = BN.min(
-		slotsElapsed
+		elapsedPeriods
 			.mul(LIQUIDATION_PCT_PRECISION)
-			.div(liquidationDuration) // ~1 minute at the onchain default
+			.div(durationPeriods) // ~1 minute at the onchain default
 			.add(initialPctToLiquidate),
 		LIQUIDATION_PCT_PRECISION
 	);

@@ -346,7 +346,7 @@ fn max_funding_rates() {
     let mut oracle_map = OracleMap::load_one(
         &oracle_account_info,
         slot,
-        crate::math::slots::BASE_SLOT_DURATION_MS,
+        crate::math::time::SlotDuration::BASELINE,
         None,
     )
     .unwrap();
@@ -462,7 +462,7 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
     let mut oracle_map = OracleMap::load_one(
         &oracle_account_info,
         slot,
-        crate::math::slots::BASE_SLOT_DURATION_MS,
+        crate::math::time::SlotDuration::BASELINE,
         None,
     )
     .unwrap();
@@ -506,7 +506,7 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     let validity = crate::vlp::amm::refresh::compute_amm_refresh_validity(
@@ -524,7 +524,7 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
         &state.oracle_guard_rails,
         reserve_price,
         slot,
-        crate::math::slots::BASE_SLOT_DURATION_MS,
+        crate::math::time::SlotDuration::BASELINE,
     )
     .unwrap());
 
@@ -537,7 +537,7 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
             validity,
             now,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     assert_eq!(
@@ -554,7 +554,7 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
             &state.oracle_guard_rails,
             unfixed.amm.reserve_price().unwrap(),
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap(),
         "the pre-fix ordering is expected to clear its own gate — if this trips, \
@@ -569,7 +569,7 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
             &mm_oracle_price_data,
             validity,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     let historical = fixed.market_stats.historical_oracle_data;
@@ -588,7 +588,7 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
         &state.oracle_guard_rails,
         fixed.amm.reserve_price().unwrap(),
         slot,
-        crate::math::slots::BASE_SLOT_DURATION_MS,
+        crate::math::time::SlotDuration::BASELINE,
     )
     .unwrap());
     // ...and it still performed its own half: `last_oracle_valid` is stamped
@@ -626,7 +626,7 @@ fn unsettled_funding_pnl() {
     let mut oracle_map = OracleMap::load_one(
         &oracle_account_info,
         slot,
-        crate::math::slots::BASE_SLOT_DURATION_MS,
+        crate::math::time::SlotDuration::BASELINE,
         None,
     )
     .unwrap();
@@ -696,7 +696,7 @@ fn unsettled_funding_pnl() {
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
         slot,
-        crate::math::slots::BASE_SLOT_DURATION_MS,
+        crate::math::time::SlotDuration::BASELINE,
     )
     .unwrap();
     assert_eq!(block_funding_rate_update, true);
@@ -724,7 +724,7 @@ fn unsettled_funding_pnl() {
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
         slot,
-        crate::math::slots::BASE_SLOT_DURATION_MS,
+        crate::math::time::SlotDuration::BASELINE,
     )
     .unwrap();
     assert_eq!(block_funding_rate_update, false);

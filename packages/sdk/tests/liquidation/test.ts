@@ -6,6 +6,7 @@ import {
 	QUOTE_PRECISION,
 	LIQUIDATION_PCT_PRECISION,
 	calculateMaxPctToLiquidate,
+	millisFromStoredUnits,
 	calculatePerpIfFee,
 	calculateSpotIfFee,
 	calculateUserProtectiveAssetPrice,
@@ -20,7 +21,7 @@ describe('calculateMaxPctToLiquidate', () => {
 			new BN(1_000_000).mul(QUOTE_PRECISION), // huge margin shortage
 			new BN(0), // slot === lastActiveSlot, no time elapsed
 			new BN(0), // initialPctToLiquidate
-			new BN(1000), // liquidationDuration
+			millisFromStoredUnits(1000), // liquidationDuration
 			true // isIsolatedPosition
 		);
 
@@ -36,7 +37,7 @@ describe('calculateMaxPctToLiquidate', () => {
 			new BN(1000).mul(QUOTE_PRECISION), // margin shortage (above the 50 QUOTE_PRECISION floor)
 			new BN(100), // slot
 			new BN(0), // initialPctToLiquidate
-			new BN(1000) // liquidationDuration
+			millisFromStoredUnits(1000) // liquidationDuration
 		);
 
 		// slotsElapsed = 100, pctFreeable = 100 * 10000 / 1000 = 1000 (10%)

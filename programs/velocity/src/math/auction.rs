@@ -4,7 +4,7 @@ use {
         error::{ErrorCode, VelocityResult},
         math::{
             casting::Cast, constants::AUCTION_DERIVE_PRICE_FRACTION, orders::standardize_price,
-            safe_math::SafeMath,
+            safe_math::SafeMath, time::SlotDuration,
         },
         msg,
         state::{
@@ -231,7 +231,7 @@ pub fn calculate_auction_params_for_trigger_order(
     oracle_price_data: &OraclePriceData,
     min_auction_duration: u8,
     perp_market: Option<&PerpMarket>,
-    slot_duration_ms: u64,
+    slot_duration: SlotDuration,
 ) -> VelocityResult<(u8, i64, i64)> {
     let auction_duration = min_auction_duration;
 
@@ -254,7 +254,7 @@ pub fn calculate_auction_params_for_trigger_order(
                     oracle_price_data.price,
                     None,
                     auction_start_buffer,
-                    slot_duration_ms,
+                    slot_duration,
                 )?
             } else {
                 OrderParams::derive_market_order_auction_params(
@@ -263,7 +263,7 @@ pub fn calculate_auction_params_for_trigger_order(
                     oracle_price_data.price,
                     order.price,
                     auction_start_buffer,
-                    slot_duration_ms,
+                    slot_duration,
                 )?
             };
 

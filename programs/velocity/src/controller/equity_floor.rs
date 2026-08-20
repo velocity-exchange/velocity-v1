@@ -107,7 +107,7 @@ mod tests {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             oracle_map_slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();

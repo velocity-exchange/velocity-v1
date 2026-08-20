@@ -45,7 +45,7 @@ pub mod deposit_into_isolated_perp_position {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -144,7 +144,7 @@ pub mod deposit_into_isolated_perp_position {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -243,7 +243,7 @@ pub mod deposit_into_isolated_perp_position {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -408,7 +408,7 @@ pub mod transfer_isolated_perp_position_deposit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -514,7 +514,7 @@ pub mod transfer_isolated_perp_position_deposit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -615,7 +615,7 @@ pub mod transfer_isolated_perp_position_deposit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -712,7 +712,7 @@ pub mod transfer_isolated_perp_position_deposit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -820,7 +820,7 @@ pub mod transfer_isolated_perp_position_deposit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -917,7 +917,7 @@ pub mod transfer_isolated_perp_position_deposit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -1047,7 +1047,7 @@ pub mod withdraw_from_isolated_perp_position {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -1152,7 +1152,7 @@ pub mod withdraw_from_isolated_perp_position {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -1251,7 +1251,7 @@ pub mod withdraw_from_isolated_perp_position {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -1355,7 +1355,7 @@ pub mod withdraw_from_isolated_perp_position {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -1496,7 +1496,7 @@ pub mod withdraw_from_isolated_perp_position {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();

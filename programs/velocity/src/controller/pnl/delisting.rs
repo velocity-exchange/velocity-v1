@@ -85,7 +85,7 @@ pub mod delisting_test {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -201,7 +201,7 @@ pub mod delisting_test {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -316,7 +316,7 @@ pub mod delisting_test {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -438,7 +438,7 @@ pub mod delisting_test {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -561,7 +561,7 @@ pub mod delisting_test {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -676,7 +676,7 @@ pub mod delisting_test {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -910,7 +910,7 @@ pub mod delisting_test {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -1138,7 +1138,7 @@ pub mod delisting_test {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -1347,7 +1347,7 @@ pub mod delisting_test {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -1777,7 +1777,7 @@ pub mod delisting_test {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -2165,7 +2165,7 @@ pub mod delisting_test {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -2575,7 +2575,7 @@ pub mod delisting_test {
                 clock.slot,
                 10,
                 PERCENTAGE_PRECISION,
-                150,
+                crate::math::time::Millis::from_stored_units(150),
                 false,
             )
             .unwrap();
@@ -2666,7 +2666,7 @@ pub mod delisting_test {
                 clock.slot,
                 10,
                 PERCENTAGE_PRECISION,
-                150,
+                crate::math::time::Millis::from_stored_units(150),
                 false,
             )
             .unwrap();

@@ -63,7 +63,7 @@ pub mod liquidate_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -181,7 +181,7 @@ pub mod liquidate_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -341,7 +341,7 @@ pub mod liquidate_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -481,7 +481,7 @@ pub mod liquidate_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -634,7 +634,7 @@ pub mod liquidate_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -783,7 +783,7 @@ pub mod liquidate_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -938,7 +938,7 @@ pub mod liquidate_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -1077,7 +1077,7 @@ pub mod liquidate_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -1231,7 +1231,7 @@ pub mod liquidate_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -1418,7 +1418,7 @@ pub mod liquidate_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -1637,7 +1637,7 @@ pub mod liquidate_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -1774,7 +1774,7 @@ pub mod liquidate_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -1911,7 +1911,7 @@ pub mod liquidate_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -2062,7 +2062,7 @@ pub mod liquidate_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -2344,7 +2344,7 @@ pub mod liquidate_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -2486,7 +2486,7 @@ pub mod liquidate_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -2615,7 +2615,7 @@ pub mod liquidate_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -2748,7 +2748,7 @@ pub mod liquidate_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -2881,7 +2881,7 @@ pub mod liquidate_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -3113,7 +3113,7 @@ pub mod liquidate_perp_with_fill {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -3327,7 +3327,7 @@ pub mod liquidate_perp_with_fill {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -3542,7 +3542,7 @@ pub mod liquidate_perp_with_fill {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -3717,7 +3717,7 @@ pub mod liquidate_perp_with_fill {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -3927,7 +3927,7 @@ pub mod liquidate_spot {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -4075,7 +4075,7 @@ pub mod liquidate_spot {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -4225,7 +4225,7 @@ pub mod liquidate_spot {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -4372,7 +4372,7 @@ pub mod liquidate_spot {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -4523,7 +4523,7 @@ pub mod liquidate_spot {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -4693,7 +4693,7 @@ pub mod liquidate_spot {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -4830,7 +4830,7 @@ pub mod liquidate_spot {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -4999,7 +4999,7 @@ pub mod liquidate_spot {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -5222,7 +5222,7 @@ pub mod liquidate_spot {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -5350,7 +5350,7 @@ pub mod liquidate_spot {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -5478,7 +5478,7 @@ pub mod liquidate_spot {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -5613,7 +5613,7 @@ pub mod liquidate_spot {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -5840,7 +5840,7 @@ pub mod liquidate_spot {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -6048,7 +6048,7 @@ pub mod liquidate_borrow_for_perp_pnl {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -6173,7 +6173,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             slot,
             10,
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -6211,7 +6211,7 @@ pub mod liquidate_borrow_for_perp_pnl {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -6336,7 +6336,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             slot,
             10,
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -6378,7 +6378,7 @@ pub mod liquidate_borrow_for_perp_pnl {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -6505,7 +6505,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             slot,
             10,
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -6549,7 +6549,7 @@ pub mod liquidate_borrow_for_perp_pnl {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -6676,7 +6676,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             slot,
             liquidation_buffer,
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -6755,7 +6755,7 @@ pub mod liquidate_borrow_for_perp_pnl {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -6879,7 +6879,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             slot,
             10,
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -6912,7 +6912,7 @@ pub mod liquidate_borrow_for_perp_pnl {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -7038,7 +7038,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             slot,
             10,
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         );
 
@@ -7062,7 +7062,7 @@ pub mod liquidate_borrow_for_perp_pnl {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -7188,7 +7188,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             slot,
             10,
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         );
 
@@ -7212,7 +7212,7 @@ pub mod liquidate_borrow_for_perp_pnl {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -7339,7 +7339,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             slot,
             liquidation_buffer,
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -7372,7 +7372,7 @@ pub mod liquidate_borrow_for_perp_pnl {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -7499,7 +7499,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             slot,
             liquidation_buffer,
             LIQUIDATION_PCT_PRECISION / 10,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -7546,7 +7546,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             slot,
             liquidation_buffer,
             LIQUIDATION_PCT_PRECISION / 10,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -7593,7 +7593,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             slot,
             liquidation_buffer,
             LIQUIDATION_PCT_PRECISION / 10,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -7659,7 +7659,7 @@ pub mod liquidate_perp_pnl_for_deposit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -7784,7 +7784,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             MARGIN_PRECISION / 50, // 2% buffer
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         );
 
@@ -7845,7 +7845,7 @@ pub mod liquidate_perp_pnl_for_deposit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -7970,7 +7970,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             10,
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -8008,7 +8008,7 @@ pub mod liquidate_perp_pnl_for_deposit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -8135,7 +8135,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             10,
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         );
 
@@ -8163,7 +8163,7 @@ pub mod liquidate_perp_pnl_for_deposit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -8265,7 +8265,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             10,
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         );
 
@@ -8300,7 +8300,7 @@ pub mod liquidate_perp_pnl_for_deposit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -8426,7 +8426,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             MARGIN_PRECISION / 50,
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -8462,7 +8462,7 @@ pub mod liquidate_perp_pnl_for_deposit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -8587,7 +8587,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             10,
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -8625,7 +8625,7 @@ pub mod liquidate_perp_pnl_for_deposit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -8750,7 +8750,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             10,
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -8786,7 +8786,7 @@ pub mod liquidate_perp_pnl_for_deposit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -8912,7 +8912,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             10,
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         );
 
@@ -8936,7 +8936,7 @@ pub mod liquidate_perp_pnl_for_deposit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -9062,7 +9062,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             10,
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         );
 
@@ -9086,7 +9086,7 @@ pub mod liquidate_perp_pnl_for_deposit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -9212,7 +9212,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             MARGIN_PRECISION / 50,
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -9249,7 +9249,7 @@ pub mod liquidate_perp_pnl_for_deposit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -9376,7 +9376,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             liquidation_buffer,
             LIQUIDATION_PCT_PRECISION / 10,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -9418,7 +9418,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             liquidation_buffer,
             LIQUIDATION_PCT_PRECISION / 10,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -9460,7 +9460,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             liquidation_buffer,
             LIQUIDATION_PCT_PRECISION / 10,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -9485,7 +9485,7 @@ pub mod liquidate_perp_pnl_for_deposit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -9623,7 +9623,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             // the transfer is refused as loss-making
             200,
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         )
         .is_err());
@@ -9671,7 +9671,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             200,
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -9695,7 +9695,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             200,
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -9723,7 +9723,7 @@ pub mod liquidate_perp_pnl_for_deposit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -9898,7 +9898,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             // the transfer is refused as loss-making
             200,
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         )
         .is_err());
@@ -9920,7 +9920,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             200,
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -9942,7 +9942,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             200,
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -9976,7 +9976,7 @@ pub mod liquidate_perp_pnl_for_deposit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -10149,7 +10149,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             // the transfer is refused as loss-making
             200,
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -10219,7 +10219,7 @@ pub mod resolve_perp_bankruptcy {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -10453,7 +10453,7 @@ pub mod resolve_perp_bankruptcy {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -10619,7 +10619,7 @@ pub mod resolve_perp_bankruptcy {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -10755,7 +10755,7 @@ pub mod resolve_perp_bankruptcy {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -10877,7 +10877,7 @@ pub mod resolve_perp_bankruptcy {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -11132,7 +11132,7 @@ pub mod resolve_perp_bankruptcy {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -11312,7 +11312,7 @@ pub mod resolve_perp_bankruptcy {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -11470,7 +11470,7 @@ pub mod resolve_perp_bankruptcy {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -11633,7 +11633,7 @@ pub mod resolve_perp_bankruptcy {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -11775,7 +11775,7 @@ pub mod resolve_perp_bankruptcy {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -11943,7 +11943,7 @@ pub mod resolve_perp_bankruptcy {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -12070,7 +12070,7 @@ pub mod resolve_perp_bankruptcy {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -12259,7 +12259,7 @@ pub mod resolve_spot_bankruptcy {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -12403,7 +12403,7 @@ pub mod resolve_spot_bankruptcy {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -12522,7 +12522,7 @@ pub mod resolve_spot_bankruptcy {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -12673,7 +12673,7 @@ pub mod resolve_spot_bankruptcy {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -12819,7 +12819,7 @@ pub mod resolve_spot_bankruptcy {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -12970,7 +12970,7 @@ pub mod resolve_spot_bankruptcy {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -13162,7 +13162,7 @@ pub mod set_user_status_to_being_liquidated {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -13279,7 +13279,7 @@ pub mod set_user_status_to_being_liquidated {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -13349,7 +13349,7 @@ pub mod set_user_status_to_being_liquidated {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -13493,7 +13493,7 @@ pub mod liquidate_spot_with_swap {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -13701,7 +13701,7 @@ pub mod liquidate_spot_with_swap {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -13889,7 +13889,7 @@ pub mod liquidate_spot_with_swap {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -14085,7 +14085,7 @@ pub mod liquidate_spot_with_swap {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -14385,7 +14385,7 @@ mod liquidate_dust_spot_market {
         let mut oracle_map = OracleMap::load(
             &mut account_infos.iter().peekable(),
             clock_slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -14507,7 +14507,7 @@ pub mod liquidate_isolated_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -14662,7 +14662,7 @@ pub mod liquidate_isolated_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -14818,7 +14818,7 @@ pub mod liquidate_isolated_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -15005,7 +15005,7 @@ pub mod liquidate_isolated_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -15140,7 +15140,7 @@ pub mod liquidate_isolated_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -15269,7 +15269,7 @@ pub mod liquidate_isolated_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -15398,7 +15398,7 @@ pub mod liquidate_isolated_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -15655,7 +15655,7 @@ pub mod liquidate_isolated_perp {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -15863,7 +15863,7 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -15987,7 +15987,7 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
             // the transfer is refused as loss-making
             200,
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -16023,7 +16023,7 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -16146,7 +16146,7 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
             slot,
             MARGIN_PRECISION / 50,
             PERCENTAGE_PRECISION,
-            150,
+            crate::math::time::Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -16252,7 +16252,7 @@ mod liquidation_mode {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();

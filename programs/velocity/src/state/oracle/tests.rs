@@ -158,7 +158,7 @@ fn use_mm_oracle() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
 
@@ -179,7 +179,7 @@ fn use_mm_oracle() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     assert_eq!(mm_oracle_price_data.get_price(), oracle_price_data.price);
@@ -195,7 +195,7 @@ fn use_mm_oracle() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     assert_eq!(mm_oracle_price_data.get_price(), oracle_price_data.price);
@@ -208,7 +208,7 @@ fn use_mm_oracle() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     assert_eq!(
@@ -228,7 +228,7 @@ fn use_mm_oracle() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     assert_eq!(mm_oracle_price_data.get_price(), oracle_price_data.price);
@@ -281,7 +281,7 @@ fn mm_oracle_confidence() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
 

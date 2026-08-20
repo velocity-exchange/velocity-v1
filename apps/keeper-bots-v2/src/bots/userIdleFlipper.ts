@@ -17,7 +17,7 @@ import {
 	ComputeBudgetProgram,
 } from '@solana/web3.js';
 import {
-	currentSlotDurationMs,
+	currentSlotDuration,
 	simulateAndGetTxWithCUs,
 	sleepMs,
 } from '../utils';
@@ -119,7 +119,7 @@ export class UserIdleFlipperBot implements Bot {
 				if (
 					user.canMakeIdle(
 						new BN(currentSlot),
-						currentSlotDurationMs(this.velocityClient)
+						currentSlotDuration(this.velocityClient)
 					)
 				) {
 					usersToIdle.push([

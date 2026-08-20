@@ -152,7 +152,7 @@ mod tests {
                 &amm_inventory_and_price,
                 constituents_indexes_and_decimals_and_prices.as_mut_slice(),
                 slot,
-                crate::math::slots::BASE_SLOT_DURATION_MS,
+                crate::math::time::SlotDuration::BASELINE,
             )
             .unwrap();
 
@@ -242,7 +242,7 @@ mod tests {
                 &amm_inventory_and_prices,
                 constituents_indexes_and_decimals_and_prices.as_mut_slice(),
                 slot,
-                crate::math::slots::BASE_SLOT_DURATION_MS,
+                crate::math::time::SlotDuration::BASELINE,
             )
             .unwrap();
 
@@ -319,7 +319,7 @@ mod tests {
                 &amm_inventory_and_prices,
                 constituents_indexes_and_decimals_and_prices.as_mut_slice(),
                 4040404040440404404,
-                crate::math::slots::BASE_SLOT_DURATION_MS,
+                crate::math::time::SlotDuration::BASELINE,
             )
             .unwrap();
 
@@ -345,7 +345,7 @@ mod tests {
                 &amm_inventory_and_prices,
                 constituents_indexes_and_decimals_and_prices.as_mut_slice(),
                 slot,
-                crate::math::slots::BASE_SLOT_DURATION_MS,
+                crate::math::time::SlotDuration::BASELINE,
             )
             .unwrap();
         assert_eq!(target_zc_mut.get(0).last_oracle_slot, slot); // still not updated
@@ -434,7 +434,7 @@ mod tests {
                 &amm_inventory_and_prices,
                 constituents_indexes_and_decimals_and_prices.as_mut_slice(),
                 slot,
-                crate::math::slots::BASE_SLOT_DURATION_MS,
+                crate::math::time::SlotDuration::BASELINE,
             )
             .unwrap();
 
@@ -522,7 +522,7 @@ mod tests {
                 &amm_inventory_and_prices,
                 constituents_indexes_and_decimals_and_prices.as_mut_slice(),
                 slot,
-                crate::math::slots::BASE_SLOT_DURATION_MS,
+                crate::math::time::SlotDuration::BASELINE,
             )
             .unwrap();
 
@@ -663,7 +663,7 @@ mod swap_tests {
                 500_000,
                 in_amount.cast::<u128>().unwrap(),
                 0,
-                crate::math::slots::BASE_SLOT_DURATION_MS,
+                crate::math::time::SlotDuration::BASELINE,
             )
             .unwrap();
         assert_eq!(in_amount, expected_in_amount);
@@ -876,7 +876,7 @@ mod swap_tests {
                 &oracle,
                 PERCENTAGE_PRECISION_I64,
                 dlp_total_supply,
-                crate::math::slots::BASE_SLOT_DURATION_MS,
+                crate::math::time::SlotDuration::BASELINE,
             )
             .unwrap();
 
@@ -1069,7 +1069,7 @@ mod swap_tests {
                 &oracle,
                 PERCENTAGE_PRECISION_I64,
                 dlp_total_supply,
-                crate::math::slots::BASE_SLOT_DURATION_MS,
+                crate::math::time::SlotDuration::BASELINE,
             )
             .unwrap();
 
@@ -1330,7 +1330,7 @@ mod swap_tests {
                 out_target_weight,
                 in_amount.cast::<u128>().unwrap(),
                 0,
-                crate::math::slots::BASE_SLOT_DURATION_MS,
+                crate::math::time::SlotDuration::BASELINE,
             )
             .unwrap();
 
@@ -1681,7 +1681,7 @@ mod swap_fee_tests {
 
         // Even a small delay in the position incurs a larger fee
         let uncertainty_fee = lp_pool
-            .get_target_uncertainty_fees(1, 0, crate::math::slots::BASE_SLOT_DURATION_MS)
+            .get_target_uncertainty_fees(1, 0, crate::math::time::SlotDuration::BASELINE)
             .unwrap();
         assert_eq!(
             uncertainty_fee,
@@ -2621,7 +2621,7 @@ mod update_aum_tests {
         let mut oracle_map = OracleMap::load(
             &mut oracle_iter,
             101,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -3051,7 +3051,7 @@ mod update_constituent_target_base_for_derivatives_tests {
         let mut oracle_map = OracleMap::load(
             &mut oracle_iter,
             101,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -3342,7 +3342,7 @@ mod update_constituent_target_base_for_derivatives_tests {
         let mut oracle_map = OracleMap::load(
             &mut oracle_iter,
             101,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -3637,7 +3637,7 @@ mod update_constituent_target_base_for_derivatives_tests {
         let mut oracle_map = OracleMap::load(
             &mut oracle_iter,
             101,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();
@@ -3874,7 +3874,7 @@ mod update_constituent_target_base_for_derivatives_tests {
         let mut oracle_map = OracleMap::load(
             &mut oracle_iter,
             101,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
             None,
         )
         .unwrap();

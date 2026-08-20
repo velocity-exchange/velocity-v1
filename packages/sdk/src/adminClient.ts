@@ -2600,7 +2600,7 @@ export class AdminClient extends VelocityClient {
 	 * Sets how many slots it takes for a liquidation's max-closeable fraction to ramp
 	 * from `initialPctToLiquidate` up to 100% (see `updateInitialPctToLiquidate`).
 	 * Requires warm admin (`check_warm`).
-	 * @param liquidationDuration - Ramp duration in 400ms baseline units (see `math/slots.ts`; ~150 ≈ 1 minute).
+	 * @param liquidationDuration - Ramp duration, stored in legacy 400ms units (decode with `millisFromStoredUnits`; ~150 ≈ 1 minute).
 	 * @returns Transaction signature.
 	 */
 	public async updateLiquidationDuration(

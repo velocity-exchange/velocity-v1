@@ -24,7 +24,7 @@ import {
 	getVersionedTransaction,
 	simulateAndGetTxWithCUs,
 	sleepMs,
-	currentSlotDurationMs,
+	currentSlotDuration,
 } from '../utils';
 import { Agent, setGlobalDispatcher } from 'undici';
 import { Channel } from '@pythnetwork/pyth-lazer-sdk';
@@ -267,7 +267,7 @@ export class PythLazerCrankerBot implements Bot {
 			const maxCrankIntervalMs =
 				this.crankConfigs.maxCrankIntervalMs ??
 				DEFAULT_MAX_CRANK_INTERVAL_SLOTS *
-					currentSlotDurationMs(this.velocityClient);
+					currentSlotDuration(this.velocityClient);
 			logger.info(
 				`Adaptive cranking enabled: posting at most every ${maxCrankIntervalMs}ms or on >=${this.crankConfigs.crankDivergenceBps}bps divergence`
 			);
@@ -354,7 +354,7 @@ export class PythLazerCrankerBot implements Bot {
 		const maxCrankIntervalMs =
 			this.crankConfigs.maxCrankIntervalMs ??
 			DEFAULT_MAX_CRANK_INTERVAL_SLOTS *
-				currentSlotDurationMs(this.velocityClient);
+				currentSlotDuration(this.velocityClient);
 		if (nowMs - lastPostMs >= maxCrankIntervalMs) {
 			return `max interval (${
 				nowMs - lastPostMs

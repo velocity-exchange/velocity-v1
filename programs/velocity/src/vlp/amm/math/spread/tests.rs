@@ -1986,7 +1986,7 @@ mod test {
                 &mm,
                 reserve_price,
                 slot,
-                crate::math::slots::BASE_SLOT_DURATION_MS,
+                crate::math::time::SlotDuration::BASELINE,
             )
             .unwrap();
             assert_eq!(amm.last_spread_update_slot, slot);

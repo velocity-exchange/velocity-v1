@@ -55,9 +55,10 @@ use {
     },
 };
 
-/// min slots between successive liquidation attempts on same user, in 400ms
-/// baseline units (~2s; inflated to actual slots at the current slot duration)
-const LIQUIDATION_SLOT_RATE_LIMIT: u64 = 5;
+/// min wall-clock time between successive liquidation attempts on same user
+/// (expressed in actual slots at the current slot duration)
+const LIQUIDATION_RATE_LIMIT: velocity_rs::program::math::time::Millis =
+    velocity_rs::program::math::time::Millis::from_secs(2);
 
 /// Maximum time allowed for a liquidation attempt in milliseconds
 const LIQUIDATION_DEADLINE_MS: u64 = 1_000;
@@ -129,9 +130,10 @@ impl LiquidationAttemptTracker {
 /// Threshold for considering a user high-risk: free margin < 10% of margin requirement
 const HIGH_RISK_FREE_MARGIN_RATIO: f64 = 0.1;
 
-/// Maximum oracle price age before considering stale, in 400ms baseline slot
-/// units (~20s; inflated to actual slots at the current slot duration)
-const MAX_ORACLE_AGE_SLOTS: u64 = 50;
+/// Maximum oracle price age before considering stale (~20s, expressed in
+/// actual slots at the current slot duration)
+const MAX_ORACLE_AGE: velocity_rs::program::math::time::Millis =
+    velocity_rs::program::math::time::Millis::from_secs(20);
 /// Maximum age for Pyth prices in milliseconds before considering stale
 const MAX_PYTH_AGE_MS: u64 = 5000;
 
@@ -177,10 +179,9 @@ fn validate_data_freshness(
     user_meta: &UserAccountMetadata,
     oracle_prices: &HashMap<MarketId, OraclePriceMetadata>,
     current_slot: u64,
-    slot_duration_ms: u64,
+    slot_duration: velocity_rs::program::math::time::SlotDuration,
 ) -> Result<(), StalenessError> {
-    let max_oracle_age_slots =
-        velocity_rs::program::math::slots::effective_slots(MAX_ORACLE_AGE_SLOTS, slot_duration_ms);
+    let max_oracle_age_slots = MAX_ORACLE_AGE.to_slots(slot_duration);
     // Check oracle prices for all markets user has positions in
     for pos in &user_meta.user.perp_positions {
         if pos.base_asset_amount != 0 {
@@ -338,7 +339,17 @@ async fn update_dashboard_state(
     for (market_id, oracle_meta) in oracle_prices {
         let age_slots = current_slot.saturating_sub(oracle_meta.last_updated_slot);
         let age_ms = now_ms.saturating_sub(oracle_meta.last_updated_timestamp_ms);
-        let is_stale = age_slots > MAX_ORACLE_AGE_SLOTS;
+        let is_stale = age_slots
+            > MAX_ORACLE_AGE.to_slots(
+                velocity
+                    .state_account()
+                    .map(|s| {
+                        velocity_rs::program::math::time::SlotDuration::from_state_ms(
+                            s.slot_duration_ms,
+                        )
+                    })
+                    .unwrap_or(velocity_rs::program::math::time::SlotDuration::BASELINE),
+            );
 
         oracle_price_infos.push(OraclePriceInfo {
             market_type: if market_id.is_perp() {
@@ -673,9 +684,11 @@ impl LiquidatorBot {
             velocity
                 .state_account()
                 .map(|s| {
-                    velocity_rs::program::math::slots::sanitize_slot_duration_ms(s.slot_duration_ms)
+                    velocity_rs::program::math::time::SlotDuration::from_state_ms(
+                        s.slot_duration_ms,
+                    )
                 })
-                .unwrap_or(velocity_rs::program::math::slots::BASE_SLOT_DURATION_MS),
+                .unwrap_or(velocity_rs::program::math::time::SlotDuration::BASELINE),
         );
 
         log::info!(target: TARGET, "spawned liquidation worker");
@@ -738,12 +751,12 @@ impl LiquidatorBot {
             .state_account()
             .map(|x| x.liquidation_margin_buffer_ratio)
             .expect("State has liquidation_margin_buffer_ratio");
-        let slot_duration_ms = velocity
+        let slot_duration = velocity
             .state_account()
             .map(|s| {
-                velocity_rs::program::math::slots::sanitize_slot_duration_ms(s.slot_duration_ms)
+                velocity_rs::program::math::time::SlotDuration::from_state_ms(s.slot_duration_ms)
             })
-            .unwrap_or(velocity_rs::program::math::slots::BASE_SLOT_DURATION_MS);
+            .unwrap_or(velocity_rs::program::math::time::SlotDuration::BASELINE);
 
         const RECHECK_CYCLE_INTERVAL: u32 = 1024;
         /// Max wall-clock time between full user sweeps; the cycle-count trigger
@@ -1055,7 +1068,7 @@ impl LiquidatorBot {
                                 user_meta,
                                 &oracle_prices,
                                 current_slot,
-                                slot_duration_ms,
+                                slot_duration,
                             )
                         {
                             log::warn!(
@@ -1113,7 +1126,7 @@ impl LiquidatorBot {
                     if let Some(user_meta) = users.get(pubkey) {
                         // With a stale oracle the margin picture is unreliable — keep the
                         // user under watch rather than dropping them.
-                        if validate_data_freshness(user_meta, &oracle_prices, current_slot, slot_duration_ms)
+                        if validate_data_freshness(user_meta, &oracle_prices, current_slot, slot_duration)
                             .is_err()
                         {
                             return true;
@@ -1172,7 +1185,7 @@ impl LiquidatorBot {
                         user_meta,
                         &oracle_prices,
                         current_slot,
-                        slot_duration_ms,
+                        slot_duration,
                     )
                     .is_err()
                     {
@@ -1686,15 +1699,12 @@ fn spawn_liquidation_worker(
     cu_limit: u32,
     priority_fee_subscriber: Arc<PriorityFeeSubscriber>,
     metrics: Arc<Metrics>,
-    slot_duration_ms: u64,
+    slot_duration: velocity_rs::program::math::time::SlotDuration,
 ) {
     let attempt_tracker = Arc::new(DashMap::<Pubkey, LiquidationAttemptTracker>::new());
-    // rate limit is 400ms baseline units; inflate to actual slots (sampled at
-    // startup — slot duration only changes at feature-gate activations)
-    let liquidation_slot_rate_limit = velocity_rs::program::math::slots::effective_slots(
-        LIQUIDATION_SLOT_RATE_LIMIT,
-        slot_duration_ms,
-    );
+    // wall-clock rate limit expressed in actual slots (sampled at startup —
+    // slot duration only changes at feature-gate activations)
+    let liquidation_slot_rate_limit = LIQUIDATION_RATE_LIMIT.to_slots(slot_duration);
 
     tokio::spawn(async move {
         // Periodically clean stale tracker entries (accounts no longer in the liquidation pipeline)

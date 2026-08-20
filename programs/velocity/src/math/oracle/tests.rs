@@ -53,7 +53,7 @@ fn calculate_oracle_valid() {
             oracle_price_data,
             10000,
             &state.oracle_guard_rails.validity,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
 
@@ -78,7 +78,7 @@ fn calculate_oracle_valid() {
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
-        crate::math::slots::BASE_SLOT_DURATION_MS,
+        crate::math::time::SlotDuration::BASELINE,
     )
     .unwrap();
 
@@ -110,7 +110,7 @@ fn calculate_oracle_valid() {
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
-        crate::math::slots::BASE_SLOT_DURATION_MS,
+        crate::math::time::SlotDuration::BASELINE,
     )
     .unwrap();
     assert!(oracle_status.oracle_validity != OracleValidity::Valid);
@@ -129,7 +129,7 @@ fn calculate_oracle_valid() {
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
-        crate::math::slots::BASE_SLOT_DURATION_MS,
+        crate::math::time::SlotDuration::BASELINE,
     )
     .unwrap();
     assert!(oracle_status.oracle_validity == OracleValidity::Valid);
@@ -144,7 +144,7 @@ fn calculate_oracle_valid() {
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
-        crate::math::slots::BASE_SLOT_DURATION_MS,
+        crate::math::time::SlotDuration::BASELINE,
     )
     .unwrap();
     assert!(oracle_status.mark_too_divergent);
@@ -156,7 +156,7 @@ fn calculate_oracle_valid() {
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
-        crate::math::slots::BASE_SLOT_DURATION_MS,
+        crate::math::time::SlotDuration::BASELINE,
     )
     .unwrap();
     assert!(oracle_status.mark_too_divergent);
@@ -204,15 +204,16 @@ fn immediate_staleness_threshold_by_override() {
             immediate_override,
             mm_sourced,
             0,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
         matches!(validity, OracleValidity::Valid)
     };
 
-    // Unset + MM-sourced resolves to MM_ORACLE_MIN_SLOT_GAP, the tightest
+    // Unset + MM-sourced resolves to MM_ORACLE_MIN_WRITE_GAP, the tightest
     // window the crank can actually satisfy, rather than to zero.
-    let min_gap = MM_ORACLE_MIN_SLOT_GAP as i64;
+    let min_gap = crate::math::constants::MM_ORACLE_MIN_WRITE_GAP
+        .to_slots(crate::math::time::SlotDuration::BASELINE) as i64;
     for delay in 0..=min_gap {
         assert!(
             is_valid(delay, -1, true),
@@ -221,7 +222,7 @@ fn immediate_staleness_threshold_by_override() {
     }
     assert!(
         !is_valid(min_gap + 1, -1, true),
-        "unset must not tolerate more than MM_ORACLE_MIN_SLOT_GAP"
+        "unset must not tolerate more than MM_ORACLE_MIN_WRITE_GAP"
     );
 
     // Unset + exchange-sourced keeps the strict zero threshold: the exchange

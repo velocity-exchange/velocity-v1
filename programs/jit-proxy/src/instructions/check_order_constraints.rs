@@ -30,7 +30,7 @@ pub fn check_order_constraints<'c: 'info, 'info>(
         slot,
         // no State account in this ctx; the maps run on default guard rails,
         // so they keep the 400ms baseline too
-        velocity::math::slots::BASE_SLOT_DURATION_MS,
+        velocity::math::time::SlotDuration::BASELINE,
         None,
     )?;
 

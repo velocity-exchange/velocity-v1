@@ -1,6 +1,7 @@
 import {
-	BASE_SLOT_DURATION_MS,
-	effectiveSlotsNum,
+	SlotDurationMs,
+	SLOT_DURATION_BASELINE,
+	msToSlotsNum,
 	BN,
 	BigNum,
 	VelocityClient,
@@ -32,8 +33,8 @@ import { Connection } from '@solana/web3.js';
 import { wsMarketArgs } from 'src/dlob-subscriber/DLOBSubscriberIO';
 import {
 	DEFAULT_AUCTION_PARAMS,
-	DEFAULT_MARKET_AUCTION_DURATION,
-	FAST_FILL_AUCTION_DURATION,
+	DEFAULT_MARKET_AUCTION_DURATION_MS,
+	FAST_FILL_AUCTION_DURATION_MS,
 	FAST_FILL_AUCTION_START_PRICE_OFFSET,
 	MAJOR_MARKETS,
 	MID_MAJOR_MARKETS,
@@ -656,7 +657,7 @@ export function createMarketBasedAuctionParams(
 	args: AuctionParamArgs,
 	overrideDefaults?: Partial<AuctionParamArgs>,
 	version: number = 1,
-	slotDurationMs: number = BASE_SLOT_DURATION_MS
+	slotDuration: SlotDurationMs = SLOT_DURATION_BASELINE
 ): AuctionParamArgs {
 	// Determine if this is a major market (PERP: SOL, BTC, ETH, HYPE)
 	const isMajorMarket =
@@ -689,17 +690,17 @@ export function createMarketBasedAuctionParams(
 			: args.auctionStartPriceOffset;
 
 	// Set market-specific defaults (only used if values are undefined)
-	// default durations are 400ms baseline units; inflate to actual slots so
-	// the auction's wall-clock ramp is independent of the slot duration
+	// default durations are wall-clock ms, expressed in actual slots so the
+	// auction's ramp is independent of the slot duration
 	const marketSpecificDefaults: Partial<AuctionParamArgs> = {
 		...DEFAULT_AUCTION_PARAMS,
 		auctionDuration: Math.min(
 			255,
-			effectiveSlotsNum(
+			msToSlotsNum(
 				isFastFill
-					? FAST_FILL_AUCTION_DURATION
-					: DEFAULT_MARKET_AUCTION_DURATION,
-				slotDurationMs
+					? FAST_FILL_AUCTION_DURATION_MS
+					: DEFAULT_MARKET_AUCTION_DURATION_MS,
+				slotDuration
 			)
 		),
 		auctionStartPriceOffsetFrom:

@@ -15,7 +15,12 @@ import { PublicKey } from '@solana/web3.js';
 import { EventEmitter } from 'events';
 import StrictEventEmitter from 'strict-event-emitter-types';
 import { VelocityClient } from './velocityClient';
-import { BASE_SLOT_DURATION_MS, baseUnitsFromSlots } from './math/slots';
+import {
+	SlotDurationMs,
+	SLOT_DURATION_BASELINE,
+	millisFromSecs,
+	millisFromSlots,
+} from './math/time';
 import {
 	HealthComponent,
 	HealthComponents,
@@ -4638,11 +4643,11 @@ export class User {
 	 * mirroring `validate_user_is_idle`); not currently being liquidated; and
 	 * no open perp positions, borrows, spot open orders, or open orders of any kind.
 	 * @param slot Current slot to evaluate inactivity against.
-	 * @param slotDurationMs Current slot duration in ms (`State.slotDurationMs`).
+	 * @param slotDuration Current slot duration (`slotDurationFromState(state.slotDurationMs)`).
 	 */
 	public canMakeIdle(
 		slot: BN,
-		slotDurationMs = BASE_SLOT_DURATION_MS
+		slotDuration: SlotDurationMs = SLOT_DURATION_BASELINE
 	): boolean {
 		const userAccount = this.getUserAccountOrThrow();
 		if (userAccount.idle) {
@@ -4653,19 +4658,16 @@ export class User {
 			this.getSpotMarketAssetAndLiabilityValue();
 		const equity = totalAssetValue.sub(totalLiabilityValue);
 
-		let slotsBeforeIdle: BN;
-		if (equity.lt(QUOTE_PRECISION.muln(1000))) {
-			slotsBeforeIdle = new BN(9000); // 1 hour
-		} else {
-			slotsBeforeIdle = new BN(1512000); // 1 week
-		}
+		const idleAfter = equity.lt(QUOTE_PRECISION.muln(1000))
+			? millisFromSecs(3_600) // 1 hour
+			: millisFromSecs(604_800); // 1 week
 
 		const userLastActiveSlot = userAccount.lastActiveSlot;
-		const slotsSinceLastActive = baseUnitsFromSlots(
+		const timeSinceLastActive = millisFromSlots(
 			slot.sub(userLastActiveSlot),
-			slotDurationMs
+			slotDuration
 		);
-		if (slotsSinceLastActive.lt(slotsBeforeIdle)) {
+		if (timeSinceLastActive.lt(idleAfter)) {
 			return false;
 		}
 

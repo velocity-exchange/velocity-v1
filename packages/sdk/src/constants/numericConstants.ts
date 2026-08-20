@@ -1,5 +1,6 @@
 import { LAMPORTS_PER_SOL } from '@solana/web3.js';
 import { BN } from '../isomorphic/anchor';
+import { millis, millisFromSecs } from '../math/time';
 
 /** Precision constants used throughout the SDK. Each mirrors an on-chain fixed-point scale — a raw `BN` amount at that precision represents `amount / 10^exponent` in human units (e.g. `PRICE_PRECISION` = 1e6, so a raw price of `1_500_000` is `$1.50`). Values must stay numerically identical to the Rust program's `math::constants` — a mismatch here silently mis-scales every derived SDK computation. */
 export const ZERO = new BN(0);
@@ -30,25 +31,25 @@ export const PERCENTAGE_PRECISION = new BN(10).pow(PERCENTAGE_PRECISION_EXP);
 
 /**
  * Minimum slots the program requires between two accepted MM-oracle writes
- * (`MM_ORACLE_MIN_SLOT_GAP` in `math/constants.rs`). Also the immediate-fill
+ * (`MM_ORACLE_MIN_WRITE_GAP` in `math/constants.rs`). Also the immediate-fill
  * staleness threshold a perp market falls back to when
  * `oracleSlotDelayOverride` is unset and the price is MM-oracle-sourced,
  * since a tighter threshold than this is unsatisfiable for such a price
  * (an exchange-sourced price keeps the strict zero threshold when unset).
  */
-export const MM_ORACLE_MIN_SLOT_GAP = new BN(2);
+export const MM_ORACLE_MIN_WRITE_GAP = millis(800);
 /**
  * Max slots the program tolerates between an MM-oracle update's source
  * observation slot (carried in the payload) and the slot it lands, enforced
- * symmetrically in both directions (`MM_ORACLE_MAX_SOURCE_AGE_SLOTS` in
+ * symmetrically in both directions (`MM_ORACLE_MAX_SOURCE_AGE` in
  * `math/constants.rs`). An update landing later than this is skipped, since
  * the stored `mmOracleSlot` is the landing slot and a late-landing update
  * would make an old observation read as fresh; a source slot further ahead
  * than this is skipped as a wrong-unit/wrong-scale caller bug. Pinned at or
- * below `MM_ORACLE_MIN_SLOT_GAP` by a program-side assert, since the
+ * below `MM_ORACLE_MIN_WRITE_GAP` by a program-side assert, since the
  * landing-slot stamp understates observation age by up to this bound.
  */
-export const MM_ORACLE_MAX_SOURCE_AGE_SLOTS = new BN(2);
+export const MM_ORACLE_MAX_SOURCE_AGE = millis(800);
 /** Alias of `PERCENTAGE_PRECISION` (1e6) for the AMM's `concentrationCoef` field. */
 export const CONCENTRATION_PRECISION = PERCENTAGE_PRECISION;
 
@@ -211,17 +212,16 @@ export const DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT = new BN(
 export const ACCOUNT_AGE_DELETION_CUTOFF_SECONDS = 60 * 60 * 24 * 13; // 13 days
 /**
  * Inactivity threshold (accelerated tier, equity < $1,000) after which a user
- * account is eligible to be marked idle: ~1 hour, denominated in 400ms
- * baseline units (see `math/slots.ts`). The non-accelerated tier is 1,512,000
- * units (~1 week).
+ * account is eligible to be marked idle: 1 hour. The non-accelerated tier is
+ * 1 week. Compare against `millisFromSlots(elapsedSlots, slotDuration)`.
  */
-export const IDLE_TIME_SLOTS = 9000;
+export const IDLE_TIME = millisFromSecs(3_600);
 /**
  * @deprecated Solana slot time is no longer a constant (400 -> 350 -> 300 ->
  * 250 -> 200ms via feature gates). Read the live value from
  * `State.slotDurationMs` (0 means unset = 400) via
- * `sanitizeSlotDurationMs(state.slotDurationMs)` in `math/slots.ts`, and use
- * its `effectiveSlots`/`baseUnitsFromSlots` helpers for conversions.
+ * `slotDurationFromState(state.slotDurationMs)` in `math/time.ts`, and use
+ * its `millisToSlots`/`millisFromSlots` helpers for conversions.
  */
 export const SLOT_TIME_ESTIMATE_MS = 400;
 

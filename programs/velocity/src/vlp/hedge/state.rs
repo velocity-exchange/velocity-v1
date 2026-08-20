@@ -13,6 +13,7 @@ use {
             safe_math::SafeMath,
             safe_unwrap::SafeUnwrap,
             spot_balance::{get_signed_token_amount, get_token_amount},
+            time::{Millis, SlotDuration},
         },
         state::{
             oracle::OraclePriceData,
@@ -50,9 +51,9 @@ pub const MIN_AUM_EXECUTION_FEE: u128 = 10_000_000_000_000;
 
 // Delay constants
 #[cfg(feature = "anchor-test")]
-pub const SETTLE_AMM_ORACLE_MAX_DELAY: u64 = 100;
+pub const SETTLE_AMM_ORACLE_MAX_DELAY: Millis = Millis::from_secs(40);
 #[cfg(not(feature = "anchor-test"))]
-pub const SETTLE_AMM_ORACLE_MAX_DELAY: u64 = 10;
+pub const SETTLE_AMM_ORACLE_MAX_DELAY: Millis = Millis::from_secs(4);
 pub const LP_POOL_SWAP_AUM_UPDATE_DELAY: u64 = 0;
 #[cfg(feature = "anchor-test")]
 pub const MAX_STALENESS_FOR_TARGET_CALC: u64 = 10000u64;
@@ -60,9 +61,9 @@ pub const MAX_STALENESS_FOR_TARGET_CALC: u64 = 10000u64;
 pub const MAX_STALENESS_FOR_TARGET_CALC: u64 = 0u64;
 
 #[cfg(feature = "anchor-test")]
-pub const MAX_ORACLE_STALENESS_FOR_TARGET_CALC: u64 = 10000u64;
+pub const MAX_ORACLE_STALENESS_FOR_TARGET_CALC: Millis = Millis::from_secs(4_000);
 #[cfg(not(feature = "anchor-test"))]
-pub const MAX_ORACLE_STALENESS_FOR_TARGET_CALC: u64 = 10u64;
+pub const MAX_ORACLE_STALENESS_FOR_TARGET_CALC: Millis = Millis::from_secs(4);
 
 #[cfg(test)]
 mod tests;
@@ -266,7 +267,7 @@ impl LPPool {
         out_target_weight: i64,
         in_amount: u128,
         correlation: i64,
-        slot_duration_ms: u64,
+        slot_duration: SlotDuration,
     ) -> VelocityResult<(u128, u128, i128, i128)> {
         let (swap_price_num, swap_price_denom) = self.get_swap_price(
             in_spot_market.decimals,
@@ -291,12 +292,12 @@ impl LPPool {
         in_fee = in_fee.safe_add(self.get_target_uncertainty_fees(
             in_target_position_slot_delay,
             in_target_oracle_slot_delay,
-            slot_duration_ms,
+            slot_duration,
         )?)?;
         out_fee = out_fee.safe_add(self.get_target_uncertainty_fees(
             out_target_position_slot_delay,
             out_target_oracle_slot_delay,
-            slot_duration_ms,
+            slot_duration,
         )?)?;
 
         in_fee = in_fee.min(MAX_SWAP_FEE);
@@ -334,7 +335,7 @@ impl LPPool {
         in_oracle: &OraclePriceData,
         in_target_weight: i64,
         dlp_total_supply: u64,
-        slot_duration_ms: u64,
+        slot_duration: SlotDuration,
     ) -> VelocityResult<(u64, u128, i64, i128)> {
         let (mut in_fee_pct, out_fee_pct) = if self.last_aum == 0 {
             (0, 0)
@@ -356,7 +357,7 @@ impl LPPool {
         in_fee_pct += self.get_target_uncertainty_fees(
             in_target_position_slot_delay,
             in_target_oracle_slot_delay,
-            slot_duration_ms,
+            slot_duration,
         )?;
         in_fee_pct = in_fee_pct.min(MAX_SWAP_FEE * 2);
 
@@ -412,7 +413,7 @@ impl LPPool {
         out_oracle: &OraclePriceData,
         out_target_weight: i64,
         dlp_total_supply: u64,
-        slot_duration_ms: u64,
+        slot_duration: SlotDuration,
     ) -> VelocityResult<(u64, u128, i64, i128)> {
         let lp_fee_to_charge_pct = self.min_mint_fee;
         let mut lp_burn_amount = lp_to_burn;
@@ -462,7 +463,7 @@ impl LPPool {
         out_fee_pct += self.get_target_uncertainty_fees(
             out_target_position_slot_delay,
             out_target_oracle_slot_delay,
-            slot_duration_ms,
+            slot_duration,
         )?;
         out_fee_pct = in_fee_pct.safe_add(out_fee_pct)?;
         out_fee_pct = out_fee_pct.min(MAX_SWAP_FEE * 2);
@@ -720,14 +721,14 @@ impl LPPool {
         self,
         target_position_slot_delay: u64,
         target_oracle_slot_delay: u64,
-        slot_duration_ms: u64,
+        slot_duration: SlotDuration,
     ) -> VelocityResult<i128> {
-        // thresholds and the 10-slot fee bucket are in 400ms baseline units;
-        // deflate the measured delays so the fee ramp keeps its wall-clock shape
+        // measured slot delays become wall-clock, counted in whole 400ms
+        // periods (the fee ramp's historical granularity)
         let target_position_slot_delay =
-            crate::math::slots::base_units_from_slots(target_position_slot_delay, slot_duration_ms);
+            Millis::from_slots(target_position_slot_delay, slot_duration).div_periods(Millis::UNIT);
         let target_oracle_slot_delay =
-            crate::math::slots::base_units_from_slots(target_oracle_slot_delay, slot_duration_ms);
+            Millis::from_slots(target_oracle_slot_delay, slot_duration).div_periods(Millis::UNIT);
         // Gives an uncertainty fee in bps if the oracle or position was stale when calcing target.
         // Uses a step function that goes up every 10 slots beyond a threshold where we consider it okay
         //  - delay 0 (<= threshold) = 0 bps
@@ -748,7 +749,7 @@ impl LPPool {
 
         let oracle_uncertainty_fee = step_fee(
             target_oracle_slot_delay,
-            MAX_ORACLE_STALENESS_FOR_TARGET_CALC,
+            MAX_ORACLE_STALENESS_FOR_TARGET_CALC.div_periods(Millis::UNIT),
             self.target_oracle_delay_fee_bps_per_10_slots,
         )?;
         let position_uncertainty_fee = step_fee(
@@ -778,17 +779,17 @@ impl LPPool {
         constituent_target_base: &AccountZeroCopyMut<'_, TargetsDatum, ConstituentTargetBaseFixed>,
         amm_cache: &AccountZeroCopyMut<'_, CacheInfo, AmmCacheFixed>,
     ) -> VelocityResult<(u128, i128, BTreeMap<u16, Vec<u16>>)> {
-        let slot_duration_ms = oracle_map.slot_duration_ms;
+        let slot_duration = oracle_map.slot_duration;
         let mut aum: i128 = 0;
         let mut crypto_delta = 0_i128;
         let mut derivative_groups: BTreeMap<u16, Vec<u16>> = BTreeMap::new();
         for i in 0..self.constituents as usize {
             let constituent = constituent_map.get_ref(&(i as u16))?;
-            // threshold is admin-set in 400ms baseline units
-            if crate::math::slots::base_units_from_slots(
+            // threshold is admin-set (stored in legacy 400ms units)
+            if Millis::from_slots(
                 slot.saturating_sub(constituent.last_oracle_slot),
-                slot_duration_ms,
-            ) > constituent.oracle_staleness_threshold
+                slot_duration,
+            ) > Millis::from_stored_units(constituent.oracle_staleness_threshold)
             {
                 msg!(
                     "Constituent {} oracle slot is too stale: {}, current slot: {}",
@@ -1429,7 +1430,7 @@ impl<'a> AccountZeroCopyMut<'a, TargetsDatum, ConstituentTargetBaseFixed> {
         amm_inventory_and_prices: &std::collections::BTreeMap<u16, AmmInventoryAndPricesAndSlots>,
         constituents_indexes_and_decimals_and_prices: &mut [ConstituentIndexAndDecimalAndPrice],
         slot: u64,
-        slot_duration_ms: u64,
+        slot_duration: SlotDuration,
     ) -> VelocityResult<()> {
         // Sorts by constituent index
         constituents_indexes_and_decimals_and_prices.sort_by_key(|c| c.constituent_index);
@@ -1520,11 +1521,8 @@ impl<'a> AccountZeroCopyMut<'a, TargetsDatum, ConstituentTargetBaseFixed> {
                 );
             }
 
-            // threshold in 400ms baseline units; deflate the measured delta
-            if crate::math::slots::base_units_from_slots(
-                slot.saturating_sub(oldest_oracle_slot),
-                slot_duration_ms,
-            ) <= MAX_ORACLE_STALENESS_FOR_TARGET_CALC
+            if Millis::from_slots(slot.saturating_sub(oldest_oracle_slot), slot_duration)
+                <= MAX_ORACLE_STALENESS_FOR_TARGET_CALC
             {
                 cell.last_oracle_slot = slot;
             } else {

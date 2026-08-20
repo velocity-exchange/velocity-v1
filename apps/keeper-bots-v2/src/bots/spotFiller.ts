@@ -20,7 +20,7 @@ import {
 	BlockhashSubscriber,
 	JupiterClient,
 	ClockSubscriber,
-	effectiveSlotsNum,
+	msToSlotsNum,
 } from '@velocity-exchange/sdk';
 import { Mutex, tryAcquire, E_ALREADY_LOCKED } from 'async-mutex';
 
@@ -77,7 +77,7 @@ import {
 	swapFillerHardEarnedUSDCForSOL,
 	validMinimumGasAmount,
 	validRebalanceSettledPnlThreshold,
-	currentSlotDurationMs,
+	currentSlotDuration,
 } from '../utils';
 import { JITO_METRIC_TYPES, BundleSender } from '../bundleSender';
 import {
@@ -98,7 +98,8 @@ const THROTTLED_NODE_SIZE_TO_PRUNE = 10; // Size of throttled nodes to get to be
 const FILL_ORDER_THROTTLE_BACKOFF = 1000; // the time to wait before trying to fill a throttled (error filling) node again
 const TRIGGER_ORDER_COOLDOWN_MS = 1000; // the time to wait before trying to a node in the triggering map again
 const SIM_CU_ESTIMATE_MULTIPLIER = 1.15;
-const SLOTS_UNTIL_JITO_LEADER_TO_SEND = 4;
+// wall-clock lead to build+send before the jito leader window (~4 slots at 400ms)
+const JITO_LEADER_LEAD_MS = 1_600;
 const CONFIRM_TX_ATTEMPTS = 2;
 const MAX_MAKERS_PER_FILL = 6; // max number of unique makers to include per fill
 const MAX_ACCOUNTS_PER_TX = 64; // solana limit, track https://github.com/solana-labs/solana/issues/27241
@@ -1475,12 +1476,11 @@ export class SpotFillerBot implements Bot {
 			if (slotsUntilJito === undefined) {
 				return false;
 			}
-			// baseline slot units: keep ~1.6s of wall-clock lead to build+send
 			return (
 				slotsUntilJito <
-				effectiveSlotsNum(
-					SLOTS_UNTIL_JITO_LEADER_TO_SEND,
-					currentSlotDurationMs(this.velocityClient)
+				msToSlotsNum(
+					JITO_LEADER_LEAD_MS,
+					currentSlotDuration(this.velocityClient)
 				)
 			);
 		}

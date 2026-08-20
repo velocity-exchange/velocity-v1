@@ -62,6 +62,7 @@ use {
             position::calculate_base_asset_value_with_oracle_price,
             safe_math::SafeMath,
             spot_balance::{get_token_amount, get_token_value},
+            time::Millis,
         },
         msg,
         state::{
@@ -112,10 +113,10 @@ pub fn liquidate_perp(
     now: i64,
     state: &State,
 ) -> VelocityResult {
-    let slot_duration_ms = oracle_map.slot_duration_ms;
+    let slot_duration = oracle_map.slot_duration;
     let liquidation_margin_buffer_ratio = state.liquidation_margin_buffer_ratio;
     let initial_pct_to_liquidate = state.initial_pct_to_liquidate as u128;
-    let liquidation_duration = state.liquidation_duration as u128;
+    let liquidation_duration = state.liquidation_duration_ms();
 
     let liquidation_mode = get_perp_liquidation_mode(user, market_index)?;
 
@@ -267,7 +268,7 @@ pub fn liquidate_perp(
         *oracle_price_data,
         slot,
         &state.oracle_guard_rails.validity,
-        state.slot_duration_ms(),
+        state.slot_duration(),
     )?;
 
     update_amm_and_check_validity(
@@ -400,7 +401,7 @@ pub fn liquidate_perp(
         market.get_max_liquidation_fee()?,
         user.last_active_slot,
         slot,
-        slot_duration_ms,
+        slot_duration,
     )?;
 
     // Compute the total insurance-side budget (margin-shortage aware) with the
@@ -449,7 +450,7 @@ pub fn liquidate_perp(
         slot,
         initial_pct_to_liquidate,
         liquidation_duration,
-        slot_duration_ms,
+        slot_duration,
     )?;
     let max_base_asset_amount_allowed_to_be_transferred =
         base_asset_amount_to_cover_margin_shortage
@@ -815,7 +816,7 @@ pub fn liquidate_perp_with_fill(
     clock: &Clock,
     state: &State,
 ) -> VelocityResult {
-    let slot_duration_ms = oracle_map.slot_duration_ms;
+    let slot_duration = oracle_map.slot_duration;
     let now = clock.unix_timestamp;
     let slot = clock.slot;
 
@@ -824,7 +825,7 @@ pub fn liquidate_perp_with_fill(
 
     let liquidation_margin_buffer_ratio = state.liquidation_margin_buffer_ratio;
     let initial_pct_to_liquidate = state.initial_pct_to_liquidate as u128;
-    let liquidation_duration = state.liquidation_duration as u128;
+    let liquidation_duration = state.liquidation_duration_ms();
 
     let liquidation_mode = get_perp_liquidation_mode(&user, market_index)?;
 
@@ -967,7 +968,7 @@ pub fn liquidate_perp_with_fill(
         *oracle_price_data,
         slot,
         &state.oracle_guard_rails.validity,
-        state.slot_duration_ms(),
+        state.slot_duration(),
     )?;
 
     update_amm_and_check_validity(
@@ -1089,7 +1090,7 @@ pub fn liquidate_perp_with_fill(
         market.get_max_liquidation_fee()?,
         user.last_active_slot,
         slot,
-        slot_duration_ms,
+        slot_duration,
     )?;
     // total insurance-side budget with the cap raised to if + protocol rates,
     // split IF-first (see liquidate_perp for rationale)
@@ -1126,7 +1127,7 @@ pub fn liquidate_perp_with_fill(
         slot,
         initial_pct_to_liquidate,
         liquidation_duration,
-        slot_duration_ms,
+        slot_duration,
     )?;
     let max_base_asset_amount_allowed_to_be_transferred =
         base_asset_amount_to_cover_margin_shortage
@@ -1330,10 +1331,10 @@ pub fn liquidate_spot(
     slot: u64,
     state: &State,
 ) -> VelocityResult {
-    let slot_duration_ms = oracle_map.slot_duration_ms;
+    let slot_duration = oracle_map.slot_duration;
     let liquidation_margin_buffer_ratio = state.liquidation_margin_buffer_ratio;
     let initial_pct_to_liquidate = state.initial_pct_to_liquidate as u128;
-    let liquidation_duration = state.liquidation_duration as u128;
+    let liquidation_duration = state.liquidation_duration_ms();
     let funding_paused = state.funding_paused()?;
 
     validate!(
@@ -1438,7 +1439,7 @@ pub fn liquidate_spot(
             now,
             Some(VelocityAction::Liquidate),
             funding_paused,
-            slot_duration_ms,
+            slot_duration,
         )?;
 
         let spot_deposit_position = user.get_spot_position(asset_market_index)?;
@@ -1511,7 +1512,7 @@ pub fn liquidate_spot(
             now,
             Some(VelocityAction::Liquidate),
             funding_paused,
-            slot_duration_ms,
+            slot_duration,
         )?;
 
         let spot_position = user.get_spot_position(liability_market_index)?;
@@ -1719,7 +1720,7 @@ pub fn liquidate_spot(
         slot,
         initial_pct_to_liquidate,
         liquidation_duration,
-        slot_duration_ms,
+        slot_duration,
     )?;
     let max_liability_allowed_to_be_transferred = liability_transfer_to_cover_margin_shortage
         .saturating_mul(max_pct_allowed)
@@ -1990,10 +1991,10 @@ pub fn liquidate_spot_with_swap_begin(
     slot: u64,
     state: &State,
 ) -> VelocityResult {
-    let slot_duration_ms = oracle_map.slot_duration_ms;
+    let slot_duration = oracle_map.slot_duration;
     let liquidation_margin_buffer_ratio = state.liquidation_margin_buffer_ratio;
     let initial_pct_to_liquidate = state.initial_pct_to_liquidate as u128;
-    let liquidation_duration = state.liquidation_duration as u128;
+    let liquidation_duration = state.liquidation_duration_ms();
 
     validate!(
         !user.is_cross_margin_bankrupt(),
@@ -2055,7 +2056,7 @@ pub fn liquidate_spot_with_swap_begin(
             validity_guard_rails,
             Some(VelocityAction::Liquidate),
             LogMode::ExchangeOracle,
-            slot_duration_ms,
+            slot_duration,
         )?;
 
         let spot_deposit_position = user.get_spot_position(asset_market_index)?;
@@ -2121,7 +2122,7 @@ pub fn liquidate_spot_with_swap_begin(
             validity_guard_rails,
             Some(VelocityAction::Liquidate),
             LogMode::ExchangeOracle,
-            slot_duration_ms,
+            slot_duration,
         )?;
 
         let spot_position = user.get_spot_position(liability_market_index)?;
@@ -2309,7 +2310,7 @@ pub fn liquidate_spot_with_swap_begin(
         slot,
         initial_pct_to_liquidate,
         liquidation_duration,
-        slot_duration_ms,
+        slot_duration,
     )?;
     let max_liability_allowed_to_be_transferred = liability_transfer_to_cover_margin_shortage
         .saturating_mul(max_pct_allowed)
@@ -2438,7 +2439,7 @@ pub fn liquidate_spot_with_swap_end(
     asset_transfer: u128,
     liability_transfer: u128,
 ) -> VelocityResult {
-    let slot_duration_ms = oracle_map.slot_duration_ms;
+    let slot_duration = oracle_map.slot_duration;
     let liquidation_margin_buffer_ratio = state.liquidation_margin_buffer_ratio;
 
     let (asset_price, asset_decimals, asset_weight, asset_liquidation_multiplier) = {
@@ -2456,7 +2457,7 @@ pub fn liquidate_spot_with_swap_end(
             validity_guard_rails,
             Some(VelocityAction::Liquidate),
             LogMode::None,
-            slot_duration_ms,
+            slot_duration,
         )?;
 
         let asset_price =
@@ -2504,7 +2505,7 @@ pub fn liquidate_spot_with_swap_end(
             validity_guard_rails,
             Some(VelocityAction::Liquidate),
             LogMode::None,
-            slot_duration_ms,
+            slot_duration,
         )?;
 
         let liability_price =
@@ -2695,10 +2696,10 @@ pub fn liquidate_borrow_for_perp_pnl(
     slot: u64,
     liquidation_margin_buffer_ratio: u32,
     initial_pct_to_liquidate: u128,
-    liquidation_duration: u128,
+    liquidation_duration: Millis,
     funding_paused: bool,
 ) -> VelocityResult {
-    let slot_duration_ms = oracle_map.slot_duration_ms;
+    let slot_duration = oracle_map.slot_duration;
     // liquidator takes over a user borrow in exchange for that user's positive perpetual pnl
     // can only be done once a user's perpetual position size is 0
     // blocks borrows where oracle is deemed invalid
@@ -2854,7 +2855,7 @@ pub fn liquidate_borrow_for_perp_pnl(
             now,
             Some(VelocityAction::Liquidate),
             funding_paused,
-            slot_duration_ms,
+            slot_duration,
         )?;
 
         let spot_position = user.get_spot_position(liability_market_index)?;
@@ -3021,7 +3022,7 @@ pub fn liquidate_borrow_for_perp_pnl(
         slot,
         initial_pct_to_liquidate,
         liquidation_duration,
-        slot_duration_ms,
+        slot_duration,
     )?;
     let max_liability_allowed_to_be_transferred = liability_transfer_to_cover_margin_shortage
         .saturating_mul(max_pct_allowed)
@@ -3209,10 +3210,10 @@ pub fn liquidate_perp_pnl_for_deposit(
     slot: u64,
     liquidation_margin_buffer_ratio: u32,
     initial_pct_to_liquidate: u128,
-    liquidation_duration: u128,
+    liquidation_duration: Millis,
     funding_paused: bool,
 ) -> VelocityResult {
-    let slot_duration_ms = oracle_map.slot_duration_ms;
+    let slot_duration = oracle_map.slot_duration;
     // liquidator takes over remaining negative perpetual pnl in exchange for a user deposit
     // can only be done once the perpetual position's size is 0
     // blocked when 1) user deposit oracle is deemed invalid
@@ -3322,7 +3323,7 @@ pub fn liquidate_perp_pnl_for_deposit(
             now,
             Some(VelocityAction::Liquidate),
             funding_paused,
-            slot_duration_ms,
+            slot_duration,
         )?;
 
         // a margin-invalid (stale/uncertain) deposit oracle may make the account
@@ -3592,7 +3593,7 @@ pub fn liquidate_perp_pnl_for_deposit(
         slot,
         initial_pct_to_liquidate,
         liquidation_duration,
-        slot_duration_ms,
+        slot_duration,
     )?;
     let max_pnl_allowed_to_be_transferred = pnl_transfer_to_cover_margin_shortage
         .saturating_mul(max_pct_allowed)

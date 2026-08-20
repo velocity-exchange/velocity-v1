@@ -21,8 +21,8 @@ use {
                 FEE_POOL_TO_REVENUE_POOL_THRESHOLD, IF_FACTOR_PRECISION, INSURANCE_A_MAX,
                 INSURANCE_B_MAX, INSURANCE_C_MAX, INSURANCE_SPECULATIVE_MAX,
                 LIQUIDATION_FEE_PRECISION, MAX_CONCENTRATION_COEFFICIENT,
-                MAX_TAKER_FEE_ADDON_TENTH_BPS, MM_ORACLE_MAX_SOURCE_AGE_SLOTS,
-                MM_ORACLE_MAX_STEP_PCT_PRECISION, MM_ORACLE_MIN_SLOT_GAP, PERCENTAGE_PRECISION,
+                MAX_TAKER_FEE_ADDON_TENTH_BPS, MM_ORACLE_MAX_SOURCE_AGE,
+                MM_ORACLE_MAX_STEP_PCT_PRECISION, MM_ORACLE_MIN_WRITE_GAP, PERCENTAGE_PRECISION,
                 PERCENTAGE_PRECISION_I128, PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U32,
                 PERP_FEE_TIER_MAX_INDEX, QUOTE_PRECISION_I64, QUOTE_SPOT_MARKET_INDEX,
                 SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_IMF_PRECISION,
@@ -31,11 +31,11 @@ use {
             margin::calculate_user_equity,
             orders::is_multiple_of_step_size,
             safe_math::SafeMath,
-            slots::effective_slots,
             spot_balance::get_token_amount,
             spot_withdraw::{
                 validate_spot_market_vault_amount, DEFAULT_WITHDRAW_CIRCUIT_BREAKER_BPS,
             },
+            time::SlotDuration,
         },
         math_error, msg,
         optional_accounts::get_token_mint,
@@ -2617,16 +2617,16 @@ pub fn handle_update_state_slot_duration_ms(
     ctx: Context<AdminUpdateState>,
     slot_duration_ms: u16,
 ) -> Result<()> {
-    let current = ctx.accounts.state.load()?.slot_duration_ms();
+    let current = ctx.accounts.state.load()?.slot_duration().as_ms();
 
     // Only values matching a real IBRL feature gate, so a typo can't set an
     // arbitrary duration.
     validate!(
-        crate::math::slots::VALID_SLOT_DURATIONS_MS.contains(&slot_duration_ms),
+        crate::math::time::VALID_SLOT_DURATIONS_MS.contains(&slot_duration_ms),
         ErrorCode::DefaultError,
         "slot_duration_ms {} is not one of the feature-gate values {:?}",
         slot_duration_ms,
-        crate::math::slots::VALID_SLOT_DURATIONS_MS
+        crate::math::time::VALID_SLOT_DURATIONS_MS
     )?;
 
     // Monotonic decreasing: feature gates cannot deactivate, so slots never
@@ -3377,7 +3377,7 @@ pub fn handle_settle_expired_market<'c: 'info, 'info>(
         &get_writable_perp_market_set(market_index),
         &get_writable_spot_market_set(QUOTE_SPOT_MARKET_INDEX),
         clock.slot,
-        state.slot_duration_ms(),
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -3392,7 +3392,7 @@ pub fn handle_settle_expired_market<'c: 'info, 'info>(
             *oracle_price_data,
             clock.slot,
             &state.oracle_guard_rails.validity,
-            state.slot_duration_ms(),
+            state.slot_duration(),
         )?;
         let validity = crate::vlp::amm::refresh::compute_amm_refresh_validity(
             &perp_market,
@@ -3404,7 +3404,7 @@ pub fn handle_settle_expired_market<'c: 'info, 'info>(
             validity,
             clock.unix_timestamp,
             clock.slot,
-            state.slot_duration_ms(),
+            state.slot_duration(),
         )?;
     }
 
@@ -3446,7 +3446,7 @@ pub fn handle_admin_deposit<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set(market_index),
         clock.slot,
-        state.slot_duration_ms(),
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -3607,16 +3607,14 @@ const STATE_SLOT_DURATION_MS_OFFSET: usize = 1506;
 
 /// Read `State::slot_duration_ms` from a raw (already discriminator-checked)
 /// state account, resolving the `0` sentinel to the 400ms baseline.
-fn read_native_state_slot_duration_ms(state_account: &AccountInfo) -> Result<u64> {
+fn read_native_state_slot_duration(state_account: &AccountInfo) -> Result<SlotDuration> {
     let state = state_account.try_borrow_data()?;
     let bytes: [u8; 2] = state
         .get(STATE_SLOT_DURATION_MS_OFFSET..STATE_SLOT_DURATION_MS_OFFSET + 2)
         .ok_or(ErrorCode::InvalidNativeStateAccount)?
         .try_into()
         .map_err(|_| ErrorCode::InvalidNativeStateAccount)?;
-    Ok(crate::math::slots::sanitize_slot_duration_ms(
-        u16::from_le_bytes(bytes),
-    ))
+    Ok(SlotDuration::from_state_ms(u16::from_le_bytes(bytes)))
 }
 
 pub fn handle_update_mm_oracle_native(accounts: &[AccountInfo], data: &[u8]) -> Result<()> {
@@ -3712,7 +3710,7 @@ fn update_mm_oracle(accounts: &[AccountInfo], data: &[u8], current_slot: u64) ->
         incoming_price,
         incoming_sequence_id,
         source_slot,
-        read_native_state_slot_duration_ms(&accounts[2])?,
+        read_native_state_slot_duration(&accounts[2])?,
     )? {
         MmOracleUpdateOutcome::Written { price } => {
             if price != incoming_price {
@@ -3738,7 +3736,7 @@ fn update_mm_oracle(accounts: &[AccountInfo], data: &[u8], current_slot: u64) ->
             msg!(
                 "mm oracle reject: re-crank gap {} < {}",
                 gap,
-                MM_ORACLE_MIN_SLOT_GAP
+                MM_ORACLE_MIN_WRITE_GAP.as_ms()
             );
         }
         MmOracleUpdateOutcome::Skipped(MmOracleSkipReason::SourceSlotOutOfRange {
@@ -3813,7 +3811,7 @@ const MM_ORACLE_BATCH_ENTRY_LEN: usize = 26;
 ///
 /// `source_slot` is the slot the crank observed the price at. It is not
 /// stored; it only bounds how late a signed update may land (see
-/// `MM_ORACLE_MAX_SOURCE_AGE_SLOTS`), since `mm_oracle_slot` is stamped with
+/// `MM_ORACLE_MAX_SOURCE_AGE`), since `mm_oracle_slot` is stamped with
 /// the landing slot and would otherwise make an old observation read as fresh.
 ///
 /// Entry `i` applies to account `2 + i`, and the entry's `market_index` must
@@ -3851,8 +3849,8 @@ const MM_ORACLE_BATCH_ENTRY_LEN: usize = 26;
 /// - non-positive price
 /// - sequence id not strictly greater than the stored one
 /// - current slot not strictly greater than the stored slot
-/// - slot gap below `MM_ORACLE_MIN_SLOT_GAP`
-/// - source slot more than `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` away from the
+/// - slot gap below `MM_ORACLE_MIN_WRITE_GAP`
+/// - source slot more than `MM_ORACLE_MAX_SOURCE_AGE` away from the
 ///   current slot in either direction (landed too late to be fresh, or a
 ///   source stamp too far ahead to be a plausible landing-slot estimate)
 ///
@@ -3949,7 +3947,7 @@ fn update_mm_oracle_batch(
 
     // Fixed prologue, paid once for the whole batch.
     let state_account = &accounts[1];
-    let slot_duration_ms = read_native_state_slot_duration_ms(state_account)?;
+    let slot_duration = read_native_state_slot_duration(state_account)?;
 
     crate::auth::require_native_account(
         state_account,
@@ -4023,7 +4021,7 @@ fn update_mm_oracle_batch(
             incoming_price,
             incoming_sequence_id,
             source_slot,
-            slot_duration_ms,
+            slot_duration,
         )? {
             MmOracleUpdateOutcome::Written { price } => {
                 if price != incoming_price {
@@ -4052,9 +4050,9 @@ enum MmOracleSkipReason {
     StaleSequenceId,
     /// Current slot not strictly greater than the stored slot.
     SlotNotAdvanced { stored_slot: u64 },
-    /// Fewer than `MM_ORACLE_MIN_SLOT_GAP` slots since the last accepted write.
+    /// Fewer slots since the last accepted write than `MM_ORACLE_MIN_WRITE_GAP` allows.
     RecrankGapTooSmall { gap: u64 },
-    /// Source slot more than `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` from the current
+    /// Source slot more than `MM_ORACLE_MAX_SOURCE_AGE` from the current
     /// slot in either direction.
     SourceSlotOutOfRange { source_slot: u64 },
 }
@@ -4101,7 +4099,7 @@ fn apply_mm_oracle_update(
     incoming_price: i64,
     incoming_sequence_id: u64,
     source_slot: u64,
-    slot_duration_ms: u64,
+    slot_duration: SlotDuration,
 ) -> Result<MmOracleUpdateOutcome> {
     use {MmOracleSkipReason as Skip, MmOracleUpdateOutcome as Outcome};
 
@@ -4139,12 +4137,12 @@ fn apply_mm_oracle_update(
         }));
     }
 
-    // Both gates are calibrated in 400ms baseline units; inflate to actual
-    // slots so the write rate limit and source-age bound keep their
-    // wall-clock width. Must stay consistent with the `MM_ORACLE_MIN_SLOT_GAP`
-    // fallback scaling inside `oracle_validity`.
+    // Both gates are wall-clock durations expressed in actual slots, so the
+    // write rate limit and source-age bound keep their width at any slot
+    // duration. Must stay consistent with the `MM_ORACLE_MIN_WRITE_GAP`
+    // fallback inside `oracle_validity`.
     let gap = current_slot - stats.mm_oracle_slot;
-    if gap < effective_slots(MM_ORACLE_MIN_SLOT_GAP, slot_duration_ms) {
+    if gap < MM_ORACLE_MIN_WRITE_GAP.to_slots(slot_duration) {
         return Ok(Outcome::Skipped(Skip::RecrankGapTooSmall { gap }));
     }
 
@@ -4155,9 +4153,7 @@ fn apply_mm_oracle_update(
     // a caller bug (a wrong-unit value, e.g. a millisecond timestamp, would
     // otherwise disable this gate permanently and silently), while a small
     // forward allowance still lets a crank estimate its landing slot.
-    if current_slot.abs_diff(source_slot)
-        > effective_slots(MM_ORACLE_MAX_SOURCE_AGE_SLOTS, slot_duration_ms)
-    {
+    if current_slot.abs_diff(source_slot) > MM_ORACLE_MAX_SOURCE_AGE.to_slots(slot_duration) {
         return Ok(Outcome::Skipped(Skip::SourceSlotOutOfRange { source_slot }));
     }
 
@@ -4442,7 +4438,7 @@ pub fn handle_reset_equity_floor_breaker<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         Clock::get()?.slot,
-        state.slot_duration_ms(),
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -5474,8 +5470,10 @@ mod native_auth_tests {
 
         let mut observed = Vec::with_capacity(writes);
         for i in 0..writes {
-            // Advance the slot past MM_ORACLE_MIN_SLOT_GAP for each write.
-            let slot = ((i as u64) + 1) * (MM_ORACLE_MIN_SLOT_GAP + 1);
+            // Advance the slot past the MM-oracle write gap for each write.
+            let gap = crate::math::constants::MM_ORACLE_MIN_WRITE_GAP
+                .to_slots(crate::math::time::SlotDuration::BASELINE);
+            let slot = ((i as u64) + 1) * (gap + 1);
 
             let mut payload = [0u8; 24];
             payload[0..8].copy_from_slice(&target.to_le_bytes());
@@ -6511,7 +6509,7 @@ mod native_batch_tests {
 
     /// Source-observation freshness on both handlers, symmetric around the
     /// landing slot: an update whose source slot is more than
-    /// `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` away in either direction is skipped —
+    /// `MM_ORACLE_MAX_SOURCE_AGE` away in either direction is skipped —
     /// behind means it landed too late to be fresh, ahead means a wrong-unit
     /// or wrong-scale source value that must not silently disable the gate.
     /// Exactly at the bound lands on both sides, so a crank may still estimate
@@ -6520,27 +6518,25 @@ mod native_batch_tests {
     fn stale_source_slot_is_skipped_by_both_handlers() {
         let initial = (BASE_PRICE, SLOT - 10, 5);
         let written = (BASE_PRICE + 1_000, SLOT, 6);
+        let max_age = crate::math::constants::MM_ORACLE_MAX_SOURCE_AGE
+            .to_slots(crate::math::time::SlotDuration::BASELINE);
 
         // (label, source_slot, expected)
         let cases: [(&str, u64, MmStats); 5] = [
             (
                 "one slot beyond the bound is skipped",
-                SLOT - MM_ORACLE_MAX_SOURCE_AGE_SLOTS - 1,
+                SLOT - max_age - 1,
                 initial,
             ),
-            (
-                "exactly at the bound lands",
-                SLOT - MM_ORACLE_MAX_SOURCE_AGE_SLOTS,
-                written,
-            ),
+            ("exactly at the bound lands", SLOT - max_age, written),
             (
                 "a landing-slot estimate at the forward bound lands",
-                SLOT + MM_ORACLE_MAX_SOURCE_AGE_SLOTS,
+                SLOT + max_age,
                 written,
             ),
             (
                 "one slot beyond the forward bound is skipped",
-                SLOT + MM_ORACLE_MAX_SOURCE_AGE_SLOTS + 1,
+                SLOT + max_age + 1,
                 initial,
             ),
             (
@@ -6562,7 +6558,7 @@ mod native_batch_tests {
         valid_prologue!(hot_key, state_info, signer);
         market_account!(0, initial, market_info);
         let accounts = [signer, state_info, market_info.clone()];
-        let stale = SLOT - MM_ORACLE_MAX_SOURCE_AGE_SLOTS - 1;
+        let stale = SLOT - max_age - 1;
         let (mask, clamped) = update_mm_oracle_batch(
             &accounts,
             &batch_payload_with_source(&[(0, BASE_PRICE + 1_000, 6, stale)]),

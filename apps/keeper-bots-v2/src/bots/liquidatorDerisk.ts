@@ -32,7 +32,7 @@ import {
 	findDirectionToClose,
 	calculateMarketAvailablePNL,
 	RECOMMENDED_JUPITER_API,
-	effectiveSlotsNum,
+	msToSlotsNum,
 } from '@velocity-exchange/sdk';
 import {
 	ComputeBudgetProgram,
@@ -52,7 +52,7 @@ import {
 	simulateAndGetTxWithCUs,
 	SimulateAndGetTxWithCUsResponse,
 	isSolLstToken,
-	currentSlotDurationMs,
+	currentSlotDuration,
 } from '../utils';
 
 const BPS_PRECISION = 10000;
@@ -240,9 +240,9 @@ export class LiquidatorDerisk {
 				price: limitPrice,
 				auctionDuration: Math.min(
 					255,
-					effectiveSlotsNum(
-						this.config.deriskAuctionDurationSlots!,
-						currentSlotDurationMs(this.velocityClient)
+					msToSlotsNum(
+						this.config.deriskAuctionDurationMs!,
+						currentSlotDuration(this.velocityClient)
 					)
 				),
 				auctionStartPrice,
@@ -630,9 +630,9 @@ export class LiquidatorDerisk {
 			marketIndex: position.marketIndex,
 			auctionDuration: Math.min(
 				255,
-				effectiveSlotsNum(
-					this.config.deriskAuctionDurationSlots!,
-					currentSlotDurationMs(this.velocityClient)
+				msToSlotsNum(
+					this.config.deriskAuctionDurationMs!,
+					currentSlotDuration(this.velocityClient)
 				)
 			),
 			auctionStartPrice,

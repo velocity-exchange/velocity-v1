@@ -36,7 +36,7 @@ use {
             orders::*,
             safe_math::SafeMath,
             safe_unwrap::SafeUnwrap,
-            slots::effective_slots,
+            time::{Millis, SlotDuration},
         },
         msg, print_error,
         state::{
@@ -253,7 +253,7 @@ pub fn place_perp_order(
             market,
             oracle_price_data.price,
             options.is_signed_msg_order(),
-            state.slot_duration_ms(),
+            state.slot_duration(),
         )?;
     }
 
@@ -261,19 +261,22 @@ pub fn place_perp_order(
         &params,
         oracle_price_data,
         market.order_tick_size,
-        state.effective_min_perp_auction_duration(),
+        state
+            .min_perp_auction_duration_ms()
+            .to_slots(state.slot_duration())
+            .min(u8::MAX as u64) as u8,
     )?;
 
     let max_ts = match params.max_ts {
         Some(max_ts) => max_ts,
         None => match params.order_type {
-            // default TIF: at least 30s, else half the auction's baseline
-            // length in seconds (duration slots * ms / 800) plus 10s of pad
+            // default TIF: at least 30s, else half the auction's wall-clock
+            // length in seconds plus 10s of pad
             OrderType::Market | OrderType::Oracle => now.safe_add(
                 30_i64.max(
-                    (auction_duration as u64)
-                        .safe_mul(state.slot_duration_ms())?
-                        .safe_div(800)?
+                    Millis::from_slots(auction_duration as u64, state.slot_duration())
+                        .as_ms()
+                        .safe_div(2_000)?
                         .cast::<i64>()?
                         .safe_add(10_i64)?,
                 ),
@@ -1199,7 +1202,7 @@ pub fn fill_perp_order(
             *oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            state.slot_duration_ms(),
+            state.slot_duration(),
         )?;
         let safe_oracle_price_data = mm_oracle_price_data.get_safe_oracle_price_data();
         safe_oracle_validity = oracle_validity(
@@ -1217,7 +1220,7 @@ pub fn fill_perp_order(
             market.oracle_slot_delay_override,
             mm_oracle_price_data.is_safe_price_mm_sourced(),
             market.oracle_low_risk_slot_delay_override,
-            state.slot_duration_ms(),
+            state.slot_duration(),
         )?;
 
         user_can_skip_duration = user.can_skip_auction_duration(user_stats, order_reduce_only)?;
@@ -1234,13 +1237,11 @@ pub fn fill_perp_order(
             && market.amm_fill_gates_ok(safe_oracle_validity, &mm_oracle_price_data)?;
 
         oracle_stale_for_margin = mm_oracle_price_data.get_delay()
-            > crate::math::slots::effective_slots_i64(
-                state
-                    .oracle_guard_rails
-                    .validity
-                    .slots_before_stale_for_margin,
-                state.slot_duration_ms(),
-            );
+            > state
+                .oracle_guard_rails
+                .validity
+                .stale_for_margin_ms()
+                .to_slots(state.slot_duration()) as i64;
 
         // No AMM mutation here — `fulfill_perp_order_step` constructs an
         // `AmmQuoter` and calls `Quoter::setup` before quoting, which is
@@ -1253,7 +1254,7 @@ pub fn fill_perp_order(
                 market,
                 &mm_oracle_price_data,
                 &state.oracle_guard_rails.validity,
-                state.slot_duration_ms(),
+                state.slot_duration(),
             )?;
 
         // Snapshot the 5-minute oracle TWAP *before* the refresh below advances
@@ -1277,7 +1278,7 @@ pub fn fill_perp_order(
             amm_refresh_validity,
             now,
             slot,
-            state.slot_duration_ms(),
+            state.slot_duration(),
         )?;
 
         reserve_price_before = market.amm.reserve_price()?;
@@ -2025,20 +2026,20 @@ fn fulfill_perp_order(
         // same curve. When the projection is a passthrough (oracle invalid for
         // curve updates, zero intensity, or the affordability floor rejected
         // it) the AMM is left at its stored curve and routing behaves as before.
-        let slot_duration_ms = oracle_map.slot_duration_ms;
+        let slot_duration = oracle_map.slot_duration;
         let oracle_pd = *oracle_map.get_price_data(&market.oracle_id())?;
         let mm_oracle_pd = market.get_mm_oracle_price_data(
             oracle_pd,
             slot,
             validity_guard_rails,
-            slot_duration_ms,
+            slot_duration,
         )?;
         let amm_refresh_validity =
             crate::vlp::amm::refresh::compute_amm_refresh_validity_with_guard_rails(
                 &market,
                 &mm_oracle_pd,
                 validity_guard_rails,
-                slot_duration_ms,
+                slot_duration,
             )?;
         let projection_inputs =
             crate::vlp::amm::math::repeg::ProjectionInputs::from_market(&market);
@@ -2063,7 +2064,7 @@ fn fulfill_perp_order(
                 &mm_oracle_pd,
                 projected_reserve_price,
                 slot,
-                slot_duration_ms,
+                slot_duration,
             )?;
         }
         determine_perp_fulfillment_methods(
@@ -2713,7 +2714,7 @@ fn settle_amm_house_fill(
     promo_fee_tier: u8,
     builder_fee_allowed: bool,
 ) -> VelocityResult<(u64, u64)> {
-    let slot_duration_ms = oracle_map.slot_duration_ms;
+    let slot_duration = oracle_map.slot_duration;
     // For sole-AMM steps with a post_only taker, override the
     // fill's quote at the order's limit price (the taker, acting
     // as maker, transacts at limit; the AMM captures the curve
@@ -2774,7 +2775,7 @@ fn settle_amm_house_fill(
         market.taker_fee_addon_tenth_bps,
         now,
         promo_fee_tier,
-        slot_duration_ms,
+        slot_duration,
     )?;
     let builder_fee = builder_fee_option.unwrap_or(0);
 
@@ -3014,7 +3015,7 @@ fn settle_dlob_match_fill(
     promo_fee_tier: u8,
     builder_fee_allowed: bool,
 ) -> VelocityResult<(u64, u64, u64)> {
-    let slot_duration_ms = oracle_map.slot_duration_ms;
+    let slot_duration = oracle_map.slot_duration;
     // DlobMatch fills only land from a Match step, which always
     // populates `match_maker_price`.
     let match_maker_price = match_maker_price.ok_or_else(print_error!(ErrorCode::DefaultError))?;
@@ -3120,7 +3121,7 @@ fn settle_dlob_match_fill(
         market.taker_fee_addon_tenth_bps,
         now,
         promo_fee_tier,
-        slot_duration_ms,
+        slot_duration,
     )?;
     let builder_fee = builder_fee_option.unwrap_or(0);
 
@@ -3371,11 +3372,11 @@ pub fn fulfill_perp_order_step(
         msg!("Order has builder but no escrow account included; builder fee skipped.");
     }
 
-    let slot_duration_ms = oracle_map.slot_duration_ms;
+    let slot_duration = oracle_map.slot_duration;
     let oracle_pd = *oracle_map.get_price_data(&market.oracle_id())?;
     let oracle_price = oracle_pd.price;
     let mm_oracle_price_data =
-        market.get_mm_oracle_price_data(oracle_pd, slot, validity_guard_rails, slot_duration_ms)?;
+        market.get_mm_oracle_price_data(oracle_pd, slot, validity_guard_rails, slot_duration)?;
     let sanitize_clamp_denom = market.get_sanitize_clamp_denominator()?;
 
     // Construct the AMM-side `Quoter` and run setup once. `Quoter::setup`
@@ -3395,7 +3396,7 @@ pub fn fulfill_perp_order_step(
             market,
             &mm_oracle_price_data,
             validity_guard_rails,
-            slot_duration_ms,
+            slot_duration,
         )?
     } else {
         None
@@ -3415,7 +3416,7 @@ pub fn fulfill_perp_order_step(
         tick: order_tick_size,
         step_size: order_step_size,
         slot,
-        slot_duration_ms,
+        slot_duration,
         base_precision: BASE_PRECISION_U64,
         market_status: market_status_local,
         market_config: market_config_local,
@@ -3532,7 +3533,7 @@ pub fn fulfill_perp_order_step(
         tick: order_tick_size,
         step_size: order_step_size,
         slot,
-        slot_duration_ms,
+        slot_duration,
         base_precision: BASE_PRECISION_U64,
         market_status: MarketStatus::default(),
         market_config: 0,
@@ -4008,10 +4009,12 @@ pub fn trigger_order(
             &mut user.orders[order_index],
             oracle_price_data,
             slot,
-            // 20 baseline slots (~8s) minimum, inflated to actual slots
-            effective_slots(20, state.slot_duration_ms()).min(u8::MAX as u64) as u8,
+            // ~8s minimum, expressed in actual slots
+            Millis::from_secs(8)
+                .to_slots(state.slot_duration())
+                .min(u8::MAX as u64) as u8,
             Some(&perp_market),
-            state.slot_duration_ms(),
+            state.slot_duration(),
         )?;
 
         if user.orders[order_index].has_auction() {
@@ -4183,7 +4186,7 @@ fn update_trigger_order_params(
     slot: u64,
     min_auction_duration: u8,
     perp_market: Option<&PerpMarket>,
-    slot_duration_ms: u64,
+    slot_duration: SlotDuration,
 ) -> VelocityResult {
     order.trigger_condition = match order.trigger_condition {
         OrderTriggerCondition::Above => OrderTriggerCondition::TriggeredAbove,
@@ -4193,9 +4196,10 @@ fn update_trigger_order_params(
         }
     };
 
-    // 150 baseline slots (~60s): a reduce-only trigger left resting this long
-    // is flagged safe for the relaxed oracle-delay gate.
-    if slot.saturating_sub(order.slot) > effective_slots(150, slot_duration_ms) && order.reduce_only
+    // ~60s: a reduce-only trigger left resting this long is flagged safe for
+    // the relaxed oracle-delay gate.
+    if slot.saturating_sub(order.slot) > Millis::from_secs(60).to_slots(slot_duration)
+        && order.reduce_only
     {
         order.add_bit_flag(OrderBitFlag::SafeTriggerOrder);
     }
@@ -4208,7 +4212,7 @@ fn update_trigger_order_params(
             oracle_price_data,
             min_auction_duration,
             perp_market,
-            slot_duration_ms,
+            slot_duration,
         )?;
 
     msg!(

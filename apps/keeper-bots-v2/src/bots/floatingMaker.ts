@@ -11,9 +11,9 @@ import {
 	BASE_PRECISION,
 	Order,
 	PerpPosition,
-	effectiveSlotsNum,
+	msToSlotsNum,
 } from '@velocity-exchange/sdk';
-import { currentSlotDurationMs } from '../utils';
+import { currentSlotDuration } from '../utils';
 import { Mutex, tryAcquire, E_ALREADY_LOCKED } from 'async-mutex';
 
 import { logger } from '../logger';
@@ -34,9 +34,9 @@ type State = {
 	openOrders: Map<number, Array<Order>>;
 };
 
-// wait this long before updating market position, in 400ms baseline slot
-// units (~12s; inflated to actual slots at the current State.slotDurationMs)
-const MARKET_UPDATE_COOLDOWN_SLOTS = 30;
+// wait this long before updating market position (expressed in actual slots
+// at the current State.slotDurationMs)
+const MARKET_UPDATE_COOLDOWN_MS = 12_000;
 
 enum METRIC_TYPES {
 	sdk_call_duration_histogram = 'sdk_call_duration_histogram',
@@ -252,9 +252,9 @@ export class FloatingPerpMakerBot implements Bot {
 		const marketIndex = marketAccount.marketIndex;
 		const nextUpdateSlot =
 			(this.lastSlotMarketUpdated.get(marketIndex) ?? 0) +
-			effectiveSlotsNum(
-				MARKET_UPDATE_COOLDOWN_SLOTS,
-				currentSlotDurationMs(this.velocityClient)
+			msToSlotsNum(
+				MARKET_UPDATE_COOLDOWN_MS,
+				currentSlotDuration(this.velocityClient)
 			);
 
 		if (nextUpdateSlot > currSlot) {

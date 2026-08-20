@@ -42,7 +42,7 @@ impl<'info, T: anchor_lang::Bumps> AccountMapProvider<'info> for Context<'info, 
             slot,
             // vault maps run on default guard rails (no velocity State in
             // scope), so they keep the 400ms baseline too
-            velocity::math::slots::BASE_SLOT_DURATION_MS,
+            velocity::math::time::SlotDuration::BASELINE,
             None,
         )
     }

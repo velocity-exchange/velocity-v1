@@ -2,8 +2,8 @@ import {
 	BN,
 	DLOBSubscriber,
 	DLOBSubscriptionConfig,
-	effectiveSlotsNum,
-	sanitizeSlotDurationMs,
+	msToSlotsNum,
+	slotDurationFromState,
 	VelocityEnv,
 	L2OrderBookGenerator,
 	MarketType,
@@ -49,8 +49,9 @@ export type wsMarketArgs = {
 
 require('dotenv').config();
 
-// 400ms baseline units (~64s); inflated to actual slots at the current slot duration
-const STALE_ORACLE_REMOVE_VAMM_THRESHOLD = 160;
+// ~64s of oracle staleness before the vAMM is dropped from the published book
+// (expressed in actual slots at the current slot duration)
+const STALE_ORACLE_REMOVE_VAMM_THRESHOLD_MS = 64_000;
 
 const INDICATIVE_QUOTES_PUBKEY = 'inDNdu3ML4vG5LNExqcwuCQtLcCU8KfK5YM2qYV3JJz';
 
@@ -366,9 +367,9 @@ export class DLOBSubscriberIO extends DLOBSubscriber {
 		let includeVamm = marketArgs.includeVamm;
 		if (
 			dlobSlot - oracleSlot.toNumber() >
-				effectiveSlotsNum(
-					STALE_ORACLE_REMOVE_VAMM_THRESHOLD,
-					sanitizeSlotDurationMs(
+				msToSlotsNum(
+					STALE_ORACLE_REMOVE_VAMM_THRESHOLD_MS,
+					slotDurationFromState(
 						this.velocityClient.getStateAccount().slotDurationMs
 					)
 				) &&

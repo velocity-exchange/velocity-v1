@@ -1178,8 +1178,8 @@ mod calculate_max_pct_to_liquidate {
             margin_shortage,
             1,
             LIQUIDATION_PCT_PRECISION / 10,
-            10,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::Millis::from_stored_units(10),
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
 
@@ -1203,7 +1203,7 @@ mod get_liquidation_fee {
             max_liq_fee,
             user_slot,
             curr_slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
         assert_eq!(fee, max_liq_fee);
@@ -1215,7 +1215,7 @@ mod get_liquidation_fee {
             max_liq_fee,
             user_slot,
             curr_slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
         assert_eq!(fee, base_liq_fee);
@@ -1228,7 +1228,7 @@ mod get_liquidation_fee {
             max_liq_fee,
             user_slot,
             curr_slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
         assert_eq!(fee, target_liq_fee);

@@ -24147,12 +24147,12 @@
               "Current Solana slot duration in milliseconds, updated by the admin as",
               "the IBRL feature gates activate (400 -> 350 -> 300 -> 250 -> 200).",
               "`0` means unset (what pre-upgrade accounts read out of former padding)",
-              "and is interpreted as the 400ms baseline. Every slot-denominated",
-              "constant and admin field keeps its historical 400ms-calibrated value;",
-              "read paths inflate them via `math::slots`. Never read this field",
-              "directly — use [`State::slot_duration_ms`], which handles the `0`",
-              "sentinel. Settable only downward (slots never get slower again), and",
-              "only to values in `math::slots::VALID_SLOT_DURATIONS_MS`."
+              "and is interpreted as the 400ms baseline. Wall-clock durations",
+              "(`math::time::Millis`) are expressed in actual slots through this",
+              "value. Never read this field directly — use [`State::slot_duration`],",
+              "which handles the `0` sentinel. Settable only downward (slots never",
+              "get slower again), and only to values in",
+              "`math::time::VALID_SLOT_DURATIONS_MS`."
             ],
             "type": "u16"
           },
@@ -24838,10 +24838,16 @@
         "fields": [
           {
             "name": "slots_before_stale_for_amm",
+            "docs": [
+              "Legacy 400ms units; read via [`Self::stale_for_amm_ms`]."
+            ],
             "type": "i64"
           },
           {
             "name": "slots_before_stale_for_margin",
+            "docs": [
+              "Legacy 400ms units; read via [`Self::stale_for_margin_ms`]."
+            ],
             "type": "i64"
           },
           {

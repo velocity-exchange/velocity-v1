@@ -118,7 +118,7 @@ pub fn update_amm_test() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     let cost_of_update =
@@ -140,7 +140,7 @@ pub fn update_amm_test() {
         state.oracle_guard_rails.validity.slots_before_stale_for_amm as i8,
         false,
         state.oracle_guard_rails.validity.slots_before_stale_for_amm as i8,
-        crate::math::slots::BASE_SLOT_DURATION_MS,
+        crate::math::time::SlotDuration::BASELINE,
     )
     .unwrap()
         == OracleValidity::Valid;
@@ -204,7 +204,7 @@ pub fn update_amm_test() {
             &mm_oracle_price_data,
             reserve_price,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     }
@@ -315,7 +315,7 @@ pub fn reference_price_offset_smoothing_uses_spread_update_slot() {
             oracle_price_data,
             slot,
             &validity,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
 
@@ -329,7 +329,7 @@ pub fn reference_price_offset_smoothing_uses_spread_update_slot() {
             &mm_oracle_price_data,
             reserve_price,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     }
@@ -399,7 +399,7 @@ pub fn update_amm_test_bad_oracle() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
 
@@ -423,7 +423,7 @@ pub fn update_amm_test_bad_oracle() {
         0,
         false,
         0,
-        crate::math::slots::BASE_SLOT_DURATION_MS,
+        crate::math::time::SlotDuration::BASELINE,
     )
     .unwrap()
         == OracleValidity::Valid;
@@ -469,7 +469,7 @@ pub fn update_amm_larg_conf_test() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     assert_eq!(0u32, 0);
@@ -492,7 +492,7 @@ pub fn update_amm_larg_conf_test() {
             &mm_oracle_price_data,
             reserve_price_after,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     }
@@ -515,7 +515,7 @@ pub fn update_amm_larg_conf_test() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
 
@@ -534,7 +534,7 @@ pub fn update_amm_larg_conf_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     }
@@ -586,7 +586,7 @@ pub fn update_amm_larg_conf_test() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     let cost_of_update =
@@ -604,7 +604,7 @@ pub fn update_amm_larg_conf_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     }
@@ -640,7 +640,7 @@ pub fn update_amm_larg_conf_test() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
 
@@ -659,7 +659,7 @@ pub fn update_amm_larg_conf_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     }
@@ -724,7 +724,7 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     assert_eq!(0u32, 0);
@@ -768,7 +768,7 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             &mm_oracle_price_data,
             reserve_price_after,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     }
@@ -800,7 +800,7 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
 
@@ -819,7 +819,7 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     }
@@ -854,7 +854,7 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
 
@@ -907,7 +907,7 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     }
@@ -958,7 +958,7 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
 
@@ -977,7 +977,7 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
-            crate::math::slots::BASE_SLOT_DURATION_MS,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     }

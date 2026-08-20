@@ -572,7 +572,7 @@ pub fn handle_deposit<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set(market_index),
         clock.slot,
-        state.slot_duration_ms(),
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -808,7 +808,7 @@ pub fn handle_withdraw<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set(market_index),
         clock.slot,
-        state.slot_duration_ms(),
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -1050,7 +1050,7 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set(market_index),
         clock.slot,
-        state.slot_duration_ms(),
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -1241,7 +1241,7 @@ pub fn handle_transfer_deposit<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set(market_index),
         clock.slot,
-        state.slot_duration_ms(),
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -1622,7 +1622,7 @@ pub fn handle_transfer_pools<'c: 'info, 'info>(
             borrow_to_market_index,
         ]),
         clock.slot,
-        state.slot_duration_ms(),
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2149,7 +2149,7 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
         &get_writable_perp_market_set(market_index),
         &MarketSet::new(),
         clock.slot,
-        state.slot_duration_ms(),
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2513,7 +2513,7 @@ pub fn handle_deposit_into_isolated_perp_position<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set(spot_market_index),
         clock.slot,
-        state.slot_duration_ms(),
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2597,7 +2597,7 @@ pub fn handle_transfer_isolated_perp_position_deposit<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set(spot_market_index),
         clock.slot,
-        state.slot_duration_ms(),
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2652,7 +2652,7 @@ pub fn handle_withdraw_from_isolated_perp_position<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set(spot_market_index),
         clock.slot,
-        state.slot_duration_ms(),
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2722,7 +2722,7 @@ pub fn handle_place_perp_order<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         clock.slot,
-        state.slot_duration_ms(),
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2790,7 +2790,7 @@ pub fn handle_cancel_order<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         clock.slot,
-        state.slot_duration_ms(),
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2830,7 +2830,7 @@ pub fn handle_cancel_order_by_user_id<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         clock.slot,
-        state.slot_duration_ms(),
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2865,7 +2865,7 @@ pub fn handle_cancel_orders_by_ids<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         clock.slot,
-        state.slot_duration_ms(),
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2904,7 +2904,7 @@ pub fn handle_cancel_orders<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         clock.slot,
-        state.slot_duration_ms(),
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2950,7 +2950,7 @@ pub fn handle_modify_order<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         clock.slot,
-        state.slot_duration_ms(),
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2993,7 +2993,7 @@ pub fn handle_modify_order_by_user_order_id<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         clock.slot,
-        state.slot_duration_ms(),
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -3056,7 +3056,7 @@ fn place_orders<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         clock.slot,
-        state.slot_duration_ms(),
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -3221,7 +3221,7 @@ pub fn handle_place_and_take_perp_order<'c: 'info, 'info>(
         &get_writable_perp_market_set(params.market_index),
         &MarketSet::new(),
         clock.slot,
-        state.slot_duration_ms(),
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -3365,7 +3365,7 @@ pub fn handle_place_and_make_perp_order<'c: 'info, 'info>(
         &get_writable_perp_market_set(params.market_index),
         &MarketSet::new(),
         Clock::get()?.slot,
-        state.slot_duration_ms(),
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -3474,7 +3474,7 @@ pub fn handle_place_and_make_signed_msg_perp_order<'c: 'info, 'info>(
         &get_writable_perp_market_set(params.market_index),
         &MarketSet::new(),
         Clock::get()?.slot,
-        state.slot_duration_ms(),
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -3620,7 +3620,7 @@ pub fn handle_update_user_margin_trading_enabled<'c: 'info, 'info>(
         Clock::get()?.slot,
         // `UpdateUser` carries no State account; this path already runs on
         // default guard rails, so it keeps the 400ms baseline too.
-        crate::math::slots::BASE_SLOT_DURATION_MS,
+        crate::math::time::SlotDuration::BASELINE,
         None,
     )?;
 
@@ -3651,7 +3651,7 @@ pub fn handle_update_user_pool_id<'c: 'info, 'info>(
         Clock::get()?.slot,
         // `UpdateUser` carries no State account; this path already runs on
         // default guard rails, so it keeps the 400ms baseline too.
-        crate::math::slots::BASE_SLOT_DURATION_MS,
+        crate::math::time::SlotDuration::BASELINE,
         None,
     )?;
 
@@ -3958,7 +3958,7 @@ pub fn handle_begin_swap<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set_from_many(vec![in_market_index, out_market_index]),
         clock.slot,
-        state.slot_duration_ms(),
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -4264,7 +4264,7 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set_from_many(vec![in_market_index, out_market_index]),
         clock.slot,
-        state.slot_duration_ms(),
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
     let out_token_program = get_token_interface(remaining_accounts)?;
@@ -4840,7 +4840,7 @@ pub fn handle_special_transfer_perp_position_to_vamm<'c: 'info, 'info>(
         &get_writable_perp_market_set(market_index),
         &MarketSet::new(),
         clock.slot,
-        state.slot_duration_ms(),
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 

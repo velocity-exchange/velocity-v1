@@ -8,6 +8,7 @@ use {
             },
             safe_math::SafeMath,
             safe_unwrap::SafeUnwrap,
+            time::{Millis, SlotDuration},
         },
         state::traits::Size,
     },
@@ -103,12 +104,12 @@ pub struct State {
     /// Current Solana slot duration in milliseconds, updated by the admin as
     /// the IBRL feature gates activate (400 -> 350 -> 300 -> 250 -> 200).
     /// `0` means unset (what pre-upgrade accounts read out of former padding)
-    /// and is interpreted as the 400ms baseline. Every slot-denominated
-    /// constant and admin field keeps its historical 400ms-calibrated value;
-    /// read paths inflate them via `math::slots`. Never read this field
-    /// directly — use [`State::slot_duration_ms`], which handles the `0`
-    /// sentinel. Settable only downward (slots never get slower again), and
-    /// only to values in `math::slots::VALID_SLOT_DURATIONS_MS`.
+    /// and is interpreted as the 400ms baseline. Wall-clock durations
+    /// (`math::time::Millis`) are expressed in actual slots through this
+    /// value. Never read this field directly — use [`State::slot_duration`],
+    /// which handles the `0` sentinel. Settable only downward (slots never
+    /// get slower again), and only to values in
+    /// `math::time::VALID_SLOT_DURATIONS_MS`.
     pub slot_duration_ms: u16,
     /// 244 = 236 remaining former padding + 8 bytes that were previously
     /// *implicit* trailing padding on x86_64 (State contains a u128, so the
@@ -226,20 +227,22 @@ impl Default for State {
 }
 
 impl State {
-    /// The configured slot duration in ms, with the `0` (pre-upgrade /
-    /// unset) sentinel resolved to the 400ms baseline.
-    pub fn slot_duration_ms(&self) -> u64 {
-        crate::math::slots::sanitize_slot_duration_ms(self.slot_duration_ms)
+    /// The live slot length, with the `0` (pre-upgrade / unset) sentinel
+    /// resolved to the 400ms baseline.
+    pub fn slot_duration(&self) -> SlotDuration {
+        SlotDuration::from_state_ms(self.slot_duration_ms)
     }
 
-    /// `min_perp_auction_duration` (400ms baseline units) inflated to actual
-    /// slots at the current slot duration, saturating at the u8 ceiling.
-    pub fn effective_min_perp_auction_duration(&self) -> u8 {
-        crate::math::slots::effective_slots(
-            self.min_perp_auction_duration as u64,
-            self.slot_duration_ms(),
-        )
-        .min(u8::MAX as u64) as u8
+    /// `min_perp_auction_duration` as a wall-clock duration (stored in legacy
+    /// 400ms units).
+    pub fn min_perp_auction_duration_ms(&self) -> Millis {
+        Millis::from_stored_units(self.min_perp_auction_duration as u64)
+    }
+
+    /// `liquidation_duration` (the ramp to 100% liquidatable) as a wall-clock
+    /// duration (stored in legacy 400ms units).
+    pub fn liquidation_duration_ms(&self) -> Millis {
+        Millis::from_stored_units(self.liquidation_duration as u64)
     }
 
     pub fn get_exchange_status(&self) -> VelocityResult<BitFlags<ExchangeStatus>> {
@@ -523,10 +526,24 @@ impl Default for PriceDivergenceGuardRails {
 #[derive(Copy, AnchorSerialize, AnchorDeserialize, Clone, Default, Debug)]
 #[repr(C)]
 pub struct ValidityGuardRails {
+    /// Legacy 400ms units; read via [`Self::stale_for_amm_ms`].
     pub slots_before_stale_for_amm: i64,
+    /// Legacy 400ms units; read via [`Self::stale_for_margin_ms`].
     pub slots_before_stale_for_margin: i64,
     pub confidence_interval_max_size: u64,
     pub too_volatile_ratio: i64,
+}
+
+impl ValidityGuardRails {
+    /// AMM staleness window as a wall-clock duration.
+    pub fn stale_for_amm_ms(&self) -> Millis {
+        Millis::from_stored_units(self.slots_before_stale_for_amm.max(0) as u64)
+    }
+
+    /// Margin staleness window as a wall-clock duration.
+    pub fn stale_for_margin_ms(&self) -> Millis {
+        Millis::from_stored_units(self.slots_before_stale_for_margin.max(0) as u64)
+    }
 }
 
 #[derive(Copy, AnchorSerialize, AnchorDeserialize, Clone, Debug)]

@@ -39,12 +39,13 @@ use {
                 FUNDING_RATE_OFFSET_PERCENTAGE, MAX_BID_ASK_INVENTORY_SKEW_FACTOR, PEG_PRECISION,
                 PERCENTAGE_PRECISION, PERCENTAGE_PRECISION_I128, PRICE_PRECISION,
                 PRICE_PRECISION_I128, PRICE_PRECISION_I64, REF_PRICE_OFFSET_SMOOTHING_MIN_STEP,
-                REF_PRICE_OFFSET_SMOOTHING_PER_SLOT_BUDGET,
+                REF_PRICE_OFFSET_SMOOTHING_PER_PERIOD_BUDGET,
                 REF_PRICE_OFFSET_SMOOTHING_STEP_DIVISOR, SPREAD_CONF_DISCOUNT_DIVISOR,
                 SPREAD_CONF_FULL_WEIGHT_THRESHOLD, SPREAD_REVENUE_RETREAT_MAX_DIVISOR,
                 SPREAD_VOL_STD_DISCOUNT_DIVISOR,
             },
             safe_math::SafeMath,
+            time::{Millis, SlotDuration},
         },
         msg,
         state::{
@@ -87,7 +88,7 @@ pub fn update_amm_quote_state(
     mm_oracle_price_data: &MMOraclePriceData,
     reserve_price: u64,
     slot: u64,
-    slot_duration_ms: u64,
+    slot_duration: SlotDuration,
 ) -> VelocityResult<()> {
     let quote_state = compute_quote_state(
         amm,
@@ -95,7 +96,7 @@ pub fn update_amm_quote_state(
         mm_oracle_price_data,
         reserve_price,
         slot,
-        slot_duration_ms,
+        slot_duration,
     )?;
     commit_quote_state(amm, &quote_state, slot)?;
     validate_amm_quote_state(amm)
@@ -129,7 +130,7 @@ fn compute_quote_state(
     mm_oracle_price_data: &MMOraclePriceData,
     reserve_price: u64,
     slot: u64,
-    slot_duration_ms: u64,
+    slot_duration: SlotDuration,
 ) -> VelocityResult<QuoteState> {
     // last_oracle_reserve_price_spread_pct
     let last_oracle_reserve_price_spread_pct =
@@ -234,12 +235,13 @@ fn compute_quote_state(
         && amm.curve_update_intensity > 100;
 
     let final_reference_price_offset = if do_reference_price_smooth {
-        // budget is per 400ms baseline unit; deflate the measured slot delta
+        // budget accrues per whole 400ms period (its historical calibration)
         // so the smoothing completes over the same wall-clock time
-        let slots_passed = crate::math::slots::base_units_from_slots(
+        let slots_passed = Millis::from_slots(
             slot.saturating_sub(amm.last_spread_update_slot),
-            slot_duration_ms,
-        );
+            slot_duration,
+        )
+        .div_periods(Millis::UNIT);
         let reference_price_delta = {
             let full_offset_delta = reference_price_offset
                 .cast::<i128>()?
@@ -249,7 +251,7 @@ fn compute_quote_state(
                 .min(
                     slots_passed
                         .cast::<i128>()?
-                        .safe_mul(REF_PRICE_OFFSET_SMOOTHING_PER_SLOT_BUDGET)?,
+                        .safe_mul(REF_PRICE_OFFSET_SMOOTHING_PER_PERIOD_BUDGET)?,
                 )
                 .safe_div(REF_PRICE_OFFSET_SMOOTHING_STEP_DIVISOR)?
                 .cast::<i32>()?;

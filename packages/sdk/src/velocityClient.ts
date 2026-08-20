@@ -95,7 +95,7 @@ export type MmOracleBatchUpdate = {
 	oracleSequenceId: BN;
 	/**
 	 * Slot the price was observed at. The program skips the entry when the
-	 * landing slot is more than `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` away from this
+	 * landing slot is more than `MM_ORACLE_MAX_SOURCE_AGE` away from this
 	 * in either direction: behind, so a late-landing transaction cannot make an
 	 * old observation read as fresh; ahead, so a wrong-unit value cannot
 	 * silently disable the check.
@@ -13246,7 +13246,7 @@ export class VelocityClient {
 	 * @param oracleSequenceId - Monotonically increasing sequence id for this update, used for
 	 * recency comparisons against the primary oracle.
 	 * @param oracleSourceSlot - Slot the price was observed at; the program skips the update when
-	 * it lands more than `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` from this in either direction.
+	 * it lands more than `MM_ORACLE_MAX_SOURCE_AGE` from this in either direction.
 	 * @returns The transaction signature.
 	 */
 	public async updateMmOracleNative(
@@ -13282,7 +13282,7 @@ export class VelocityClient {
 	 * BN's little-endian encoding would silently drop the sign.
 	 * @param oracleSequenceId - Monotonically increasing sequence id for this update.
 	 * @param oracleSourceSlot - Slot the price was observed at; the program skips the update when
-	 * it lands more than `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` from this in either direction.
+	 * it lands more than `MM_ORACLE_MAX_SOURCE_AGE` from this in either direction.
 	 * @returns The instruction.
 	 */
 	public async getUpdateMmOracleNativeIx(
@@ -13338,7 +13338,7 @@ export class VelocityClient {
 	 *
 	 * Per-market rate-limit and sanity rejections (non-positive price, non-advancing sequence id,
 	 * slot gap below the program floor, source slot more than
-	 * `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` from the landing slot in either direction) skip that market
+	 * `MM_ORACLE_MAX_SOURCE_AGE` from the landing slot in either direction) skip that market
 	 * and leave the rest of the batch intact. A
 	 * price more than 1% from the last accepted one is clamped to the cap and written, matching
 	 * `updateMmOracleNative`. Structural problems (an account that is not a perp market, a

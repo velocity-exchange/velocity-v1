@@ -200,7 +200,7 @@ export function registerPerpMarket(parent: Command): void {
 		pm
 			.command('set-oracle-slot-delay <market> <slots>')
 			.description(
-				'oracle_slot_delay_override (i8): max slot age before the oracle is "stale for amm immediate". Threshold is max(slots, 0); -1 (the init default) clamps to 0, so any age >0 reads stale and spams the "Stale (oracle_delay=N)" log. Set a positive value (e.g. 5) below the low-risk guard rail (10). Values are 400ms baseline units, inflated to actual slots on chain as slot time drops.'
+				'oracle_slot_delay_override (i8): max slot age before the oracle is "stale for amm immediate". Threshold is max(slots, 0); -1 (the init default) clamps to 0, so any age >0 reads stale and spams the "Stale (oracle_delay=N)" log. Set a positive value (e.g. 5) below the low-risk guard rail (10). Values are stored in legacy 400ms units and expressed in actual slots on chain as slot time drops.'
 			)
 	).action(async (market: string, slots: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);

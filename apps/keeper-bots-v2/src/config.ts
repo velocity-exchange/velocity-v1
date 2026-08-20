@@ -55,8 +55,8 @@ export type FillerMultiThreadedConfig = BaseBotConfig & {
 
 	// Min slots between fill attempts on the same order (paces re-attempts against
 	// the DLOB builder's ~200ms re-emit). Defaults to 5.
-	/// in 400ms baseline slot units (inflated to actual slots at the current slot duration)
-	fillAttemptSlotInterval?: number;
+	/// wall-clock ms between fill attempts per order (expressed in actual slots at the current slot duration)
+	fillAttemptIntervalMs?: number;
 };
 
 export type FillerConfig = BaseBotConfig & {
@@ -110,8 +110,8 @@ export type LiquidatorConfig = BaseBotConfig & {
 	maxSlippagePct?: number;
 	maxSlippageBps?: number;
 
-	/// in 400ms baseline slot units (inflated to actual slots at the current slot duration)
-	deriskAuctionDurationSlots?: number;
+	/// wall-clock ms for derisk order auctions (expressed in actual slots at the current slot duration)
+	deriskAuctionDurationMs?: number;
 	twapDurationSec?: number;
 	minDepositToLiq?: Map<number, number>;
 	excludedAccounts?: Set<string>;
@@ -493,7 +493,7 @@ export function loadConfigFromOpts(opts: any): Config {
 			// deprecated: use {@link LiquidatorConfig.maxSlippageBps}
 			maxSlippagePct: opts.maxSlippagePct ?? 50,
 			maxSlippageBps: opts.maxSlippageBps ?? 50,
-			deriskAuctionDurationSlots: opts.deriskAuctionDurationSlots ?? 100,
+			deriskAuctionDurationMs: opts.deriskAuctionDurationMs ?? 40_000,
 			twapDurationSec: parseInt(opts.twapDurationSec ?? '300'),
 			notifyOnLiquidation: opts.notifyOnLiquidation ?? false,
 		};

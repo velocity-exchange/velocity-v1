@@ -418,9 +418,9 @@ impl TriggerOrder {
                     // `controller::orders::trigger_order`
                     20,
                     Some(market),
-                    // 400ms baseline: this estimator has no State in scope; only
+                    // baseline: this estimator has no State in scope; only
                     // affects the estimated post-trigger auction pacing
-                    program::math::slots::BASE_SLOT_DURATION_MS,
+                    program::math::time::SlotDuration::BASELINE,
                 )
                 .unwrap();
             order.auction_duration = auction_duration;

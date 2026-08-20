@@ -1,4 +1,4 @@
-use solana_program::native_token::LAMPORTS_PER_SOL; // expo 9
+use {crate::math::time::Millis, solana_program::native_token::LAMPORTS_PER_SOL}; // expo 9
 pub const LAMPORTS_PER_SOL_U64: u64 = LAMPORTS_PER_SOL;
 pub const LAMPORTS_PER_SOL_I64: i64 = LAMPORTS_PER_SOL as i64;
 
@@ -236,9 +236,10 @@ pub const MAX_APR_PER_REVENUE_SETTLE_TO_INSURANCE_FUND_VAULT: u128 =
 
 pub const MAX_CONCENTRATION_COEFFICIENT: u128 = 1_414_200;
 pub const MAX_LIQUIDATION_MULTIPLIER: u32 = 3;
-/// .01 bps per 400ms baseline unit (see `math::slots`); `get_liquidation_fee`
-/// deflates the measured slot delta before applying this rate.
-pub const LIQUIDATION_FEE_INCREASE_PER_SLOT: u32 = LIQUIDATION_FEE_PRECISION / 1_000_000;
+/// .01 bps per [`crate::math::time::Millis::UNIT`] (400ms) of elapsed time;
+/// `get_liquidation_fee` counts whole periods before applying this rate. The
+/// period is the historical calibration and changing it changes economics.
+pub const LIQUIDATION_FEE_INCREASE_PER_PERIOD: u32 = LIQUIDATION_FEE_PRECISION / 1_000_000;
 pub const MAX_LIQUIDATION_SLIPPAGE: i128 = 10_000; // expo = -2
 pub const MAX_LIQUIDATION_SLIPPAGE_U128: u128 = 10_000; // expo = -2
 pub const MAX_MARK_TWAP_DIVERGENCE: u128 = 500_000; // expo = -3
@@ -263,9 +264,9 @@ pub const SPREAD_VOL_STD_DISCOUNT_DIVISOR: u128 = 4;
 pub const SPREAD_REVENUE_RETREAT_MAX_DIVISOR: u64 = 10;
 /// Reference-price-offset sign-transition smoothing: per-slot budget for the
 /// pre-division step (`|delta|` is capped at `slots_passed *` this).
-/// Budget per 400ms baseline unit; `compute_quote_state` deflates the
-/// measured slot delta before applying it.
-pub const REF_PRICE_OFFSET_SMOOTHING_PER_SLOT_BUDGET: i128 = 1000;
+/// Budget per [`crate::math::time::Millis::UNIT`] (400ms) of elapsed time;
+/// `compute_quote_state` counts whole periods before applying it.
+pub const REF_PRICE_OFFSET_SMOOTHING_PER_PERIOD_BUDGET: i128 = 1000;
 /// Reference-price-offset sign-transition smoothing: the capped delta is
 /// divided by this to get the per-refresh step.
 pub const REF_PRICE_OFFSET_SMOOTHING_STEP_DIVISOR: i128 = 10;
@@ -293,14 +294,14 @@ pub const BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT: u64 = 15;
 /// leader window, about 9.6s at 400ms. It stays below the 150-slot `SafeTriggerOrder` horizon and the
 /// 256-slot `Order::posted_slot_tail` modulus.
 ///
-/// Denominated in 400ms baseline units (see `math::slots`) and inflated to
-/// actual slots at the read site, like the `min_auction_duration` and
-/// `SafeTriggerOrder` values it is calibrated against — all three scale
-/// together, so the resting invariant survives every slot-duration gate. Note
-/// the `posted_slot_tail` modulus does NOT scale (it is a u8 field width), so
-/// the honest age window shrinks in wall-clock as slots get faster; the
-/// inflated rest requirement (48 actual slots at 200ms) still fits under it.
-pub const BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS: u64 = 24;
+/// A wall-clock duration (~9.6s), expressed in actual slots at the read site,
+/// like the `min_auction_duration` and `SafeTriggerOrder` values it is
+/// calibrated against — all three scale together, so the resting invariant
+/// survives every slot-duration gate. Note the `posted_slot_tail` modulus does
+/// NOT scale (it is a u8 field width), so the honest age window shrinks in
+/// wall-clock as slots get faster; the rest requirement (48 actual slots at
+/// 200ms) still fits under it.
+pub const BID_ASK_TWAP_MIN_QUOTE_REST: Millis = Millis::from_ms(9_600);
 
 pub const MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN: i128 = 100 * QUOTE_PRECISION_I128; // max upnl for initial margin calc
 pub const DEFAULT_MAX_TWAP_UPDATE_PRICE_BAND_DENOMINATOR: i64 = 3; // '3' here means clamp new data point to 33% (1/3) divergence from current twap (if twap > 0)
@@ -344,12 +345,12 @@ pub const INTEREST_RATE_SEGMENT_AND_WEIGHTS: &[(u128, u128)] = &[
 ];
 
 // MM ORACLE
-/// Min slots between accepted writes, in 400ms baseline units (see
-/// `math::slots`); inflated to actual slots at the write gate and at the
-/// immediate-fill unset threshold inside `oracle_validity`.
-pub const MM_ORACLE_MIN_SLOT_GAP: u64 = 2;
+/// Min wall-clock time between accepted writes (800ms); expressed in actual
+/// slots at the write gate and at the immediate-fill unset threshold inside
+/// `oracle_validity`.
+pub const MM_ORACLE_MIN_WRITE_GAP: Millis = Millis::from_ms(800);
 pub const MM_ORACLE_MAX_STEP_PCT_PRECISION: i128 = PERCENTAGE_PRECISION_I128 / 100; // 1%
-/// Max slots between an MM oracle update's source observation slot (carried in
+/// Max wall-clock age between an MM oracle update's source observation slot (carried in
 /// the payload) and the slot it lands, enforced symmetrically in both
 /// directions. The stored `mm_oracle_slot` is the landing slot, so without this
 /// bound a signed update landing late (recent blockhash allows ~150 slots)
@@ -358,11 +359,13 @@ pub const MM_ORACLE_MAX_STEP_PCT_PRECISION: i128 = PERCENTAGE_PRECISION_I128 / 1
 /// write costs nothing: by the time an update is this late the crank has newer
 /// data to send.
 ///
-/// Must stay at or below `MM_ORACLE_MIN_SLOT_GAP` (asserted below): the
+/// Must stay at or below `MM_ORACLE_MIN_WRITE_GAP` (asserted below): the
 /// landing-slot stamp makes `oracle_delay` understate true observation age by
 /// up to this bound, so the immediate-fill gate's unset threshold of
-/// `MM_ORACLE_MIN_SLOT_GAP` measured slots only bounds true age to twice the
+/// `MM_ORACLE_MIN_WRITE_GAP` only bounds true age to twice the
 /// gap while the two constants are equal. Widening this widens what
 /// "slot-fresh" means everywhere downstream.
-pub const MM_ORACLE_MAX_SOURCE_AGE_SLOTS: u64 = 2;
-static_assertions::const_assert!(MM_ORACLE_MAX_SOURCE_AGE_SLOTS <= MM_ORACLE_MIN_SLOT_GAP);
+pub const MM_ORACLE_MAX_SOURCE_AGE: Millis = Millis::from_ms(800);
+static_assertions::const_assert!(
+    MM_ORACLE_MAX_SOURCE_AGE.as_ms() <= MM_ORACLE_MIN_WRITE_GAP.as_ms()
+);

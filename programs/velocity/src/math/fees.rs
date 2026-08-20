@@ -9,6 +9,7 @@ use {
             },
             helpers::get_proportion_u128,
             safe_math::SafeMath,
+            time::{Millis, SlotDuration},
         },
         msg,
         state::{
@@ -91,7 +92,7 @@ pub fn calculate_fee_for_fulfillment_with_amm(
     taker_fee_addon_tenth_bps: u16,
     now: i64,
     promo_fee_tier: u8,
-    slot_duration_ms: u64,
+    slot_duration: SlotDuration,
 ) -> VelocityResult<FillFees> {
     let fee_tier = determine_user_fee_tier(
         user_stats,
@@ -126,7 +127,7 @@ pub fn calculate_fee_for_fulfillment_with_amm(
                 clock_slot,
                 0,
                 &fee_structure.filler_reward_structure,
-                slot_duration_ms,
+                slot_duration,
             )?
         };
         // (spread-derived) house fee net of the filler reward, split three
@@ -173,7 +174,7 @@ pub fn calculate_fee_for_fulfillment_with_amm(
                 clock_slot,
                 0,
                 &fee_structure.filler_reward_structure,
-                slot_duration_ms,
+                slot_duration,
             )?
         };
 
@@ -349,7 +350,7 @@ fn calculate_filler_reward(
     clock_slot: u64,
     multiplier: u64,
     filler_reward_structure: &OrderFillerRewardStructure,
-    slot_duration_ms: u64,
+    slot_duration: SlotDuration,
 ) -> VelocityResult<u64> {
     // incentivize keepers to prioritize filling older orders (rather than just largest orders)
     // for sufficiently small-sized order, reward based on fraction of fee paid
@@ -370,15 +371,14 @@ fn calculate_filler_reward(
         )?
         .safe_div(multiplier_precision)?;
 
-    // reward curve is calibrated to 400ms baseline units; deflate the
-    // measured slot delta so the time-based reward keeps its wall-clock shape
+    // reward curve accrues per whole 400ms period of order age (its
+    // historical calibration), so the time-based reward keeps its wall-clock
+    // shape at any slot duration
     let slots_since_order = max(
         1,
-        crate::math::slots::base_units_from_slots(
-            clock_slot.safe_sub(order_slot)?,
-            slot_duration_ms,
-        )
-        .cast::<u128>()?,
+        Millis::from_slots(clock_slot.safe_sub(order_slot)?, slot_duration)
+            .div_periods(Millis::UNIT)
+            .cast::<u128>()?,
     );
     let time_filler_reward = slots_since_order
         .safe_mul(100_000_000)? // 1e8
@@ -409,7 +409,7 @@ pub fn calculate_fee_for_fulfillment_with_match(
     taker_fee_addon_tenth_bps: u16,
     now: i64,
     promo_fee_tier: u8,
-    slot_duration_ms: u64,
+    slot_duration: SlotDuration,
 ) -> VelocityResult<FillFees> {
     let taker_fee_tier =
         determine_user_fee_tier(taker_stats, fee_structure, market_type, now, promo_fee_tier)?;
@@ -443,7 +443,7 @@ pub fn calculate_fee_for_fulfillment_with_match(
             clock_slot,
             filler_multiplier,
             &fee_structure.filler_reward_structure,
-            slot_duration_ms,
+            slot_duration,
         )?
     };
 

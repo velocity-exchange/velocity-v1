@@ -463,18 +463,18 @@ pub fn calculate_max_pct_to_liquidate(
         return Ok(LIQUIDATION_PCT_PRECISION);
     }
 
-    // The ramp is a ratio of elapsed wall-clock time to `liquidation_duration`,
-    // both counted in whole 400ms periods (the ramp's historical granularity).
-    // Floor on the elapsed side: the user never gets less than the intended
-    // time before becoming fully liquidatable.
-    let elapsed_periods = Millis::from_slots(slot.safe_sub(user.last_active_slot)?, slot_duration)
-        .div_periods(Millis::UNIT);
-    let duration_periods = liquidation_duration.div_periods(Millis::UNIT);
+    // The ramp is a ratio of elapsed slots to the liquidation window in slots.
+    // `elapsed_slots` is the raw delta; `duration_slots` inflates the configured
+    // window (`to_slots_ceil`, so the window rounds up and the ramp never
+    // reaches 100% earlier in wall-clock than intended). Both scale with the
+    // slot duration, so the ratio is duration-independent and identity with the
+    // historical slot ratio at 400ms.
+    let elapsed_slots = slot.safe_sub(user.last_active_slot)?;
+    let duration_slots = liquidation_duration.to_slots_ceil(slot_duration);
 
-    let pct_freeable = elapsed_periods
-        .cast::<u128>()?
+    let pct_freeable = (elapsed_slots as u128)
         .safe_mul(LIQUIDATION_PCT_PRECISION)?
-        .safe_div(duration_periods as u128) // ~1 minute at the onchain default
+        .safe_div(duration_slots as u128) // ~1 minute at the onchain default
         .unwrap_or(LIQUIDATION_PCT_PRECISION) // if divide by zero, default to 100%
         .safe_add(initial_pct_to_liquidate)?
         .min(LIQUIDATION_PCT_PRECISION);

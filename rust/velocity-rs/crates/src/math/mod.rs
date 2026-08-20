@@ -189,10 +189,15 @@ pub fn get_liquidation_fee(
     if current_slot < last_active_user_slot {
         return Err(SdkError::MathError("slot < user.last_active_slot"));
     }
-    // grace period and per-slot rate are in 400ms baseline units; deflate the
-    // measured slot delta to match (mirrors the program's get_liquidation_fee)
-    let slots_elapsed =
-        (current_slot - last_active_user_slot).saturating_mul(slot_duration_ms.max(1)) / 400;
+    // grace period and per-period rate are in 400ms baseline units; count whole
+    // 400ms periods of elapsed wall-clock (mirrors the program's
+    // get_liquidation_fee). `0` slot duration = unset -> 400ms baseline.
+    let slot_duration = program::math::time::SlotDuration::from_state_ms(slot_duration_ms as u16);
+    let slots_elapsed = program::math::time::Millis::from_slots(
+        current_slot - last_active_user_slot,
+        slot_duration,
+    )
+    .div_periods(program::math::time::Millis::UNIT);
 
     if slots_elapsed < LIQUIDATION_FEE_ADJUST_GRACE_PERIOD_SLOTS {
         return Ok(base_liquidation_fee);

@@ -344,15 +344,23 @@ pub fn calculate_max_pct_to_liquidate(
     if slot < user.last_active_slot {
         return Err(SdkError::MathError("slot < user.last_active_slot"));
     }
-    // `liquidation_duration` is in 400ms baseline units; deflate the measured
-    // slot delta to match (mirrors the program's calculate_max_pct_to_liquidate)
-    let slots_elapsed =
-        (slot - user.last_active_slot).saturating_mul(slot_duration_ms.max(1)) / 400;
+    // ratio of elapsed slots to the liquidation window in slots (mirrors the
+    // program's calculate_max_pct_to_liquidate). `0` slot duration = unset ->
+    // 400ms baseline; the window ceils so the ramp never reaches 100% earlier
+    // than intended; both scale with the slot duration so the ratio is
+    // duration-independent and identity at 400ms.
+    let slot_duration = program::math::time::SlotDuration::from_state_ms(slot_duration_ms as u16);
+    let elapsed_slots = slot - user.last_active_slot;
+    let duration_slots =
+        program::math::time::Millis::from_stored_units(liquidation_duration as u64)
+            .to_slots_ceil(slot_duration);
 
-    let pct_freeable = slots_elapsed as u128 * LIQUIDATION_PCT_PRECISION
-        .checked_div(liquidation_duration) // ~1 minute at the onchain default
-        .unwrap_or(LIQUIDATION_PCT_PRECISION) // if divide by zero, default to 100%
-        + initial_pct_to_liquidate
+    let ramp = (elapsed_slots as u128)
+        .saturating_mul(LIQUIDATION_PCT_PRECISION)
+        .checked_div(duration_slots as u128) // ~1 minute at the onchain default
+        .unwrap_or(LIQUIDATION_PCT_PRECISION); // if divide by zero, default to 100%
+    let pct_freeable = ramp
+        .saturating_add(initial_pct_to_liquidate)
         .min(LIQUIDATION_PCT_PRECISION);
 
     let total_margin_shortage = margin_shortage + user.liquidation_margin_freed as u128;

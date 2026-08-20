@@ -292,13 +292,18 @@ pub fn block_operation(
 
     let funding_paused_on_market = market.is_operation_paused(PerpOperation::UpdateFunding);
 
-    // block if the amm hasn't been updated for `funding_period` 400ms periods
-    // (~40% of the period in wall-clock; `funding_period` is seconds and the
-    // gate has always compared it against a slot count, kept for
-    // compatibility). The measured elapsed time is counted in whole periods so
-    // the gate's wall-clock width is independent of the slot duration.
-    let block = Millis::from_slots(slots_since_amm_update, slot_duration).div_periods(Millis::UNIT)
-        > market.market_stats.funding_period.cast()?
+    // Block if the amm has been stale for more than ~40% of the funding period.
+    // `funding_period` is seconds; `* 400` = 0.4 * 1000ms, the historical
+    // behavior (the pre-scaling gate compared a raw slot count against
+    // `funding_period`, i.e. elapsed slots at 400ms = 0.4 * period seconds).
+    // Comparing wall-clock ms on both sides keeps that width at any slot duration.
+    let amm_stale_ms = Millis::from_slots(slots_since_amm_update, slot_duration).as_ms();
+    let block = amm_stale_ms
+        > market
+            .market_stats
+            .funding_period
+            .cast::<u64>()?
+            .safe_mul(400)?
         || !is_oracle_valid
         || is_oracle_mark_too_divergent
         || funding_paused_on_market;

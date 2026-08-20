@@ -1,11 +1,9 @@
 import { BN } from '../isomorphic/anchor';
 import {
 	Millis,
-	MILLIS_UNIT,
 	SlotDurationMs,
 	SLOT_DURATION_BASELINE,
-	divPeriods,
-	millisFromSlots,
+	millisToSlotsCeil,
 } from './time';
 import {
 	PRICE_PRECISION,
@@ -460,22 +458,20 @@ export function calculateMaxPctToLiquidate(
 		return LIQUIDATION_PCT_PRECISION;
 	}
 
-	// ratio of elapsed wall-clock time to the ramp length, both counted in
-	// whole 400ms periods (the ramp's historical granularity)
-	const elapsedPeriods = divPeriods(
-		millisFromSlots(
-			BN.max(slot.sub(userLastActiveSlot), new BN(0)),
-			slotDuration
-		),
-		MILLIS_UNIT
-	);
-	const durationPeriods = divPeriods(liquidationDuration, MILLIS_UNIT);
+	// ratio of elapsed slots to the liquidation window in slots; the window
+	// ceils (never ramps to 100% earlier than intended), both scale with the
+	// slot duration so the ratio is duration-independent, and it is identity
+	// with the historical slot ratio at 400ms. duration 0 (unset) -> 100%,
+	// matching the program's divide-by-zero fallback
+	const elapsedSlots = BN.max(slot.sub(userLastActiveSlot), new BN(0));
+	const durationSlots = millisToSlotsCeil(liquidationDuration, slotDuration);
+
+	const rampPct = durationSlots.isZero()
+		? LIQUIDATION_PCT_PRECISION
+		: elapsedSlots.mul(LIQUIDATION_PCT_PRECISION).div(durationSlots);
 
 	const pctFreeable = BN.min(
-		elapsedPeriods
-			.mul(LIQUIDATION_PCT_PRECISION)
-			.div(durationPeriods) // ~1 minute at the onchain default
-			.add(initialPctToLiquidate),
+		rampPct.add(initialPctToLiquidate),
 		LIQUIDATION_PCT_PRECISION
 	);
 

@@ -4548,6 +4548,9 @@ fn sync_liq_conditions(
     accounts.push(AccountMeta::new(spot_market_pda(0), false));
     accounts.push(AccountMeta::new(perp_market_pda(0), false));
     accounts.push(AccountMeta::new_readonly(market_conditions, false));
+    // Stored in the inert tail, where `load_maps` never reaches: the cancel
+    // stage of the ladder needs the entry to name the book and its program.
+    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
     let ix = Instruction {
         program_id: velocity_id(),
         accounts,
@@ -4579,6 +4582,7 @@ fn run_liq_resolver(
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
     accounts.push(AccountMeta::new(spot_market_pda(0), false));
     accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
     let ix = Instruction {
         program_id: velocity_id(),
         accounts,
@@ -4593,6 +4597,95 @@ fn run_liq_resolver(
     let data = fixture.svm.get_account(&relay_scratch_pda()).unwrap().data;
     let staged = &data[pointer.offset() as usize..(pointer.offset() + pointer.len()) as usize];
     Some(velocity::relay_spec::ResolvedCrankV0::read(staged).unwrap())
+}
+
+/// Cancelling comes before liquidating, and one watch drives both.
+///
+/// `force_cancel_clob_orders` answers to the initial requirement and
+/// liquidation to the maintenance one, so anything liquidatable was already
+/// cancellable — they are stages of one ladder, not two watches. While the
+/// account rests orders the resolver stages the sweep; once the book is clear
+/// the same wake resolves to the liquidation. Orders first matters: a
+/// liquidation that leaves risk-increasing orders resting hands the account
+/// new exposure the moment one fills.
+#[test]
+fn the_distress_ladder_stages_a_cancel_before_a_liquidation() {
+    let mut fixture = setup();
+    const PAYMENT: u64 = 10_000;
+    let market_conditions = init_crank_conditions(&mut fixture, PAYMENT);
+    // The relay turner is paid out of the market's reservoir in
+    // program-keeper mode, so it has to hold more than rent.
+    fixture
+        .svm
+        .airdrop(&market_conditions, 1_000_000_000)
+        .unwrap();
+    set_protocol_user(&mut fixture.svm);
+    let maker_stats = maker_stats_address(&fixture);
+    set_user_stats_account(
+        &mut fixture.svm,
+        maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+
+    // The book maker rests an ask, then takes on a short it cannot carry:
+    // $3 of collateral against a $100 position, which is under the 5%
+    // maintenance requirement, so it is liquidatable *and* cancellable at
+    // once. That is the case worth pinning — the ladder still takes the
+    // orders off first. Short with a resting ask, so the order adds to the
+    // position: a reducing one is passed over, which
+    // `force_cancel_passes_over_a_risk_reducing_order` covers.
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+    let maker_user = fixture.clob_maker_user;
+    let mut maker = trading_user(
+        &fixture.clob_maker_authority.pubkey(),
+        3 * SPOT_BALANCE_PRECISION_U64,
+        None,
+    );
+    maker.perp_positions[0].market_index = 0;
+    maker.perp_positions[0].base_asset_amount = -(UNIT as i64);
+    maker.perp_positions[0].quote_asset_amount = 100_000_000;
+    maker.perp_positions[0].open_asks = -((UNIT / 2) as i64);
+    maker.perp_positions[0].open_orders = 1;
+    maker.open_orders = 1;
+    maker.has_open_order = true;
+    maker.next_order_id = 2;
+    set_user_account(&mut fixture.svm, maker_user, &maker);
+
+    sync_liq_conditions(&mut fixture, maker_user, market_conditions, PAYMENT);
+
+    // Stage one: orders are in the way, so the sweep is what gets staged —
+    // not the liquidation that is also available right now.
+    let resolved = run_liq_resolver(&mut fixture, maker_user)
+        .expect("a distressed account with resting orders is work");
+    assert_eq!(
+        resolved.executor_disc,
+        velocity::instruction::ForceCancelClobOrders::DISCRIMINATOR,
+        "orders come off the book before the position is touched"
+    );
+
+    // Run it. The sweep takes the whole ask side, so the resolver never had
+    // to read the book to name a single order ref.
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::ForceCancelClobOrders::DISCRIMINATOR,
+        payout,
+    );
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    let after: User = read_zero_copy(&fixture.svm, &maker_user);
+    assert_eq!(after.perp_positions[0].open_orders, 0);
+
+    // Stage two: the book is clear, so the same wake now resolves to the
+    // liquidation it was holding back.
+    let resolved = run_liq_resolver(&mut fixture, maker_user)
+        .expect("a liquidatable account with a clear book is work");
+    assert_eq!(
+        resolved.executor_disc,
+        velocity::instruction::LiquidatePerpWithFill::DISCRIMINATOR,
+        "with the book clear the ladder moves on to the position"
+    );
 }
 
 /// A leveraged long's liquidation threshold: the sync solves the

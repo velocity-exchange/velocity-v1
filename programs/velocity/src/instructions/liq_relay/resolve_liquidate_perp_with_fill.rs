@@ -1,6 +1,16 @@
-//! Resolver for a liquidation threshold: confirm the user is actually
-//! liquidatable right now and stage `liquidate_perp_with_fill` with the
-//! protocol `User` as the liquidator.
+//! Resolver for a distress threshold: work out which stage of the ladder
+//! this account is actually in right now, and stage that.
+//!
+//! Cancelling comes before liquidating. `force_cancel_clob_orders` answers to
+//! the initial margin requirement and liquidation to the maintenance one, so
+//! anything liquidatable was already cancellable — the two are stages of one
+//! ladder, and one watch drives both. The sync prices the threshold at the
+//! stage the account is in; this picks the executor to match, and relay's
+//! level-triggered wake brings it back for the next stage.
+//!
+//! Orders first, deliberately: a liquidation that leaves risk-increasing
+//! orders resting on a book hands the liquidated account new exposure the
+//! moment one fills.
 //!
 //! The threshold that woke this is a conservative single-oracle estimate,
 //! so the resolver is where the *real* answer is computed — the full
@@ -14,7 +24,10 @@ use {
     crate::{
         error::ErrorCode,
         instructions::optional_accounts::{load_maps, AccountMaps},
-        math::margin::calculate_margin_requirement_and_total_collateral_and_liability_info,
+        math::margin::{
+            calculate_margin_requirement_and_total_collateral_and_liability_info,
+            calculate_net_equity_for_floor, MarginRequirementType,
+        },
         state::{
             margin_calculation::MarginContext, perp_market_map::MarketSet, state::State,
             user::User, user_conditions::UserConditionsV0,
@@ -65,6 +78,93 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
             Some(state.oracle_guard_rails),
         )?;
 
+        // Stage one: a book this account may no longer rest risk-increasing
+        // orders on. The grounds are the executor's own — initial margin, a
+        // provable floor breach, or the authority-wide latch — recomputed
+        // here so the wake's conservative single-oracle estimate is never
+        // what acts.
+        let cancel_target = {
+            let user = crate::load!(ctx.accounts.user)?;
+            let initial = calculate_margin_requirement_and_total_collateral_and_liability_info(
+                &user,
+                &perp_market_map,
+                &spot_market_map,
+                &mut oracle_map,
+                MarginContext::standard(MarginRequirementType::Initial),
+            )?;
+            let below_floor = calculate_net_equity_for_floor(
+                &user,
+                &perp_market_map,
+                &spot_market_map,
+                &mut oracle_map,
+            )?
+            .is_some_and(|net_equity| net_equity.proves_below_floor(&user));
+            if initial.meets_margin_requirement() && !below_floor {
+                None
+            } else {
+                // One market per wake; relay comes back for the rest while
+                // the account still qualifies.
+                user.perp_positions
+                    .iter()
+                    .map(|position| position.market_index)
+                    .find(|market_index| user.clob_resident_open_orders(*market_index) > 0)
+            }
+        };
+        if let Some(market_index) = cancel_target {
+            let quoter = perp_market_map.get_ref(&market_index)?.clob_quoter;
+            if quoter != Pubkey::default() {
+                let user_stats =
+                    crate::state::pdas::user_stats(&crate::load!(ctx.accounts.user)?.authority);
+                let (protocol_user, protocol_user_stats) = crate::state::pdas::protocol_user_pair();
+                // The book and its program come off the registry entry, which
+                // the sync stored in the list's inert tail alongside the
+                // margin map.
+                let Some(entry_info) =
+                    crate::state::prop_amm::find_account(ctx.remaining_accounts, &quoter)
+                else {
+                    msg!(
+                        "quoter {} absent from the stored list; cannot stage a cancel",
+                        quoter
+                    );
+                    return Ok(None);
+                };
+                let entry =
+                    AccountLoader::<crate::state::prop_amm::QuoterV0>::try_from(entry_info)?;
+                let (clob_market, clob_program) = {
+                    let entry = entry.load()?;
+                    (entry.response_account, entry.program_id)
+                };
+                return Ok(
+                    Some(
+                        crate::instructions::StagedCall::new::<
+                            crate::instruction::ForceCancelClobOrders,
+                        >(crate::accounts::ForceCancelClobOrders {
+                            state: ctx.accounts.state.key(),
+                            authority: crate::state::pdas::keeper_placeholder(),
+                            filler: protocol_user,
+                            filler_stats: protocol_user_stats,
+                            user: ctx.accounts.user.key(),
+                            user_stats,
+                            quoter,
+                            clob_market,
+                            clob_program,
+                            quoter_signer: crate::signer::find_quoter_signer().0,
+                            crank_conditions: Some(crate::state::pdas::clob_crank_conditions(
+                                market_index,
+                            )),
+                        })
+                        .refs(stored)
+                        .arg(market_index)?
+                        // The sweep takes the side that cannot be reducing, so
+                        // the resolver never has to read the book to name refs.
+                        .arg(Vec::<crate::instructions::ForceCancelClobRefV0>::new())?,
+                    ),
+                );
+            }
+        }
+
+        // Stage two: no orders left in the way, so the question is whether
+        // this is liquidatable.
         let liquidatable = {
             let user = crate::load!(ctx.accounts.user)?;
             let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(

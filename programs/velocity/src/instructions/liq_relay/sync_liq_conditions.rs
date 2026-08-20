@@ -126,6 +126,9 @@ struct MarketInputs {
     oracle_source: Option<OracleSource>,
     /// Maintenance margin ratio (perp) / maintenance asset weight (spot).
     maintenance_ratio: u32,
+    /// The same at the initial tier — what the force-cancel gate answers to,
+    /// and always the earlier crossing of the two.
+    initial_ratio: u32,
     /// The oracle price in `PRICE_PRECISION` — not the raw field, which is
     /// only the same thing on a six-decimal feed.
     price: i128,
@@ -173,6 +176,7 @@ pub fn rewrite_liq_conditions<'info>(
                 entry.oracle = Some(market.oracle);
                 entry.oracle_source = Some(market.oracle_source);
                 entry.maintenance_ratio = market.margin_ratio_maintenance;
+                entry.initial_ratio = market.margin_ratio_initial;
                 oracle_of_market.insert(market.oracle, (true, market.market_index));
                 market_refs.push(AccountRefV0::writable(info.key.to_bytes()));
                 continue;
@@ -183,6 +187,7 @@ pub fn rewrite_liq_conditions<'info>(
                 entry.oracle = Some(market.oracle);
                 entry.oracle_source = Some(market.oracle_source);
                 entry.maintenance_ratio = market.maintenance_asset_weight;
+                entry.initial_ratio = market.initial_asset_weight;
                 entry.decimals = market.decimals;
                 entry.cumulative_deposit_interest = market.cumulative_deposit_interest;
                 oracle_of_market.insert(market.oracle, (false, market.market_index));
@@ -284,7 +289,30 @@ pub fn rewrite_liq_conditions<'info>(
     // Stamped before the thresholds so a sync that legitimately writes none
     // still converges — the resolver compares digests, not slot contents.
     conditions.positions_digest = UserConditionsV0::digest_positions(&user);
-    let (free_collateral, target_market) = estimate_free_collateral(&user, &perps, &spots)?;
+    // The threshold is priced at whichever stage this account is in.
+    //
+    // Cancelling always comes before liquidating: `force_cancel_clob_orders`
+    // answers to the initial requirement and liquidation to the maintenance
+    // one, so anything liquidatable was already cancellable and the two are
+    // stages of one ladder rather than separate watches. While the account
+    // rests orders on a book, the earlier crossing is the one worth waking
+    // at; once they are gone there is nothing to cancel and the watch belongs
+    // back at the liquidation price.
+    //
+    // Nothing has to move it. The self-maintenance watch below covers
+    // `[spot_positions, orders)`, which is where `open_orders` / `open_bids` /
+    // `open_asks` live, so the cancel that empties the book and the placement
+    // that refills it both re-run this sync and re-derive the stage.
+    let tier = if user
+        .perp_positions
+        .iter()
+        .any(|position| user.clob_resident_open_orders(position.market_index) > 0)
+    {
+        CollateralTier::Initial
+    } else {
+        CollateralTier::Maintenance
+    };
+    let (free_collateral, target_market) = estimate_free_collateral(&user, &perps, &spots, tier)?;
 
     let mut slot_index = 0usize;
     if free_collateral > 0 {
@@ -424,11 +452,29 @@ fn spot_market_stub(inputs: &MarketInputs) -> SpotMarket {
 /// plus the user's largest perp position (the liquidation target for
 /// spot-driven thresholds). Deliberately a local estimate: the executor
 /// does the real calculation.
+/// Which tier's ratios [`estimate_free_collateral`] values the account at.
+///
+/// `Maintenance` answers "when is this liquidatable"; `Initial` answers "when
+/// does this stop being allowed to rest risk-increasing orders" — the gate
+/// `force_cancel_clob_orders` gets its grounds from. Initial is the stricter
+/// requirement, so its free collateral is always the smaller number and its
+/// crossing is always the earlier price.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CollateralTier {
+    Initial,
+    Maintenance,
+}
+
 fn estimate_free_collateral(
     user: &User,
     perps: &BTreeMap<u16, MarketInputs>,
     spots: &BTreeMap<u16, MarketInputs>,
+    tier: CollateralTier,
 ) -> Result<(i128, Option<u16>)> {
+    let perp_ratio = |inputs: &MarketInputs| match tier {
+        CollateralTier::Initial => inputs.initial_ratio,
+        CollateralTier::Maintenance => inputs.maintenance_ratio,
+    };
     let mut collateral: i128 = 0;
     let mut requirement: i128 = 0;
     let mut largest: Option<(u16, i128)> = None;
@@ -452,7 +498,7 @@ fn estimate_free_collateral(
         )?;
         requirement = requirement.safe_add(
             notional
-                .safe_mul(inputs.maintenance_ratio as i128)?
+                .safe_mul(perp_ratio(inputs) as i128)?
                 .safe_div(MARGIN_PRECISION_U128 as i128)?,
         )?;
         if base != 0 && largest.is_none_or(|(_, n)| notional > n) {
@@ -485,7 +531,7 @@ fn estimate_free_collateral(
                 let weight = if position.market_index == 0 {
                     SPOT_WEIGHT_PRECISION_U128 as i128
                 } else {
-                    inputs.maintenance_ratio as i128
+                    perp_ratio(inputs) as i128
                 };
                 collateral = collateral.safe_add(
                     value

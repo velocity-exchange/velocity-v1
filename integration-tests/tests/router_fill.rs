@@ -515,6 +515,79 @@ fn setup() -> Fixture {
 
 /// Place a 0.5-unit CLOB ask at `price` through the velocity adapter and
 /// return the order ref from the tx return data.
+/// The maker's `UserStats` at the address `is_stats_for_user` will accept.
+fn maker_stats_address(fixture: &Fixture) -> Pubkey {
+    Pubkey::find_program_address(
+        &[
+            b"user_stats",
+            fixture.clob_maker_authority.pubkey().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0
+}
+
+/// `set_user_stats_account` with the authority-wide equity breaker latched.
+fn set_tripped_user_stats(svm: &mut litesvm::LiteSVM, address: Pubkey, authority: &Pubkey) {
+    let mut stats: UserStats = Zeroable::zeroed();
+    stats.authority = anchor_lang::prelude::Pubkey::new_from_array(*authority.as_array());
+    stats.number_of_sub_accounts = 1;
+    stats.set_equity_breaker_tripped(true);
+    set_zero_copy_account(
+        svm,
+        address,
+        UserStats::DISCRIMINATOR,
+        &stats,
+        UserStats::SIZE,
+    );
+}
+
+/// A ref declaring the ask side, which is what `place_clob_ask` rests.
+fn ask_ref(order_ref: ClobOrderRefV0) -> velocity::instructions::ForceCancelClobRefV0 {
+    velocity::instructions::ForceCancelClobRefV0 {
+        order_ref,
+        side: velocity::state::prop_amm::ClobSide::Ask,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn force_cancel_clob_ix(
+    fixture: &Fixture,
+    filler_user: Pubkey,
+    filler_stats: Pubkey,
+    user_stats: Pubkey,
+    authority: Pubkey,
+    order_refs: Vec<velocity::instructions::ForceCancelClobRefV0>,
+) -> Instruction {
+    let (quoter_signer, _) = quoter_signer_pda();
+    let mut accounts = velocity::accounts::ForceCancelClobOrders {
+        state: state_pda(),
+        authority,
+        filler: filler_user,
+        filler_stats,
+        user: fixture.clob_maker_user,
+        user_stats,
+        quoter: fixture.quoter,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+        quoter_signer,
+        crank_conditions: None,
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::ForceCancelClobOrders {
+            market_index: 0,
+            order_refs,
+        }
+        .data(),
+    }
+}
+
 fn place_clob_ask(fixture: &mut Fixture, price: u64, size: u64) -> ClobOrderRefV0 {
     let ix = place_clob_order_ix(
         fixture.clob_maker_user,
@@ -2651,46 +2724,36 @@ fn force_cancel_reclaims_a_failing_makers_clob_orders() {
         &trading_user(&fixture.keeper.pubkey(), 0, None),
     );
     set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
+    let maker_stats = maker_stats_address(&fixture);
+    set_user_stats_account(
+        &mut fixture.svm,
+        maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
 
-    let (quoter_signer, _) = quoter_signer_pda();
     let force_cancel_ix = |fixture: &Fixture| {
-        let mut accounts = velocity::accounts::ForceCancelClobOrders {
-            state: state_pda(),
-            authority: fixture.keeper.pubkey(),
-            filler: filler_user,
+        force_cancel_clob_ix(
+            fixture,
+            filler_user,
             filler_stats,
-            user: fixture.clob_maker_user,
-            quoter: fixture.quoter,
-            clob_market: fixture.clob_market,
-            clob_program: clob_id(),
-            quoter_signer,
-            crank_conditions: None,
-        }
-        .to_account_metas(None);
-        accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
-        accounts.push(AccountMeta::new(spot_market_pda(0), false));
-        accounts.push(AccountMeta::new(perp_market_pda(0), false));
-        Instruction {
-            program_id: velocity_id(),
-            accounts,
-            data: velocity::instruction::ForceCancelClobOrders {
-                market_index: 0,
-                order_refs: vec![order_ref],
-            }
-            .data(),
-        }
+            maker_stats,
+            fixture.keeper.pubkey(),
+            vec![ask_ref(order_ref)],
+        )
     };
 
-    // Healthy account: refused.
+    // Healthy account: nothing to do, and saying so is a success. A fill
+    // prefixes this to clear its way and must not be taken down by an
+    // account that turned out to be fine.
     let keeper = fixture.keeper.insecure_clone();
-    let err = {
+    {
         let ix = force_cancel_ix(&fixture);
-        send(&mut fixture.svm, &keeper, ix, &[]).expect_err("still healthy")
-    };
-    assert!(
-        format!("{:?}", err.meta.logs).contains("SufficientCollateral"),
-        "unexpected: {:?}",
-        err.meta.logs
+        send(&mut fixture.svm, &keeper, ix, &[]).expect("a healthy account is a no-op");
+    }
+    assert_eq!(
+        clob_ask_count(&fixture.svm, &fixture.clob_market),
+        1,
+        "the no-op took nothing off the book"
     );
 
     // Deteriorated: the order is reclaimed for the flat fee.
@@ -2712,10 +2775,207 @@ fn force_cancel_reclaims_a_failing_makers_clob_orders() {
         SpotBalanceType::Borrow
     );
 
-    // Nothing left: the same ref is now stale and the call fails loudly.
+    // Relay racing a prefixed cancel lands here: the orders are already
+    // gone, so the second caller has nothing to do and says so with success.
+    // A revert would take the fill that prefixed it down too.
+    let filler_before: User = read_zero_copy(&fixture.svm, &filler_user);
     let ix = force_cancel_ix(&fixture);
-    let err = send(&mut fixture.svm, &keeper, ix, &[]).expect_err("stale ref");
-    assert!(format!("{:?}", err.meta.logs).contains("no passed refs are live orders"));
+    send(&mut fixture.svm, &keeper, ix, &[]).expect("a stale ref is a no-op");
+    let filler_after: User = read_zero_copy(&fixture.svm, &filler_user);
+    assert_eq!(
+        filler_before.spot_positions[0].scaled_balance,
+        filler_after.spot_positions[0].scaled_balance,
+        "a no-op pays the caller nothing"
+    );
+}
+
+/// The authority-wide latch is grounds by itself. Relay proves one
+/// subaccount below its floor and trips it; from then on every subaccount is
+/// barred from risk-increasing activity, so the orders this one is resting
+/// cannot legally fill and anyone may reclaim them — without re-deriving the
+/// breach, which is what the latch exists to record.
+#[test]
+fn a_tripped_equity_breaker_is_grounds_on_its_own() {
+    let mut fixture = setup();
+    let order_ref = place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+
+    // Solvent by every other measure: full collateral, no floor set.
+    let mut maker = trading_user(
+        &fixture.clob_maker_authority.pubkey(),
+        10_000 * SPOT_BALANCE_PRECISION_U64,
+        None,
+    );
+    maker.perp_positions[0].open_asks = -((UNIT / 2) as i64);
+    maker.perp_positions[0].open_orders = 1;
+    maker.open_orders = 1;
+    maker.has_open_order = true;
+    maker.next_order_id = 2;
+    set_user_account(&mut fixture.svm, fixture.clob_maker_user, &maker);
+
+    let filler_user = Pubkey::new_unique();
+    let filler_stats = Pubkey::new_unique();
+    set_user_account(
+        &mut fixture.svm,
+        filler_user,
+        &trading_user(&fixture.keeper.pubkey(), 0, None),
+    );
+    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
+    let maker_stats = maker_stats_address(&fixture);
+    set_user_stats_account(
+        &mut fixture.svm,
+        maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+
+    let keeper = fixture.keeper.insecure_clone();
+    let build = |fixture: &Fixture| {
+        force_cancel_clob_ix(
+            fixture,
+            filler_user,
+            filler_stats,
+            maker_stats,
+            fixture.keeper.pubkey(),
+            vec![ask_ref(order_ref)],
+        )
+    };
+
+    // Control: latch clear, account healthy, so there is nothing to do.
+    let ix = build(&fixture);
+    send(&mut fixture.svm, &keeper, ix, &[]).expect("healthy is a no-op");
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 1);
+
+    // Latch set: the same call now reclaims the order.
+    set_tripped_user_stats(
+        &mut fixture.svm,
+        maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+    let ix = build(&fixture);
+    send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(maker.perp_positions[0].open_asks, 0);
+    assert_eq!(maker.perp_positions[0].open_orders, 0);
+}
+
+/// A risk-*reducing* order is passed over, not cancelled and not fatal.
+/// Cancelling one would only make a failing account worse, and a caller whose
+/// refs went stale against a position that moved must not take the
+/// transaction down — the prefixed cancel rides in front of a fill.
+#[test]
+fn force_cancel_passes_over_a_risk_reducing_order() {
+    let mut fixture = setup();
+    // One of each side, so the pass-over is shown to be selective rather
+    // than the whole call quietly doing nothing.
+    let ask_order = place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+    let bid_order = place_clob_bid(&mut fixture, 90 * PRICE, UNIT / 2);
+
+    // Long a whole unit on gutted collateral: the account fails initial
+    // margin, so the grounds are met. Against +1 the resting ask reduces and
+    // the resting bid increases.
+    let mut maker = trading_user(&fixture.clob_maker_authority.pubkey(), 1_000, None);
+    maker.perp_positions[0].base_asset_amount = UNIT as i64;
+    maker.perp_positions[0].open_asks = -((UNIT / 2) as i64);
+    maker.perp_positions[0].open_bids = (UNIT / 2) as i64;
+    maker.perp_positions[0].open_orders = 2;
+    maker.open_orders = 2;
+    maker.has_open_order = true;
+    maker.next_order_id = 3;
+    set_user_account(&mut fixture.svm, fixture.clob_maker_user, &maker);
+
+    let filler_user = Pubkey::new_unique();
+    let filler_stats = Pubkey::new_unique();
+    set_user_account(
+        &mut fixture.svm,
+        filler_user,
+        &trading_user(&fixture.keeper.pubkey(), 0, None),
+    );
+    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
+    let maker_stats = maker_stats_address(&fixture);
+    set_user_stats_account(
+        &mut fixture.svm,
+        maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+
+    let keeper = fixture.keeper.insecure_clone();
+    let ix = force_cancel_clob_ix(
+        &fixture,
+        filler_user,
+        filler_stats,
+        maker_stats,
+        fixture.keeper.pubkey(),
+        vec![
+            ask_ref(ask_order),
+            velocity::instructions::ForceCancelClobRefV0 {
+                order_ref: bid_order,
+                side: velocity::state::prop_amm::ClobSide::Bid,
+            },
+        ],
+    );
+    send(&mut fixture.svm, &keeper, ix, &[]).expect("a reducing ref is passed over, not fatal");
+    assert_eq!(
+        clob_ask_count(&fixture.svm, &fixture.clob_market),
+        1,
+        "the reducing ask stays on the book"
+    );
+    assert_eq!(
+        clob_bid_count(&fixture.svm, &fixture.clob_market),
+        0,
+        "the risk-increasing bid in the same call was still reclaimed"
+    );
+}
+
+/// The declared side is what the risk-reducing test is run against before the
+/// CPI, so a caller that declares it wrong had its order judged on the wrong
+/// rule. That is the caller being wrong about what it passed, and unlike a
+/// stale ref it is not forgiven.
+#[test]
+fn a_misdeclared_side_fails_loudly() {
+    let mut fixture = setup();
+    let order_ref = place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+
+    let mut broke = trading_user(&fixture.clob_maker_authority.pubkey(), 1_000, None);
+    broke.perp_positions[0].open_asks = -((UNIT / 2) as i64);
+    broke.perp_positions[0].open_orders = 1;
+    broke.open_orders = 1;
+    broke.has_open_order = true;
+    broke.next_order_id = 2;
+    set_user_account(&mut fixture.svm, fixture.clob_maker_user, &broke);
+
+    let filler_user = Pubkey::new_unique();
+    let filler_stats = Pubkey::new_unique();
+    set_user_account(
+        &mut fixture.svm,
+        filler_user,
+        &trading_user(&fixture.keeper.pubkey(), 0, None),
+    );
+    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
+    let maker_stats = maker_stats_address(&fixture);
+    set_user_stats_account(
+        &mut fixture.svm,
+        maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+
+    let keeper = fixture.keeper.insecure_clone();
+    let ix = force_cancel_clob_ix(
+        &fixture,
+        filler_user,
+        filler_stats,
+        maker_stats,
+        fixture.keeper.pubkey(),
+        vec![velocity::instructions::ForceCancelClobRefV0 {
+            order_ref,
+            side: velocity::state::prop_amm::ClobSide::Bid,
+        }],
+    );
+    let err = send(&mut fixture.svm, &keeper, ix, &[]).expect_err("side was declared wrong");
+    assert!(
+        format!("{:?}", err.meta.logs).contains("rested on the other side than declared"),
+        "unexpected: {:?}",
+        err.meta.logs
+    );
 }
 
 /// Retail routes: `place_and_take_perp_order_v1` fills the taker off the

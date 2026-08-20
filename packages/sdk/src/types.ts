@@ -484,6 +484,27 @@ export type QuoterCrossConditionsV0Account = {
 	padding: number[];
 };
 
+/** Book side of a resting CLOB order, as the CLOB encodes it on its wire. */
+export class ClobSide {
+	static readonly BID = { bid: {} };
+	static readonly ASK = { ask: {} };
+}
+
+/**
+ * One order handed to `forceCancelClobOrders`.
+ *
+ * The side is declared by the caller because a book node carries none of its
+ * own — the CLOB stores it by which list the node is linked into. Declaring
+ * it lets the program run the risk-reducing test before the cancel CPI, so a
+ * reducing order is passed over rather than cancelled. It is not trusted: the
+ * program checks it against the side the CLOB reports for the removal, and a
+ * mismatch reverts.
+ */
+export type ForceCancelClobRefV0 = {
+	orderRef: { nodeIndex: number; orderId: BN };
+	side: ClobSide;
+};
+
 /** Which perp market a `UserConditionsV0` liquidation-threshold slot watches, parallel to the slot's condition. */
 export type LiqSlotMetaV0 = {
 	targetMarketIndex: number;

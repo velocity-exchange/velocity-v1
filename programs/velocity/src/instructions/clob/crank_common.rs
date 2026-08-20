@@ -146,7 +146,7 @@ pub fn crank_clob_removal(
 ) -> Result<()> {
     let clock = Clock::get()?;
     let state = ctx.accounts.state.load()?;
-    let program_keeper_mode = ctx.accounts.filler.load()?.authority == state.signer;
+    let program_keeper_mode = is_protocol_user(&ctx.accounts.filler, &ctx.accounts.state)?;
     validate!(
         !program_keeper_mode || ctx.accounts.crank_conditions.is_some(),
         ErrorCode::DefaultError,
@@ -378,7 +378,7 @@ pub fn finish_trigger_crank<'info>(
         )?;
         conditions.release_slot(market_index, order_id);
     }
-    let program_keeper_mode = filler.load()?.authority == state.load()?.signer;
+    let program_keeper_mode = is_protocol_user(filler, state)?;
     if program_keeper_mode {
         let reservoir = crank_conditions
             .as_ref()

@@ -13,9 +13,18 @@
 //! the end.
 //!
 //! Deliberately not gated on the quoter entry's active/approved flags —
-//! dead books still need failing makers' orders reclaimed — and not
-//! relay-wired: discovering deteriorated accounts is a sweep over an
-//! unbounded user set, which stays bespoke-keeper territory by design.
+//! dead books still need failing makers' orders reclaimed.
+//!
+//! Dual-mode, like the evict and expiry cranks: a signed keeper cranks for
+//! its own filler, or the protocol `User` is passed as filler and no
+//! signature is required, which is how a relay turner drives it.
+//!
+//! Every gate answers "nothing to do" with success rather than an error. A
+//! fill that would touch a doomed maker prefixes this instruction to clear
+//! the way, and relay is racing to do the same thing; whichever lands second
+//! must not take the transaction down with it. Only a caller that is wrong
+//! about something it declared — a ref belonging to another user, a side that
+//! does not match the order — still fails loudly.
 
 use {
     crate::{
@@ -46,7 +55,7 @@ use {
             perp_market_map::MarketSet,
             prop_amm::{
                 clob_hint_scan, read_clob_node, ClobCancelOrderArgsV0, ClobMarket, ClobOrderRefV0,
-                ClobRemovedOrderV0, ClobUserRefV0, QuoterV0,
+                ClobRemovedOrderV0, ClobSide, ClobUserRefV0, QuoterV0,
             },
             spot_market_map::get_writable_spot_market_set,
             state::State,
@@ -61,14 +70,33 @@ use {
 /// Refs per call, bounding CPI count and compute.
 pub const MAX_FORCE_CANCEL_CLOB_ORDERS: usize = 8;
 
+/// One order the caller wants reclaimed.
+///
+/// The side is declared rather than read, because a node carries no side of
+/// its own — the book stores it by which list the node is linked into, and
+/// finding that out costs a walk from the head. Declaring it lets the
+/// risk-reducing test run *before* the CPI, so a reducing order is passed
+/// over instead of being cancelled and then reverting the call. The
+/// declaration is not trusted: the removal the CLOB returns carries the real
+/// side and is checked against it.
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
+pub struct ForceCancelClobRefV0 {
+    pub order_ref: ClobOrderRefV0,
+    pub side: ClobSide,
+}
+
 #[derive(Accounts)]
 #[instruction(market_index: u16)]
 pub struct ForceCancelClobOrders<'info> {
     pub state: AccountLoader<'info, State>,
-    pub authority: Signer<'info>,
+    /// CHECK: in signed-keeper mode this must sign for `filler`; in
+    /// program-keeper mode (protocol `User` as filler, relay turners) it is
+    /// only the reservoir payout target and no signature is required.
+    #[account(mut)]
+    pub authority: UncheckedAccount<'info>,
     #[account(
         mut,
-        constraint = can_sign_for_user(&filler, &authority)?
+        constraint = can_crank_for_filler(&filler, &authority, &state)?
     )]
     pub filler: AccountLoader<'info, User>,
     #[account(
@@ -79,6 +107,9 @@ pub struct ForceCancelClobOrders<'info> {
     /// The deteriorated account whose CLOB orders are being reclaimed.
     #[account(mut)]
     pub user: AccountLoader<'info, User>,
+    /// Carries the authority-wide equity breaker, which is grounds on its own.
+    #[account(constraint = is_stats_for_user(&user, &user_stats)?)]
+    pub user_stats: AccountLoader<'info, UserStats>,
     /// Deliberately not gated on active/approved: dead books still need
     /// failing makers' orders reclaimed.
     pub quoter: AccountLoader<'info, QuoterV0>,
@@ -110,10 +141,16 @@ pub struct ForceCancelClobOrders<'info> {
 pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
     ctx: Context<'info, ForceCancelClobOrders<'info>>,
     market_index: u16,
-    order_refs: Vec<ClobOrderRefV0>,
+    order_refs: Vec<ForceCancelClobRefV0>,
 ) -> Result<()> {
     let clock = Clock::get()?;
     let state = ctx.accounts.state.load()?;
+    let program_keeper_mode = is_protocol_user(&ctx.accounts.filler, &ctx.accounts.state)?;
+    validate!(
+        !program_keeper_mode || ctx.accounts.crank_conditions.is_some(),
+        ErrorCode::DefaultError,
+        "program-keeper force-cancel requires the market's conditions account"
+    )?;
 
     validate!(
         !order_refs.is_empty() && order_refs.len() <= MAX_FORCE_CANCEL_CLOB_ORDERS,
@@ -147,7 +184,7 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
     // ---- Gate: the account must actually be failing, same as the DLOB
     // force-cancel, and the refs must be this user's risk-increasing
     // orders. ----
-    let (user_ref, cancellable): (ClobUserRefV0, Vec<ClobOrderRefV0>) = {
+    let (user_ref, cancellable): (ClobUserRefV0, Vec<ForceCancelClobRefV0>) = {
         let user = &mut load_mut!(ctx.accounts.user)?;
         validate!(
             !user.is_being_liquidated(),
@@ -173,46 +210,64 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
             &mut oracle_map,
         )?
         .is_some_and(|net_equity| net_equity.proves_below_floor(user));
-        validate!(
-            !margin_calc.meets_margin_requirement() || below_equity_floor,
-            ErrorCode::SufficientCollateral
-        )?;
+        // A tripped breaker is grounds on its own. It is the authority-wide
+        // latch that says one of this authority's subaccounts was proven
+        // below its floor, it is already permissionless to set, and while it
+        // is set every subaccount is barred from risk-increasing activity —
+        // so the risk-increasing orders this one is resting cannot legally
+        // fill, and holding them on the book only blocks other people's.
+        let breaker_tripped = ctx.accounts.user_stats.load()?.is_equity_breaker_tripped();
+        if margin_calc.meets_margin_requirement() && !below_equity_floor && !breaker_tripped {
+            // Not a "no": a "nothing to do". A prefixed force-cancel races
+            // relay for the same work, and the account may also have simply
+            // recovered since the caller looked.
+            msg!("account meets its requirements; nothing to force-cancel");
+            return Ok(());
+        }
         // Per-market arm of the DLOB sweep's skip logic: an isolated
         // position answers to its own requirement, cross positions to the
-        // cross requirement.
+        // cross requirement. The breaker outranks both — it freezes every
+        // subaccount, whatever this one market looks like.
         let market_isolated = user
             .get_perp_position(market_index)
             .map(|position| position.is_isolated())
             .unwrap_or(false);
-        let market_recoverable = if market_isolated {
-            margin_calc.meets_isolated_margin_requirement(market_index)?
-        } else {
-            margin_calc.meets_cross_margin_requirement() && !below_equity_floor
-        };
-        validate!(
-            !market_recoverable,
-            ErrorCode::SufficientCollateral,
-            "market {} meets its margin requirement",
-            market_index
-        )?;
+        let market_recoverable = !breaker_tripped
+            && if market_isolated {
+                margin_calc.meets_isolated_margin_requirement(market_index)?
+            } else {
+                margin_calc.meets_cross_margin_requirement() && !below_equity_floor
+            };
+        if market_recoverable {
+            msg!("market {} meets its margin requirement", market_index);
+            return Ok(());
+        }
 
         let user_ref = ClobUserRefV0 {
             authority: user.authority,
             sub_account_id: user.sub_account_id.into(),
         };
+        let position_base = user
+            .get_perp_position(market_index)
+            .map(|position| position.base_asset_amount)
+            .unwrap_or(0);
 
-        // Read each hinted node off the book: a hint that no longer holds a
-        // live order is dropped (raced by a fill/cancel — normal), but a
-        // hint pointing at someone else's order is a keeper error and fails
-        // loudly. The risk-reducing check runs post-CPI on the returned
-        // removal (which carries the side); a reducing ref reverts the
-        // whole call, so the keeper's contract is to not pass them.
+        // Read each hinted node off the book. A hint that no longer holds a
+        // live order is dropped — relay or a fill got there first, which is
+        // the expected outcome of the race, not an error. A hint pointing at
+        // someone else's order is the caller being wrong about what it
+        // passed, and fails loudly.
+        //
+        // Risk-reducing orders are dropped here rather than after the CPI:
+        // cancelling one would only make the account worse, and a caller
+        // whose refs went stale against a position that moved must not take
+        // the transaction down for it.
         let book = ctx.accounts.clob_market.try_borrow_data()?;
         let cancellable = order_refs
             .iter()
             .filter_map(|order_ref| {
-                let node = read_clob_node(&book, order_ref.node_index)?;
-                if !node.is_open || node.order_id != order_ref.order_id {
+                let node = read_clob_node(&book, order_ref.order_ref.node_index)?;
+                if !node.is_open || node.order_id != order_ref.order_ref.order_id {
                     return None;
                 }
                 Some((order_ref, node))
@@ -222,28 +277,35 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
                     node.user_ref() == user_ref,
                     ErrorCode::DefaultError,
                     "order {} belongs to {}/{}, not the passed user",
-                    order_ref.order_id,
+                    order_ref.order_ref.order_id,
                     node.user_ref().authority,
                     node.user_ref().sub_account_id
                 )?;
-                Ok(*order_ref)
+                let reducing = is_order_position_reducing(
+                    &order_ref.side.to_position_direction(),
+                    node.base_asset_amount,
+                    position_base,
+                )?;
+                Ok((!reducing).then_some(*order_ref))
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>();
         (user_ref, cancellable)
     };
 
-    validate!(
-        !cancellable.is_empty(),
-        ErrorCode::DefaultError,
-        "no passed refs are live orders of this user"
-    )?;
+    if cancellable.is_empty() {
+        msg!("no passed ref is a live risk-increasing order of this user");
+        return Ok(());
+    }
 
     // ---- Cancel CPIs while no user borrows are held. ----
     let removed_orders: Vec<ClobRemovedOrderV0> = cancellable
         .iter()
         .map(|order_ref| {
             clob.cancel(ClobCancelOrderArgsV0 {
-                order_ref: *order_ref,
+                order_ref: order_ref.order_ref,
                 user: user_ref,
             })
         })
@@ -255,24 +317,24 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
         let user = &mut load_mut!(ctx.accounts.user)?;
         let mut filler = load_mut!(ctx.accounts.filler)?;
         let position_index = get_position_index(&user.perp_positions, market_index)?;
-        for removed in &removed_orders {
+        for (order_ref, removed) in cancellable.iter().zip(removed_orders.iter()) {
             validate!(
                 removed.user == user_ref,
                 ErrorCode::DefaultError,
                 "clob cancelled an order for a different user"
             )?;
-            let direction = removed.side.to_position_direction();
-            let is_position_reducing = is_order_position_reducing(
-                &direction,
-                removed.base_asset_amount,
-                user.perp_positions[position_index].base_asset_amount,
-            )?;
+            // The declared side decided, before the CPI, that this order was
+            // not risk-reducing. A caller that declared it wrong got a
+            // different order cancelled than the one it was judged on, so the
+            // judgement did not apply — that is the caller being wrong about
+            // what it passed, and it fails loudly.
             validate!(
-                !is_position_reducing,
-                ErrorCode::InvalidOrderNotRiskReducing,
-                "order {} is risk-reducing; force-cancel skips those — don't pass it",
+                removed.side == order_ref.side,
+                ErrorCode::DefaultError,
+                "order {} rested on the other side than declared",
                 removed.order_id
             )?;
+            let direction = removed.side.to_position_direction();
             decrease_open_bids_and_asks(
                 &mut user.perp_positions[position_index],
                 &direction,
@@ -299,13 +361,27 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
         user.update_last_active_slot(clock.slot);
     }
 
-    // Repair the wake hints from the post-cancel book.
+    // Repair the wake hints from the post-cancel book, and pay the relay
+    // turner out of the reservoir when it is the one that cranked.
     if let Some(conditions_loader) = &ctx.accounts.crank_conditions {
         let (min_expiry, min_activation) =
             clob_hint_scan(&ctx.accounts.clob_market.try_borrow_data()?, clock.slot);
-        let mut conditions = load_mut!(conditions_loader)?;
-        conditions.repair_expiry(min_expiry)?;
-        conditions.repair_activation(min_activation)?;
+        let payment = {
+            let mut conditions = load_mut!(conditions_loader)?;
+            conditions.repair_expiry(min_expiry)?;
+            conditions.repair_activation(min_activation)?;
+            conditions.keeper_payment_lamports
+        };
+        if program_keeper_mode {
+            let conditions_info = conditions_loader.to_account_info();
+            let rent_minimum = Rent::get()?.minimum_balance(conditions_info.data_len());
+            ClobCrankConditionsV0::pay_keeper_lamports(
+                &conditions_info,
+                &ctx.accounts.authority.to_account_info(),
+                payment,
+                rent_minimum,
+            )?;
+        }
     }
 
     msg!(

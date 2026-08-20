@@ -3384,7 +3384,11 @@ export type Velocity = {
         },
         {
           "name": "authority",
-          "signer": true
+          "docs": [
+            "program-keeper mode (protocol `User` as filler, relay turners) it is",
+            "only the reservoir payout target and no signature is required."
+          ],
+          "writable": true
         },
         {
           "name": "filler",
@@ -3400,6 +3404,12 @@ export type Velocity = {
             "The deteriorated account whose CLOB orders are being reclaimed."
           ],
           "writable": true
+        },
+        {
+          "name": "userStats",
+          "docs": [
+            "Carries the authority-wide equity breaker, which is grounds on its own."
+          ]
         },
         {
           "name": "quoter",
@@ -3501,7 +3511,7 @@ export type Velocity = {
           "type": {
             "vec": {
               "defined": {
-                "name": "clobOrderRefV0"
+                "name": "forceCancelClobRefV0"
               }
             }
           }
@@ -22691,6 +22701,41 @@ export type Velocity = {
           {
             "name": "refereeFeeDenominator",
             "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "forceCancelClobRefV0",
+      "docs": [
+        "One order the caller wants reclaimed.",
+        "",
+        "The side is declared rather than read, because a node carries no side of",
+        "its own — the book stores it by which list the node is linked into, and",
+        "finding that out costs a walk from the head. Declaring it lets the",
+        "risk-reducing test run *before* the CPI, so a reducing order is passed",
+        "over instead of being cancelled and then reverting the call. The",
+        "declaration is not trusted: the removal the CLOB returns carries the real",
+        "side and is checked against it."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "orderRef",
+            "type": {
+              "defined": {
+                "name": "clobOrderRefV0"
+              }
+            }
+          },
+          {
+            "name": "side",
+            "type": {
+              "defined": {
+                "name": "clobSide"
+              }
+            }
           }
         ]
       }

@@ -67,6 +67,7 @@ import {
 	SignedMsgOrderParamsMessage,
 	TxParams,
 	UserAccount,
+	ForceCancelClobRefV0,
 	UserStatsAccount,
 	SignedMsgOrderParamsDelegateMessage,
 	TokenProgramFlag,
@@ -186,6 +187,7 @@ import { EventEmitter } from 'events';
 import StrictEventEmitter from 'strict-event-emitter-types';
 import {
 	getQuoterSignerPublicKey,
+	getClobCrankConditionsPublicKey,
 	getVelocitySignerPublicKey,
 	getVelocityStateAccountPublicKey,
 	getInsuranceFundStakeAccountPublicKey,
@@ -8503,6 +8505,75 @@ export class VelocityClient {
 			},
 			remainingAccounts,
 		});
+	}
+
+	/**
+	 * Keeper instruction: reclaims a deteriorated account's risk-increasing CLOB orders.
+	 *
+	 * The CLOB arm of `forceCancelOrders`. Grounds are the same, plus the authority-wide
+	 * equity breaker: the account fails initial margin, is provably below its equity floor,
+	 * or its breaker is latched. Risk-*reducing* orders are passed over — cancelling those
+	 * would only make the account worse.
+	 *
+	 * Every "nothing to do" answer is a success, not an error: the account turned out
+	 * healthy, the refs are already gone, or none of them is risk-increasing. That is what
+	 * makes it safe to prefix in front of a fill that would otherwise revert on this maker,
+	 * while a keeper or relay races to do the same work.
+	 *
+	 * @param marketIndex - Perp market whose CLOB the orders rest on.
+	 * @param userAccountPublicKey - Public key of the deteriorated account.
+	 * @param userAccount - Decoded account of the deteriorated user.
+	 * @param orderRefs - The orders to reclaim, each with the side it rests on.
+	 * @param clobAccounts - The market's CLOB registry entry, book and program.
+	 * @param fillerPublicKey - Filler's user account; defaults to this client's own.
+	 * @returns The instruction.
+	 */
+	public async getForceCancelClobOrdersIx(
+		marketIndex: number,
+		userAccountPublicKey: PublicKey,
+		userAccount: UserAccount,
+		orderRefs: ForceCancelClobRefV0[],
+		clobAccounts: {
+			quoter: PublicKey;
+			clobMarket: PublicKey;
+			clobProgram: PublicKey;
+		},
+		fillerPublicKey?: PublicKey
+	): Promise<TransactionInstruction> {
+		const filler = fillerPublicKey ?? (await this.getUserAccountPublicKey());
+
+		const remainingAccounts = this.getRemainingAccounts({
+			userAccounts: [userAccount],
+			writableSpotMarketIndexes: [QUOTE_SPOT_MARKET_INDEX],
+			writablePerpMarketIndexes: [marketIndex],
+		});
+
+		return await this.program.instruction.forceCancelClobOrders(
+			marketIndex,
+			orderRefs,
+			{
+				accounts: {
+					state: await this.getStatePublicKey(),
+					authority: this.wallet.publicKey,
+					filler,
+					fillerStats: await this.getUserStatsAccountPublicKey(),
+					user: userAccountPublicKey,
+					userStats: getUserStatsAccountPublicKey(
+						this.program.programId,
+						userAccount.authority
+					),
+					quoter: clobAccounts.quoter,
+					clobMarket: clobAccounts.clobMarket,
+					clobProgram: clobAccounts.clobProgram,
+					quoterSigner: this.getQuoterSignerPublicKey(),
+					crankConditions: getClobCrankConditionsPublicKey(
+						this.program.programId,
+						marketIndex
+					),
+				},
+				remainingAccounts,
+			}
+		);
 	}
 
 	/**

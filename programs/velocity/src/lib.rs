@@ -2441,7 +2441,7 @@ pub mod velocity {
     pub fn force_cancel_clob_orders<'c: 'info, 'info>(
         ctx: Context<'info, ForceCancelClobOrders<'info>>,
         market_index: u16,
-        order_refs: Vec<ClobOrderRefV0>,
+        order_refs: Vec<ForceCancelClobRefV0>,
     ) -> Result<()> {
         handle_force_cancel_clob_orders(ctx, market_index, order_refs)
     }

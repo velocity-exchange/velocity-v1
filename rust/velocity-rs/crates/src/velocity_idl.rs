@@ -428,7 +428,7 @@ pub mod instructions {
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct ForceCancelClobOrders {
         pub market_index: u16,
-        pub order_refs: Vec<ClobOrderRefV0>,
+        pub order_refs: Vec<ForceCancelClobRefV0>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for ForceCancelClobOrders {
@@ -3837,6 +3837,23 @@ pub mod types {
         pub referrer_reward_denominator: u32,
         pub referee_fee_numerator: u32,
         pub referee_fee_denominator: u32,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct ForceCancelClobRefV0 {
+        pub order_ref: ClobOrderRefV0,
+        pub side: ClobSide,
     }
     #[repr(C)]
     #[derive(
@@ -11713,6 +11730,7 @@ pub mod accounts {
         pub filler: Pubkey,
         pub filler_stats: Pubkey,
         pub user: Pubkey,
+        pub user_stats: Pubkey,
         pub quoter: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
@@ -11742,8 +11760,8 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.authority,
-                    is_signer: true,
-                    is_writable: false,
+                    is_signer: false,
+                    is_writable: true,
                 },
                 AccountMeta {
                     pubkey: self.filler,
@@ -11759,6 +11777,11 @@ pub mod accounts {
                     pubkey: self.user,
                     is_signer: false,
                     is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.user_stats,
+                    is_signer: false,
+                    is_writable: false,
                 },
                 AccountMeta {
                     pubkey: self.quoter,

@@ -3366,6 +3366,7 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
         };
         let (quoter_signer, quoter_signer_nonce) = crate::signer::find_quoter_signer();
         let inputs = crate::instructions::QuoteInputs {
+            caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
             market_index: params.market_index,
             direction,
             size: unfilled,

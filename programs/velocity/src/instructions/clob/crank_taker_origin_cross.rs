@@ -453,6 +453,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
                 direction.clob_side(),
                 size,
                 &users,
+                &crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
                 &taker_ref,
                 clock.slot,
                 clock.unix_timestamp,
@@ -468,6 +469,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
             let located = quoter.execute(
                 market_index,
                 ExecuteArgsV0 {
+                    caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
                     direction,
                     size,
                     users: QuoterUserSetRef(&users),

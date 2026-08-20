@@ -36,6 +36,8 @@ pub struct CpiQuoterExecutor<'a, 'info> {
     /// The loaded-user set forwarded on every execute (quoters must not fill
     /// anyone else), in the wire's derivable form.
     pub users: &'a [ClobUserRefV0],
+    /// The same caps the quote was taken with.
+    pub caps: crate::state::prop_amm::QuoterUserCapsV0,
     /// The taker — forwarded so quoters skip the taker's own resting
     /// liquidity (self-trade prevention).
     pub taker: ClobUserRefV0,
@@ -99,6 +101,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
             direction.clob_side(),
             size,
             &self.users,
+            &self.caps,
             &self.taker,
             self.slot,
             self.now,
@@ -201,6 +204,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
             .execute(
                 self.market_index,
                 ExecuteArgsV0 {
+                    caps: self.caps,
                     direction,
                     size,
                     users: QuoterUserSetRef(self.users),

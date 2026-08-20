@@ -12,7 +12,7 @@ use {
         error::ClobError,
         state::{
             CancelAllOutcome, CancelSidesV0, ClobMarketV0, Direction, OrderBitFlag,
-            PlaceOrderParams, Side, UserRefV0, CANCEL_ALL_ORDERS_CEILING,
+            PlaceOrderParams, Side, UserCapsV0, UserRefV0, CANCEL_ALL_ORDERS_CEILING,
         },
     },
     anchor_lang_v2::prelude::*,
@@ -160,11 +160,11 @@ fn a_link_out_of_the_arena_fails_every_walk() {
             .unwrap();
 
         assert_err(
-            book.quote(Direction::Long, 10, &[], None, 0, 0),
+            book.quote(Direction::Long, 10, &[], &UserCapsV0::EMPTY, None, 0, 0),
             ClobError::NodeIndexOutOfRange,
         );
         assert_err(
-            book.execute(Direction::Long, 10, &[], None, 0, 0),
+            book.execute(Direction::Long, 10, &[], &UserCapsV0::EMPTY, None, 0, 0),
             ClobError::NodeIndexOutOfRange,
         );
         // The placement scan walks the same list.
@@ -186,7 +186,15 @@ fn a_cycled_link_cannot_spin_the_walk() {
     book.update_node(head.node_index, |node| node.next = head.node_index)
         .unwrap();
     assert_err(
-        book.quote(Direction::Long, u64::MAX, &[], None, 0, 0),
+        book.quote(
+            Direction::Long,
+            u64::MAX,
+            &[],
+            &UserCapsV0::EMPTY,
+            None,
+            0,
+            0,
+        ),
         ClobError::BookInvariantViolated,
     );
 }

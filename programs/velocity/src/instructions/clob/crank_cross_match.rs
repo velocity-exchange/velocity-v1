@@ -182,6 +182,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
     )?;
     let (quoter_signer, quoter_signer_nonce) = crate::signer::find_quoter_signer();
     let mut executor = CpiQuoterExecutor {
+        caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
         quoted: &quoted,
         market_index,
         accounts: &accounts,
@@ -544,6 +545,9 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             quoter.quote(
                 market_index,
                 crate::state::prop_amm::QuoteArgsV0 {
+                    // The crank's taker is the protocol User and the legs it
+                    // matches are the book's own; it constrains no one.
+                    caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
                     direction,
                     size: u64::MAX / 2,
                     users: crate::state::prop_amm::QuoterUserSetRef::EMPTY,

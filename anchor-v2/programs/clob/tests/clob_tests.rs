@@ -14,8 +14,8 @@ use {
         instruction,
         state::{
             CancelSidesV0, ClobHeaderV0, ClobMarketV0, Direction, MarketConfigV0, OrderBitFlag,
-            OrderNodeV0, OrderRefV0, Side, UserRefV0, UserSetV0, CANCEL_ALL_ORDERS_CEILING,
-            EXECUTE_FILLS_CEILING, ORDERS_OFFSET, REMOVED_ORDER_BYTES,
+            OrderNodeV0, OrderRefV0, Side, UserCapsV0, UserRefV0, UserSetV0,
+            CANCEL_ALL_ORDERS_CEILING, EXECUTE_FILLS_CEILING, ORDERS_OFFSET, REMOVED_ORDER_BYTES,
         },
         CancelAllArgsV0, CancelOrderArgsV0, EvictWorstArgsV0, ExecuteArgsV0, PlaceOrderArgsV0,
         QuoteArgsV0, RemoveExpiredArgsV0, ResizeMarketArgsV0, UpdateMarketArgsV0,
@@ -281,6 +281,7 @@ fn quote_meta_users(
 ) -> Result<TransactionMetadata, FailedTransactionMetadata> {
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
+            caps: UserCapsV0::EMPTY,
             direction,
             size,
             users: user_set(users),
@@ -315,6 +316,7 @@ fn execute_meta_users(
 ) -> Result<TransactionMetadata, FailedTransactionMetadata> {
     let ix = instruction::ExecuteV0 {
         args: ExecuteArgsV0 {
+            caps: UserCapsV0::EMPTY,
             direction,
             size,
             users: user_set(users),
@@ -680,6 +682,7 @@ fn execute_rejects_unauthorized_caller() {
     ctx.svm.warp_to_slot(11);
 
     let args = || ExecuteArgsV0 {
+        caps: UserCapsV0::EMPTY,
         direction: Direction::Long,
         size: 5,
         users: UserSetV0::EMPTY,
@@ -1082,6 +1085,7 @@ fn cu_benchmarks() {
     // Quote sweeping the entire side (level cap applies).
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
+            caps: UserCapsV0::EMPTY,
             direction: Direction::Short,
             size: u64::MAX,
             users: UserSetV0::EMPTY,
@@ -1297,6 +1301,7 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
 
     let ix = instruction::ExecuteV0 {
         args: ExecuteArgsV0 {
+            caps: UserCapsV0::EMPTY,
             direction: Direction::Long,
             size: fills as u64,
             users: UserSetV0::EMPTY,
@@ -1395,6 +1400,7 @@ fn resize_grows_arena_and_per_side_capacity() {
 fn quote_taker(ctx: &mut Ctx, direction: Direction, size: u64, taker: Address) -> Vec<(u64, u64)> {
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
+            caps: UserCapsV0::EMPTY,
             direction,
             size,
             users: UserSetV0::EMPTY,
@@ -1416,6 +1422,7 @@ fn execute_taker(
 ) -> Vec<([u8; 32], u64, u64, Vec<u64>)> {
     let ix = instruction::ExecuteV0 {
         args: ExecuteArgsV0 {
+            caps: UserCapsV0::EMPTY,
             direction,
             size,
             users: UserSetV0::EMPTY,
@@ -1701,6 +1708,7 @@ fn cu_benchmark_quote_with_a_taker_origin_head() {
 
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
+            caps: UserCapsV0::EMPTY,
             direction: Direction::Short,
             size: u64::MAX,
             users: UserSetV0::EMPTY,

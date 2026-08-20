@@ -227,7 +227,18 @@ fn the_resting_walk_covers_the_requested_size_and_stops() {
             TestNode::live(user_ref(3, 0), 102, 5, CLOB_NIL),
         ],
     );
-    let walk = |size| clob_resting_prefix(&data, ClobSide::Ask, size, &[], &user_ref(9, 0), 0, 0);
+    let walk = |size| {
+        clob_resting_prefix(
+            &data,
+            ClobSide::Ask,
+            size,
+            &[],
+            &QuoterUserCapsV0::EMPTY,
+            &user_ref(9, 0),
+            0,
+            0,
+        )
+    };
     assert_eq!(walk(5).len(), 1);
     assert_eq!(walk(6).len(), 2);
     assert_eq!(walk(100).len(), 3);
@@ -260,7 +271,16 @@ fn the_resting_walk_skips_what_execute_skips_and_keeps_going() {
             ClobSide::Ask,
             &[head, TestNode::live(reachable, 101, 5, CLOB_NIL)],
         );
-        let prefix = clob_resting_prefix(&data, ClobSide::Ask, 5, &[], &user_ref(9, 0), slot, now);
+        let prefix = clob_resting_prefix(
+            &data,
+            ClobSide::Ask,
+            5,
+            &[],
+            &QuoterUserCapsV0::EMPTY,
+            &user_ref(9, 0),
+            slot,
+            now,
+        );
         assert_eq!(prefix.len(), 1);
         assert_eq!(prefix[0].user, reachable);
     }
@@ -280,7 +300,16 @@ fn the_resting_walk_skips_the_taker_and_unsettleable_makers() {
         ],
     );
     let users = quoter_wire_users([taker, loaded]).unwrap();
-    let prefix = clob_resting_prefix(&data, ClobSide::Ask, 5, &users, &taker, 0, 0);
+    let prefix = clob_resting_prefix(
+        &data,
+        ClobSide::Ask,
+        5,
+        &users,
+        &QuoterUserCapsV0::EMPTY,
+        &taker,
+        0,
+        0,
+    );
     assert_eq!(prefix.len(), 1);
     assert_eq!(prefix[0].user, loaded);
 }
@@ -296,7 +325,16 @@ fn the_resting_walk_terminates_on_a_cyclic_book() {
             TestNode::live(user_ref(2, 0), 101, 1, 0),
         ],
     );
-    let prefix = clob_resting_prefix(&data, ClobSide::Ask, u64::MAX, &[], &user_ref(9, 0), 0, 0);
+    let prefix = clob_resting_prefix(
+        &data,
+        ClobSide::Ask,
+        u64::MAX,
+        &[],
+        &QuoterUserCapsV0::EMPTY,
+        &user_ref(9, 0),
+        0,
+        0,
+    );
     assert_eq!(prefix.len(), 2);
 }
 
@@ -305,6 +343,64 @@ fn the_resting_walk_terminates_on_a_cyclic_book() {
 /// writer velocity actually uses must produce byte-for-byte what serializing
 /// the fixed struct produces: the struct is the shape each quoter mirrors,
 /// while velocity never materializes one (it does not fit in an SBF frame).
+/// The cap list rides beside the user set on the same wire, so it is pinned
+/// the same way: a fixed width both sides agree on without negotiating, and
+/// exclusions ahead of partial caps so a list too long to carry drops only
+/// the entries whose loss costs a revert that was coming anyway.
+#[test]
+fn the_cap_list_encodes_to_a_fixed_width_with_exclusions_first() {
+    fn encode<T: AnchorSerialize>(value: &T) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        value.serialize(&mut bytes).unwrap();
+        bytes
+    }
+    assert_eq!(MAX_CONSTRAINED_WIRE_USERS, 8);
+    assert_eq!(QUOTER_USER_CAPS_BYTES, 137);
+    assert_eq!(
+        encode(&QuoterUserCapsV0::EMPTY).len(),
+        QUOTER_USER_CAPS_BYTES
+    );
+
+    // A partial cap offered before an exclusion still lands behind it.
+    let partial = QuoterUserCapV0 {
+        index: 0,
+        bid_base: 500,
+        ask_base: 500,
+    };
+    let excluded = QuoterUserCapV0 {
+        index: 1,
+        bid_base: 0,
+        ask_base: 0,
+    };
+    let caps = QuoterUserCapsV0::from_caps(vec![partial, excluded]);
+    assert_eq!(caps.len, 2);
+    assert_eq!(
+        caps.as_slice()[0],
+        excluded,
+        "an exclusion outranks a partial cap for the scarce slots"
+    );
+    assert_eq!(caps.as_slice()[1], partial);
+    assert_eq!(encode(&caps).len(), QUOTER_USER_CAPS_BYTES);
+
+    // Past the ceiling the tail is dropped, and the exclusions are the part
+    // that survives.
+    let mut many: Vec<QuoterUserCapV0> = (0..MAX_CONSTRAINED_WIRE_USERS as u8 + 4)
+        .map(|index| QuoterUserCapV0 {
+            index,
+            bid_base: 1_000,
+            ask_base: 1_000,
+        })
+        .collect();
+    many.push(QuoterUserCapV0 {
+        index: 200,
+        bid_base: 0,
+        ask_base: 0,
+    });
+    let caps = QuoterUserCapsV0::from_caps(many);
+    assert_eq!(caps.len as usize, MAX_CONSTRAINED_WIRE_USERS);
+    assert_eq!(caps.as_slice()[0].index, 200, "the exclusion is kept");
+}
+
 #[test]
 fn the_user_set_encodes_to_a_fixed_width() {
     assert_eq!(MAX_QUOTER_WIRE_USERS, 48);

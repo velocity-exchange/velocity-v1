@@ -150,6 +150,9 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                 .quote(
                     market_index,
                     QuoteArgsV0 {
+                        // The view settles nothing, so it constrains nothing:
+                        // it reports the book as it stands.
+                        caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
                         direction: args.direction,
                         size: args.size,
                         // A view has no settlement, so no loaded-user

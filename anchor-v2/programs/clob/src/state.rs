@@ -424,6 +424,70 @@ pub struct UserSetV0 {
     pub users: [UserRefV0; USER_SET_CAPACITY],
 }
 
+/// Constrained users one call can name. Mirrors velocity's
+/// `MAX_CONSTRAINED_WIRE_USERS`.
+pub const USER_CAPS_CAPACITY: usize = 8;
+
+/// What one named user may still take on, per side, in base.
+///
+/// Two numbers rather than one keyed off the call's direction: a maker's room
+/// differs by side, and one set has to serve a cross-match that sweeps both
+/// sides of this book in the same transaction.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, wincode::SchemaRead, wincode::SchemaWrite)]
+pub struct UserCapV0 {
+    /// Index into the accompanying [`UserSetV0`].
+    pub index: u8,
+    /// Base this user may take resting on the bid side (going long).
+    pub bid_base: u64,
+    /// Base this user may take resting on the ask side (going short).
+    pub ask_base: u64,
+}
+
+/// Per-user room, parallel to the user set.
+///
+/// A user absent from this list is unconstrained. A cap of zero means their
+/// orders are passed over entirely — the caller has said it cannot settle a
+/// fill against them, so quoting depth that stands on their orders would be
+/// quoting depth that cannot be delivered.
+///
+/// Distinct from membership of [`UserSetV0`]: absent from *that* means the
+/// caller's account set is stale and, past the grace window, the whole call
+/// fails. A zero cap is a deliberate constraint, not a mistake, and never
+/// fails the call.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+pub struct UserCapsV0 {
+    /// Live entries at the head of `caps`; the tail is undefined.
+    pub len: u8,
+    pub caps: [UserCapV0; USER_CAPS_CAPACITY],
+}
+
+impl Default for UserCapsV0 {
+    fn default() -> Self {
+        Self::EMPTY
+    }
+}
+
+impl UserCapsV0 {
+    pub const EMPTY: Self = Self {
+        len: 0,
+        caps: [UserCapV0 {
+            index: 0,
+            bid_base: 0,
+            ask_base: 0,
+        }; USER_CAPS_CAPACITY],
+    };
+
+    /// The live prefix. `len` arrives from a foreign caller, so it is clamped
+    /// rather than trusted.
+    pub fn as_slice(&self) -> &[UserCapV0] {
+        &self.caps[..(self.len as usize).min(USER_CAPS_CAPACITY)]
+    }
+}
+
+/// Encoded width of a [`UserCapsV0`], pinned against velocity's
+/// `QUOTER_USER_CAPS_BYTES`.
+pub const USER_CAPS_BYTES: usize = 1 + USER_CAPS_CAPACITY * (1 + 8 + 8);
+
 /// Encoded width of a [`UserSetV0`], pinned against velocity's
 /// `QUOTER_USER_SET_BYTES` by `tests::response`.
 pub const USER_SET_BYTES: usize = 1 + USER_SET_CAPACITY * USER_REF_BYTES;

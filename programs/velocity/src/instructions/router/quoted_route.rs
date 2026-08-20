@@ -84,6 +84,10 @@ pub struct QuoteInputs<'a> {
     pub size: u64,
     /// The loaded-user set quoters must not fill outside of.
     pub users: &'a [ClobUserRefV0],
+    /// Per-user room, carried here so the quote and the execute that binds to
+    /// it cannot be given different numbers: the executor is built from these
+    /// same inputs, so the two walks skip identically by construction.
+    pub caps: crate::state::prop_amm::QuoterUserCapsV0,
     pub taker: ClobUserRefV0,
     pub quoter_signer: Pubkey,
     pub quoter_signer_nonce: u8,
@@ -154,6 +158,7 @@ impl<'info> QuotedRoute<'info> {
                 let levels = quoter.quote(
                     inputs.market_index,
                     QuoteArgsV0 {
+                        caps: inputs.caps,
                         direction: inputs.direction,
                         size: inputs.size,
                         users: QuoterUserSetRef(inputs.users),
@@ -261,6 +266,7 @@ impl<'info> QuotedRoute<'info> {
         now: i64,
     ) -> CpiQuoterExecutor<'a, 'info> {
         CpiQuoterExecutor {
+            caps: inputs.caps,
             quoted: &self.quoted,
             market_index: inputs.market_index,
             accounts: self.accounts,

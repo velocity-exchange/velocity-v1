@@ -63,10 +63,10 @@ use {
         state::{
             CancelAllOutcome, CancelSidesV0, CancelledRemainderV0, ClobHeaderV0, ClobMarketV0,
             CompletedOrderV0, Direction, ExecuteOutcome, MarketConfigV0, OrderBitFlag, OrderNodeV0,
-            OrderRefV0, PlaceOrderParams, RemovedOrder, ResponsePointerV0, Side, UserRefV0,
-            CANCEL_ALL_ORDERS_CEILING, CHANGE_MIN_BYTES, EXECUTE_FILLS_CEILING,
-            EXECUTE_USERS_CEILING, ORDER_ID_BYTES, QUOTE_LEVELS_CEILING, USER_REF_BYTES,
-            ZERO_ADDRESS,
+            OrderRefV0, PlaceOrderParams, RemovedOrder, ResponsePointerV0, Side, UserCapsV0,
+            UserRefV0, CANCEL_ALL_ORDERS_CEILING, CHANGE_MIN_BYTES, EXECUTE_FILLS_CEILING,
+            EXECUTE_USERS_CEILING, ORDER_ID_BYTES, QUOTE_LEVELS_CEILING, USER_CAPS_CAPACITY,
+            USER_REF_BYTES, ZERO_ADDRESS,
         },
     },
     anchor_lang_v2::{address_eq, prelude::*},
@@ -119,20 +119,24 @@ pub trait ClobBook {
     ) -> Result<CancelAllOutcome>;
     fn evict_worst(&mut self, side: Side) -> Result<RemovedOrder>;
     fn remove_expired(&mut self, order_ref: OrderRefV0, now: i64) -> Result<RemovedOrder>;
+    #[allow(clippy::too_many_arguments)]
     fn quote(
         &mut self,
         direction: Direction,
         size: u64,
         users: &[UserRefV0],
+        caps: &UserCapsV0,
         taker: Option<&UserRefV0>,
         slot: u64,
         now: i64,
     ) -> Result<ResponsePointerV0>;
+    #[allow(clippy::too_many_arguments)]
     fn execute(
         &mut self,
         direction: Direction,
         size: u64,
         users: &[UserRefV0],
+        caps: &UserCapsV0,
         taker: Option<&UserRefV0>,
         slot: u64,
         now: i64,
@@ -656,11 +660,13 @@ impl ClobBook for ClobMarketV0 {
     /// Also skips an order [`TakerOriginGate`] holds back — a taker remainder a
     /// counterparty currently crosses — which [`Self::execute`] skips too, so the
     /// depth published here is always depth the fill can deliver.
+    #[allow(clippy::too_many_arguments)]
     fn quote(
         &mut self,
         direction: Direction,
         size: u64,
         users: &[UserRefV0],
+        caps: &UserCapsV0,
         taker: Option<&UserRefV0>,
         slot: u64,
         now: i64,
@@ -697,6 +703,9 @@ impl ClobBook for ClobMarketV0 {
         let mut written: Option<u64> = None;
         let mut remaining = size;
         let mut gate = TakerOriginGate::new(side, slot, now);
+        // Spent by this walk exactly as `execute` spends it, so the ladder
+        // stands only on orders the fill can settle.
+        let mut budget = UserBudget::new(users, caps, side);
 
         walk_side(self, side, |book, _, node| {
             // Mirrors `execute`'s own stop, in the same place in the walk, so
@@ -711,7 +720,12 @@ impl ClobBook for ClobMarketV0 {
             {
                 return Ok(Walk::Continue);
             }
-            let take = remaining.min(node.base_asset_amount);
+            let take = budget.allow(node, remaining.min(node.base_asset_amount));
+            if take == 0 {
+                // Out of room: this owner's remaining orders cannot settle,
+                // and the depth behind them still can.
+                return Ok(Walk::Continue);
+            }
             fills += 1;
             match open {
                 Some((price, aggregate)) if price == node.price => {
@@ -769,11 +783,13 @@ impl ClobBook for ClobMarketV0 {
     /// counterparty on the other side. See [`TakerOriginGate`], which
     /// [`Self::quote`] reads too so the two never disagree about what is
     /// takeable.
+    #[allow(clippy::too_many_arguments)]
     fn execute(
         &mut self,
         direction: Direction,
         size: u64,
         users: &[UserRefV0],
+        caps: &UserCapsV0,
         taker: Option<&UserRefV0>,
         slot: u64,
         now: i64,
@@ -808,6 +824,7 @@ impl ClobBook for ClobMarketV0 {
         let mut swept = 0u128;
         let mut paid = 0u128;
         let mut gate = TakerOriginGate::new(side, slot, now);
+        let mut budget = UserBudget::new(users, caps, side);
 
         walk_side(self, side, |book, index, node| {
             if remaining == 0 || fills.len() == max_fills {
@@ -820,13 +837,16 @@ impl ClobBook for ClobMarketV0 {
             {
                 return Ok(Walk::Continue);
             }
+            let take = budget.allow(node, remaining.min(node.base_asset_amount));
+            if take == 0 {
+                return Ok(Walk::Continue);
+            }
             let user_key = node.user_ref().to_bytes();
             let existing =
                 find_change_record(book, &writer, records_start, change_count, &user_key)?;
             if existing.is_none() && change_count == max_users {
                 return Ok(Walk::Stop);
             }
-            let take = remaining.min(node.base_asset_amount);
             check_fill_price(side, filled, node.price, take)?;
             filled = Some(node.price);
             // Each fill's quote is the *difference of running floors*, not the
@@ -1099,6 +1119,74 @@ fn is_matchable(
         return Ok(false);
     }
     Ok(!skip_unknown_user(users, node, grace_slots, slot)?)
+}
+
+/// Per-user room for one walk, spent as it goes.
+///
+/// The caller names how much base each constrained user may still take on the
+/// side being swept; anyone unnamed is unconstrained. A user out of room is
+/// passed over, and one with less room than an order holds is filled only as
+/// far as the room goes.
+///
+/// The point is that `quote` and `execute` spend the *same* budget in the
+/// same place, so a ladder never promises depth standing on a user the fill
+/// would then decline. It is not a trust boundary — a book that ignored it
+/// would leave its caller exactly where it stands without it — but honouring
+/// it is what keeps a maker who cannot be settled against from stopping every
+/// fill that reaches them.
+///
+/// Holds indices into the caller's set rather than copies of the refs it
+/// names. A ref is 34 bytes and this lives on a walk's frame inside a 4 KB
+/// SBF stack that the fixed-width args have already spent most of — copying
+/// them in overflowed it.
+struct UserBudget<'a> {
+    users: &'a [UserRefV0],
+    /// `(index into users, base still available)`.
+    entries: [(u8, u64); USER_CAPS_CAPACITY],
+    len: usize,
+}
+
+impl<'a> UserBudget<'a> {
+    fn new(users: &'a [UserRefV0], caps: &UserCapsV0, side: Side) -> Self {
+        let mut budget = UserBudget {
+            users,
+            entries: [(0, 0); USER_CAPS_CAPACITY],
+            len: 0,
+        };
+        for cap in caps.as_slice() {
+            if users.get(cap.index as usize).is_none() {
+                // An index past the set is a caller that disagrees with
+                // itself. Ignoring it constrains nobody, which is where the
+                // call would be without any caps at all.
+                continue;
+            }
+            let room = match side {
+                Side::Bid => cap.bid_base,
+                Side::Ask => cap.ask_base,
+            };
+            budget.entries[budget.len] = (cap.index, room);
+            budget.len += 1;
+        }
+        budget
+    }
+
+    /// How much of `want` this order's owner may still take, spending it.
+    fn allow(&mut self, node: &OrderNodeV0, want: u64) -> u64 {
+        if self.len == 0 {
+            return want;
+        }
+        let user = node.user_ref();
+        for slot in 0..self.len {
+            let (index, room) = self.entries[slot];
+            if self.users.get(index as usize) != Some(&user) {
+                continue;
+            }
+            let allowed = want.min(room);
+            self.entries[slot].1 = room - allowed;
+            return allowed;
+        }
+        want
+    }
 }
 
 /// Whether a taker-origin order has to be passed over right now, because a

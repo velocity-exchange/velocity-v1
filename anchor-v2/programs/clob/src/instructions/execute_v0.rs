@@ -3,7 +3,7 @@ use {
         book::ClobBook,
         emit::emit_execute_record,
         error::ClobError,
-        state::{ClobMarketV0, Direction, ResponsePointerV0, UserRefV0, UserSetV0},
+        state::{ClobMarketV0, Direction, ResponsePointerV0, UserCapsV0, UserRefV0, UserSetV0},
     },
     anchor_lang_v2::prelude::*,
 };
@@ -23,6 +23,11 @@ pub struct ExecuteArgsV0 {
     /// `User`s velocity has loaded and can settle. Empty = unrestricted
     /// (tests; velocity always passes the loaded set).
     pub users: UserSetV0,
+    /// How much of `users` each named one may still take, per side. Anyone
+    /// absent is unconstrained; a zero cap passes their orders over. Quote
+    /// and execute must be given the same caps — the ladder is a promise
+    /// about what the fill will deliver.
+    pub caps: UserCapsV0,
     /// The taker's `User`: their own resting orders are skipped
     /// unconditionally (self-trade prevention).
     pub taker: Option<UserRefV0>,
@@ -43,6 +48,7 @@ pub fn handle_execute_v0(
         args.direction,
         args.size,
         args.users.as_slice(),
+        &args.caps,
         args.taker.as_ref(),
         clock.slot,
         clock.unix_timestamp,

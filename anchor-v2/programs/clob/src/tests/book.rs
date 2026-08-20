@@ -147,6 +147,102 @@ fn arena_access_validates_every_index() {
     book.set_prev(NIL, 0).unwrap();
 }
 
+/// The levels a quote published, as `(price, size)`.
+fn levels(book: &ClobMarketV0, pointer: crate::state::ResponsePointerV0) -> Vec<(u64, u64)> {
+    crate::state::QuoteResponseV0::parse(&super::response::streamed(book, pointer))
+        .expect("quote response")
+        .levels
+        .iter()
+        .map(|level| (level.price, level.size))
+        .collect()
+}
+
+/// A capped user is passed over where they rest, and the depth behind them
+/// is still quoted and still filled.
+///
+/// This is the whole point of a per-user budget over a shorter ladder: a
+/// maker the caller cannot settle against sits at the top of book, and
+/// truncating in front of them would cost every order behind. Quote and
+/// execute have to agree exactly, or the ladder the router split on is not
+/// the fill it gets.
+#[test]
+fn a_user_with_no_room_is_skipped_mid_book() {
+    let market = TestMarket::new(8);
+    let mut book = market.book();
+    let broke = user(1);
+    let healthy = user(2);
+    // The one who cannot settle is at the front, best price.
+    place(&mut book, Side::Ask, 100, 5, broke);
+    place(&mut book, Side::Ask, 101, 7, healthy);
+
+    let users = [broke, healthy];
+    let mut caps = UserCapsV0::EMPTY;
+    caps.excluded_ask[0] |= 1; // index 0 == broke
+
+    // Control: unconstrained, both levels quote.
+    let pointer = book
+        .quote(Direction::Long, 12, &users, &UserCapsV0::EMPTY, None, 0, 0)
+        .unwrap();
+    assert_eq!(levels(&mut book, pointer), vec![(100, 5), (101, 7)]);
+
+    // Capped: the front order is gone and the one behind it survives — not
+    // truncated away with it.
+    let pointer = book
+        .quote(Direction::Long, 12, &users, &caps, None, 0, 0)
+        .unwrap();
+    assert_eq!(
+        levels(&mut book, pointer),
+        vec![(101, 7)],
+        "the depth behind the skipped maker is still quoted"
+    );
+
+    // And execute spends the same budget, so the fill matches the ladder.
+    let outcome = book
+        .execute(Direction::Long, 12, &users, &caps, None, 0, 0)
+        .unwrap();
+    let filled: u64 = outcome.fills.iter().map(|fill| fill.base_size).sum();
+    assert_eq!(filled, 7);
+    assert_eq!(
+        book.node_count(Side::Ask),
+        1,
+        "the skipped maker's order is untouched, not consumed"
+    );
+}
+
+/// A partial cap truncates one maker without ending the walk.
+#[test]
+fn a_user_with_some_room_is_filled_only_that_far() {
+    let market = TestMarket::new(8);
+    let mut book = market.book();
+    let tight = user(1);
+    let healthy = user(2);
+    place(&mut book, Side::Ask, 100, 5, tight);
+    place(&mut book, Side::Ask, 101, 7, healthy);
+
+    let users = [tight, healthy];
+    let mut caps = UserCapsV0::EMPTY;
+    caps.len = 1;
+    caps.caps[0] = crate::state::UserCapV0 {
+        index: 0,
+        bid_base: 0,
+        ask_base: 2,
+    };
+
+    let pointer = book
+        .quote(Direction::Long, 12, &users, &caps, None, 0, 0)
+        .unwrap();
+    assert_eq!(
+        levels(&mut book, pointer),
+        vec![(100, 2), (101, 7)],
+        "capped to its room, and the rest of the book follows"
+    );
+    let outcome = book
+        .execute(Direction::Long, 12, &users, &caps, None, 0, 0)
+        .unwrap();
+    let filled: u64 = outcome.fills.iter().map(|fill| fill.base_size).sum();
+    assert_eq!(filled, 9);
+}
+
 #[test]
 fn a_link_out_of_the_arena_fails_every_walk() {
     // Just past the arena, and just short of the sentinel.

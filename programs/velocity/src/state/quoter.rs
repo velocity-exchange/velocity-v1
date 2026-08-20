@@ -40,6 +40,7 @@ use crate::{
     state::{
         oracle::{MMOraclePriceData, OraclePriceData},
         perp_market::MarketStats,
+        prop_amm::WireDirectionExt,
     },
 };
 

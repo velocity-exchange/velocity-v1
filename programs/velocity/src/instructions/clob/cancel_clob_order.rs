@@ -13,7 +13,9 @@ use {
         load_mut, msg,
         signer::QUOTER_SIGNER_SEED,
         state::{
-            prop_amm::{ClobCancelOrderArgsV0, ClobMarket, ClobOrderRefV0, QuoterV0},
+            prop_amm::{
+                ClobCancelOrderArgsV0, ClobMarket, ClobOrderRefV0, QuoterV0, WireDirectionExt,
+            },
             state::State,
             user::User,
         },

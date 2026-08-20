@@ -56,7 +56,7 @@ use {
             prop_amm::{
                 clob_hint_scan, read_clob_node, ClobCancelAllArgsV0, ClobCancelOrderArgsV0,
                 ClobCancelSides, ClobMarket, ClobOrderRefV0, ClobRemovedOrderV0, ClobSide,
-                ClobUserRefV0, QuoterV0,
+                ClobUserRefV0, QuoterV0, WireDirectionExt,
             },
             spot_market_map::get_writable_spot_market_set,
             state::State,

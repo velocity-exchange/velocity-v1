@@ -343,25 +343,30 @@ fn the_resting_walk_terminates_on_a_cyclic_book() {
 /// writer velocity actually uses must produce byte-for-byte what serializing
 /// the fixed struct produces: the struct is the shape each quoter mirrors,
 /// while velocity never materializes one (it does not fit in an SBF frame).
-/// The cap list rides beside the user set on the same wire, so it is pinned
-/// the same way: a fixed width both sides agree on without negotiating, and
-/// exclusions ahead of partial caps so a list too long to carry drops only
-/// the entries whose loss costs a revert that was coming anyway.
+/// The cap list rides beside the user set on the same wire, pinned the same
+/// way: a fixed width both sides agree on without negotiating.
+///
+/// The split matters more than the width. A user with no room is one bit, so
+/// every user in the set can be excluded at once — which is what a sharp move
+/// produces, and the moment the book most needs to stay usable. Only the
+/// narrow band with *some* room spends a slot, and an overflow there costs a
+/// revert that was already coming.
 #[test]
-fn the_cap_list_encodes_to_a_fixed_width_with_exclusions_first() {
+fn the_cap_list_puts_no_ceiling_on_exclusions() {
     fn encode<T: AnchorSerialize>(value: &T) -> Vec<u8> {
         let mut bytes = Vec::new();
         value.serialize(&mut bytes).unwrap();
         bytes
     }
     assert_eq!(MAX_CONSTRAINED_WIRE_USERS, 8);
-    assert_eq!(QUOTER_USER_CAPS_BYTES, 137);
+    assert_eq!(USER_EXCLUSION_BITMAP_BYTES, 6);
+    assert_eq!(QUOTER_USER_CAPS_BYTES, 149);
     assert_eq!(
         encode(&QuoterUserCapsV0::EMPTY).len(),
         QUOTER_USER_CAPS_BYTES
     );
 
-    // A partial cap offered before an exclusion still lands behind it.
+    // A user with no room takes a bit, not one of the scarce slots.
     let partial = QuoterUserCapV0 {
         index: 0,
         bid_base: 500,
@@ -373,32 +378,38 @@ fn the_cap_list_encodes_to_a_fixed_width_with_exclusions_first() {
         ask_base: 0,
     };
     let caps = QuoterUserCapsV0::from_caps(vec![partial, excluded]);
-    assert_eq!(caps.len, 2);
-    assert_eq!(
-        caps.as_slice()[0],
-        excluded,
-        "an exclusion outranks a partial cap for the scarce slots"
-    );
-    assert_eq!(caps.as_slice()[1], partial);
+    assert_eq!(caps.len, 1, "only the partial spends a slot");
+    assert_eq!(caps.as_slice()[0], partial);
+    assert!(caps.is_excluded(1, ClobSide::Bid));
+    assert!(caps.is_excluded(1, ClobSide::Ask));
+    assert!(!caps.is_excluded(0, ClobSide::Bid));
     assert_eq!(encode(&caps).len(), QUOTER_USER_CAPS_BYTES);
 
-    // Past the ceiling the tail is dropped, and the exclusions are the part
-    // that survives.
-    let mut many: Vec<QuoterUserCapV0> = (0..MAX_CONSTRAINED_WIRE_USERS as u8 + 4)
+    // The case that scales: every user in the set can be excluded at once,
+    // which is what a sharp move produces. None of them touches the slots.
+    let all: Vec<QuoterUserCapV0> = (0..MAX_QUOTER_WIRE_USERS as u8)
         .map(|index| QuoterUserCapV0 {
             index,
-            bid_base: 1_000,
-            ask_base: 1_000,
+            bid_base: 0,
+            ask_base: 0,
         })
         .collect();
-    many.push(QuoterUserCapV0 {
-        index: 200,
-        bid_base: 0,
-        ask_base: 0,
-    });
+    let caps = QuoterUserCapsV0::from_caps(all);
+    assert_eq!(caps.len, 0);
+    assert!((0..MAX_QUOTER_WIRE_USERS).all(|i| caps.is_excluded(i, ClobSide::Ask)));
+    assert_eq!(encode(&caps).len(), QUOTER_USER_CAPS_BYTES);
+
+    // Partials past the ceiling drop the roomiest, keeping the tightest.
+    let many: Vec<QuoterUserCapV0> = (0..MAX_CONSTRAINED_WIRE_USERS as u8 + 4)
+        .map(|index| QuoterUserCapV0 {
+            index,
+            bid_base: 1_000 * (index as u64 + 1),
+            ask_base: 0,
+        })
+        .collect();
     let caps = QuoterUserCapsV0::from_caps(many);
     assert_eq!(caps.len as usize, MAX_CONSTRAINED_WIRE_USERS);
-    assert_eq!(caps.as_slice()[0].index, 200, "the exclusion is kept");
+    assert_eq!(caps.as_slice()[0].bid_base, 1_000, "the tightest is kept");
 }
 
 #[test]

@@ -42,7 +42,8 @@ use {
             perp_market::PerpMarket,
             prop_amm::{
                 clob_hint_scan, read_clob_node, ClobEvictWorstArgsV0, ClobMarket, ClobNodeView,
-                ClobRemoveExpiredArgsV0, ClobRemovedOrderV0, ClobUserRefV0, QuoterV0, CLOB_NIL,
+                ClobRemoveExpiredArgsV0, ClobRemovedOrderV0, ClobUserRefV0, QuoterV0,
+                WireDirectionExt, CLOB_NIL,
             },
             state::State,
             user::{User, UserStats},

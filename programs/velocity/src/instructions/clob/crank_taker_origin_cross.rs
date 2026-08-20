@@ -59,7 +59,8 @@ use {
                 clob_hint_scan, clob_resting_prefix, read_clob_u32, ClobCancelOrderArgsV0,
                 ClobMarket, ClobNodeView, ClobOrderRefV0, ClobPlaceOrderArgsV0, ClobRemovedOrderV0,
                 ClobSide, ClobUserRefV0, Direction, ExecuteArgsV0, QuoterSubjects,
-                QuoterUserSetRef, QuoterV0, CLOB_BEST_ASK_OFFSET, CLOB_BEST_BID_OFFSET,
+                QuoterUserSetRef, QuoterV0, WireDirectionExt, CLOB_BEST_ASK_OFFSET,
+                CLOB_BEST_BID_OFFSET,
             },
             state::State,
             user::{OrderStatus, User, UserStats},
@@ -450,7 +451,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
             let users = [taker_ref, cross.counterparty.user_ref()];
             let subjects = QuoterSubjects::Book(clob_resting_prefix(
                 &ctx.accounts.clob_market.try_borrow_data()?,
-                direction.clob_side(),
+                direction.side(),
                 size,
                 &users,
                 &crate::state::prop_amm::QuoterUserCapsV0::EMPTY,

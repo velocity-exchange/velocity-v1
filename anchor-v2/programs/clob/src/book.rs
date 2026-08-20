@@ -65,8 +65,8 @@ use {
             CompletedOrderV0, Direction, ExecuteOutcome, MarketConfigV0, OrderBitFlag, OrderNodeV0,
             OrderRefV0, PlaceOrderParams, RemovedOrder, ResponsePointerV0, Side, UserCapsV0,
             UserRefV0, CANCEL_ALL_ORDERS_CEILING, CHANGE_MIN_BYTES, EXECUTE_FILLS_CEILING,
-            EXECUTE_USERS_CEILING, ORDER_ID_BYTES, QUOTE_LEVELS_CEILING, USER_CAPS_CAPACITY,
-            USER_REF_BYTES, ZERO_ADDRESS,
+            EXECUTE_USERS_CEILING, QUOTE_LEVELS_CEILING, USER_CAPS_CAPACITY,
+            USER_EXCLUSION_BITMAP_BYTES, USER_REF_BYTES, USER_SET_CAPACITY, ZERO_ADDRESS,
         },
     },
     anchor_lang_v2::{address_eq, prelude::*},
@@ -705,7 +705,7 @@ impl ClobBook for ClobMarketV0 {
         let mut gate = TakerOriginGate::new(side, slot, now);
         // Spent by this walk exactly as `execute` spends it, so the ladder
         // stands only on orders the fill can settle.
-        let mut budget = UserBudget::new(users, caps, side);
+        let mut budget = UserBudget::new(caps, side);
 
         walk_side(self, side, |book, _, node| {
             // Mirrors `execute`'s own stop, in the same place in the walk, so
@@ -715,12 +715,13 @@ impl ClobBook for ClobMarketV0 {
             }
             // Both halves of "pass over this order": the intrinsic and
             // caller-relative reasons, then the crossed-remainder gate.
-            if !is_matchable(node, users, taker, grace_slots, slot, now)?
+            let owner = users.iter().position(|u| *u == node.user_ref());
+            if !is_matchable(node, users, owner, taker, grace_slots, slot, now)?
                 || gate.skips(book, node)?
             {
                 return Ok(Walk::Continue);
             }
-            let take = budget.allow(node, remaining.min(node.base_asset_amount));
+            let take = budget.allow(owner, remaining.min(node.base_asset_amount));
             if take == 0 {
                 // Out of room: this owner's remaining orders cannot settle,
                 // and the depth behind them still can.
@@ -824,7 +825,7 @@ impl ClobBook for ClobMarketV0 {
         let mut swept = 0u128;
         let mut paid = 0u128;
         let mut gate = TakerOriginGate::new(side, slot, now);
-        let mut budget = UserBudget::new(users, caps, side);
+        let mut budget = UserBudget::new(caps, side);
 
         walk_side(self, side, |book, index, node| {
             if remaining == 0 || fills.len() == max_fills {
@@ -832,12 +833,13 @@ impl ClobBook for ClobMarketV0 {
             }
             // Both halves of "pass over this order": the intrinsic and
             // caller-relative reasons, then the crossed-remainder gate.
-            if !is_matchable(node, users, taker, grace_slots, slot, now)?
+            let owner = users.iter().position(|u| *u == node.user_ref());
+            if !is_matchable(node, users, owner, taker, grace_slots, slot, now)?
                 || gate.skips(book, node)?
             {
                 return Ok(Walk::Continue);
             }
-            let take = budget.allow(node, remaining.min(node.base_asset_amount));
+            let take = budget.allow(owner, remaining.min(node.base_asset_amount));
             if take == 0 {
                 return Ok(Walk::Continue);
             }
@@ -1104,9 +1106,13 @@ fn removed_order(node: &OrderNodeV0) -> RemovedOrder {
 /// needs no access to the book. [`TakerOriginGate`] is the other half of the same
 /// decision — the reason to pass over an order that depends on what is resting on
 /// the *other* side — and both call sites ask the two together.
+/// `index` is where this order's owner sits in `users`, resolved once by the
+/// caller: membership and the per-user budget both need it, and the set is 48
+/// wide, so resolving it twice per order is a walk of the set nobody needs.
 fn is_matchable(
     node: &OrderNodeV0,
     users: &[UserRefV0],
+    index: Option<usize>,
     taker: Option<&UserRefV0>,
     grace_slots: u32,
     slot: u64,
@@ -1118,7 +1124,7 @@ fn is_matchable(
     if taker.is_some_and(|t| *t == node.user_ref()) {
         return Ok(false);
     }
-    Ok(!skip_unknown_user(users, node, grace_slots, slot)?)
+    Ok(!skip_unknown_user(users, index, node, grace_slots, slot)?)
 }
 
 /// Per-user room for one walk, spent as it goes.
@@ -1139,27 +1145,30 @@ fn is_matchable(
 /// names. A ref is 34 bytes and this lives on a walk's frame inside a 4 KB
 /// SBF stack that the fixed-width args have already spent most of — copying
 /// them in overflowed it.
-struct UserBudget<'a> {
-    users: &'a [UserRefV0],
-    /// `(index into users, base still available)`.
+struct UserBudget {
+    excluded: [u8; USER_EXCLUSION_BITMAP_BYTES],
+    any_excluded: bool,
+    /// `(index into the caller's set, base still available)` for the users
+    /// with *some* room. Indices rather than refs: a ref is 34 bytes and this
+    /// lives on a walk's frame inside a 4 KB SBF stack the fixed-width args
+    /// have already spent most of.
     entries: [(u8, u64); USER_CAPS_CAPACITY],
     len: usize,
 }
 
-impl<'a> UserBudget<'a> {
-    fn new(users: &'a [UserRefV0], caps: &UserCapsV0, side: Side) -> Self {
+impl UserBudget {
+    fn new(caps: &UserCapsV0, side: Side) -> Self {
+        let excluded = match side {
+            Side::Bid => caps.excluded_bid,
+            Side::Ask => caps.excluded_ask,
+        };
         let mut budget = UserBudget {
-            users,
+            excluded,
+            any_excluded: excluded.iter().any(|byte| *byte != 0),
             entries: [(0, 0); USER_CAPS_CAPACITY],
             len: 0,
         };
         for cap in caps.as_slice() {
-            if users.get(cap.index as usize).is_none() {
-                // An index past the set is a caller that disagrees with
-                // itself. Ignoring it constrains nobody, which is where the
-                // call would be without any caps at all.
-                continue;
-            }
             let room = match side {
                 Side::Bid => cap.bid_base,
                 Side::Ask => cap.ask_base,
@@ -1170,15 +1179,24 @@ impl<'a> UserBudget<'a> {
         budget
     }
 
-    /// How much of `want` this order's owner may still take, spending it.
-    fn allow(&mut self, node: &OrderNodeV0, want: u64) -> u64 {
-        if self.len == 0 {
+    /// How much of `want` the user at `index` may still take, spending it.
+    ///
+    /// `index` is the position the membership scan already resolved, so the
+    /// bitmap costs a bit test rather than a second walk of the set.
+    fn allow(&mut self, index: Option<usize>, want: u64) -> u64 {
+        if !self.any_excluded && self.len == 0 {
             return want;
         }
-        let user = node.user_ref();
+        let Some(index) = index else {
+            // Unrestricted set: nobody is named, so nobody is capped.
+            return want;
+        };
+        if index < USER_SET_CAPACITY && self.excluded[index / 8] & (1 << (index % 8)) != 0 {
+            return 0;
+        }
         for slot in 0..self.len {
-            let (index, room) = self.entries[slot];
-            if self.users.get(index as usize) != Some(&user) {
+            let (named, room) = self.entries[slot];
+            if named as usize != index {
                 continue;
             }
             let allowed = want.min(room);
@@ -1317,11 +1335,12 @@ fn best_actionable_price(
 /// aged order is stale (or pruning makers) and the whole fill must not land.
 fn skip_unknown_user(
     users: &[UserRefV0],
+    index: Option<usize>,
     node: &OrderNodeV0,
     grace_slots: u32,
     slot: u64,
 ) -> Result<bool> {
-    if users.is_empty() || users.iter().any(|u| *u == node.user_ref()) {
+    if users.is_empty() || index.is_some() {
         return Ok(false);
     }
     require!(

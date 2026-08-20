@@ -6,8 +6,8 @@
 
 use {
     crate::{
-        controller,
         controller::{
+            self,
             funding::settle_funding_payment,
             position::{
                 self, add_new_position, decrease_open_bids_and_asks, get_position_index,
@@ -51,6 +51,7 @@ use {
             paused_operations::PerpOperation,
             perp_market::PerpMarket,
             perp_market_map::PerpMarketMap,
+            prop_amm::WireDirectionExt,
             quoter::{DlobOrderQuoter, MarketQuoteInputs as QuoteInputs, QuoteContext, QuoterFill},
             revenue_share::{
                 RevenueShareEscrowZeroCopyMut, RevenueShareOrder, RevenueShareOrderBitFlag,

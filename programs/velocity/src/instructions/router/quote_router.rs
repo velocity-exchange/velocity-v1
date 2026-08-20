@@ -42,6 +42,7 @@ use {
             perp_market_map::{get_writable_perp_market_set, MarketSet},
             prop_amm::{
                 Direction, PriceLevel, QuoteArgsV0, QuoterType, QuoterUserSetRef, QuoterV0,
+                WireDirectionExt,
             },
             quoter::MarketQuoteInputs,
             router_quote::{QuotedSourceKind, RouterQuoteBufferV0},

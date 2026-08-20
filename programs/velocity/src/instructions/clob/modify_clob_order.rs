@@ -48,7 +48,7 @@ use {
             perp_market_map::MarketSet,
             prop_amm::{
                 read_clob_node, ClobCancelOrderArgsV0, ClobMarket, ClobOrderRefV0,
-                ClobPlaceOrderArgsV0, ClobUserRefV0, QuoterV0,
+                ClobPlaceOrderArgsV0, ClobUserRefV0, QuoterV0, WireDirectionExt,
             },
             state::State,
             user::User,

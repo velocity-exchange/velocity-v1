@@ -189,29 +189,34 @@ fn quoter_account_metas(registered: &[AmmAccountMeta], quoter_signer: &Pubkey) -
         .collect()
 }
 
-/// Taker direction, from the taker's perspective. Borsh wire encoding
-/// (Long = 0, Short = 1) deliberately matches
-/// [`crate::controller::position::PositionDirection`], but the CPI ABI gets
-/// its own enum so it can never drift with internal refactors.
-#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
-pub enum Direction {
-    Long,
-    Short,
+/// The request half of the quoter wire, declared in `quoter-spec` alongside
+/// the responses: velocity writes these bytes and a quoter reads them, so a
+/// second declaration here would be a second thing to keep in step. The
+/// aliases keep velocity's names.
+pub use quoter_spec::{DirectionV0 as Direction, SideV0 as ClobSide};
+
+/// What velocity reads into the wire's direction and side beyond their shape.
+/// An inherent impl is not available on a foreign type, and a trait keeps
+/// every call site reading as it did.
+pub trait WireDirectionExt {
+    fn to_position_direction(self) -> crate::controller::position::PositionDirection;
 }
 
-impl Direction {
-    /// The book side a taker of this direction consumes.
-    pub fn clob_side(self) -> ClobSide {
-        match self {
-            Direction::Long => ClobSide::Ask,
-            Direction::Short => ClobSide::Bid,
-        }
-    }
-
-    pub fn to_position_direction(self) -> crate::controller::position::PositionDirection {
+impl WireDirectionExt for Direction {
+    fn to_position_direction(self) -> crate::controller::position::PositionDirection {
         match self {
             Direction::Long => crate::controller::position::PositionDirection::Long,
             Direction::Short => crate::controller::position::PositionDirection::Short,
+        }
+    }
+}
+
+impl WireDirectionExt for ClobSide {
+    /// The maker position direction a resting order on this side represents.
+    fn to_position_direction(self) -> crate::controller::position::PositionDirection {
+        match self {
+            ClobSide::Bid => crate::controller::position::PositionDirection::Long,
+            ClobSide::Ask => crate::controller::position::PositionDirection::Short,
         }
     }
 }
@@ -235,23 +240,6 @@ pub type ClobUserRefV0 = quoter_spec::UserRefV0;
 pub const CLOB_USER_REF_BYTES: usize = quoter_spec::UserRefV0::SIZE;
 const_assert_eq!(std::mem::size_of::<ClobUserRefV0>(), CLOB_USER_REF_BYTES);
 
-/// Capacity of [`QuoterUserSetV0`].
-///
-/// The set velocity forwards is its loaded maker/referrer map, and every
-/// entry there is a distinct `User` account the transaction locked. Solana
-/// caps a transaction at 64 account locks, and a router fill spends 15 of
-/// them before any maker: the velocity program, `State`, the filler's
-/// signer, the filler `User`+`UserStats`, the taker `User`+`UserStats`, the
-/// perp market and its oracle, the quote spot market and its oracle, then —
-/// for an external quoter to exist at all — its registry entry, its program,
-/// its response account and velocity's signer PDA. The remaining 49 locks
-/// must also cover at least one `UserStats` (shared across sub-accounts of
-/// one authority in the best case), so 48 `User`s is the most a landed fill
-/// can carry. A larger set is therefore unreachable, and velocity treats it
-/// as an error rather than silently truncating the set a quoter matches
-/// against.
-pub const MAX_QUOTER_WIRE_USERS: usize = 48;
-
 /// The loaded-user set on the quoter wire: a fixed array plus a live count,
 /// so passing it costs no allocation on a path that runs it once per quoter
 /// per fill. Fixed width is also what lets both sides of the CPI decode it
@@ -262,101 +250,16 @@ pub const MAX_QUOTER_WIRE_USERS: usize = 48;
 /// discovery). A quoter reading a non-empty set must skip liquidity whose
 /// owner is absent from it: velocity cannot settle a balance change for a
 /// `User` it did not load, so such a fill is refused wholesale.
-#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
-pub struct QuoterUserSetV0 {
-    /// Live entries at the head of `users`; the tail is undefined.
-    pub len: u8,
-    pub users: [ClobUserRefV0; MAX_QUOTER_WIRE_USERS],
-}
-
-/// Constrained users one quote/execute call can name.
-///
-/// Sparse rather than a slot per loaded user: almost every maker is
-/// unconstrained, and the set is already 1.6 KB of CPI data reserved on a
-/// bump heap that never reclaims — a parallel array would add another 768
-/// bytes to every call to say "no limit" 48 times.
-pub const MAX_CONSTRAINED_WIRE_USERS: usize = 8;
-
-/// What one user may still take on, per side, in base.
-///
-/// Two numbers rather than one keyed off the call's direction. A maker's room
-/// genuinely differs by side — the direction that reduces its position
-/// answers to maintenance margin and is all but unbounded, while the one that
-/// adds to it is capped at the fill tier — so a single number would be a
-/// lossy model whose meaning depended on a separate field. It also lets one
-/// set serve a cross-match crank, which sweeps both sides of a book in the
-/// same transaction.
-#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug, Default)]
-pub struct QuoterUserCapV0 {
-    /// Index into the accompanying [`QuoterUserSetV0`].
-    pub index: u8,
-    /// Base this user may take resting on the bid side (going long).
-    pub bid_base: u64,
-    /// Base this user may take resting on the ask side (going short).
-    pub ask_base: u64,
-}
-
-/// Per-user room on the quoter wire, parallel to the user set.
-///
-/// A quoter must not fill a named user past its cap on the side it rests. A
-/// cap of zero means skip that user's orders entirely — the fill would be
-/// refused, so quoting depth that stands on them is quoting a lie. Anyone
-/// absent from this list is unconstrained.
-///
-/// **Caps are not a trust boundary.** A quoter that ignores one leaves the
-/// caller exactly where it would be without them: the fill's own post-fill
-/// margin and floor checks refuse it and the transaction reverts. What they
-/// buy is that the honest case stops reverting — and, for a zero cap, the
-/// user is also absent from the permitted-subject set velocity derives from
-/// the book itself, so ignoring *that* is refused outright.
-///
-/// Zero caps sort first. The list is finite, and an overflowing set drops its
-/// tail; dropping a partial cap costs a revert that would have happened
-/// anyway, while dropping an exclusion costs one that would not have.
-#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
-pub struct QuoterUserCapsV0 {
-    /// Live entries at the head of `caps`; the tail is undefined.
-    pub len: u8,
-    pub caps: [QuoterUserCapV0; MAX_CONSTRAINED_WIRE_USERS],
-}
-
-impl Default for QuoterUserCapsV0 {
-    fn default() -> Self {
-        Self::EMPTY
-    }
-}
-
-impl QuoterUserCapsV0 {
-    pub const EMPTY: Self = Self {
-        len: 0,
-        caps: [QuoterUserCapV0 {
-            index: 0,
-            bid_base: 0,
-            ask_base: 0,
-        }; MAX_CONSTRAINED_WIRE_USERS],
-    };
-
-    /// The live prefix. `len` arrives from a foreign caller on the decode
-    /// side, so it is clamped rather than trusted.
-    pub fn as_slice(&self) -> &[QuoterUserCapV0] {
-        &self.caps[..(self.len as usize).min(MAX_CONSTRAINED_WIRE_USERS)]
-    }
-
-    /// Build from `(index, bid_base, ask_base)`, exclusions first so a set
-    /// too large to carry drops only the caps whose loss costs nothing new.
-    pub fn from_caps(mut caps: Vec<QuoterUserCapV0>) -> Self {
-        caps.sort_by_key(|cap| cap.bid_base.saturating_add(cap.ask_base));
-        let mut set = Self::EMPTY;
-        for (slot, cap) in caps.iter().take(MAX_CONSTRAINED_WIRE_USERS).enumerate() {
-            set.caps[slot] = *cap;
-            set.len = (slot + 1) as u8;
-        }
-        set
-    }
-}
-
-/// Encoded width of a [`QuoterUserCapsV0`], pinned against the CLOB's mirror.
-pub const QUOTER_USER_CAPS_BYTES: usize = 1 + MAX_CONSTRAINED_WIRE_USERS * (1 + 8 + 8);
+/// The request half of the quoter wire is declared in `quoter-spec`, the same
+/// place the responses are: velocity writes these bytes and a quoter reads
+/// them, so a second declaration here would be a second thing to keep in
+/// step. The aliases keep velocity's names for them.
+pub use quoter_spec::{
+    UserCapV0 as QuoterUserCapV0, UserCapsV0 as QuoterUserCapsV0, UserSetV0 as QuoterUserSetV0,
+    USER_CAPS_BYTES as QUOTER_USER_CAPS_BYTES, USER_CAPS_CAPACITY as MAX_CONSTRAINED_WIRE_USERS,
+    USER_EXCLUSION_BITMAP_BYTES, USER_SET_BYTES as QUOTER_USER_SET_BYTES,
+    USER_SET_CAPACITY as MAX_QUOTER_WIRE_USERS,
+};
 
 /// Upper bound on a quote/execute CPI's instruction data: discriminator,
 /// direction, size, the fixed-width user set, and an optional taker ref.
@@ -374,33 +277,6 @@ pub const CLOB_CPI_DATA_CAPACITY: usize = 8 + 1 + 8 + 8 + 5 + 8 + CLOB_USER_REF_
 
 pub const QUOTER_CPI_DATA_CAPACITY: usize =
     8 + 1 + 8 + QUOTER_USER_SET_BYTES + QUOTER_USER_CAPS_BYTES + 1 + CLOB_USER_REF_BYTES;
-
-/// Encoded width of a [`QuoterUserSetV0`] on the wire. Pinned here and
-/// against the CLOB's `UserSetV0` (`anchor-v2`, wincode) — the two must
-/// agree byte for byte.
-pub const QUOTER_USER_SET_BYTES: usize = 1 + MAX_QUOTER_WIRE_USERS * CLOB_USER_REF_BYTES;
-
-impl Default for QuoterUserSetV0 {
-    fn default() -> Self {
-        Self::EMPTY
-    }
-}
-
-impl QuoterUserSetV0 {
-    /// Unrestricted: every user the quoter holds liquidity for is fair game.
-    pub const EMPTY: Self = Self {
-        len: 0,
-        users: [ClobUserRefV0::ZERO; MAX_QUOTER_WIRE_USERS],
-    };
-
-    pub fn as_slice(&self) -> &[ClobUserRefV0] {
-        &self.users[..self.len as usize]
-    }
-
-    pub fn contains(&self, user: &ClobUserRefV0) -> bool {
-        self.as_slice().contains(user)
-    }
-}
 
 /// The loaded-user set as velocity holds it: a heap slice, capped at the
 /// wire's capacity, serialized to the wire's fixed width by
@@ -571,23 +447,6 @@ pub use quoter_spec::CompletedOrderV0;
 /// spend heap per quoter per fill that nothing gives back. The caller holds
 /// the account guard (see [`ResponseLocationV0`]) for as long as it reads.
 pub use quoter_spec::ExecuteResponseV0;
-
-/// The CLOB's book side, as encoded on its wire (borsh enum tag).
-#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
-pub enum ClobSide {
-    Bid,
-    Ask,
-}
-
-impl ClobSide {
-    /// The maker position direction a resting order on this side represents.
-    pub fn to_position_direction(self) -> crate::controller::position::PositionDirection {
-        match self {
-            ClobSide::Bid => crate::controller::position::PositionDirection::Long,
-            ClobSide::Ask => crate::controller::position::PositionDirection::Short,
-        }
-    }
-}
 
 /// Order handle on the CLOB: an O(1) node hint verified against the order id
 /// there, so a stale hint fails closed on the CLOB side.
@@ -1167,6 +1026,7 @@ pub fn clob_resting_prefix(
             Some((*user, room))
         })
         .collect();
+    let any_excluded = caps.any_excluded(side);
     let mut index = match read_clob_u32(data, head_offset) {
         Some(index) => index,
         None => return prefix,
@@ -1183,13 +1043,23 @@ pub fn clob_resting_prefix(
         let settleable = users.is_empty() || users.contains(&user);
         // A named user out of room is passed over here exactly as the book
         // passes it over, so it never reaches the permitted set.
-        let allowed = match budget.iter_mut().find(|(named, _)| *named == user) {
-            Some(entry) => {
-                let take = node.base_asset_amount.min(entry.1);
-                entry.1 -= take;
-                take
+        // Same order as the book: the bitmap first, then the partial caps.
+        let excluded = any_excluded
+            && users
+                .iter()
+                .position(|named| *named == user)
+                .is_some_and(|index| caps.is_excluded(index, side));
+        let allowed = if excluded {
+            0
+        } else {
+            match budget.iter_mut().find(|(named, _)| *named == user) {
+                Some(entry) => {
+                    let take = node.base_asset_amount.min(entry.1);
+                    entry.1 -= take;
+                    take
+                }
+                None => node.base_asset_amount,
             }
-            None => node.base_asset_amount,
         };
         if node.is_matchable(slot, now) && settleable && user != *taker && allowed > 0 {
             prefix.push(ClobRestingOrderV0 {

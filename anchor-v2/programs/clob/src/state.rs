@@ -398,128 +398,18 @@ pub struct OrderRefV0 {
 /// dead end (its authority lives inside account data the reader can't
 /// load).
 pub use quoter_spec::UserRefV0;
-
-/// Capacity of [`UserSetV0`]. Mirrors velocity's `MAX_QUOTER_WIRE_USERS`,
-/// which is derived from the account-lock budget of the transaction that
-/// forwards the set: 64 locks, minus the 15 a router fill spends before its
-/// first maker, minus one for the `UserStats` those makers share in the best
-/// case. Both sides must hold the same number or the wire is undecodable.
-pub const USER_SET_CAPACITY: usize = 48;
-
-/// The caller's settleable-user set, exactly as velocity's
-/// `QuoterUserSetV0` puts it on the wire: a live count followed by a
-/// fixed-width array. Fixed width is what lets both sides decode it without
-/// allocating on a path that runs twice per fill, and what makes the encoding
-/// something to pin rather than negotiate.
+/// The request half of this wire, declared in `quoter-spec` alongside the
+/// responses — one declaration both programs read, rather than a shape each
+/// restates and a width each asserts.
 ///
-/// An empty set means unrestricted, which only callers that settle nothing
-/// (quote discovery) use. Otherwise it is the set of velocity `User`s the
-/// calling transaction loaded, and liquidity owned by anyone else must be
-/// passed over: velocity cannot settle a balance change for a `User` it did
-/// not load, and refuses the whole response if one appears.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct UserSetV0 {
-    /// Live entries at the head of `users`; the tail is undefined.
-    pub len: u8,
-    pub users: [UserRefV0; USER_SET_CAPACITY],
-}
-
-/// Constrained users one call can name. Mirrors velocity's
-/// `MAX_CONSTRAINED_WIRE_USERS`.
-pub const USER_CAPS_CAPACITY: usize = 8;
-
-/// What one named user may still take on, per side, in base.
-///
-/// Two numbers rather than one keyed off the call's direction: a maker's room
-/// differs by side, and one set has to serve a cross-match that sweeps both
-/// sides of this book in the same transaction.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct UserCapV0 {
-    /// Index into the accompanying [`UserSetV0`].
-    pub index: u8,
-    /// Base this user may take resting on the bid side (going long).
-    pub bid_base: u64,
-    /// Base this user may take resting on the ask side (going short).
-    pub ask_base: u64,
-}
-
-/// Per-user room, parallel to the user set.
-///
-/// A user absent from this list is unconstrained. A cap of zero means their
-/// orders are passed over entirely — the caller has said it cannot settle a
-/// fill against them, so quoting depth that stands on their orders would be
-/// quoting depth that cannot be delivered.
-///
-/// Distinct from membership of [`UserSetV0`]: absent from *that* means the
-/// caller's account set is stale and, past the grace window, the whole call
-/// fails. A zero cap is a deliberate constraint, not a mistake, and never
-/// fails the call.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct UserCapsV0 {
-    /// Live entries at the head of `caps`; the tail is undefined.
-    pub len: u8,
-    pub caps: [UserCapV0; USER_CAPS_CAPACITY],
-}
-
-impl Default for UserCapsV0 {
-    fn default() -> Self {
-        Self::EMPTY
-    }
-}
-
-impl UserCapsV0 {
-    pub const EMPTY: Self = Self {
-        len: 0,
-        caps: [UserCapV0 {
-            index: 0,
-            bid_base: 0,
-            ask_base: 0,
-        }; USER_CAPS_CAPACITY],
-    };
-
-    /// The live prefix. `len` arrives from a foreign caller, so it is clamped
-    /// rather than trusted.
-    pub fn as_slice(&self) -> &[UserCapV0] {
-        &self.caps[..(self.len as usize).min(USER_CAPS_CAPACITY)]
-    }
-}
-
-/// Encoded width of a [`UserCapsV0`], pinned against velocity's
-/// `QUOTER_USER_CAPS_BYTES`.
-pub const USER_CAPS_BYTES: usize = 1 + USER_CAPS_CAPACITY * (1 + 8 + 8);
-
-/// Encoded width of a [`UserSetV0`], pinned against velocity's
-/// `QUOTER_USER_SET_BYTES` by `tests::response`.
-pub const USER_SET_BYTES: usize = 1 + USER_SET_CAPACITY * USER_REF_BYTES;
-
-impl UserSetV0 {
-    pub const EMPTY: Self = Self {
-        len: 0,
-        users: [UserRefV0::ZERO; USER_SET_CAPACITY],
-    };
-
-    /// The live prefix. `len` arrives from a foreign caller, so it is clamped
-    /// rather than trusted.
-    pub fn as_slice(&self) -> &[UserRefV0] {
-        &self.users[..(self.len as usize).min(USER_SET_CAPACITY)]
-    }
-
-    /// Whether the set restricts anything at all.
-    pub fn is_unrestricted(&self) -> bool {
-        self.len == 0
-    }
-
-    /// Build from at most [`USER_SET_CAPACITY`] refs; `None` past capacity.
-    pub fn from_refs(refs: &[UserRefV0]) -> Option<Self> {
-        if refs.len() > USER_SET_CAPACITY {
-            return None;
-        }
-        let mut set = Self::EMPTY;
-        set.users[..refs.len()].copy_from_slice(refs);
-        set.len = refs.len() as u8;
-        Some(set)
-    }
-}
+/// `USER_SET_CAPACITY` is derived from the account-lock budget of the
+/// transaction that forwards the set: 64 locks, minus the 15 a router fill
+/// spends before its first maker, minus one for the `UserStats` those makers
+/// share in the best case.
+pub use quoter_spec::{
+    UserCapV0, UserCapsV0, UserSetV0, USER_CAPS_BYTES, USER_CAPS_CAPACITY,
+    USER_EXCLUSION_BITMAP_BYTES, USER_SET_BYTES, USER_SET_CAPACITY,
+};
 
 /// Declared by `quoter-spec`; the alias keeps this program's name for it.
 pub type PriceLevel = quoter_spec::PriceLevelV0;

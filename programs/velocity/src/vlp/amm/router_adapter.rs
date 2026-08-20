@@ -39,7 +39,7 @@ use {
             safe_math::SafeMath,
         },
         state::{
-            prop_amm::{Direction, PriceLevel, QuoterType},
+            prop_amm::{Direction, PriceLevel, QuoterType, WireDirectionExt},
             quoter::{QuoteContext, QuoterFill, RouterQuoter},
         },
     },

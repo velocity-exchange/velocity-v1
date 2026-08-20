@@ -411,7 +411,7 @@ fn the_args_round_trip_with_caps_between_the_set_and_the_taker() {
 #[test]
 fn the_cap_list_is_fixed_width_on_the_wire() {
     assert_eq!(USER_CAPS_CAPACITY, 8);
-    assert_eq!(USER_CAPS_BYTES, 137);
+    assert_eq!(USER_CAPS_BYTES, 149);
     assert_eq!(encode(&UserCapsV0::EMPTY).len(), USER_CAPS_BYTES);
     let mut full = UserCapsV0::EMPTY;
     full.len = USER_CAPS_CAPACITY as u8;

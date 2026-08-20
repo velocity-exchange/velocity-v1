@@ -3,6 +3,10 @@ import {
 	Millis,
 	SlotDurationMs,
 	SLOT_DURATION_BASELINE,
+	MILLIS_UNIT,
+	divPeriods,
+	millisFromSecs,
+	millisFromSlots,
 	millisToSlotsCeil,
 } from './time';
 import {
@@ -485,6 +489,35 @@ export function calculateMaxPctToLiquidate(
 	);
 
 	return marginFreeable.mul(LIQUIDATION_PCT_PRECISION).div(marginShortage);
+}
+
+/** Ten-minute grace window before the liquidation fee starts increasing. */
+export const LIQUIDATION_FEE_ADJUST_GRACE_PERIOD = millisFromSecs(600);
+/** One fee-precision unit added per whole legacy 400ms calibration period. */
+export const LIQUIDATION_FEE_INCREASE_PER_PERIOD = 1;
+
+/**
+ * Mirrors the program's `get_liquidation_fee`: after a ten-minute grace
+ * period, increase the base fee once per whole 400ms calibration period of
+ * elapsed wall-clock time, capped at `maxLiquidationFee`.
+ */
+export function getLiquidationFee(
+	baseLiquidationFee: number,
+	maxLiquidationFee: number,
+	lastActiveUserSlot: BN,
+	currentSlot: BN,
+	slotDuration: SlotDurationMs = SLOT_DURATION_BASELINE
+): number {
+	const elapsedSlots = BN.max(currentSlot.sub(lastActiveUserSlot), ZERO);
+	const elapsed = millisFromSlots(elapsedSlots, slotDuration);
+	if (elapsed.lt(LIQUIDATION_FEE_ADJUST_GRACE_PERIOD)) {
+		return baseLiquidationFee;
+	}
+
+	const fee = new BN(baseLiquidationFee).add(
+		divPeriods(elapsed, MILLIS_UNIT).muln(LIQUIDATION_FEE_INCREASE_PER_PERIOD)
+	);
+	return Math.min(maxLiquidationFee, fee.toNumber());
 }
 
 /**

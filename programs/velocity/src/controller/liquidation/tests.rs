@@ -20,6 +20,7 @@ pub mod liquidate_perp {
                     MarginRequirementType,
                 },
                 position::calculate_base_asset_value_with_oracle_price,
+                time::legacy_slot_duration_u8,
             },
             state::{
                 margin_calculation::{MarginCalculation, MarginContext},
@@ -139,7 +140,7 @@ pub mod liquidate_perp {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         assert!(user.is_cross_margin_being_liquidated());
@@ -275,7 +276,7 @@ pub mod liquidate_perp {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         liquidate_perp(
@@ -438,7 +439,7 @@ pub mod liquidate_perp {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         let result = liquidate_perp(
@@ -578,7 +579,7 @@ pub mod liquidate_perp {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         liquidate_perp(
@@ -731,7 +732,7 @@ pub mod liquidate_perp {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             // exchange-wide FundingPaused
             exchange_status: 0b00100000,
             ..Default::default()
@@ -878,7 +879,7 @@ pub mod liquidate_perp {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         liquidate_perp(
@@ -1031,7 +1032,7 @@ pub mod liquidate_perp {
         let state = State {
             liquidation_margin_buffer_ratio: 255,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         liquidate_perp(
@@ -1172,7 +1173,7 @@ pub mod liquidate_perp {
         let state = State {
             liquidation_margin_buffer_ratio: MARGIN_PRECISION / 50,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         liquidate_perp(
@@ -1328,7 +1329,7 @@ pub mod liquidate_perp {
         let state = State {
             liquidation_margin_buffer_ratio: MARGIN_PRECISION / 50,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         liquidate_perp(
@@ -1567,7 +1568,7 @@ pub mod liquidate_perp {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         liquidate_perp(
@@ -1732,7 +1733,7 @@ pub mod liquidate_perp {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
 
@@ -1869,7 +1870,7 @@ pub mod liquidate_perp {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
 
@@ -1999,7 +2000,7 @@ pub mod liquidate_perp {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         liquidate_perp(
@@ -2159,7 +2160,7 @@ pub mod liquidate_perp {
         let state = State {
             liquidation_margin_buffer_ratio: MARGIN_PRECISION / 50,
             initial_pct_to_liquidate: (LIQUIDATION_PCT_PRECISION / 10) as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         liquidate_perp(
@@ -2441,7 +2442,7 @@ pub mod liquidate_perp {
         let state = State {
             liquidation_margin_buffer_ratio: MARGIN_PRECISION / 50,
             initial_pct_to_liquidate: (LIQUIDATION_PCT_PRECISION / 10) as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         liquidate_perp(
@@ -2571,7 +2572,7 @@ pub mod liquidate_perp {
         let state = State {
             liquidation_margin_buffer_ratio: MARGIN_PRECISION / 50,
             initial_pct_to_liquidate: (LIQUIDATION_PCT_PRECISION / 10) as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         liquidate_perp(
@@ -2704,7 +2705,7 @@ pub mod liquidate_perp {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         liquidate_perp(
@@ -2837,7 +2838,7 @@ pub mod liquidate_perp {
         let state = State {
             liquidation_margin_buffer_ratio: 200,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         liquidate_perp(
@@ -3009,7 +3010,7 @@ pub mod liquidate_perp {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
 
@@ -3066,12 +3067,15 @@ pub mod liquidate_perp_with_fill {
         crate::{
             controller::{liquidation::liquidate_perp_with_fill, position::PositionDirection},
             create_anchor_account_info,
-            math::constants::{
-                AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64,
-                LIQUIDATION_FEE_PRECISION, LIQUIDATION_PCT_PRECISION, PEG_PRECISION,
-                PRICE_PRECISION_U64, QUOTE_PRECISION_I128, QUOTE_PRECISION_I64,
-                SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
-                SPOT_WEIGHT_PRECISION,
+            math::{
+                constants::{
+                    AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64,
+                    LIQUIDATION_FEE_PRECISION, LIQUIDATION_PCT_PRECISION, PEG_PRECISION,
+                    PRICE_PRECISION_U64, QUOTE_PRECISION_I128, QUOTE_PRECISION_I64,
+                    SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
+                    SPOT_WEIGHT_PRECISION,
+                },
+                time::legacy_slot_duration_u8,
             },
             state::{
                 market_status::MarketStatus,
@@ -3225,7 +3229,7 @@ pub mod liquidate_perp_with_fill {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
 
@@ -3439,7 +3443,7 @@ pub mod liquidate_perp_with_fill {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
 
@@ -3657,7 +3661,7 @@ pub mod liquidate_perp_with_fill {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
 
@@ -3832,7 +3836,7 @@ pub mod liquidate_perp_with_fill {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
 
@@ -3891,6 +3895,7 @@ pub mod liquidate_spot {
                 margin::calculate_margin_requirement_and_total_collateral_and_liability_info,
                 orders::is_oracle_too_divergent_with_twap_5min,
                 spot_balance::{get_strict_token_value, get_token_amount, get_token_value},
+                time::legacy_slot_duration_u8,
             },
             state::{
                 margin_calculation::{MarginCalculation, MarginContext},
@@ -4016,7 +4021,7 @@ pub mod liquidate_spot {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
 
@@ -4168,7 +4173,7 @@ pub mod liquidate_spot {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
 
@@ -4318,7 +4323,7 @@ pub mod liquidate_spot {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
 
@@ -4466,7 +4471,7 @@ pub mod liquidate_spot {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
 
@@ -4620,7 +4625,7 @@ pub mod liquidate_spot {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
 
@@ -4785,7 +4790,7 @@ pub mod liquidate_spot {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
 
@@ -4919,7 +4924,7 @@ pub mod liquidate_spot {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         // oracle twap too volatile to liq rn
@@ -5089,7 +5094,7 @@ pub mod liquidate_spot {
         let state = State {
             liquidation_margin_buffer_ratio: MARGIN_PRECISION / 50,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         liquidate_spot(
@@ -5310,7 +5315,7 @@ pub mod liquidate_spot {
         let state = State {
             liquidation_margin_buffer_ratio: MARGIN_PRECISION / 50,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         let limit_price = (100000000 * PRICE_PRECISION_U64 / 999000) + 1;
@@ -5438,7 +5443,7 @@ pub mod liquidate_spot {
         let state = State {
             liquidation_margin_buffer_ratio: MARGIN_PRECISION / 50,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         let limit_price = (100000000 * PRICE_PRECISION_U64 / 999000) - 1;
@@ -5568,7 +5573,7 @@ pub mod liquidate_spot {
         let state = State {
             liquidation_margin_buffer_ratio: MARGIN_PRECISION / 50,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         liquidate_spot(
@@ -5702,7 +5707,7 @@ pub mod liquidate_spot {
         let state = State {
             liquidation_margin_buffer_ratio: MARGIN_PRECISION / 50,
             initial_pct_to_liquidate: (LIQUIDATION_PCT_PRECISION / 10) as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
 
@@ -5949,7 +5954,7 @@ pub mod liquidate_spot {
         let state = State {
             liquidation_margin_buffer_ratio: liquidation_buffer,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
 
@@ -7619,6 +7624,7 @@ pub mod liquidate_perp_pnl_for_deposit {
                     SPOT_WEIGHT_PRECISION,
                 },
                 margin::calculate_margin_requirement_and_total_collateral_and_liability_info,
+                time::legacy_slot_duration_u8,
             },
             state::{
                 margin_calculation::MarginContext,
@@ -9631,7 +9637,7 @@ pub mod liquidate_perp_pnl_for_deposit {
         let state = State {
             liquidation_margin_buffer_ratio: MARGIN_PRECISION / 50,
             initial_pct_to_liquidate: (PERCENTAGE_PRECISION / 10) as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
 
@@ -13825,10 +13831,14 @@ pub mod set_user_status_to_being_liquidated {
             },
             create_anchor_account_info,
             error::ErrorCode,
-            math::constants::{
-                AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_I64, BASE_PRECISION_U64,
-                LIQUIDATION_FEE_PRECISION, PEG_PRECISION, QUOTE_PRECISION_I128,
-                QUOTE_PRECISION_I64, SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+            math::{
+                constants::{
+                    AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_I64,
+                    BASE_PRECISION_U64, LIQUIDATION_FEE_PRECISION, PEG_PRECISION,
+                    QUOTE_PRECISION_I128, QUOTE_PRECISION_I64, SPOT_CUMULATIVE_INTEREST_PRECISION,
+                    SPOT_WEIGHT_PRECISION,
+                },
+                time::legacy_slot_duration_u8,
             },
             state::{
                 market_status::MarketStatus,
@@ -13953,7 +13963,7 @@ pub mod set_user_status_to_being_liquidated {
         let state = State {
             liquidation_margin_buffer_ratio: DEFAULT_LIQUIDATION_MARGIN_BUFFER_RATIO,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
 
@@ -14001,7 +14011,7 @@ pub mod set_user_status_to_being_liquidated {
         let state = State {
             liquidation_margin_buffer_ratio: DEFAULT_LIQUIDATION_MARGIN_BUFFER_RATIO,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
 
@@ -14131,7 +14141,7 @@ pub mod set_user_status_to_being_liquidated {
         let state = State {
             liquidation_margin_buffer_ratio: DEFAULT_LIQUIDATION_MARGIN_BUFFER_RATIO,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
 
@@ -14164,6 +14174,7 @@ pub mod liquidate_spot_with_swap {
                     SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
                 },
                 spot_balance::get_token_amount,
+                time::legacy_slot_duration_u8,
             },
             state::{
                 oracle::{HistoricalOracleData, OracleSource},
@@ -14289,7 +14300,7 @@ pub mod liquidate_spot_with_swap {
         let state = State {
             liquidation_margin_buffer_ratio: MARGIN_PRECISION / 50,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
 
@@ -14499,7 +14510,7 @@ pub mod liquidate_spot_with_swap {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
 
@@ -14689,7 +14700,7 @@ pub mod liquidate_spot_with_swap {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
 
@@ -14883,7 +14894,7 @@ pub mod liquidate_spot_with_swap {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
 
@@ -15172,6 +15183,7 @@ pub mod liquidate_isolated_perp {
                 liquidation::validate_user_not_being_liquidated,
                 margin::calculate_margin_requirement_and_total_collateral_and_liability_info,
                 position::calculate_base_asset_value_with_oracle_price,
+                time::legacy_slot_duration_u8,
             },
             state::{
                 margin_calculation::MarginContext,
@@ -15308,7 +15320,7 @@ pub mod liquidate_isolated_perp {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         liquidate_perp(
@@ -15464,7 +15476,7 @@ pub mod liquidate_isolated_perp {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         liquidate_perp(
@@ -15617,7 +15629,7 @@ pub mod liquidate_isolated_perp {
         let state = State {
             liquidation_margin_buffer_ratio: MARGIN_PRECISION / 50,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         liquidate_perp(
@@ -15803,7 +15815,7 @@ pub mod liquidate_isolated_perp {
         let state = State {
             liquidation_margin_buffer_ratio: MARGIN_PRECISION / 50,
             initial_pct_to_liquidate: (LIQUIDATION_PCT_PRECISION / 10) as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         liquidate_perp(
@@ -15931,7 +15943,7 @@ pub mod liquidate_isolated_perp {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         liquidate_perp(
@@ -16060,7 +16072,7 @@ pub mod liquidate_isolated_perp {
         let state = State {
             liquidation_margin_buffer_ratio: 200,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         liquidate_perp(
@@ -16245,7 +16257,7 @@ pub mod liquidate_isolated_perp {
         let state = State {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..Default::default()
         };
         let result = liquidate_perp(

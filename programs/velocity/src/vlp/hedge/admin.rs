@@ -12,6 +12,7 @@ use {
         math::{
             constants::{PRICE_PRECISION_U64, QUOTE_SPOT_MARKET_INDEX},
             safe_math::SafeMath,
+            time::legacy_slot_duration_u64,
         },
         perp_market_valid,
         state::{
@@ -45,6 +46,42 @@ use {
 /// spelled out so this module compiles when the `vlp-hedge` entry points are gated out.
 /// Pinned to the generated value by `end_lp_swap_discriminator_matches` below.
 const END_LP_SWAP_DISCRIMINATOR: &[u8] = &[99, 125, 214, 165, 129, 175, 253, 135];
+
+/// Defensive ceiling for the constituent oracle-staleness window, in its
+/// historical 400ms storage units. This matches the margin-oracle ceiling:
+/// 1,000,000 units is roughly 4.6 days, already far beyond any operational
+/// setting, while preventing a fat-fingered value from making the AUM oracle
+/// freshness gate effectively unbounded.
+const MAX_CONSTITUENT_ORACLE_STALENESS_STORED_UNITS: u64 = 1_000_000;
+
+fn validate_oracle_staleness_threshold(oracle_staleness_threshold: u64) -> Result<()> {
+    validate!(
+        oracle_staleness_threshold <= MAX_CONSTITUENT_ORACLE_STALENESS_STORED_UNITS,
+        ErrorCode::InvalidConstituent,
+        "oracle_staleness_threshold must be <= {} legacy 400ms units",
+        MAX_CONSTITUENT_ORACLE_STALENESS_STORED_UNITS
+    )?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod oracle_staleness_threshold_tests {
+    use super::{
+        validate_oracle_staleness_threshold, MAX_CONSTITUENT_ORACLE_STALENESS_STORED_UNITS,
+    };
+
+    #[test]
+    fn accepts_ceiling_and_rejects_value_above_it() {
+        assert!(
+            validate_oracle_staleness_threshold(MAX_CONSTITUENT_ORACLE_STALENESS_STORED_UNITS)
+                .is_ok()
+        );
+        assert!(validate_oracle_staleness_threshold(
+            MAX_CONSTITUENT_ORACLE_STALENESS_STORED_UNITS + 1
+        )
+        .is_err());
+    }
+}
 
 #[cfg(all(test, feature = "vlp-hedge"))]
 #[test]
@@ -154,6 +191,8 @@ pub fn handle_initialize_constituent<'info>(
     xi: u8,
     new_constituent_correlations: Vec<i64>,
 ) -> Result<()> {
+    validate_oracle_staleness_threshold(oracle_staleness_threshold)?;
+
     let mut constituent = ctx.accounts.constituent.load_init()?;
     let mut lp_pool = ctx.accounts.lp_pool.load_mut()?;
 
@@ -197,7 +236,7 @@ pub fn handle_initialize_constituent<'info>(
     constituent.max_weight_deviation = max_weight_deviation;
     constituent.swap_fee_min = swap_fee_min;
     constituent.swap_fee_max = swap_fee_max;
-    constituent.oracle_staleness_threshold = oracle_staleness_threshold;
+    constituent.oracle_staleness_threshold = legacy_slot_duration_u64(oracle_staleness_threshold);
     constituent.pubkey = ctx.accounts.constituent.key();
     constituent.mint = ctx.accounts.spot_market_mint.key();
     constituent.vault = ctx.accounts.constituent_vault.key();
@@ -349,12 +388,14 @@ pub fn handle_update_constituent_params(
     }
 
     if let Some(oracle_staleness_threshold) = constituent_params.oracle_staleness_threshold {
+        validate_oracle_staleness_threshold(oracle_staleness_threshold)?;
         msg!(
             "oracle_staleness_threshold: {:?} -> {:?}",
             constituent.oracle_staleness_threshold,
             oracle_staleness_threshold
         );
-        constituent.oracle_staleness_threshold = oracle_staleness_threshold;
+        constituent.oracle_staleness_threshold =
+            legacy_slot_duration_u64(oracle_staleness_threshold);
     }
 
     if let Some(cost_to_trade_bps) = constituent_params.cost_to_trade_bps {

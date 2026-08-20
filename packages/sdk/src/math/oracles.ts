@@ -4,6 +4,7 @@ import {
 	OracleGuardRails,
 	OracleSource,
 	OracleValidity,
+	PerpOperation,
 	PerpMarketAccount,
 	SpotMarketAccount,
 	isOneOfVariant,
@@ -28,9 +29,11 @@ import {
 	SlotDurationMs,
 	SLOT_DURATION_BASELINE,
 	millisFromStoredUnits,
+	millisFromSlots,
 	millisToSlots,
 	millisToSlotsCeil,
 } from './time';
+import { isOperationPaused } from './exchangeStatus';
 
 /**
  * Computes a generic sanity band around the oracle price, sized by the gap between the
@@ -326,6 +329,61 @@ export function isMarkOracleTooDivergent(
 		PERCENTAGE_PRECISION.div(TEN)
 	);
 	return priceSpreadPct.abs().gt(maxDivergence);
+}
+
+/**
+ * Predict whether the program will block a funding update, mirroring
+ * `math::oracle::block_operation`. Funding accepts stale/insufficient oracle
+ * readings but rejects non-positive, too-volatile, or too-uncertain prices; it
+ * also blocks on mark/TWAP divergence, a paused market, or an AMM that has not
+ * updated for more than 40% of the funding period.
+ */
+export function blockOperation(
+	market: PerpMarketAccount,
+	oraclePriceData: OraclePriceData,
+	oracleGuardRails: OracleGuardRails,
+	reservePrice: BN,
+	currentSlot: BN,
+	slotDuration: SlotDurationMs = SLOT_DURATION_BASELINE
+): boolean {
+	const validity = getOracleValidity(
+		market,
+		oraclePriceData,
+		oracleGuardRails,
+		currentSlot,
+		ZERO,
+		false,
+		slotDuration
+	);
+	const oracleInvalidForFunding =
+		validity === OracleValidity.NonPositive ||
+		validity === OracleValidity.TooVolatile ||
+		validity === OracleValidity.TooUncertain;
+
+	const oracleTwap5Min =
+		market.marketStats.historicalOracleData.lastOraclePriceTwap5Min;
+	const markSpreadPct = reservePrice
+		.sub(oracleTwap5Min)
+		.mul(BID_ASK_SPREAD_PRECISION)
+		.div(reservePrice);
+	const markTooDivergent = isMarkOracleTooDivergent(
+		markSpreadPct,
+		oracleGuardRails
+	);
+
+	const slotsSinceAmmUpdate = BN.max(
+		currentSlot.sub(market.amm.lastUpdateSlot),
+		ZERO
+	);
+	const ammStaleMs = millisFromSlots(slotsSinceAmmUpdate, slotDuration);
+	const staleLimitMs = market.marketStats.fundingPeriod.muln(400);
+
+	return (
+		ammStaleMs.gt(staleLimitMs) ||
+		oracleInvalidForFunding ||
+		markTooDivergent ||
+		isOperationPaused(market.pausedOperations, PerpOperation.UPDATE_FUNDING)
+	);
 }
 
 /**

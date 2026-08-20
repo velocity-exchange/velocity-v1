@@ -2131,7 +2131,7 @@ mod update_perp_auction_params {
 mod get_close_perp_params {
     use {
         crate::{
-            math::orders::get_posted_slot_from_clock_slot,
+            math::{orders::get_posted_slot_from_clock_slot, time::SlotDuration},
             state::{
                 oracle::HistoricalOracleData,
                 order_params::PostOnlyParam,
@@ -2186,9 +2186,13 @@ mod get_close_perp_params {
         let direction_to_close = PositionDirection::Long;
         let base_asset_amount = BASE_PRECISION_U64;
 
-        let params =
-            OrderParams::get_close_perp_params(&perp_market, direction_to_close, base_asset_amount)
-                .unwrap();
+        let params = OrderParams::get_close_perp_params(
+            &perp_market,
+            direction_to_close,
+            base_asset_amount,
+            SlotDuration::BASELINE,
+        )
+        .unwrap();
 
         let auction_start_price = params.auction_start_price.unwrap();
         let auction_end_price = params.auction_end_price.unwrap();
@@ -2231,9 +2235,13 @@ mod get_close_perp_params {
             order_tick_size: 1,
             ..PerpMarket::default()
         };
-        let params =
-            OrderParams::get_close_perp_params(&perp_market, direction_to_close, base_asset_amount)
-                .unwrap();
+        let params = OrderParams::get_close_perp_params(
+            &perp_market,
+            direction_to_close,
+            base_asset_amount,
+            SlotDuration::BASELINE,
+        )
+        .unwrap();
 
         let auction_start_price = params.auction_start_price.unwrap();
         let auction_end_price = params.auction_end_price.unwrap();
@@ -2276,9 +2284,13 @@ mod get_close_perp_params {
             order_tick_size: 1,
             ..PerpMarket::default()
         };
-        let params =
-            OrderParams::get_close_perp_params(&perp_market, direction_to_close, base_asset_amount)
-                .unwrap();
+        let params = OrderParams::get_close_perp_params(
+            &perp_market,
+            direction_to_close,
+            base_asset_amount,
+            SlotDuration::BASELINE,
+        )
+        .unwrap();
 
         let auction_start_price = params.auction_start_price.unwrap();
         let auction_end_price = params.auction_end_price.unwrap();
@@ -2329,9 +2341,13 @@ mod get_close_perp_params {
         let direction_to_close = PositionDirection::Short;
         let base_asset_amount = BASE_PRECISION_U64;
 
-        let params =
-            OrderParams::get_close_perp_params(&perp_market, direction_to_close, base_asset_amount)
-                .unwrap();
+        let params = OrderParams::get_close_perp_params(
+            &perp_market,
+            direction_to_close,
+            base_asset_amount,
+            SlotDuration::BASELINE,
+        )
+        .unwrap();
 
         let auction_start_price = params.auction_start_price.unwrap();
         let auction_end_price = params.auction_end_price.unwrap();
@@ -2374,9 +2390,13 @@ mod get_close_perp_params {
             order_tick_size: 1,
             ..PerpMarket::default()
         };
-        let params =
-            OrderParams::get_close_perp_params(&perp_market, direction_to_close, base_asset_amount)
-                .unwrap();
+        let params = OrderParams::get_close_perp_params(
+            &perp_market,
+            direction_to_close,
+            base_asset_amount,
+            SlotDuration::BASELINE,
+        )
+        .unwrap();
 
         let auction_start_price = params.auction_start_price.unwrap();
         let auction_end_price = params.auction_end_price.unwrap();
@@ -2420,9 +2440,13 @@ mod get_close_perp_params {
             order_tick_size: 1,
             ..PerpMarket::default()
         };
-        let params =
-            OrderParams::get_close_perp_params(&perp_market, direction_to_close, base_asset_amount)
-                .unwrap();
+        let params = OrderParams::get_close_perp_params(
+            &perp_market,
+            direction_to_close,
+            base_asset_amount,
+            SlotDuration::BASELINE,
+        )
+        .unwrap();
 
         let auction_start_price = params.auction_start_price.unwrap();
         let auction_end_price = params.auction_end_price.unwrap();
@@ -2467,9 +2491,13 @@ mod get_close_perp_params {
         let direction_to_close = PositionDirection::Short;
         let base_asset_amount = BASE_PRECISION_U64;
 
-        let params =
-            OrderParams::get_close_perp_params(&perp_market, direction_to_close, base_asset_amount)
-                .unwrap();
+        let params = OrderParams::get_close_perp_params(
+            &perp_market,
+            direction_to_close,
+            base_asset_amount,
+            SlotDuration::BASELINE,
+        )
+        .unwrap();
 
         let auction_start_price = params.auction_start_price.unwrap();
         let auction_end_price = params.auction_end_price.unwrap();
@@ -2515,9 +2543,13 @@ mod get_close_perp_params {
         let direction_to_close = PositionDirection::Short;
         let base_asset_amount = 100 * BASE_PRECISION_U64;
 
-        let params =
-            OrderParams::get_close_perp_params(&perp_market, direction_to_close, base_asset_amount)
-                .unwrap();
+        let params = OrderParams::get_close_perp_params(
+            &perp_market,
+            direction_to_close,
+            base_asset_amount,
+            SlotDuration::BASELINE,
+        )
+        .unwrap();
 
         let auction_start_price = params.auction_start_price.unwrap();
         let auction_end_price = params.auction_end_price.unwrap();
@@ -2619,6 +2651,7 @@ mod get_close_perp_params {
             &perp_market,
             PositionDirection::Long,
             base_asset_amount,
+            SlotDuration::BASELINE,
         )
         .unwrap();
 
@@ -2630,6 +2663,15 @@ mod get_close_perp_params {
         assert_eq!(auction_end_price, long_end); // 115
         assert_eq!(oracle_price_offset, long_end);
         assert_eq!(auction_duration, 80);
+
+        let fast_slot_params = OrderParams::get_close_perp_params(
+            &perp_market,
+            PositionDirection::Long,
+            base_asset_amount,
+            SlotDuration::from_state_ms(200),
+        )
+        .unwrap();
+        assert_eq!(fast_slot_params.auction_duration, Some(160));
 
         let order = get_order(&params, slot);
 

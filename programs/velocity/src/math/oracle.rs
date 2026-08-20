@@ -7,7 +7,7 @@ use {
                 BID_ASK_SPREAD_PRECISION, MM_ORACLE_MIN_WRITE_GAP, PERCENTAGE_PRECISION_U64,
             },
             safe_math::SafeMath,
-            time::{DelayOverride, Millis, SlotDuration},
+            time::{legacy_slot_duration_i64_raw, DelayOverride, Millis, SlotDuration},
         },
         state::{
             oracle::{OraclePriceData, OracleSource},
@@ -325,7 +325,8 @@ pub fn get_oracle_status(
     reserve_price: u64,
     slot_duration: SlotDuration,
 ) -> VelocityResult<OracleStatus> {
-    let slot_delay_override = guard_rails.validity.slots_before_stale_for_amm.cast()?;
+    let slot_delay_override =
+        legacy_slot_duration_i64_raw(guard_rails.validity.slots_before_stale_for_amm).cast()?;
     let oracle_validity = oracle_validity(
         MarketType::Perp,
         market.market_index,

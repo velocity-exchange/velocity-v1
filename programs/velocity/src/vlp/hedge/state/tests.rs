@@ -2452,7 +2452,7 @@ mod update_aum_tests {
             last_oracle_slot: 100,
             decimals: 6,
             vault_token_balance: usdc_balance,
-            oracle_staleness_threshold: 10,
+            oracle_staleness_threshold: legacy_slot_duration_u64(10),
             ..Constituent::default()
         };
         create_anchor_account_info!(constituent_usdc, Constituent, constituent_usdc_account_info);
@@ -2465,7 +2465,7 @@ mod update_aum_tests {
             last_oracle_slot: 100,
             decimals: 9,
             vault_token_balance: sol_balance,
-            oracle_staleness_threshold: 10,
+            oracle_staleness_threshold: legacy_slot_duration_u64(10),
             ..Constituent::default()
         };
         create_anchor_account_info!(constituent_sol, Constituent, constituent_sol_account_info);
@@ -2478,7 +2478,7 @@ mod update_aum_tests {
             last_oracle_slot: 100,
             decimals: 8,
             vault_token_balance: btc_balance,
-            oracle_staleness_threshold: 10,
+            oracle_staleness_threshold: legacy_slot_duration_u64(10),
             ..Constituent::default()
         };
         create_anchor_account_info!(constituent_btc, Constituent, constituent_btc_account_info);
@@ -2491,7 +2491,7 @@ mod update_aum_tests {
             last_oracle_slot: 100,
             decimals: 5,
             vault_token_balance: bonk_balance,
-            oracle_staleness_threshold: 10,
+            oracle_staleness_threshold: legacy_slot_duration_u64(10),
             ..Constituent::default()
         };
         create_anchor_account_info!(constituent_bonk, Constituent, constituent_bonk_account_info);

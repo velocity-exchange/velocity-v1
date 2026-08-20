@@ -2,6 +2,7 @@ use crate::{
     math::{
         constants::{AMM_RESERVE_PRECISION, PEG_PRECISION, PRICE_PRECISION, PRICE_PRECISION_U64},
         oracle::*,
+        time::legacy_slot_duration_i64,
     },
     state::{
         oracle::HistoricalOracleData,
@@ -24,6 +25,49 @@ fn mm_immediate_threshold_matches_write_gate_at_every_gate() {
         let threshold = MM_ORACLE_MIN_WRITE_GAP.to_slots_ceil(d);
         assert_eq!(threshold, expected, "MM write-gap slots wrong at {ms}ms");
     }
+}
+
+#[test]
+fn staleness_windows_scale_at_non_baseline_duration() {
+    let guard_rails = ValidityGuardRails {
+        slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4 seconds
+        slots_before_stale_for_margin: legacy_slot_duration_i64(120),
+        confidence_interval_max_size: 20_000,
+        too_volatile_ratio: 5,
+    };
+    let oracle_price_data = OraclePriceData {
+        price: (100 * PRICE_PRECISION) as i64,
+        confidence: 1,
+        delay: 15,
+        has_sufficient_number_of_data_points: true,
+        sequence_id: None,
+    };
+    let validity = |slot_duration| {
+        oracle_validity(
+            MarketType::Perp,
+            0,
+            oracle_price_data.price,
+            &oracle_price_data,
+            &guard_rails,
+            1,
+            &OracleSource::PythLazer,
+            LogMode::None,
+            10,
+            false,
+            10,
+            slot_duration,
+        )
+        .unwrap()
+    };
+
+    assert!(matches!(
+        validity(crate::math::time::SlotDuration::BASELINE),
+        OracleValidity::StaleForAMM { .. }
+    ));
+    assert_eq!(
+        validity(crate::math::time::SlotDuration::from_state_ms(200)),
+        OracleValidity::Valid
+    );
 }
 
 #[test]
@@ -80,9 +124,9 @@ fn calculate_oracle_valid() {
                 oracle_twap_5min_percent_divergence: 10,
             },
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,      // 5s
-                slots_before_stale_for_margin: 120,  // 60s
-                confidence_interval_max_size: 20000, // 2%
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 5s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 60s
+                confidence_interval_max_size: 20000,                      // 2%
                 too_volatile_ratio: 5,
             },
         },
@@ -194,8 +238,8 @@ fn calculate_oracle_valid() {
 #[test]
 fn immediate_staleness_threshold_by_override() {
     let guard_rails = ValidityGuardRails {
-        slots_before_stale_for_amm: 10,
-        slots_before_stale_for_margin: 120,
+        slots_before_stale_for_amm: legacy_slot_duration_i64(10),
+        slots_before_stale_for_margin: legacy_slot_duration_i64(120),
         confidence_interval_max_size: 20_000,
         too_volatile_ratio: 5,
     };

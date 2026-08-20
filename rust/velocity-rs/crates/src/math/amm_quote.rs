@@ -156,9 +156,10 @@ pub(crate) fn btc_market_fixture() -> PerpMarket {
 /// Mainnet-shaped oracle validity guard rails for tests.
 #[cfg(test)]
 pub(crate) fn validity_guard_rails_fixture() -> ValidityGuardRails {
+    use program::math::time::legacy_slot_duration_i64;
     ValidityGuardRails {
-        slots_before_stale_for_amm: 10,
-        slots_before_stale_for_margin: 120,
+        slots_before_stale_for_amm: legacy_slot_duration_i64(10),
+        slots_before_stale_for_margin: legacy_slot_duration_i64(120),
         confidence_interval_max_size: 20_000,
         too_volatile_ratio: 5,
     }

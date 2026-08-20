@@ -5,11 +5,13 @@ import {
 	OracleValidity,
 	PRICE_PRECISION,
 	getOracleValidity,
+	blockOperation,
 	isOracleTooDivergent,
 	isFallbackAvailableLiquiditySource,
 	MMOraclePriceData,
 	StateAccount,
 	VelocityClient,
+	slotDurationFromState,
 } from '../../src';
 import { mockPerpMarkets } from '../dlob/helpers';
 import { mockOrder } from '../user/helpers';
@@ -139,6 +141,57 @@ describe('MM oracle validity gate (UseMMOraclePrice semantics)', () => {
 		);
 
 		assert(mmOracleValidity === OracleValidity.TooVolatile);
+	});
+});
+
+describe('funding blockOperation mirror', () => {
+	it('uses live slot duration for the AMM staleness boundary', () => {
+		const market = _.cloneDeep(mockPerpMarkets[0]);
+		const price = new BN(100).mul(PRICE_PRECISION);
+		market.marketStats.historicalOracleData.lastOraclePriceTwap = price;
+		market.marketStats.historicalOracleData.lastOraclePriceTwap5Min = price;
+		market.amm.lastUpdateSlot = new BN(0);
+		market.pausedOperations = 0;
+		const guardRails: OracleGuardRails = {
+			priceDivergence: {
+				markOraclePercentDivergence: new BN(0),
+				oracleTwap5MinPercentDivergence: new BN(0),
+			},
+			validity: {
+				slotsBeforeStaleForAmm: new BN(10),
+				slotsBeforeStaleForMargin: new BN(120),
+				confidenceIntervalMaxSize: new BN(20_000),
+				tooVolatileRatio: new BN(5),
+			},
+		};
+		const thresholdSlots = market.marketStats.fundingPeriod.muln(2); // 40% at 200ms
+		const oracle = {
+			price,
+			confidence: new BN(1),
+			slot: thresholdSlots,
+			hasSufficientNumberOfDataPoints: true,
+		};
+
+		assert(
+			!blockOperation(
+				market,
+				oracle,
+				guardRails,
+				price,
+				thresholdSlots,
+				slotDurationFromState(200)
+			)
+		);
+		assert(
+			blockOperation(
+				market,
+				{ ...oracle, slot: thresholdSlots.addn(1) },
+				guardRails,
+				price,
+				thresholdSlots.addn(1),
+				slotDurationFromState(200)
+			)
+		);
 	});
 });
 

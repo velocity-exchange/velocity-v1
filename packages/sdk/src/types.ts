@@ -2112,9 +2112,9 @@ export type OracleGuardRails = {
 		oracleTwap5MinPercentDivergence: BN;
 	};
 	validity: {
-		/** slots; oracle updates older than this are stale for AMM-facing actions */
+		/** legacy 400ms units; oracle updates older than this wall-clock duration are stale for AMM-facing actions */
 		slotsBeforeStaleForAmm: BN;
-		/** slots; oracle updates older than this are stale for margin/liquidation actions */
+		/** legacy 400ms units; oracle updates older than this wall-clock duration are stale for margin/liquidation actions */
 		slotsBeforeStaleForMargin: BN;
 		/** PERCENTAGE_PRECISION (1e6)-scaled fraction of price; oracle confidence intervals wider than this are rejected */
 		confidenceIntervalMaxSize: BN;

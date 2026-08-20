@@ -3,6 +3,7 @@ use {
         math::{
             constants::ONE_BPS_DENOMINATOR,
             oracle::{self, oracle_validity},
+            time::legacy_slot_duration_u8,
         },
         state::{
             fill_mode::FillMode,
@@ -36,7 +37,7 @@ fn get_user_keys() -> (Pubkey, Pubkey, Pubkey) {
 
 fn get_state(min_auction_duration: u8) -> State {
     State {
-        min_perp_auction_duration: min_auction_duration,
+        min_perp_auction_duration: legacy_slot_duration_u8(min_auction_duration),
         ..State::default()
     }
 }

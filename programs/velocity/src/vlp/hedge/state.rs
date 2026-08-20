@@ -1,3 +1,7 @@
+// Anchor's IDL source parser expands the account-field alias and needs these
+// names in scope even though the runtime Rust compiler does not.
+#[allow(unused_imports)]
+use crate::math::time::{StoredSlotDuration, STORED_UNIT_MS};
 use {
     crate::{
         error::{ErrorCode, VelocityResult},
@@ -13,7 +17,10 @@ use {
             safe_math::SafeMath,
             safe_unwrap::SafeUnwrap,
             spot_balance::{get_signed_token_amount, get_token_amount},
-            time::{Millis, SlotDuration},
+            time::{
+                legacy_slot_duration_u64, legacy_slot_duration_u64_to_millis,
+                LegacySlotDurationU64, Millis, SlotDuration,
+            },
         },
         state::{
             oracle::OraclePriceData,
@@ -56,9 +63,11 @@ pub const SETTLE_AMM_ORACLE_MAX_DELAY: Millis = Millis::from_secs(40);
 pub const SETTLE_AMM_ORACLE_MAX_DELAY: Millis = Millis::from_secs(4);
 pub const LP_POOL_SWAP_AUM_UPDATE_DELAY: u64 = 0;
 #[cfg(feature = "anchor-test")]
-pub const MAX_STALENESS_FOR_TARGET_CALC: u64 = 10000u64;
+pub const MAX_POSITION_STALENESS_SLOTS: u64 = 10_000;
 #[cfg(not(feature = "anchor-test"))]
-pub const MAX_STALENESS_FOR_TARGET_CALC: u64 = 0u64;
+pub const MAX_POSITION_STALENESS_SLOTS: u64 = 0;
+pub const MAX_POSITION_STALENESS_FOR_TARGET_CALC: Millis =
+    Millis::from_stored_units(MAX_POSITION_STALENESS_SLOTS);
 
 #[cfg(feature = "anchor-test")]
 pub const MAX_ORACLE_STALENESS_FOR_TARGET_CALC: Millis = Millis::from_secs(4_000);
@@ -754,11 +763,8 @@ impl LPPool {
             self.target_oracle_delay_fee_bps_per_10_slots,
         )?;
         let position_uncertainty_fee = step_fee(
-            // threshold is in 400ms baseline units like its oracle sibling;
-            // convert to the period domain `target_position_slot_delay` is in.
-            // (the raw const stays u64 for the same-slot `==` check elsewhere.)
             position_periods,
-            Millis::from_stored_units(MAX_STALENESS_FOR_TARGET_CALC).div_periods(Millis::UNIT),
+            MAX_POSITION_STALENESS_FOR_TARGET_CALC.div_periods(Millis::UNIT),
             self.target_position_delay_fee_bps_per_10_slots,
         )?;
 
@@ -793,7 +799,7 @@ impl LPPool {
             if Millis::from_slots(
                 slot.saturating_sub(constituent.last_oracle_slot),
                 slot_duration,
-            ) > Millis::from_stored_units(constituent.oracle_staleness_threshold)
+            ) > legacy_slot_duration_u64_to_millis(constituent.oracle_staleness_threshold)
             {
                 msg!(
                     "Constituent {} oracle slot is too stale: {}, current slot: {}",
@@ -999,8 +1005,9 @@ pub struct Constituent {
     pub last_oracle_price: i64,
     pub last_oracle_slot: u64,
 
-    /// Delay allowed for valid AUM calculation
-    pub oracle_staleness_threshold: u64,
+    /// Delay allowed for valid AUM calculation, encoded in historical 400ms
+    /// slot quanta while remaining a one-word onchain field.
+    pub oracle_staleness_threshold: LegacySlotDurationU64,
 
     pub flash_loan_initial_token_amount: u64,
     /// Every swap to/from this constituent has a monotonically increasing id. This is the next id to use
@@ -1056,7 +1063,7 @@ impl Default for Constituent {
             vault_token_balance: 0,
             last_oracle_price: 0,
             last_oracle_slot: 0,
-            oracle_staleness_threshold: 0,
+            oracle_staleness_threshold: legacy_slot_duration_u64(0),
             flash_loan_initial_token_amount: 0,
             next_swap_id: 0,
             derivative_weight: 0,
@@ -1514,7 +1521,7 @@ impl<'a> AccountZeroCopyMut<'a, TargetsDatum, ConstituentTargetBaseFixed> {
             );
             cell.target_base = target_base.cast::<i64>()?;
 
-            if slot.saturating_sub(oldest_position_slot) == MAX_STALENESS_FOR_TARGET_CALC {
+            if slot.saturating_sub(oldest_position_slot) == MAX_POSITION_STALENESS_SLOTS {
                 cell.last_position_slot = slot;
             } else {
                 msg!(

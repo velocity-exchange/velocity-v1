@@ -5,6 +5,7 @@ import {
 	SLOT_DURATION_BASELINE,
 	MILLIS_UNIT,
 	slotDurationFromState,
+	activeSlotDurationFromState,
 	millis,
 	millisFromSecs,
 	millisFromStoredUnits,
@@ -40,8 +41,28 @@ describe('slot-time helpers (program parity)', () => {
 
 	it('0 slotDurationMs resolves to the 400ms baseline', () => {
 		assert.equal(slotDurationFromState(0), STORED_UNIT_MS);
+		assert.equal(slotDurationFromState(undefined), STORED_UNIT_MS);
 		assert.equal(slotDurationFromState(0), SLOT_DURATION_BASELINE);
 		assert.equal(slotDurationFromState(200), 200);
+	});
+
+	it('staged duration switches exactly at the effective slot', () => {
+		const state = {
+			slotDurationMs: 350,
+			pendingSlotDurationMs: 300,
+			slotDurationEffectiveSlot: new BN(1_000),
+		};
+		assert.equal(activeSlotDurationFromState(state, new BN(999)), 350);
+		assert.equal(activeSlotDurationFromState(state, new BN(1_000)), 300);
+		assert.equal(activeSlotDurationFromState(state, new BN(1_001)), 300);
+	});
+
+	it('older State objects without staging fields resolve safely', () => {
+		assert.equal(activeSlotDurationFromState({}, new BN(1_000)), 400);
+		assert.equal(
+			activeSlotDurationFromState({ slotDurationMs: 350 }, new BN(1_000)),
+			350
+		);
 	});
 
 	it('terminal 200ms gate doubles slot counts', () => {

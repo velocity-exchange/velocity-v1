@@ -1,3 +1,7 @@
+// Anchor's IDL source parser expands the account-field aliases and needs these
+// names in scope even though the runtime Rust compiler does not.
+#[allow(unused_imports)]
+use crate::math::time::{StoredSlotDuration, STORED_UNIT_MS};
 use {
     crate::{
         error::VelocityResult,
@@ -9,7 +13,11 @@ use {
             },
             safe_math::SafeMath,
             safe_unwrap::SafeUnwrap,
-            time::{Millis, SlotDuration},
+            time::{
+                legacy_slot_duration_i64, legacy_slot_duration_i64_to_millis,
+                legacy_slot_duration_u8, legacy_slot_duration_u8_to_millis, LegacySlotDurationI64,
+                LegacySlotDurationU8, Millis, SlotDuration,
+            },
         },
         state::traits::Size,
     },
@@ -62,11 +70,16 @@ pub struct State {
     pub number_of_markets: u16,
     pub number_of_spot_markets: u16,
     pub signer_nonce: u8,
-    pub min_perp_auction_duration: u8,
+    /// Compact wall-clock duration encoded in historical 400ms slot quanta.
+    pub min_perp_auction_duration: LegacySlotDurationU8,
     pub default_market_order_time_in_force: u8,
+    /// An actual slot-count setting, not a wall-clock duration. It currently has
+    /// no on-chain reader (spot DLOB trading is disabled), so it intentionally
+    /// remains raw rather than using `StoredSlotDuration`.
     pub default_spot_auction_duration: u8,
     pub exchange_status: u8,
-    pub liquidation_duration: u8,
+    /// Compact wall-clock duration encoded in historical 400ms slot quanta.
+    pub liquidation_duration: LegacySlotDurationU8,
     pub initial_pct_to_liquidate: u16,
     pub max_number_of_sub_accounts: u16,
     pub max_initialize_user_fee: u16,
@@ -224,11 +237,11 @@ impl Default for State {
             number_of_markets: 0,
             number_of_spot_markets: 0,
             signer_nonce: 0,
-            min_perp_auction_duration: 0,
+            min_perp_auction_duration: legacy_slot_duration_u8(0),
             default_market_order_time_in_force: 0,
             default_spot_auction_duration: 0,
             exchange_status: 0,
-            liquidation_duration: 0,
+            liquidation_duration: legacy_slot_duration_u8(0),
             initial_pct_to_liquidate: 0,
             max_number_of_sub_accounts: 0,
             max_initialize_user_fee: 0,
@@ -319,13 +332,13 @@ impl State {
     /// `min_perp_auction_duration` as a wall-clock duration (stored in legacy
     /// 400ms units).
     pub fn min_perp_auction_duration_ms(&self) -> Millis {
-        Millis::from_stored_units(self.min_perp_auction_duration as u64)
+        legacy_slot_duration_u8_to_millis(self.min_perp_auction_duration)
     }
 
     /// `liquidation_duration` (the ramp to 100% liquidatable) as a wall-clock
     /// duration (stored in legacy 400ms units).
     pub fn liquidation_duration_ms(&self) -> Millis {
-        Millis::from_stored_units(self.liquidation_duration as u64)
+        legacy_slot_duration_u8_to_millis(self.liquidation_duration)
     }
 
     /// The time after `PerpMarket.expiry_ts` that must pass before an expired market may move its
@@ -599,10 +612,10 @@ impl Default for OracleGuardRails {
         OracleGuardRails {
             price_divergence: PriceDivergenceGuardRails::default(),
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,       // 4s at the 400ms baseline
-                slots_before_stale_for_margin: 120,   // 48s at the 400ms baseline
-                confidence_interval_max_size: 20_000, // 2% of price
-                too_volatile_ratio: 5,                // 5x or 80% down
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
+                confidence_interval_max_size: 20_000,                     // 2% of price
+                too_volatile_ratio: 5,                                    // 5x or 80% down
             },
         }
     }
@@ -635,10 +648,10 @@ impl Default for PriceDivergenceGuardRails {
 #[derive(Copy, AnchorSerialize, AnchorDeserialize, Clone, Default, Debug)]
 #[repr(C)]
 pub struct ValidityGuardRails {
-    /// Legacy 400ms units; read via [`Self::stale_for_amm_ms`].
-    pub slots_before_stale_for_amm: i64,
-    /// Legacy 400ms units; read via [`Self::stale_for_margin_ms`].
-    pub slots_before_stale_for_margin: i64,
+    /// Compact wall-clock duration encoded in historical 400ms slot quanta.
+    pub slots_before_stale_for_amm: LegacySlotDurationI64,
+    /// Compact wall-clock duration encoded in historical 400ms slot quanta.
+    pub slots_before_stale_for_margin: LegacySlotDurationI64,
     pub confidence_interval_max_size: u64,
     pub too_volatile_ratio: i64,
 }
@@ -646,12 +659,12 @@ pub struct ValidityGuardRails {
 impl ValidityGuardRails {
     /// AMM staleness window as a wall-clock duration.
     pub fn stale_for_amm_ms(&self) -> Millis {
-        Millis::from_stored_units(self.slots_before_stale_for_amm.max(0) as u64)
+        legacy_slot_duration_i64_to_millis(self.slots_before_stale_for_amm)
     }
 
     /// Margin staleness window as a wall-clock duration.
     pub fn stale_for_margin_ms(&self) -> Millis {
-        Millis::from_stored_units(self.slots_before_stale_for_margin.max(0) as u64)
+        legacy_slot_duration_i64_to_millis(self.slots_before_stale_for_margin)
     }
 }
 

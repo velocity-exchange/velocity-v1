@@ -1,8 +1,11 @@
 use {
-    crate::state::{
-        oracle_map::OracleMap,
-        perp_market::MarketStats,
-        user::{Order, PerpPosition},
+    crate::{
+        math::time::{legacy_slot_duration_i64, legacy_slot_duration_u8},
+        state::{
+            oracle_map::OracleMap,
+            perp_market::MarketStats,
+            user::{Order, PerpPosition},
+        },
     },
     anchor_lang::prelude::Pubkey,
 };
@@ -134,8 +137,8 @@ pub mod delisting_test {
         let state = State {
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: 10,     // 5s
-                    slots_before_stale_for_margin: 120, // 60s
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 5s
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 60s
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },
@@ -261,8 +264,8 @@ pub mod delisting_test {
         let state = State {
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: 10,     // 5s
-                    slots_before_stale_for_margin: 120, // 60s
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 5s
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 60s
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },
@@ -376,8 +379,8 @@ pub mod delisting_test {
         let state = State {
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: 10,     // 5s
-                    slots_before_stale_for_margin: 120, // 60s
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 5s
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 60s
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },
@@ -499,8 +502,8 @@ pub mod delisting_test {
         let state = State {
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: 10,     // 5s
-                    slots_before_stale_for_margin: 120, // 60s
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 5s
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 60s
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },
@@ -622,8 +625,8 @@ pub mod delisting_test {
         let state = State {
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: 10,     // 5s
-                    slots_before_stale_for_margin: 120, // 60s
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 5s
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 60s
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },
@@ -783,8 +786,8 @@ pub mod delisting_test {
         let state = State {
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: 10,     // 5s
-                    slots_before_stale_for_margin: 120, // 60s
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 5s
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 60s
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },
@@ -987,8 +990,8 @@ pub mod delisting_test {
             settlement_duration: 1,
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: 10,
-                    slots_before_stale_for_margin: 120,
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10),
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120),
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },
@@ -1186,8 +1189,8 @@ pub mod delisting_test {
         let state = State {
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: 10,     // 5s
-                    slots_before_stale_for_margin: 120, // 60s
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 5s
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 60s
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },
@@ -1414,8 +1417,8 @@ pub mod delisting_test {
         let state = State {
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: 10,     // 5s
-                    slots_before_stale_for_margin: 120, // 60s
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 5s
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 60s
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },
@@ -1701,8 +1704,8 @@ pub mod delisting_test {
         let state = State {
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: 10,     // 5s
-                    slots_before_stale_for_margin: 120, // 60s
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 5s
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 60s
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },
@@ -2117,8 +2120,8 @@ pub mod delisting_test {
         let state = State {
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: 10,     // 5s
-                    slots_before_stale_for_margin: 120, // 60s
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 5s
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 60s
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },
@@ -2519,15 +2522,15 @@ pub mod delisting_test {
         let state = State {
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: 10,     // 5s
-                    slots_before_stale_for_margin: 120, // 60s
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 5s
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 60s
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },
                 ..OracleGuardRails::default()
             },
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..State::default()
         };
 

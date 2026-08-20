@@ -17832,7 +17832,8 @@ export type Velocity = {
           {
             "name": "oracleStalenessThreshold",
             "docs": [
-              "Delay allowed for valid AUM calculation"
+              "Delay allowed for valid AUM calculation, encoded in historical 400ms",
+              "slot quanta while remaining a one-word onchain field."
             ],
             "type": "u64"
           },
@@ -24418,6 +24419,9 @@ export type Velocity = {
           },
           {
             "name": "minPerpAuctionDuration",
+            "docs": [
+              "Compact wall-clock duration encoded in historical 400ms slot quanta."
+            ],
             "type": "u8"
           },
           {
@@ -24426,6 +24430,11 @@ export type Velocity = {
           },
           {
             "name": "defaultSpotAuctionDuration",
+            "docs": [
+              "An actual slot-count setting, not a wall-clock duration. It currently has",
+              "no on-chain reader (spot DLOB trading is disabled), so it intentionally",
+              "remains raw rather than using `StoredSlotDuration`."
+            ],
             "type": "u8"
           },
           {
@@ -24434,6 +24443,9 @@ export type Velocity = {
           },
           {
             "name": "liquidationDuration",
+            "docs": [
+              "Compact wall-clock duration encoded in historical 400ms slot quanta."
+            ],
             "type": "u8"
           },
           {
@@ -25249,14 +25261,14 @@ export type Velocity = {
           {
             "name": "slotsBeforeStaleForAmm",
             "docs": [
-              "Legacy 400ms units; read via [`Self::stale_for_amm_ms`]."
+              "Compact wall-clock duration encoded in historical 400ms slot quanta."
             ],
             "type": "i64"
           },
           {
             "name": "slotsBeforeStaleForMargin",
             "docs": [
-              "Legacy 400ms units; read via [`Self::stale_for_margin_ms`]."
+              "Compact wall-clock duration encoded in historical 400ms slot quanta."
             ],
             "type": "i64"
           },

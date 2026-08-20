@@ -55,7 +55,7 @@ gate's warmup:
    all in one check. Staging the next value first promotes an already-effective pending into the
    base.
 2. **Effective slot read from the gate.** The instruction takes the target's IBRL feature-gate
-   account as a remaining account, verifies it (owned by `Feature111…`, staged with `data[0] == 1`),
+   account as a remaining account, verifies it (owned by `Feature111…`, activated with `data[0] == 1`),
    and reads its activation slot; `slot_duration_effective_slot = activation + one epoch (432,000
    slots)`. It does **not** require the warmup to have elapsed — the activation slot is exposed one
    epoch ahead precisely so State can be staged during the warmup and flip in lockstep with the
@@ -81,9 +81,9 @@ from the gate rather than requiring a hand-timed transaction at the boundary.
 Runbook, in full:
 
 ```
-# during the target gate's warmup epoch (feature staged, not yet effective),
+# during the target gate's warmup epoch (feature activated, not yet effective),
 # once the Feature Gate Tracker shows it activated for the *next* epoch:
-velocity-admin exchange set-slot-duration-ms 350   # then 300, 250, 200 as each is staged
+velocity-admin exchange set-slot-duration-ms 350   # then 300, 250, 200 as each is activated
 ```
 
 Nothing else. No guard-rail retunes, no per-market updates, no bot restarts (the off-chain mirrors
@@ -128,7 +128,6 @@ raw slot count. Constructors and conversions:
 ```rust
 Millis::from_secs(600)                 // a code constant: ten minutes, readable as written
 Millis::from_ms(800)                   // sub-second constants
-Millis::from_stored_units(raw)         // decode a legacy stored field (400ms units, codec only)
 Millis::from_slots(delta, d)           // the exact wall-clock time a measured slot delta represents
 
 m.to_slots(d)                          // express in actual slots, floor
@@ -143,6 +142,32 @@ logic, so a slot *count* can never be passed where the slot *length* belongs. Bo
 that mixup were previously bare `u64`s sitting next to each other in thirty function signatures.
 `SlotDuration::BASELINE` (400ms) exists for tests and for contexts with no `State` account, which
 by construction also run on default guard rails.
+
+**`StoredSlotDuration<T, const SLOT_MS: u64>`** is the compact account-storage type. `T` fixes the
+wire width and `SLOT_MS` records the slot length assumed when that field was created. Thus
+`StoredSlotDuration<u8, 400>` still occupies one byte, but a raw `10` unambiguously means 4,000ms;
+`StoredSlotDuration<u8, 200>` with the same raw byte means 2,000ms. Program logic calls
+`to_millis()` immediately and performs all arithmetic in `Millis`:
+
+```rust
+type LegacyDuration = StoredSlotDuration<u8, 400>;
+let stored = LegacyDuration::try_from_millis(Millis::from_ms(4_000)).unwrap();
+assert_eq!(stored.raw_units(), 10);
+assert_eq!(stored.to_millis(), Millis::from_ms(4_000));
+
+LegacyDuration::try_from_millis(Millis::from_ms(4_001)); // None: not an exact 400ms multiple
+```
+
+The type is `repr(transparent)` and preserves the wrapped integer's bytes, size, and alignment.
+The account aliases expose their primitive wire types during IDL generation because Anchor's
+JavaScript coder does not yet flatten transparent generic wrappers; SDK users therefore keep the
+existing `u8`/`i64`/`u64` decoded shapes. Signed fields with sentinel values are intentionally not
+modeled as ordinary durations and continue through `DelayOverride`.
+
+Changing a field from (for example) `StoredSlotDuration<u8, 400>` to
+`StoredSlotDuration<u8, 200>` changes the interpretation of every existing byte. That is a real
+data migration: coordinate the program upgrade with an admin rewrite that preserves each field's
+wall-clock value. Never change only the const parameter.
 
 **`DelayOverride`** decodes the per-market `i8` oracle-delay overrides, moving the `0` / negative
 sentinel branching out of `oracle_validity` and into two constructors
@@ -219,16 +244,17 @@ encoding is confined to each field's typed getter:
 
 | Stored field | Storage | Getter |
 | --- | --- | --- |
-| `ValidityGuardRails.slots_before_stale_for_amm` / `_for_margin` | `i64`, 400ms units | `stale_for_amm_ms()` / `stale_for_margin_ms()` -> `Millis` |
-| `State.liquidation_duration` | `u8`, 400ms units | `liquidation_duration_ms()` -> `Millis` |
-| `State.min_perp_auction_duration` | `u8`, 400ms units | `min_perp_auction_duration_ms()` -> `Millis` |
+| `ValidityGuardRails.slots_before_stale_for_amm` / `_for_margin` | `StoredSlotDuration<i64, 400>` (IDL: `i64`) | `stale_for_amm_ms()` / `stale_for_margin_ms()` -> `Millis` |
+| `State.liquidation_duration` | `StoredSlotDuration<u8, 400>` (IDL: `u8`) | `liquidation_duration_ms()` -> `Millis` |
+| `State.min_perp_auction_duration` | `StoredSlotDuration<u8, 400>` (IDL: `u8`) | `min_perp_auction_duration_ms()` -> `Millis` |
 | `PerpMarket.oracle_slot_delay_override` / `oracle_low_risk_slot_delay_override` | `i8` with sentinels, 400ms units | `DelayOverride::from_immediate` / `from_low_risk` |
-| `Constituent.oracle_staleness_threshold` (VLP hedge) | `u64`, 400ms units | decoded inline via `Millis::from_stored_units` |
+| `Constituent.oracle_staleness_threshold` (VLP hedge) | `StoredSlotDuration<u64, 400>` (IDL: `u64`) | normalized to `Millis` at use |
 
 The `400` is a storage codec detail, the same way nobody "thinks in" `PRICE_PRECISION`: admins
 type seconds in the CLI, which encodes on the way in; logic compares `Millis`; the chain stores a
-compact integer. New stored durations should store milliseconds natively (a `u32` of ms covers 49
-days) and never use this encoding. If a legacy field's encoding ever needs to die, the house
+compact integer. New compact stored durations should encode their chosen quantum in
+`StoredSlotDuration<T, SLOT_MS>`; use a native millisecond integer instead when arbitrary
+millisecond precision matters more than width. If a legacy field's encoding ever needs to die, the house
 pattern applies: carve a ms-native replacement field from padding, give the getter a fallback,
 re-set the value once, and the typed choke point guarantees nothing else in the codebase moves.
 
@@ -305,9 +331,13 @@ if Millis::from_slots(slot - last_rebalance, state.slot_duration()) >= REBALANCE
 // genuine slot logic: plain u64, no conversion, no Millis
 if amm.last_update_slot == slot { return Ok(()); }   // same-slot idempotence
 
-// a new admin-set duration: store ms natively, skip the legacy encoding entirely
-pub cooldown_ms: u32,                                 // in the account
-Millis::from_ms(self.cooldown_ms as u64)             // in the getter
+// a compact admin-set duration: the field type records its storage quantum
+pub cooldown: StoredSlotDuration<u16, 200>,
+let cooldown = self.cooldown.to_millis();
+
+// if arbitrary millisecond precision matters more than compactness, store ms directly
+pub cooldown_ms: u32,
+let cooldown = Millis::from_ms(self.cooldown_ms as u64);
 ```
 
 Getting it wrong does not compile: a raw threshold will not compare against anything the rest of
@@ -344,9 +374,9 @@ subscription; no service needs a restart at a gate flip.
 | Knob | `State.slot_duration_ms` (u16, bytes 1506..1508; `0` = unset = 400ms) |
 | Setter | `update_state_slot_duration_ms`, warm admin; allowlist `{350, 300, 250, 200}`, decrease-only |
 | CLI | `velocity-admin exchange set-slot-duration-ms <ms>` |
-| Duration type | `math::time::Millis` (program), branded `Millis` in `math/time.ts` (SDK) |
+| Duration types | `Millis` for arithmetic; `StoredSlotDuration<T, SLOT_MS>` for compact account storage |
 | Slot length type | `SlotDuration` / `SlotDurationMs`, sole source `State::slot_duration()` |
-| Legacy encoding | `STORED_UNIT_MS` = 400, confined to the stored-field getters in the table above |
+| Legacy encoding | `STORED_UNIT_MS` = 400, carried in the stored fields' Rust types and normalized to `Millis` |
 | Legacy rate period | `Millis::UNIT` (400ms), explicit at each rate site |
 | Ops per gate | one instruction, four gates total |
 | Behavior at 400ms | identity: every conversion reproduces the historical slot counts exactly |

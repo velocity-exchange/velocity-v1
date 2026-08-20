@@ -5,6 +5,7 @@ use crate::{
             PRICE_PRECISION_U64, QUOTE_PRECISION,
         },
         oracle::OracleValidity,
+        time::{legacy_slot_duration_i64, legacy_slot_duration_i64_raw},
     },
     state::{
         oracle::{HistoricalOracleData, OraclePriceData},
@@ -70,8 +71,8 @@ pub fn update_amm_test() {
                 oracle_twap_5min_percent_divergence: 10,
             },
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,     // 5s
-                slots_before_stale_for_margin: 120, // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 5s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 60s
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },
@@ -137,9 +138,11 @@ pub fn update_amm_test() {
         market.get_max_confidence_interval_multiplier().unwrap(),
         &market.oracle_source,
         LogMode::ExchangeOracle,
-        state.oracle_guard_rails.validity.slots_before_stale_for_amm as i8,
+        legacy_slot_duration_i64_raw(state.oracle_guard_rails.validity.slots_before_stale_for_amm)
+            as i8,
         false,
-        state.oracle_guard_rails.validity.slots_before_stale_for_amm as i8,
+        legacy_slot_duration_i64_raw(state.oracle_guard_rails.validity.slots_before_stale_for_amm)
+            as i8,
         crate::math::time::SlotDuration::BASELINE,
     )
     .unwrap()
@@ -298,8 +301,8 @@ pub fn reference_price_offset_smoothing_uses_spread_update_slot() {
 
     let reserve_price = market.amm.reserve_price().unwrap();
     let validity = ValidityGuardRails {
-        slots_before_stale_for_amm: 10,
-        slots_before_stale_for_margin: 120,
+        slots_before_stale_for_amm: legacy_slot_duration_i64(10),
+        slots_before_stale_for_margin: legacy_slot_duration_i64(120),
         confidence_interval_max_size: 1000,
         too_volatile_ratio: 5,
     };
@@ -376,9 +379,9 @@ pub fn update_amm_test_bad_oracle() {
                 oracle_twap_5min_percent_divergence: 10,
             },
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,      // 5s
-                slots_before_stale_for_margin: 120,  // 60s
-                confidence_interval_max_size: 20000, //2%
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 5s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 60s
+                confidence_interval_max_size: 20000,                      //2%
                 too_volatile_ratio: 5,
             },
         },
@@ -445,9 +448,9 @@ pub fn update_amm_larg_conf_test() {
                 oracle_twap_5min_percent_divergence: 10,
             },
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,      // 5s
-                slots_before_stale_for_margin: 120,  // 60s
-                confidence_interval_max_size: 20000, //2%
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 5s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 60s
+                confidence_interval_max_size: 20000,                      //2%
                 too_volatile_ratio: 5,
             },
         },
@@ -700,9 +703,9 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
                 oracle_twap_5min_percent_divergence: 10,
             },
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,      // 5s
-                slots_before_stale_for_margin: 120,  // 60s
-                confidence_interval_max_size: 20000, //2%
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 5s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 60s
+                confidence_interval_max_size: 20000,                      //2%
                 too_volatile_ratio: 5,
             },
         },

@@ -6,7 +6,9 @@ import {
 	QUOTE_PRECISION,
 	LIQUIDATION_PCT_PRECISION,
 	calculateMaxPctToLiquidate,
+	getLiquidationFee,
 	millisFromStoredUnits,
+	slotDurationFromState,
 	calculatePerpIfFee,
 	calculateSpotIfFee,
 	calculateUserProtectiveAssetPrice,
@@ -42,6 +44,30 @@ describe('calculateMaxPctToLiquidate', () => {
 
 		// slotsElapsed = 100, pctFreeable = 100 * 10000 / 1000 = 1000 (10%)
 		assert.isTrue(pct.eq(new BN(1000)));
+	});
+});
+
+describe('getLiquidationFee', () => {
+	it('matches elapsed wall-clock time at 400ms and 200ms', () => {
+		const baseFee = 20_000;
+		const maxFee = 50_000;
+		const baseline = getLiquidationFee(
+			baseFee,
+			maxFee,
+			new BN(0),
+			new BN(10_000),
+			slotDurationFromState(400)
+		);
+		const fast = getLiquidationFee(
+			baseFee,
+			maxFee,
+			new BN(0),
+			new BN(20_000),
+			slotDurationFromState(200)
+		);
+
+		assert.equal(baseline, 30_000);
+		assert.equal(fast, baseline);
 	});
 });
 

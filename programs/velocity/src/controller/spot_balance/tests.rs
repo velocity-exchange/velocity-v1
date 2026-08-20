@@ -25,6 +25,7 @@ use {
                 calculate_token_utilization_limits, check_deposit_limits, check_withdraw_limits,
             },
             stats::calculate_weighted_average,
+            time::legacy_slot_duration_i64,
         },
         state::{
             margin_calculation::{MarginCalculation, MarginContext},
@@ -2979,8 +2980,8 @@ fn update_and_check_validity_judges_and_snapshots_before_refreshing() {
     };
 
     let guard_rails = ValidityGuardRails {
-        slots_before_stale_for_amm: 10,
-        slots_before_stale_for_margin: 120,
+        slots_before_stale_for_amm: legacy_slot_duration_i64(10),
+        slots_before_stale_for_margin: legacy_slot_duration_i64(120),
         confidence_interval_max_size: 20_000,
         too_volatile_ratio: 5,
     };

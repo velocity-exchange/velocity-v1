@@ -11,6 +11,7 @@ use {
             funding::*,
             helpers::on_the_hour_update,
             oracle::{block_operation, OracleValidity},
+            time::legacy_slot_duration_i64,
         },
         state::{
             oracle::{HistoricalOracleData, MMOraclePriceData},
@@ -325,8 +326,8 @@ fn max_funding_rates() {
     let state = State {
         oracle_guard_rails: OracleGuardRails {
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,     // 5s
-                slots_before_stale_for_margin: 120, // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 5s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 60s
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },
@@ -437,8 +438,8 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
     let state = State {
         oracle_guard_rails: OracleGuardRails {
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,     // 5s
-                slots_before_stale_for_margin: 120, // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 5s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 60s
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },
@@ -605,8 +606,8 @@ fn unsettled_funding_pnl() {
     let state = State {
         oracle_guard_rails: OracleGuardRails {
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,     // 5s
-                slots_before_stale_for_margin: 120, // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 5s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 60s
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },
@@ -1087,8 +1088,8 @@ fn funding_after_a_long_mark_twap_gap_charges_the_offset_alone() {
     let state = State {
         oracle_guard_rails: OracleGuardRails {
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,
-                slots_before_stale_for_margin: 120,
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10),
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120),
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },

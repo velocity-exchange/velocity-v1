@@ -19,7 +19,8 @@ import { BN } from '@coral-xyz/anchor';
  * Legacy admin-set onchain fields keep their compact encoding in units of
  * `STORED_UNIT_MS` = 400ms (the historical slot length); decode them with
  * `millisFromStoredUnits`. That factor is a storage codec detail, not a unit
- * to think in; new stored durations should store milliseconds natively.
+ * to think in; new compact onchain fields should declare their encoding with
+ * Rust's `StoredSlotDuration<T, SLOT_MS>` and normalize to `Millis` for math.
  *
  * Rounding matches the program exactly: `millisToSlots` floors (staleness
  * windows marginally tighter, the safe direction), `millisToSlotsCeil` is for
@@ -59,8 +60,9 @@ export const MILLIS_UNIT = new BN(STORED_UNIT_MS) as Millis;
  * This is the value *before* any staged switch — most callers want
  * {@link activeSlotDurationFromState}, which also applies a staged flip.
  */
-export function slotDurationFromState(raw: number): SlotDurationMs {
-	return (raw === 0 ? STORED_UNIT_MS : raw) as SlotDurationMs;
+export function slotDurationFromState(raw?: number): SlotDurationMs {
+	const value = raw ?? 0;
+	return (value === 0 ? STORED_UNIT_MS : value) as SlotDurationMs;
 }
 
 /**
@@ -73,7 +75,7 @@ export function slotDurationFromState(raw: number): SlotDurationMs {
  */
 export function activeSlotDurationFromState(
 	state: {
-		slotDurationMs: number;
+		slotDurationMs?: number;
 		pendingSlotDurationMs?: number;
 		slotDurationEffectiveSlot?: BN;
 	},

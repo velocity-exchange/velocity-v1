@@ -13,16 +13,20 @@
 //!   each gate activates. It is the sole bridge between durations and slots
 //!   and is not constructible from an arbitrary number, so a raw slot value
 //!   can never be passed where the slot length belongs.
+//! - [`StoredSlotDuration`] is a compact onchain duration encoded in quanta of
+//!   a slot length fixed when the field was introduced. For example,
+//!   `StoredSlotDuration<u8, 400>` still occupies one byte, but its type records
+//!   that a stored `10` means 4,000ms. Program logic immediately normalizes it
+//!   to [`Millis`]; it is never interpreted using the live slot length.
 //! - Plain `u64` remains the type of actual slot counts: same-slot
 //!   idempotence, blockhash windows, per-order auction snapshots. Genuine
 //!   chain-slot logic never touches `Millis`.
 //!
-//! Legacy admin-set fields (oracle guard rails, `liquidation_duration`, the
-//! per-market delay overrides, `min_perp_auction_duration`) keep their compact
-//! onchain encoding in units of [`STORED_UNIT_MS`] = 400ms, the historical
-//! slot length. That factor is a storage codec detail confined to those
-//! fields' getters; it is not a unit any logic thinks in. New stored durations
-//! should store milliseconds natively.
+//! Legacy admin-set fields keep their compact onchain encoding in units of
+//! [`STORED_UNIT_MS`] = 400ms, the historical slot length. Ordinary duration
+//! fields express that fact in their [`StoredSlotDuration`] type. Signed fields
+//! whose raw values carry sentinel meanings keep their raw integer type and use
+//! a purpose-specific decoder such as [`DelayOverride`].
 //!
 //! Rounding is deliberate and mirrored by the TypeScript SDK exactly:
 //! [`Millis::to_slots`] floors (staleness windows come out marginally tighter,
@@ -35,13 +39,193 @@
 //! Full design rationale, the gate-activation runbook, and worked examples
 //! live in [`docs/SLOT-DURATION.md`](../../../../docs/SLOT-DURATION.md).
 
-use crate::math::safe_math::SafeMath;
+use {
+    crate::math::safe_math::SafeMath,
+    anchor_lang::prelude::*,
+    bytemuck::{Pod, Zeroable},
+    std::convert::{TryFrom, TryInto},
+};
 
 /// Storage encoding quantum for pre-gate duration fields: the historical
 /// 400ms slot length. Exists only in the encode/decode of those fields (and in
-/// the calibration periods of a few legacy per-slot rates). Never used by new
-/// code; new stored durations store milliseconds natively.
+/// the calibration periods of a few legacy per-slot rates). New compact fields
+/// should put their chosen quantum in [`StoredSlotDuration`]'s const parameter
+/// rather than referring to this legacy constant implicitly.
 pub const STORED_UNIT_MS: u64 = 400;
+
+/// A compact wall-clock duration stored as `T` fixed-slot quanta.
+///
+/// `SLOT_MS` records the slot length assumed when the field was introduced;
+/// it is a storage codec, not the chain's live slot length. The transparent
+/// representation preserves the wrapped integer's exact size, alignment, and
+/// bytes, so existing accounts remain layout-compatible.
+///
+/// New values should be created with [`Self::try_from_millis`], which rejects
+/// durations that are not an exact multiple of `SLOT_MS` or do not fit in `T`.
+/// [`Self::from_raw_units`] exists only for decoding and legacy instruction
+/// arguments that are already denominated in the field's fixed units.
+#[repr(transparent)]
+#[derive(
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default, AnchorSerialize, AnchorDeserialize,
+)]
+pub struct StoredSlotDuration<T, const SLOT_MS: u64>(T);
+
+// SAFETY: `StoredSlotDuration` is `repr(transparent)` over its only stored
+// field, `T`; the const generic occupies no memory. Therefore every all-zero
+// bit pattern valid for a `Zeroable` `T` is also valid for this wrapper.
+unsafe impl<T: Zeroable, const SLOT_MS: u64> Zeroable for StoredSlotDuration<T, SLOT_MS> {}
+
+// SAFETY: `repr(transparent)` gives this wrapper exactly `T`'s layout, with no
+// additional fields or padding. If `T` is `Pod`, the wrapper has the same valid
+// bit patterns and can be read from zero-copy account bytes safely.
+unsafe impl<T: Pod, const SLOT_MS: u64> Pod for StoredSlotDuration<T, SLOT_MS> {}
+
+impl<T, const SLOT_MS: u64> StoredSlotDuration<T, SLOT_MS>
+where
+    T: Copy + TryFrom<u64> + TryInto<u64>,
+{
+    /// Wrap already-encoded fixed-slot units. Keep this at account/legacy-API
+    /// boundaries; duration arithmetic should use [`Self::to_millis`].
+    pub const fn from_raw_units(units: T) -> Self {
+        Self(units)
+    }
+
+    /// Encode an exact millisecond duration without changing storage width.
+    pub fn try_from_millis(duration: Millis) -> Option<Self> {
+        if SLOT_MS == 0 || duration.as_ms() % SLOT_MS != 0 {
+            return None;
+        }
+        T::try_from(duration.as_ms() / SLOT_MS).ok().map(Self)
+    }
+
+    /// Decode into the common wall-clock arithmetic type.
+    pub fn to_millis(self) -> Millis {
+        // Signed legacy fields may contain historical negative values. Their
+        // failed conversion deliberately normalizes to zero, matching the
+        // pre-newtype `value.max(0) as u64` decode.
+        let units = self.0.try_into().unwrap_or(0);
+        Millis::from_ms(units.saturating_mul(SLOT_MS))
+    }
+
+    /// Return the underlying fixed-slot units for wire compatibility, logging,
+    /// or a legacy instruction boundary.
+    pub const fn raw_units(self) -> T {
+        self.0
+    }
+}
+
+impl<T: std::fmt::Display, const SLOT_MS: u64> std::fmt::Display
+    for StoredSlotDuration<T, SLOT_MS>
+{
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+// Runtime and IDL builds deliberately see different Rust type names with the
+// same wire bytes:
+//
+// - Normal program builds use `StoredSlotDuration`, giving Rust the strong
+//   fixed-quantum type.
+// - Anchor's `idl-build` sees the original integer type. Anchor currently
+//   describes the transparent generic wrapper as a defined tuple struct, and
+//   its JavaScript Borsh coder would decode it as `{ 0: value }` rather than the
+//   primitive number/BN clients already consume.
+//
+// The complementary `cfg` attributes are required because each alias name may
+// have exactly one definition in any build. Remove this split once Anchor's IDL
+// and JavaScript coder flatten transparent wrappers to their inner primitive.
+#[cfg(feature = "idl-build")]
+pub type LegacySlotDurationU8 = u8;
+#[cfg(not(feature = "idl-build"))]
+pub type LegacySlotDurationU8 = StoredSlotDuration<u8, STORED_UNIT_MS>;
+
+#[cfg(feature = "idl-build")]
+pub type LegacySlotDurationI64 = i64;
+#[cfg(not(feature = "idl-build"))]
+pub type LegacySlotDurationI64 = StoredSlotDuration<i64, STORED_UNIT_MS>;
+
+#[cfg(feature = "idl-build")]
+pub type LegacySlotDurationU64 = u64;
+#[cfg(not(feature = "idl-build"))]
+pub type LegacySlotDurationU64 = StoredSlotDuration<u64, STORED_UNIT_MS>;
+
+pub const fn legacy_slot_duration_u8(units: u8) -> LegacySlotDurationU8 {
+    #[cfg(not(feature = "idl-build"))]
+    {
+        StoredSlotDuration::from_raw_units(units)
+    }
+    #[cfg(feature = "idl-build")]
+    {
+        units
+    }
+}
+
+pub const fn legacy_slot_duration_i64(units: i64) -> LegacySlotDurationI64 {
+    #[cfg(not(feature = "idl-build"))]
+    {
+        StoredSlotDuration::from_raw_units(units)
+    }
+    #[cfg(feature = "idl-build")]
+    {
+        units
+    }
+}
+
+pub const fn legacy_slot_duration_u64(units: u64) -> LegacySlotDurationU64 {
+    #[cfg(not(feature = "idl-build"))]
+    {
+        StoredSlotDuration::from_raw_units(units)
+    }
+    #[cfg(feature = "idl-build")]
+    {
+        units
+    }
+}
+
+pub fn legacy_slot_duration_u8_to_millis(value: LegacySlotDurationU8) -> Millis {
+    #[cfg(not(feature = "idl-build"))]
+    {
+        value.to_millis()
+    }
+    #[cfg(feature = "idl-build")]
+    {
+        Millis::from_stored_units(value as u64)
+    }
+}
+
+pub fn legacy_slot_duration_i64_to_millis(value: LegacySlotDurationI64) -> Millis {
+    #[cfg(not(feature = "idl-build"))]
+    {
+        value.to_millis()
+    }
+    #[cfg(feature = "idl-build")]
+    {
+        Millis::from_stored_units(value.max(0) as u64)
+    }
+}
+
+pub const fn legacy_slot_duration_i64_raw(value: LegacySlotDurationI64) -> i64 {
+    #[cfg(not(feature = "idl-build"))]
+    {
+        value.raw_units()
+    }
+    #[cfg(feature = "idl-build")]
+    {
+        value
+    }
+}
+
+pub fn legacy_slot_duration_u64_to_millis(value: LegacySlotDurationU64) -> Millis {
+    #[cfg(not(feature = "idl-build"))]
+    {
+        value.to_millis()
+    }
+    #[cfg(feature = "idl-build")]
+    {
+        Millis::from_stored_units(value)
+    }
+}
 
 /// The set of slot durations the admin may configure, matching the IBRL
 /// feature-gate schedule. 400 is the pre-upgrade default and is not settable
@@ -229,6 +413,65 @@ impl DelayOverride {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stored_slot_duration_preserves_storage_layout() {
+        assert_eq!(std::mem::size_of::<StoredSlotDuration<u8, 400>>(), 1);
+        assert_eq!(std::mem::align_of::<StoredSlotDuration<u8, 400>>(), 1);
+        assert_eq!(std::mem::size_of::<StoredSlotDuration<i64, 400>>(), 8);
+        assert_eq!(std::mem::align_of::<StoredSlotDuration<i64, 400>>(), 8);
+
+        let value = StoredSlotDuration::<u8, 400>::from_raw_units(10);
+        assert_eq!(bytemuck::bytes_of(&value), &[10]);
+        let mut serialized = Vec::new();
+        value.serialize(&mut serialized).unwrap();
+        assert_eq!(serialized, vec![10]);
+    }
+
+    #[test]
+    fn stored_slot_duration_encodes_only_exact_representable_millis() {
+        type LegacyU8 = StoredSlotDuration<u8, 400>;
+
+        let encoded = LegacyU8::try_from_millis(Millis::from_ms(4_000)).unwrap();
+        assert_eq!(encoded.raw_units(), 10);
+        assert_eq!(encoded.to_millis(), Millis::from_ms(4_000));
+        assert!(LegacyU8::try_from_millis(Millis::from_ms(4_001)).is_none());
+        assert!(LegacyU8::try_from_millis(Millis::from_ms(102_400)).is_none());
+
+        let legacy_negative = StoredSlotDuration::<i64, 400>::from_raw_units(-1);
+        assert_eq!(legacy_negative.to_millis(), Millis::ZERO);
+    }
+
+    #[test]
+    fn stored_slot_duration_unit_is_part_of_the_type() {
+        let legacy = StoredSlotDuration::<u8, 400>::from_raw_units(10);
+        let newer = StoredSlotDuration::<u8, 200>::from_raw_units(10);
+        assert_eq!(legacy.to_millis(), Millis::from_ms(4_000));
+        assert_eq!(newer.to_millis(), Millis::from_ms(2_000));
+    }
+
+    #[cfg(feature = "idl-build")]
+    #[test]
+    fn idl_build_alias_helpers_preserve_primitive_semantics() {
+        // Anchor's IDL build substitutes primitive aliases for the transparent
+        // wrappers. Pin those cfg-only branches so they cannot silently drift
+        // from the runtime codec.
+        let u8_value = legacy_slot_duration_u8(10);
+        let i64_value = legacy_slot_duration_i64(-1);
+        let u64_value = legacy_slot_duration_u64(120);
+        assert_eq!(u8_value, 10u8);
+        assert_eq!(
+            legacy_slot_duration_u8_to_millis(u8_value),
+            Millis::from_ms(4_000)
+        );
+        assert_eq!(legacy_slot_duration_i64_raw(i64_value), -1);
+        assert_eq!(legacy_slot_duration_i64_to_millis(i64_value), Millis::ZERO);
+        assert_eq!(u64_value, 120u64);
+        assert_eq!(
+            legacy_slot_duration_u64_to_millis(u64_value),
+            Millis::from_ms(48_000)
+        );
+    }
 
     #[test]
     fn baseline_is_identity_on_stored_units() {

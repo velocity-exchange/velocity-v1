@@ -949,9 +949,14 @@ impl OrderParams {
         market: &PerpMarket,
         direction_to_close: PositionDirection,
         base_asset_amount: u64,
+        slot_duration: SlotDuration,
     ) -> VelocityResult<OrderParams> {
         let (auction_start_price, auction_end_price) =
             OrderParams::get_perp_baseline_start_end_price_offset(market, direction_to_close, 1)?;
+        let auction_duration = Millis::from_stored_units(80)
+            .to_slots_ceil(slot_duration)
+            .min(u8::MAX as u64)
+            .cast::<u8>()?;
 
         let params = OrderParams {
             market_type: MarketType::Perp,
@@ -962,7 +967,7 @@ impl OrderParams {
             reduce_only: true,
             auction_start_price: Some(auction_start_price),
             auction_end_price: Some(auction_end_price),
-            auction_duration: Some(80),
+            auction_duration: Some(auction_duration),
             oracle_price_offset: Some(auction_end_price.cast()?),
             ..OrderParams::default()
         };

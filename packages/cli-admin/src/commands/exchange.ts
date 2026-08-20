@@ -82,7 +82,7 @@ export function registerExchange(parent: Command): void {
 					);
 				} else {
 					console.log(
-						`IBRL gate ${featureGate.toBase58()} is not staged yet — the program will reject this until Anza activates it`
+						`IBRL gate ${featureGate.toBase58()} is not activated yet — the program will reject this until Anza activates it`
 					);
 				}
 			}

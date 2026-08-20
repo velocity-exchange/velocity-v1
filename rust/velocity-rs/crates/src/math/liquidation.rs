@@ -333,7 +333,7 @@ pub fn calculate_max_pct_to_liquidate(
     margin_shortage: u128,
     slot: u64,
     initial_pct_to_liquidate: u128,
-    liquidation_duration: u128,
+    liquidation_duration: program::math::time::Millis,
     slot_duration: program::math::time::SlotDuration,
 ) -> SdkResult<u128> {
     // if margin shortage is tiny, accelerate liquidation
@@ -349,14 +349,11 @@ pub fn calculate_max_pct_to_liquidate(
     // (not a raw ms number) so a caller cannot pass the pre-switch base while a
     // staged value is active; the window ceils so the ramp never reaches 100%
     // earlier than intended; both scale with the slot duration so the ratio is
-    // duration-independent and identity at 400ms. The window narrowing rejects
-    // out-of-range input rather than silently wrapping.
+    // duration-independent and identity at 400ms. Taking `Millis` keeps the
+    // legacy storage encoding at the account boundary instead of making this
+    // arithmetic helper guess what a bare integer means.
     let elapsed_slots = slot - user.last_active_slot;
-    let duration_slots = program::math::time::Millis::from_stored_units(
-        u64::try_from(liquidation_duration)
-            .map_err(|_| SdkError::MathError("liquidation_duration out of u64 range"))?,
-    )
-    .to_slots_ceil(slot_duration);
+    let duration_slots = liquidation_duration.to_slots_ceil(slot_duration);
 
     let ramp = (elapsed_slots as u128)
         .saturating_mul(LIQUIDATION_PCT_PRECISION)

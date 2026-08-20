@@ -107,7 +107,7 @@ const IBRL_FEATURE_GATES: Record<number, PublicKey> = {
 	200: new PublicKey('iBRLjhJnkmDZgNoZRDMW11d8ZV7HvsL3vAyRjZB5npW'),
 };
 
-/** One epoch: a staged IBRL feature only takes effect this many slots later. */
+/** One epoch: an activated IBRL feature only takes effect this many slots later. */
 export const IBRL_FEATURE_WARMUP_SLOTS = 432_000;
 
 /**
@@ -2833,7 +2833,7 @@ export class AdminClient extends VelocityClient {
 	/**
 	 * Builds the `updateStateSlotDurationMs` instruction without sending it. See
 	 * `updateStateSlotDurationMs`. Appends the IBRL feature-gate account for the
-	 * target duration as a remaining account; the program verifies it is staged
+	 * target duration as a remaining account; the program verifies it is activated
 	 * and reads its effective slot to stage the switch.
 	 * @returns The unsigned `updateStateSlotDurationMs` instruction.
 	 */
@@ -4654,7 +4654,8 @@ export class AdminClient extends VelocityClient {
 	 * Sets the protocol-wide default minimum perp-order auction duration
 	 * (`state.minPerpAuctionDuration`) — orders placed without an explicit longer
 	 * auction fall back to this floor. Requires warm admin (`check_warm`).
-	 * @param minDuration - Minimum auction duration, slots.
+	 * @param minDuration - Minimum auction duration in legacy 400ms units
+	 * (for example, 10 means 4 seconds).
 	 * @returns Transaction signature.
 	 */
 	public async updatePerpAuctionDuration(

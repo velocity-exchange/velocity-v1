@@ -1,6 +1,9 @@
 use {
     crate::{
-        math::oracle::oracle_validity,
+        math::{
+            oracle::oracle_validity,
+            time::{legacy_slot_duration_i64, legacy_slot_duration_u8},
+        },
         state::{
             fill_mode::FillMode,
             market_status::MarketStatus,
@@ -53,7 +56,7 @@ fn get_oracle_map<'a>() -> OracleMap<'a> {
 
 fn get_state(min_auction_duration: u8) -> State {
     State {
-        min_perp_auction_duration: min_auction_duration,
+        min_perp_auction_duration: legacy_slot_duration_u8(min_auction_duration),
         ..State::default()
     }
 }
@@ -2912,8 +2915,8 @@ pub mod fulfill_order {
         let mut state = State {
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: 10,     // 5s
-                    slots_before_stale_for_margin: 120, // 60s
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 5s
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 60s
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },
@@ -2995,7 +2998,7 @@ pub mod fulfill_order {
         market.amm.min_base_asset_reserve = 0;
 
         let mut state = State {
-            min_perp_auction_duration: 1,
+            min_perp_auction_duration: legacy_slot_duration_u8(1),
             default_market_order_time_in_force: 10,
             ..State::default()
         };
@@ -5548,7 +5551,7 @@ pub mod fulfill_order {
             AccountLoader::try_from(&filler_stats_account_info).unwrap();
 
         let state = State {
-            min_perp_auction_duration: 1,
+            min_perp_auction_duration: legacy_slot_duration_u8(1),
             default_market_order_time_in_force: 10,
             ..State::default()
         };
@@ -6884,7 +6887,7 @@ pub mod fill_order {
             AccountLoader::try_from(&filler_stats_account_info).unwrap();
 
         let state = State {
-            min_perp_auction_duration: 1,
+            min_perp_auction_duration: legacy_slot_duration_u8(1),
             default_market_order_time_in_force: 10,
             ..State::default()
         };
@@ -7096,7 +7099,7 @@ pub mod fill_order {
             AccountLoader::try_from(&filler_stats_account_info).unwrap();
 
         let state = State {
-            min_perp_auction_duration: 1,
+            min_perp_auction_duration: legacy_slot_duration_u8(1),
             default_market_order_time_in_force: 10,
             ..State::default()
         };
@@ -7217,7 +7220,7 @@ pub mod fill_order {
             AccountLoader::try_from(&filler_stats_account_info).unwrap();
 
         let state = State {
-            min_perp_auction_duration: 1,
+            min_perp_auction_duration: legacy_slot_duration_u8(1),
             default_market_order_time_in_force: 10,
             ..State::default()
         };
@@ -7397,7 +7400,7 @@ pub mod fill_order {
             AccountLoader::try_from(&filler_stats_account_info).unwrap();
 
         let state = State {
-            min_perp_auction_duration: 1,
+            min_perp_auction_duration: legacy_slot_duration_u8(1),
             default_market_order_time_in_force: 10,
             ..State::default()
         };
@@ -7655,7 +7658,7 @@ pub mod force_cancel_orders {
             AccountLoader::try_from(&filler_stats_account_info).unwrap();
 
         let state = State {
-            min_perp_auction_duration: 1,
+            min_perp_auction_duration: legacy_slot_duration_u8(1),
             default_market_order_time_in_force: 10,
             ..State::default()
         };
@@ -9598,8 +9601,8 @@ fn oracle_derived_stats_refresh_can_flip_the_5min_divergence_verdict() {
 
     let guard_rails = OracleGuardRails {
         validity: ValidityGuardRails {
-            slots_before_stale_for_amm: 10,
-            slots_before_stale_for_margin: 120,
+            slots_before_stale_for_amm: legacy_slot_duration_i64(10),
+            slots_before_stale_for_margin: legacy_slot_duration_i64(120),
             confidence_interval_max_size: 1000,
             too_volatile_ratio: 5,
         },

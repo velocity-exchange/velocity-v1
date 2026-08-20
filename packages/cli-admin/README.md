@@ -32,7 +32,7 @@ velocity-admin auth init-config [--initial-warm <pk>]
 
 velocity-admin perp-market set-status <market> <status>
 velocity-admin perp-market set-fee-buffer <market> <amount>
-velocity-admin perp-market set-bankruptcy-if-floor <market> <pct>
+velocity-admin perp-market set-bankruptcy-if-floor <market> <pct>  # PERCENTAGE_PRECISION (1e6); 0 selects the 10 bps default, "disabled" turns the floor off
 velocity-admin perp-market set-funding-dead-zone <market> <threshold> <slope>
 velocity-admin perp-market set-oracle-slot-delay <market> <slots>
 velocity-admin spot-market set-status <market> <status>
@@ -57,6 +57,7 @@ velocity-admin fees set-promo-tier <tier>                        # warm/cold adm
 velocity-admin fees withdraw-perp <market> <amount>  # FeeWithdraw hot key; pays the recipient's ATA (created if needed)
 velocity-admin fees withdraw-spot <market> <amount>  # FeeWithdraw hot key; pays the recipient's ATA (created if needed)
 velocity-admin fees sweep <market>                               # permissionless
+velocity-admin fees settle-revenue-share <market> [escrowAuthority] [--all] # permissionless; pays accrued builder/referrer fees out of the pnl pool. --all settles every escrow still owed on the market, which delisting now requires
 velocity-admin fees transfer-fee-pnl <feePoolMarket> <pnlPoolMarket> <amount> <fee-to-pnl|pnl-to-fee> # warm/cold admin
 
 velocity-admin user init <name> [--sub-accounts <n>] [--authority <pk>] [--vault-index <i>] [--dry-run]  # authority must sign on mainnet; one proposal with --multisig, vault pays rent

@@ -157,6 +157,25 @@ pub const EPOCH_DURATION: i64 = TWENTY_FOUR_HOUR * 28;
 pub const THIRTY_DAY: i64 = TWENTY_FOUR_HOUR * 30;
 pub const THIRTY_DAY_I128: i128 = (TWENTY_FOUR_HOUR * 30) as i128;
 pub const ONE_YEAR: u128 = 31536000;
+
+/// How many funding periods the mark TWAP may stay unwritten. Past this many periods
+/// `MarketStats::update_mark_twap` discards the stored value and re-seeds it from the
+/// oracle TWAP.
+///
+/// `calculate_new_twap` weights the incoming sample by the time since the last write.
+/// It floors the opposing weight at 1. Past one funding period a single fill-path
+/// sample therefore replaces the TWAP almost completely, because fills pass no
+/// `max_sample_elapsed` cap. The bid/ask crank's samples are weight-capped
+/// (`MarketStats::max_mark_twap_sample_elapsed`), so there the re-seed instead
+/// replaces a slow crawl of capped samples with one exact oracle-TWAP write.
+/// A market that stops writing keeps no history either way. A funding pause makes
+/// that gap longest, because both funding cranks reject while the pause is set.
+///
+/// The multiplier must stay above 2. A market whose only writer is the funding crank
+/// writes once per funding period in the steady state. `on_the_hour_update` can also
+/// stretch one legitimate interval to about 1.67 periods. A lower bound re-seeds a
+/// market that is merely quiet or cranked late, and discards a real premium.
+pub const MARK_TWAP_RESEED_FUNDING_PERIODS: i64 = 3;
 /// Max age of the last fill before the trigger price's last-fill leg is
 /// treated as absent (oracle price substitutes).
 pub const TRIGGER_PRICE_LAST_FILL_MAX_AGE: i64 = FIVE_MINUTE as i64;
@@ -215,6 +234,14 @@ pub const OPEN_ORDER_MARGIN_REQUIREMENT: u128 = QUOTE_PRECISION / 100;
 /// "reducing" swap can leak through a bad route while the account is frozen.
 /// 100 = 1%. TUNABLE.
 pub const EQUITY_FLOOR_SWAP_MAX_VALUE_LOSS_BPS: u128 = 100;
+/// Most favorable value the breaker-trip proof concedes to a position whose
+/// oracle is invalid: an asset worth no more than this at its own last twap
+/// counts as exactly this much, a liability counts as zero, and a larger
+/// invalid position keeps the trip blocked. Bounds how much equity dust in
+/// dead-oracle markets can add to the trip's upper bound (allowance times
+/// the account's position slots), so dust cannot veto a material breach.
+/// $100. TUNABLE.
+pub const EQUITY_FLOOR_TRIP_DUST_ALLOWANCE: i128 = 100 * QUOTE_PRECISION_I128;
 pub const FEE_ADJUSTMENT_MAX: u64 = 100;
 pub const FEE_ADJUSTMENT_MAX_I16: i16 = FEE_ADJUSTMENT_MAX as i16;
 
@@ -310,8 +337,15 @@ pub const DEFAULT_MAX_TWAP_UPDATE_PRICE_BAND_DENOMINATOR: i64 = 3; // '3' here m
 pub const DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT: i64 = -25 * QUOTE_PRECISION_I64; //$25 loss
 /// Default `PerpMarket.bankruptcy_if_floor_pct` for new markets: 10 bps of
 /// open-interest notional retained in `pending_if_fee` as a standing
-/// bankruptcy tranche (PERCENTAGE_PRECISION).
+/// bankruptcy tranche (PERCENTAGE_PRECISION). A market that holds `0` — every
+/// market created before the field existed — also uses this value, so the
+/// tranche does not depend on an admin call per market.
 pub const DEFAULT_BANKRUPTCY_IF_FLOOR_PCT: u32 = PERCENTAGE_PRECISION_U32 / 1000; // 0.1%
+/// The `PerpMarket.bankruptcy_if_floor_pct` value that turns the standing
+/// floor off. `0` means "use `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`", so a market
+/// with no floor needs an explicit sentinel. The freeze that
+/// `pending_bankruptcy_claims` applies is not affected by this value.
+pub const BANKRUPTCY_IF_FLOOR_DISABLED: u32 = u32::MAX;
 pub const DEFAULT_LARGE_BID_ASK_FACTOR: u64 = 10 * BID_ASK_SPREAD_PRECISION;
 pub const DEFAULT_LIQUIDATION_MARGIN_BUFFER_RATIO: u32 = MARGIN_PRECISION / 50; // 2%
 pub const DEFAULT_BASE_ASSET_AMOUNT_STEP_SIZE: u64 = BASE_PRECISION_U64 / 10000; // 1e-4;

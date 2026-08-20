@@ -1,8 +1,9 @@
 use {
     crate::{
+        error::ErrorCode,
         events::{FeeUpdateAction, FeeUpdateRecord},
         state::{vault::validate_fee_policy, FeeUpdateStatus, Vault},
-        Size,
+        validate, Size,
     },
     anchor_lang::prelude::*,
     static_assertions::const_assert_eq,
@@ -39,12 +40,24 @@ impl FeeUpdate {
         self.incoming_update_ts > 0
     }
 
+    /// Install a matured update.
+    ///
+    /// #98: the management fee accrues over an interval, so the rate must change only at an
+    /// instant where the vault is settled. Otherwise the new rate prices the interval that was
+    /// earned under the old one. [`Vault::apply_fee`] is the only caller: it settles the interval
+    /// first and stamps `last_fee_update_ts`, which the validate below requires.
     pub fn try_update_vault_fees(&mut self, now: i64, vault: &mut Vault) -> Result<()> {
         if !self.is_pending() {
             return Ok(());
         }
 
         if now >= self.incoming_update_ts {
+            validate!(
+                vault.last_fee_update_ts == now,
+                ErrorCode::InvalidVaultUpdate,
+                "vault fees must be settled to the current time before a fee update installs"
+            )?;
+
             // #97: defense-in-depth — never install an out-of-bounds policy, even if a bad update
             // was somehow queued. The combined protocol-sum check needs protocol state (only
             // available via apply_fee), so here we enforce the manager-facing bounds and, for
@@ -77,14 +90,6 @@ impl FeeUpdate {
             vault.hurdle_rate = self.incoming_hurdle_rate;
 
             vault.fee_update_status = FeeUpdateStatus::None as u8;
-
-            // #98: treat the fee change as a rate-epoch boundary. Stamp last_fee_update_ts to the
-            // activation instant so the new (possibly raised) rate never retroactively prices the
-            // pre-activation interval. The pre-activation interval was charged at the old rate on
-            // prior interactions; any un-accrued sliver is conservatively forfeited rather than
-            // re-priced at the new rate. Uses max() so a timestamp already past the boundary is
-            // never moved backward (which would double-charge).
-            vault.last_fee_update_ts = vault.last_fee_update_ts.max(self.incoming_update_ts);
 
             self.reset();
         }

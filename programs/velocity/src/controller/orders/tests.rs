@@ -5618,7 +5618,7 @@ pub mod fulfill_order {
     //         &pyth_program,
     //         oracle_account_info
     //     );
-    //     let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+    //     let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, crate::math::time::SlotDuration::BASELINE, None).unwrap();
     //
     //     let mut market = PerpMarket {
     //         amm: AMM {
@@ -9696,6 +9696,290 @@ fn oracle_derived_stats_refresh_can_flip_the_5min_divergence_verdict() {
         "the refresh is expected to normalize the divergence away — if this trips, \
          the fixture no longer reproduces #112"
     );
+}
+
+pub mod maker_floor_prune {
+    use {
+        super::*,
+        crate::{
+            controller::{
+                orders::{admit_reducing_maker_orders, get_maker_orders_info},
+                position::PositionDirection,
+            },
+            create_anchor_account_info,
+            math::constants::{
+                AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64, PEG_PRECISION,
+                PRICE_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64, QUOTE_PRECISION_I64,
+                SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
+                SPOT_WEIGHT_PRECISION,
+            },
+            state::{
+                oracle::{HistoricalOracleData, OracleSource},
+                perp_market::{MarketStats, AMM},
+                perp_market_map::PerpMarketMap,
+                pyth_lazer_oracle::PythLazerOracle,
+                spot_market::{SpotBalanceType, SpotMarket},
+                spot_market_map::SpotMarketMap,
+                user::{OrderStatus, OrderType, SpotPosition, User},
+                user_map::UserMap,
+            },
+            test_utils::{get_orders, get_positions, get_pyth_price, get_spot_positions},
+        },
+        anchor_lang::prelude::Pubkey,
+        std::str::FromStr,
+    };
+
+    // A floored maker whose oracles cannot be priced has its risk-increasing
+    // orders pruned, and "risk-increasing" is a property of the admitted set
+    // rather than of any single order. Justin's case: long 1 with two resting
+    // sells of 0.75 each. Judged individually against the resting position
+    // both look reducing, but together they flip the maker short, the post-fill
+    // gate then rejects a maker it cannot price, and the revert takes the taker
+    // and every other maker in the transaction down with it, repeatably.
+    // The admitted set is judged best price first, so the reducing budget
+    // goes to the orders the taker wants matched, not to the lowest slots.
+    // Returns the admitted (maker key, order index, price) tuples.
+    fn run(
+        orders: [(u64, u64); 2],
+        maker_position_base: i64,
+        floor: u64,
+    ) -> Vec<(Pubkey, usize, u64)> {
+        let now = 0_i64;
+        // far past the oracle's posted slot, so the maker's floor is
+        // unverifiable and the prune engages
+        let slot = 100_000_u64;
+
+        let mut oracle_price = get_pyth_price(100, 6);
+        let oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            oracle_price,
+            &oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
+
+        let mut market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                max_slippage_ratio: 50,
+                max_fill_reserve_fraction: 100,
+                base_spread: 0,
+                ..AMM::default()
+            },
+            margin_ratio_initial: 1000,
+            margin_ratio_maintenance: 500,
+            status: MarketStatus::Active,
+            order_step_size: 1000,
+            order_tick_size: 1,
+            oracle: oracle_price_key,
+            oracle_source: OracleSource::PythLazer,
+            market_stats: MarketStats {
+                historical_oracle_data: HistoricalOracleData {
+                    last_oracle_price: (100 * PRICE_PRECISION) as i64,
+                    last_oracle_price_twap: (100 * PRICE_PRECISION) as i64,
+                    last_oracle_price_twap_5min: (100 * PRICE_PRECISION) as i64,
+                    ..HistoricalOracleData::default()
+                },
+                ..MarketStats::default()
+            },
+            ..PerpMarket::default_test()
+        };
+        market.amm.max_base_asset_reserve = u128::MAX;
+        market.amm.min_base_asset_reserve = 0;
+        create_anchor_account_info!(market, PerpMarket, market_account_info);
+        let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        let mut spot_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+            historical_oracle_data: HistoricalOracleData::default_price(QUOTE_PRECISION_I64),
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+
+        // taker buys, so the maker's sells are the resting side
+        let taker_order = Order {
+            market_index: 0,
+            status: OrderStatus::Open,
+            order_type: OrderType::Limit,
+            direction: PositionDirection::Long,
+            base_asset_amount: 2 * BASE_PRECISION_U64,
+            slot: 0,
+            price: 150 * PRICE_PRECISION_U64,
+            ..Order::default()
+        };
+
+        let maker_authority =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        let mut maker_orders = get_orders(Order::default());
+        for (slot_index, (order_base, order_price)) in orders.iter().enumerate() {
+            maker_orders[slot_index] = Order {
+                market_index: 0,
+                status: OrderStatus::Open,
+                post_only: true,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Short,
+                base_asset_amount: *order_base,
+                price: *order_price,
+                ..Order::default()
+            };
+        }
+        let total_asks = orders.iter().map(|(base, _)| *base as i64).sum::<i64>();
+
+        let mut maker = User {
+            authority: maker_authority,
+            equity_floor: floor,
+            orders: maker_orders,
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                base_asset_amount: maker_position_base,
+                open_orders: 2,
+                open_asks: -total_asks,
+                ..PerpPosition::default()
+            }),
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+        create_anchor_account_info!(maker, User, maker_account_info);
+        let makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
+
+        let taker_key = Pubkey::from_str("My11111111111111111111111111111111111111111").unwrap();
+        let filler_key = Pubkey::default();
+
+        get_maker_orders_info(
+            &market_map,
+            &spot_market_map,
+            &mut oracle_map,
+            &makers_and_referrers,
+            &taker_key,
+            &taker_order,
+            &mut None,
+            &filler_key,
+            0,
+            100 * PRICE_PRECISION_I64,
+            None,
+            now,
+            slot,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn two_individually_reducing_orders_cannot_flip_the_position() {
+        // long 1, two sells of 0.75 at the same price. One is reducing
+        // against +1 and is admitted; the other is then judged against the
+        // +0.25 the first leaves behind, where 0.75 is not reducing, so it
+        // is pruned. Admitting both is what let a maker revert unrelated
+        // fills.
+        let admitted = run(
+            [
+                (3 * BASE_PRECISION_U64 / 4, 100 * PRICE_PRECISION_U64),
+                (3 * BASE_PRECISION_U64 / 4, 100 * PRICE_PRECISION_U64),
+            ],
+            BASE_PRECISION_I64,
+            100 * QUOTE_PRECISION_I64 as u64,
+        );
+        assert_eq!(
+            admitted.len(),
+            1,
+            "the pair would flip the maker short, so only one order may match"
+        );
+    }
+
+    #[test]
+    fn orders_that_stay_reducing_together_are_all_admitted() {
+        // long 1, two sells of 0.25: the pair still leaves the maker long, so
+        // pruning either one would needlessly stop a floored maker reducing.
+        let admitted = run(
+            [
+                (BASE_PRECISION_U64 / 4, 100 * PRICE_PRECISION_U64),
+                (BASE_PRECISION_U64 / 4, 100 * PRICE_PRECISION_U64),
+            ],
+            BASE_PRECISION_I64,
+            100 * QUOTE_PRECISION_I64 as u64,
+        );
+        assert_eq!(admitted.len(), 2, "both orders keep the maker long");
+    }
+
+    #[test]
+    fn the_reducing_budget_goes_to_the_best_priced_order() {
+        // long 1, sell 0.75 at 101 in slot 0 and sell 0.75 at 100 in slot 1.
+        // Only one fits the budget, and judging in slot order would hand it
+        // to the 101 sell and prune the 100 the taker actually wants. The
+        // admitted set is judged best price first, so the 100 survives.
+        let admitted = run(
+            [
+                (3 * BASE_PRECISION_U64 / 4, 101 * PRICE_PRECISION_U64),
+                (3 * BASE_PRECISION_U64 / 4, 100 * PRICE_PRECISION_U64),
+            ],
+            BASE_PRECISION_I64,
+            100 * QUOTE_PRECISION_I64 as u64,
+        );
+        assert_eq!(admitted.len(), 1);
+        assert_eq!(
+            (admitted[0].1, admitted[0].2),
+            (1, 100 * PRICE_PRECISION_U64),
+            "the better-priced order must win the reducing budget"
+        );
+    }
+
+    #[test]
+    fn an_unfloored_maker_is_never_pruned() {
+        // no floor, so the walk short-circuits and the pair matches as before
+        let admitted = run(
+            [
+                (3 * BASE_PRECISION_U64 / 4, 100 * PRICE_PRECISION_U64),
+                (3 * BASE_PRECISION_U64 / 4, 100 * PRICE_PRECISION_U64),
+            ],
+            BASE_PRECISION_I64,
+            0,
+        );
+        assert_eq!(
+            admitted.len(),
+            2,
+            "prune must not touch a maker with no floor"
+        );
+    }
+
+    #[test]
+    fn maker_buys_are_judged_highest_price_first() {
+        // direct check of the admission order for the other side: the taker
+        // sells to maker buys, so the best price for the taker is the
+        // highest buy. Maker short 1, buys of 0.75 at 99 (slot 0) and 100
+        // (slot 1): the 100 wins the budget.
+        let admitted = admit_reducing_maker_orders(
+            vec![
+                (0, 99 * PRICE_PRECISION_U64, 3 * BASE_PRECISION_U64 / 4),
+                (1, 100 * PRICE_PRECISION_U64, 3 * BASE_PRECISION_U64 / 4),
+            ],
+            PositionDirection::Long,
+            -BASE_PRECISION_I64,
+        )
+        .unwrap();
+
+        assert_eq!(admitted, vec![(1, 100 * PRICE_PRECISION_U64)]);
+    }
 }
 
 /// The margin gate on the builder fee.

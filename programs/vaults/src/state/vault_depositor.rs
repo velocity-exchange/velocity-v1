@@ -18,7 +18,6 @@ use {
         error::ErrorCode as VelocityErrorCode,
         math::{
             casting::Cast,
-            constants::PERCENTAGE_PRECISION,
             insurance::{
                 if_shares_to_vault_amount as depositor_shares_to_vault_amount,
                 vault_amount_to_if_shares as vault_amount_to_depositor_shares,
@@ -57,13 +56,20 @@ pub struct VaultDepositor {
     pub total_deposits: u64,
     /// lifetime total withdraws
     pub total_withdraws: u64,
-    /// the token amount of gains the vault depositor has paid performance fees on
+    /// the token amount of gain, net of the profit share taken on it, that the high-water mark
+    /// already covers. `net_deposits + cumulative_profit_share_amount` is the high-water mark.
     pub cumulative_profit_share_amount: i64,
     pub profit_share_fee_paid: u64,
     /// the exponent for vault_shares decimal places
     pub vault_shares_base: u32,
+    /// the vault's profit share when the high-water mark was last set. Gain above the high-water
+    /// mark is priced at this rate, so a later raise never prices gain earned before it.
+    pub profit_share_at_basis: u32,
+    /// the vault's hurdle rate when the high-water mark was last set. Gain above the high-water
+    /// mark keeps this shelter, so a later cut never exposes gain earned before it.
+    pub hurdle_rate_at_basis: u32,
     pub padding_align: u32,
-    pub padding: [u64; 5],
+    pub padding: [u64; 4],
 }
 
 impl Size for VaultDepositor {
@@ -117,12 +123,26 @@ impl VaultDepositorBase for VaultDepositor {
     fn set_profit_share_fee_paid(&mut self, amount: u64) {
         self.profit_share_fee_paid = amount;
     }
+
+    fn get_profit_share_at_basis(&self) -> u32 {
+        self.profit_share_at_basis
+    }
+    fn set_profit_share_at_basis(&mut self, profit_share: u32) {
+        self.profit_share_at_basis = profit_share;
+    }
+
+    fn get_hurdle_rate_at_basis(&self) -> u32 {
+        self.hurdle_rate_at_basis
+    }
+    fn set_hurdle_rate_at_basis(&mut self, hurdle_rate: u32) {
+        self.hurdle_rate_at_basis = hurdle_rate;
+    }
 }
 
 impl VaultDepositor {
-    pub fn new(vault: Pubkey, pubkey: Pubkey, authority: Pubkey, now: i64) -> Self {
+    pub fn new(vault: &Vault, pubkey: Pubkey, authority: Pubkey, now: i64) -> Self {
         VaultDepositor {
-            vault,
+            vault: vault.pubkey,
             pubkey,
             authority,
             vault_shares: 0,
@@ -134,8 +154,10 @@ impl VaultDepositor {
             total_withdraws: 0,
             cumulative_profit_share_amount: 0,
             profit_share_fee_paid: 0,
+            profit_share_at_basis: vault.profit_share,
+            hurdle_rate_at_basis: vault.hurdle_rate,
             padding_align: 0,
-            padding: [0u64; 5],
+            padding: [0u64; 4],
         }
     }
 
@@ -230,42 +252,6 @@ impl VaultDepositor {
         )?;
 
         Ok(rebase_divisor)
-    }
-
-    pub fn calculate_profit_share_and_update(
-        &mut self,
-        total_amount: u64,
-        vault: &Vault,
-        vault_protocol: &mut Option<RefMut<VaultProtocol>>,
-    ) -> Result<(u128, u128)> {
-        let profit = total_amount.cast::<i64>()?.safe_sub(
-            self.net_deposits
-                .safe_add(self.cumulative_profit_share_amount)?,
-        )?;
-        if profit > 0 {
-            let profit_u128 = profit.cast::<u128>()?;
-
-            let manager_profit_share_amount = profit_u128
-                .safe_mul(vault.profit_share.cast()?)?
-                .safe_div(PERCENTAGE_PRECISION)?;
-            let protocol_profit_share_amount = match vault_protocol {
-                None => 0,
-                Some(vp) => profit_u128
-                    .safe_mul(vp.protocol_profit_share.cast()?)?
-                    .safe_div(PERCENTAGE_PRECISION)?,
-            };
-            let profit_share_amount =
-                manager_profit_share_amount.safe_add(protocol_profit_share_amount)?;
-            self.cumulative_profit_share_amount = self
-                .cumulative_profit_share_amount
-                .safe_add(profit_u128.cast()?)?;
-            self.profit_share_fee_paid = self
-                .profit_share_fee_paid
-                .safe_add(profit_share_amount.cast()?)?;
-            return Ok((manager_profit_share_amount, protocol_profit_share_amount));
-        }
-
-        Ok((0, 0))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -945,7 +931,8 @@ mod vault_v1_tests {
     #[test]
     fn base_init() {
         let now = 1337;
-        let vd = VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vault = Vault::default();
+        let vd = VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
         assert_eq!(vd.vault_shares_base, 0);
         assert_eq!(vd.last_valid_ts, now);
     }
@@ -959,8 +946,7 @@ mod vault_v1_tests {
         let now = 1000;
         let mut vault = Vault::default();
         let vp = RefCell::new(VaultProtocol::default());
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
 
         // First deposit bootstraps shares 1:1 at $100 equity.
         vd.deposit(
@@ -998,8 +984,7 @@ mod vault_v1_tests {
         let mut vault = Vault::default();
         let vp = RefCell::new(VaultProtocol::default());
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
 
         let vault_equity: u64 = 100 * QUOTE_PRECISION_U64; // $100 in total equity
         let amount: u64 = 100 * QUOTE_PRECISION_U64; // $100 of new deposits to add to total equity, for new total of $200
@@ -1047,9 +1032,10 @@ mod vault_v1_tests {
         let now = 1000;
         let mut vault = Vault::default();
         let vp = RefCell::new(VaultProtocol::default());
+        vault.profit_share = 100_000; // 10% profit share
+        vp.borrow_mut().protocol_profit_share = 50_000; // 5% profit share
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
 
         let mut vault_equity: u64 = 100 * QUOTE_PRECISION_U64; // $100 in total equity for depositor
         let amount: u64 = 100 * QUOTE_PRECISION_U64; // $100 in total equity for vault
@@ -1068,8 +1054,6 @@ mod vault_v1_tests {
         assert_eq!(vault.user_shares, 100_000_000);
         assert_eq!(vault.total_shares, 200_000_000);
 
-        vault.profit_share = 100_000; // 10% profit share
-        vp.borrow_mut().protocol_profit_share = 50_000; // 5% profit share
         vault_equity = 400 * QUOTE_PRECISION_U64; // vault gains 100% in value ($200 -> $400)
 
         // withdraw principal
@@ -1150,9 +1134,9 @@ mod vault_v1_tests {
         let now = 1000;
         let mut vault = Vault::default();
         let vp = RefCell::new(VaultProtocol::default());
+        vault.profit_share = 100_000; // 10% profit share
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
 
         let mut vault_equity: u64 = 100 * QUOTE_PRECISION_U64; // $100 in total equity for depositor
         let amount: u64 = 100 * QUOTE_PRECISION_U64; // $100 in total equity for vault
@@ -1171,7 +1155,6 @@ mod vault_v1_tests {
         assert_eq!(vault.user_shares, 100_000_000);
         assert_eq!(vault.total_shares, 200_000_000);
 
-        vault.profit_share = 100_000; // 10% profit share
         vault_equity = 400 * QUOTE_PRECISION_U64; // vault gains 100% in value ($200 -> $400)
 
         // withdraw principal
@@ -1236,9 +1219,10 @@ mod vault_v1_tests {
         let now = 1000;
         let mut vault = Vault::default();
         let vp = RefCell::new(VaultProtocol::default());
+        vault.profit_share = 100_000; // 10% profit share
+        vp.borrow_mut().protocol_profit_share = 50_000; // 5% profit share
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
 
         let mut vault_equity: u64 = 100 * QUOTE_PRECISION_U64;
         let amount: u64 = 100 * QUOTE_PRECISION_U64;
@@ -1257,8 +1241,6 @@ mod vault_v1_tests {
         assert_eq!(vault.user_shares, 100_000_000);
         assert_eq!(vault.total_shares, 200_000_000);
 
-        vault.profit_share = 100_000; // 10% profit share
-        vp.borrow_mut().protocol_profit_share = 50_000; // 5% profit share
         vault_equity = 400 * QUOTE_PRECISION_U64; // up 100%
 
         // withdraw all
@@ -1357,9 +1339,9 @@ mod vault_v1_tests {
         let now = 1000;
         let mut vault = Vault::default();
         let vp = RefCell::new(VaultProtocol::default());
+        vault.profit_share = 100_000; // 10% profit share
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
 
         let mut vault_equity: u64 = 100 * QUOTE_PRECISION_U64;
         let amount: u64 = 100 * QUOTE_PRECISION_U64;
@@ -1378,7 +1360,6 @@ mod vault_v1_tests {
         assert_eq!(vault.user_shares, 100_000_000);
         assert_eq!(vault.total_shares, 200_000_000);
 
-        vault.profit_share = 100_000; // 10% profit share
         vault_equity = 400 * QUOTE_PRECISION_U64; // up 100%
 
         // withdraw all
@@ -1477,9 +1458,9 @@ mod vault_v1_tests {
         let now = 1000;
         let mut vault = Vault::default();
         let vp = RefCell::new(VaultProtocol::default());
+        vault.profit_share = 100_000; // 10% profit share
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
 
         let mut vault_equity: u64 = 100 * QUOTE_PRECISION_U64; // $100 in equity
         let amount: u64 = 100 * QUOTE_PRECISION_U64;
@@ -1498,8 +1479,7 @@ mod vault_v1_tests {
         assert_eq!(vault.user_shares, 100000000);
         assert_eq!(vault.total_shares, 200000000);
 
-        vault.profit_share = 100_000; // 10% profit share
-                                      // vault_protocol.protocol_profit_share = 50_000; // 5% profit share
+        // vault_protocol.protocol_profit_share = 50_000; // 5% profit share
         vault_equity = 400 * QUOTE_PRECISION_U64; // up 100%
 
         vd.realize_profits(
@@ -1579,8 +1559,7 @@ mod vault_v1_tests {
         let mut vault = Vault::default();
         let vp = RefCell::new(VaultProtocol::default());
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
 
         let mut vault_equity: u64 = 100 * QUOTE_PRECISION_U64;
         let amount: u64 = 100 * QUOTE_PRECISION_U64;
@@ -1685,8 +1664,7 @@ mod vault_v1_tests {
         let mut vault = Vault::default();
         let vp = RefCell::new(VaultProtocol::default());
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
 
         let mut vault_equity: u64 = 100 * QUOTE_PRECISION_U64;
         let amount: u64 = 100 * QUOTE_PRECISION_U64;
@@ -1796,8 +1774,7 @@ mod vault_v1_tests {
         vault.total_shares = 100; // high share price: few shares, huge equity
         vault.user_shares = 100;
 
-        let vd =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
         vd.set_vault_shares(100);
         vd.net_deposits = 999_999_900; // profit of 100 tokens -> fee of 10 tokens
 
@@ -1830,8 +1807,7 @@ mod vault_v1_tests {
         vault2.total_shares = 100;
         vault2.user_shares = 100;
 
-        let vd2 =
-            &mut VaultDepositor::new(Pubkey::default(), Pubkey::default(), Pubkey::default(), now);
+        let vd2 = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
         vd2.set_vault_shares(100);
         vd2.net_deposits = 0; // profit of 1e9 -> fee of 1e8 tokens = 10 shares
 
@@ -1860,12 +1836,7 @@ mod vault_v1_tests {
             let mut vp = None;
             vault.total_shares = 200_000_000;
             vault.user_shares = 200_000_000;
-            let vd = &mut VaultDepositor::new(
-                Pubkey::default(),
-                Pubkey::default(),
-                Pubkey::default(),
-                now,
-            );
+            let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
             vd.set_vault_shares(10);
             let vault_equity: u64 = 2; // divisor 1e7 -> 10 shares floor to 0
             let res = vd.apply_rebase_public(&mut vault, &mut vp, vault_equity);
@@ -1881,12 +1852,7 @@ mod vault_v1_tests {
             let mut vp = None;
             vault.total_shares = 200_000_000;
             vault.user_shares = 200_000_000;
-            let vd = &mut VaultDepositor::new(
-                Pubkey::default(),
-                Pubkey::default(),
-                Pubkey::default(),
-                now,
-            );
+            let vd = &mut VaultDepositor::new(&vault, Pubkey::default(), Pubkey::default(), now);
             vd.set_vault_shares(100_000_000);
             let vault_equity: u64 = 2; // divisor 1e7 -> 1e8 shares -> 10 (nonzero)
             let res = vd.apply_rebase_public(&mut vault, &mut vp, vault_equity);
@@ -1905,18 +1871,8 @@ mod vault_v1_tests {
         vault.management_fee = 990_000; // 99%
         vault.last_fee_update_ts = 0;
 
-        let vd1 = &mut VaultDepositor::new(
-            Pubkey::default(),
-            Pubkey::new_unique(),
-            Pubkey::new_unique(),
-            now,
-        );
-        let vd2 = &mut VaultDepositor::new(
-            Pubkey::default(),
-            Pubkey::new_unique(),
-            Pubkey::new_unique(),
-            now,
-        );
+        let vd1 = &mut VaultDepositor::new(&vault, Pubkey::new_unique(), Pubkey::new_unique(), now);
+        let vd2 = &mut VaultDepositor::new(&vault, Pubkey::new_unique(), Pubkey::new_unique(), now);
 
         let vault_equity: u64 = 100 * QUOTE_PRECISION_U64;
         let amount: u64 = 100 * QUOTE_PRECISION_U64;
@@ -1971,18 +1927,8 @@ mod vault_v1_tests {
         let mut vault = Vault::default();
         let vp = RefCell::new(VaultProtocol::default());
 
-        let vd1 = &mut VaultDepositor::new(
-            Pubkey::default(),
-            Pubkey::new_unique(),
-            Pubkey::new_unique(),
-            now,
-        );
-        let vd2 = &mut VaultDepositor::new(
-            Pubkey::default(),
-            Pubkey::new_unique(),
-            Pubkey::new_unique(),
-            now,
-        );
+        let vd1 = &mut VaultDepositor::new(&vault, Pubkey::new_unique(), Pubkey::new_unique(), now);
+        let vd2 = &mut VaultDepositor::new(&vault, Pubkey::new_unique(), Pubkey::new_unique(), now);
 
         let vault_equity: u64 = 100 * QUOTE_PRECISION_U64;
         vd1.deposit(

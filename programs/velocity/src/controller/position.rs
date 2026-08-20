@@ -365,6 +365,11 @@ pub fn update_position_and_market(
     position.quote_entry_amount = new_quote_entry_amount;
     position.quote_break_even_amount = new_quote_break_even_amount;
 
+    // This path writes the quote directly, so it releases a booked claim too.
+    // It is reachable on a booked position: the stale-latch path un-latches an
+    // estate that still owes the market, and the account can trade again.
+    release_bankruptcy_claim_if_settled(position, market);
+
     Ok(pnl)
 }
 
@@ -510,7 +515,38 @@ pub fn update_quote_asset_amount(
         market.number_of_users = market.number_of_users.saturating_sub(1);
     }
 
+    release_bankruptcy_claim_if_settled(position, market);
+
     Ok(())
+}
+
+/// Release a booked bankruptcy claim once the position's quote debt is gone.
+///
+/// A latched bankrupt debt is booked against the market in
+/// `pending_bankruptcy_claims`, which freezes the fee sweep's IF drain. The
+/// booking must be released whoever cleared the debt: the bankruptcy resolver,
+/// a quote-deposit setoff, or a settle or fill after the latch is lifted. The
+/// position flag makes the release happen exactly once.
+///
+/// EVERY writer of `PerpPosition::quote_asset_amount` must call this. There
+/// are two — `update_quote_asset_amount` and `update_position_and_market` —
+/// and missing either one strands the counter: `add_new_position` recycles any
+/// slot that reports `is_available()` by overwriting the whole position,
+/// `position_flag` included, so a claim left on a zeroed position is destroyed
+/// without ever decrementing the market. The market's IF-fee sweep would then
+/// stay frozen for good.
+///
+/// A non-negative quote means there is no bankrupt debt left for the tranche
+/// to absorb: `resolve_perp_bankruptcy` takes a negative quote and refuses
+/// anything else. This does NOT assume a non-negative quote proves solvency.
+/// It cannot, because a position holding base can carry either sign.
+/// `flag_perp_bankruptcy_claim` books only a settled claim (zero base), and a
+/// later loss on a re-traded account is a new admission and a new booking.
+fn release_bankruptcy_claim_if_settled(position: &mut PerpPosition, market: &mut PerpMarket) {
+    if position.has_bankruptcy_claim() && position.quote_asset_amount >= 0 {
+        position.clear_bankruptcy_claim();
+        market.decrement_pending_bankruptcy_claims();
+    }
 }
 
 pub fn update_quote_break_even_amount(

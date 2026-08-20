@@ -14,7 +14,10 @@ use {
         },
         error::{ErrorCode, VelocityResult},
         math::{
-            bankruptcy::{is_cross_margin_bankrupt, is_isolated_margin_bankrupt},
+            bankruptcy::{
+                has_realizable_isolated_assets, has_realizable_spot_assets_for_setoff,
+                is_cross_margin_bankrupt, is_isolated_margin_bankrupt,
+            },
             constants::{LIQUIDATION_PCT_PRECISION, QUOTE_SPOT_MARKET_INDEX},
             liquidation::calculate_max_pct_to_liquidate,
             margin::calculate_user_safest_position_tiers,
@@ -61,7 +64,20 @@ pub trait LiquidatePerpMode {
         &self,
         user: &User,
         spot_market_map: &SpotMarketMap,
-        perp_market_map: &PerpMarketMap,
+    ) -> VelocityResult<bool>;
+
+    /// Whether the estate holds value that ordinary liquidation can move onto this debt, which makes
+    /// the bankruptcy latch stale (OtterSec #130).
+    ///
+    /// The answer depends on the mode, so it belongs on the mode. A cross-margin estate pays from its
+    /// spot rows and its perp claims. An isolated position is walled off from both and pays only from
+    /// its own collateral row. A resolver that asked the cross question about an isolated bankruptcy
+    /// would un-latch on a deposit that can never reach that debt, re-admit on the next call, and
+    /// never resolve.
+    fn has_realizable_assets(
+        &self,
+        user: &User,
+        spot_market_map: &SpotMarketMap,
     ) -> VelocityResult<bool>;
 
     fn enter_bankruptcy(&self, user: &mut User) -> VelocityResult<()>;
@@ -185,9 +201,16 @@ impl LiquidatePerpMode for CrossMarginLiquidatePerpMode {
         &self,
         user: &User,
         spot_market_map: &SpotMarketMap,
-        perp_market_map: &PerpMarketMap,
     ) -> VelocityResult<bool> {
-        is_cross_margin_bankrupt(user, spot_market_map, perp_market_map)
+        is_cross_margin_bankrupt(user, spot_market_map)
+    }
+
+    fn has_realizable_assets(
+        &self,
+        user: &User,
+        spot_market_map: &SpotMarketMap,
+    ) -> VelocityResult<bool> {
+        has_realizable_spot_assets_for_setoff(user, spot_market_map)
     }
 
     fn enter_bankruptcy(&self, user: &mut User) -> VelocityResult<()> {
@@ -342,11 +365,20 @@ impl LiquidatePerpMode for IsolatedMarginLiquidatePerpMode {
         &self,
         user: &User,
         _spot_market_map: &SpotMarketMap,
-        _perp_market_map: &PerpMarketMap,
     ) -> VelocityResult<bool> {
         // Isolated positions carry their own collateral, so the cross-margin
         // realizability questions (#145 / #151) do not apply here.
         is_isolated_margin_bankrupt(user, self.market_index)
+    }
+
+    fn has_realizable_assets(
+        &self,
+        user: &User,
+        _spot_market_map: &SpotMarketMap,
+    ) -> VelocityResult<bool> {
+        // Only this position's own collateral can pay this position's debt. The cross-margin book is
+        // out of reach, so it must not be read here.
+        has_realizable_isolated_assets(user, self.market_index)
     }
 
     fn enter_bankruptcy(&self, user: &mut User) -> VelocityResult<()> {

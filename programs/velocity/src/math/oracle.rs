@@ -218,8 +218,25 @@ pub fn is_oracle_valid_for_action(
                     | OracleValidity::InsufficientDataPoints
                     | OracleValidity::StaleForMargin
             ),
-            VelocityAction::FillOrderMatch
-            | VelocityAction::UpdateAmmCache
+            // Same admitted set as `MarginCalc`, deliberately. A DLOB match
+            // prices off resting limit orders rather than the oracle, so the
+            // looser rule reads reasonable in isolation, but a fill it lets
+            // through at a stale-for-margin oracle is a fill whose margin
+            // consequences the program cannot evaluate: an exact close by both
+            // sides classifies as reducing, which skips the equity-floor gate,
+            // and the lazy breaker cannot arm because it requires `MarginCalc`
+            // validity. A temporary mark loss then crystallizes permanently at
+            // a price the protocol itself treats as unusable, and the
+            // counterparty's matching gain settles out of the pnl pool once the
+            // feed recovers (OtterSec #142).
+            VelocityAction::FillOrderMatch => !matches!(
+                oracle_validity,
+                OracleValidity::NonPositive
+                    | OracleValidity::TooVolatile
+                    | OracleValidity::TooUncertain
+                    | OracleValidity::StaleForMargin
+            ),
+            VelocityAction::UpdateAmmCache
             | VelocityAction::UpdateLpPoolAum
             | VelocityAction::LpPoolSwap => !matches!(
                 oracle_validity,

@@ -5,7 +5,7 @@ use crate::{
     math::{
         casting::Cast,
         constants::{
-            INTEREST_RATE_SEGMENT_AND_WEIGHTS, ONE_YEAR, SPOT_RATE_PRECISION,
+            IF_FACTOR_PRECISION, INTEREST_RATE_SEGMENT_AND_WEIGHTS, ONE_YEAR, SPOT_RATE_PRECISION,
             SPOT_UTILIZATION_PRECISION,
         },
         safe_math::{SafeDivFloor, SafeMath},
@@ -90,6 +90,168 @@ pub fn get_interest_token_amount(
     let token_amount = balance.safe_mul(interest)?.safe_div(precision_decrease)?;
 
     Ok(token_amount)
+}
+
+/// How one interval's deposit interest divides between lenders and the two
+/// carveout pools, plus the remainders to carry into the next interval.
+#[derive(Default)]
+pub struct InterestSplit {
+    /// Added to `cumulative_deposit_interest`.
+    /// precision: SPOT_CUMULATIVE_INTEREST_PRECISION
+    pub for_lenders: u128,
+    /// Withheld for the insurance fund, before conversion to tokens.
+    /// precision: SPOT_CUMULATIVE_INTEREST_PRECISION
+    pub for_insurance_fund: u128,
+    /// Withheld for the protocol, before conversion to tokens.
+    /// precision: SPOT_CUMULATIVE_INTEREST_PRECISION
+    pub for_protocol: u128,
+    /// New `revenue_pool.pending_interest_split_dust`
+    pub carveout_dust: u32,
+    /// New `protocol_fee_pool.pending_interest_split_dust`
+    pub insurance_fund_dust: u32,
+}
+
+/// Divide an interval's deposit interest between lenders, the insurance fund and
+/// the protocol. Carry the amounts that do not reach a whole index unit.
+///
+/// A one-second interval produces only a few index units of `deposit_interest`. A
+/// factor below one percent then rounds the carveout to zero. The size of the
+/// market does not help, because the factor multiply happens in index space,
+/// after the market size divides out. Frequent cranks of this permissionless
+/// accrual therefore held every cut under that floor. The insurance fund and the
+/// protocol lost their whole share of lending yield. Finding #127 describes this.
+/// This function carries each remainder and adds it back on the next interval.
+///
+/// The function splits twice, in order. The first split separates lenders from
+/// the combined carveout. The second split separates the insurance fund from the
+/// protocol, inside the amount that the first split withheld.
+///
+/// That order makes `for_insurance_fund + for_protocol <= deposit_interest` a
+/// property of the arithmetic. A clamp does not have to enforce it. Two
+/// independent cuts can instead each round up by one unit, take the whole
+/// interval, and leave lenders at zero. A zero lender share once stopped the
+/// interval from committing, which billed the span against later balances.
+/// Findings #115 and #117 describe that result.
+///
+/// `update_spot_market_if_factor` holds `if_fee_factor + protocol_fee_factor`
+/// below `IF_FACTOR_PRECISION`. That bound limits the first split's numerator.
+/// The same instruction can lower the pair at any time, so the second split's
+/// divisor is not a constant. The carry it stored under a larger divisor is
+/// reduced below the divisor in force before it is used.
+pub fn split_deposit_interest(
+    spot_market: &SpotMarket,
+    deposit_interest: u128,
+) -> VelocityResult<InterestSplit> {
+    let if_factor = spot_market.insurance_fund.if_fee_factor.cast::<u128>()?;
+    let combined_factor = if_factor.safe_add(spot_market.protocol_fee_factor.cast::<u128>()?)?;
+
+    let carried_carveout = spot_market
+        .revenue_pool
+        .pending_interest_split_dust
+        .cast::<u128>()?;
+    let carried_if = spot_market
+        .protocol_fee_pool
+        .pending_interest_split_dust
+        .cast::<u128>()?;
+
+    // The second split divides by the combined factor, and the admin can lower that
+    // factor at any time. A remainder is only valid below the divisor that stored
+    // it. Under a smaller divisor the stored remainder raises the insurance fund cut
+    // above the withheld amount, and the protocol residual then underflows. The
+    // accrual runs first on nearly every spot instruction, so the market would take
+    // no deposit, withdrawal, borrow or repayment until the factors went back up.
+    //
+    // The carry is therefore reduced below the divisor in force. Each change of the
+    // factors forfeits less than one index unit. A combined factor of zero drops the
+    // carry, because the split that it belongs to no longer exists. The first split
+    // needs no reduction, because its divisor is the constant `IF_FACTOR_PRECISION`.
+    let carried_if = carried_if.min(combined_factor.saturating_sub(1));
+
+    // Nothing configured and nothing in flight: lenders take the whole interval.
+    // Most markets run this way and this runs on nearly every spot instruction.
+    if combined_factor == 0 && carried_carveout == 0 && carried_if == 0 {
+        return Ok(InterestSplit {
+            for_lenders: deposit_interest,
+            ..InterestSplit::default()
+        });
+    }
+
+    // Split one: lenders vs. the carveouts as a whole.
+    //
+    // `combined_factor < IF_FACTOR_PRECISION` and `carried_carveout <
+    // IF_FACTOR_PRECISION` bound the numerator by
+    // `(deposit_interest + 1) * (IF_FACTOR_PRECISION - 1)`, so the quotient is at
+    // most `deposit_interest` and lenders can never go negative.
+    let carveout_numerator = deposit_interest
+        .safe_mul(combined_factor)?
+        .safe_add(carried_carveout)?;
+    let withheld = carveout_numerator.safe_div(IF_FACTOR_PRECISION)?;
+    let carveout_dust = carveout_numerator
+        .safe_sub(withheld.safe_mul(IF_FACTOR_PRECISION)?)?
+        .cast::<u32>()?;
+
+    let for_lenders = deposit_interest.safe_sub(withheld)?;
+
+    // Split two: the insurance fund's share of what was withheld, with the
+    // protocol taking the exact residual so the pair always sums back to
+    // `withheld`. `if_factor <= combined_factor` and `carried_if <
+    // combined_factor` hold the numerator below `(withheld + 1) *
+    // combined_factor`, so `for_insurance_fund <= withheld` and the residual never
+    // underflows.
+    let (for_insurance_fund, insurance_fund_dust) = if combined_factor == 0 {
+        // No carveout is configured, so this split has no divisor. The reduction
+        // above already dropped the carry.
+        (0, 0)
+    } else {
+        let if_numerator = withheld.safe_mul(if_factor)?.safe_add(carried_if)?;
+        let for_insurance_fund = if_numerator.safe_div(combined_factor)?;
+        let dust = if_numerator
+            .safe_sub(for_insurance_fund.safe_mul(combined_factor)?)?
+            .cast::<u32>()?;
+        (for_insurance_fund, dust)
+    };
+
+    Ok(InterestSplit {
+        for_lenders,
+        for_insurance_fund,
+        for_protocol: withheld.safe_sub(for_insurance_fund)?,
+        carveout_dust,
+        insurance_fund_dust,
+    })
+}
+
+/// Convert a withheld carveout to whole tokens. Also return the sub-token
+/// remainder for the next interval.
+///
+/// This is the conversion that [`get_interest_token_amount`] performs. It differs
+/// in two ways. It returns the part that the division would discard. It also adds
+/// the remainder from earlier intervals before it divides.
+///
+/// On a small market this division floors to zero even when the index-space cut
+/// is not zero. Lenders have already given up the value at that point. A floored
+/// cut therefore credits nobody and leaves unattributed slack in the vault.
+///
+/// `carried_dust` uses the numerator units of that division, which are
+/// `token * 10^(19 - decimals)`. It always stays below one token, so the returned
+/// remainder does too. See `PoolBalance::pending_interest_dust`.
+pub fn get_interest_token_amount_with_dust(
+    balance: u128,
+    spot_market: &SpotMarket,
+    interest: u128,
+    carried_dust: u64,
+) -> VelocityResult<(u128, u64)> {
+    let precision_decrease = 10_u128.pow(19_u32.safe_sub(spot_market.decimals)?);
+
+    let numerator = balance
+        .safe_mul(interest)?
+        .safe_add(carried_dust.cast::<u128>()?)?;
+
+    let token_amount = numerator.safe_div(precision_decrease)?;
+    let dust = numerator
+        .safe_sub(token_amount.safe_mul(precision_decrease)?)?
+        .cast::<u64>()?;
+
+    Ok((token_amount, dust))
 }
 
 pub struct InterestAccumulated {
@@ -180,28 +342,26 @@ pub fn calculate_accumulated_interest(
         .safe_div(ONE_YEAR)?
         .safe_div(SPOT_RATE_PRECISION)?;
 
-    // Conservation clamp: the deposit side of an interval must never be credited more tokens
-    // than the borrow side is charged for it.
+    // Conservation clamp. The deposit side of an interval never receives more tokens than the
+    // borrow side pays for it.
     //
-    // The two are equal by construction — the deposit rate is the borrow rate scaled by
-    // `utilization = borrow_tokens / deposit_tokens`, so
-    // `deposit_tokens * rate * utilization == borrow_tokens * rate`. But `utilization` is
-    // computed from *rounded* token amounts (the borrow side rounds up, `get_token_amount`)
-    // and is sampled once at the start of the interval, then applied across the whole span.
-    // That sub-token overstatement is multiplied by the interval's rate factor
-    // (`modified_borrow_rate / ONE_YEAR / SPOT_RATE_PRECISION`), so on a long interval at a
-    // high rate it grows into whole tokens of deposit credit that no borrower ever paid —
-    // depositor claims backed by nothing in the vault.
+    // The two sides are equal by construction. The deposit rate is the borrow rate scaled by
+    // `utilization = borrow_tokens / deposit_tokens`. So
+    // `deposit_tokens * rate * utilization == borrow_tokens * rate`.
     //
-    // Left unclamped this is the wrong direction to be wrong in, and the #127 carveout
-    // deferral below makes intervals *longer*, so the two changes travel together. Measured on
-    // the `check_fee_collection` fixture (a $1 market at a 2000% optimal rate): a year settled
-    // in two cranks over-credited depositors by 5 tokens against the borrowers' charge. One
-    // crank and three-or-more cranks both land on the safe side, which is why this only shows
-    // up at particular interval lengths rather than monotonically.
+    // `utilization` comes from rounded token amounts, because the borrow side rounds up in
+    // `get_token_amount`. The code samples it once at the start of the interval and applies it
+    // across the whole span. The interval rate factor then multiplies that small overstatement.
+    // On a long interval at a high rate it reaches whole tokens of deposit credit that no
+    // borrower paid. Those deposit claims have no backing in the vault.
     //
-    // Scaled proportionally rather than saturated to the borrow charge so the credit stays a
-    // faithful (just capped) share of what was actually paid.
+    // The `check_fee_collection` fixture measures this. On a $1 market at a 2000% optimal rate,
+    // a year settled in two cranks credited depositors 5 tokens above the borrower charge. One
+    // crank and three or more cranks stay on the safe side. The error therefore appears at
+    // particular interval lengths, not at every length.
+    //
+    // The code scales `deposit_interest` down in proportion. It does not saturate it to the
+    // borrow charge, so the credit stays a true share of the amount that borrowers paid.
     let deposit_token_amount_gain =
         get_interest_token_amount(spot_market.deposit_balance, spot_market, deposit_interest)?;
     let borrow_token_amount_gain =

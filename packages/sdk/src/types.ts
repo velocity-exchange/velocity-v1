@@ -1156,8 +1156,10 @@ export type PerpMarketAccount = {
 	takerFeeAddonTenthBps: number;
 	/** QUOTE_PRECISION (1e6); pnl-pool retention buffer the fee-sweep leaves untouched above `max(net_user_pnl, 0)` */
 	feePoolBufferTarget: BN;
-	/** PERCENTAGE_PRECISION (1e6 = 100%); fraction of OI notional (at the oracle TWAP) the sweep leaves behind in `feeLedger.pendingIfFee` as a standing bankruptcy first-loss tranche; 0 disables */
+	/** PERCENTAGE_PRECISION (1e6 = 100%); fraction of OI notional (at the oracle TWAP) the sweep leaves behind in `feeLedger.pendingIfFee` as a standing bankruptcy first-loss tranche. 0 means `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT` (10 bps), `BANKRUPTCY_IF_FLOOR_DISABLED` turns the floor off */
 	bankruptcyIfFloorPct: number;
+	/** count of unresolved bankrupt quote debts booked against this market; while it is above zero the fee sweep withholds the whole `feeLedger.pendingIfFee` so a permissionless sweep cannot drain the first-loss tranche before `resolvePerpBankruptcy` consumes it */
+	pendingBankruptcyClaims: number;
 	/** QUOTE_PRECISION (1e6); aggregate builder/referrer revenue share accrued but not yet paid out of this market's pnl pool. The fee sweep reserves it (like `max(net_user_pnl, 0)` and the floored IF tranche) so a protocol-fee drain can't leave accrued revenue-share claims temporarily unpayable */
 	pendingRevenueShare: BN;
 	/** MARGIN_PRECISION (1e4); scales margin ratio up for large positions */
@@ -1322,9 +1324,12 @@ export type SpotMarketAccount = {
 	protocolLiquidationFee: number;
 	/** IF_FACTOR_PRECISION (1e6); protocol's carveout of lending deposit-interest gains */
 	protocolFeeFactor: number;
-	/** token mint precision; IF vault balance recorded at the last revenue settle, used as a
-	 * donation-proof base for the per-period revenue-settle APR cap (see `settle_revenue_to_insurance_fund`);
-	 * `0` = uninitialized (pre-upgrade accounts, seeded on first settle) */
+	/** token mint precision; lowest IF vault balance since the end of the last revenue settle.
+	 * The settle writes the balance it leaves behind, and every IF outflow lowers it again. The
+	 * per-period revenue-settle APR cap is sized off `min(live IF vault, this)`, so it counts only
+	 * capital the fund held for the whole period and neither a pre-settle donation nor one that
+	 * refills a mid-period dip can lift it (see `settle_revenue_to_insurance_fund`);
+	 * `0` = the market never settled revenue */
 	ifLastSettleVaultAmount: BN;
 
 	/** token mint decimals; token-mint precision throughout this account is 10^decimals */
@@ -1437,6 +1442,22 @@ export type PoolBalance = {
 	scaledBalance: BN;
 	/** the spot market this balance's token amount is denominated in */
 	marketIndex: number;
+	/**
+	 * Remainder of one index-space division that splits deposit interest between lenders and the
+	 * carveout pools. The division depends on the pool. On `revenuePool` it is the
+	 * lenders-vs-carveouts split, with divisor `IF_FACTOR_PRECISION`. On `protocolFeePool` it is the
+	 * insurance-fund-vs-protocol split, with divisor `ifFeeFactor + protocolFeeFactor`. Only a spot
+	 * market's `revenuePool` and `protocolFeePool` use it; it is 0 everywhere else.
+	 */
+	pendingInterestSplitDust: number;
+	/**
+	 * Remainder of the token-space division for this pool's carveout
+	 * (`depositBalance * cut / 10^(19 - decimals)`). The program carries it so a cut too small to
+	 * reach a whole token is not taken from lenders and given to nobody.
+	 * precision: token * 10^(19 - decimals). Only a spot market's `revenuePool` and
+	 * `protocolFeePool` use it; it is 0 everywhere else.
+	 */
+	pendingInterestDust: BN;
 };
 
 /**
@@ -1839,6 +1860,8 @@ export class PositionFlag {
 	static readonly IsolatedPosition = 1;
 	static readonly BeingLiquidated = 2;
 	static readonly Bankruptcy = 4;
+	/** this position's quote debt is counted in its market's `pendingBankruptcyClaims`, which freezes that market's IF-fee sweep until the debt resolves */
+	static readonly BankruptcyClaim = 8;
 }
 
 /** The subset of `OrderParams` an SDK caller must always supply; everything else can be defaulted. */

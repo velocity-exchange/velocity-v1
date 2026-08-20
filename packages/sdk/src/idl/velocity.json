@@ -2582,6 +2582,137 @@
       ]
     },
     {
+      "name": "forfeit_revenue_share_order",
+      "discriminator": [
+        141,
+        205,
+        148,
+        171,
+        116,
+        92,
+        53,
+        250
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "perp_market",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  112,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "market_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "spot_market",
+          "docs": [
+            "The quote spot market of the perp market. The PDA seeds enforce this. The handler values",
+            "the pnl pool against it. It is writable because the handler accrues interest first."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "perp_market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "escrow_authority",
+          "docs": [
+            "The owner of the escrow that holds the row."
+          ]
+        },
+        {
+          "name": "revenue_share_escrow",
+          "docs": [
+            "The escrow that holds the row to write off."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  82,
+                  69,
+                  86,
+                  95,
+                  69,
+                  83,
+                  67,
+                  82,
+                  79,
+                  87
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "escrow_authority"
+              }
+            ]
+          }
+        },
+        {
+          "name": "beneficiary_user",
+          "docs": [
+            "Sub-account 0 of the beneficiary of the row. This is the payout account. The handler proves",
+            "that it does not exist."
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "market_index",
+          "type": "u16"
+        },
+        {
+          "name": "order_index",
+          "type": "u32"
+        }
+      ]
+    },
+    {
       "name": "initialize",
       "discriminator": [
         175,
@@ -6305,6 +6436,32 @@
       "args": []
     },
     {
+      "name": "refresh_spot_market_interest",
+      "discriminator": [
+        11,
+        188,
+        50,
+        141,
+        73,
+        51,
+        134,
+        78
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        }
+      ],
+      "args": [
+        {
+          "name": "market_indexes",
+          "type": {
+            "vec": "u16"
+          }
+        }
+      ]
+    },
+    {
       "name": "remove_amm_constituent_mapping_data",
       "discriminator": [
         20,
@@ -7628,6 +7785,106 @@
         {
           "name": "market_index",
           "type": "u16"
+        }
+      ]
+    },
+    {
+      "name": "settle_revenue_share",
+      "discriminator": [
+        21,
+        123,
+        155,
+        221,
+        194,
+        240,
+        233,
+        76
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "escrow_authority",
+          "docs": [
+            "The owner of the escrow to settle."
+          ]
+        },
+        {
+          "name": "revenue_share_escrow",
+          "docs": [
+            "The escrow that holds the accrued builder and referrer rows."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  82,
+                  69,
+                  86,
+                  95,
+                  69,
+                  83,
+                  67,
+                  82,
+                  79,
+                  87
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "escrow_authority"
+              }
+            ]
+          }
+        },
+        {
+          "name": "spot_market_vault",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "const",
+                "value": [
+                  0,
+                  0
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "market_index",
+          "type": "u16"
+        },
+        {
+          "name": "num_owner_sub_accounts",
+          "type": "u8"
         }
       ]
     },
@@ -16754,6 +17011,16 @@
       "code": 6371,
       "name": "SpotMarketInterestStaleForMargin",
       "msg": "Spot market interest is too stale to value a borrow for margin"
+    },
+    {
+      "code": 6372,
+      "name": "UnsettledRevenueShareOnDelist",
+      "msg": "Market still owes builder/referrer revenue share; settle it before delisting"
+    },
+    {
+      "code": 6373,
+      "name": "RevenueShareOrderNotForfeitable",
+      "msg": "Revenue share order can still be paid; settle it instead of forfeiting"
     }
   ],
   "types": [
@@ -18712,10 +18979,9 @@
               "Fraction of spot deposit-interest gains carved out to the insurance fund",
               "(staker-owned). precision: IF_FACTOR_PRECISION. (Was `total_factor`; the",
               "protocol-vs-staker split was removed — the IF is now 100% staker-owned,",
-              "so this is purely the staker IF carveout.) While non-zero, an accrual",
-              "interval whose cut would convert to less than one token is deferred rather",
-              "than committed, so the cut is never floored away — see",
-              "`update_spot_market_cumulative_interest`."
+              "so this is purely the staker IF carveout.) A cut too small to reach a",
+              "whole unit is carried on `revenue_pool`, not floored away. See",
+              "`split_deposit_interest`."
             ],
             "type": "u32"
           },
@@ -21720,17 +21986,48 @@
             "type": "i16"
           },
           {
+            "name": "pending_bankruptcy_claims",
+            "docs": [
+              "Number of unresolved bankrupt quote debts booked against this market.",
+              "A liquidation that latches a user bankrupt increments it. Both writers",
+              "of `PerpPosition.quote_asset_amount` decrement it when that debt",
+              "reaches zero: `update_quote_asset_amount` and",
+              "`update_position_and_market`. The count tracks the debt, not the latch:",
+              "an un-latched estate that still owes the market stays booked, because",
+              "the debt still resolves through the bankruptcy waterfall.",
+              "",
+              "While it is above zero the fee sweep withholds the whole",
+              "`pending_if_fee`, not just `get_bankruptcy_if_floor()` — the sweep is",
+              "permissionless, so a caller could otherwise drain the first-loss",
+              "tranche between the latch and the resolution and push the loss onto the",
+              "shared insurance fund or into socialization. The freeze is independent",
+              "of open interest and of `bankruptcy_if_floor_pct`, both of which can be",
+              "zero exactly when a bankruptcy is pending.",
+              "",
+              "Occupies 2 of the 6 bytes the Rust compiler inserts to 8-align",
+              "`last_fill_price`. The remaining 4 stay explicit padding, so every",
+              "later byte offset and the account size are unchanged and existing",
+              "accounts read 0 (no pending claim).",
+              "",
+              "`settle_expired_market_pools_to_revenue_pool` rejects while this count",
+              "is above zero, because that instruction's final sweep bypasses the",
+              "floor."
+            ],
+            "type": "u16"
+          },
+          {
             "name": "_padding_align_lfp",
             "docs": [
-              "Explicit padding so the IDL records the 6 bytes the Rust compiler",
-              "inserts to 8-align `last_fill_price`. Without this the JS borsh",
+              "Explicit padding so the IDL records the 4 bytes the Rust compiler",
+              "still inserts to 8-align `last_fill_price`. Without this the JS borsh",
               "decoder (which reads sequentially after the variable-span enum",
-              "`status`) reads every field past `fee_adjustment` 6 bytes early."
+              "`status`) reads every field past `pending_bankruptcy_claims` 4 bytes",
+              "early."
             ],
             "type": {
               "array": [
                 "u8",
-                6
+                4
               ]
             }
           },
@@ -21806,16 +22103,26 @@
             "name": "bankruptcy_if_floor_pct",
             "docs": [
               "Floor on the unswept IF-fee carveout, as a percentage of open-interest",
-              "notional (PERCENTAGE_PRECISION; 0 disables). The fee sweep's IF drain",
-              "leaves `pending_if_fee` at (at least) this floor, so a standing",
-              "first-loss tranche is always available to `resolve_perp_bankruptcy` —",
-              "a permissionless sweep (or the inline sweep on any pnl settle) cannot",
-              "drain the tranche below it ahead of a bankruptcy resolution. Notional",
-              "is valued at the market's own oracle TWAP so a manipulated spot print",
-              "can't crush the floor. Occupies the former 4-byte trailing padding",
-              "before `market_stats` (same offset/alignment on all targets), so",
-              "existing accounts read 0 = disabled until the admin sets it;",
-              "new markets initialize to `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`."
+              "notional (PERCENTAGE_PRECISION). The fee sweep's IF drain leaves",
+              "`pending_if_fee` at (at least) this floor, so a standing first-loss",
+              "tranche is available to `resolve_perp_bankruptcy` before any user is",
+              "latched bankrupt — a permissionless sweep (or the inline sweep on any",
+              "pnl settle) cannot drain the tranche below it. Notional is valued at",
+              "the market's own oracle TWAP so a manipulated spot print can't crush",
+              "the floor.",
+              "",
+              "`0` means `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`, so every market created",
+              "before the field existed carries the standing tranche without an admin",
+              "call. `BANKRUPTCY_IF_FLOOR_DISABLED` turns the floor off. Read it",
+              "through `get_bankruptcy_if_floor_pct`, never directly.",
+              "",
+              "The floor sizes the tranche off market risk, which is a proxy for the",
+              "loss and can be smaller than it. `pending_bankruptcy_claims` covers",
+              "every latched bankruptcy exactly, by withholding all of",
+              "`pending_if_fee` until it resolves.",
+              "",
+              "Occupies the former 4-byte trailing padding before `market_stats`",
+              "(same offset/alignment on all targets)."
             ],
             "type": "u32"
           },
@@ -22074,12 +22381,72 @@
           },
           {
             "name": "padding",
+            "docs": [
+              "Filler for the alignment gap before the two dust fields. Those fields must",
+              "start at offsets 20 and 24. The host layout and the SBF layout then agree,",
+              "and the packed borsh layout in the IDL reaches the same offsets. This",
+              "field shrank from 14 bytes to 2. The size of the struct and every other",
+              "field offset are unchanged. Do not reorder or resize these fields."
+            ],
             "type": {
               "array": [
                 "u8",
-                14
+                2
               ]
             }
+          },
+          {
+            "name": "pending_interest_split_dust",
+            "docs": [
+              "Remainder of one index-space division that splits a spot market's deposit",
+              "interest between lenders and the carveout pools. The accrual carries the",
+              "remainder between intervals. A share too small to reach a whole index unit",
+              "is therefore delayed and not lost.",
+              "",
+              "The division depends on the pool. See `split_deposit_interest`.",
+              "",
+              "- On `revenue_pool` this is the lenders-vs-carveouts split. The divisor",
+              "is IF_FACTOR_PRECISION, so the value stays below IF_FACTOR_PRECISION.",
+              "- On `protocol_fee_pool` this is the insurance-fund-vs-protocol split of",
+              "the withheld amount. The divisor is",
+              "`if_fee_factor + protocol_fee_factor`, so the value stays below it. The",
+              "admin can lower that pair, which leaves a stored value at or above the",
+              "new divisor. `split_deposit_interest` reduces the value it reads below",
+              "the divisor in force, so a change of the factors costs less than one",
+              "index unit and cannot strand the market.",
+              "",
+              "That order keeps the two carveouts from taking more than the interval",
+              "gain. The first division bounds the total. The second division only",
+              "divides the amount that the first division set aside. Two independent cuts",
+              "can instead each round up and leave lenders at zero.",
+              "",
+              "precision: the numerator units of its division."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "pending_interest_dust",
+            "docs": [
+              "Remainder of the token-space division for this pool's carveout.",
+              "",
+              "A withheld index amount reaches the pool only as whole tokens, through",
+              "`deposit_balance * cut / 10^(19 - decimals)`. On a small market that",
+              "division floors to zero even when the index-space cut is not zero. Lenders",
+              "have already given up the value at that point, so a floored cut credits",
+              "nobody and leaves unattributed slack in the vault. The accrual parks the",
+              "remainder here and adds it back on the next interval.",
+              "",
+              "precision: token * 10^(19 - decimals). The value always stays below one",
+              "token, which is `10^(19 - decimals)` and at most 10^19. It therefore fits",
+              "a u64 for every supported value of `decimals`.",
+              "",
+              "Only the two lending carveout pools use these two fields. Those pools are",
+              "a spot market's `revenue_pool` and `protocol_fee_pool`. Both fields stay 0",
+              "on every other `PoolBalance`, such as a perp market's `pnl_pool` and",
+              "`fee_pool`. Both fields read 0 on markets created before the fields",
+              "existed, which is the correct starting value."
+            ],
+            "type": "u64"
           }
         ]
       }
@@ -23702,39 +24069,41 @@
             "name": "protocol_fee_factor",
             "docs": [
               "Protocol's carveout of lending deposit-interest gains, routed to",
-              "`protocol_fee_pool`. precision: IF_FACTOR_PRECISION. While non-zero, an",
-              "accrual interval whose cut would convert to less than one token is",
-              "deferred rather than committed, so the cut is never floored away — see",
-              "`update_spot_market_cumulative_interest`."
+              "`protocol_fee_pool`. precision: IF_FACTOR_PRECISION. A cut too small to",
+              "reach a whole unit is carried on the carveout pools, not floored away. See",
+              "`split_deposit_interest`."
             ],
             "type": "u32"
           },
           {
             "name": "if_last_settle_vault_amount",
             "docs": [
-              "Donation-proof accounted balance of the insurance-fund vault. It is moved",
-              "by the same signed delta as the real SPL vault on *every* instruction that",
-              "moves the vault, so it stays a faithful shadow of the vault minus raw",
-              "donations. Inflows grow it: staker deposits (`add_insurance_fund_stake`)",
-              "and settled revenue (`settle_revenue_to_insurance_fund`). Outflows/draws",
-              "shrink it (saturating at 0): staker withdrawals",
-              "(`remove_insurance_fund_stake`) and every IF draw that covers a loss —",
-              "`resolve_perp_pnl_deficit`, `resolve_perp_bankruptcy`,",
-              "`resolve_spot_bankruptcy`. The one movement deliberately *excluded* is a",
-              "raw SPL transfer straight into the vault: it runs no instruction, so it",
-              "never enters this balance — that is exactly the donation the shadow must",
-              "not see. Consumed by the per-period revenue-settle APR cap in",
-              "`settle_revenue_to_insurance_fund`, sized off `min(live_if_vault, this)`,",
-              "so a donation spiked into the live vault right before a settle cannot",
-              "inflate the cap while legitimate stakes and real settled revenue (which",
-              "this balance tracks) still do. (The unstake-cancel share forfeiture is",
-              "donation-proofed differently — by withdraw-and-restake at the active share",
-              "price — and does *not* read this field.) Repurposed from trailing padding —",
-              "layout/size unchanged; `0` means \"uninitialized\" (existing account",
-              "pre-upgrade, or an accounted balance legitimately drained to empty — an",
-              "empty IF vault has no user shares, so this is safe), and is seeded from the",
-              "live balance on the next add/settle and treated as \"fall back to live\" by",
-              "the consumers."
+              "Lowest insurance-fund vault balance since the end of the last revenue",
+              "settle. `settle_revenue_to_insurance_fund` starts each period by writing",
+              "the live vault balance plus the amount that settle transfers in, and",
+              "`record_insurance_fund_outflow` lowers it on every path that moves tokens",
+              "out of the vault: `remove_insurance_fund_stake`,",
+              "`resolve_perp_pnl_deficit`, `resolve_perp_bankruptcy`, and",
+              "`resolve_spot_bankruptcy`. A transfer into the vault never raises it, so",
+              "it lags the live vault by up to one `revenue_settle_period`.",
+              "",
+              "The per-period revenue-settle APR cap is sized off",
+              "`min(live_if_vault, this)`, so it counts only capital the fund held for",
+              "the whole period. A donation spiked into the live vault right before a",
+              "settle is absent from this field and cannot lift the cap. Tracking the",
+              "running minimum is what closes the same trick after a dip: a loss draw",
+              "takes the vault to 100, a donation puts it back to 1000, and a plain",
+              "end-of-period snapshot would read 1000 again. A donation that does",
+              "survive a full period counts, and correctly so — by then it belongs to",
+              "the stakers pro rata, so the fund really is that large.",
+              "",
+              "`0` means the market never settled revenue, or settled while the vault",
+              "was empty. Both give a cap base of `0` for one period and then self-heal,",
+              "because the settle that reads `0` still writes the new period's balance.",
+              "",
+              "(The unstake-cancel share forfeiture is donation-proofed differently — by",
+              "withdraw-and-restake at the active share price — and does *not* read this",
+              "field.) Repurposed from trailing padding — layout and size are unchanged."
             ],
             "type": "u64"
           }

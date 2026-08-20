@@ -443,89 +443,6 @@
         {
           "name": "velocity_program",
           "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
-        },
-        {
-          "name": "velocity_spot_market",
-          "docs": [
-            "The vault's denomination spot market, refreshed by CPI before NAV is",
-            "snapshotted (OtterSec #136/#137). Writable because velocity advances its",
-            "`cumulative_deposit_interest`."
-          ],
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
-        },
-        {
-          "name": "velocity_oracle",
-          "docs": [
-            "`valid_oracle_for_spot_market` access control on the refresh CPI."
-          ]
-        },
-        {
-          "name": "velocity_spot_market_vault",
-          "docs": [
-            "deserialized and validated inside the refresh CPI."
-          ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
         }
       ],
       "args": []
@@ -557,89 +474,6 @@
         },
         {
           "name": "velocity_state"
-        },
-        {
-          "name": "velocity_spot_market",
-          "docs": [
-            "The vault's denomination spot market, refreshed by CPI before NAV is",
-            "snapshotted (OtterSec #136/#137). Writable because velocity advances its",
-            "`cumulative_deposit_interest`."
-          ],
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
-        },
-        {
-          "name": "velocity_oracle",
-          "docs": [
-            "`valid_oracle_for_spot_market` access control on the refresh CPI."
-          ]
-        },
-        {
-          "name": "velocity_spot_market_vault",
-          "docs": [
-            "deserialized and validated inside the refresh CPI."
-          ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
         },
         {
           "name": "velocity_program",
@@ -675,89 +509,6 @@
         },
         {
           "name": "velocity_state"
-        },
-        {
-          "name": "velocity_spot_market",
-          "docs": [
-            "The vault's denomination spot market, refreshed by CPI before NAV is",
-            "snapshotted (OtterSec #136/#137). Writable because velocity advances its",
-            "`cumulative_deposit_interest`."
-          ],
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
-        },
-        {
-          "name": "velocity_oracle",
-          "docs": [
-            "`valid_oracle_for_spot_market` access control on the refresh CPI."
-          ]
-        },
-        {
-          "name": "velocity_spot_market_vault",
-          "docs": [
-            "deserialized and validated inside the refresh CPI."
-          ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
         },
         {
           "name": "velocity_program",
@@ -1035,89 +786,6 @@
           "name": "velocity_state"
         },
         {
-          "name": "velocity_spot_market",
-          "docs": [
-            "The vault's denomination spot market, refreshed by CPI before NAV is",
-            "snapshotted (OtterSec #136/#137). Writable because velocity advances its",
-            "`cumulative_deposit_interest`."
-          ],
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
-        },
-        {
-          "name": "velocity_oracle",
-          "docs": [
-            "`valid_oracle_for_spot_market` access control on the refresh CPI."
-          ]
-        },
-        {
-          "name": "velocity_spot_market_vault",
-          "docs": [
-            "deserialized and validated inside the refresh CPI."
-          ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
-        },
-        {
           "name": "velocity_program",
           "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
         }
@@ -1243,49 +911,6 @@
         {
           "name": "token_program",
           "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-        },
-        {
-          "name": "velocity_spot_market",
-          "docs": [
-            "The vault's denomination spot market, refreshed by CPI before NAV is",
-            "snapshotted (OtterSec #136/#137). Writable because velocity advances its",
-            "`cumulative_deposit_interest`."
-          ],
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
-        },
-        {
-          "name": "velocity_oracle",
-          "docs": [
-            "`valid_oracle_for_spot_market` access control on the refresh CPI."
-          ]
         }
       ],
       "args": [
@@ -1385,49 +1010,6 @@
         {
           "name": "token_program",
           "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-        },
-        {
-          "name": "velocity_spot_market",
-          "docs": [
-            "The vault's denomination spot market, refreshed by CPI before NAV is",
-            "snapshotted (OtterSec #136/#137). Writable because velocity advances its",
-            "`cumulative_deposit_interest`."
-          ],
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
-        },
-        {
-          "name": "velocity_oracle",
-          "docs": [
-            "`valid_oracle_for_spot_market` access control on the refresh CPI."
-          ]
         }
       ],
       "args": []
@@ -2191,89 +1773,6 @@
         },
         {
           "name": "velocity_state"
-        },
-        {
-          "name": "velocity_spot_market",
-          "docs": [
-            "The vault's denomination spot market, refreshed by CPI before NAV is",
-            "snapshotted (OtterSec #136/#137). Writable because velocity advances its",
-            "`cumulative_deposit_interest`."
-          ],
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
-        },
-        {
-          "name": "velocity_oracle",
-          "docs": [
-            "`valid_oracle_for_spot_market` access control on the refresh CPI."
-          ]
-        },
-        {
-          "name": "velocity_spot_market_vault",
-          "docs": [
-            "deserialized and validated inside the refresh CPI."
-          ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
         }
       ],
       "args": []
@@ -2479,49 +1978,6 @@
         {
           "name": "token_program",
           "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-        },
-        {
-          "name": "velocity_spot_market",
-          "docs": [
-            "The vault's denomination spot market, refreshed by CPI before NAV is",
-            "snapshotted (OtterSec #136/#137). Writable because velocity advances its",
-            "`cumulative_deposit_interest`."
-          ],
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
-        },
-        {
-          "name": "velocity_oracle",
-          "docs": [
-            "`valid_oracle_for_spot_market` access control on the refresh CPI."
-          ]
         }
       ],
       "args": [
@@ -2635,89 +2091,6 @@
           "name": "velocity_state"
         },
         {
-          "name": "velocity_spot_market",
-          "docs": [
-            "The vault's denomination spot market, refreshed by CPI before NAV is",
-            "snapshotted (OtterSec #136/#137). Writable because velocity advances its",
-            "`cumulative_deposit_interest`."
-          ],
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
-        },
-        {
-          "name": "velocity_oracle",
-          "docs": [
-            "`valid_oracle_for_spot_market` access control on the refresh CPI."
-          ]
-        },
-        {
-          "name": "velocity_spot_market_vault",
-          "docs": [
-            "deserialized and validated inside the refresh CPI."
-          ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
-        },
-        {
           "name": "velocity_program",
           "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
         }
@@ -2821,6 +2194,19 @@
               }
             ]
           }
+        },
+        {
+          "name": "velocity_user",
+          "docs": [
+            "Installing a matured update settles the vault's fee first, which needs vault equity."
+          ]
+        },
+        {
+          "name": "velocity_state"
+        },
+        {
+          "name": "velocity_program",
+          "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
         }
       ],
       "args": [
@@ -2920,49 +2306,6 @@
         {
           "name": "token_program",
           "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-        },
-        {
-          "name": "velocity_spot_market",
-          "docs": [
-            "The vault's denomination spot market, refreshed by CPI before NAV is",
-            "snapshotted (OtterSec #136/#137). Writable because velocity advances its",
-            "`cumulative_deposit_interest`."
-          ],
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
-        },
-        {
-          "name": "velocity_oracle",
-          "docs": [
-            "`valid_oracle_for_spot_market` access control on the refresh CPI."
-          ]
         }
       ],
       "args": []
@@ -2996,89 +2339,6 @@
         },
         {
           "name": "velocity_state"
-        },
-        {
-          "name": "velocity_spot_market",
-          "docs": [
-            "The vault's denomination spot market, refreshed by CPI before NAV is",
-            "snapshotted (OtterSec #136/#137). Writable because velocity advances its",
-            "`cumulative_deposit_interest`."
-          ],
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
-        },
-        {
-          "name": "velocity_oracle",
-          "docs": [
-            "`valid_oracle_for_spot_market` access control on the refresh CPI."
-          ]
-        },
-        {
-          "name": "velocity_spot_market_vault",
-          "docs": [
-            "deserialized and validated inside the refresh CPI."
-          ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
         },
         {
           "name": "velocity_program",
@@ -3122,89 +2382,6 @@
           "name": "velocity_state"
         },
         {
-          "name": "velocity_spot_market",
-          "docs": [
-            "The vault's denomination spot market, refreshed by CPI before NAV is",
-            "snapshotted (OtterSec #136/#137). Writable because velocity advances its",
-            "`cumulative_deposit_interest`."
-          ],
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
-        },
-        {
-          "name": "velocity_oracle",
-          "docs": [
-            "`valid_oracle_for_spot_market` access control on the refresh CPI."
-          ]
-        },
-        {
-          "name": "velocity_spot_market_vault",
-          "docs": [
-            "deserialized and validated inside the refresh CPI."
-          ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
-        },
-        {
           "name": "velocity_program",
           "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
         }
@@ -3244,89 +2421,6 @@
         },
         {
           "name": "velocity_state"
-        },
-        {
-          "name": "velocity_spot_market",
-          "docs": [
-            "The vault's denomination spot market, refreshed by CPI before NAV is",
-            "snapshotted (OtterSec #136/#137). Writable because velocity advances its",
-            "`cumulative_deposit_interest`."
-          ],
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
-        },
-        {
-          "name": "velocity_oracle",
-          "docs": [
-            "`valid_oracle_for_spot_market` access control on the refresh CPI."
-          ]
-        },
-        {
-          "name": "velocity_spot_market_vault",
-          "docs": [
-            "deserialized and validated inside the refresh CPI."
-          ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
         },
         {
           "name": "velocity_program",
@@ -3438,49 +2532,6 @@
         {
           "name": "token_program",
           "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-        },
-        {
-          "name": "velocity_spot_market",
-          "docs": [
-            "The vault's denomination spot market, refreshed by CPI before NAV is",
-            "snapshotted (OtterSec #136/#137). Writable because velocity advances its",
-            "`cumulative_deposit_interest`."
-          ],
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
-        },
-        {
-          "name": "velocity_oracle",
-          "docs": [
-            "`valid_oracle_for_spot_market` access control on the refresh CPI."
-          ]
         }
       ],
       "args": []
@@ -3568,89 +2619,6 @@
         },
         {
           "name": "velocity_state"
-        },
-        {
-          "name": "velocity_spot_market",
-          "docs": [
-            "The vault's denomination spot market, refreshed by CPI before NAV is",
-            "snapshotted (OtterSec #136/#137). Writable because velocity advances its",
-            "`cumulative_deposit_interest`."
-          ],
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
-        },
-        {
-          "name": "velocity_oracle",
-          "docs": [
-            "`valid_oracle_for_spot_market` access control on the refresh CPI."
-          ]
-        },
-        {
-          "name": "velocity_spot_market_vault",
-          "docs": [
-            "deserialized and validated inside the refresh CPI."
-          ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
         },
         {
           "name": "velocity_program",
@@ -4146,89 +3114,6 @@
           "name": "velocity_state"
         },
         {
-          "name": "velocity_spot_market",
-          "docs": [
-            "The vault's denomination spot market, refreshed by CPI before NAV is",
-            "snapshotted (OtterSec #136/#137). Writable because velocity advances its",
-            "`cumulative_deposit_interest`."
-          ],
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
-        },
-        {
-          "name": "velocity_oracle",
-          "docs": [
-            "`valid_oracle_for_spot_market` access control on the refresh CPI."
-          ]
-        },
-        {
-          "name": "velocity_spot_market_vault",
-          "docs": [
-            "deserialized and validated inside the refresh CPI."
-          ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
-        },
-        {
           "name": "velocity_program",
           "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
         }
@@ -4377,89 +3262,6 @@
           "name": "velocity_state"
         },
         {
-          "name": "velocity_spot_market",
-          "docs": [
-            "The vault's denomination spot market, refreshed by CPI before NAV is",
-            "snapshotted (OtterSec #136/#137). Writable because velocity advances its",
-            "`cumulative_deposit_interest`."
-          ],
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
-        },
-        {
-          "name": "velocity_oracle",
-          "docs": [
-            "`valid_oracle_for_spot_market` access control on the refresh CPI."
-          ]
-        },
-        {
-          "name": "velocity_spot_market_vault",
-          "docs": [
-            "deserialized and validated inside the refresh CPI."
-          ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
-        },
-        {
           "name": "velocity_program",
           "address": "vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P"
         }
@@ -4545,89 +3347,6 @@
         },
         {
           "name": "velocity_state"
-        },
-        {
-          "name": "velocity_spot_market",
-          "docs": [
-            "The vault's denomination spot market, refreshed by CPI before NAV is",
-            "snapshotted (OtterSec #136/#137). Writable because velocity advances its",
-            "`cumulative_deposit_interest`."
-          ],
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
-        },
-        {
-          "name": "velocity_oracle",
-          "docs": [
-            "`valid_oracle_for_spot_market` access control on the refresh CPI."
-          ]
-        },
-        {
-          "name": "velocity_spot_market_vault",
-          "docs": [
-            "deserialized and validated inside the refresh CPI."
-          ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116,
-                  95,
-                  118,
-                  97,
-                  117,
-                  108,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
         },
         {
           "name": "velocity_program",
@@ -4981,49 +3700,6 @@
         {
           "name": "token_program",
           "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-        },
-        {
-          "name": "velocity_spot_market",
-          "docs": [
-            "The vault's denomination spot market, refreshed by CPI before NAV is",
-            "snapshotted (OtterSec #136/#137). Writable because velocity advances its",
-            "`cumulative_deposit_interest`."
-          ],
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  115,
-                  112,
-                  111,
-                  116,
-                  95,
-                  109,
-                  97,
-                  114,
-                  107,
-                  101,
-                  116
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "vault"
-              }
-            ],
-            "program": {
-              "kind": "account",
-              "path": "velocity_program"
-            }
-          }
-        },
-        {
-          "name": "velocity_oracle",
-          "docs": [
-            "`valid_oracle_for_spot_market` access control on the refresh CPI."
-          ]
         }
       ],
       "args": []
@@ -5651,7 +4327,9 @@
               "Fraction of spot deposit-interest gains carved out to the insurance fund",
               "(staker-owned). precision: IF_FACTOR_PRECISION. (Was `total_factor`; the",
               "protocol-vs-staker split was removed — the IF is now 100% staker-owned,",
-              "so this is purely the staker IF carveout.)"
+              "so this is purely the staker IF carveout.) A cut too small to reach a",
+              "whole unit is carried on `revenue_pool`, not floored away. See",
+              "`split_deposit_interest`."
             ],
             "type": "u32"
           },
@@ -6427,12 +5105,72 @@
           },
           {
             "name": "padding",
+            "docs": [
+              "Filler for the alignment gap before the two dust fields. Those fields must",
+              "start at offsets 20 and 24. The host layout and the SBF layout then agree,",
+              "and the packed borsh layout in the IDL reaches the same offsets. This",
+              "field shrank from 14 bytes to 2. The size of the struct and every other",
+              "field offset are unchanged. Do not reorder or resize these fields."
+            ],
             "type": {
               "array": [
                 "u8",
-                14
+                2
               ]
             }
+          },
+          {
+            "name": "pending_interest_split_dust",
+            "docs": [
+              "Remainder of one index-space division that splits a spot market's deposit",
+              "interest between lenders and the carveout pools. The accrual carries the",
+              "remainder between intervals. A share too small to reach a whole index unit",
+              "is therefore delayed and not lost.",
+              "",
+              "The division depends on the pool. See `split_deposit_interest`.",
+              "",
+              "- On `revenue_pool` this is the lenders-vs-carveouts split. The divisor",
+              "is IF_FACTOR_PRECISION, so the value stays below IF_FACTOR_PRECISION.",
+              "- On `protocol_fee_pool` this is the insurance-fund-vs-protocol split of",
+              "the withheld amount. The divisor is",
+              "`if_fee_factor + protocol_fee_factor`, so the value stays below it. The",
+              "admin can lower that pair, which leaves a stored value at or above the",
+              "new divisor. `split_deposit_interest` reduces the value it reads below",
+              "the divisor in force, so a change of the factors costs less than one",
+              "index unit and cannot strand the market.",
+              "",
+              "That order keeps the two carveouts from taking more than the interval",
+              "gain. The first division bounds the total. The second division only",
+              "divides the amount that the first division set aside. Two independent cuts",
+              "can instead each round up and leave lenders at zero.",
+              "",
+              "precision: the numerator units of its division."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "pending_interest_dust",
+            "docs": [
+              "Remainder of the token-space division for this pool's carveout.",
+              "",
+              "A withheld index amount reaches the pool only as whole tokens, through",
+              "`deposit_balance * cut / 10^(19 - decimals)`. On a small market that",
+              "division floors to zero even when the index-space cut is not zero. Lenders",
+              "have already given up the value at that point, so a floored cut credits",
+              "nobody and leaves unattributed slack in the vault. The accrual parks the",
+              "remainder here and adds it back on the next interval.",
+              "",
+              "precision: token * 10^(19 - decimals). The value always stays below one",
+              "token, which is `10^(19 - decimals)` and at most 10^19. It therefore fits",
+              "a u64 for every supported value of `decimals`.",
+              "",
+              "Only the two lending carveout pools use these two fields. Those pools are",
+              "a spot market's `revenue_pool` and `protocol_fee_pool`. Both fields stay 0",
+              "on every other `PoolBalance`, such as a perp market's `pnl_pool` and",
+              "`fee_pool`. Both fields read 0 on markets created before the fields",
+              "existed, which is the correct starting value."
+            ],
+            "type": "u64"
           }
         ]
       }
@@ -7058,36 +5796,41 @@
             "name": "protocol_fee_factor",
             "docs": [
               "Protocol's carveout of lending deposit-interest gains, routed to",
-              "`protocol_fee_pool`. precision: IF_FACTOR_PRECISION"
+              "`protocol_fee_pool`. precision: IF_FACTOR_PRECISION. A cut too small to",
+              "reach a whole unit is carried on the carveout pools, not floored away. See",
+              "`split_deposit_interest`."
             ],
             "type": "u32"
           },
           {
             "name": "if_last_settle_vault_amount",
             "docs": [
-              "Donation-proof accounted balance of the insurance-fund vault. It is moved",
-              "by the same signed delta as the real SPL vault on *every* instruction that",
-              "moves the vault, so it stays a faithful shadow of the vault minus raw",
-              "donations. Inflows grow it: staker deposits (`add_insurance_fund_stake`)",
-              "and settled revenue (`settle_revenue_to_insurance_fund`). Outflows/draws",
-              "shrink it (saturating at 0): staker withdrawals",
-              "(`remove_insurance_fund_stake`) and every IF draw that covers a loss —",
-              "`resolve_perp_pnl_deficit`, `resolve_perp_bankruptcy`,",
-              "`resolve_spot_bankruptcy`. The one movement deliberately *excluded* is a",
-              "raw SPL transfer straight into the vault: it runs no instruction, so it",
-              "never enters this balance — that is exactly the donation the shadow must",
-              "not see. Consumed by the per-period revenue-settle APR cap in",
-              "`settle_revenue_to_insurance_fund`, sized off `min(live_if_vault, this)`,",
-              "so a donation spiked into the live vault right before a settle cannot",
-              "inflate the cap while legitimate stakes and real settled revenue (which",
-              "this balance tracks) still do. (The unstake-cancel share forfeiture is",
-              "donation-proofed differently — by withdraw-and-restake at the active share",
-              "price — and does *not* read this field.) Repurposed from trailing padding —",
-              "layout/size unchanged; `0` means \"uninitialized\" (existing account",
-              "pre-upgrade, or an accounted balance legitimately drained to empty — an",
-              "empty IF vault has no user shares, so this is safe), and is seeded from the",
-              "live balance on the next add/settle and treated as \"fall back to live\" by",
-              "the consumers."
+              "Lowest insurance-fund vault balance since the end of the last revenue",
+              "settle. `settle_revenue_to_insurance_fund` starts each period by writing",
+              "the live vault balance plus the amount that settle transfers in, and",
+              "`record_insurance_fund_outflow` lowers it on every path that moves tokens",
+              "out of the vault: `remove_insurance_fund_stake`,",
+              "`resolve_perp_pnl_deficit`, `resolve_perp_bankruptcy`, and",
+              "`resolve_spot_bankruptcy`. A transfer into the vault never raises it, so",
+              "it lags the live vault by up to one `revenue_settle_period`.",
+              "",
+              "The per-period revenue-settle APR cap is sized off",
+              "`min(live_if_vault, this)`, so it counts only capital the fund held for",
+              "the whole period. A donation spiked into the live vault right before a",
+              "settle is absent from this field and cannot lift the cap. Tracking the",
+              "running minimum is what closes the same trick after a dip: a loss draw",
+              "takes the vault to 100, a donation puts it back to 1000, and a plain",
+              "end-of-period snapshot would read 1000 again. A donation that does",
+              "survive a full period counts, and correctly so — by then it belongs to",
+              "the stakers pro rata, so the fund really is that large.",
+              "",
+              "`0` means the market never settled revenue, or settled while the vault",
+              "was empty. Both give a cap base of `0` for one period and then self-heal,",
+              "because the settle that reads `0` still writes the new period's balance.",
+              "",
+              "(The unstake-cancel share forfeiture is donation-proofed differently — by",
+              "withdraw-and-restake at the active share price — and does *not* read this",
+              "field.) Repurposed from trailing padding — layout and size are unchanged."
             ],
             "type": "u64"
           }
@@ -7249,7 +5992,8 @@
           {
             "name": "cumulative_profit_share_amount",
             "docs": [
-              "the token amount of gains the vault depositor has paid performance fees on"
+              "the token amount of gain, net of the profit share taken on it, that the high-water mark",
+              "already covers. `net_deposits + cumulative_profit_share_amount` is the high-water mark."
             ],
             "type": "i64"
           },
@@ -7263,6 +6007,22 @@
               "The exponent for vault_shares decimal places at the time the tokenized vault depositor was initialized.",
               "If the vault undergoes a rebase, this TokenizedVaultDepositor can no longer issue new tokens, only redeem",
               "is possible."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "profit_share_at_basis",
+            "docs": [
+              "the vault's profit share when the high-water mark was last set. Gain above the high-water",
+              "mark is priced at this rate, so a later raise never prices gain earned before it."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "hurdle_rate_at_basis",
+            "docs": [
+              "the vault's hurdle rate when the high-water mark was last set. Gain above the high-water",
+              "mark keeps this shelter, so a later cut never exposes gain earned before it."
             ],
             "type": "u32"
           },
@@ -7287,7 +6047,7 @@
             "type": {
               "array": [
                 "u64",
-                11
+                10
               ]
             }
           }
@@ -8212,7 +6972,8 @@
           {
             "name": "cumulative_profit_share_amount",
             "docs": [
-              "the token amount of gains the vault depositor has paid performance fees on"
+              "the token amount of gain, net of the profit share taken on it, that the high-water mark",
+              "already covers. `net_deposits + cumulative_profit_share_amount` is the high-water mark."
             ],
             "type": "i64"
           },
@@ -8228,6 +6989,22 @@
             "type": "u32"
           },
           {
+            "name": "profit_share_at_basis",
+            "docs": [
+              "the vault's profit share when the high-water mark was last set. Gain above the high-water",
+              "mark is priced at this rate, so a later raise never prices gain earned before it."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "hurdle_rate_at_basis",
+            "docs": [
+              "the vault's hurdle rate when the high-water mark was last set. Gain above the high-water",
+              "mark keeps this shelter, so a later cut never exposes gain earned before it."
+            ],
+            "type": "u32"
+          },
+          {
             "name": "padding_align",
             "type": "u32"
           },
@@ -8236,7 +7013,7 @@
             "type": {
               "array": [
                 "u64",
-                5
+                4
               ]
             }
           }

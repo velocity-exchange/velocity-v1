@@ -716,6 +716,13 @@ pub mod velocity {
         handle_update_spot_market_cumulative_interest(ctx)
     }
 
+    pub fn refresh_spot_market_interest<'c: 'info, 'info>(
+        ctx: Context<'info, RefreshSpotMarketInterest<'info>>,
+        market_indexes: Vec<u16>,
+    ) -> Result<()> {
+        handle_refresh_spot_market_interest(ctx, market_indexes)
+    }
+
     pub fn update_amms<'c: 'info, 'info>(
         ctx: Context<'info, UpdateAMM<'info>>,
         market_indexes: Vec<u16>,
@@ -1839,6 +1846,22 @@ pub mod velocity {
         add: bool,
     ) -> Result<()> {
         handle_change_approved_builder(ctx, builder, max_fee_bps, add)
+    }
+
+    pub fn settle_revenue_share<'c: 'info, 'info>(
+        ctx: Context<'info, SettleRevenueShare<'info>>,
+        market_index: u16,
+        num_owner_sub_accounts: u8,
+    ) -> Result<()> {
+        handle_settle_revenue_share(ctx, market_index, num_owner_sub_accounts)
+    }
+
+    pub fn forfeit_revenue_share_order(
+        ctx: Context<ForfeitRevenueShareOrder>,
+        market_index: u16,
+        order_index: u32,
+    ) -> Result<()> {
+        handle_forfeit_revenue_share_order(ctx, market_index, order_index)
     }
 
     #[cfg(feature = "vlp-hedge")]

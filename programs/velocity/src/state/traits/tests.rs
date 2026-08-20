@@ -121,12 +121,26 @@ mod native_instruction_offsets {
         );
         // Repurposed the former 4-byte trailing padding before market_stats;
         // it must keep occupying exactly those bytes (4-aligned) so every
-        // other offset stays fixed and legacy accounts read the correct
-        // initial 0 (= floor disabled).
+        // other offset stays fixed and legacy accounts read the initial 0
+        // (= the default floor).
         assert_eq!(
             DISC + std::mem::offset_of!(PerpMarket, bankruptcy_if_floor_pct),
             stats_start - 4,
             "bankruptcy_if_floor_pct must sit in the 4 bytes before market_stats"
+        );
+        // Repurposed the first 2 of the 6 alignment-padding bytes before
+        // last_fill_price. The remaining 4 stay padding, so last_fill_price
+        // and every later field keep their offsets and legacy accounts read
+        // the initial 0 (= no pending claim).
+        assert_eq!(
+            DISC + std::mem::offset_of!(PerpMarket, pending_bankruptcy_claims),
+            DISC + std::mem::offset_of!(PerpMarket, last_fill_price) - 6,
+            "pending_bankruptcy_claims must sit in the 6 bytes before last_fill_price"
+        );
+        assert_eq!(
+            std::mem::offset_of!(PerpMarket, pending_bankruptcy_claims) % 2,
+            0,
+            "pending_bankruptcy_claims must be 2-aligned"
         );
     }
 

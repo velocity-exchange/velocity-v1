@@ -160,6 +160,8 @@ export const PRICE_TIMES_AMM_TO_QUOTE_PRECISION_RATIO = PRICE_PRECISION.mul(
 	AMM_TO_QUOTE_PRECISION_RATIO
 );
 
+/** 60 seconds. */
+export const ONE_MINUTE = new BN(60);
 /** 300 seconds. */
 export const FIVE_MINUTE = new BN(60 * 5);
 /** Max age of the last fill before the trigger price's last-fill leg is treated as absent (oracle price substitutes). */
@@ -168,6 +170,18 @@ export const TRIGGER_PRICE_LAST_FILL_MAX_AGE = FIVE_MINUTE;
 export const ONE_HOUR = new BN(60 * 60);
 /** 31,536,000 seconds (365 days). */
 export const ONE_YEAR = new BN(31536000);
+
+/**
+ * Mirror of the program's `MARK_TWAP_RESEED_FUNDING_PERIODS`.
+ *
+ * How many funding periods the mark TWAP may go unwritten before the program discards
+ * its stored value and re-seeds it from the oracle TWAP. The weight an incoming
+ * fill-path sample receives grows with the time since the last write (crank samples
+ * are weight-capped on-chain), so past this many periods the stored TWAP holds no
+ * usable history. The threshold is floored at {@link ONE_HOUR}, because a market's
+ * funding period can be zero.
+ */
+export const MARK_TWAP_RESEED_FUNDING_PERIODS = new BN(3);
 
 /**
  * Mirror of the program's `MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN`: the largest
@@ -202,6 +216,11 @@ export const LAMPORTS_EXP = new BN(Math.log10(LAMPORTS_PER_SOL));
 
 /** `QUOTE_PRECISION / 100` = $0.01; per-open-order margin requirement reserved against free collateral. */
 export const OPEN_ORDER_MARGIN_REQUIREMENT = QUOTE_PRECISION.div(new BN(100));
+
+/** $100 (`QUOTE_PRECISION`); most favorable value the breaker-trip proof concedes to a position whose oracle is invalid. A liability or short base leg counts as zero at any size, an asset or long base leg worth no more than this at its own last twap counts as exactly this much, and a larger asset or long (or one whose twap is not positive) keeps the trip blocked. Mirrors the program's `EQUITY_FLOOR_TRIP_DUST_ALLOWANCE`. */
+export const EQUITY_FLOOR_TRIP_DUST_ALLOWANCE = new BN(100).mul(
+	QUOTE_PRECISION
+);
 
 /** -$25 (`QUOTE_PRECISION`); default floor for `AMM.netRevenueSinceLastFunding` below which the funding-rate spread retreats, damping the AMM from over-widening its spread after a large one-off loss. */
 export const DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT = new BN(
@@ -241,6 +260,20 @@ export const MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN = new BN(100).mul(
 
 /** Max number of pubkeys per `getMultipleAccounts` RPC call the SDK will batch (RPC-imposed ceiling is 100; kept at 99 for headroom). */
 export const GET_MULTIPLE_ACCOUNTS_CHUNK_SIZE = 99;
+
+/**
+ * 10 bps of open-interest notional (`PERCENTAGE_PRECISION`); the standing bankruptcy first-loss
+ * tranche the fee sweep leaves in `feeLedger.pendingIfFee`. A market whose `bankruptcyIfFloorPct`
+ * reads 0 — every market written before the field existed — uses this value. Mirrors the Rust
+ * `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT` constant; keep both in sync.
+ */
+export const DEFAULT_BANKRUPTCY_IF_FLOOR_PCT = 1000;
+/**
+ * The `PerpMarketAccount.bankruptcyIfFloorPct` value that turns the standing floor off, since 0
+ * means `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT`. A latched bankruptcy still freezes the sweep through
+ * `pendingBankruptcyClaims`. Mirrors the Rust `BANKRUPTCY_IF_FLOOR_DISABLED` constant.
+ */
+export const BANKRUPTCY_IF_FLOOR_DISABLED = 4294967295; // u32::MAX
 
 // integer constants
 // Built with `BN` directly (not `BigNum.fromPrint`) to avoid a module-load

@@ -288,6 +288,7 @@ import { RevenueShareEscrowMap } from './userMap/revenueShareEscrowMap';
 import {
 	isBuilderOrderReferral,
 	isBuilderOrderCompleted,
+	isBuilderOrderOpen,
 	escrowHasReferrer,
 	hasBuilderParams,
 } from './math/builder';
@@ -6067,6 +6068,63 @@ export class VelocityClient {
 	}
 
 	/**
+	 * Permissionless batch crank: books the lending interest of several spot markets in one
+	 * instruction. Written for a caller that has to value several markets in one transaction,
+	 * such as a program pricing a share against the markets a user holds.
+	 *
+	 * Two differences from `updateSpotMarketCumulativeInterest`, which stays the crank that keeps
+	 * a market's oracle EMA fresh. This one passes no oracle, so it leaves every oracle TWAP
+	 * alone, and it accepts a market whose status is `Delisted`.
+	 * @param marketIndexes - Spot market indexes to book, at most 16.
+	 * @param txParams - Optional compute-unit/priority-fee overrides for the transaction.
+	 * @returns The transaction signature.
+	 */
+	public async refreshSpotMarketInterest(
+		marketIndexes: number[],
+		txParams?: TxParams
+	): Promise<TransactionSignature> {
+		const { txSig } = await this.sendTransaction(
+			await this.buildTransaction(
+				await this.refreshSpotMarketInterestIx(marketIndexes),
+				txParams
+			),
+			[],
+			this.opts
+		);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `refreshSpotMarketInterest` instruction. See `refreshSpotMarketInterest` for
+	 * semantics.
+	 * @param marketIndexes - Spot market indexes to book, at most 16.
+	 * @returns The instruction.
+	 */
+	public async refreshSpotMarketInterestIx(
+		marketIndexes: number[]
+	): Promise<TransactionInstruction> {
+		// `load_maps` reads oracles first, then spot markets, and stops at the first account it
+		// does not recognize. This instruction reads no price, so it passes no oracle at all and
+		// the market accounts start the list. Each is writable because velocity advances its
+		// cumulative indexes.
+		const remainingAccounts = marketIndexes.map((marketIndex) => ({
+			pubkey: this.getSpotMarketAccountOrThrow(marketIndex).pubkey,
+			isWritable: true,
+			isSigner: false,
+		}));
+
+		return await this.program.instruction.refreshSpotMarketInterest(
+			marketIndexes,
+			{
+				accounts: {
+					state: await this.getStatePublicKey(),
+				},
+				remainingAccounts,
+			}
+		);
+	}
+
+	/**
 	 * Lists the spot markets that must be cranked before the given accounts can be
 	 * used on a value-releasing path.
 	 *
@@ -11574,9 +11632,9 @@ export class VelocityClient {
 				this.getUserAccountOrThrow(liquidatorSubAccountId),
 				userAccount,
 			],
-			// The resolver also forfeits the estate's unfundable positive perp claims to their own
-			// markets' insurance tranches, so those markets are written to as well. Passing one
-			// read-only makes the program revert at map load.
+			// The resolver also recovers the estate's payable perp claims from those markets' pnl
+			// pools, and forfeits what is left to their insurance tranches, so those markets are
+			// written to as well. Passing one read-only makes the program revert at map load.
 			writablePerpMarketIndexes: [
 				marketIndex,
 				...getPerpMarketsWithForfeitableClaims(userAccount).filter(
@@ -11674,10 +11732,12 @@ export class VelocityClient {
 				this.getUserAccountOrThrow(liquidatorSubAccountId),
 				userAccount,
 			],
-			writableSpotMarketIndexes: [marketIndex],
-			// This resolver also winds up the estate's unfundable positive perp claims into their
-			// markets' insurance tranches, so those perp markets must be writable even though the
-			// bankruptcy being resolved is a spot borrow.
+			// The quote market is writable because the resolver recovers the estate's payable perp
+			// claims into its quote deposit, and the borrow being resolved may be in another market.
+			// It must be passed even when the estate holds no quote row of its own.
+			writableSpotMarketIndexes: [marketIndex, QUOTE_SPOT_MARKET_INDEX],
+			// The resolver also recovers from, and forfeits to, the markets holding those claims, so
+			// those perp markets must be writable even though the bankruptcy is a spot borrow.
 			writablePerpMarketIndexes:
 				getPerpMarketsWithForfeitableClaims(userAccount),
 		});
@@ -12791,7 +12851,10 @@ export class VelocityClient {
 	 * fee carveouts out of the PnL pool — `pendingProtocolFee` to the market's protocol fee pool
 	 * (runs first, buffer-exempt), then `pendingIfFee` to the quote spot market's revenue pool and
 	 * `pendingAmmProvision` into the AMM's fee pool (both leave `feePoolBufferTarget` behind). Every
-	 * drain reserves `max(netUserPnl, 0)` so user claims stay backed. This runs inline on every
+	 * drain reserves `max(netUserPnl, 0)` so user claims stay backed. The `pendingIfFee` drain also
+	 * leaves the bankruptcy first-loss tranche behind: the whole counter while
+	 * `pendingBankruptcyClaims` is above zero, otherwise `bankruptcyIfFloorPct` of open-interest
+	 * notional at the oracle TWAP. This runs inline on every
 	 * `settlePNL` already — this instruction lets a keeper run it on demand without settling anyone's
 	 * PnL. Values `netUserPnl` at the market's fixed `expiryPrice` when the market is in `settlement`
 	 * status (expired positions settle at that price, not the live oracle, so no live-oracle gate is
@@ -12838,6 +12901,318 @@ export class VelocityClient {
 			}
 		);
 		return ix;
+	}
+
+	/**
+	 * Keeper instruction. Writes off one revenue-share row that the program cannot pay. The
+	 * liability counter of the market can then reach zero, and the delist is not blocked. Anyone
+	 * can call this. The market must be in settlement or delisted.
+	 *
+	 * The program requires proof that it cannot pay the row. A missing account is not proof. One of
+	 * these must be true: the beneficiary has no payout `User` account, the closed pool is smaller
+	 * than the row, or the row names no beneficiary that the program can reach. Use
+	 * `settleRevenueShare` for a row that the program can still pay. This instruction rejects it
+	 * with `RevenueShareOrderNotForfeitable`.
+	 *
+	 * This moves no tokens. Only the row and the counter change.
+	 * @param escrowAuthority - Authority owning the escrow holding the row.
+	 * @param escrow - Decoded escrow account, used to resolve the row's beneficiary.
+	 * @param marketIndex - Perp market index the row belongs to.
+	 * @param orderIndex - Index of the row within `escrow.orders`.
+	 * @param txParams - Optional compute-unit/priority-fee overrides.
+	 * @returns The transaction signature.
+	 */
+	public async forfeitRevenueShareOrder(
+		escrowAuthority: PublicKey,
+		escrow: RevenueShareEscrowAccount,
+		marketIndex: number,
+		orderIndex: number,
+		txParams?: TxParams
+	): Promise<TransactionSignature> {
+		const tx = await this.buildTransaction(
+			await this.getForfeitRevenueShareOrderIx(
+				escrowAuthority,
+				escrow,
+				marketIndex,
+				orderIndex
+			),
+			txParams
+		);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `forfeitRevenueShareOrder` instruction. See `forfeitRevenueShareOrder` for
+	 * semantics.
+	 *
+	 * This finds the beneficiary of the row in the same way as the program. A referral row uses the
+	 * referrer. Any other row uses `approvedBuilders[builderIdx]`. It then passes sub-account 0 of
+	 * that authority. The program derives the address again and rejects any other address. If the
+	 * row names no beneficiary, the program skips the check and accepts any address.
+	 * @param escrowAuthority - Authority owning the escrow holding the row.
+	 * @param escrow - Decoded escrow account.
+	 * @param marketIndex - Perp market index the row belongs to.
+	 * @param orderIndex - Index of the row within `escrow.orders`.
+	 * @returns The instruction.
+	 */
+	public async getForfeitRevenueShareOrderIx(
+		escrowAuthority: PublicKey,
+		escrow: RevenueShareEscrowAccount,
+		marketIndex: number,
+		orderIndex: number
+	): Promise<TransactionInstruction> {
+		const order = escrow.orders[orderIndex];
+		if (order === undefined) {
+			throw new Error(
+				`escrow ${escrowAuthority.toBase58()} has no order at index ${orderIndex}`
+			);
+		}
+
+		const beneficiary = isBuilderOrderReferral(order)
+			? escrowHasReferrer(escrow)
+				? escrow.referrer
+				: undefined
+			: escrow.approvedBuilders[order.builderIdx]?.authority;
+
+		const perpMarketAccount = this.getPerpMarketAccountOrThrow(marketIndex);
+		const spotMarketAccount = this.getSpotMarketAccountOrThrow(
+			perpMarketAccount.quoteSpotMarketIndex
+		);
+
+		return await this.program.instruction.forfeitRevenueShareOrder(
+			marketIndex,
+			orderIndex,
+			{
+				accounts: {
+					state: await this.getStatePublicKey(),
+					perpMarket: perpMarketAccount.pubkey,
+					spotMarket: spotMarketAccount.pubkey,
+					escrowAuthority,
+					revenueShareEscrow: getRevenueShareEscrowAccountPublicKey(
+						this.program.programId,
+						escrowAuthority
+					),
+					// A row without a beneficiary has no address to pass. The program does not read
+					// this account in that case, so any address is valid.
+					beneficiaryUser:
+						beneficiary === undefined
+							? escrowAuthority
+							: getUserAccountPublicKeySync(
+									this.program.programId,
+									beneficiary,
+									0
+							  ),
+				},
+			}
+		);
+	}
+
+	/**
+	 * Fetches and decodes an authority's `RevenueShareEscrow` account.
+	 * @param escrowAuthority - Authority the escrow PDA is derived from.
+	 * @throws if the authority has no escrow account.
+	 * @returns The decoded escrow account.
+	 */
+	public async fetchRevenueShareEscrowAccount(
+		escrowAuthority: PublicKey
+	): Promise<RevenueShareEscrowAccount> {
+		const escrowPk = getRevenueShareEscrowAccountPublicKey(
+			this.program.programId,
+			escrowAuthority
+		);
+		const accountInfo = await this.connection.getAccountInfo(escrowPk);
+		if (accountInfo === null) {
+			throw new Error(
+				`RevenueShareEscrow account not found for authority ${escrowAuthority.toBase58()}`
+			);
+		}
+		return (
+			this.program.account as any
+		).revenueShareEscrow.coder.accounts.decode(
+			'revenueShareEscrow',
+			accountInfo.data
+		) as RevenueShareEscrowAccount;
+	}
+
+	/**
+	 * Keeper instruction. Pays the accrued builder and referrer fees in one escrow for one perp
+	 * market, out of the pnl pool of that market. Anyone can call this, so a builder or a referrer
+	 * can collect without the escrow owner.
+	 *
+	 * `settlePNL` runs the same sweep, but only when it moves pnl. After the escrow owner closes
+	 * the position and stops trading, nobody can collect the rows that way. The
+	 * `pendingRevenueShare` of the market then holds pnl-pool value against that claim.
+	 *
+	 * This rejects a delisted market. A delist requires a zero liability and moves the pnl pool to
+	 * the revenue pool, so the market owes nothing and holds nothing.
+	 * @param escrowAuthority - Authority owning the `RevenueShareEscrow` to settle.
+	 * @param escrow - Decoded escrow account, used to derive which sub-accounts and beneficiaries to pass.
+	 * @param marketIndex - Perp market index whose rows to settle.
+	 * @param txParams - Optional compute-unit/priority-fee overrides.
+	 * @returns The transaction signature.
+	 */
+	public async settleRevenueShare(
+		escrowAuthority: PublicKey,
+		escrow: RevenueShareEscrowAccount,
+		marketIndex: number,
+		txParams?: TxParams
+	): Promise<TransactionSignature> {
+		const tx = await this.buildTransaction(
+			await this.getSettleRevenueShareIx(escrowAuthority, escrow, marketIndex),
+			txParams
+		);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `settleRevenueShare` instruction. See `settleRevenueShare` for semantics.
+	 *
+	 * This builds `remainingAccounts` in the order that the program reads them. First the oracle
+	 * and market accounts. Then the sub-accounts of the escrow owner, read-only. Then the `User`
+	 * and `RevenueShare` accounts of the beneficiaries, writable. The program uses the owner
+	 * sub-accounts to complete rows whose orders are closed, because a builder row needs
+	 * `Completed` before payment. Those accounts must be read-only. That marks the end of the
+	 * group.
+	 *
+	 * A sub-account a row names may no longer exist, and the program rejects an unallocated one
+	 * rather than skipping it, so the owner region is filtered to accounts that are actually on
+	 * chain. While the market is in settlement the region is dropped entirely: no fill can accrue
+	 * to a row any more, so the program pays open rows without requiring completion, and that is
+	 * what makes the liability drainable for an owner who deleted the sub-account a row names.
+	 * @param escrowAuthority - Authority owning the `RevenueShareEscrow` to settle.
+	 * @param escrow - Decoded escrow account.
+	 * @param marketIndex - Perp market index whose rows to settle.
+	 * @returns The instruction.
+	 */
+	public async getSettleRevenueShareIx(
+		escrowAuthority: PublicKey,
+		escrow: RevenueShareEscrowAccount,
+		marketIndex: number
+	): Promise<TransactionInstruction> {
+		const remainingAccounts = this.getRemainingAccounts({
+			userAccounts: [],
+			writablePerpMarketIndexes: [marketIndex],
+			writableSpotMarketIndexes: [QUOTE_SPOT_MARKET_INDEX],
+		});
+
+		const marketInSettlement = isVariant(
+			this.getPerpMarketAccountOrThrow(marketIndex).status,
+			'settlement'
+		);
+
+		// The sub-accounts that hold rows to complete for this market. The program matches a row
+		// against the sub-account that owns it, so each one needs its own account.
+		const candidateSubAccountIds = new Set<number>();
+		if (!marketInSettlement) {
+			for (const order of escrow.orders) {
+				if (
+					isBuilderOrderOpen(order) &&
+					!isBuilderOrderCompleted(order) &&
+					!isBuilderOrderReferral(order) &&
+					order.marketIndex === marketIndex
+				) {
+					candidateSubAccountIds.add(order.subAccountId);
+				}
+			}
+		}
+
+		// Keep only the sub-accounts that exist. A deleted sub-account has no account to pass, and
+		// the program fails the whole instruction on an empty entry in this group. The escrow could
+		// then never settle. Rows of a deleted sub-account stay open until the market reaches
+		// settlement, where they need no completion.
+		const candidates = Array.from(candidateSubAccountIds)
+			.sort((a, b) => a - b)
+			.map((subAccountId) => ({
+				subAccountId,
+				pubkey: getUserAccountPublicKeySync(
+					this.program.programId,
+					escrowAuthority,
+					subAccountId
+				),
+			}));
+		const ownerSubAccountIds = new Set<number>();
+		if (candidates.length > 0) {
+			const accountInfos = await this.connection.getMultipleAccountsInfo(
+				candidates.map((c) => c.pubkey)
+			);
+			candidates.forEach((candidate, i) => {
+				if (accountInfos[i] !== null) {
+					ownerSubAccountIds.add(candidate.subAccountId);
+				}
+			});
+		}
+
+		// The beneficiaries. These are the builders of the payable rows for this market. They also
+		// include the referrer if a referral row for this market still owes. The owner sub-accounts
+		// above can complete an open row in this same instruction, so its builder must be present
+		// too.
+		const builders = new Map<number, PublicKey>();
+		for (const order of escrow.orders) {
+			const payable =
+				!isBuilderOrderReferral(order) &&
+				order.feesAccrued.gt(ZERO) &&
+				order.marketIndex === marketIndex &&
+				(isBuilderOrderCompleted(order) ||
+					marketInSettlement ||
+					(isBuilderOrderOpen(order) &&
+						ownerSubAccountIds.has(order.subAccountId)));
+			const builderAuthority =
+				escrow.approvedBuilders[order.builderIdx]?.authority;
+			if (payable && builderAuthority && !builders.has(order.builderIdx)) {
+				builders.set(order.builderIdx, builderAuthority);
+			}
+		}
+		const beneficiaries = Array.from(builders.values());
+		const hasReferralForMarket = escrow.orders.some(
+			(o) =>
+				isBuilderOrderReferral(o) &&
+				o.feesAccrued.gt(ZERO) &&
+				o.marketIndex === marketIndex
+		);
+		if (hasReferralForMarket && escrowHasReferrer(escrow)) {
+			beneficiaries.push(escrow.referrer);
+		}
+		const beneficiaryUserKeys = new Set(
+			beneficiaries.map((b) =>
+				getUserAccountPublicKeySync(this.program.programId, b, 0).toBase58()
+			)
+		);
+
+		// The owner group goes first and is read-only. That marks where it ends and where the
+		// writable beneficiary group starts. An escrow owner that is also their own builder would
+		// put one account in both groups with different write flags. The runtime then makes it
+		// writable and the program rejects it. Drop the shared account instead. That row is not
+		// completed by this call, and the call still succeeds.
+		const ownerSubAccountKeys = candidates
+			.filter((c) => ownerSubAccountIds.has(c.subAccountId))
+			.map((c) => c.pubkey)
+			.filter((pk) => !beneficiaryUserKeys.has(pk.toBase58()));
+		for (const pubkey of ownerSubAccountKeys) {
+			remainingAccounts.push({ pubkey, isSigner: false, isWritable: false });
+		}
+
+		if (beneficiaries.length > 0) {
+			this.addBuilderToRemainingAccounts(beneficiaries, remainingAccounts);
+		}
+
+		return await this.program.instruction.settleRevenueShare(
+			marketIndex,
+			ownerSubAccountKeys.length,
+			{
+				accounts: {
+					state: await this.getStatePublicKey(),
+					escrowAuthority,
+					revenueShareEscrow: getRevenueShareEscrowAccountPublicKey(
+						this.program.programId,
+						escrowAuthority
+					),
+					spotMarketVault: this.getQuoteSpotMarketAccount().vault,
+				},
+				remainingAccounts,
+			}
+		);
 	}
 
 	/**

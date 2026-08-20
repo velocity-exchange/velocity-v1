@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import { BN } from '@coral-xyz/anchor';
 import { PublicKey } from '@solana/web3.js';
+import { BANKRUPTCY_IF_FLOOR_DISABLED } from '@velocity-exchange/sdk';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
 import { reportDispatch, sendOrPropose } from '../lib/squads';
@@ -71,17 +72,23 @@ export function registerPerpMarket(parent: Command): void {
 		pm
 			.command('set-bankruptcy-if-floor <market> <pct>')
 			.description(
-				'Fraction of OI notional (at the oracle TWAP) the fee sweep leaves in pending_if_fee as a standing bankruptcy first-loss tranche (u32, PERCENTAGE_PRECISION: 1000000 = 100%, 1000 = 10 bps = the new-market default). 0 disables.'
+				'Fraction of OI notional (at the oracle TWAP) the fee sweep leaves in pending_if_fee as a standing bankruptcy first-loss tranche (u32, PERCENTAGE_PRECISION: 1000000 = 100%, 1000 = 10 bps). 0 selects the 10 bps default; pass "disabled" to turn the floor off. A latched bankruptcy freezes the sweep either way.'
 			)
 	).action(async (market: string, pct: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
 		const provider = buildProvider(opts);
 		const client = await buildAdminClient(opts);
 		try {
-			const value = Number.parseInt(pct, 10);
-			if (!Number.isInteger(value) || value < 0 || value > 1000000) {
+			const value =
+				pct === 'disabled'
+					? BANKRUPTCY_IF_FLOOR_DISABLED
+					: Number.parseInt(pct, 10);
+			if (
+				value !== BANKRUPTCY_IF_FLOOR_DISABLED &&
+				(!Number.isInteger(value) || value < 0 || value > 1000000)
+			) {
 				throw new Error(
-					`pct must be an integer in [0, 1000000] (PERCENTAGE_PRECISION), got "${pct}"`
+					`pct must be an integer in [0, 1000000] (PERCENTAGE_PRECISION) or "disabled", got "${pct}"`
 				);
 			}
 			const ix = await client.getUpdatePerpMarketBankruptcyIfFloorPctIx(

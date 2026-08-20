@@ -30,11 +30,11 @@ use {
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             prop_amm::{
-                clob_hint_scan, read_clob_node, ClobCancelAllArgsV0, ClobCancelSides, ClobMarket,
-                ClobUserRefV0, QuoterV0,
+                clob_hint_scan, ClobCancelAllArgsV0, ClobCancelSides, ClobMarket, ClobUserRefV0,
+                QuoterV0,
             },
             state::State,
-            user::{MarketType, OrderStatus, User},
+            user::User,
         },
         validate,
     },

@@ -3366,6 +3366,7 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
         };
         let (quoter_signer, quoter_signer_nonce) = crate::signer::find_quoter_signer();
         let inputs = crate::instructions::QuoteInputs {
+            // Filled in below, once the makers on the books are sized.
             caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
             market_index: params.market_index,
             direction,
@@ -3382,6 +3383,24 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
             quoter_signer,
             quoter_signer_nonce,
         };
+        // Before the quote: see `build_user_caps`.
+        let inputs = crate::instructions::QuoteInputs {
+            caps: crate::instructions::build_user_caps(
+                tail,
+                &inputs,
+                &mut crate::instructions::CapInputs {
+                    makers_and_referrer: &makers_and_referrer,
+                    makers_and_referrer_stats: &makers_and_referrer_stats,
+                    perp_market_map: &perp_market_map,
+                    spot_market_map: &spot_market_map,
+                    oracle_map: &mut oracle_map,
+                    slot: clock.slot,
+                    now: clock.unix_timestamp,
+                },
+            )?,
+            ..inputs
+        };
+
         let route = crate::instructions::QuotedRoute::assemble(tail, &inputs)?;
         route.require_baseline(perp_market_map.get_ref(&params.market_index)?.clob_quoter)?;
         let mut book_storage =

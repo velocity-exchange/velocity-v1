@@ -30,7 +30,7 @@ use {
     crate::{
         controller::{
             orders::pay_keeper_flat_reward_for_spot,
-            position::{decrease_open_bids_and_asks, get_position_index, PositionDirection},
+            position::{decrease_open_bids_and_asks, get_position_index},
         },
         error::ErrorCode,
         instructions::{

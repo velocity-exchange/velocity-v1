@@ -268,6 +268,8 @@ fn fill_order<'c: 'info, 'info>(
     let (quoter_signer, quoter_signer_nonce) = crate::signer::find_quoter_signer();
     let inputs =
         crate::instructions::QuoteInputs {
+            // Filled in below: sizing the makers needs the inputs, and the
+            // quote needs the sizes.
             caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
             market_index,
             direction,
@@ -284,6 +286,25 @@ fn fill_order<'c: 'info, 'info>(
             quoter_signer,
             quoter_signer_nonce,
         };
+    // Before the quote, so a book never publishes depth standing on a maker
+    // this fill would refuse to settle against.
+    let inputs = crate::instructions::QuoteInputs {
+        caps: crate::instructions::build_user_caps(
+            tail,
+            &inputs,
+            &mut crate::instructions::CapInputs {
+                makers_and_referrer: &makers_and_referrer,
+                makers_and_referrer_stats: &makers_and_referrer_stats,
+                perp_market_map: &perp_market_map,
+                spot_market_map: &spot_market_map,
+                oracle_map: &mut oracle_map,
+                slot: clock.slot,
+                now: clock.unix_timestamp,
+            },
+        )?,
+        ..inputs
+    };
+
     let route = crate::instructions::QuotedRoute::assemble(tail, &inputs)?;
     route.require_baseline(perp_market_map.get_ref(&market_index)?.clob_quoter)?;
     route.require_signed_route(&signed_route, route_digest)?;

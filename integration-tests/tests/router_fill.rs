@@ -3184,16 +3184,16 @@ fn place_and_take_v1_fills_a_retail_taker_off_the_clob() {
     assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
 }
 
-/// A fill clears a latched maker off the book on its way through, so the
-/// next one is not cut short by the same orders.
+/// A fill skips a latched maker and lands, instead of reverting on them.
 ///
 /// Relay proves a subaccount below its floor and trips the authority-wide
-/// latch. From then on that authority may not rest risk-increasing orders
-/// anywhere, so the fill routes around them — and, having proven it, takes
-/// them off. No keeper prefix, no relay round trip: the fill that would have
-/// been blocked is the thing that unblocks the book.
+/// latch. From then on that authority may not take risk-increasing fills
+/// anywhere, so velocity sizes them at zero before the books are quoted and
+/// the book passes their orders over. The orders stay where they are — the
+/// latch is a fact about the account, and clearing someone's book is the
+/// maker's own call or a keeper's, not a side effect of a stranger's fill.
 #[test]
-fn a_fill_clears_a_latched_makers_orders_on_its_way_through() {
+fn a_fill_skips_a_latched_maker_instead_of_reverting() {
     use velocity::state::order_params::{OrderParams, PostOnlyParam};
 
     let mut fixture = setup();
@@ -3284,19 +3284,17 @@ fn a_fill_clears_a_latched_makers_orders_on_its_way_through() {
     )
     .expect("the fill routes around the latched maker instead of reverting");
 
-    // And the orders that would have blocked it are gone.
+    // Passed over, not filled and not cancelled.
     assert_eq!(
         clob_ask_count(&fixture.svm, &fixture.clob_market),
-        0,
-        "the latched maker's whole side came off in the one call"
+        2,
+        "a latched maker's orders are skipped, not taken off the book"
     );
     let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert_eq!(
         maker.perp_positions[0].base_asset_amount, 0,
-        "cleared, not filled against"
+        "and nothing was filled against them"
     );
-    assert_eq!(maker.perp_positions[0].open_asks, 0, "reserve unwound");
-    assert_eq!(maker.perp_positions[0].open_orders, 0);
 }
 
 /// A partially-filled place-and-take limit rests its remainder on the CLOB

@@ -2173,161 +2173,6 @@ fn fulfill_perp_order(
     )
 }
 
-/// Where a CLOB book stops being routable, and which of its makers are
-/// provably beyond saving.
-///
-/// Mirrors the floor prune `get_maker_orders_info` runs over DLOB makers: a
-/// maker whose equity floor cannot be verified — any oracle it touches
-/// invalid for margin — may not take a risk-increasing fill, while its
-/// reducing orders stay matchable. Reducing is a property of the admitted
-/// set, so each of that maker's orders is judged against the position the
-/// ones ahead of it would leave behind, best price first (which the book's
-/// own order already is).
-///
-/// Only the unverifiable case is held back, exactly as on the DLOB. A maker
-/// that is provably below its floor, or whose authority-wide breaker is
-/// tripped, still reverts the fill — those are real breaches and are meant
-/// to be loud.
-///
-/// Two reasons a maker's order stops the walk, and they are not treated the
-/// same afterwards. A floor the program cannot verify is a fact about the
-/// oracle, so the book is routed around and the orders are left alone. A
-/// proven breach — the authority-wide latch is set, or a trusted value sits
-/// below the floor — is a fact about the account, and those orders are
-/// cleared once the fill has settled: they are the same grounds
-/// `force_cancel_clob_orders` acts on, and leaving them means every later
-/// fill pays this same cut.
-///
-/// The initial-margin arm of those grounds is deliberately absent. Proving it
-/// costs a full margin walk per maker *before* the split, where the walk this
-/// already does is free for an account with no floor set — and the post-fill
-/// check plus relay both still catch it.
-///
-/// The answer is advisory. The pre-execute `subjects` read at the settle loop
-/// stays the authority on who a response may touch; this only decides how
-/// much size the split is allowed to send here.
-#[allow(clippy::too_many_arguments)]
-struct ClobBookVerdict {
-    /// Depth the split may still send here, or `None` for the whole book.
-    cap: Option<u64>,
-    /// Makers this book must be cleared of once the fill has settled.
-    clear: Vec<Pubkey>,
-}
-
-#[allow(clippy::too_many_arguments)]
-fn clob_unverifiable_floor_depth(
-    resting: &[crate::state::prop_amm::ClobRestingOrderV0],
-    resolve_user: impl Fn(&crate::state::prop_amm::ClobUserRefV0) -> VelocityResult<Pubkey>,
-    makers_and_referrer: &UserMap,
-    makers_and_referrer_stats: &UserStatsMap,
-    perp_market_map: &PerpMarketMap,
-    spot_market_map: &SpotMarketMap,
-    oracle_map: &mut OracleMap,
-    market_index: u16,
-    maker_direction: PositionDirection,
-) -> VelocityResult<ClobBookVerdict> {
-    /// What the walk has settled about one maker in the run. A short vector
-    /// with a linear scan, not a map: a sweep is a handful of orders, and
-    /// this way the walk allocates once.
-    struct MakerFloor {
-        key: Pubkey,
-        /// The maker's floor is set and one of its oracles is invalid.
-        unverifiable: bool,
-        /// A proven breach: the latch is set, or a trusted value is below the
-        /// floor. Unlike `unverifiable`, these orders get cleared.
-        doomed: bool,
-        /// Position this market would hold after the orders admitted so far.
-        projected: i64,
-    }
-
-    /// Depth ahead of the cut that execute is *certain* to consume.
-    ///
-    /// A taker-origin order is passed over while a counterparty crosses it,
-    /// so its base is not depth the allocation can rely on burning before it
-    /// reaches the cut. Counting it would let a sweep sized at the cap walk
-    /// straight through the order the cut exists to protect and fill the very
-    /// maker the post-fill check refuses. Not counting it under-routes
-    /// instead, which is the safe direction and mirrors exactly what the
-    /// CLOB's own walk counts.
-    fn reachable_depth(order: &crate::state::prop_amm::ClobRestingOrderV0) -> u64 {
-        if order.is_taker_origin {
-            0
-        } else {
-            order.base_asset_amount
-        }
-    }
-
-    let mut seen: Vec<MakerFloor> = Vec::with_capacity(resting.len());
-    let mut clear: Vec<Pubkey> = Vec::new();
-    let mut ahead = 0_u64;
-
-    for order in resting {
-        let key = resolve_user(&order.user)?;
-        let index = match seen.iter().position(|maker| maker.key == key) {
-            Some(index) => index,
-            None => {
-                let maker = makers_and_referrer.get_ref(&key)?;
-                let net_equity = calculate_net_equity_for_floor(
-                    &maker,
-                    perp_market_map,
-                    spot_market_map,
-                    oracle_map,
-                )?;
-                let unverifiable =
-                    net_equity.is_some_and(|net_equity| !net_equity.all_oracles_valid);
-                let doomed = net_equity
-                    .is_some_and(|net_equity| net_equity.proves_below_floor(&maker))
-                    || makers_and_referrer_stats
-                        .get_ref(&maker.authority)
-                        .map(|stats| stats.is_equity_breaker_tripped())
-                        .unwrap_or(false);
-                if doomed && !clear.contains(&key) {
-                    clear.push(key);
-                }
-                let projected = maker
-                    .get_perp_position(market_index)
-                    .map(|position| position.base_asset_amount)
-                    .unwrap_or(0);
-                seen.push(MakerFloor {
-                    key,
-                    unverifiable,
-                    doomed,
-                    projected,
-                });
-                seen.len() - 1
-            }
-        };
-
-        if !seen[index].unverifiable && !seen[index].doomed {
-            ahead = ahead.safe_add(reachable_depth(order))?;
-            continue;
-        }
-
-        if !is_order_position_reducing(
-            &maker_direction,
-            order.base_asset_amount,
-            seen[index].projected,
-        )? {
-            // The first order the post-fill check refuses. Everything behind
-            // it is unreachable without sweeping through it, so the depth in
-            // front is all this book can safely take.
-            return Ok(ClobBookVerdict {
-                cap: Some(ahead),
-                clear,
-            });
-        }
-
-        let signed = match maker_direction {
-            PositionDirection::Long => order.base_asset_amount.cast::<i64>()?,
-            PositionDirection::Short => -order.base_asset_amount.cast::<i64>()?,
-        };
-        seen[index].projected = seen[index].projected.safe_add(signed)?;
-        ahead = ahead.safe_add(reachable_depth(order))?;
-    }
-
-    Ok(ClobBookVerdict { cap: None, clear })
-}
-
 /// Post-fill invariants the router pass runs after it settles its allocations:
 /// fill-amount coherence, the taker's fill-margin + equity-floor/breaker
 /// check, per-maker margin + equity-floor checks over the accumulated
@@ -3860,24 +3705,6 @@ fn fulfill_perp_order_router_pass(
         return Ok((0, 0));
     }
 
-    // True when any loaded account is in a state the CLOB clamp could act on:
-    // a floor to fall below, or an authority-wide latch already set. Gates the
-    // clamp, whose cost is otherwise paid on every fill for a condition almost
-    // no account is ever in. The latch is checked separately because it can be
-    // set by a *sibling* subaccount's breach, so this one may carry no floor.
-    let any_loaded_distress = makers_and_referrer
-        .0
-        .values()
-        .try_fold(false, |found, loader| -> VelocityResult<bool> {
-            Ok(found || load!(loader)?.equity_floor > 0)
-        })?
-        || makers_and_referrer_stats.0.values().try_fold(
-            false,
-            |found, loader| -> VelocityResult<bool> {
-                Ok(found || load!(loader)?.is_equity_breaker_tripped())
-            },
-        )?;
-
     // Resolves a wire user reference against the loaded set. Built here
     // rather than at the settle loop below because the CLOB depth clamp
     // needs it too, and the index is a snapshot of identities that no fill
@@ -3912,21 +3739,14 @@ fn fulfill_perp_order_router_pass(
     // Custom: a PropAMM's depth is never margin-reserved, so the cap is what
     // the quoted user's account supports right now.
     //
-    // Clob: an order is margin-reserved at placement, so its size is backed.
-    // The maker's equity floor is not: once one of its oracles goes invalid,
-    // `fulfill_perp_order_post_checks` refuses a risk-increasing fill
-    // against it, and `get_maker_orders_info` prunes exactly those orders on
-    // the DLOB for the same reason. A book cannot be pruned order by order —
-    // execute sweeps best-first, and dropping one maker from the forwarded
-    // user set is `StaleUserSet` past the grace window, which fails the whole
-    // call instead of skipping the order. So the cap is the depth ahead of
-    // the first such order and the router fills the rest of the taker's size
-    // elsewhere.
+    // A CLOB needs no clamp: its makers are sized before the books are
+    // quoted and the book passes over anyone out of room, mid-book, so the
+    // depth behind them is still quoted and still fillable
+    // (`build_user_caps`). Truncating in front of them, which is all a clamp
+    // out here can do, would cost every order behind.
     //
-    // Runs before this market's `RefMut` is taken, because both walks value
-    // every market the maker touches.
-    // Makers a book has to be cleared of once the fill settles, per book.
-    let mut clear_by_book: Vec<(usize, Vec<Pubkey>)> = Vec::new();
+    // Runs before this market's `RefMut` is taken, because the margin walk
+    // values every market the quoted user touches.
     let clamped_books: Vec<Option<Vec<PriceLevel>>> = (0..external_books.len())
         .map(|i| -> VelocityResult<Option<Vec<PriceLevel>>> {
             let cap = match router.executor.quoter_type(i) {
@@ -3953,38 +3773,7 @@ fn fulfill_perp_order_router_pass(
                         oracle_map,
                     )?
                 }
-                QuoterType::Clob => {
-                    // Nothing to hold back unless some loaded account carries
-                    // a floor at all. Floors are admin-set and rare, so this
-                    // keeps the book read and the per-order resolution off
-                    // the ordinary fill.
-                    if !any_loaded_distress {
-                        return Ok(None);
-                    }
-                    let resting = match router.executor.subjects(i, direction, target_size)? {
-                        crate::state::prop_amm::QuoterSubjects::Book(resting) => resting,
-                        crate::state::prop_amm::QuoterSubjects::Account(_) => return Ok(None),
-                    };
-                    let verdict = clob_unverifiable_floor_depth(
-                        &resting,
-                        &resolve_user,
-                        makers_and_referrer,
-                        makers_and_referrer_stats,
-                        perp_market_map,
-                        spot_market_map,
-                        oracle_map,
-                        market_index,
-                        maker_direction,
-                    )?;
-                    if !verdict.clear.is_empty() {
-                        clear_by_book.push((i, verdict.clear));
-                    }
-                    match verdict.cap {
-                        Some(cap) => cap,
-                        None => return Ok(None),
-                    }
-                }
-                QuoterType::Vamm => return Ok(None),
+                QuoterType::Clob | QuoterType::Vamm => return Ok(None),
             };
             let depth = external_books[i]
                 .levels
@@ -4600,90 +4389,6 @@ fn fulfill_perp_order_router_pass(
                     OrderStatus::Canceled,
                 );
             }
-        }
-    }
-
-    // ---- Clear the makers the walk proved may not rest here. ----
-    //
-    // After settlement, deliberately. The books were quoted before this
-    // function ran, so removing orders any earlier would leave every ladder
-    // describing a book that no longer exists and the executed prices would
-    // fall outside the prefix they were bound to. The fill routed around
-    // these makers already; clearing them now is what stops the next fill
-    // paying the same cut.
-    //
-    // Ahead of the zero-fill return below, because a fill the clamp cut down
-    // to nothing is the case that most needs the book unbricked.
-    //
-    // Only proven breaches reach here — a latch that is set, or a trusted
-    // value below the floor. A floor the program could not verify is left
-    // alone: cancelling is irreversible and an oracle blip must not destroy a
-    // maker's resting orders.
-    //
-    // The taker's fill does the work and spends the compute, so the flat fee
-    // goes to its filler on the same terms `force_cancel_clob_orders` pays a
-    // keeper for the identical job.
-    for (book_index, maker_keys) in clear_by_book {
-        for maker_key in maker_keys {
-            let sides = {
-                let maker = makers_and_referrer.get_ref(&maker_key)?;
-                let position = maker.get_perp_position(market_index).ok();
-                let base = position.map(|p| p.base_asset_amount).unwrap_or(0);
-                // The side that adds to the position can hold nothing
-                // reducing, whatever the sizes; a flat maker has no reducing
-                // side at all. Same rule the keeper sweep applies.
-                let bids = base >= 0 && position.is_some_and(|p| p.open_bids != 0);
-                let asks = base <= 0 && position.is_some_and(|p| p.open_asks != 0);
-                match (bids, asks) {
-                    (true, true) => Some(crate::state::prop_amm::ClobCancelSides::Both),
-                    (true, false) => Some(crate::state::prop_amm::ClobCancelSides::Bids),
-                    (false, true) => Some(crate::state::prop_amm::ClobCancelSides::Asks),
-                    (false, false) => None,
-                }
-            };
-            let Some(sides) = sides else {
-                continue;
-            };
-            let maker_ref = {
-                let maker = makers_and_referrer.get_ref(&maker_key)?;
-                crate::state::prop_amm::ClobUserRefV0 {
-                    authority: maker.authority,
-                    sub_account_id: maker.sub_account_id.into(),
-                }
-            };
-            let Some(swept) = router.executor.cancel_all(book_index, maker_ref, sides)? else {
-                continue;
-            };
-            if swept.orders() == 0 {
-                continue;
-            }
-            let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
-            let mut orders = 0_u32;
-            router.executor.with_book(book_index, &mut |book: &[u8]| {
-                orders = crate::state::prop_amm::unwind_swept_orders(
-                    &mut maker,
-                    book,
-                    market_index,
-                    sides,
-                    &swept,
-                )
-                .unwrap_or(0);
-            })?;
-            let fee = fee_structure
-                .flat_filler_fee
-                .safe_mul(orders.cast::<u64>()?)?;
-            pay_keeper_flat_reward_for_perps(
-                &mut maker,
-                filler.as_deref_mut(),
-                market.deref_mut(),
-                fee,
-                slot,
-            )?;
-            msg!(
-                "cleared {} clob orders of proven-breached maker {}",
-                orders,
-                maker_key
-            );
         }
     }
 

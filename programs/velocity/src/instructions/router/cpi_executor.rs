@@ -13,7 +13,7 @@ use {
             clob_resting_prefix, find_account, read_clob_u16, ClobCancelAllArgsV0,
             ClobCancelAllOutcomeV0, ClobCancelSides, ClobMarket, ClobUserRefV0, Direction,
             ExecuteArgsV0, ExternalQuoterExecutor, QuoterSubjects, QuoterType, QuoterUserSetRef,
-            ResponseLocationV0, WireDirectionExt, CLOB_MARKET_INDEX_OFFSET,
+            ResponseLocationV0, CLOB_MARKET_INDEX_OFFSET,
         },
         validate,
     },

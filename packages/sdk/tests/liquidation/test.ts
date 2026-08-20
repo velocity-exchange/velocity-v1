@@ -69,6 +69,13 @@ describe('getLiquidationFee', () => {
 		assert.equal(baseline, 30_000);
 		assert.equal(fast, baseline);
 	});
+
+	it('rejects a current slot before the last-active slot like the program', () => {
+		assert.throws(
+			() => getLiquidationFee(20_000, 50_000, new BN(101), new BN(100)),
+			/currentSlot must not precede lastActiveUserSlot/
+		);
+	});
 });
 
 describe('calculatePerpIfFee', () => {

@@ -953,7 +953,7 @@ impl OrderParams {
     ) -> VelocityResult<OrderParams> {
         let (auction_start_price, auction_end_price) =
             OrderParams::get_perp_baseline_start_end_price_offset(market, direction_to_close, 1)?;
-        let auction_duration = Millis::from_stored_units(80)
+        let auction_duration = Millis::from_secs(32)
             .to_slots_ceil(slot_duration)
             .min(u8::MAX as u64)
             .cast::<u8>()?;

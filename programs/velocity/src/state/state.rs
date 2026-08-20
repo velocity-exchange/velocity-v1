@@ -1,5 +1,6 @@
 // Anchor's IDL source parser expands the account-field aliases and needs these
-// names in scope even though the runtime Rust compiler does not.
+// names in scope even though the runtime Rust compiler does not. Do not remove
+// this apparently-unused import without regenerating and checking the IDL.
 #[allow(unused_imports)]
 use crate::math::time::{StoredSlotDuration, STORED_UNIT_MS};
 use {
@@ -298,6 +299,12 @@ impl State {
         // velocity's ErrorCode (the `validate!` macro binds `ErrorCode`
         // unqualified; the anchor prelude otherwise shadows it here)
         use crate::error::ErrorCode;
+        let (expected_state, _) = Pubkey::find_program_address(&[b"velocity_state"], &crate::id());
+        crate::validate!(
+            account.key == &expected_state,
+            ErrorCode::DefaultError,
+            "account is not the velocity State PDA"
+        )?;
         crate::validate!(
             account.owner == &crate::id(),
             ErrorCode::DefaultError,

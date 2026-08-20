@@ -1,5 +1,6 @@
 // Anchor's IDL source parser expands the account-field alias and needs these
-// names in scope even though the runtime Rust compiler does not.
+// names in scope even though the runtime Rust compiler does not. Do not remove
+// this apparently-unused import without regenerating and checking the IDL.
 #[allow(unused_imports)]
 use crate::math::time::{StoredSlotDuration, STORED_UNIT_MS};
 use {
@@ -66,8 +67,10 @@ pub const LP_POOL_SWAP_AUM_UPDATE_DELAY: u64 = 0;
 pub const MAX_POSITION_STALENESS_SLOTS: u64 = 10_000;
 #[cfg(not(feature = "anchor-test"))]
 pub const MAX_POSITION_STALENESS_SLOTS: u64 = 0;
-pub const MAX_POSITION_STALENESS_FOR_TARGET_CALC: Millis =
-    Millis::from_stored_units(MAX_POSITION_STALENESS_SLOTS);
+#[cfg(feature = "anchor-test")]
+pub const MAX_POSITION_STALENESS_FOR_TARGET_CALC: Millis = Millis::from_secs(4_000);
+#[cfg(not(feature = "anchor-test"))]
+pub const MAX_POSITION_STALENESS_FOR_TARGET_CALC: Millis = Millis::ZERO;
 
 #[cfg(feature = "anchor-test")]
 pub const MAX_ORACLE_STALENESS_FOR_TARGET_CALC: Millis = Millis::from_secs(4_000);

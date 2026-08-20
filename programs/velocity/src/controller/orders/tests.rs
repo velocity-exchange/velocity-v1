@@ -2915,8 +2915,8 @@ pub mod fulfill_order {
         let mut state = State {
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 5s
-                    slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 60s
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },

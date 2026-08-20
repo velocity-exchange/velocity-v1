@@ -508,7 +508,10 @@ export function getLiquidationFee(
 	currentSlot: BN,
 	slotDuration: SlotDurationMs = SLOT_DURATION_BASELINE
 ): number {
-	const elapsedSlots = BN.max(currentSlot.sub(lastActiveUserSlot), ZERO);
+	if (currentSlot.lt(lastActiveUserSlot)) {
+		throw new Error('currentSlot must not precede lastActiveUserSlot');
+	}
+	const elapsedSlots = currentSlot.sub(lastActiveUserSlot);
 	const elapsed = millisFromSlots(elapsedSlots, slotDuration);
 	if (elapsed.lt(LIQUIDATION_FEE_ADJUST_GRACE_PERIOD)) {
 		return baseLiquidationFee;

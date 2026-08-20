@@ -60,10 +60,11 @@ pub const STORED_UNIT_MS: u64 = 400;
 /// representation preserves the wrapped integer's exact size, alignment, and
 /// bytes, so existing accounts remain layout-compatible.
 ///
-/// New values should be created with [`Self::try_from_millis`], which rejects
-/// durations that are not an exact multiple of `SLOT_MS` or do not fit in `T`.
-/// [`Self::from_raw_units`] exists only for decoding and legacy instruction
-/// arguments that are already denominated in the field's fixed units.
+/// New fields and APIs should create values with [`Self::try_from_millis`],
+/// which rejects durations that are not an exact multiple of `SLOT_MS` or do
+/// not fit in `T`. Existing admin instructions intentionally retain their
+/// legacy raw-unit wire arguments; [`Self::from_raw_units`] exists for those
+/// boundaries and for decoding already-encoded account data.
 #[repr(transparent)]
 #[derive(
     Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default, AnchorSerialize, AnchorDeserialize,
@@ -87,6 +88,7 @@ where
     /// Wrap already-encoded fixed-slot units. Keep this at account/legacy-API
     /// boundaries; duration arithmetic should use [`Self::to_millis`].
     pub const fn from_raw_units(units: T) -> Self {
+        assert!(SLOT_MS > 0, "stored slot-duration quantum must be nonzero");
         Self(units)
     }
 
@@ -100,6 +102,7 @@ where
 
     /// Decode into the common wall-clock arithmetic type.
     pub fn to_millis(self) -> Millis {
+        assert!(SLOT_MS > 0, "stored slot-duration quantum must be nonzero");
         // Signed legacy fields may contain historical negative values. Their
         // failed conversion deliberately normalizes to zero, matching the
         // pre-newtype `value.max(0) as u64` decode.
@@ -316,14 +319,14 @@ impl Millis {
     /// rounding down. Default for staleness windows: marginally tighter than
     /// wall-clock is the safe direction.
     pub fn to_slots(self, d: SlotDuration) -> u64 {
-        self.0.safe_div(d.0.max(1)).unwrap_or(self.0)
+        self.0.safe_div(d.0.max(1)).unwrap_or(0)
     }
 
     /// This duration expressed in actual slots, rounding up. For
     /// user-protection windows (liquidation ramps, grace periods): the user
     /// never gets less than the intended time.
     pub fn to_slots_ceil(self, d: SlotDuration) -> u64 {
-        self.0.safe_div_ceil(d.0.max(1)).unwrap_or(self.0)
+        self.0.safe_div_ceil(d.0.max(1)).unwrap_or(0)
     }
 
     /// How many whole `period`s fit in this duration (floor). For legacy

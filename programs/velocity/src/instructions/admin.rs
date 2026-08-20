@@ -7008,7 +7008,7 @@ mod feature_gate_tests {
     // bare AccountInfo, since AccountLoader needs a `'info` borrow they lack.
     #[test]
     fn foreign_state_reader_validates_and_switches() {
-        let key = Pubkey::new_unique();
+        let (key, _) = Pubkey::find_program_address(&[b"velocity_state"], &crate::id());
         let mut lamports = 1u64;
         // 8-byte discriminator + zeroed State, with the staging fields written at
         // their real offsets
@@ -7046,6 +7046,12 @@ mod feature_gate_tests {
                     .as_ms(),
                 300
             );
+        }
+        // a correctly-owned State-shaped account at the wrong address is rejected
+        let wrong_key = Pubkey::new_unique();
+        {
+            let acct = account(&wrong_key, &velocity_id, &mut lamports, &mut data);
+            assert!(State::slot_duration_from_account_info(&acct, 0).is_err());
         }
         // wrong owner is rejected
         let not_velocity = Pubkey::new_unique();

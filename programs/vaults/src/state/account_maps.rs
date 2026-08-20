@@ -41,7 +41,10 @@ impl<'info, T: anchor_lang::Bumps> AccountMapProvider<'info> for Context<'info, 
         let slot_duration = match velocity_state {
             Some(state) => {
                 velocity::state::state::State::slot_duration_from_account_info(state, slot)
-                    .map_err(|_| velocity::error::ErrorCode::DefaultError)?
+                    .map_err(|error| {
+                        msg!("invalid velocity State account: {}", error);
+                        velocity::error::ErrorCode::DefaultError
+                    })?
             }
             None => velocity::math::time::SlotDuration::BASELINE,
         };

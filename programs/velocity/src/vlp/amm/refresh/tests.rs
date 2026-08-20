@@ -71,8 +71,8 @@ pub fn update_amm_test() {
                 oracle_twap_5min_percent_divergence: 10,
             },
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 5s
-                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },
@@ -379,8 +379,8 @@ pub fn update_amm_test_bad_oracle() {
                 oracle_twap_5min_percent_divergence: 10,
             },
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 5s
-                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                 confidence_interval_max_size: 20000,                      //2%
                 too_volatile_ratio: 5,
             },
@@ -448,8 +448,8 @@ pub fn update_amm_larg_conf_test() {
                 oracle_twap_5min_percent_divergence: 10,
             },
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 5s
-                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                 confidence_interval_max_size: 20000,                      //2%
                 too_volatile_ratio: 5,
             },
@@ -703,8 +703,8 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
                 oracle_twap_5min_percent_divergence: 10,
             },
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 5s
-                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                 confidence_interval_max_size: 20000,                      //2%
                 too_volatile_ratio: 5,
             },

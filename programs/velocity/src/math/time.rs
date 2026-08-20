@@ -48,6 +48,48 @@ pub const STORED_UNIT_MS: u64 = 400;
 /// (there is no path back to slower slots: feature gates cannot deactivate).
 pub const VALID_SLOT_DURATIONS_MS: [u16; 4] = [350, 300, 250, 200];
 
+/// The full slot-duration schedule, largest first: the 400ms baseline followed
+/// by the four gate values. The admin may only step from one entry to the one
+/// immediately after it (see [`next_slot_duration_ms`]).
+pub const SLOT_DURATION_SCHEDULE_MS: [u16; 5] = [400, 350, 300, 250, 200];
+
+/// The only value the admin may set next, given the current effective slot
+/// duration in ms: the immediately smaller entry on the schedule. `None` at
+/// 200ms (fully rolled out) or when `current_ms` is not a schedule value.
+///
+/// Requiring the exact successor makes the setter monotonic-decreasing, rejects
+/// gate skips (so each in-flight measurement crosses at most one step), and
+/// rejects non-schedule typos in a single check.
+pub const fn next_slot_duration_ms(current_ms: u64) -> Option<u16> {
+    let sched = SLOT_DURATION_SCHEDULE_MS;
+    let mut i = 0;
+    while i + 1 < sched.len() {
+        if sched[i] as u64 == current_ms {
+            return Some(sched[i + 1]);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The raw `slot_duration_ms` in effect at `now_slot` given the `State` staging
+/// fields: the staged `pending_ms` once `now_slot` reaches `effective_slot`,
+/// otherwise the current `base_ms`. The single source of truth for the staged
+/// switch, shared by `State::active_slot_duration_ms`, the native fast-path
+/// reader, and the off-chain mirrors, so they cannot diverge.
+pub const fn active_slot_duration_ms(
+    base_ms: u16,
+    pending_ms: u16,
+    effective_slot: u64,
+    now_slot: u64,
+) -> u16 {
+    if pending_ms != 0 && now_slot >= effective_slot {
+        pending_ms
+    } else {
+        base_ms
+    }
+}
+
 /// A wall-clock duration in milliseconds. The only duration unit in the
 /// codebase; see the module doc for the type discipline.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
@@ -252,6 +294,24 @@ mod tests {
         for v in VALID_SLOT_DURATIONS_MS {
             assert!((v as u64) < SlotDuration::BASELINE.as_ms());
         }
+    }
+
+    #[test]
+    fn next_slot_duration_is_the_exact_successor() {
+        // walks the full schedule one step at a time
+        assert_eq!(next_slot_duration_ms(400), Some(350));
+        assert_eq!(next_slot_duration_ms(350), Some(300));
+        assert_eq!(next_slot_duration_ms(300), Some(250));
+        assert_eq!(next_slot_duration_ms(250), Some(200));
+        // fully rolled out: nothing after 200
+        assert_eq!(next_slot_duration_ms(200), None);
+        // non-schedule values (incl the 0 unset sentinel) have no successor;
+        // `State::slot_duration()` resolves 0 to 400 before this is ever called
+        assert_eq!(next_slot_duration_ms(0), None);
+        assert_eq!(next_slot_duration_ms(375), None);
+        // every settable value is exactly one successor step, and skipping is
+        // unrepresentable (400 -> 300 is not the successor of 400)
+        assert_ne!(next_slot_duration_ms(400), Some(300));
     }
 
     #[test]

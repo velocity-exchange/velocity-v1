@@ -1480,7 +1480,10 @@ export class SpotFillerBot implements Bot {
 				slotsUntilJito <
 				msToSlotsNum(
 					JITO_LEADER_LEAD_MS,
-					currentSlotDuration(this.velocityClient)
+					currentSlotDuration(
+						this.velocityClient,
+						this.dlobSubscriber?.slotSource.getSlot() ?? 0
+					)
 				)
 			);
 		}

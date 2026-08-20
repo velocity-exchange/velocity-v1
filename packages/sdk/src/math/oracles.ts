@@ -29,6 +29,7 @@ import {
 	SLOT_DURATION_BASELINE,
 	millisFromStoredUnits,
 	millisToSlots,
+	millisToSlotsCeil,
 } from './time';
 
 /**
@@ -116,6 +117,10 @@ export function getOracleValidity(
 	slotDuration: SlotDurationMs = SLOT_DURATION_BASELINE
 ): OracleValidity {
 	const slots = (m: Millis) => millisToSlots(m, slotDuration);
+	// Ceil variant for the unset MM-sourced immediate threshold, matching the
+	// crank write gate (which ceils MM_ORACLE_MIN_WRITE_GAP); flooring would sit a
+	// slot below the write gate at intermediate slot durations.
+	const slotsCeil = (m: Millis) => millisToSlotsCeil(m, slotDuration);
 	const isNonPositive = oraclePriceData.price.lte(ZERO);
 	const isTooVolatile = BN.max(
 		oraclePriceData.price,
@@ -152,7 +157,7 @@ export function getOracleValidity(
 	let isStaleForAmmImmediate = true;
 	if (market.oracleSlotDelayOverride < 0) {
 		isStaleForAmmImmediate = oracleDelay.gt(
-			isMmSourcedPrice ? slots(MM_ORACLE_MIN_WRITE_GAP) : ZERO
+			isMmSourcedPrice ? slotsCeil(MM_ORACLE_MIN_WRITE_GAP) : ZERO
 		);
 	} else if (market.oracleSlotDelayOverride != 0) {
 		isStaleForAmmImmediate = oracleDelay.gt(
@@ -222,6 +227,7 @@ export function getOracleValidity(
  * @param oraclePriceData Oracle reading to validate (`price`/`confidence` PRICE_PRECISION 1e6).
  * @param oracleGuardRails Protocol-wide validity thresholds.
  * @param slot Current slot, used to compute oracle staleness.
+ * @param slotDuration Current slot duration (`slotDurationFromState(state.slotDurationMs)`); staleness windows convert to actual slots through it.
  * @returns `true` if the oracle is valid for an AMM-only fill.
  */
 export function isOracleValid(
@@ -558,6 +564,7 @@ export function getSpotMaxConfidenceIntervalMultiplier(
  * @param oracleGuardRails Protocol-wide validity thresholds (`state.oracleGuardRails`).
  * @param slot Current slot, used to compute oracle delay.
  * @param oracleStalenessBuffer Extra slots subtracted from the raw oracle delay (default 5).
+ * @param slotDuration Current slot duration (`slotDurationFromState(state.slotDurationMs)`); staleness windows convert to actual slots through it.
  * @returns The most severe `MarginCalc`-relevant `OracleValidity` that applies.
  */
 export function getSpotOracleValidity(

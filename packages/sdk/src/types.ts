@@ -1108,12 +1108,28 @@ export type StateAccount = {
 	/**
 	 * current Solana slot duration in ms, admin-set as the IBRL feature gates
 	 * activate (400 -> 350 -> 300 -> 250 -> 200). 0 = unset (pre-upgrade
-	 * padding), meaning the 400ms baseline; resolve with
-	 * `slotDurationFromState` from `math/time.ts`. Wall-clock durations
-	 * (`Millis`) are expressed in actual slots through this value via
+	 * padding), meaning the 400ms baseline. Do not read directly: the live value
+	 * may be the staged `pendingSlotDurationMs` once the chain reaches
+	 * `slotDurationEffectiveSlot` — resolve with `activeSlotDurationFromState`
+	 * (or `slotDurationFromState` for the base) from `math/time.ts`. Wall-clock
+	 * durations (`Millis`) are expressed in actual slots through this value via
 	 * `millisToSlots`/`millisFromSlots`.
 	 */
 	slotDurationMs: number;
+	/**
+	 * staged next slot duration in ms, set during the target gate's one-epoch
+	 * warmup. 0 = nothing staged. Once the chain slot reaches
+	 * `slotDurationEffectiveSlot`, this is the live value (see
+	 * `activeSlotDurationFromState`).
+	 */
+	pendingSlotDurationMs: number;
+	/** explicit alignment padding (2 bytes) before `slotDurationEffectiveSlot` */
+	slotDurationPad: number[];
+	/**
+	 * slot at which `pendingSlotDurationMs` takes effect (target gate activation
+	 * slot + one-epoch warmup). 0 when nothing is staged.
+	 */
+	slotDurationEffectiveSlot: BN;
 };
 
 /** Decoded mirror of the on-chain `PerpMarket` zero-copy account. */

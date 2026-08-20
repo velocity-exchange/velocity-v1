@@ -1,8 +1,16 @@
 import { Command } from 'commander';
 import { PublicKey } from '@solana/web3.js';
+import {
+	getIbrlFeatureGate,
+	IBRL_FEATURE_WARMUP_SLOTS,
+} from '@velocity-exchange/sdk';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
-import { reportDispatch, sendOrPropose } from '../lib/squads';
+import {
+	reportDispatch,
+	resolveAdminAuthority,
+	sendOrPropose,
+} from '../lib/squads';
 
 export function registerExchange(parent: Command): void {
 	const ex = parent.command('exchange').description('Whole-protocol controls.');
@@ -37,23 +45,61 @@ export function registerExchange(parent: Command): void {
 		ex
 			.command('set-slot-duration-ms <ms>')
 			.description(
-				'Set State.slotDurationMs as each IBRL feature gate activates. Accepts only {350, 300, 250, 200} and only strictly below the current effective value (slots never slow down; 0 on chain reads as 400). Warm admin.'
+				"Stage the next slot duration during the target IBRL gate's one-epoch warmup. Accepts only the exact next value on the schedule (400 -> 350 -> 300 -> 250 -> 200); reads the switch slot from the gate feature account and State flips itself at the boundary in lockstep with the chain (no second tx). 0 on chain reads as 400. Warm admin."
 			)
 	).action(async (ms: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
 		const provider = buildProvider(opts);
 		const client = await buildAdminClient(opts);
 		try {
+			if (!/^\d+$/.test(ms.trim())) {
+				throw new Error(
+					`slot duration must be an integer number of ms, got "${ms}"`
+				);
+			}
+			const newMs = Number.parseInt(ms.trim(), 10);
+			const currentMs = client.getStateAccount().slotDurationMs || 400;
+			console.log(`slot duration ${currentMs}ms -> ${newMs}ms`);
+			// Preview the switch slot from the target IBRL gate account (the same
+			// account the program reads): activation slot + one-epoch warmup =
+			// effective slot at which State auto-switches.
+			const featureGate = getIbrlFeatureGate(newMs);
+			if (featureGate) {
+				const [acct, currentSlot] = await Promise.all([
+					provider.connection.getAccountInfo(featureGate),
+					provider.connection.getSlot(),
+				]);
+				if (acct && acct.data.length === 9 && acct.data[0] === 1) {
+					const activation = Number(acct.data.readBigUInt64LE(1));
+					const effective = activation + IBRL_FEATURE_WARMUP_SLOTS;
+					const status =
+						currentSlot >= effective
+							? 'already effective'
+							: `effective in ~${effective - currentSlot} slots`;
+					console.log(
+						`IBRL gate ${featureGate.toBase58()}: activation slot ${activation}, ` +
+							`effective slot ${effective} (current ${currentSlot}, ${status})`
+					);
+				} else {
+					console.log(
+						`IBRL gate ${featureGate.toBase58()} is not staged yet — the program will reject this until Anza activates it`
+					);
+				}
+			}
+			const multisigPda = opts.multisig
+				? new PublicKey(opts.multisig)
+				: undefined;
 			const ix = await client.getUpdateStateSlotDurationMsIx(
-				Number.parseInt(ms, 10)
+				newMs,
+				resolveAdminAuthority(provider, multisigPda)
 			);
 			const result = await sendOrPropose(
 				provider,
 				[ix],
-				opts.multisig ? new PublicKey(opts.multisig) : undefined,
+				multisigPda,
 				'velocity-admin exchange set-slot-duration-ms'
 			);
-			reportDispatch(`slot duration = ${ms}ms`, result);
+			reportDispatch(`slot duration = ${newMs}ms`, result);
 		} finally {
 			await client.unsubscribe();
 		}

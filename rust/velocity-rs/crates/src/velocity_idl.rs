@@ -5185,8 +5185,11 @@ pub mod types {
         pub hot_account_extension: Pubkey,
         pub promo_fee_tier: u8,
         pub slot_duration_ms: u16,
+        pub pending_slot_duration_ms: u16,
+        pub slot_duration_pad: [u8; 2],
+        pub slot_duration_effective_slot: u64,
         #[serde(skip)]
-        pub padding: Padding<244>,
+        pub padding: Padding<232>,
     }
     #[repr(C)]
     #[derive(
@@ -6528,8 +6531,11 @@ pub mod accounts {
         pub hot_account_extension: Pubkey,
         pub promo_fee_tier: u8,
         pub slot_duration_ms: u16,
+        pub pending_slot_duration_ms: u16,
+        pub slot_duration_pad: [u8; 2],
+        pub slot_duration_effective_slot: u64,
         #[serde(skip)]
-        pub padding: Padding<244>,
+        pub padding: Padding<232>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for State {

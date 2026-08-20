@@ -254,7 +254,7 @@ export class FloatingPerpMakerBot implements Bot {
 			(this.lastSlotMarketUpdated.get(marketIndex) ?? 0) +
 			msToSlotsNum(
 				MARKET_UPDATE_COOLDOWN_MS,
-				currentSlotDuration(this.velocityClient)
+				currentSlotDuration(this.velocityClient, this.slotSubscriber.getSlot())
 			);
 
 		if (nextUpdateSlot > currSlot) {
@@ -262,10 +262,23 @@ export class FloatingPerpMakerBot implements Bot {
 		}
 
 		const openOrders = this.agentState!.openOrders.get(marketIndex) || [];
-		const oracle =
-			this.velocityClient.getMMOracleDataForPerpMarket(marketIndex);
-		const vAsk = calculateAskPrice(marketAccount, oracle);
-		const vBid = calculateBidPrice(marketAccount, oracle);
+		const oracle = this.velocityClient.getMMOracleDataForPerpMarket(
+			marketIndex,
+			currSlot
+		);
+		const slotDuration = currentSlotDuration(this.velocityClient, currSlot);
+		const vAsk = calculateAskPrice(
+			marketAccount,
+			oracle,
+			new BN(currSlot),
+			slotDuration
+		);
+		const vBid = calculateBidPrice(
+			marketAccount,
+			oracle,
+			new BN(currSlot),
+			slotDuration
+		);
 
 		// cancel orders if not quoting both sides of the market
 		let placeNewOrders = openOrders.length === 0;

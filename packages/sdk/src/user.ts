@@ -131,7 +131,10 @@ import {
 	getSpotOracleValidity,
 	isOracleValidForMarginCalc,
 } from './math/oracles';
-import { slotDurationFromState } from './math/time';
+import {
+	activeSlotDurationFromState,
+	slotDurationFromState,
+} from './math/time';
 import { getPerpMarketTierNumber, getSpotMarketTierNumber } from './math/tiers';
 import { StrictOraclePrice } from './oracles/strictOraclePrice';
 
@@ -1995,7 +1998,10 @@ export class User {
 	public getPositionEstimatedExitPriceAndPnl(
 		position: PerpPosition,
 		amountToClose?: BN,
-		useAMMClose = false
+		useAMMClose = false,
+		// live chain slot: applies a staged slot-duration switch to the AMM-close
+		// spread-reserve smoothing and MM-oracle validity; omit for the baseline
+		slot?: number
 	): [BN, BN] {
 		const market = this.velocityClient.getPerpMarketAccountOrThrow(
 			position.marketIndex
@@ -2004,7 +2010,8 @@ export class User {
 		const entryPrice = calculateEntryPrice(position);
 
 		const oraclePriceData = this.getMMOracleDataForPerpMarket(
-			position.marketIndex
+			position.marketIndex,
+			slot
 		);
 
 		if (amountToClose) {
@@ -2022,10 +2029,22 @@ export class User {
 		let baseAssetValue: BN;
 
 		if (useAMMClose) {
+			const latestSlot = slot !== undefined ? new BN(slot) : undefined;
+			const slotDuration =
+				slot !== undefined
+					? activeSlotDurationFromState(
+							this.velocityClient.getStateAccount(),
+							new BN(slot)
+					  )
+					: undefined;
 			baseAssetValue = calculateBaseAssetValue(
 				market,
 				position,
-				oraclePriceData
+				oraclePriceData,
+				true,
+				false,
+				latestSlot,
+				slotDuration
 			);
 		} else {
 			baseAssetValue = calculateBaseAssetValueWithOracle(
@@ -2331,7 +2350,9 @@ export class User {
 	getFloorNetEquity(slot?: BN): FloorNetEquity {
 		const stateAccount = this.velocityClient.getStateAccount();
 		const oracleGuardRails = stateAccount.oracleGuardRails;
-		const slotDuration = slotDurationFromState(stateAccount.slotDurationMs);
+		const slotDuration = slot
+			? activeSlotDurationFromState(stateAccount, slot)
+			: slotDurationFromState(stateAccount.slotDurationMs);
 		const userAccount = this.getUserAccountOrThrow();
 
 		let value = ZERO;
@@ -2472,8 +2493,11 @@ export class User {
 	 * @returns Upper bound and provability, QUOTE_PRECISION.
 	 */
 	getTripNetEquity(slot?: BN): TripNetEquity {
-		const oracleGuardRails =
-			this.velocityClient.getStateAccount().oracleGuardRails;
+		const stateAccount = this.velocityClient.getStateAccount();
+		const oracleGuardRails = stateAccount.oracleGuardRails;
+		const slotDuration = slot
+			? activeSlotDurationFromState(stateAccount, slot)
+			: slotDurationFromState(stateAccount.slotDurationMs);
 		const userAccount = this.getUserAccountOrThrow();
 
 		const unprovable: TripNetEquity = {
@@ -2500,7 +2524,9 @@ export class User {
 							spotMarket,
 							oracleData,
 							oracleGuardRails,
-							slot
+							slot,
+							undefined,
+							slotDuration
 						)
 				  )
 				: true;
@@ -2571,7 +2597,9 @@ export class User {
 							quoteSpotMarket,
 							quoteOracleData,
 							oracleGuardRails,
-							slot
+							slot,
+							undefined,
+							slotDuration
 						)
 				  )
 				: true;
@@ -2601,7 +2629,15 @@ export class User {
 				settled ||
 				(slot
 					? isOracleValidForMarginCalc(
-							getOracleValidity(market, oracleData, oracleGuardRails, slot)
+							getOracleValidity(
+								market,
+								oracleData,
+								oracleGuardRails,
+								slot,
+								undefined,
+								undefined,
+								slotDuration
+							)
 					  )
 					: true);
 
@@ -4869,10 +4905,10 @@ export class User {
 	 * Determines whether the user can be marked idle (excluded from userMap
 	 * subscriptions by default, and skipped by most keeper crank passes) as of
 	 * `slot`. Requires: not already idle; inactive for the required window
-	 * since `lastActiveSlot` (~1 hour / 9,000 baseline units if equity is under
-	 * $1,000, otherwise ~1 week / 1,512,000 baseline units — thresholds are in
-	 * 400ms baseline units and the measured slot delta is deflated to match,
-	 * mirroring `validate_user_is_idle`); not currently being liquidated; and
+	 * since `lastActiveSlot` (~1 hour if equity is under $1,000, otherwise
+	 * ~1 week; thresholds are wall-clock and the measured slot delta is
+	 * converted to ms, mirroring `validate_user_is_idle`); not currently being
+	 * liquidated; and
 	 * no open perp positions, borrows, spot open orders, or open orders of any kind.
 	 * @param slot Current slot to evaluate inactivity against.
 	 * @param slotDuration Current slot duration (`slotDurationFromState(state.slotDurationMs)`).
@@ -5395,8 +5431,14 @@ export class User {
 		).sub(currentPerpPositionValueUSDC);
 	}
 
-	private getMMOracleDataForPerpMarket(marketIndex: number): MMOraclePriceData {
-		return this.velocityClient.getMMOracleDataForPerpMarket(marketIndex);
+	private getMMOracleDataForPerpMarket(
+		marketIndex: number,
+		currentSlot?: number
+	): MMOraclePriceData {
+		return this.velocityClient.getMMOracleDataForPerpMarket(
+			marketIndex,
+			currentSlot
+		);
 	}
 
 	private getOracleDataForPerpMarket(marketIndex: number): OraclePriceData {

@@ -1615,7 +1615,10 @@ export class SpotFillerMultithreaded {
 				slotsUntilJito <
 				msToSlotsNum(
 					JITO_LEADER_LEAD_MS,
-					currentSlotDuration(this.velocityClient)
+					currentSlotDuration(
+						this.velocityClient,
+						this.slotSubscriber.getSlot()
+					)
 				)
 			);
 		}

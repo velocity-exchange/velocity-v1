@@ -7,9 +7,10 @@ import morgan from 'morgan';
 import { Commitment, Connection, Keypair, PublicKey } from '@solana/web3.js';
 
 import {
+	BN,
 	DLOBNode,
 	DLOBSubscriber,
-	slotDurationFromState,
+	activeSlotDurationFromState,
 	VelocityClient,
 	VelocityEnv,
 	SlotSubscriber,
@@ -999,7 +1000,10 @@ const main = async (): Promise<void> => {
 				auctionParamsInput,
 				undefined,
 				apiVersion,
-				slotDurationFromState(velocityClient.getStateAccount().slotDurationMs)
+				activeSlotDurationFromState(
+					velocityClient.getStateAccount(),
+					new BN(dlobProvider.getSlot())
+				)
 			);
 
 			const result = await mapToMarketOrderParams(
@@ -1008,7 +1012,8 @@ const main = async (): Promise<void> => {
 				fetchFromRedis,
 				selectMostRecentBySlot,
 				redisFillQualityInfo,
-				apiVersion
+				apiVersion,
+				dlobProvider.getSlot()
 			);
 
 			if (!result.success) {

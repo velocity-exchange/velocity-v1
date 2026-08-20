@@ -3,7 +3,7 @@ import {
 	DLOBSubscriber,
 	DLOBSubscriptionConfig,
 	msToSlotsNum,
-	slotDurationFromState,
+	activeSlotDurationFromState,
 	VelocityEnv,
 	L2OrderBookGenerator,
 	MarketType,
@@ -153,7 +153,8 @@ export class DLOBSubscriberIO extends DLOBSubscriber {
 				if (this.indicativeQuotesRedisClient) {
 					const oraclePriceData = isVariant(marketArgs.marketType, 'perp')
 						? this.velocityClient.getMMOracleDataForPerpMarket(
-								marketArgs.marketIndex
+								marketArgs.marketIndex,
+								this.slotSource.getSlot()
 						  )
 						: this.velocityClient.getOracleDataForSpotMarket(
 								marketArgs.marketIndex
@@ -191,12 +192,14 @@ export class DLOBSubscriberIO extends DLOBSubscriber {
 							perpMarketAccount.amm,
 							perpMarketAccount.marketStats,
 							this.velocityClient.getMMOracleDataForPerpMarket(
-								marketArgs.marketIndex
+								marketArgs.marketIndex,
+								this.slotSource.getSlot()
 							),
 							true,
 							new BN(this.slotSource.getSlot()),
-							slotDurationFromState(
-								this.velocityClient.getStateAccount().slotDurationMs
+							activeSlotDurationFromState(
+								this.velocityClient.getStateAccount(),
+								new BN(this.slotSource.getSlot())
 							)
 						);
 
@@ -354,7 +357,8 @@ export class DLOBSubscriberIO extends DLOBSubscriber {
 		const oracleData =
 			marketType === 'perp'
 				? this.velocityClient.getMMOracleDataForPerpMarket(
-						marketArgs.marketIndex
+						marketArgs.marketIndex,
+						this.slotSource.getSlot()
 				  )
 				: this.velocityClient.getOracleDataForSpotMarket(
 						marketArgs.marketIndex
@@ -372,8 +376,9 @@ export class DLOBSubscriberIO extends DLOBSubscriber {
 			dlobSlot - oracleSlot.toNumber() >
 				msToSlotsNum(
 					STALE_ORACLE_REMOVE_VAMM_THRESHOLD_MS,
-					slotDurationFromState(
-						this.velocityClient.getStateAccount().slotDurationMs
+					activeSlotDurationFromState(
+						this.velocityClient.getStateAccount(),
+						new BN(dlobSlot)
 					)
 				) &&
 			!isPerpMarketAndPrelaunchMarket

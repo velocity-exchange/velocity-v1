@@ -119,7 +119,7 @@ export class UserIdleFlipperBot implements Bot {
 				if (
 					user.canMakeIdle(
 						new BN(currentSlot),
-						currentSlotDuration(this.velocityClient)
+						currentSlotDuration(this.velocityClient, currentSlot)
 					)
 				) {
 					usersToIdle.push([

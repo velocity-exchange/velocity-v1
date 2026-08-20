@@ -112,13 +112,28 @@ pub struct State {
     /// get slower again), and only to values in
     /// `math::time::VALID_SLOT_DURATIONS_MS`.
     pub slot_duration_ms: u16,
-    /// 244 = 236 remaining former padding + 8 bytes that were previously
-    /// *implicit* trailing padding on x86_64 (State contains a u128, so the
-    /// struct rounds up to align 16 on the host but only 8 on SBF; explicit
-    /// padding makes `size_of::<State>()` 1744 on both targets, per the
-    /// alignment invariant in docs/alignment-and-native-offsets.md). Those 8
-    /// bytes have always existed zeroed inside the 1752-byte account.
-    pub padding: [u8; 244],
+    /// Staged next slot duration in ms, set by the admin during the target IBRL
+    /// gate's one-epoch warmup. `0` means nothing is staged. Once
+    /// `slot_duration_effective_slot` is reached, [`State::slot_duration`] returns
+    /// this value instead of `slot_duration_ms`, so State switches in lockstep
+    /// with the chain at the exact boundary without a second admin transaction.
+    /// Staging the next gate first promotes this into `slot_duration_ms`.
+    pub pending_slot_duration_ms: u16,
+    /// Explicit padding so `slot_duration_effective_slot` (u64) lands on its
+    /// 8-byte alignment with no *implicit* padding (see the alignment invariant).
+    pub slot_duration_pad: [u8; 2],
+    /// Slot at which `pending_slot_duration_ms` takes effect: the target gate's
+    /// activation slot + the one-epoch (432,000-slot) warmup, read from the IBRL
+    /// feature account when the switch is staged. `0` when nothing is staged.
+    pub slot_duration_effective_slot: u64,
+    /// 232 = the former 244-byte padding minus the 12 bytes taken above
+    /// (`pending_slot_duration_ms` 2 + `slot_duration_pad` 2 + the 8-byte
+    /// `slot_duration_effective_slot`). The padding still absorbs the 8 bytes that
+    /// were previously *implicit* trailing padding on x86_64 (State contains a
+    /// u128, align 16 on the host but 8 on SBF; explicit padding keeps
+    /// `size_of::<State>()` 1744 on both targets, per the alignment invariant in
+    /// docs/alignment-and-native-offsets.md).
+    pub padding: [u8; 232],
 }
 
 /// Purpose-specific hot role keys held on `State`. Each variant maps to one of the
@@ -222,16 +237,83 @@ impl Default for State {
             solvency_status: 0,
             promo_fee_tier: 0,
             slot_duration_ms: 0,
-            padding: [0; 244],
+            pending_slot_duration_ms: 0,
+            slot_duration_pad: [0; 2],
+            slot_duration_effective_slot: 0,
+            padding: [0; 232],
         }
     }
 }
 
 impl State {
-    /// The live slot length, with the `0` (pre-upgrade / unset) sentinel
-    /// resolved to the 400ms baseline.
+    /// The live slot length, applying a staged switch once its effective slot has
+    /// passed. Reads the current slot from the Clock sysvar so every existing
+    /// caller keeps its signature; if the sysvar is unavailable (unit tests) it
+    /// falls back to the pre-switch base value. The `0` (pre-upgrade / unset)
+    /// sentinel resolves to the 400ms baseline.
     pub fn slot_duration(&self) -> SlotDuration {
-        SlotDuration::from_state_ms(self.slot_duration_ms)
+        let now_slot = Clock::get().map(|c| c.slot).unwrap_or(0);
+        SlotDuration::from_state_ms(self.active_slot_duration_ms(now_slot))
+    }
+
+    /// The raw `slot_duration_ms` in effect at `now_slot`: the staged
+    /// `pending_slot_duration_ms` once `slot_duration_effective_slot` has been
+    /// reached, otherwise the current base value. `now_slot == 0` (no clock)
+    /// yields the base, so pre-switch is the safe default. Shared by
+    /// [`State::slot_duration`] and the native fast-path reader.
+    pub fn active_slot_duration_ms(&self, now_slot: u64) -> u16 {
+        crate::math::time::active_slot_duration_ms(
+            self.slot_duration_ms,
+            self.pending_slot_duration_ms,
+            self.slot_duration_effective_slot,
+            now_slot,
+        )
+    }
+
+    /// Read the live slot duration from a foreign, unchecked `State` account, for
+    /// programs (e.g. `vaults`) that hold velocity's State as a bare `AccountInfo`
+    /// and cannot use `AccountLoader` — its `try_from` requires a `&'info`
+    /// borrow that an `#[derive(Accounts)]` struct field cannot provide. Validates
+    /// the velocity-program owner and the `State` discriminator (together unique
+    /// to the singleton State), then reads the staging fields by offset and
+    /// applies any switch effective at `now_slot` via the shared helper. Offsets
+    /// come from `offset_of!` so they cannot drift from the layout.
+    pub fn slot_duration_from_account_info(
+        account: &AccountInfo,
+        now_slot: u64,
+    ) -> Result<SlotDuration> {
+        // velocity's ErrorCode (the `validate!` macro binds `ErrorCode`
+        // unqualified; the anchor prelude otherwise shadows it here)
+        use crate::error::ErrorCode;
+        crate::validate!(
+            account.owner == &crate::id(),
+            ErrorCode::DefaultError,
+            "State account not owned by the velocity program"
+        )?;
+        let data = account.try_borrow_data()?;
+        crate::validate!(
+            data.starts_with(&State::DISCRIMINATOR),
+            ErrorCode::DefaultError,
+            "account is not a velocity State account"
+        )?;
+        const DISC: usize = 8;
+        let base_off = DISC + std::mem::offset_of!(State, slot_duration_ms);
+        let pending_off = DISC + std::mem::offset_of!(State, pending_slot_duration_ms);
+        let eff_off = DISC + std::mem::offset_of!(State, slot_duration_effective_slot);
+        // one bounds check covers every field read below
+        crate::validate!(
+            data.len() >= eff_off + 8,
+            ErrorCode::DefaultError,
+            "velocity State account data too short"
+        )?;
+        let base = u16::from_le_bytes([data[base_off], data[base_off + 1]]);
+        let pending = u16::from_le_bytes([data[pending_off], data[pending_off + 1]]);
+        let mut eff = [0u8; 8];
+        eff.copy_from_slice(&data[eff_off..eff_off + 8]);
+        let effective = u64::from_le_bytes(eff);
+        Ok(SlotDuration::from_state_ms(
+            crate::math::time::active_slot_duration_ms(base, pending, effective, now_slot),
+        ))
     }
 
     /// `min_perp_auction_duration` as a wall-clock duration (stored in legacy
@@ -482,19 +564,27 @@ impl Size for State {
     // the padding); protocol_fee_recipient_spot later took 32 B back out; solvency_status
     // took 1 B out of the padding; hot_account_extension took another 32 B out;
     // slot_duration_ms took 2 B out (promo_fee_tier ends at an odd offset, so the u16
-    // starts at the even byte right after it — no implicit padding, pinned below), and
-    // the padding absorbed the 8 formerly-implicit trailing bytes (see the field doc)
-    // so sizeof is target-independent.
+    // starts at the even byte right after it — no implicit padding, pinned below); the
+    // staging fields (pending_slot_duration_ms[2] + slot_duration_pad[2] +
+    // slot_duration_effective_slot[8]) took another 12 B out; and the padding absorbed
+    // the 8 formerly-implicit trailing bytes (see the field doc) so sizeof is
+    // target-independent.
     // SIZE stays constant and (SIZE - 8) % 16 == 0 holds (1744).
     const SIZE: usize = 1752;
 }
 
 // `slot_duration_ms` must start exactly where the old padding began (byte 1498
 // of the struct, an even offset), so pre-upgrade accounts read `0` (= 400ms
-// baseline) out of former padding and no implicit alignment padding was
-// introduced. The size assert holds on both x86_64 (u128 align 16) and SBF
-// (u128 align 8) because all padding is explicit.
+// baseline) out of former padding. The staging fields follow it with explicit
+// padding so `slot_duration_effective_slot` (u64) lands 8-aligned at 1504 with no
+// implicit alignment padding. The size assert holds on both x86_64 (u128 align
+// 16) and SBF (u128 align 8) because all padding is explicit.
 static_assertions::const_assert_eq!(std::mem::offset_of!(State, slot_duration_ms), 1498);
+static_assertions::const_assert_eq!(std::mem::offset_of!(State, pending_slot_duration_ms), 1500);
+static_assertions::const_assert_eq!(
+    std::mem::offset_of!(State, slot_duration_effective_slot),
+    1504
+);
 static_assertions::const_assert_eq!(std::mem::size_of::<State>(), 1744);
 
 #[derive(Copy, AnchorSerialize, AnchorDeserialize, Clone, Debug)]
@@ -509,8 +599,8 @@ impl Default for OracleGuardRails {
         OracleGuardRails {
             price_divergence: PriceDivergenceGuardRails::default(),
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,       // ~5 seconds
-                slots_before_stale_for_margin: 120,   // ~60 seconds
+                slots_before_stale_for_amm: 10,       // 4s at the 400ms baseline
+                slots_before_stale_for_margin: 120,   // 48s at the 400ms baseline
                 confidence_interval_max_size: 20_000, // 2% of price
                 too_volatile_ratio: 5,                // 5x or 80% down
             },

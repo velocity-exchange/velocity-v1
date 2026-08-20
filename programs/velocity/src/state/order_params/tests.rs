@@ -66,6 +66,41 @@ mod get_auction_duration {
         .unwrap();
         assert_eq!(duration, 120);
     }
+
+    #[test]
+    fn scales_wall_clock_across_gates_and_clamps_u8() {
+        use crate::math::time::SlotDuration;
+        let price = 100 * PRICE_PRECISION_U64;
+        let tier = ContractTier::C;
+
+        // a 2%-diff auction is 48s at tier C (120 steps x 400ms); the actual-slot
+        // count grows as slots shorten (ceil) but the wall-clock stays constant
+        let diff = 2 * PRICE_PRECISION_U64;
+        let dur = |ms: u16| {
+            get_auction_duration(diff, price, tier, SlotDuration::from_state_ms(ms)).unwrap()
+        };
+        assert_eq!(
+            get_auction_duration(diff, price, tier, SlotDuration::BASELINE).unwrap(),
+            120
+        );
+        assert_eq!(dur(350), 138); // ceil(48000 / 350)
+        assert_eq!(dur(300), 160);
+        assert_eq!(dur(250), 192);
+        assert_eq!(dur(200), 240);
+
+        // the 180-step (72s) maximum inflates past the u8 ceiling at the fastest
+        // gates and clamps to 255 (~51s), the one documented wall-clock compression
+        let max_diff = 3 * PRICE_PRECISION_U64;
+        let max_dur = |ms: u16| {
+            get_auction_duration(max_diff, price, tier, SlotDuration::from_state_ms(ms)).unwrap()
+        };
+        assert_eq!(
+            get_auction_duration(max_diff, price, tier, SlotDuration::BASELINE).unwrap(),
+            180
+        );
+        assert_eq!(max_dur(250), 255); // ceil(72000 / 250) = 288, clamped
+        assert_eq!(max_dur(200), 255); // 360, clamped
+    }
 }
 
 mod update_perp_auction_params {

@@ -42,7 +42,7 @@ pub fn manager_update_borrow<'info>(
         perp_market_map,
         spot_market_map,
         mut oracle_map,
-    } = ctx.load_maps(clock.slot, None, vp.is_some(), has_fee_update)?;
+    } = ctx.load_maps(clock.slot, None, vp.is_some(), has_fee_update, None)?;
 
     let user = ctx.accounts.velocity_user.load()?;
 

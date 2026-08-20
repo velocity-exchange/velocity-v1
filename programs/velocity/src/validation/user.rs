@@ -84,8 +84,8 @@ pub fn validate_user_is_idle(
     accelerated: bool,
     slot_duration: SlotDuration,
 ) -> VelocityResult {
-    // thresholds are in 400ms baseline units; deflate the measured slot delta
-    // to the same units so the wall-clock windows hold at any slot duration
+    // thresholds are wall-clock; convert the measured slot delta to ms so the
+    // windows hold at any slot duration
     let time_since_last_active =
         Millis::from_slots(slot.saturating_sub(user.last_active_slot), slot_duration);
 

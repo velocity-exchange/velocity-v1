@@ -165,7 +165,10 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         solvency_status: SolvencyStatus::active(),
         promo_fee_tier: 0,
         slot_duration_ms: 0,
-        padding: [0; 244],
+        pending_slot_duration_ms: 0,
+        slot_duration_pad: [0; 2],
+        slot_duration_effective_slot: 0,
+        padding: [0; 232],
     };
 
     Ok(())
@@ -2631,23 +2634,32 @@ pub fn handle_update_liquidation_margin_buffer_ratio(
     Ok(())
 }
 
-/// Sane ceiling (in 400ms baseline units) on the oracle staleness windows.
+/// Sane ceiling (in 400ms baseline units) on the margin oracle staleness window.
 /// ~4.6 days of tolerance, absurd as a real config but far below the point
 /// where `Millis::from_stored_units` would saturate; keeps a fat-fingered
 /// value from turning the staleness gate into a global never-stale.
 const MAX_STALENESS_STORED_UNITS: i64 = 1_000_000;
+
+/// Tighter ceiling on the *AMM* staleness window: `get_oracle_status` routes it
+/// through `oracle_validity`'s `i8` slot-delay override (it doubles as the AMM's
+/// immediate/low-risk delay override), so a value above `i8::MAX` would pass this
+/// setter but then `CastingFailure` in every funding path that calls
+/// `get_oracle_status`. `i8::MAX` units is ~50s at the 400ms baseline, far above
+/// any real AMM freshness window (default 10).
+const MAX_AMM_STALENESS_STORED_UNITS: i64 = i8::MAX as i64;
 
 pub fn handle_update_oracle_guard_rails(
     ctx: Context<AdminUpdateState>,
     oracle_guard_rails: OracleGuardRails,
 ) -> Result<()> {
     validate!(
-        (0..=MAX_STALENESS_STORED_UNITS)
+        (0..=MAX_AMM_STALENESS_STORED_UNITS)
             .contains(&oracle_guard_rails.validity.slots_before_stale_for_amm)
             && (0..=MAX_STALENESS_STORED_UNITS)
                 .contains(&oracle_guard_rails.validity.slots_before_stale_for_margin),
         ErrorCode::DefaultError,
-        "oracle staleness windows out of range [0, {}]",
+        "oracle staleness windows out of range: amm [0, {}], margin [0, {}]",
+        MAX_AMM_STALENESS_STORED_UNITS,
         MAX_STALENESS_STORED_UNITS
     )?;
 
@@ -2675,36 +2687,124 @@ pub fn handle_update_state_settlement_duration(
     Ok(())
 }
 
+/// Solana's feature-gate program; every feature account is owned by it.
+const FEATURE_GATE_PROGRAM: Pubkey = pubkey!("Feature111111111111111111111111111111111111");
+/// A staged feature only takes effect one epoch after it is stamped.
+const FEATURE_WARMUP_SLOTS: u64 = 432_000;
+
+/// The IBRL feature gate whose activation drops the slot to `slot_duration_ms`.
+/// `None` for the 400ms baseline (no gate) or any non-schedule value.
+fn ibrl_feature_gate(slot_duration_ms: u16) -> Option<Pubkey> {
+    Some(match slot_duration_ms {
+        350 => pubkey!("iBRL5RuWhw4yqaAZu96RUULHckHTZAoe2b77qaV38JZ"),
+        300 => pubkey!("iBRLL3k18HST852F1Mf3Lv83waTNQmmqvKDxvYGwQFL"),
+        250 => pubkey!("iBRLMc81UjRa8fn8A6eE8bJTnRbgQoPTynM51akENCV"),
+        200 => pubkey!("iBRLjhJnkmDZgNoZRDMW11d8ZV7HvsL3vAyRjZB5npW"),
+        _ => return None,
+    })
+}
+
+/// Verify `expected` is the staged IBRL feature gate and return the slot at which
+/// its slot-time reduction becomes effective (activation slot + one-epoch warmup).
+/// Mirrors the feature-gate account layout: owned by Feature111…, 9 bytes,
+/// `data[0] == 1` with the activation slot in little-endian `data[1..9]`. Errors
+/// if the account is the wrong key, not owned by the feature program, not staged,
+/// or malformed. It does NOT require the warmup to have elapsed: staging the
+/// switch during the warmup (so State flips at the boundary in lockstep with the
+/// chain) is the point.
+fn feature_gate_effective_slot(account: &AccountInfo, expected: &Pubkey) -> Result<u64> {
+    validate!(
+        account.key == expected,
+        ErrorCode::DefaultError,
+        "wrong feature-gate account: expected {}, got {}",
+        expected,
+        account.key
+    )?;
+    validate!(
+        account.owner == &FEATURE_GATE_PROGRAM,
+        ErrorCode::DefaultError,
+        "feature-gate account not owned by the feature program"
+    )?;
+    let data = account.try_borrow_data()?;
+    validate!(
+        data.len() == 9,
+        ErrorCode::DefaultError,
+        "feature-gate account has the wrong data length"
+    )?;
+    // 0 = not staged yet (Anza has not activated it); anything else = malformed.
+    validate!(
+        data[0] == 1,
+        ErrorCode::DefaultError,
+        "IBRL feature gate {} is not staged yet (data[0] = {})",
+        expected,
+        data[0]
+    )?;
+    let activated_at = u64::from_le_bytes(data[1..9].try_into().unwrap());
+    Ok(activated_at.saturating_add(FEATURE_WARMUP_SLOTS))
+}
+
 pub fn handle_update_state_slot_duration_ms(
     ctx: Context<AdminUpdateState>,
     slot_duration_ms: u16,
 ) -> Result<()> {
-    let current = ctx.accounts.state.load()?.slot_duration().as_ms();
+    let now_slot = Clock::get()?.slot;
+    let feature_account = ctx
+        .remaining_accounts
+        .first()
+        .ok_or(ErrorCode::DefaultError)?;
 
-    // Only values matching a real IBRL feature gate, so a typo can't set an
-    // arbitrary duration.
+    let mut state = ctx.accounts.state.load_mut()?;
+
+    // Promote an already-effective staged switch into the base value first, so
+    // staging the next gate does not clobber an unconsumed one and the
+    // exact-successor check below sees the true current duration.
+    if state.pending_slot_duration_ms != 0 && now_slot >= state.slot_duration_effective_slot {
+        state.slot_duration_ms = state.pending_slot_duration_ms;
+        state.pending_slot_duration_ms = 0;
+        state.slot_duration_effective_slot = 0;
+    }
+
+    // Refuse to stage over a switch that has not taken effect yet: one pending
+    // step at a time keeps each in-flight measurement crossing at most one gate.
     validate!(
-        crate::math::time::VALID_SLOT_DURATIONS_MS.contains(&slot_duration_ms),
+        state.pending_slot_duration_ms == 0,
         ErrorCode::DefaultError,
-        "slot_duration_ms {} is not one of the feature-gate values {:?}",
-        slot_duration_ms,
-        crate::math::time::VALID_SLOT_DURATIONS_MS
+        "a staged slot-duration switch to {}ms is not yet effective (at slot {})",
+        state.pending_slot_duration_ms,
+        state.slot_duration_effective_slot
     )?;
 
-    // Monotonic decreasing: feature gates cannot deactivate, so slots never
-    // get slower. This makes an accidental flip back to a larger duration
-    // (which would silently shrink every wall-clock window) unrepresentable.
+    // May only step to the immediately smaller value on the gate schedule
+    // (400 -> 350 -> 300 -> 250 -> 200). One check enforces monotonic-decrease
+    // (slots never slow down), rejects skips (each in-flight measurement crosses
+    // at most one step), and rejects non-schedule typos.
+    let current = SlotDuration::from_state_ms(state.slot_duration_ms).as_ms();
+    let expected_next = crate::math::time::next_slot_duration_ms(current);
     validate!(
-        (slot_duration_ms as u64) < current,
+        expected_next == Some(slot_duration_ms),
         ErrorCode::DefaultError,
-        "slot_duration_ms may only decrease: {} -> {}",
+        "slot_duration_ms must step {} -> {:?}, got {}",
         current,
+        expected_next,
         slot_duration_ms
     )?;
 
-    msg!("slot_duration_ms: {} -> {}", current, slot_duration_ms);
+    // Read the switch slot from the matching IBRL feature gate (activation +
+    // warmup). Staged during the warmup, State then flips itself at exactly that
+    // slot, in lockstep with the chain — no second transaction, and no window
+    // where State and the chain disagree. Not a hot path, so the read is fine.
+    let feature_gate = ibrl_feature_gate(slot_duration_ms).ok_or(ErrorCode::DefaultError)?;
+    let effective_slot = feature_gate_effective_slot(feature_account, &feature_gate)?;
 
-    ctx.accounts.state.load_mut()?.slot_duration_ms = slot_duration_ms;
+    msg!(
+        "slot_duration_ms: staging {} -> {} effective at slot {}",
+        current,
+        slot_duration_ms,
+        effective_slot
+    );
+
+    state.pending_slot_duration_ms = slot_duration_ms;
+    state.slot_duration_effective_slot = effective_slot;
     Ok(())
 }
 
@@ -3671,17 +3771,44 @@ const STATE_HOT_MM_ORACLE_CRANK_OFFSET: usize = 360;
 /// account data. Same guard as above. The native MM-oracle handlers read it to
 /// scale the write-gap and source-age gates.
 const STATE_SLOT_DURATION_MS_OFFSET: usize = 1506;
+/// Byte offset of `State::pending_slot_duration_ms` (u16 LE): the staged next
+/// value (`slot_duration_ms` offset + 2).
+const STATE_PENDING_SLOT_DURATION_MS_OFFSET: usize = 1508;
+/// Byte offset of `State::slot_duration_effective_slot` (u64 LE): the slot the
+/// staged switch takes effect at (8-aligned, 4 bytes after the pending u16).
+const STATE_SLOT_DURATION_EFFECTIVE_SLOT_OFFSET: usize = 1512;
 
-/// Read `State::slot_duration_ms` from a raw (already discriminator-checked)
-/// state account, resolving the `0` sentinel to the 400ms baseline.
-fn read_native_state_slot_duration(state_account: &AccountInfo) -> Result<SlotDuration> {
+/// Read the live slot duration from a raw (already discriminator-checked) state
+/// account, applying a staged switch once `current_slot` has reached its
+/// effective slot (mirrors [`State::active_slot_duration_ms`]) and resolving the
+/// `0` sentinel to the 400ms baseline.
+fn read_native_state_slot_duration(
+    state_account: &AccountInfo,
+    current_slot: u64,
+) -> Result<SlotDuration> {
     let state = state_account.try_borrow_data()?;
-    let bytes: [u8; 2] = state
-        .get(STATE_SLOT_DURATION_MS_OFFSET..STATE_SLOT_DURATION_MS_OFFSET + 2)
+    let read_u16 = |off: usize| -> Result<u16> {
+        let bytes: [u8; 2] = state
+            .get(off..off + 2)
+            .ok_or(ErrorCode::InvalidNativeStateAccount)?
+            .try_into()
+            .map_err(|_| ErrorCode::InvalidNativeStateAccount)?;
+        Ok(u16::from_le_bytes(bytes))
+    };
+    let base = read_u16(STATE_SLOT_DURATION_MS_OFFSET)?;
+    let pending = read_u16(STATE_PENDING_SLOT_DURATION_MS_OFFSET)?;
+    let effective_bytes: [u8; 8] = state
+        .get(
+            STATE_SLOT_DURATION_EFFECTIVE_SLOT_OFFSET
+                ..STATE_SLOT_DURATION_EFFECTIVE_SLOT_OFFSET + 8,
+        )
         .ok_or(ErrorCode::InvalidNativeStateAccount)?
         .try_into()
         .map_err(|_| ErrorCode::InvalidNativeStateAccount)?;
-    Ok(SlotDuration::from_state_ms(u16::from_le_bytes(bytes)))
+    let effective_slot = u64::from_le_bytes(effective_bytes);
+    let raw =
+        crate::math::time::active_slot_duration_ms(base, pending, effective_slot, current_slot);
+    Ok(SlotDuration::from_state_ms(raw))
 }
 
 pub fn handle_update_mm_oracle_native(accounts: &[AccountInfo], data: &[u8]) -> Result<()> {
@@ -3777,7 +3904,7 @@ fn update_mm_oracle(accounts: &[AccountInfo], data: &[u8], current_slot: u64) ->
         incoming_price,
         incoming_sequence_id,
         source_slot,
-        read_native_state_slot_duration(&accounts[2])?,
+        read_native_state_slot_duration(&accounts[2], current_slot)?,
     )? {
         MmOracleUpdateOutcome::Written { price } => {
             if price != incoming_price {
@@ -4020,7 +4147,7 @@ fn update_mm_oracle_batch(
         State::DISCRIMINATOR,
         ErrorCode::InvalidNativeStateAccount,
     )?;
-    let slot_duration = read_native_state_slot_duration(state_account)?;
+    let slot_duration = read_native_state_slot_duration(state_account, current_slot)?;
 
     {
         let state = state_account.try_borrow_data()?;
@@ -6712,5 +6839,211 @@ mod reserved_quote_name_tests {
         let mut invalid = [b' '; 32];
         invalid[..5].copy_from_slice(&[0xff, b'U', b'S', b'D', b'T']);
         assert!(!name_is_reserved_quote(&invalid));
+    }
+}
+
+#[cfg(test)]
+mod feature_gate_tests {
+    //! The slot-duration setter stages a switch by reading the target IBRL gate's
+    //! effective slot from its feature account. These pin the account parse: right
+    //! key/owner/layout, the activation + warmup arithmetic, and every rejection
+    //! path (all must error, so a bad account can't stage a bogus switch).
+    use {
+        super::{
+            feature_gate_effective_slot, ibrl_feature_gate, read_native_state_slot_duration,
+            FEATURE_GATE_PROGRAM, FEATURE_WARMUP_SLOTS,
+        },
+        anchor_lang::prelude::*,
+    };
+
+    fn staged(slot: u64) -> [u8; 9] {
+        let mut d = [0u8; 9];
+        d[0] = 1;
+        d[1..9].copy_from_slice(&slot.to_le_bytes());
+        d
+    }
+
+    fn account<'a>(
+        key: &'a Pubkey,
+        owner: &'a Pubkey,
+        lamports: &'a mut u64,
+        data: &'a mut [u8],
+    ) -> AccountInfo<'a> {
+        AccountInfo::new(key, false, false, lamports, data, owner, false)
+    }
+
+    #[test]
+    fn gate_pubkeys_only_for_schedule_values() {
+        for ms in [350, 300, 250, 200] {
+            assert!(ibrl_feature_gate(ms).is_some());
+        }
+        // baseline, unset, and non-schedule values have no gate
+        for ms in [400, 0, 375] {
+            assert!(ibrl_feature_gate(ms).is_none());
+        }
+    }
+
+    #[test]
+    fn effective_slot_is_activation_plus_warmup() {
+        let key = ibrl_feature_gate(200).unwrap();
+        let owner = FEATURE_GATE_PROGRAM;
+        let mut lamports = 1u64;
+        let mut data = staged(1_000);
+        let acct = account(&key, &owner, &mut lamports, &mut data);
+        assert_eq!(
+            feature_gate_effective_slot(&acct, &key).unwrap(),
+            1_000 + FEATURE_WARMUP_SLOTS
+        );
+    }
+
+    #[test]
+    fn wrong_key_is_rejected() {
+        let key = ibrl_feature_gate(200).unwrap();
+        let expected = ibrl_feature_gate(350).unwrap();
+        let owner = FEATURE_GATE_PROGRAM;
+        let mut lamports = 1u64;
+        let mut data = staged(0);
+        let acct = account(&key, &owner, &mut lamports, &mut data);
+        // account for the 200 gate passed while staging the 350 gate
+        assert!(feature_gate_effective_slot(&acct, &expected).is_err());
+    }
+
+    #[test]
+    fn wrong_owner_is_rejected() {
+        let key = ibrl_feature_gate(200).unwrap();
+        let not_feature_program = Pubkey::new_unique();
+        let mut lamports = 1u64;
+        let mut data = staged(0);
+        let acct = account(&key, &not_feature_program, &mut lamports, &mut data);
+        assert!(feature_gate_effective_slot(&acct, &key).is_err());
+    }
+
+    #[test]
+    fn not_staged_is_rejected() {
+        let key = ibrl_feature_gate(200).unwrap();
+        let owner = FEATURE_GATE_PROGRAM;
+        let mut lamports = 1u64;
+        let mut data = [0u8; 9]; // data[0] == 0 => not staged by Anza yet
+        let acct = account(&key, &owner, &mut lamports, &mut data);
+        assert!(feature_gate_effective_slot(&acct, &key).is_err());
+    }
+
+    #[test]
+    fn malformed_flag_is_rejected() {
+        let key = ibrl_feature_gate(200).unwrap();
+        let owner = FEATURE_GATE_PROGRAM;
+        let mut lamports = 1u64;
+        let mut data = [2u8; 9]; // data[0] not in {0, 1}
+        let acct = account(&key, &owner, &mut lamports, &mut data);
+        assert!(feature_gate_effective_slot(&acct, &key).is_err());
+    }
+
+    #[test]
+    fn wrong_length_is_rejected() {
+        let key = ibrl_feature_gate(200).unwrap();
+        let owner = FEATURE_GATE_PROGRAM;
+        let mut lamports = 1u64;
+        let mut data = [1u8; 8]; // not the 9-byte feature layout
+        let acct = account(&key, &owner, &mut lamports, &mut data);
+        assert!(feature_gate_effective_slot(&acct, &key).is_err());
+    }
+
+    // Exercises `State::slot_duration_from_account_info` — the validated reader
+    // foreign programs (vaults) use to read velocity's live slot duration from a
+    // bare AccountInfo, since AccountLoader needs a `'info` borrow they lack.
+    #[test]
+    fn foreign_state_reader_validates_and_switches() {
+        use crate::state::state::State;
+        let key = Pubkey::new_unique();
+        let mut lamports = 1u64;
+        // 8-byte discriminator + zeroed State, with the staging fields written at
+        // their real offsets
+        let mut data = vec![0u8; 8 + std::mem::size_of::<State>()];
+        data[..8].copy_from_slice(&State::DISCRIMINATOR);
+        let put_u16 = |d: &mut [u8], off: usize, v: u16| {
+            d[8 + off..8 + off + 2].copy_from_slice(&v.to_le_bytes())
+        };
+        put_u16(
+            &mut data,
+            std::mem::offset_of!(State, slot_duration_ms),
+            350,
+        );
+        put_u16(
+            &mut data,
+            std::mem::offset_of!(State, pending_slot_duration_ms),
+            300,
+        );
+        let eff_off = 8 + std::mem::offset_of!(State, slot_duration_effective_slot);
+        data[eff_off..eff_off + 8].copy_from_slice(&1_000u64.to_le_bytes());
+
+        let velocity_id = crate::id();
+        {
+            let acct = account(&key, &velocity_id, &mut lamports, &mut data);
+            // before the effective slot: base 350; at/after: staged 300
+            assert_eq!(
+                State::slot_duration_from_account_info(&acct, 999)
+                    .unwrap()
+                    .as_ms(),
+                350
+            );
+            assert_eq!(
+                State::slot_duration_from_account_info(&acct, 1_000)
+                    .unwrap()
+                    .as_ms(),
+                300
+            );
+        }
+        // wrong owner is rejected
+        let not_velocity = Pubkey::new_unique();
+        {
+            let acct = account(&key, &not_velocity, &mut lamports, &mut data);
+            assert!(State::slot_duration_from_account_info(&acct, 0).is_err());
+        }
+        // wrong discriminator is rejected
+        data[0] ^= 0xff;
+        {
+            let acct = account(&key, &velocity_id, &mut lamports, &mut data);
+            assert!(State::slot_duration_from_account_info(&acct, 0).is_err());
+        }
+    }
+
+    // The native fast-path reader parses the slot-duration fields by raw byte
+    // offset; verify it decodes the staged switch (not merely that the offset
+    // constants match `offset_of!`, which the traits test covers).
+    #[test]
+    fn native_reader_switches_at_effective_slot() {
+        use crate::state::state::State;
+        let key = Pubkey::new_unique();
+        let owner = crate::id();
+        let mut lamports = 1u64;
+        let mut data = vec![0u8; 8 + std::mem::size_of::<State>()];
+        data[..8].copy_from_slice(&State::DISCRIMINATOR);
+        let put_u16 = |d: &mut [u8], off: usize, v: u16| {
+            d[8 + off..8 + off + 2].copy_from_slice(&v.to_le_bytes())
+        };
+        put_u16(
+            &mut data,
+            std::mem::offset_of!(State, slot_duration_ms),
+            350,
+        );
+        put_u16(
+            &mut data,
+            std::mem::offset_of!(State, pending_slot_duration_ms),
+            300,
+        );
+        let eff_off = 8 + std::mem::offset_of!(State, slot_duration_effective_slot);
+        data[eff_off..eff_off + 8].copy_from_slice(&1_000u64.to_le_bytes());
+        let acct = account(&key, &owner, &mut lamports, &mut data);
+        // before the effective slot: base 350; at/after: staged 300
+        assert_eq!(
+            read_native_state_slot_duration(&acct, 999).unwrap().as_ms(),
+            350
+        );
+        assert_eq!(
+            read_native_state_slot_duration(&acct, 1_000)
+                .unwrap()
+                .as_ms(),
+            300
+        );
     }
 }

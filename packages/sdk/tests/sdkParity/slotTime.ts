@@ -13,6 +13,7 @@ import {
 	millisToSlotsCeil,
 	divPeriods,
 	msToSlotsNum,
+	msToSlotsCeilNum,
 	slotsToMsNum,
 } from '../../src/math/time';
 
@@ -82,6 +83,15 @@ describe('slot-time helpers (program parity)', () => {
 		assert.equal(msToSlotsNum(4000, gate(200)), 20);
 		assert.equal(msToSlotsNum(4000, gate(350)), 11);
 		assert.equal(slotsToMsNum(20, gate(200)), 4000);
+	});
+
+	it('msToSlotsCeilNum rounds up (auction/pacing durations)', () => {
+		// floor would shorten these below the intended wall-clock time
+		assert.equal(msToSlotsCeilNum(4000, gate(350)), 12); // ceil(4000/350)=12 vs floor 11
+		assert.equal(msToSlotsCeilNum(8000, gate(350)), 23); // ceil(8000/350)=23 vs floor 22
+		// exact multiples: ceil == floor
+		assert.equal(msToSlotsCeilNum(4000, gate(200)), 20);
+		assert.equal(msToSlotsCeilNum(8000, gate(200)), 40);
 	});
 
 	it('millis constructors', () => {

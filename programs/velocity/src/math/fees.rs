@@ -374,13 +374,13 @@ fn calculate_filler_reward(
     // reward curve accrues per whole 400ms period of order age (its
     // historical calibration), so the time-based reward keeps its wall-clock
     // shape at any slot duration
-    let slots_since_order = max(
+    let periods_since_order = max(
         1,
         Millis::from_slots(clock_slot.safe_sub(order_slot)?, slot_duration)
             .div_periods(Millis::UNIT)
             .cast::<u128>()?,
     );
-    let time_filler_reward = slots_since_order
+    let time_filler_reward = periods_since_order
         .safe_mul(100_000_000)? // 1e8
         .nth_root(4)
         .safe_mul(min_time_filler_reward)?

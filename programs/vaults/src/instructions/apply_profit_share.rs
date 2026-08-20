@@ -59,6 +59,7 @@ pub fn apply_profit_share<'info>(ctx: Context<'info, ApplyProfitShare<'info>>) -
         Some(spot_market_index),
         vp.is_some(),
         has_fee_update,
+        Some(&ctx.accounts.velocity_state),
     )?;
 
     let vault_equity =

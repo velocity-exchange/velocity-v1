@@ -54,11 +54,39 @@ export const SLOT_DURATION_BASELINE = STORED_UNIT_MS as SlotDurationMs;
 export const MILLIS_UNIT = new BN(STORED_UNIT_MS) as Millis;
 
 /**
- * Resolve the raw `State.slotDurationMs` field: `0` is what pre-upgrade
+ * Resolve the raw `State.slotDurationMs` (base) field: `0` is what pre-upgrade
  * accounts read out of former padding and means "unset" (the 400ms baseline).
+ * This is the value *before* any staged switch — most callers want
+ * {@link activeSlotDurationFromState}, which also applies a staged flip.
  */
 export function slotDurationFromState(raw: number): SlotDurationMs {
 	return (raw === 0 ? STORED_UNIT_MS : raw) as SlotDurationMs;
+}
+
+/**
+ * The live slot duration at `currentSlot`, mirroring
+ * `State::active_slot_duration_ms`: the staged `pendingSlotDurationMs` once
+ * `currentSlot` reaches `slotDurationEffectiveSlot`, otherwise the base
+ * `slotDurationMs`. Use this wherever a prediction must match the on-chain value
+ * across a gate flip; `slotDurationFromState` alone would keep returning the
+ * pre-switch value.
+ */
+export function activeSlotDurationFromState(
+	state: {
+		slotDurationMs: number;
+		pendingSlotDurationMs?: number;
+		slotDurationEffectiveSlot?: BN;
+	},
+	currentSlot: BN
+): SlotDurationMs {
+	// Tolerate hand-built / older State objects that omit the staging fields:
+	// an absent pending field means nothing is staged, not `undefined !== 0`.
+	const pending = state.pendingSlotDurationMs ?? 0;
+	const effective = state.slotDurationEffectiveSlot;
+	if (pending !== 0 && effective !== undefined && currentSlot.gte(effective)) {
+		return slotDurationFromState(pending);
+	}
+	return slotDurationFromState(state.slotDurationMs);
 }
 
 export function millis(ms: number): Millis {
@@ -113,6 +141,15 @@ export function divPeriods(m: Millis, period: Millis): BN {
 /** `millisToSlots` for plain numbers (off-chain pacing/threshold code). */
 export function msToSlotsNum(ms: number, d: SlotDurationMs): number {
 	return Math.floor(ms / Math.max(1, d));
+}
+
+/**
+ * `millisToSlotsCeil` for plain numbers. Use for durations/intervals the value
+ * must not fall below (auction lengths, minimum pacing/cooldowns): flooring
+ * would shorten them below the intended wall-clock time.
+ */
+export function msToSlotsCeilNum(ms: number, d: SlotDurationMs): number {
+	return Math.ceil(ms / Math.max(1, d));
 }
 
 /** `millisFromSlots` for plain numbers (off-chain pacing/threshold code). */

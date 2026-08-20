@@ -129,7 +129,7 @@ const FILL_ORDER_THROTTLE_BACKOFF = 1000; // the time to wait before trying to f
 const DEFAULT_FILL_ATTEMPT_INTERVAL_MS = 2_000;
 
 // Validate `fillAttemptIntervalMs` config: only a finite, non-negative integer
-// is a meaningful slot count. Anything else (negative / fractional / NaN /
+// is a meaningful interval. Anything else (negative / fractional / NaN /
 // Infinity) would silently break the pacing comparison in executeFillablePerpNodes
 // (e.g. a negative or NaN interval disables pacing entirely), so fall back to the
 // default and surface a warning. Omitted (undefined) is not an error — it takes
@@ -1581,7 +1581,10 @@ export class FillerMultithreaded {
 				slotsUntilJito <
 				msToSlotsNum(
 					JITO_LEADER_LEAD_MS,
-					currentSlotDuration(this.velocityClient)
+					currentSlotDuration(
+						this.velocityClient,
+						this.slotSubscriber.getSlot()
+					)
 				)
 			);
 		}
@@ -1719,7 +1722,10 @@ export class FillerMultithreaded {
 							slot /
 								msToSlotsNum(
 									NO_CROSS_RESAMPLE_MS,
-									currentSlotDuration(this.velocityClient)
+									currentSlotDuration(
+										this.velocityClient,
+										this.slotSubscriber.getSlot()
+									)
 								)
 					  )}`
 					: '';
@@ -1874,9 +1880,11 @@ export class FillerMultithreaded {
 		}
 
 		const marketIndex = nodeToFill.node.order.marketIndex;
-		const mmOraclePriceData =
-			this.velocityClient.getMMOracleDataForPerpMarket(marketIndex);
 		const currentSlot = this.slotSubscriber.getSlot();
+		const mmOraclePriceData = this.velocityClient.getMMOracleDataForPerpMarket(
+			marketIndex,
+			currentSlot
+		);
 		// keep-rs reports the oracle's own `delay`; the TS filler's equivalent is
 		// how far the mm-oracle price it is about to gate on lags the current slot.
 		const oracleDelay = currentSlot - mmOraclePriceData.slot.toNumber();
@@ -1982,7 +1990,10 @@ export class FillerMultithreaded {
 				currentSlot - prior.lastAttemptSlot <
 					msToSlotsNum(
 						this.fillAttemptIntervalMs,
-						currentSlotDuration(this.velocityClient)
+						currentSlotDuration(
+							this.velocityClient,
+							this.slotSubscriber.getSlot()
+						)
 					)
 			) {
 				// Pace non-signed re-attempts to at most once per

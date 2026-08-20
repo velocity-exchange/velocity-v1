@@ -340,16 +340,7 @@ async fn update_dashboard_state(
         let age_slots = current_slot.saturating_sub(oracle_meta.last_updated_slot);
         let age_ms = now_ms.saturating_sub(oracle_meta.last_updated_timestamp_ms);
         let is_stale = age_slots
-            > MAX_ORACLE_AGE.to_slots(
-                velocity
-                    .state_account()
-                    .map(|s| {
-                        velocity_rs::program::math::time::SlotDuration::from_state_ms(
-                            s.slot_duration_ms,
-                        )
-                    })
-                    .unwrap_or(velocity_rs::program::math::time::SlotDuration::BASELINE),
-            );
+            > MAX_ORACLE_AGE.to_slots(crate::util::client_slot_duration(velocity, current_slot));
 
         oracle_price_infos.push(OraclePriceInfo {
             market_type: if market_id.is_perp() {
@@ -502,6 +493,10 @@ pub struct LiquidatorBot {
     // Map(Signature,(collateral, ts))
     tx_sig_to_collateral: Arc<DashMap<Signature, (u128, u64)>>,
     free_collateral_per_subaccount: Arc<DashMap<Pubkey, u128>>,
+    /// Live slot duration (ms) shared with the liquidation worker so its rate
+    /// limiter re-paces on a mid-run gate switch without a restart; updated by
+    /// the main loop whenever it refreshes its own `slot_duration`.
+    liquidation_slot_duration_ms: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl LiquidatorBot {
@@ -664,6 +659,13 @@ impl LiquidatorBot {
 
         // start liquidation worker
         let (liq_tx, liq_rx) = tokio::sync::mpsc::channel::<LiquidationRequest>(102400);
+        // Live slot duration shared with the worker; seeded from the real chain
+        // slot so a restart after a gate switch re-paces immediately, then kept
+        // current by the main loop (see `run`).
+        let startup_slot = velocity.get_slot().await.unwrap_or(0);
+        let liquidation_slot_duration_ms = Arc::new(std::sync::atomic::AtomicU64::new(
+            crate::util::client_slot_duration(&velocity, startup_slot).as_ms(),
+        ));
         spawn_liquidation_worker(
             tx_sender.clone(),
             Arc::new(PrimaryLiquidationStrategy {
@@ -681,14 +683,7 @@ impl LiquidatorBot {
             cu_limit,
             Arc::clone(&priority_fee_subscriber),
             Arc::clone(&metrics),
-            velocity
-                .state_account()
-                .map(|s| {
-                    velocity_rs::program::math::time::SlotDuration::from_state_ms(
-                        s.slot_duration_ms,
-                    )
-                })
-                .unwrap_or(velocity_rs::program::math::time::SlotDuration::BASELINE),
+            Arc::clone(&liquidation_slot_duration_ms),
         );
 
         log::info!(target: TARGET, "spawned liquidation worker");
@@ -735,6 +730,7 @@ impl LiquidatorBot {
             txs_in_flight,
             tx_sig_to_collateral,
             free_collateral_per_subaccount,
+            liquidation_slot_duration_ms,
         }
     }
 
@@ -751,12 +747,15 @@ impl LiquidatorBot {
             .state_account()
             .map(|x| x.liquidation_margin_buffer_ratio)
             .expect("State has liquidation_margin_buffer_ratio");
-        let slot_duration = velocity
-            .state_account()
-            .map(|s| {
-                velocity_rs::program::math::time::SlotDuration::from_state_ms(s.slot_duration_ms)
-            })
-            .unwrap_or(velocity_rs::program::math::time::SlotDuration::BASELINE);
+        // refreshed on the collateral-refresh cadence below, so a mid-run slot
+        // duration flip is picked up without a bot restart
+        // seed with the real chain slot so a restart after a gate switch
+        // reflects it immediately, not only after the first refresh below
+        let startup_slot = velocity.get_slot().await.unwrap_or(0);
+        let mut slot_duration = crate::util::client_slot_duration(velocity, startup_slot);
+        // keep the worker's rate limiter in sync with the resolved duration
+        self.liquidation_slot_duration_ms
+            .store(slot_duration.as_ms(), std::sync::atomic::Ordering::Relaxed);
 
         const RECHECK_CYCLE_INTERVAL: u32 = 1024;
         /// Max wall-clock time between full user sweeps; the cycle-count trigger
@@ -907,6 +906,13 @@ impl LiquidatorBot {
                             >= COLLATERAL_REFRESH_INTERVAL_MS
                         {
                             last_collateral_refresh_ms = now_ms;
+
+                            // Pick up a mid-run slot-duration flip
+                            slot_duration =
+                                crate::util::client_slot_duration(velocity, update_slot);
+                            // re-pace the worker's rate limiter on the flip
+                            self.liquidation_slot_duration_ms
+                                .store(slot_duration.as_ms(), std::sync::atomic::Ordering::Relaxed);
 
                             // Update collaterals
                             let new_collateral = get_collateral_info_per_subaccount(
@@ -1699,12 +1705,9 @@ fn spawn_liquidation_worker(
     cu_limit: u32,
     priority_fee_subscriber: Arc<PriorityFeeSubscriber>,
     metrics: Arc<Metrics>,
-    slot_duration: velocity_rs::program::math::time::SlotDuration,
+    slot_duration_ms: Arc<std::sync::atomic::AtomicU64>,
 ) {
     let attempt_tracker = Arc::new(DashMap::<Pubkey, LiquidationAttemptTracker>::new());
-    // wall-clock rate limit expressed in actual slots (sampled at startup —
-    // slot duration only changes at feature-gate activations)
-    let liquidation_slot_rate_limit = LIQUIDATION_RATE_LIMIT.to_slots(slot_duration);
 
     tokio::spawn(async move {
         // Periodically clean stale tracker entries (accounts no longer in the liquidation pipeline)
@@ -1721,6 +1724,14 @@ fn spawn_liquidation_worker(
             status,
         }) = liq_rx.recv().await
         {
+            // wall-clock rate limit expressed in actual slots, at the live slot
+            // duration (kept current by the main loop) so a mid-run gate switch
+            // re-paces without a restart
+            let liquidation_slot_rate_limit = LIQUIDATION_RATE_LIMIT.to_slots(
+                velocity_rs::program::math::time::SlotDuration::from_state_ms(
+                    slot_duration_ms.load(std::sync::atomic::Ordering::Relaxed) as u16,
+                ),
+            );
             // Drop entries older than 1 second to handle backpressure
             let now = current_time_millis();
             if now.saturating_sub(timestamp_ms) > MAX_LIQUIDATION_AGE_MS {

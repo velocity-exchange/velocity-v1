@@ -53,9 +53,9 @@ export type FillerMultiThreadedConfig = BaseBotConfig & {
 
 	triggerPriorityFeeMultiplier?: number;
 
-	// Min slots between fill attempts on the same order (paces re-attempts against
-	// the DLOB builder's ~200ms re-emit). Defaults to 5.
-	/// wall-clock ms between fill attempts per order (expressed in actual slots at the current slot duration)
+	/// wall-clock ms between fill attempts per order (paces re-attempts against
+	/// the DLOB builder's ~200ms re-emit; expressed in actual slots at the current
+	/// slot duration). Defaults to 2000.
 	fillAttemptIntervalMs?: number;
 };
 
@@ -360,6 +360,64 @@ function mergeDefaults<T>(defaults: T, data: Partial<T>): T {
 	return result;
 }
 
+/**
+ * Back-compat for the *Slots -> *Ms config renames. Slot time is no longer a
+ * fixed 400ms, so these intervals are denominated in wall-clock ms now. If a
+ * deprecated slot-denominated key is present, warn and, when the new ms key is
+ * unset, carry the old value forward converted at the 400ms baseline (its
+ * original wall-clock meaning) so behavior does not silently change.
+ */
+function migrateDeprecatedSlotConfigs(config: Partial<Config>): void {
+	const BASELINE_MS = 400;
+	const renames = [
+		{
+			bot: 'fillerMultithreaded',
+			oldKey: 'fillAttemptSlotInterval',
+			newKey: 'fillAttemptIntervalMs',
+		},
+		{
+			bot: 'spotFillerMultithreaded',
+			oldKey: 'fillAttemptSlotInterval',
+			newKey: 'fillAttemptIntervalMs',
+		},
+		{
+			bot: 'liquidator',
+			oldKey: 'deriskAuctionDurationSlots',
+			newKey: 'deriskAuctionDurationMs',
+		},
+	];
+
+	const botConfigs = config.botConfigs as
+		| Record<string, Record<string, unknown>>
+		| undefined;
+	if (!botConfigs) {
+		return;
+	}
+
+	for (const { bot, oldKey, newKey } of renames) {
+		const botConfig = botConfigs[bot];
+		if (!botConfig || botConfig[oldKey] === undefined) {
+			continue;
+		}
+		const oldSlots = botConfig[oldKey];
+		if (botConfig[newKey] === undefined && typeof oldSlots === 'number') {
+			botConfig[newKey] = oldSlots * BASELINE_MS;
+			console.warn(
+				`config "${bot}.${oldKey}" is deprecated (renamed to "${newKey}", now in ms): ` +
+					`interpreting ${oldSlots} slots as ${
+						oldSlots * BASELINE_MS
+					}ms at the 400ms baseline. ` +
+					`Set "${newKey}" directly to silence this.`
+			);
+		} else {
+			console.warn(
+				`config "${bot}.${oldKey}" is deprecated and ignored; use "${newKey}" (ms).`
+			);
+		}
+		delete botConfig[oldKey];
+	}
+}
+
 export function loadConfigFromFile(path: string): Config {
 	if (!path.endsWith('.yaml') && !path.endsWith('.yml')) {
 		throw new Error('Config file must be a yaml file');
@@ -367,6 +425,7 @@ export function loadConfigFromFile(path: string): Config {
 
 	const configFile = fs.readFileSync(path, 'utf8');
 	const config = YAML.parse(configFile) as Partial<Config>;
+	migrateDeprecatedSlotConfigs(config);
 
 	return mergeDefaults(defaultConfig, config) as Config;
 }
@@ -493,7 +552,21 @@ export function loadConfigFromOpts(opts: any): Config {
 			// deprecated: use {@link LiquidatorConfig.maxSlippageBps}
 			maxSlippagePct: opts.maxSlippagePct ?? 50,
 			maxSlippageBps: opts.maxSlippageBps ?? 50,
-			deriskAuctionDurationMs: opts.deriskAuctionDurationMs ?? 40_000,
+			deriskAuctionDurationMs: ((): number => {
+				if (opts.deriskAuctionDurationMs !== undefined) {
+					return opts.deriskAuctionDurationMs;
+				}
+				if (opts.deriskAuctionDurationSlots !== undefined) {
+					console.warn(
+						`opt "deriskAuctionDurationSlots" is deprecated (renamed to "deriskAuctionDurationMs", now in ms): ` +
+							`interpreting ${opts.deriskAuctionDurationSlots} slots as ${
+								opts.deriskAuctionDurationSlots * 400
+							}ms at the 400ms baseline.`
+					);
+					return opts.deriskAuctionDurationSlots * 400;
+				}
+				return 40_000;
+			})(),
 			twapDurationSec: parseInt(opts.twapDurationSec ?? '300'),
 			notifyOnLiquidation: opts.notifyOnLiquidation ?? false,
 		};

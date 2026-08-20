@@ -305,7 +305,7 @@ pub const REF_PRICE_OFFSET_SMOOTHING_MIN_STEP: i32 = 10;
 /// Bids more than this % below oracle and asks more than this % above oracle are filtered out.
 pub const BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT: u64 = 15;
 
-/// Minimum number of slots a DLOB quote must rest on-chain before it can move the bid/ask/mark TWAP
+/// Minimum wall-clock time a DLOB quote must rest onchain before it can move the bid/ask/mark TWAP
 /// (OtterSec #146).
 ///
 /// `update_perp_bid_ask_twap` samples the book from caller-supplied `User` accounts, and nothing else

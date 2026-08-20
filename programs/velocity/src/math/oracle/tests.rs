@@ -11,6 +11,22 @@ use crate::{
 };
 
 #[test]
+fn mm_immediate_threshold_matches_write_gate_at_every_gate() {
+    // The unset MM-sourced immediate-fill threshold in `oracle_validity` and the
+    // crank's write gate in `update_mm_oracle` both convert MM_ORACLE_MIN_WRITE_GAP
+    // to slots and MUST agree at every slot duration — otherwise a quote the crank
+    // was allowed to post reads stale on the fill path. Both ceil; pin the values.
+    use crate::math::{constants::MM_ORACLE_MIN_WRITE_GAP, time::SlotDuration};
+    for (ms, expected) in [(400u16, 2u64), (350, 3), (300, 3), (250, 4), (200, 4)] {
+        let d = SlotDuration::from_state_ms(ms);
+        // the immediate threshold (oracle_validity, `slots_ceil`) and the write
+        // gate (update_mm_oracle, `to_slots_ceil`) are the same expression
+        let threshold = MM_ORACLE_MIN_WRITE_GAP.to_slots_ceil(d);
+        assert_eq!(threshold, expected, "MM write-gap slots wrong at {ms}ms");
+    }
+}
+
+#[test]
 fn calculate_oracle_valid() {
     let prev = 1656682258;
     let now = prev + 3600;

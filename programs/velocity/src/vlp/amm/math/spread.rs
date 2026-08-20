@@ -237,7 +237,7 @@ fn compute_quote_state(
     let final_reference_price_offset = if do_reference_price_smooth {
         // budget accrues per whole 400ms period (its historical calibration)
         // so the smoothing completes over the same wall-clock time
-        let slots_passed = Millis::from_slots(
+        let periods_passed = Millis::from_slots(
             slot.saturating_sub(amm.last_spread_update_slot),
             slot_duration,
         )
@@ -249,7 +249,7 @@ fn compute_quote_state(
             let raw = full_offset_delta
                 .abs()
                 .min(
-                    slots_passed
+                    periods_passed
                         .cast::<i128>()?
                         .safe_mul(REF_PRICE_OFFSET_SMOOTHING_PER_PERIOD_BUDGET)?,
                 )

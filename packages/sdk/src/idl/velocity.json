@@ -22081,7 +22081,7 @@
           {
             "name": "oracle_slot_delay_override",
             "docs": [
-              "Max oracle delay, in slots, tolerated by immediate (JIT / auction-skipping)",
+              "Max oracle delay (legacy 400ms units) tolerated by immediate (JIT / auction-skipping)",
               "AMM fills. Positive is an explicit threshold. `0` disables immediate AMM",
               "fills entirely. Negative (the init default, `-1`) means unset, which",
               "resolves by price source: `MM_ORACLE_MIN_WRITE_GAP` for an MM-oracle-sourced",
@@ -22094,8 +22094,8 @@
           {
             "name": "oracle_low_risk_slot_delay_override",
             "docs": [
-              "the override for the state.min_perp_auction_duration",
-              "0 is no override, -1 is disable speed bump, 1-100 is literal speed bump"
+              "Low-risk oracle delay override (legacy 400ms units): 0 = unset (use the",
+              "guard rail), otherwise a literal threshold. See `math::time::DelayOverride`."
             ],
             "type": "i8"
           },
@@ -24526,19 +24526,54 @@
             "type": "u16"
           },
           {
-            "name": "padding",
+            "name": "pending_slot_duration_ms",
             "docs": [
-              "244 = 236 remaining former padding + 8 bytes that were previously",
-              "*implicit* trailing padding on x86_64 (State contains a u128, so the",
-              "struct rounds up to align 16 on the host but only 8 on SBF; explicit",
-              "padding makes `size_of::<State>()` 1744 on both targets, per the",
-              "alignment invariant in docs/alignment-and-native-offsets.md). Those 8",
-              "bytes have always existed zeroed inside the 1752-byte account."
+              "Staged next slot duration in ms, set by the admin during the target IBRL",
+              "gate's one-epoch warmup. `0` means nothing is staged. Once",
+              "`slot_duration_effective_slot` is reached, [`State::slot_duration`] returns",
+              "this value instead of `slot_duration_ms`, so State switches in lockstep",
+              "with the chain at the exact boundary without a second admin transaction.",
+              "Staging the next gate first promotes this into `slot_duration_ms`."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "slot_duration_pad",
+            "docs": [
+              "Explicit padding so `slot_duration_effective_slot` (u64) lands on its",
+              "8-byte alignment with no *implicit* padding (see the alignment invariant)."
             ],
             "type": {
               "array": [
                 "u8",
-                244
+                2
+              ]
+            }
+          },
+          {
+            "name": "slot_duration_effective_slot",
+            "docs": [
+              "Slot at which `pending_slot_duration_ms` takes effect: the target gate's",
+              "activation slot + the one-epoch (432,000-slot) warmup, read from the IBRL",
+              "feature account when the switch is staged. `0` when nothing is staged."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "padding",
+            "docs": [
+              "232 = the former 244-byte padding minus the 12 bytes taken above",
+              "(`pending_slot_duration_ms` 2 + `slot_duration_pad` 2 + the 8-byte",
+              "`slot_duration_effective_slot`). The padding still absorbs the 8 bytes that",
+              "were previously *implicit* trailing padding on x86_64 (State contains a",
+              "u128, align 16 on the host but 8 on SBF; explicit padding keeps",
+              "`size_of::<State>()` 1744 on both targets, per the alignment invariant in",
+              "docs/alignment-and-native-offsets.md)."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                232
               ]
             }
           }

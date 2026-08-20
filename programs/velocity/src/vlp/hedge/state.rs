@@ -725,15 +725,16 @@ impl LPPool {
     ) -> VelocityResult<i128> {
         // measured slot delays become wall-clock, counted in whole 400ms
         // periods (the fee ramp's historical granularity)
-        let target_position_slot_delay =
+        let position_periods =
             Millis::from_slots(target_position_slot_delay, slot_duration).div_periods(Millis::UNIT);
-        let target_oracle_slot_delay =
+        let oracle_periods =
             Millis::from_slots(target_oracle_slot_delay, slot_duration).div_periods(Millis::UNIT);
         // Gives an uncertainty fee in bps if the oracle or position was stale when calcing target.
-        // Uses a step function that goes up every 10 slots beyond a threshold where we consider it okay
+        // Uses a step function that goes up every 10 periods (one 400ms period = one "block")
+        // beyond a threshold where we consider it okay:
         //  - delay 0 (<= threshold) = 0 bps
-        //  - delay 1..10  = 10 bps (1 block)
-        //  - delay 11..20 = 20 bps (2 blocks)
+        //  - delay 1..10 periods  = 10 bps (1 block)
+        //  - delay 11..20 periods = 20 bps (2 blocks)
         fn step_fee(delay: u64, threshold: u64, per_10_slot_bps: u8) -> VelocityResult<u128> {
             if delay <= threshold || per_10_slot_bps == 0 {
                 return Ok(0);
@@ -748,7 +749,7 @@ impl LPPool {
         }
 
         let oracle_uncertainty_fee = step_fee(
-            target_oracle_slot_delay,
+            oracle_periods,
             MAX_ORACLE_STALENESS_FOR_TARGET_CALC.div_periods(Millis::UNIT),
             self.target_oracle_delay_fee_bps_per_10_slots,
         )?;
@@ -756,7 +757,7 @@ impl LPPool {
             // threshold is in 400ms baseline units like its oracle sibling;
             // convert to the period domain `target_position_slot_delay` is in.
             // (the raw const stays u64 for the same-slot `==` check elsewhere.)
-            target_position_slot_delay,
+            position_periods,
             Millis::from_stored_units(MAX_STALENESS_FOR_TARGET_CALC).div_periods(Millis::UNIT),
             self.target_position_delay_fee_bps_per_10_slots,
         )?;

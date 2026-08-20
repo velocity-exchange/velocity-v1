@@ -30,7 +30,7 @@ export const PERCENTAGE_PRECISION_EXP = new BN(6);
 export const PERCENTAGE_PRECISION = new BN(10).pow(PERCENTAGE_PRECISION_EXP);
 
 /**
- * Minimum slots the program requires between two accepted MM-oracle writes
+ * Minimum wall-clock time the program requires between two accepted MM-oracle writes
  * (`MM_ORACLE_MIN_WRITE_GAP` in `math/constants.rs`). Also the immediate-fill
  * staleness threshold a perp market falls back to when
  * `oracleSlotDelayOverride` is unset and the price is MM-oracle-sourced,
@@ -39,7 +39,7 @@ export const PERCENTAGE_PRECISION = new BN(10).pow(PERCENTAGE_PRECISION_EXP);
  */
 export const MM_ORACLE_MIN_WRITE_GAP = millis(800);
 /**
- * Max slots the program tolerates between an MM-oracle update's source
+ * Max wall-clock age the program tolerates between an MM-oracle update's source
  * observation slot (carried in the payload) and the slot it lands, enforced
  * symmetrically in both directions (`MM_ORACLE_MAX_SOURCE_AGE` in
  * `math/constants.rs`). An update landing later than this is skipped, since

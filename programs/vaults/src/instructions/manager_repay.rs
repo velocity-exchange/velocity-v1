@@ -63,6 +63,7 @@ pub fn manager_repay<'info>(
         Some(repay_spot_market_index),
         vp.is_some(),
         has_fee_update,
+        Some(&ctx.accounts.velocity_state),
     )?;
 
     let user = ctx.accounts.velocity_user.load()?;

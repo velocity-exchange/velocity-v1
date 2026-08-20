@@ -26,6 +26,49 @@ use {
     },
 };
 
+/// Live slot duration from a `State` snapshot's staging fields, applying a
+/// staged switch once `now_slot` reaches the effective slot (mirrors the
+/// on-chain `State::active_slot_duration_ms` via the shared program helper).
+/// Pass the current chain slot, not the slot State was last written at; `0`
+/// yields the base value. Reads the fields directly so no `State` type import
+/// is needed at the call sites.
+pub fn active_slot_duration(
+    base_ms: u16,
+    pending_ms: u16,
+    effective_slot: u64,
+    now_slot: u64,
+) -> velocity_rs::program::math::time::SlotDuration {
+    velocity_rs::program::math::time::SlotDuration::from_state_ms(
+        velocity_rs::program::math::time::active_slot_duration_ms(
+            base_ms,
+            pending_ms,
+            effective_slot,
+            now_slot,
+        ),
+    )
+}
+
+/// Live slot duration from the client's cached `State`, applying a staged switch
+/// at `now_slot` (see [`active_slot_duration`]); the 400ms baseline when State is
+/// not yet subscribed. Wraps the repeated
+/// `state_account().map(...).unwrap_or(BASELINE)` boilerplate.
+pub fn client_slot_duration(
+    velocity: &velocity_rs::VelocityClient,
+    now_slot: u64,
+) -> velocity_rs::program::math::time::SlotDuration {
+    velocity
+        .state_account()
+        .map(|s| {
+            active_slot_duration(
+                s.slot_duration_ms,
+                s.pending_slot_duration_ms,
+                s.slot_duration_effective_slot,
+                now_slot,
+            )
+        })
+        .unwrap_or(velocity_rs::program::math::time::SlotDuration::BASELINE)
+}
+
 pub struct OrderSlotLimiter<const N: usize> {
     slots: [Vec<u32>; N],
     generations: [u64; N],

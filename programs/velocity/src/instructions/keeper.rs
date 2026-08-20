@@ -2835,7 +2835,7 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
         &makers,
         slot,
         now,
-        BID_ASK_TWAP_MIN_QUOTE_REST.to_slots(state.slot_duration()),
+        BID_ASK_TWAP_MIN_QUOTE_REST.to_slots_ceil(state.slot_duration()),
     )?;
     let (bids, asks) = filter_bids_asks_by_oracle_divergence(
         bids,

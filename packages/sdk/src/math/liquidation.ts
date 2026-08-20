@@ -423,7 +423,7 @@ export function calculateAssetTransferForLiabilityTransfer(
  * Calculates the fraction of a position's remaining liability a liquidator may currently
  * take, mirroring `calculate_max_pct_to_liquidate` in
  * `programs/velocity/src/math/liquidation.rs`. Liquidations ramp up gradually over
- * `liquidationDuration` slots (starting from `initialPctToLiquidate`) rather than allowing
+ * the `liquidationDuration` wall-clock window (starting from `initialPctToLiquidate`) rather than allowing
  * 100% in one shot, so a user isn't force-closed more aggressively than necessary — except:
  * isolated perp positions (`isIsolatedPosition`) are always liquidated 100% in one shot
  * since they have no other cross-margin exposure to protect, and any position is liquidated

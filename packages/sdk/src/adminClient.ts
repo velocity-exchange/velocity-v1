@@ -89,8 +89,38 @@ import {
 } from './constants/numericConstants';
 import { calculateTargetPriceTrade } from './math/trade';
 import { calculateAmmReservesAfterSwap, getSwapDirection } from './math/amm';
+import { activeSlotDurationFromState } from './math/time';
 import { JupiterClient, JupiterSwapQuote } from './jupiter/jupiterClient';
 import { SwapMode } from './swap/UnifiedSwapClient';
+
+/**
+ * The IBRL feature gate whose activation drops the slot to each target duration.
+ * `updateStateSlotDurationMs` passes the matching account so the program can read
+ * its activation slot and stage the switch (`pendingSlotDurationMs` +
+ * `slotDurationEffectiveSlot`); State then flips itself at the effective slot.
+ * Mirrors `ibrl_feature_gate` in the program.
+ */
+const IBRL_FEATURE_GATES: Record<number, PublicKey> = {
+	350: new PublicKey('iBRL5RuWhw4yqaAZu96RUULHckHTZAoe2b77qaV38JZ'),
+	300: new PublicKey('iBRLL3k18HST852F1Mf3Lv83waTNQmmqvKDxvYGwQFL'),
+	250: new PublicKey('iBRLMc81UjRa8fn8A6eE8bJTnRbgQoPTynM51akENCV'),
+	200: new PublicKey('iBRLjhJnkmDZgNoZRDMW11d8ZV7HvsL3vAyRjZB5npW'),
+};
+
+/** One epoch: a staged IBRL feature only takes effect this many slots later. */
+export const IBRL_FEATURE_WARMUP_SLOTS = 432_000;
+
+/**
+ * The IBRL feature-gate account whose activation drops the slot to
+ * `slotDurationMs`, or `undefined` for the 400ms baseline / a non-schedule
+ * value. Mirrors `ibrl_feature_gate` in the program; exposed so tooling can read
+ * the account's activation slot and preview the effective (switch) slot.
+ */
+export function getIbrlFeatureGate(
+	slotDurationMs: number
+): PublicKey | undefined {
+	return IBRL_FEATURE_GATES[slotDurationMs];
+}
 
 export class AdminClient extends VelocityClient {
 	/**
@@ -1375,12 +1405,18 @@ export class AdminClient extends VelocityClient {
 	): Promise<TransactionInstruction> {
 		const perpMarket = this.getPerpMarketAccountOrThrow(perpMarketIndex);
 
+		// live chain slot so the target-price trade sizes against the AMM's
+		// current-slot spread smoothing / MM-oracle validity across a gate switch
+		const currentSlot = await this.connection.getSlot();
 		const [direction, tradeSize, _] = calculateTargetPriceTrade(
 			perpMarket,
 			targetPrice,
 			new BN(1000),
 			'quote',
-			this.getMMOracleDataForPerpMarket(perpMarketIndex)
+			this.getMMOracleDataForPerpMarket(perpMarketIndex, currentSlot),
+			true,
+			new BN(currentSlot),
+			activeSlotDurationFromState(this.getStateAccount(), new BN(currentSlot))
 		);
 
 		const [newQuoteAssetAmount, newBaseAssetAmount] =
@@ -2767,20 +2803,25 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Sets `state.slotDurationMs` — the current Solana slot duration in ms, to be
-	 * flipped as each IBRL feature gate activates (400 -> 350 -> 300 -> 250 -> 200).
-	 * The program only accepts values from the feature-gate set {350, 300, 250, 200}
-	 * and only strictly below the current effective value (slots never get slower
-	 * again), so an accidental flip back to a larger duration is unrepresentable.
-	 * Requires warm admin (`check_warm`).
+	 * Stages the next Solana slot duration (400 -> 350 -> 300 -> 250 -> 200). The
+	 * program accepts only the exact next value on that schedule, reads the switch
+	 * slot from the target IBRL feature account (activation + one-epoch warmup),
+	 * and records it as `pendingSlotDurationMs` + `slotDurationEffectiveSlot`;
+	 * State then flips itself at that slot in lockstep with the chain, no second
+	 * transaction. Stage it during the feature's warmup epoch. Requires warm admin
+	 * (`check_warm`; the cold admin also satisfies it).
 	 * @param slotDurationMs - New slot duration in milliseconds.
+	 * @param admin - Signer to list as the admin. Defaults to `warmAdmin` when
+	 *   set, else `coldAdmin` (both pass `check_warm`); pass explicitly for a
+	 *   warm multisig vault whose key differs from either.
 	 * @returns Transaction signature.
 	 */
 	public async updateStateSlotDurationMs(
-		slotDurationMs: number
+		slotDurationMs: number,
+		admin?: PublicKey
 	): Promise<TransactionSignature> {
 		const updateStateSlotDurationMsIx =
-			await this.getUpdateStateSlotDurationMsIx(slotDurationMs);
+			await this.getUpdateStateSlotDurationMsIx(slotDurationMs, admin);
 
 		const tx = await this.buildTransaction(updateStateSlotDurationMsIx);
 
@@ -2791,21 +2832,44 @@ export class AdminClient extends VelocityClient {
 
 	/**
 	 * Builds the `updateStateSlotDurationMs` instruction without sending it. See
-	 * `updateStateSlotDurationMs`.
+	 * `updateStateSlotDurationMs`. Appends the IBRL feature-gate account for the
+	 * target duration as a remaining account; the program verifies it is staged
+	 * and reads its effective slot to stage the switch.
 	 * @returns The unsigned `updateStateSlotDurationMs` instruction.
 	 */
 	public async getUpdateStateSlotDurationMsIx(
-		slotDurationMs: number
+		slotDurationMs: number,
+		admin?: PublicKey
 	): Promise<TransactionInstruction> {
+		const featureGate = IBRL_FEATURE_GATES[slotDurationMs];
+		if (!featureGate) {
+			throw new Error(
+				`no IBRL feature gate for slotDurationMs=${slotDurationMs}; expected one of ${Object.keys(
+					IBRL_FEATURE_GATES
+				).join(', ')}`
+			);
+		}
+		let adminKey = admin;
+		if (!adminKey) {
+			if (this.isSubscribed) {
+				const state = this.getStateAccount();
+				adminKey = state.warmAdmin.equals(PublicKey.default)
+					? state.coldAdmin
+					: state.warmAdmin;
+			} else {
+				adminKey = this.wallet.publicKey;
+			}
+		}
 		return await this.program.instruction.updateStateSlotDurationMs(
 			slotDurationMs,
 			{
 				accounts: {
-					admin: this.isSubscribed
-						? this.getStateAccount().coldAdmin
-						: this.wallet.publicKey,
+					admin: adminKey,
 					state: await this.getStatePublicKey(),
 				},
+				remainingAccounts: [
+					{ pubkey: featureGate, isWritable: false, isSigner: false },
+				],
 			}
 		);
 	}

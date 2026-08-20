@@ -55,6 +55,9 @@ export class PythLazerCrankerBot implements Bot {
 
 	private blockhashSubscriber: BlockhashSubscriber;
 	private health: boolean = true;
+	// live chain slot, refreshed each crank loop; drives the slot-duration used
+	// for the adaptive-crank pacing. 0 until the first loop => 400ms baseline.
+	private currentSlot = 0;
 	// Metrics
 	private txRecorder: TxRecorder;
 
@@ -267,7 +270,7 @@ export class PythLazerCrankerBot implements Bot {
 			const maxCrankIntervalMs =
 				this.crankConfigs.maxCrankIntervalMs ??
 				DEFAULT_MAX_CRANK_INTERVAL_SLOTS *
-					currentSlotDuration(this.velocityClient);
+					currentSlotDuration(this.velocityClient, this.currentSlot);
 			logger.info(
 				`Adaptive cranking enabled: posting at most every ${maxCrankIntervalMs}ms or on >=${this.crankConfigs.crankDivergenceBps}bps divergence`
 			);
@@ -354,7 +357,7 @@ export class PythLazerCrankerBot implements Bot {
 		const maxCrankIntervalMs =
 			this.crankConfigs.maxCrankIntervalMs ??
 			DEFAULT_MAX_CRANK_INTERVAL_SLOTS *
-				currentSlotDuration(this.velocityClient);
+				currentSlotDuration(this.velocityClient, this.currentSlot);
 		if (nowMs - lastPostMs >= maxCrankIntervalMs) {
 			return `max interval (${
 				nowMs - lastPostMs
@@ -399,6 +402,13 @@ export class PythLazerCrankerBot implements Bot {
 		if (!this.pythLazerClient) {
 			logger.warn('pythLazerClient not initialized, skipping crank loop');
 			return;
+		}
+
+		// refresh the live slot so the pacing tracks a staged slot-duration switch
+		try {
+			this.currentSlot = await this.velocityClient.connection.getSlot();
+		} catch (e) {
+			logger.warn(`failed to refresh slot for crank pacing: ${e}`);
 		}
 
 		for (const [

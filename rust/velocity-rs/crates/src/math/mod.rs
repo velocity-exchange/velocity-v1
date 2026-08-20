@@ -184,27 +184,28 @@ pub fn get_liquidation_fee(
     max_liquidation_fee: u32,
     last_active_user_slot: u64,
     current_slot: u64,
-    slot_duration_ms: u64,
+    slot_duration: program::math::time::SlotDuration,
 ) -> SdkResult<u32> {
     if current_slot < last_active_user_slot {
         return Err(SdkError::MathError("slot < user.last_active_slot"));
     }
     // grace period and per-period rate are in 400ms baseline units; count whole
     // 400ms periods of elapsed wall-clock (mirrors the program's
-    // get_liquidation_fee). `0` slot duration = unset -> 400ms baseline.
-    let slot_duration = program::math::time::SlotDuration::from_state_ms(slot_duration_ms as u16);
-    let slots_elapsed = program::math::time::Millis::from_slots(
+    // get_liquidation_fee). Takes a resolved `SlotDuration` (not a raw ms number)
+    // so a caller cannot accidentally pass the pre-switch base `slot_duration_ms`
+    // while a staged value is active — resolve it with `active_slot_duration`.
+    let periods_elapsed = program::math::time::Millis::from_slots(
         current_slot - last_active_user_slot,
         slot_duration,
     )
     .div_periods(program::math::time::Millis::UNIT);
 
-    if slots_elapsed < LIQUIDATION_FEE_ADJUST_GRACE_PERIOD_SLOTS {
+    if periods_elapsed < LIQUIDATION_FEE_ADJUST_GRACE_PERIOD_SLOTS {
         return Ok(base_liquidation_fee);
     }
 
     let liquidation_fee = base_liquidation_fee
-        .saturating_add((slots_elapsed * LIQUIDATION_FEE_INCREASE_PER_SLOT as u64) as u32);
+        .saturating_add((periods_elapsed * LIQUIDATION_FEE_INCREASE_PER_SLOT as u64) as u32);
 
     Ok(liquidation_fee.min(max_liquidation_fee))
 }

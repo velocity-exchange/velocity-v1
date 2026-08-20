@@ -16,6 +16,7 @@ pub trait AccountMapProvider<'a> {
         writable_spot_market: Option<u16>,
         has_vault_protocol: bool,
         has_fee_update: bool,
+        velocity_state: Option<&AccountInfo>,
     ) -> VelocityResult<AccountMaps<'a>>;
 }
 
@@ -26,11 +27,24 @@ impl<'info, T: anchor_lang::Bumps> AccountMapProvider<'info> for Context<'info, 
         writable_spot_market_index: Option<u16>,
         has_vault_protocol: bool,
         has_fee_update: bool,
+        velocity_state: Option<&AccountInfo>,
     ) -> VelocityResult<AccountMaps<'info>> {
         // if [`VaultProtocol`] exists it will be the last index in the remaining_accounts, so we need to skip it.
         let mut end_index = self.remaining_accounts.len() - (has_vault_protocol as usize);
         // if there is a [`FeeUpdate`], we need to skip one more account
         end_index -= has_fee_update as usize;
+
+        // Track the real slot duration when the caller has velocity's State in
+        // scope (validated + read by `slot_duration_from_account_info`); the one
+        // path that doesn't (`manager_update_borrow`) passes None and stays on the
+        // 400ms baseline (stricter at faster slots, the safe direction).
+        let slot_duration = match velocity_state {
+            Some(state) => {
+                velocity::state::state::State::slot_duration_from_account_info(state, slot)
+                    .map_err(|_| velocity::error::ErrorCode::DefaultError)?
+            }
+            None => velocity::math::time::SlotDuration::BASELINE,
+        };
 
         let remaining_accounts_iter = &mut self.remaining_accounts[..end_index].iter().peekable();
         load_maps(
@@ -40,9 +54,7 @@ impl<'info, T: anchor_lang::Bumps> AccountMapProvider<'info> for Context<'info, 
                 .map(get_writable_spot_market_set)
                 .unwrap_or_default(),
             slot,
-            // vault maps run on default guard rails (no velocity State in
-            // scope), so they keep the 400ms baseline too
-            velocity::math::time::SlotDuration::BASELINE,
+            slot_duration,
             None,
         )
     }

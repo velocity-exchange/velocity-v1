@@ -24,7 +24,7 @@ use {
 pub const SIGNED_MSG_PDA_SEED: &str = "SIGNED_MSG";
 pub const SIGNED_MSG_WS_PDA_SEED: &str = "SIGNED_MSG_WS";
 /// Grace past `max_slot` before a signed-msg order id is prunable (~4s),
-/// expressed in actual slots at the current slot duration.
+/// expressed in actual slots at the read site.
 pub const SIGNED_MSG_EVICTION_BUFFER: Millis = Millis::from_ms(4_000);
 
 mod tests;

@@ -269,7 +269,7 @@ import { getOrderParams } from './orderParams';
 import { numberToSafeBN } from './math/utils';
 import { TransactionParamProcessor } from './tx/txParamProcessor';
 import { isOracleValid, getOracleValidity } from './math/oracles';
-import { slotDurationFromState } from './math/time';
+import { activeSlotDurationFromState } from './math/time';
 import { TxHandler } from './tx/txHandler';
 import { createMinimalEd25519VerifyIx } from './util/ed25519Utils';
 import {
@@ -10200,6 +10200,14 @@ export class VelocityClient {
 			: marketIndexes;
 
 		if (filterInvalidMarkets) {
+			// A genuine live chain slot, fetched once: it drives BOTH the oracle
+			// age and the staged slot-duration switch, so they agree, and unlike an
+			// account-notification slot it keeps advancing when a market is idle
+			// (exactly when staleness matters). Falls back to the State slot if the
+			// RPC call fails.
+			const nowSlot =
+				(await this.connection.getSlot().catch(() => undefined)) ??
+				this.accountSubscriber.getStateAccountAndSlot().slot;
 			for (const marketIndex of marketIndexes) {
 				const perpMarketAccount = this.getPerpMarketAccountOrThrow(marketIndex);
 				const oraclePriceData = this.getOracleDataForPerpMarket(marketIndex);
@@ -10211,8 +10219,8 @@ export class VelocityClient {
 					perpMarketAccount,
 					oraclePriceData,
 					oracleGuardRails,
-					stateAccountAndSlot.slot,
-					slotDurationFromState(stateAccountAndSlot.data.slotDurationMs)
+					nowSlot,
+					activeSlotDurationFromState(stateAccountAndSlot.data, new BN(nowSlot))
 				);
 
 				if (isValid) {
@@ -12060,7 +12068,16 @@ export class VelocityClient {
 	 * indicating whether the market has an initialized MM oracle at all (independent of which price
 	 * was ultimately selected).
 	 */
-	public getMMOracleDataForPerpMarket(marketIndex: number): MMOraclePriceData {
+	public getMMOracleDataForPerpMarket(
+		marketIndex: number,
+		// Live chain slot for the MM-oracle validity's age + staged slot-duration
+		// switch. Pass a real current slot (e.g. `slotSubscriber.getSlot()`) — this
+		// method is synchronous so it cannot fetch one. Omitting it falls back to a
+		// best-effort observed slot (the exchange oracle / State), which can stall
+		// while a market is idle; pass a live slot for correct post-transition
+		// classification.
+		currentSlot?: number
+	): MMOraclePriceData {
 		const perpMarket = this.getPerpMarketAccountOrThrow(marketIndex);
 		const oracleData = this.getOracleDataForPerpMarket(marketIndex);
 		const stateAccountAndSlot = this.accountSubscriber.getStateAccountAndSlot();
@@ -12114,6 +12131,15 @@ export class VelocityClient {
 		// `conf`), matching the program's get_mm_oracle_price_data, which feeds
 		// `oracle_price_data.confidence` into `oracle_validity`. (Currently latent since the
 		// gate below only inspects NonPositive/TooVolatile, but correct for TooUncertain too.)
+		// "now" for BOTH the MM-oracle age and the staged slot-duration switch, so
+		// they agree. Prefer the caller-supplied live chain slot; the MM oracle's
+		// own slot can't be "now" (age would self-reference). Without a live slot,
+		// fall back to a best-effort observed slot (exchange oracle / State), which
+		// can stall on an idle market — callers acting on validity should pass one.
+		const nowSlot =
+			currentSlot !== undefined
+				? new BN(currentSlot)
+				: BN.max(new BN(stateAccountAndSlot.slot), oracleData.slot);
 		const mmOracleValidity = perpMarket.marketStats.mmOraclePrice.eq(ZERO)
 			? OracleValidity.NonPositive
 			: getOracleValidity(
@@ -12125,10 +12151,10 @@ export class VelocityClient {
 						hasSufficientNumberOfDataPoints: true,
 					},
 					stateAccountAndSlot.data.oracleGuardRails,
-					new BN(stateAccountAndSlot.slot),
+					nowSlot,
 					undefined,
 					true, // classifying the MM oracle price itself
-					slotDurationFromState(stateAccountAndSlot.data.slotDurationMs)
+					activeSlotDurationFromState(stateAccountAndSlot.data, nowSlot)
 			  );
 		const isMMOracleInvalidForUse =
 			mmOracleValidity === OracleValidity.NonPositive ||

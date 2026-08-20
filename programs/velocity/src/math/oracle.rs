@@ -397,6 +397,12 @@ pub fn oracle_validity(
     // activations. Floor rounding: a marginally tighter window is the safe
     // direction for staleness.
     let slots = |m: Millis| m.to_slots(slot_duration) as i64;
+    // Ceil variant for the unset MM-sourced immediate threshold: it must match
+    // the crank's write gate (`update_mm_oracle`, which ceils
+    // `MM_ORACLE_MIN_WRITE_GAP`). Flooring here would put the accept threshold a
+    // slot below the write gate at intermediate gates (e.g. 350ms: floor 2 vs
+    // write 3), rejecting quotes the crank was allowed to post.
+    let slots_ceil = |m: Millis| m.to_slots_ceil(slot_duration) as i64;
 
     let is_oracle_price_nonpositive = oracle_price <= 0;
 
@@ -451,7 +457,7 @@ pub fn oracle_validity(
             DelayOverride::Never => true,
             DelayOverride::Unset => {
                 let unset_threshold: i64 = if immediate_price_is_mm_sourced {
-                    slots(MM_ORACLE_MIN_WRITE_GAP)
+                    slots_ceil(MM_ORACLE_MIN_WRITE_GAP)
                 } else {
                     0
                 };

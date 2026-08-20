@@ -786,19 +786,27 @@ export class FillerBot extends TxThreaded implements Bot {
 	} {
 		const marketIndex = market.marketIndex;
 
-		const mmOraclePriceData =
-			this.velocityClient.getMMOracleDataForPerpMarket(marketIndex);
+		const mmOraclePriceData = this.velocityClient.getMMOracleDataForPerpMarket(
+			marketIndex,
+			this.slotSubscriber.getSlot()
+		);
 
 		const slot = new BN(this.slotSubscriber.getSlot());
+		const slotDuration = currentSlotDuration(
+			this.velocityClient,
+			this.slotSubscriber.getSlot()
+		);
 		const vAsk = calculateAskPrice(
 			market,
 			mmOraclePriceData as MMOraclePriceData,
-			slot
+			slot,
+			slotDuration
 		);
 		const vBid = calculateBidPrice(
 			market,
 			mmOraclePriceData as MMOraclePriceData,
-			slot
+			slot,
+			slotDuration
 		);
 
 		const fillSlot = this.getMaxSlot();
@@ -2471,7 +2479,10 @@ export class FillerBot extends TxThreaded implements Bot {
 				slotsUntilJito <
 				msToSlotsNum(
 					JITO_LEADER_LEAD_MS,
-					currentSlotDuration(this.velocityClient)
+					currentSlotDuration(
+						this.velocityClient,
+						this.slotSubscriber.getSlot()
+					)
 				)
 			);
 		}

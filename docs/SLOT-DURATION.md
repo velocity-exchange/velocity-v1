@@ -27,31 +27,92 @@ compare a duration against a slot count without converting.
 
 ## The knob: `State.slot_duration_ms`
 
-`State.slot_duration_ms` is a `u16` carved in place from the padding after `promo_fee_tier`
-(bytes 1506..1508 of the account data; the offset is pinned by a `const_assert_eq!` and the
-native-offset guard test). Pre-upgrade accounts read `0` out of former padding, which means
-"unset" and resolves to the 400ms baseline, so there was no migration. Never read the field
-directly: `State::slot_duration()` returns the resolved [`SlotDuration`](#the-types).
+The live slot length is held by three `State` fields carved in place from the padding after
+`promo_fee_tier` (offsets pinned by `const_assert_eq!` and the native-offset guard test):
+
+- `slot_duration_ms` (`u16`, bytes 1506..1508): the current base value. Pre-upgrade accounts read
+  `0` out of former padding, which means "unset" and resolves to the 400ms baseline, so there was
+  no migration.
+- `pending_slot_duration_ms` (`u16`, bytes 1508..1510): a staged next value, `0` when nothing is
+  staged.
+- `slot_duration_effective_slot` (`u64`, bytes 1512..1520): the slot at which the staged value takes
+  effect.
+
+Never read the fields directly: `State::slot_duration()` reads the current slot from the Clock
+sysvar and returns the staged value once `slot_duration_effective_slot` has been reached, otherwise
+the base — so **State switches itself at the boundary with no second transaction**. The switch
+decision lives in one place, `math::time::active_slot_duration_ms`, shared by `slot_duration()`, the
+native fast-path reader, and the off-chain mirrors.
 
 The setter is `update_state_slot_duration_ms` (warm admin; CLI:
-`velocity-admin exchange set-slot-duration-ms <ms>`). It accepts only the feature-gate values
-`{350, 300, 250, 200}` (`VALID_SLOT_DURATIONS_MS`), and only strictly below the current effective
-value. Both guards exist for the same reason: the one catastrophic operator error would be setting
-the field back to a larger duration on a fast chain, which would silently shrink every wall-clock
-safety window at once (a 4s oracle window becomes 2s, a 60s liquidation ramp becomes 30s). Feature
-gates cannot deactivate, so slots never get slower again, and the monotonic guard makes the error
-unrepresentable rather than merely reviewed for. Flipping a gate value *early* (before the chain
-gate activates) errs in the lenient direction: windows temporarily widen, nothing loses liveness.
+`velocity-admin exchange set-slot-duration-ms <ms>`). It *stages* the switch during the target
+gate's warmup:
 
-Gate activation runbook, in full:
+1. **Exact successor only.** The value must be the one immediately after the current effective
+   duration on the schedule `400 -> 350 -> 300 -> 250 -> 200` (`next_slot_duration_ms`):
+   monotonic-decreasing (slots never get slower again; feature gates cannot deactivate), skips
+   rejected (so any in-flight measurement crosses at most one step), non-schedule typos rejected —
+   all in one check. Staging the next value first promotes an already-effective pending into the
+   base.
+2. **Effective slot read from the gate.** The instruction takes the target's IBRL feature-gate
+   account as a remaining account, verifies it (owned by `Feature111…`, staged with `data[0] == 1`),
+   and reads its activation slot; `slot_duration_effective_slot = activation + one epoch (432,000
+   slots)`. It does **not** require the warmup to have elapsed — the activation slot is exposed one
+   epoch ahead precisely so State can be staged during the warmup and flip in lockstep with the
+   chain. The SDK/CLI fill in the account from the target value.
+
+**Why lockstep matters — there is no universally-safe direction for a mismatch** between the live
+`slot_duration_ms` and the real slot length. A conversion serves both risk *ceilings* (oracle
+staleness: a shorter window is safer) and user-protection *minima* (liquidation ramps, grace
+periods: a longer window is safer), and the two want opposite errors. With max allowed real oracle
+age `= (window_ms / live_ms) x real_slot_ms`:
+
+- **live value ahead of the chain** (200ms while the chain is still 400ms): a 48s oracle window
+  becomes `48000/200 x 400 = 96s` — it *widens*, accepting staler oracles (unsafe ceiling); ramps
+  meanwhile *lengthen* (safe for the user).
+- **live value behind the chain** (400ms while the chain is already 200ms): the oracle window
+  becomes `48000/400 x 200 = 24s` — it *tightens* (safe ceiling, at a liveness cost); but ramps and
+  grace periods *shorten* to half their intended wall-clock (unsafe minimum).
+
+Staging during the warmup makes the effective value match the chain at the exact boundary, so
+neither lag is ever live in steady state — which is the whole point of reading the effective slot
+from the gate rather than requiring a hand-timed transaction at the boundary.
+
+Runbook, in full:
 
 ```
-# when the Feature Gate Tracker shows the next IBRL gate activated on mainnet
-velocity-admin exchange set-slot-duration-ms 350   # then 300, 250, 200 as each lands
+# during the target gate's warmup epoch (feature staged, not yet effective),
+# once the Feature Gate Tracker shows it activated for the *next* epoch:
+velocity-admin exchange set-slot-duration-ms 350   # then 300, 250, 200 as each is staged
 ```
 
-Nothing else. No guard-rail retunes, no per-market updates, no bot restarts (the off-chain
-mirrors read the same field from their state subscription).
+Nothing else. No guard-rail retunes, no per-market updates, no bot restarts (the off-chain mirrors
+read the same fields from their state subscription and apply the switch against a live chain slot).
+
+### The one residual: measurements that straddle the switch
+
+Staging removes the operator-timing lag, but it does not remove the arithmetic residual at the
+switch instant. The conversions assume every slot in a measured delta had the current duration;
+Solana's slot *counter* does not record that earlier slots were longer, so a measurement whose
+interval began before the switch slot and ends after it is converted with the new (shorter) duration
+and reads marginally younger than its true wall-clock age. That under-count is safe for elapsed/ramp
+sites (favors the user) and unsafe for oracle-freshness gates (briefly accepts a slightly-staler
+oracle).
+
+Two honest caveats on the magnitude:
+
+- A warm admin catching a lagged State up can stage successive gates back-to-back, so a measurement
+  straddling that catch-up can see more than one step at once. Each step still requires its gate to
+  be staged, so it only happens when the chain has genuinely passed those gates.
+- A measurement window longer than the gap between two real gate activations naturally spans more
+  than one transition. In practice the risk-sensitive windows (oracle staleness ~seconds,
+  liquidation ramp ~minutes) are far shorter than the weeks-apart rollout, so they span at most one
+  transition; only the long user-protection windows (idle, force-delete) can span more, and their
+  under-count direction favors the user.
+
+We accept this residual rather than carry a full per-regime activation-slot clock. The robust
+alternative, if the tail ever bites, is to keep the history of effective transition slots in State
+and compute elapsed time piecewise (`slot_duration_at(slot)` + a summed walk over the transitions).
 
 ## The types
 
@@ -217,16 +278,20 @@ every slot duration.
 
 ### Paths that run on the baseline (no `State` in scope)
 
-A few instruction paths load oracle validity without a velocity `State` account and so decode the
-guard-rail staleness windows at the 400ms baseline regardless of the live slot duration: the
-`vaults` program's margin/equity map loads, `jit-proxy`'s `check_order_constraints`, and the two
-`UpdateUser` handlers (margin-trading toggle, pool-id). These already ran on default guard rails,
-and floor-tightening is the safe direction (a 4s window becomes 2s at 200ms, stricter, never more
-permissive), so it is a liveness note, not a safety gap: at 200ms these paths want an oracle
-cranked within ~2s. Threading velocity `State` into the vaults CPI path would lift them to the
-live duration and is the one worth doing if that tightening ever bites. Similarly, keep-rs's
-liquidator worker samples the slot duration once at spawn, so a process spanning a gate activation
-keeps the old rate limit until restart; it is an internal pacing knob, not a correctness gate.
+A few instruction paths load oracle validity without a velocity `State` account in scope and so
+decode the guard-rail staleness windows at the 400ms baseline regardless of the live slot duration:
+`jit-proxy`'s `check_order_constraints`, the two `UpdateUser` handlers (margin-trading toggle,
+pool-id), and the vaults `manager_update_borrow` instruction (its account struct carries no velocity
+`State`). Every other vaults instruction now resolves the live duration from its `velocity_state`
+account via `State::slot_duration_from_account_info` (owner + discriminator validated, staging fields
+read by offset), so only that one vault path stays on the baseline. Floor-tightening is the safe
+direction (a 4s window becomes 2s at 200ms, stricter, never more permissive), so the remaining
+baseline paths are a liveness note, not a safety gap: at 200ms they want an oracle cranked within
+~2s. Threading `State` into `manager_update_borrow` (an account/ABI change) is the one step left if
+that tightening ever bites. keep-rs's liquidator and filler re-sample the slot duration on a live
+cadence — the liquidator's rate limiter reads a shared value the main loop refreshes, the filler
+refreshes on an elapsed-slot config tick — so a process spanning a gate activation picks up the new
+duration without a restart.
 
 ## Writing new code
 
@@ -264,7 +329,8 @@ subscription; no service needs a restart at a gate flip.
 - **Bots** (`apps/dlob-server`, `apps/keeper-bots-v2`): all pacing and threshold constants are
   wall-clock ms (`JITO_LEADER_LEAD_MS`, `MARKET_UPDATE_COOLDOWN_MS`, auction duration defaults,
   the vAMM stale-removal threshold), expressed in slots via `msToSlotsNum` and the shared
-  `currentSlotDuration(velocityClient)` helper. Operator config knobs are ms
+  `currentSlotDuration(velocityClient, currentSlot)` helper (pass a live chain slot so a staged
+  switch is applied). Operator config knobs are ms
   (`fillAttemptIntervalMs`, `deriskAuctionDurationMs`).
 - **Rust bots** (`rust/keep-rs`, `rust/swift`, `rust/velocity-rs`): mirror the program types
   through `velocity_rs::program::math::time`; the swift server's signed-msg staleness gate and

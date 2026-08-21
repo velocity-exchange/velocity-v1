@@ -319,6 +319,7 @@ impl FillerBot {
                                         perp_market.clob_quoter,
                                         tx_worker_ref.clone(),
                                         attest,
+                                        Arc::clone(&metrics),
                                     ).await;
                                 }
                                 SwiftEval::NotFillable(reason) => {
@@ -1048,6 +1049,7 @@ async fn clob_makers(
     direction: PositionDirection,
     size: u64,
     taker: ClobUserRefV0,
+    metrics: &Metrics,
 ) -> Vec<User> {
     let Ok(data) = velocity.rpc().get_account_data(&book).await else {
         log::warn!(target: TARGET, "clob makers: book {book} unreadable");
@@ -1058,15 +1060,31 @@ async fn clob_makers(
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or_default();
-    let makers = velocity_rs::clob::resting_makers(
+    // Asked for without a budget first, so what the budget leaves behind is
+    // countable. A book stops at the first maker the transaction did not
+    // bring, so every one dropped here is depth the taker did not get, and
+    // whether that is worth designing around turns on how often it happens.
+    let reachable = velocity_rs::clob::resting_makers(
         &data,
         velocity_rs::clob::swept_side(direction),
         size,
         taker,
         slot,
         now,
-        CLOB_MAKERS_PER_FILL,
+        usize::MAX,
     );
+    let carried = reachable.len().min(CLOB_MAKERS_PER_FILL);
+    metrics.clob_makers_carried.inc_by(carried as u64);
+    if reachable.len() > carried {
+        let dropped = reachable.len() - carried;
+        metrics.clob_makers_dropped.inc_by(dropped as u64);
+        log::info!(
+            target: TARGET,
+            "clob makers: book {book} had {} in reach, carrying {carried}, {dropped} left resting",
+            reachable.len()
+        );
+    }
+    let makers = &reachable[..carried];
     // A maker missing from the cache is dropped rather than fatal, the same
     // way a DLOB maker is: the book simply stops there and the fill takes
     // what it can reach.
@@ -1096,6 +1114,7 @@ async fn try_swift_fill(
     clob_quoter: Pubkey,
     tx_worker_ref: TxSender,
     attest: Option<&'static crate::attest::AttestClient>,
+    metrics: Arc<Metrics>,
 ) {
     log::info!(target: TARGET, "try fill swift order: {}", swift_order.order_uuid_str());
     let taker_order = swift_order.order_params();
@@ -1178,6 +1197,7 @@ async fn try_swift_fill(
                     ),
                     sub_account_id: taker_account_data.sub_account_id,
                 },
+                &metrics,
             )
             .await,
         );

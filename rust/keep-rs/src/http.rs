@@ -64,6 +64,10 @@ pub struct Metrics {
     pub trigger_actual: IntCounter,
     pub swift_placed: IntCounter,
     pub swift_place_skipped: IntCounter,
+    /// Book makers a fill reached past but could not carry.
+    pub clob_makers_dropped: IntCounter,
+    /// Book makers a fill did carry, so the two read as a ratio.
+    pub clob_makers_carried: IntCounter,
     pub fill_expected: IntCounterVec,
     pub fill_actual: IntCounterVec,
     pub liquidation_attempts: IntCounterVec,
@@ -149,6 +153,28 @@ impl Metrics {
         .unwrap();
         registry
             .register(Box::new(swift_place_skipped.clone()))
+            .unwrap();
+
+        // A book stops at the first maker the transaction did not bring, so
+        // every dropped maker is depth this fill left resting and the taker
+        // did not get. Whether that is worth designing around depends on how
+        // often it happens at all, which nothing measured until now.
+        let clob_makers_dropped = IntCounter::new(
+            "rfb_clob_makers_dropped_total",
+            "CLOB makers within reach of a fill that its account budget could not carry",
+        )
+        .unwrap();
+        registry
+            .register(Box::new(clob_makers_dropped.clone()))
+            .unwrap();
+
+        let clob_makers_carried = IntCounter::new(
+            "rfb_clob_makers_carried_total",
+            "CLOB makers a fill carried the accounts for",
+        )
+        .unwrap();
+        registry
+            .register(Box::new(clob_makers_carried.clone()))
             .unwrap();
 
         let liquidation_attempts = IntCounterVec::new(
@@ -300,6 +326,8 @@ impl Metrics {
             trigger_actual,
             swift_placed,
             swift_place_skipped,
+            clob_makers_dropped,
+            clob_makers_carried,
         }
     }
 }

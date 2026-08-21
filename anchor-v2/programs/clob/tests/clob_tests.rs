@@ -1011,6 +1011,34 @@ fn a_short_user_set_trades_less_of_the_book_not_a_worse_part() {
     assert_eq!(quote(&mut ctx, Direction::Long, 12), vec![(101, 7)]);
 }
 
+/// The report is one order deep, and deliberately so.
+///
+/// It says "here is the order I stopped on", not "here is everything behind
+/// me". A caller holds that much back from worse-priced sources and no more,
+/// which understates a deep book — genuine depth past the stop does reach a
+/// worse price. The alternative is worse: a report covering everything behind
+/// the stop would let anyone who can occupy the caller's account budget with
+/// small orders declare an arbitrary amount of the taker's size unfillable,
+/// and cancel afterwards. Under-reporting caps what that is worth to them.
+#[test]
+fn the_withheld_report_covers_the_order_it_stopped_on_and_no_more() {
+    let mut ctx = setup();
+    let carried = addr(Pubkey::new_unique());
+    let first_missing = addr(Pubkey::new_unique());
+    let behind = addr(Pubkey::new_unique());
+    ctx.svm.warp_to_slot(10);
+    place(&mut ctx, place_args(Side::Ask, 100, 5), carried);
+    place(&mut ctx, place_args(Side::Ask, 101, 7), first_missing);
+    place(&mut ctx, place_args(Side::Ask, 102, 900), behind);
+    ctx.svm.warp_to_slot(20);
+
+    assert_eq!(
+        quote_withheld(&mut ctx, Direction::Long, 1_000, Some(vec![carried])),
+        Some((101, 7)),
+        "the order the walk stopped on, not the 900 sitting behind it"
+    );
+}
+
 #[test]
 fn partial_fill_remainder_below_min_order_size_is_culled() {
     let mut ctx = setup();

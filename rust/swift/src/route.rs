@@ -19,7 +19,7 @@ use {
         response::IntoResponse,
         Json,
     },
-    relay_chain_source::RpcSource,
+    relay_chain_source::{ChainSource, RpcSource},
     serde::{Deserialize, Serialize},
     solana_pubkey::Pubkey,
     std::collections::HashMap,
@@ -29,6 +29,7 @@ use {
         quote_view::{build_quote_router_ix, perp_market_pda, read_zero_copy, simulate_quote_view},
         split_across_quoters, Direction, PriceLevel, QuoterBook,
     },
+    velocity_rs::program::state::{prop_amm::ClobUserRefV0, router_quote::QuotedSourceKind},
 };
 
 /// Everything `/route` needs, independent of the rest of the server: its
@@ -98,6 +99,14 @@ pub struct RouteQuery {
     direction: String,
     /// Taker base size, BASE_PRECISION units.
     size: u64,
+    /// The taker's own authority and sub-account, when it has one. A book
+    /// never fills a user against itself, so a caller that also rests on the
+    /// book gets a different answer than one that does not. Omitted means "no
+    /// resting liquidity of my own here", which is the common case and is
+    /// safe: the worst it costs is naming one maker the fill will skip.
+    taker_authority: Option<String>,
+    #[serde(default)]
+    taker_sub_account_id: u16,
 }
 
 /// One source's verified book in the response. Prices and sizes are
@@ -131,6 +140,16 @@ struct AllocationOut {
     quote: String,
 }
 
+/// One book maker the fill has to carry, and the two accounts it costs.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MakerOut {
+    authority: String,
+    sub_account_id: u16,
+    user: String,
+    user_stats: String,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct RouteResponse {
@@ -146,6 +165,22 @@ struct RouteResponse {
     filled_base: String,
     filled_quote: String,
     unfilled_base: String,
+    /// The makers resting on the route's CLOB books that this fill would
+    /// sweep, best price first, with the two accounts each costs.
+    ///
+    /// A fill settles only for users whose accounts it carries, and a book
+    /// stores its makers as an authority and a sub-account rather than an
+    /// account key — so this is the one part of a fill's account set that
+    /// cannot be worked out without reading the book. The list is the
+    /// program's own walk, not an estimate.
+    ///
+    /// Carry them in this order and stop where the transaction runs out of
+    /// room: the book stops at the first maker the caller did not bring, so a
+    /// prefix fills and a gap forfeits everything behind it.
+    ///
+    /// DLOB makers are not here and cannot be — they rest in `User.orders`,
+    /// which this endpoint does not read. They come from `/topMakers`.
+    clob_makers: Vec<MakerOut>,
 }
 
 pub enum RouteError {
@@ -269,6 +304,15 @@ pub async fn route_quote(
 
     let filled_base: u64 = allocations.iter().map(|a| a.base).sum();
     let filled_quote: u64 = allocations.iter().map(|a| a.quote).sum();
+    let clob_makers = clob_makers_for_route(&ctx.source, &ctx.velocity, &view, direction, &query)
+        .await
+        .unwrap_or_else(|err| {
+            // A book that cannot be read costs the caller the maker half of
+            // its answer, not the whole route: the split above stands on the
+            // simulation, which already succeeded.
+            log::warn!(target: "route", "clob makers unavailable: {err:#}");
+            Vec::new()
+        });
     Ok(Json(RouteResponse {
         market_index: view.market,
         direction: direction_label,
@@ -308,5 +352,109 @@ pub async fn route_quote(
         filled_base: filled_base.to_string(),
         filled_quote: filled_quote.to_string(),
         unfilled_base: query.size.saturating_sub(filled_base).to_string(),
+        clob_makers,
     }))
+}
+
+/// The makers a fill would sweep off every CLOB book on the route.
+///
+/// Walked at the taker's whole size rather than at what the split allocated:
+/// on-chain the book is quoted before anything is split, so the makers it
+/// touches are the ones within the full size. Sizing this to the allocation
+/// would name fewer accounts than the fill needs.
+async fn clob_makers_for_route(
+    source: &RpcSource,
+    velocity: &Pubkey,
+    view: &velocity_router_sim::quote_view::QuoteView,
+    direction: Direction,
+    query: &RouteQuery,
+) -> anyhow::Result<Vec<MakerOut>> {
+    use velocity_rs::program::state::prop_amm::{QuoterType, QuoterV0};
+
+    let taker = ClobUserRefV0 {
+        authority: match query.taker_authority.as_deref() {
+            Some(text) => anchor_lang::prelude::Pubkey::new_from_array(
+                text.parse::<Pubkey>()
+                    .map_err(|err| anyhow::anyhow!("takerAuthority: {err}"))?
+                    .to_bytes(),
+            ),
+            None => anchor_lang::prelude::Pubkey::default(),
+        },
+        sub_account_id: query.taker_sub_account_id,
+    };
+
+    let entry_keys: Vec<Pubkey> = view
+        .books
+        .iter()
+        .filter(|book| book.kind == QuotedSourceKind::Quoter)
+        .map(|book| book.key)
+        .collect();
+    if entry_keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let entries = source.get_multiple_accounts(&entry_keys).await?;
+
+    let mut books = Vec::new();
+    for account in entries.into_iter().flatten() {
+        let entry: QuoterV0 = read_zero_copy(&account.data)?;
+        if entry.quoter_type == QuoterType::Clob {
+            books.push(entry.response_account);
+        }
+    }
+    if books.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let side = velocity_rs::clob::swept_side(match direction {
+        Direction::Long => velocity_rs::program::controller::position::PositionDirection::Long,
+        Direction::Short => velocity_rs::program::controller::position::PositionDirection::Short,
+    });
+    let mut out = Vec::new();
+    for (key, account) in books
+        .iter()
+        .zip(source.get_multiple_accounts(&books).await?)
+    {
+        let Some(account) = account else {
+            anyhow::bail!("clob market {key} missing");
+        };
+        // No cap: the endpoint reports what the book holds and the caller
+        // decides how much of it fits in a transaction.
+        for maker in velocity_rs::clob::resting_makers(
+            &account.data,
+            side,
+            query.size,
+            taker,
+            view.slot,
+            chrono_now(),
+            usize::MAX,
+        ) {
+            let authority = Pubkey::new_from_array(maker.authority.to_bytes());
+            let user = Pubkey::find_program_address(
+                &[
+                    b"user",
+                    authority.as_ref(),
+                    &maker.sub_account_id.to_le_bytes(),
+                ],
+                velocity,
+            )
+            .0;
+            let user_stats =
+                Pubkey::find_program_address(&[b"user_stats", authority.as_ref()], velocity).0;
+            out.push(MakerOut {
+                authority: authority.to_string(),
+                sub_account_id: maker.sub_account_id,
+                user: user.to_string(),
+                user_stats: user_stats.to_string(),
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Wall clock in seconds, for the book walk's expiry check.
+fn chrono_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default()
 }

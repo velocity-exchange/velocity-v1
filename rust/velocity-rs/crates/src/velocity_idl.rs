@@ -3415,7 +3415,7 @@ pub mod types {
     )]
     pub struct CancelAllClobOrdersParams {
         pub market_index: u16,
-        pub sides: ClobCancelSides,
+        pub sides: CancelSidesV0,
     }
     #[repr(C)]
     #[derive(
@@ -3446,7 +3446,7 @@ pub mod types {
         Debug,
         PartialEq,
     )]
-    pub enum ClobCancelSides {
+    pub enum CancelSidesV0 {
         #[default]
         Bids,
         Asks,

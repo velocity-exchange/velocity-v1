@@ -288,6 +288,11 @@ pub fn get_revenue_share_escrow_account<'a>(
 /// `RevenueShareEscrow` in remaining accounts and returns its persistent Accelerated
 /// status. The account is intentionally readonly: popular referrers must not
 /// become writable lock hotspots on every referee fill.
+///
+/// The account is optional and is only consumed when it is present, is a `UserStats`, and
+/// belongs to the escrow's referrer. Anything else leaves the iterator untouched and yields
+/// the standard reward rate, so a caller that does not supply it still fills. The flag only
+/// selects between two reward rates, which is not worth failing a fill over.
 pub fn get_referrer_accelerated_status<'a>(
     account_info_iter: &mut Peekable<Iter<'a, AccountInfo<'a>>>,
     escrow: Option<&RevenueShareEscrowZeroCopyMut<'a>>,
@@ -296,20 +301,33 @@ pub fn get_referrer_accelerated_status<'a>(
         return Ok(false);
     };
 
-    let referrer_stats_account_info =
-        next_account_info(account_info_iter).or(Err(ErrorCode::ReferrerStatsNotFound))?;
+    let Some(account_info) = account_info_iter.peek() else {
+        return Ok(false);
+    };
 
-    let referrer_stats: AccountLoader<UserStats> =
-        AccountLoader::try_from(referrer_stats_account_info)
-            .or(Err(ErrorCode::CouldNotDeserializeReferrerStats))?;
+    // Check owner, discriminator and authority before consuming, so a non-matching account stays
+    // in the iterator for whichever group actually owns it.
+    if account_info.owner != &crate::ID || account_info.data_len() < 8 + 32 {
+        return Ok(false);
+    }
+
+    {
+        let borrowed_data = account_info.data.borrow();
+        if array_ref![&borrowed_data, 0, 8] != UserStats::DISCRIMINATOR {
+            return Ok(false);
+        }
+        if array_ref![&borrowed_data, 8, 32] != &referrer.to_bytes() {
+            return Ok(false);
+        }
+    }
+
+    let account_info = account_info_iter.next().safe_unwrap()?;
+
+    let referrer_stats: AccountLoader<UserStats> = AccountLoader::try_from(account_info)
+        .or(Err(ErrorCode::CouldNotDeserializeReferrerStats))?;
     let referrer_stats = referrer_stats
         .load()
         .or(Err(ErrorCode::UnableToLoadUserStatsAccount))?;
-
-    validate!(
-        referrer_stats.authority == referrer,
-        ErrorCode::ReferrerAndReferrerStatsAuthorityUnequal
-    )?;
 
     Ok(referrer_stats.is_accelerated_referrer())
 }

@@ -6545,34 +6545,66 @@ export class VelocityClient {
 	 * a referred taker's referrer UserStats follows the escrow.
 	 *
 	 * Throws when `takerEscrow` does not belong to `takerAuthority`.
+	 *
+	 * A `UserStats` fetch is only issued when nothing local answers whether the taker is
+	 * referred. Pass `takerReferrer` (or a decoded `takerEscrow`) to skip it; the taker's own
+	 * paths read the subscribed `UserStats` for `this.authority`.
 	 */
 	private async getTakerRevenueShareAccountMetas(
 		takerAuthority: PublicKey,
 		orderHasBuilder: boolean,
 		takerEscrow?: RevenueShareEscrowAccount,
-		takerIsReferred?: boolean
+		takerIsReferred?: boolean,
+		takerReferrer?: PublicKey
 	): Promise<AccountMeta[]> {
 		if (takerEscrow && !takerEscrow.authority.equals(takerAuthority)) {
 			throw new Error(
 				'takerEscrow.authority does not match the taker user account authority'
 			);
 		}
-		let takerStats: UserStatsAccount | undefined;
-		if (!takerEscrow && takerIsReferred === undefined) {
-			takerStats = await fetchUserStatsAccount(
-				this.connection,
-				this.program,
-				takerAuthority
-			);
+
+		const hasReferrer = (referrer?: PublicKey): referrer is PublicKey =>
+			!!referrer && !referrer.equals(PublicKey.default);
+
+		let referrer = takerEscrow?.referrer ?? takerReferrer;
+
+		// The taker is this client's own authority on the place-and-take / place-and-make
+		// paths, where the subscribed UserStats already holds the referrer.
+		let localStats: UserStatsAccount | undefined;
+		if (!referrer && takerAuthority.equals(this.authority)) {
+			localStats = this.userStats?.getAccount();
+			referrer = localStats?.referrer;
 		}
 
 		// A taker is referred when their escrow was initialized with a referrer.
 		// Resolve this automatically for immediate fill builders so their default
 		// call path cannot omit mandatory referral accounts.
-		const referred =
+		let referred =
 			!!takerIsReferred ||
 			(!!takerEscrow && escrowHasReferrer(takerEscrow)) ||
-			(!!takerStats && isBuilderReferral(takerStats));
+			(!!localStats && isBuilderReferral(localStats)) ||
+			hasReferrer(takerReferrer);
+
+		// Nothing local settles it, so fetch once and use the result for both the gate below
+		// and the referrer pubkey.
+		if (
+			!referred &&
+			!takerEscrow &&
+			!localStats &&
+			takerIsReferred === undefined &&
+			!takerReferrer
+		) {
+			const fetchedStats = await fetchUserStatsAccount(
+				this.connection,
+				this.program,
+				takerAuthority
+			);
+			if (fetchedStats) {
+				referred = isBuilderReferral(fetchedStats);
+				referrer = fetchedStats.referrer;
+			}
+		}
+
 		if (!orderHasBuilder && !referred) {
 			return [];
 		}
@@ -6591,16 +6623,18 @@ export class VelocityClient {
 		// The program reads the referrer's persistent Accelerated status immediately after
 		// the taker's escrow. Keep this account readonly so a popular referrer does
 		// not become a write lock bottleneck for every referee fill.
-		let referrer = takerEscrow?.referrer ?? takerStats?.referrer;
-		if (!referrer) {
-			takerStats ??= await fetchUserStatsAccount(
-				this.connection,
-				this.program,
-				takerAuthority
-			);
-			referrer = takerStats?.referrer;
+		// `takerReferrer` is authoritative when the caller supplied it, including as the default
+		// pubkey to say the referrer's status is not being resolved.
+		if (referred && !hasReferrer(referrer) && takerReferrer === undefined) {
+			referrer = (
+				await fetchUserStatsAccount(
+					this.connection,
+					this.program,
+					takerAuthority
+				)
+			)?.referrer;
 		}
-		if (referrer && !referrer.equals(PublicKey.default)) {
+		if (hasReferrer(referrer)) {
 			metas.push({
 				pubkey: getUserStatsAccountPublicKey(this.program.programId, referrer),
 				isWritable: false,
@@ -7590,6 +7624,9 @@ export class VelocityClient {
 	 * @param hasBuilderFee - Force-attach the taker escrow regardless of the detected builder flag.
 	 * @param takerEscrow - Optional decoded escrow. Supplying it avoids a UserStats fetch; referral
 	 * accounts are otherwise discovered automatically.
+	 * @param takerIsReferred - Whether the taker is referred, when already known.
+	 * @param takerReferrer - The taker's referrer authority, when already known. Supplying this
+	 * (or `takerEscrow`) keeps the fill path free of a `UserStats` fetch.
 	 * @throws If no order can be resolved to fill, or (for a non-signed-msg fill) `order` is omitted.
 	 * @returns The instruction.
 	 */
@@ -7611,7 +7648,11 @@ export class VelocityClient {
 		// referrer). This mirrors the on-chain gate, which reads the taker's
 		// UserStats.referrerStatus BuilderReferral bit — e.g. pass
 		// `isBuilderReferral(takerUserStats)`. No escrow account data is needed.
-		takerIsReferred?: boolean
+		takerIsReferred?: boolean,
+		// The taker's referrer authority, when the caller already holds the taker's
+		// UserStats (e.g. pass `takerUserStats.referrer`). Supplying it avoids a
+		// UserStats fetch on the fill hot path.
+		takerReferrer?: PublicKey
 	): Promise<TransactionInstruction> {
 		const userStatsPublicKey = getUserStatsAccountPublicKey(
 			this.program.programId,
@@ -7701,7 +7742,8 @@ export class VelocityClient {
 			userAccount.authority,
 			withBuilder,
 			takerEscrow,
-			takerIsReferred
+			takerIsReferred,
+			takerReferrer
 		);
 		remainingAccounts.push(...takerRevenueShareMetas);
 

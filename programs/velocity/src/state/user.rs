@@ -28,6 +28,7 @@ use {
         },
         math_error, msg, safe_increment,
         state::{
+            events::{emit_accelerated_referral_status_changed, AcceleratedReferralStatusChange},
             margin_calculation::{MarginContext, MarginTypeConfig},
             oracle::StrictOraclePrice,
             oracle_map::OracleMap,
@@ -2040,6 +2041,25 @@ impl UserStats {
 
         self.accelerated_referral_status |= AcceleratedReferralStatus::Accelerated as u8;
         true
+    }
+
+    /// `try_auto_enroll_accelerated_referral` plus the transition event, for the eligible
+    /// interactions (user initialization, perp fills, swaps) that all enroll the same way.
+    pub fn try_auto_enroll_accelerated_referral_and_emit(
+        &mut self,
+        enrollment_enabled: bool,
+        now: i64,
+    ) {
+        let previous_status = self.accelerated_referral_status;
+        if self.try_auto_enroll_accelerated_referral(enrollment_enabled) {
+            emit_accelerated_referral_status_changed(
+                now,
+                self.authority,
+                previous_status,
+                self.accelerated_referral_status,
+                AcceleratedReferralStatusChange::AutoEnrollment,
+            );
+        }
     }
 
     /// Admin grants clear a prior enrollment block. Admin revocations set the

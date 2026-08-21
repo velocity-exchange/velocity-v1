@@ -54,7 +54,7 @@ export async function buildPlacePerpOrderInstruction(args: {
  * @param args.user - the taker's `User` account.
  * @param args.userStats - the taker's `UserStats` PDA.
  * @param args.authority - signer that must own or be a registered delegate of `user`.
- * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`, followed by maker/referrer `(User, UserStats)` pairs, followed by the taker's `RevenueShareEscrow` account if builder codes are enabled.
+ * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`, followed by maker/referrer `(User, UserStats)` pairs, followed by the taker's `RevenueShareEscrow` account if builder codes are enabled, and, when that taker is referred, the referrer's readonly `UserStats` after the escrow.
  * @returns the unsigned `placeAndTakePerpOrder` `TransactionInstruction`.
  */
 export async function buildPlaceAndTakePerpOrderInstruction(args: {
@@ -96,7 +96,7 @@ export async function buildPlaceAndTakePerpOrderInstruction(args: {
  * @param args.taker - the taker's `User` account (order owner being filled).
  * @param args.takerStats - the taker's `UserStats` PDA.
  * @param args.authority - signer that must own or be a registered delegate of `user` (the maker).
- * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`, followed by any additional maker/referrer `(User, UserStats)` pairs needed to fill `taker`'s order, followed by `taker`'s `RevenueShareEscrow` account if builder codes are enabled.
+ * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`, followed by any additional maker/referrer `(User, UserStats)` pairs needed to fill `taker`'s order, followed by `taker`'s `RevenueShareEscrow` account if builder codes are enabled, and, when that taker is referred, the referrer's readonly `UserStats` after the escrow.
  * @returns the unsigned `placeAndMakePerpOrder` `TransactionInstruction`.
  */
 export async function buildPlaceAndMakePerpOrderInstruction(args: {

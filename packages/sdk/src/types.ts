@@ -466,6 +466,30 @@ export type NewUserRecord = {
 	referrer: PublicKey;
 };
 
+/** Which code path changed an authority's Accelerated referral status. */
+export class AcceleratedReferralStatusChange {
+	static readonly AUTO_ENROLLMENT = { autoEnrollment: {} };
+	static readonly ADMIN_GRANT = { adminGrant: {} };
+	static readonly ADMIN_REVOKE = { adminRevoke: {} };
+}
+
+/**
+ * Emitted whenever an authority's `acceleratedReferralStatus` bitmask changes: automatic
+ * enrollment on an eligible interaction, or an admin grant/revoke. `previousStatus` and
+ * `newStatus` are `AcceleratedReferralStatus` bitmasks.
+ */
+export type AcceleratedReferralStatusChangedRecord = {
+	ts: BN;
+	authority: PublicKey;
+	previousStatus: number;
+	newStatus: number;
+	action: {
+		autoEnrollment?: any;
+		adminGrant?: any;
+		adminRevoke?: any;
+	};
+};
+
 /** Emitted on every deposit, withdraw, or internal transfer that moves tokens into/out of a spot market. */
 export type DepositRecord = {
 	ts: BN;

@@ -60,10 +60,8 @@ use {
         print_error, safe_decrement, safe_increment,
         state::{
             events::{
-                emit_accelerated_referral_status_changed, emit_stack,
-                AcceleratedReferralStatusChange, DepositDirection, DepositExplanation,
-                DepositRecord, NewUserRecord, OrderAction, OrderActionExplanation,
-                OrderActionRecord, OrderRecord, SwapRecord,
+                emit_stack, DepositDirection, DepositExplanation, DepositRecord, NewUserRecord,
+                OrderAction, OrderActionExplanation, OrderActionRecord, OrderRecord, SwapRecord,
             },
             fill_mode::FillMode,
             margin_calculation::MarginContext,
@@ -191,8 +189,7 @@ pub fn handle_initialize_user<'c: 'info, 'info>(
 
     let mut state = ctx.accounts.state.load_mut()?;
     let now_ts = Clock::get()?.unix_timestamp;
-    try_auto_enroll_accelerated_referral(
-        &mut user_stats,
+    user_stats.try_auto_enroll_accelerated_referral_and_emit(
         state.accelerated_referral_enrollment_enabled(),
         now_ts,
     );
@@ -274,8 +271,7 @@ pub fn handle_initialize_user_stats<'c: 'info, 'info>(
     };
 
     let mut state = ctx.accounts.state.load_mut()?;
-    try_auto_enroll_accelerated_referral(
-        &mut user_stats,
+    user_stats.try_auto_enroll_accelerated_referral_and_emit(
         state.accelerated_referral_enrollment_enabled(),
         clock.unix_timestamp,
     );
@@ -4812,26 +4808,12 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         now,
     )?;
 
-    try_auto_enroll_accelerated_referral(
-        &mut user_stats,
+    user_stats.try_auto_enroll_accelerated_referral_and_emit(
         state.accelerated_referral_enrollment_enabled(),
         now,
     );
 
     Ok(())
-}
-
-fn try_auto_enroll_accelerated_referral(user_stats: &mut UserStats, enabled: bool, now: i64) {
-    let previous_status = user_stats.accelerated_referral_status;
-    if user_stats.try_auto_enroll_accelerated_referral(enabled) {
-        emit_accelerated_referral_status_changed(
-            now,
-            user_stats.authority,
-            previous_status,
-            user_stats.accelerated_referral_status,
-            AcceleratedReferralStatusChange::AutoEnrollment,
-        );
-    }
 }
 
 #[access_control(

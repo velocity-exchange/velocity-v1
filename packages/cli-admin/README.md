@@ -45,6 +45,7 @@ velocity-admin spot-market set-deposit-cap <market> <threshold> <pctPerDay>
 velocity-admin exchange set-status <bitfield>
 velocity-admin exchange set-slot-duration-ms <ms>      # warm admin; stage next gate value (400->350->300->250->200) during its warmup (previews the gate's activation/effective slots); State auto-switches at the boundary
 velocity-admin exchange set-solvency-status <bitfield>  # cold admin; gates solvency-repair ixs (1=solvencyRepairPaused)
+velocity-admin exchange set-accelerated-referral-enrollment <enabled>  # warm/cold admin; while enabled, account init and eligible fills/swaps permanently grant Accelerated referral status
 
 velocity-admin feature-flags median-trigger-price <true|false>  # bit 2; enabling requires cold admin
 velocity-admin feature-flags builder-codes <true|false>  # bit 4; enabling requires cold admin
@@ -54,6 +55,7 @@ velocity-admin fees set-recipient <pubkey> <perp|spot>           # cold admin
 velocity-admin fees set-split <ammFeeNumerator> <ifFeeNumerator> # warm/cold admin
 velocity-admin fees set-taker-addon <market> <tenthBps>          # warm/cold admin; additive taker-fee add-on, -100..100 tenth-bps
 velocity-admin fees set-promo-tier <tier>                        # warm/cold admin; promo fee-tier floor for everyone, 0 = off
+velocity-admin fees set-referral-rate <percent>                  # warm/cold admin; Standard referrer reward on every active perp tier; Accelerated is a fixed constant
 velocity-admin fees withdraw-perp <market> <amount>  # FeeWithdraw hot key; pays the recipient's ATA (created if needed)
 velocity-admin fees withdraw-spot <market> <amount>  # FeeWithdraw hot key; pays the recipient's ATA (created if needed)
 velocity-admin fees sweep <market>                               # permissionless
@@ -65,6 +67,7 @@ velocity-admin user set-delegate <delegate> [--sub-accounts <n>] [--allow-transf
 velocity-admin user set-special-status <user> <flags>
 velocity-admin user set-equity-floor <user> <floor> <buffer>     # warm/cold admin; QUOTE_PRECISION raw units; floor 0 disables both checks
 velocity-admin user reset-equity-breaker <userStats>             # warm/cold admin; unfreezes an authority after the breaker tripped
+velocity-admin user set-accelerated-referral <authority> <accelerated>  # warm/cold admin; grant clears the auto-enrollment block, revoke sets it
 velocity-admin user equity-floor-status <authority>              # read-only; per-subaccount equity/floor/buffer/headroom + level + breaker flag
 velocity-admin user close-positions [--sub-accounts <csv>]       # signer = account authority; cancel all orders + close all perp positions reduce-only
 velocity-admin user admin-deposit <market> <amount> --user <pk> --user-token-account <pk>

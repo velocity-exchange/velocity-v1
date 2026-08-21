@@ -3,7 +3,7 @@ import { assert } from 'chai';
 
 import { Program } from '@coral-xyz/anchor';
 
-import { Keypair, PublicKey } from '@solana/web3.js';
+import { Keypair, PublicKey, Transaction } from '@solana/web3.js';
 
 import {
 	TestClient,
@@ -591,6 +591,66 @@ describe('referrer', () => {
 			.muln(feeTier.refereeFeeNumerator)
 			.divn(feeTier.refereeFeeDenominator);
 		assert(discount.eq(expectedDiscount));
+	});
+
+	it('Standard reward applies when the fill omits the referrer UserStats', async () => {
+		// A client built before the accelerated-referral upgrade sends the taker's escrow with no
+		// referrer UserStats behind it. The fill must still land, at the Standard rate.
+		const marketIndex = 0;
+		await referrerVelocityClient.fetchAccounts();
+		assert(
+			(referrerVelocityClient.getUserStats().getAccount()
+				.acceleratedReferralStatus &
+				AcceleratedReferralStatus.Accelerated) >
+				0
+		);
+
+		await refereeVelocityClient.placePerpOrder(
+			getLimitOrderParams({
+				baseAssetAmount: BASE_PRECISION,
+				direction: PositionDirection.SHORT,
+				marketIndex,
+				price: new BN(99).mul(PRICE_PRECISION),
+			})
+		);
+		await refereeVelocityClient.fetchAccounts();
+		const order = refereeVelocityClient.getUser().getOpenOrders()[0];
+
+		const fillIx = await fillerVelocityClient.getFillPerpOrderIx(
+			await refereeVelocityClient.getUserAccountPublicKey(),
+			refereeVelocityClient.getUserAccount(),
+			{ marketIndex, orderId: order.orderId },
+			undefined, // makerInfo
+			undefined, // fillerSubAccountId
+			undefined, // isSignedMsg
+			undefined, // fillerAuthority
+			undefined, // hasBuilderFee
+			undefined, // takerEscrow
+			true, // takerIsReferred: attach the escrow
+			PublicKey.default // takerReferrer: and nothing behind it
+		);
+		const { txSig } = await fillerVelocityClient.sendTransaction(
+			(await fillerVelocityClient.buildTransaction([fillIx])) as Transaction
+		);
+		await eventSubscriber.awaitTx(txSig);
+
+		const eventRecord = eventSubscriber.getEventsArray('OrderActionRecord')[0];
+		const feeTier =
+			refereeVelocityClient.getStateAccount().perpFeeStructure.feeTiers[0];
+		const grossFee = new BN(eventRecord.quoteAssetAmountFilled)
+			.muln(feeTier.feeNumerator)
+			.divn(feeTier.feeDenominator);
+		const expectedStandardReward = grossFee
+			.muln(feeTier.referrerRewardNumerator)
+			.divn(feeTier.referrerRewardDenominator);
+		assert(new BN(eventRecord.referrerReward).eq(expectedStandardReward));
+		assert(
+			!new BN(eventRecord.referrerReward).eq(
+				grossFee
+					.muln(ACCELERATED_REFERRER_REWARD_PERCENT)
+					.divn(feeTier.referrerRewardDenominator)
+			)
+		);
 	});
 
 	it('withdraw', async () => {

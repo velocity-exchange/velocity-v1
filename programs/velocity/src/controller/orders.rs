@@ -41,8 +41,7 @@ use {
         msg, print_error,
         state::{
             events::{
-                emit_accelerated_referral_status_changed, emit_stack, get_order_action_record,
-                AcceleratedReferralStatusChange, OrderAction, OrderActionExplanation,
+                emit_stack, get_order_action_record, OrderAction, OrderActionExplanation,
                 OrderActionRecord, OrderRecord,
             },
             fill_mode::FillMode,
@@ -2617,17 +2616,17 @@ fn fulfill_perp_order(
 
         if maker.authority != user.authority {
             let mut maker_stats = makers_and_referrer_stats.get_ref_mut(&maker.authority)?;
-            try_auto_enroll_accelerated_referral(
-                &mut maker_stats,
+            maker_stats.try_auto_enroll_accelerated_referral_and_emit(
                 accelerated_referral_enrollment_enabled,
                 now,
             );
         }
     }
 
-    if base_asset_amount != 0 {
-        try_auto_enroll_accelerated_referral(
-            user_stats,
+    // The maker seat above is a voluntary fill even during a liquidation, so it stays eligible.
+    // The taker seat of a liquidation fill is the liquidatee, who did not initiate anything.
+    if base_asset_amount != 0 && !fill_mode.is_liquidation() {
+        user_stats.try_auto_enroll_accelerated_referral_and_emit(
             accelerated_referral_enrollment_enabled,
             now,
         );
@@ -2643,19 +2642,6 @@ fn fulfill_perp_order(
     }
 
     Ok((base_asset_amount, quote_asset_amount))
-}
-
-fn try_auto_enroll_accelerated_referral(user_stats: &mut UserStats, enabled: bool, now: i64) {
-    let previous_status = user_stats.accelerated_referral_status;
-    if user_stats.try_auto_enroll_accelerated_referral(enabled) {
-        emit_accelerated_referral_status_changed(
-            now,
-            user_stats.authority,
-            previous_status,
-            user_stats.accelerated_referral_status,
-            AcceleratedReferralStatusChange::AutoEnrollment,
-        );
-    }
 }
 
 #[inline(always)]

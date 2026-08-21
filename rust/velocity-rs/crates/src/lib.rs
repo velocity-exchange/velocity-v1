@@ -2602,6 +2602,10 @@ impl<'a> TransactionBuilder<'a> {
             accounts.push(AccountMeta::new(*high_leverage_mode_account(), false));
         }
 
+        // A taker order missing from the supplied account (a stale cache, or an order that has
+        // not landed yet) is treated as carrying a builder, so the escrow is attached rather
+        // than omitted. Attaching one that is not needed is harmless: the program peeks at the
+        // account and ignores anything that is not an initialized escrow.
         let taker_order_has_builder = taker_account
             .orders
             .iter()

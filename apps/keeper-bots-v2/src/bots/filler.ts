@@ -1024,6 +1024,7 @@ export class FillerBot extends TxThreaded implements Bot {
 		takerUserSlot: number;
 		referrerInfo: ReferrerInfo | undefined;
 		takerIsReferred: boolean;
+		takerReferrer: PublicKey | undefined;
 		marketType: MarketType;
 	}> {
 		const makerInfos: Array<DataAndSlot<MakerInfo>> = [];
@@ -1089,6 +1090,10 @@ export class FillerBot extends TxThreaded implements Bot {
 		const takerIsReferred = takerStatsAccount
 			? isBuilderReferral(takerStatsAccount)
 			: false;
+		// The fill ix needs the referrer authority to derive the referrer's readonly
+		// UserStats. It comes from the UserStats already loaded here, so passing it keeps
+		// the SDK from refetching.
+		const takerReferrer = takerStatsAccount?.referrer;
 
 		return Promise.resolve({
 			makerInfos,
@@ -1097,6 +1102,7 @@ export class FillerBot extends TxThreaded implements Bot {
 			takerUserSlot: takerUserAcct.slot,
 			referrerInfo,
 			takerIsReferred,
+			takerReferrer,
 			marketType: nodeToFill.node.order!.marketType,
 		});
 	}
@@ -1510,6 +1516,7 @@ export class FillerBot extends TxThreaded implements Bot {
 				takerUserPubKey,
 				takerUserSlot,
 				takerIsReferred,
+				takerReferrer,
 				marketType,
 			} = await this.getNodeFillInfo(nodeToFill);
 
@@ -1577,7 +1584,8 @@ export class FillerBot extends TxThreaded implements Bot {
 						undefined, // fillerAuthority
 						undefined, // hasBuilderFee (derived from order bitflags)
 						undefined, // takerEscrow (referred case signalled below)
-						takerIsReferred
+						takerIsReferred,
+						takerReferrer
 					)
 				);
 
@@ -1770,6 +1778,7 @@ export class FillerBot extends TxThreaded implements Bot {
 				takerUserSlot,
 				referrerInfo,
 				takerIsReferred,
+				takerReferrer,
 				marketType,
 			} = await this.getNodeFillInfo(nodeToFill);
 
@@ -1823,7 +1832,8 @@ export class FillerBot extends TxThreaded implements Bot {
 				undefined, // fillerAuthority
 				undefined, // hasBuilderFee (derived from order bitflags)
 				undefined, // takerEscrow (referred case signalled below)
-				takerIsReferred
+				takerIsReferred,
+				takerReferrer
 			);
 
 			if (!ix) {
@@ -2077,6 +2087,7 @@ export class FillerBot extends TxThreaded implements Bot {
 			// The taker of a triggered order can also be referred; the fill leg then
 			// requires their escrow (see getNodeFillInfo).
 			let takerIsReferred = false;
+			let takerReferrer: PublicKey | undefined;
 			try {
 				const takerUserPubKey = nodeToTrigger.node.userAccount.toString();
 				const takerUserAcct = await this.getUserAccountAndSlotFromMap(
@@ -2090,6 +2101,7 @@ export class FillerBot extends TxThreaded implements Bot {
 				takerIsReferred = userStatsAccount
 					? isBuilderReferral(userStatsAccount)
 					: false;
+				takerReferrer = userStatsAccount?.referrer;
 				logger.info(
 					`[Filler - executeTriggerablePerpNodes] Got referrerInfo: ${referrerInfo}`
 				);
@@ -2125,7 +2137,8 @@ export class FillerBot extends TxThreaded implements Bot {
 					undefined, // fillerAuthority
 					undefined, // hasBuilderFee (derived from order bitflags)
 					undefined, // takerEscrow (referred case signalled below)
-					takerIsReferred
+					takerIsReferred,
+					takerReferrer
 				);
 				ixs.push(fillIx);
 

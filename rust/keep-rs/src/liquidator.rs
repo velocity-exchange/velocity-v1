@@ -55,8 +55,10 @@ use {
     },
 };
 
-/// min slots between successive liquidation attempts on same user
-const LIQUIDATION_SLOT_RATE_LIMIT: u64 = 5; // ~2s
+/// min wall-clock time between successive liquidation attempts on same user
+/// (expressed in actual slots at the current slot duration)
+const LIQUIDATION_RATE_LIMIT: velocity_rs::program::math::time::Millis =
+    velocity_rs::program::math::time::Millis::from_secs(2);
 
 /// Maximum time allowed for a liquidation attempt in milliseconds
 const LIQUIDATION_DEADLINE_MS: u64 = 1_000;
@@ -128,8 +130,10 @@ impl LiquidationAttemptTracker {
 /// Threshold for considering a user high-risk: free margin < 10% of margin requirement
 const HIGH_RISK_FREE_MARGIN_RATIO: f64 = 0.1;
 
-/// Maximum age for oracle prices in slots before considering stale (~20 seconds)
-const MAX_ORACLE_AGE_SLOTS: u64 = 50;
+/// Maximum oracle price age before considering stale (~20s, expressed in
+/// actual slots at the current slot duration)
+const MAX_ORACLE_AGE: velocity_rs::program::math::time::Millis =
+    velocity_rs::program::math::time::Millis::from_secs(20);
 /// Maximum age for Pyth prices in milliseconds before considering stale
 const MAX_PYTH_AGE_MS: u64 = 5000;
 
@@ -175,14 +179,16 @@ fn validate_data_freshness(
     user_meta: &UserAccountMetadata,
     oracle_prices: &HashMap<MarketId, OraclePriceMetadata>,
     current_slot: u64,
+    slot_duration: velocity_rs::program::math::time::SlotDuration,
 ) -> Result<(), StalenessError> {
+    let max_oracle_age_slots = MAX_ORACLE_AGE.to_slots(slot_duration);
     // Check oracle prices for all markets user has positions in
     for pos in &user_meta.user.perp_positions {
         if pos.base_asset_amount != 0 {
             let market_id = MarketId::perp(pos.market_index);
             if let Some(oracle_meta) = oracle_prices.get(&market_id) {
                 let oracle_age_slots = current_slot.saturating_sub(oracle_meta.last_updated_slot);
-                if oracle_age_slots > MAX_ORACLE_AGE_SLOTS {
+                if oracle_age_slots > max_oracle_age_slots {
                     return Err(StalenessError::OraclePriceStale {
                         market: market_id,
                         age_slots: oracle_age_slots,
@@ -197,7 +203,7 @@ fn validate_data_freshness(
             let market_id = MarketId::spot(pos.market_index);
             if let Some(oracle_meta) = oracle_prices.get(&market_id) {
                 let oracle_age_slots = current_slot.saturating_sub(oracle_meta.last_updated_slot);
-                if oracle_age_slots > MAX_ORACLE_AGE_SLOTS {
+                if oracle_age_slots > max_oracle_age_slots {
                     return Err(StalenessError::OraclePriceStale {
                         market: market_id,
                         age_slots: oracle_age_slots,
@@ -333,7 +339,8 @@ async fn update_dashboard_state(
     for (market_id, oracle_meta) in oracle_prices {
         let age_slots = current_slot.saturating_sub(oracle_meta.last_updated_slot);
         let age_ms = now_ms.saturating_sub(oracle_meta.last_updated_timestamp_ms);
-        let is_stale = age_slots > MAX_ORACLE_AGE_SLOTS;
+        let is_stale = age_slots
+            > MAX_ORACLE_AGE.to_slots(crate::util::client_slot_duration(velocity, current_slot));
 
         oracle_price_infos.push(OraclePriceInfo {
             market_type: if market_id.is_perp() {
@@ -486,6 +493,10 @@ pub struct LiquidatorBot {
     // Map(Signature,(collateral, ts))
     tx_sig_to_collateral: Arc<DashMap<Signature, (u128, u64)>>,
     free_collateral_per_subaccount: Arc<DashMap<Pubkey, u128>>,
+    /// Live slot duration (ms) shared with the liquidation worker so its rate
+    /// limiter re-paces on a mid-run gate switch without a restart; updated by
+    /// the main loop whenever it refreshes its own `slot_duration`.
+    liquidation_slot_duration_ms: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl LiquidatorBot {
@@ -648,6 +659,13 @@ impl LiquidatorBot {
 
         // start liquidation worker
         let (liq_tx, liq_rx) = tokio::sync::mpsc::channel::<LiquidationRequest>(102400);
+        // Live slot duration shared with the worker; seeded from the real chain
+        // slot so a restart after a gate switch re-paces immediately, then kept
+        // current by the main loop (see `run`).
+        let startup_slot = velocity.get_slot().await.unwrap_or(0);
+        let liquidation_slot_duration_ms = Arc::new(std::sync::atomic::AtomicU64::new(
+            crate::util::client_slot_duration(&velocity, startup_slot).as_ms(),
+        ));
         spawn_liquidation_worker(
             tx_sender.clone(),
             Arc::new(PrimaryLiquidationStrategy {
@@ -665,6 +683,7 @@ impl LiquidatorBot {
             cu_limit,
             Arc::clone(&priority_fee_subscriber),
             Arc::clone(&metrics),
+            Arc::clone(&liquidation_slot_duration_ms),
         );
 
         log::info!(target: TARGET, "spawned liquidation worker");
@@ -711,6 +730,7 @@ impl LiquidatorBot {
             txs_in_flight,
             tx_sig_to_collateral,
             free_collateral_per_subaccount,
+            liquidation_slot_duration_ms,
         }
     }
 
@@ -727,6 +747,15 @@ impl LiquidatorBot {
             .state_account()
             .map(|x| x.liquidation_margin_buffer_ratio)
             .expect("State has liquidation_margin_buffer_ratio");
+        // refreshed on the collateral-refresh cadence below, so a mid-run slot
+        // duration flip is picked up without a bot restart
+        // seed with the real chain slot so a restart after a gate switch
+        // reflects it immediately, not only after the first refresh below
+        let startup_slot = velocity.get_slot().await.unwrap_or(0);
+        let mut slot_duration = crate::util::client_slot_duration(velocity, startup_slot);
+        // keep the worker's rate limiter in sync with the resolved duration
+        self.liquidation_slot_duration_ms
+            .store(slot_duration.as_ms(), std::sync::atomic::Ordering::Relaxed);
 
         const RECHECK_CYCLE_INTERVAL: u32 = 1024;
         /// Max wall-clock time between full user sweeps; the cycle-count trigger
@@ -877,6 +906,13 @@ impl LiquidatorBot {
                             >= COLLATERAL_REFRESH_INTERVAL_MS
                         {
                             last_collateral_refresh_ms = now_ms;
+
+                            // Pick up a mid-run slot-duration flip
+                            slot_duration =
+                                crate::util::client_slot_duration(velocity, update_slot);
+                            // re-pace the worker's rate limiter on the flip
+                            self.liquidation_slot_duration_ms
+                                .store(slot_duration.as_ms(), std::sync::atomic::Ordering::Relaxed);
 
                             // Update collaterals
                             let new_collateral = get_collateral_info_per_subaccount(
@@ -1034,7 +1070,12 @@ impl LiquidatorBot {
                         // Don't act on stale oracle data: a liquidation decision made off a
                         // dead price feed is more likely wrong than late.
                         if let Err(StalenessError::OraclePriceStale { market, age_slots }) =
-                            validate_data_freshness(user_meta, &oracle_prices, current_slot)
+                            validate_data_freshness(
+                                user_meta,
+                                &oracle_prices,
+                                current_slot,
+                                slot_duration,
+                            )
                         {
                             log::warn!(
                                 target: TARGET,
@@ -1091,7 +1132,7 @@ impl LiquidatorBot {
                     if let Some(user_meta) = users.get(pubkey) {
                         // With a stale oracle the margin picture is unreliable — keep the
                         // user under watch rather than dropping them.
-                        if validate_data_freshness(user_meta, &oracle_prices, current_slot)
+                        if validate_data_freshness(user_meta, &oracle_prices, current_slot, slot_duration)
                             .is_err()
                         {
                             return true;
@@ -1146,7 +1187,14 @@ impl LiquidatorBot {
                     }
 
                     // Don't act on stale oracle data (see the high-risk scan above)
-                    if validate_data_freshness(user_meta, &oracle_prices, current_slot).is_err() {
+                    if validate_data_freshness(
+                        user_meta,
+                        &oracle_prices,
+                        current_slot,
+                        slot_duration,
+                    )
+                    .is_err()
+                    {
                         continue;
                     }
 
@@ -1657,6 +1705,7 @@ fn spawn_liquidation_worker(
     cu_limit: u32,
     priority_fee_subscriber: Arc<PriorityFeeSubscriber>,
     metrics: Arc<Metrics>,
+    slot_duration_ms: Arc<std::sync::atomic::AtomicU64>,
 ) {
     let attempt_tracker = Arc::new(DashMap::<Pubkey, LiquidationAttemptTracker>::new());
 
@@ -1675,6 +1724,14 @@ fn spawn_liquidation_worker(
             status,
         }) = liq_rx.recv().await
         {
+            // wall-clock rate limit expressed in actual slots, at the live slot
+            // duration (kept current by the main loop) so a mid-run gate switch
+            // re-paces without a restart
+            let liquidation_slot_rate_limit = LIQUIDATION_RATE_LIMIT.to_slots(
+                velocity_rs::program::math::time::SlotDuration::from_state_ms(
+                    slot_duration_ms.load(std::sync::atomic::Ordering::Relaxed) as u16,
+                ),
+            );
             // Drop entries older than 1 second to handle backpressure
             let now = current_time_millis();
             if now.saturating_sub(timestamp_ms) > MAX_LIQUIDATION_AGE_MS {
@@ -1692,7 +1749,7 @@ fn spawn_liquidation_worker(
             // Check slot-based rate limit AND failure-based cooldown
             if let Some(tracker) = attempt_tracker.get(&liquidatee) {
                 // Basic slot rate limit
-                if slot.abs_diff(tracker.last_attempt_slot) < LIQUIDATION_SLOT_RATE_LIMIT {
+                if slot.abs_diff(tracker.last_attempt_slot) < liquidation_slot_rate_limit {
                     log::debug!(target: TARGET, "rate limited liquidation for {:?} (current: {})", liquidatee, slot);
                     continue;
                 }

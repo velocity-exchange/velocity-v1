@@ -12868,6 +12868,35 @@ export type Velocity = {
       ]
     },
     {
+      "name": "updateStateSlotDurationMs",
+      "discriminator": [
+        122,
+        155,
+        95,
+        123,
+        0,
+        221,
+        47,
+        218
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "slotDurationMs",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "updateUserAllowDelegateTransfer",
       "discriminator": [
         235,
@@ -13138,6 +13167,38 @@ export type Velocity = {
         {
           "name": "authority",
           "signer": true
+        },
+        {
+          "name": "state",
+          "docs": [
+            "Read only for the live slot duration. The seed constraint both locks",
+            "the account to the singleton `State` and lets clients resolve it from",
+            "the IDL, so callers that built this instruction before the account",
+            "existed keep working."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  101,
+                  108,
+                  111,
+                  99,
+                  105,
+                  116,
+                  121,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -13288,6 +13349,38 @@ export type Velocity = {
         {
           "name": "authority",
           "signer": true
+        },
+        {
+          "name": "state",
+          "docs": [
+            "Read only for the live slot duration. The seed constraint both locks",
+            "the account to the singleton `State` and lets clients resolve it from",
+            "the IDL, so callers that built this instruction before the account",
+            "existed keep working."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  101,
+                  108,
+                  111,
+                  99,
+                  105,
+                  116,
+                  121,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -17803,7 +17896,8 @@ export type Velocity = {
           {
             "name": "oracleStalenessThreshold",
             "docs": [
-              "Delay allowed for valid AUM calculation"
+              "Delay allowed for valid AUM calculation, encoded in historical 400ms",
+              "slot quanta while remaining a one-word onchain field."
             ],
             "type": "u64"
           },
@@ -19460,10 +19554,21 @@ export type Velocity = {
           },
           {
             "name": "targetOracleDelayFeeBpsPer10Slots",
+            "docs": [
+              "Bps of fee charged per 10 whole 400ms periods of oracle delay past the",
+              "staleness threshold, so one step is 4 seconds of wall clock. The `_slots`",
+              "suffix is the historical name from when a slot was 400ms; `step_fee`",
+              "receives period counts, so the rate no longer scales with slot time.",
+              "Renaming the field would change the IDL, so the unit lives here."
+            ],
             "type": "u8"
           },
           {
             "name": "targetPositionDelayFeeBpsPer10Slots",
+            "docs": [
+              "Bps of fee charged per 10 whole 400ms periods of position delay past the",
+              "staleness threshold. Same units as the oracle sibling above."
+            ],
             "type": "u8"
           },
           {
@@ -22058,10 +22163,10 @@ export type Velocity = {
           {
             "name": "oracleSlotDelayOverride",
             "docs": [
-              "Max oracle delay, in slots, tolerated by immediate (JIT / auction-skipping)",
+              "Max oracle delay (legacy 400ms units) tolerated by immediate (JIT / auction-skipping)",
               "AMM fills. Positive is an explicit threshold. `0` disables immediate AMM",
               "fills entirely. Negative (the init default, `-1`) means unset, which",
-              "resolves by price source: `MM_ORACLE_MIN_SLOT_GAP` for an MM-oracle-sourced",
+              "resolves by price source: `MM_ORACLE_MIN_WRITE_GAP` for an MM-oracle-sourced",
               "price (the tightest window the crank can satisfy, since the program refuses",
               "MM-oracle writes closer together than that) and `0` for an exchange-oracle",
               "price, which can be same-slot fresh. See `math::oracle::oracle_validity`."
@@ -22071,8 +22176,8 @@ export type Velocity = {
           {
             "name": "oracleLowRiskSlotDelayOverride",
             "docs": [
-              "the override for the state.min_perp_auction_duration",
-              "0 is no override, -1 is disable speed bump, 1-100 is literal speed bump"
+              "Low-risk oracle delay override (legacy 400ms units): 0 = unset (use the",
+              "guard rail), otherwise a literal threshold. See `math::time::DelayOverride`."
             ],
             "type": "i8"
           },
@@ -24389,14 +24494,27 @@ export type Velocity = {
           },
           {
             "name": "minPerpAuctionDuration",
+            "docs": [
+              "Compact wall-clock duration encoded in historical 400ms slot quanta."
+            ],
             "type": "u8"
           },
           {
             "name": "defaultMarketOrderTimeInForce",
+            "docs": [
+              "Default time-in-force for market orders, in seconds. `Order.max_ts` is a",
+              "unix timestamp, so this never converts through the slot length and stays",
+              "a raw integer. It currently has no on-chain reader."
+            ],
             "type": "u8"
           },
           {
             "name": "defaultSpotAuctionDuration",
+            "docs": [
+              "An actual slot-count setting, not a wall-clock duration. It currently has",
+              "no on-chain reader (spot DLOB trading is disabled), so it intentionally",
+              "remains raw rather than using `StoredSlotDuration`."
+            ],
             "type": "u8"
           },
           {
@@ -24405,6 +24523,9 @@ export type Velocity = {
           },
           {
             "name": "liquidationDuration",
+            "docs": [
+              "Compact wall-clock duration encoded in historical 400ms slot quanta."
+            ],
             "type": "u8"
           },
           {
@@ -24488,11 +24609,69 @@ export type Velocity = {
             "type": "u8"
           },
           {
-            "name": "padding",
+            "name": "slotDurationMs",
+            "docs": [
+              "Current Solana slot duration in milliseconds, updated by the admin as",
+              "the IBRL feature gates activate (400 -> 350 -> 300 -> 250 -> 200).",
+              "`0` means unset (what pre-upgrade accounts read out of former padding)",
+              "and is interpreted as the 400ms baseline. Wall-clock durations",
+              "(`math::time::Millis`) are expressed in actual slots through this",
+              "value. Never read this field directly — use [`State::slot_duration`],",
+              "which handles the `0` sentinel. Settable only downward (slots never",
+              "get slower again), and only to values in",
+              "`math::time::VALID_SLOT_DURATIONS_MS`."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "pendingSlotDurationMs",
+            "docs": [
+              "Staged next slot duration in ms, set by the admin during the target IBRL",
+              "gate's one-epoch warmup. `0` means nothing is staged. Once",
+              "`slot_duration_effective_slot` is reached, [`State::slot_duration`] returns",
+              "this value instead of `slot_duration_ms`, so State switches in lockstep",
+              "with the chain at the exact boundary without a second admin transaction.",
+              "Staging the next gate first promotes this into `slot_duration_ms`."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "slotDurationPad",
+            "docs": [
+              "Explicit padding so `slot_duration_effective_slot` (u64) lands on its",
+              "8-byte alignment with no *implicit* padding (see the alignment invariant)."
+            ],
             "type": {
               "array": [
                 "u8",
-                238
+                2
+              ]
+            }
+          },
+          {
+            "name": "slotDurationEffectiveSlot",
+            "docs": [
+              "Slot at which `pending_slot_duration_ms` takes effect: the target gate's",
+              "activation slot + the one-epoch (432,000-slot) warmup, read from the IBRL",
+              "feature account when the switch is staged. `0` when nothing is staged."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "padding",
+            "docs": [
+              "232 = the former 244-byte padding minus the 12 bytes taken above",
+              "(`pending_slot_duration_ms` 2 + `slot_duration_pad` 2 + the 8-byte",
+              "`slot_duration_effective_slot`). The padding still absorbs the 8 bytes that",
+              "were previously *implicit* trailing padding on x86_64 (State contains a",
+              "u128, align 16 on the host but 8 on SBF; explicit padding keeps",
+              "`size_of::<State>()` 1744 on both targets, per the alignment invariant in",
+              "docs/alignment-and-native-offsets.md)."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                232
               ]
             }
           }
@@ -25161,10 +25340,16 @@ export type Velocity = {
         "fields": [
           {
             "name": "slotsBeforeStaleForAmm",
+            "docs": [
+              "Compact wall-clock duration encoded in historical 400ms slot quanta."
+            ],
             "type": "i64"
           },
           {
             "name": "slotsBeforeStaleForMargin",
+            "docs": [
+              "Compact wall-clock duration encoded in historical 400ms slot quanta."
+            ],
             "type": "i64"
           },
           {

@@ -10,6 +10,7 @@ use {
             },
             oracle::{self, OracleValidity},
             safe_math::SafeMath,
+            time::SlotDuration,
         },
         msg,
         state::{
@@ -33,6 +34,7 @@ pub fn calculate_repeg_validity_from_oracle_account(
     terminal_price_before: u64,
     clock_slot: u64,
     oracle_guard_rails: &OracleGuardRails,
+    slot_duration: SlotDuration,
 ) -> VelocityResult<(bool, bool, bool, bool)> {
     let oracle_price_data =
         get_oracle_price(&market.oracle_source, oracle_account_info, clock_slot)?;
@@ -51,6 +53,7 @@ pub fn calculate_repeg_validity_from_oracle_account(
         market.oracle_slot_delay_override,
         false, // exchange-oracle price, never MM-sourced
         market.oracle_low_risk_slot_delay_override,
+        slot_duration,
     )? == OracleValidity::Valid;
 
     let (oracle_is_valid, direction_valid, profitability_valid, price_impact_valid) =

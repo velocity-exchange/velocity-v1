@@ -1,5 +1,15 @@
 import { BN } from '../isomorphic/anchor';
 import {
+	Millis,
+	SlotDurationMs,
+	SLOT_DURATION_BASELINE,
+	MILLIS_UNIT,
+	divPeriods,
+	millisFromSecs,
+	millisFromSlots,
+	millisToSlotsCeil,
+} from './time';
+import {
 	PRICE_PRECISION,
 	LIQUIDATION_FEE_PRECISION,
 	MARGIN_PRECISION,
@@ -417,7 +427,7 @@ export function calculateAssetTransferForLiabilityTransfer(
  * Calculates the fraction of a position's remaining liability a liquidator may currently
  * take, mirroring `calculate_max_pct_to_liquidate` in
  * `programs/velocity/src/math/liquidation.rs`. Liquidations ramp up gradually over
- * `liquidationDuration` slots (starting from `initialPctToLiquidate`) rather than allowing
+ * the `liquidationDuration` wall-clock window (starting from `initialPctToLiquidate`) rather than allowing
  * 100% in one shot, so a user isn't force-closed more aggressively than necessary — except:
  * isolated perp positions (`isIsolatedPosition`) are always liquidated 100% in one shot
  * since they have no other cross-margin exposure to protect, and any position is liquidated
@@ -427,8 +437,9 @@ export function calculateAssetTransferForLiabilityTransfer(
  * @param marginShortage Total margin shortfall for the user/position, QUOTE_PRECISION (1e6).
  * @param slot Current slot.
  * @param initialPctToLiquidate Starting liquidatable fraction at slot zero of the ramp, LIQUIDATION_PCT_PRECISION (1e4).
- * @param liquidationDuration Number of slots for the ramp to reach 100% (~1 minute at 400ms/slot for the on-chain default).
+ * @param liquidationDuration Ramp length as a wall-clock duration; decode the onchain field with `millisFromStoredUnits(state.liquidationDuration)` (~1 minute for the onchain default).
  * @param isIsolatedPosition If true, always returns 100% (LIQUIDATION_PCT_PRECISION) regardless of the other inputs (default false).
+ * @param slotDuration Current slot duration (`slotDurationFromState(state.slotDurationMs)`); the ramp's wall-clock length is slot-duration independent, mirroring `calculate_max_pct_to_liquidate`.
  * @returns Fraction of the remaining liability liquidatable now, LIQUIDATION_PCT_PRECISION (1e4).
  */
 export function calculateMaxPctToLiquidate(
@@ -437,8 +448,9 @@ export function calculateMaxPctToLiquidate(
 	marginShortage: BN,
 	slot: BN,
 	initialPctToLiquidate: BN,
-	liquidationDuration: BN,
-	isIsolatedPosition = false
+	liquidationDuration: Millis,
+	isIsolatedPosition = false,
+	slotDuration: SlotDurationMs = SLOT_DURATION_BASELINE
 ): BN {
 	// isolated perp positions are liquidated 100% in one shot
 	if (isIsolatedPosition) {
@@ -450,13 +462,20 @@ export function calculateMaxPctToLiquidate(
 		return LIQUIDATION_PCT_PRECISION;
 	}
 
-	const slotsElapsed = BN.max(slot.sub(userLastActiveSlot), new BN(0));
+	// ratio of elapsed slots to the liquidation window in slots; the window
+	// ceils (never ramps to 100% earlier than intended), both scale with the
+	// slot duration so the ratio is duration-independent, and it is identity
+	// with the historical slot ratio at 400ms. duration 0 (unset) -> 100%,
+	// matching the program's divide-by-zero fallback
+	const elapsedSlots = BN.max(slot.sub(userLastActiveSlot), new BN(0));
+	const durationSlots = millisToSlotsCeil(liquidationDuration, slotDuration);
+
+	const rampPct = durationSlots.isZero()
+		? LIQUIDATION_PCT_PRECISION
+		: elapsedSlots.mul(LIQUIDATION_PCT_PRECISION).div(durationSlots);
 
 	const pctFreeable = BN.min(
-		slotsElapsed
-			.mul(LIQUIDATION_PCT_PRECISION)
-			.div(liquidationDuration) // ~ 1 minute if per slot is 400ms
-			.add(initialPctToLiquidate),
+		rampPct.add(initialPctToLiquidate),
 		LIQUIDATION_PCT_PRECISION
 	);
 
@@ -470,6 +489,38 @@ export function calculateMaxPctToLiquidate(
 	);
 
 	return marginFreeable.mul(LIQUIDATION_PCT_PRECISION).div(marginShortage);
+}
+
+/** Ten-minute grace window before the liquidation fee starts increasing. */
+export const LIQUIDATION_FEE_ADJUST_GRACE_PERIOD = millisFromSecs(600);
+/** One fee-precision unit added per whole legacy 400ms calibration period. */
+export const LIQUIDATION_FEE_INCREASE_PER_PERIOD = 1;
+
+/**
+ * Mirrors the program's `get_liquidation_fee`: after a ten-minute grace
+ * period, increase the base fee once per whole 400ms calibration period of
+ * elapsed wall-clock time, capped at `maxLiquidationFee`.
+ */
+export function getLiquidationFee(
+	baseLiquidationFee: number,
+	maxLiquidationFee: number,
+	lastActiveUserSlot: BN,
+	currentSlot: BN,
+	slotDuration: SlotDurationMs = SLOT_DURATION_BASELINE
+): number {
+	if (currentSlot.lt(lastActiveUserSlot)) {
+		throw new Error('currentSlot must not precede lastActiveUserSlot');
+	}
+	const elapsedSlots = currentSlot.sub(lastActiveUserSlot);
+	const elapsed = millisFromSlots(elapsedSlots, slotDuration);
+	if (elapsed.lt(LIQUIDATION_FEE_ADJUST_GRACE_PERIOD)) {
+		return baseLiquidationFee;
+	}
+
+	const fee = new BN(baseLiquidationFee).add(
+		divPeriods(elapsed, MILLIS_UNIT).muln(LIQUIDATION_FEE_INCREASE_PER_PERIOD)
+	);
+	return Math.min(maxLiquidationFee, fee.toNumber());
 }
 
 /**

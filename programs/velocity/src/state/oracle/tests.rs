@@ -154,7 +154,12 @@ fn use_mm_oracle() {
     let state = State::default();
 
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::time::SlotDuration::BASELINE,
+        )
         .unwrap();
 
     // Use the MM oracle when it's recent and it's valid to use
@@ -170,7 +175,12 @@ fn use_mm_oracle() {
     // Update the MM oracle slot to be equal but the sequence number to be behind, should use exchange oracle
     market.market_stats.mm_oracle_sequence_id = 1756262481 - 10;
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::time::SlotDuration::BASELINE,
+        )
         .unwrap();
     assert_eq!(mm_oracle_price_data.get_price(), oracle_price_data.price);
     assert_eq!(mm_oracle_price_data.get_delay(), oracle_price_data.delay,);
@@ -181,7 +191,12 @@ fn use_mm_oracle() {
     // With no sequence id and delayed mm oracle slot, should fall back to using oracle price data
     market.market_stats.mm_oracle_slot = slot - 5;
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::time::SlotDuration::BASELINE,
+        )
         .unwrap();
     assert_eq!(mm_oracle_price_data.get_price(), oracle_price_data.price);
     assert_eq!(mm_oracle_price_data.get_delay(), oracle_price_data.delay,);
@@ -189,7 +204,12 @@ fn use_mm_oracle() {
     // With no sequence id and up to date mm oracle slot, should use mm oracle
     market.market_stats.mm_oracle_slot = slot;
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::time::SlotDuration::BASELINE,
+        )
         .unwrap();
     assert_eq!(
         mm_oracle_price_data.get_price(),
@@ -204,7 +224,12 @@ fn use_mm_oracle() {
     market.market_stats.mm_oracle_sequence_id = 1756262481000; // wrong resolution
     market.market_stats.mm_oracle_slot = slot - 5;
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::time::SlotDuration::BASELINE,
+        )
         .unwrap();
     assert_eq!(mm_oracle_price_data.get_price(), oracle_price_data.price);
     assert_eq!(mm_oracle_price_data.get_delay(), oracle_price_data.delay);
@@ -252,7 +277,12 @@ fn mm_oracle_confidence() {
     let state = State::default();
 
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::time::SlotDuration::BASELINE,
+        )
         .unwrap();
 
     let expected_confidence = oracle_price_data.confidence

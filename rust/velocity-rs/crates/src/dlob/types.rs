@@ -414,10 +414,15 @@ impl TriggerOrder {
                         has_sufficient_number_of_data_points: true,
                         sequence_id: None,
                     },
-                    // min auction duration; mirrors the hardcoded value the program passes in
-                    // `controller::orders::trigger_order`
+                    // This estimator simulates triggering and filling in the same
+                    // slot, so it always evaluates the auction start price. The
+                    // minimum duration cannot affect that price; it matters only
+                    // after elapsed slots become nonzero. Keep the historical
+                    // baseline inputs unless this helper starts projecting a
+                    // future post-trigger slot or returning auction metadata.
                     20,
                     Some(market),
+                    program::math::time::SlotDuration::BASELINE,
                 )
                 .unwrap();
             order.auction_duration = auction_duration;

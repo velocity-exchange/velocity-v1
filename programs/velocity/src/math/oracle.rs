@@ -4,9 +4,10 @@ use {
         math::{
             casting::Cast,
             constants::{
-                BID_ASK_SPREAD_PRECISION, MM_ORACLE_MIN_SLOT_GAP, PERCENTAGE_PRECISION_U64,
+                BID_ASK_SPREAD_PRECISION, MM_ORACLE_MIN_WRITE_GAP, PERCENTAGE_PRECISION_U64,
             },
             safe_math::SafeMath,
+            time::{legacy_slot_duration_i64_raw, DelayOverride, Millis, SlotDuration},
         },
         state::{
             oracle::{OraclePriceData, OracleSource},
@@ -270,13 +271,20 @@ pub fn block_operation(
     guard_rails: &OracleGuardRails,
     reserve_price: u64,
     slot: u64,
+    slot_duration: SlotDuration,
 ) -> VelocityResult<bool> {
     let OracleStatus {
         oracle_validity,
         mark_too_divergent: is_oracle_mark_too_divergent,
         oracle_reserve_price_spread_pct: _,
         ..
-    } = get_oracle_status(market, oracle_price_data, guard_rails, reserve_price)?;
+    } = get_oracle_status(
+        market,
+        oracle_price_data,
+        guard_rails,
+        reserve_price,
+        slot_duration,
+    )?;
     let is_oracle_valid =
         is_oracle_valid_for_action(oracle_validity, Some(VelocityAction::UpdateFunding))?;
 
@@ -284,8 +292,18 @@ pub fn block_operation(
 
     let funding_paused_on_market = market.is_operation_paused(PerpOperation::UpdateFunding);
 
-    // block if amm hasnt been updated since over half the funding period (assuming slot ~= 500ms)
-    let block = slots_since_amm_update > market.market_stats.funding_period.cast()?
+    // Block if the amm has been stale for more than ~40% of the funding period.
+    // `funding_period` is seconds; `* 400` = 0.4 * 1000ms, the historical
+    // behavior (the pre-scaling gate compared a raw slot count against
+    // `funding_period`, i.e. elapsed slots at 400ms = 0.4 * period seconds).
+    // Comparing wall-clock ms on both sides keeps that width at any slot duration.
+    let amm_stale_ms = Millis::from_slots(slots_since_amm_update, slot_duration).as_ms();
+    let block = amm_stale_ms
+        > market
+            .market_stats
+            .funding_period
+            .cast::<u64>()?
+            .safe_mul(400)?
         || !is_oracle_valid
         || is_oracle_mark_too_divergent
         || funding_paused_on_market;
@@ -305,8 +323,10 @@ pub fn get_oracle_status(
     oracle_price_data: &OraclePriceData,
     guard_rails: &OracleGuardRails,
     reserve_price: u64,
+    slot_duration: SlotDuration,
 ) -> VelocityResult<OracleStatus> {
-    let slot_delay_override = guard_rails.validity.slots_before_stale_for_amm.cast()?;
+    let slot_delay_override =
+        legacy_slot_duration_i64_raw(guard_rails.validity.slots_before_stale_for_amm).cast()?;
     let oracle_validity = oracle_validity(
         MarketType::Perp,
         market.market_index,
@@ -322,6 +342,7 @@ pub fn get_oracle_status(
         slot_delay_override,
         false, // exchange-oracle price, never MM-sourced
         slot_delay_override,
+        slot_duration,
     )?;
     let oracle_reserve_price_spread_pct = market
         .market_stats
@@ -361,6 +382,7 @@ pub fn oracle_validity(
     slots_before_stale_for_amm_immdiate_override: i8,
     immediate_price_is_mm_sourced: bool,
     oracle_low_risk_slot_delay_override: i8,
+    slot_duration: SlotDuration,
 ) -> VelocityResult<OracleValidity> {
     let OraclePriceData {
         price: oracle_price,
@@ -369,6 +391,19 @@ pub fn oracle_validity(
         has_sufficient_number_of_data_points,
         ..
     } = *oracle_price_data;
+
+    // Every staleness threshold below is a wall-clock duration (guard rails,
+    // per-market overrides, the MM-gap fallback), expressed in actual slots at
+    // the live slot duration so the windows stay constant across the IBRL gate
+    // activations. Floor rounding: a marginally tighter window is the safe
+    // direction for staleness.
+    let slots = |m: Millis| m.to_slots(slot_duration) as i64;
+    // Ceil variant for the unset MM-sourced immediate threshold: it must match
+    // the crank's write gate (`update_mm_oracle`, which ceils
+    // `MM_ORACLE_MIN_WRITE_GAP`). Flooring here would put the accept threshold a
+    // slot below the write gate at intermediate gates (e.g. 350ms: floor 2 vs
+    // write 3), rejecting quotes the crank was allowed to post.
+    let slots_ceil = |m: Millis| m.to_slots_ceil(slot_duration) as i64;
 
     let is_oracle_price_nonpositive = oracle_price <= 0;
 
@@ -396,12 +431,12 @@ pub fn oracle_validity(
     // `max(override, 0)`, i.e. a threshold of zero, requiring the price to have
     // been written in this exact slot. That is unsatisfiable for an MM-oracle-
     // sourced price by construction: the program refuses any MM-oracle write
-    // closer than `MM_ORACLE_MIN_SLOT_GAP` slots to the previous one, so such a
+    // closer than `MM_ORACLE_MIN_WRITE_GAP` to the previous one, so such a
     // price is at best zero slots old on alternating slots and can never be
     // fresher than that on the rest. A market left at the init default
     // therefore could not pass this gate on roughly half of all slots no matter
     // how aggressively it was cranked — an arithmetic contradiction between two
-    // independent constants, so unset resolves to `MM_ORACLE_MIN_SLOT_GAP` for
+    // independent constants, so unset resolves to `MM_ORACLE_MIN_WRITE_GAP` for
     // an MM-sourced price: the tightest window the crank can actually satisfy.
     //
     // An exchange-oracle price has no such floor — it can be same-slot fresh
@@ -411,38 +446,37 @@ pub fn oracle_validity(
     // or diverged), which is when latency arbitrage against the vAMM pays most.
     //
     // Note `oracle_delay` for an MM price measures from the *landing* slot, and
-    // the write path accepts observations up to `MM_ORACLE_MAX_SOURCE_AGE_SLOTS`
+    // the write path accepts observations up to `MM_ORACLE_MAX_SOURCE_AGE`
     // older than their landing, so the true observation age this gate admits is
     // up to the sum of the two. A `const_assert!` in `math/constants.rs` pins
-    // that bound to at most `MM_ORACLE_MIN_SLOT_GAP`, i.e. twice the gap.
+    // that bound to at most `MM_ORACLE_MIN_WRITE_GAP`, i.e. twice the gap.
     //
     // An explicit override still wins in both directions on both paths, so this
     // only affects markets that never had one set.
-    let is_stale_for_amm_immediate = if slots_before_stale_for_amm_immdiate_override == 0 {
-        true
-    } else if slots_before_stale_for_amm_immdiate_override < 0 {
-        let unset_threshold: i64 = if immediate_price_is_mm_sourced {
-            MM_ORACLE_MIN_SLOT_GAP.cast::<i64>()?
-        } else {
-            0
+    let is_stale_for_amm_immediate =
+        match DelayOverride::from_immediate(slots_before_stale_for_amm_immdiate_override) {
+            DelayOverride::Never => true,
+            DelayOverride::Unset => {
+                let unset_threshold: i64 = if immediate_price_is_mm_sourced {
+                    slots_ceil(MM_ORACLE_MIN_WRITE_GAP)
+                } else {
+                    0
+                };
+                oracle_delay.gt(&unset_threshold)
+            }
+            DelayOverride::Fixed(threshold) => oracle_delay.gt(&slots(threshold)),
         };
-        oracle_delay.gt(&unset_threshold)
-    } else {
-        oracle_delay.gt(&slots_before_stale_for_amm_immdiate_override.cast()?)
-    };
 
-    let is_stale_for_amm_low_risk = if oracle_low_risk_slot_delay_override != 0 {
-        oracle_delay.gt(&oracle_low_risk_slot_delay_override.max(0).cast()?)
-    } else {
-        oracle_delay.gt(&valid_oracle_guard_rails.slots_before_stale_for_amm)
-    };
+    let is_stale_for_amm_low_risk =
+        match DelayOverride::from_low_risk(oracle_low_risk_slot_delay_override) {
+            DelayOverride::Fixed(threshold) => oracle_delay.gt(&slots(threshold)),
+            _ => oracle_delay.gt(&slots(valid_oracle_guard_rails.stale_for_amm_ms())),
+        };
 
     let is_stale_for_margin = if matches!(oracle_source, OracleSource::PythLazerStableCoin) {
-        oracle_delay.gt(&(valid_oracle_guard_rails
-            .slots_before_stale_for_margin
-            .saturating_mul(3)))
+        oracle_delay.gt(&slots(valid_oracle_guard_rails.stale_for_margin_ms()).saturating_mul(3))
     } else {
-        oracle_delay.gt(&valid_oracle_guard_rails.slots_before_stale_for_margin)
+        oracle_delay.gt(&slots(valid_oracle_guard_rails.stale_for_margin_ms()))
     };
 
     let oracle_validity = if is_oracle_price_nonpositive {

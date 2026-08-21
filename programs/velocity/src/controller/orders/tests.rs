@@ -1,6 +1,9 @@
 use {
     crate::{
-        math::oracle::oracle_validity,
+        math::{
+            oracle::oracle_validity,
+            time::{legacy_slot_duration_i64, legacy_slot_duration_u8},
+        },
         state::{
             fill_mode::FillMode,
             market_status::MarketStatus,
@@ -53,7 +56,7 @@ fn get_oracle_map<'a>() -> OracleMap<'a> {
 
 fn get_state(min_auction_duration: u8) -> State {
     State {
-        min_perp_auction_duration: min_auction_duration,
+        min_perp_auction_duration: legacy_slot_duration_u8(min_auction_duration),
         ..State::default()
     }
 }
@@ -69,7 +72,12 @@ pub fn get_amm_is_available(
     let state = get_state(min_auction_duration);
     let oracle_price_data = oracle_map.get_price_data(&market.oracle_id()).unwrap();
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(*oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            *oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::time::SlotDuration::BASELINE,
+        )
         .unwrap();
     let safe_oracle_price_data = mm_oracle_price_data.get_safe_oracle_price_data();
     let safe_oracle_validity = oracle_validity(
@@ -87,6 +95,7 @@ pub fn get_amm_is_available(
         market.oracle_slot_delay_override,
         mm_oracle_price_data.is_safe_price_mm_sourced(),
         market.oracle_low_risk_slot_delay_override,
+        crate::math::time::SlotDuration::BASELINE,
     )
     .unwrap();
     market
@@ -1958,7 +1967,13 @@ pub mod fulfill_order_with_maker_order {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket::default_test();
         market
@@ -2130,7 +2145,13 @@ pub mod fulfill_order_with_maker_order {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let taker_price = taker.orders[0]
             .get_limit_price(
@@ -2284,7 +2305,13 @@ pub mod fulfill_order_with_maker_order {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket::default_test();
         market.oracle = oracle_price_key;
@@ -2433,7 +2460,13 @@ pub mod fulfill_order_with_maker_order {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket::default_test();
         market.oracle = oracle_price_key;
@@ -2882,8 +2915,8 @@ pub mod fulfill_order {
         let mut state = State {
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: 10,     // 5s
-                    slots_before_stale_for_margin: 120, // 60s
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },
@@ -2965,7 +2998,7 @@ pub mod fulfill_order {
         market.amm.min_base_asset_reserve = 0;
 
         let mut state = State {
-            min_perp_auction_duration: 1,
+            min_perp_auction_duration: legacy_slot_duration_u8(1),
             default_market_order_time_in_force: 10,
             ..State::default()
         };
@@ -2997,7 +3030,13 @@ pub mod fulfill_order {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -3246,7 +3285,13 @@ pub mod fulfill_order {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -3412,7 +3457,13 @@ pub mod fulfill_order {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -3572,7 +3623,13 @@ pub mod fulfill_order {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -3731,7 +3788,13 @@ pub mod fulfill_order {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -3951,7 +4014,13 @@ pub mod fulfill_order {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -4399,7 +4468,13 @@ pub mod fulfill_order {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -4572,7 +4647,13 @@ pub mod fulfill_order {
             oracle_account_info
         );
 
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -4777,7 +4858,13 @@ pub mod fulfill_order {
             oracle_account_info
         );
 
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -4965,7 +5052,13 @@ pub mod fulfill_order {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -5151,7 +5244,13 @@ pub mod fulfill_order {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -5345,7 +5444,13 @@ pub mod fulfill_order {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -5446,7 +5551,7 @@ pub mod fulfill_order {
             AccountLoader::try_from(&filler_stats_account_info).unwrap();
 
         let state = State {
-            min_perp_auction_duration: 1,
+            min_perp_auction_duration: legacy_slot_duration_u8(1),
             default_market_order_time_in_force: 10,
             ..State::default()
         };
@@ -5516,7 +5621,7 @@ pub mod fulfill_order {
     //         &pyth_program,
     //         oracle_account_info
     //     );
-    //     let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+    //     let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, crate::math::time::SlotDuration::BASELINE, None).unwrap();
     //
     //     let mut market = PerpMarket {
     //         amm: AMM {
@@ -5992,7 +6097,13 @@ pub mod fulfill_order {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -6208,7 +6319,13 @@ pub mod fulfill_order {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -6409,7 +6526,13 @@ pub mod fulfill_order {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -6605,7 +6728,13 @@ pub mod fill_order {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            clock.slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -6758,7 +6887,7 @@ pub mod fill_order {
             AccountLoader::try_from(&filler_stats_account_info).unwrap();
 
         let state = State {
-            min_perp_auction_duration: 1,
+            min_perp_auction_duration: legacy_slot_duration_u8(1),
             default_market_order_time_in_force: 10,
             ..State::default()
         };
@@ -6808,7 +6937,13 @@ pub mod fill_order {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            clock.slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -6964,7 +7099,7 @@ pub mod fill_order {
             AccountLoader::try_from(&filler_stats_account_info).unwrap();
 
         let state = State {
-            min_perp_auction_duration: 1,
+            min_perp_auction_duration: legacy_slot_duration_u8(1),
             default_market_order_time_in_force: 10,
             ..State::default()
         };
@@ -7085,7 +7220,7 @@ pub mod fill_order {
             AccountLoader::try_from(&filler_stats_account_info).unwrap();
 
         let state = State {
-            min_perp_auction_duration: 1,
+            min_perp_auction_duration: legacy_slot_duration_u8(1),
             default_market_order_time_in_force: 10,
             ..State::default()
         };
@@ -7147,7 +7282,13 @@ pub mod fill_order {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            clock.slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -7259,7 +7400,7 @@ pub mod fill_order {
             AccountLoader::try_from(&filler_stats_account_info).unwrap();
 
         let state = State {
-            min_perp_auction_duration: 1,
+            min_perp_auction_duration: legacy_slot_duration_u8(1),
             default_market_order_time_in_force: 10,
             ..State::default()
         };
@@ -7333,7 +7474,13 @@ pub mod force_cancel_orders {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            clock.slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -7511,7 +7658,7 @@ pub mod force_cancel_orders {
             AccountLoader::try_from(&filler_stats_account_info).unwrap();
 
         let state = State {
-            min_perp_auction_duration: 1,
+            min_perp_auction_duration: legacy_slot_duration_u8(1),
             default_market_order_time_in_force: 10,
             ..State::default()
         };
@@ -7583,7 +7730,13 @@ pub mod cancel_reduce_only_trigger_orders {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            clock.slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -7854,7 +8007,13 @@ pub mod get_maker_orders_info {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            clock.slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -8045,7 +8204,13 @@ pub mod get_maker_orders_info {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            clock.slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -8237,7 +8402,13 @@ pub mod get_maker_orders_info {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            clock.slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -8415,7 +8586,13 @@ pub mod get_maker_orders_info {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            clock.slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -8667,7 +8844,13 @@ pub mod get_maker_orders_info {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            clock.slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -8861,7 +9044,13 @@ pub mod get_maker_orders_info {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            clock.slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -9092,6 +9281,7 @@ pub mod update_trigger_order_params {
             slot,
             min_auction_duration,
             None,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
 
@@ -9117,6 +9307,7 @@ pub mod update_trigger_order_params {
             slot,
             min_auction_duration,
             None,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
 
@@ -9142,6 +9333,7 @@ pub mod update_trigger_order_params {
             slot,
             min_auction_duration,
             None,
+            crate::math::time::SlotDuration::BASELINE,
         );
         assert!(err.is_err());
 
@@ -9158,6 +9350,7 @@ pub mod update_trigger_order_params {
             slot,
             min_auction_duration,
             None,
+            crate::math::time::SlotDuration::BASELINE,
         );
         assert!(err.is_err());
     }
@@ -9408,8 +9601,8 @@ fn oracle_derived_stats_refresh_can_flip_the_5min_divergence_verdict() {
 
     let guard_rails = OracleGuardRails {
         validity: ValidityGuardRails {
-            slots_before_stale_for_amm: 10,
-            slots_before_stale_for_margin: 120,
+            slots_before_stale_for_amm: legacy_slot_duration_i64(10),
+            slots_before_stale_for_margin: legacy_slot_duration_i64(120),
             confidence_interval_max_size: 1000,
             too_volatile_ratio: 5,
         },
@@ -9464,17 +9657,29 @@ fn oracle_derived_stats_refresh_can_flip_the_5min_divergence_verdict() {
         ..OraclePriceData::default()
     };
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &guard_rails.validity,
+            crate::math::time::SlotDuration::BASELINE,
+        )
         .unwrap();
     let validity = crate::vlp::amm::refresh::compute_amm_refresh_validity_with_guard_rails(
         &market,
         &mm_oracle_price_data,
         &guard_rails.validity,
+        crate::math::time::SlotDuration::BASELINE,
     )
     .unwrap();
 
     market
-        .update_oracle_derived_stats(&mm_oracle_price_data, validity, now, slot)
+        .update_oracle_derived_stats(
+            &mm_oracle_price_data,
+            validity,
+            now,
+            slot,
+            crate::math::time::SlotDuration::BASELINE,
+        )
         .unwrap();
 
     let post_refresh_twap_5min = market
@@ -9556,7 +9761,13 @@ pub mod maker_floor_prune {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -9982,8 +10193,13 @@ pub mod builder_fee_margin_gate {
             sol_oracle_account_info,
             other_perp_oracle_account_info,
         ]);
-        let mut oracle_map =
-            OracleMap::load(&mut oracle_account_infos.iter().peekable(), slot, None).unwrap();
+        let mut oracle_map = OracleMap::load(
+            &mut oracle_account_infos.iter().peekable(),
+            slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -10313,8 +10529,13 @@ mod fill_gates_apply_to_a_reducing_fill {
         );
 
         let oracle_infos = [perp_oracle_info, collateral_oracle_info];
-        let mut oracle_map =
-            OracleMap::load(&mut oracle_infos.iter().peekable(), SLOT, None).unwrap();
+        let mut oracle_map = OracleMap::load(
+            &mut oracle_infos.iter().peekable(),
+            SLOT,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {

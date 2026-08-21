@@ -103,7 +103,8 @@ struct Config {
     /// more than this many slots behind the latest slot — so a stale swift-side
     /// oracle can't start rejecting otherwise-valid orders. `0` disables the
     /// staleness gate (always apply the band). Override with
-    /// `AUCTION_ORACLE_MAX_STALENESS_SLOTS` (default 10 ≈ 4s).
+    /// `AUCTION_ORACLE_MAX_STALENESS_SLOTS` (default 10 ≈ 4s), in 400ms
+    /// baseline slot units — inflated to actual slots at the live slot duration.
     auction_oracle_max_staleness_slots: u64,
 }
 
@@ -322,7 +323,12 @@ pub async fn process_order(
         },
         max_margin_ratio,
         isolated_position_deposit,
-    ) = extract_signed_message_info(signed_msg, &taker_authority, current_slot)?;
+    ) = extract_signed_message_info(
+        signed_msg,
+        &taker_authority,
+        current_slot,
+        server_slot_duration(&server_params.velocity, current_slot),
+    )?;
 
     log::info!(
         target: "server",
@@ -547,6 +553,7 @@ pub async fn deposit_trade(
         &req.swift_order.order(),
         &req.swift_order.taker_authority,
         current_slot,
+        server_slot_duration(&server_params.velocity, current_slot),
     ) {
         Ok((_info, max_margin_ratio, _is_isolated)) => max_margin_ratio,
         Err((_status, err)) => return (StatusCode::BAD_REQUEST, Json(err)),
@@ -1519,7 +1526,11 @@ impl ServerParams {
         // measurement — unreliable) or a stale oracle must never turn this guard
         // into a source of rejections for otherwise-valid orders.
         let slot_subscriber_stale = self.slot_subscriber.is_stale();
-        let max_staleness = self.config.auction_oracle_max_staleness_slots;
+        // configured in 400ms-unit encoding (env knob); expressed in actual slots
+        let max_staleness = velocity_rs::program::math::time::Millis::from_stored_units(
+            self.config.auction_oracle_max_staleness_slots,
+        )
+        .to_slots(server_slot_duration(&self.velocity, current_slot));
         let oracle_stale = max_staleness != 0 && oracle_staleness_slots > max_staleness;
         if slot_subscriber_stale || oracle_stale {
             record(if slot_subscriber_stale {
@@ -1648,8 +1659,15 @@ impl ServerParams {
 
         // Mirrors the on-chain `place_perp_order` sanitize step: returns true
         // when the program would adjust the auction params at placement time.
+        let slot_duration =
+            server_slot_duration(&self.velocity, self.slot_subscriber.current_slot());
         let mut params = order_params.clone();
-        match params.update_perp_auction_params(&perp_market, oracle_data.data.price, true) {
+        match params.update_perp_auction_params(
+            &perp_market,
+            oracle_data.data.price,
+            true,
+            slot_duration,
+        ) {
             Ok(sanitized) => sanitized,
             Err(err) => {
                 log::debug!(
@@ -1777,6 +1795,7 @@ fn validate_order(
     take_profit: Option<&SignedMsgTriggerOrderParams>,
     taker_slot: Slot,
     current_slot: Slot,
+    slot_duration: velocity_rs::program::math::time::SlotDuration,
 ) -> Result<(), (axum::http::StatusCode, ProcessOrderResponse)> {
     // Validate order parameters
     if stop_loss.is_some_and(|x| x.base_asset_amount == 0 || x.trigger_price == 0)
@@ -1791,8 +1810,13 @@ fn validate_order(
         ));
     }
 
-    // Validate slot
-    if taker_slot < current_slot.saturating_sub(500) {
+    // Validate slot: ~200s expressed in actual slots — mirrors the program's
+    // signed-msg staleness gate
+    if taker_slot
+        < current_slot.saturating_sub(
+            velocity_rs::program::math::time::Millis::from_secs(200).to_slots(slot_duration),
+        )
+    {
         return Err((
             axum::http::StatusCode::BAD_REQUEST,
             ProcessOrderResponse {
@@ -1805,10 +1829,24 @@ fn validate_order(
     Ok(())
 }
 
+/// Live slot duration from the subscribed velocity `State` account at
+/// `now_slot`, applying a staged switch once its effective slot has passed.
+/// Falls back to the 400ms baseline when state is unavailable. Pass a current
+/// chain slot: the raw base field lags a staged switch, and sizing these windows
+/// off the pre-switch value makes the server reject orders the program accepts
+/// and, for the auction band check, skip the guard entirely.
+fn server_slot_duration(
+    velocity: &velocity_rs::VelocityClient,
+    now_slot: Slot,
+) -> velocity_rs::program::math::time::SlotDuration {
+    velocity.slot_duration_at(now_slot)
+}
+
 fn extract_signed_message_info(
     signed_msg: &SignedOrderType,
     taker_authority: &Pubkey,
     current_slot: Slot,
+    slot_duration: velocity_rs::program::math::time::SlotDuration,
 ) -> Result<
     (SignedMessageInfo, Option<u16>, Option<u64>),
     (axum::http::StatusCode, ProcessOrderResponse),
@@ -1820,6 +1858,7 @@ fn extract_signed_message_info(
                 inner.take_profit_order_params.as_ref(),
                 inner.slot,
                 current_slot,
+                slot_duration,
             )?;
             Ok((
                 SignedMessageInfo {
@@ -1838,6 +1877,7 @@ fn extract_signed_message_info(
                 inner.take_profit_order_params.as_ref(),
                 inner.slot,
                 current_slot,
+                slot_duration,
             )?;
             Ok((
                 SignedMessageInfo {
@@ -2309,7 +2349,12 @@ mod tests {
             isolated_position_deposit: None,
         });
 
-        let result = extract_signed_message_info(&delegated_msg, &taker_authority, current_slot);
+        let result = extract_signed_message_info(
+            &delegated_msg,
+            &taker_authority,
+            current_slot,
+            velocity_rs::program::math::time::SlotDuration::BASELINE,
+        );
         assert!(result.is_ok_and(|(info, _, _)| {
             info.slot == current_slot
                 && info.order_params.base_asset_amount == LAMPORTS_PER_SOL
@@ -2341,7 +2386,12 @@ mod tests {
             isolated_position_deposit: None,
         });
 
-        let result = extract_signed_message_info(&delegated_msg, &taker_authority, current_slot);
+        let result = extract_signed_message_info(
+            &delegated_msg,
+            &taker_authority,
+            current_slot,
+            velocity_rs::program::math::time::SlotDuration::BASELINE,
+        );
         assert!(result.is_err_and(|x| {
             x.0 == axum::http::StatusCode::BAD_REQUEST
                 && x.1.message == PROCESS_ORDER_RESPONSE_ERROR_MSG_INVALID_ORDER_AMOUNT
@@ -2377,7 +2427,12 @@ mod tests {
             isolated_position_deposit: None,
         });
 
-        let result = extract_signed_message_info(&authority_msg, &taker_authority, current_slot);
+        let result = extract_signed_message_info(
+            &authority_msg,
+            &taker_authority,
+            current_slot,
+            velocity_rs::program::math::time::SlotDuration::BASELINE,
+        );
         assert!(result.is_ok_and(|(info, _margin_ratio, _is_isolated)| {
             info.slot == current_slot
                 && info.order_params.base_asset_amount == LAMPORTS_PER_SOL
@@ -2411,7 +2466,12 @@ mod tests {
             isolated_position_deposit: None,
         });
 
-        let result = extract_signed_message_info(&authority_msg, &taker_authority, current_slot);
+        let result = extract_signed_message_info(
+            &authority_msg,
+            &taker_authority,
+            current_slot,
+            velocity_rs::program::math::time::SlotDuration::BASELINE,
+        );
         assert!(result.is_err_and(|x| {
             x.0 == axum::http::StatusCode::BAD_REQUEST
                 && x.1.message == PROCESS_ORDER_RESPONSE_ERROR_MSG_INVALID_ORDER_AMOUNT
@@ -2446,7 +2506,12 @@ mod tests {
             isolated_position_deposit: None,
         });
 
-        let result = extract_signed_message_info(&delegated_msg, &taker_authority, current_slot);
+        let result = extract_signed_message_info(
+            &delegated_msg,
+            &taker_authority,
+            current_slot,
+            velocity_rs::program::math::time::SlotDuration::BASELINE,
+        );
         assert!(result.is_err_and(|x| x
             == (
                 axum::http::StatusCode::BAD_REQUEST,
@@ -2484,7 +2549,12 @@ mod tests {
             isolated_position_deposit: None,
         });
         assert!(!is_isolated_deposit(&delegated_msg));
-        let result = extract_signed_message_info(&delegated_msg, &taker_authority, current_slot);
+        let result = extract_signed_message_info(
+            &delegated_msg,
+            &taker_authority,
+            current_slot,
+            velocity_rs::program::math::time::SlotDuration::BASELINE,
+        );
         assert!(result.is_ok_and(|(_, _, is_isolated)| is_isolated.is_none()));
 
         // Test delegated order with isolated deposit of 0 (should be false)
@@ -2509,7 +2579,12 @@ mod tests {
             isolated_position_deposit: Some(0),
         });
         assert!(!is_isolated_deposit(&delegated_msg));
-        let result = extract_signed_message_info(&delegated_msg, &taker_authority, current_slot);
+        let result = extract_signed_message_info(
+            &delegated_msg,
+            &taker_authority,
+            current_slot,
+            velocity_rs::program::math::time::SlotDuration::BASELINE,
+        );
         // `extract_signed_message_info` returns the raw `isolated_position_deposit` field, so a
         // zero deposit comes back as `Some(0)` (not `None`). The "zero == not isolated" semantics
         // live in `is_isolated_deposit()`, asserted above.
@@ -2537,7 +2612,12 @@ mod tests {
             isolated_position_deposit: Some(100_000_000), // 0.1 SOL
         });
         assert!(is_isolated_deposit(&delegated_msg));
-        let result = extract_signed_message_info(&delegated_msg, &taker_authority, current_slot);
+        let result = extract_signed_message_info(
+            &delegated_msg,
+            &taker_authority,
+            current_slot,
+            velocity_rs::program::math::time::SlotDuration::BASELINE,
+        );
         assert!(result.is_ok_and(|(_, _, is_isolated)| is_isolated.is_some()));
 
         // Test authority order with no isolated deposit
@@ -2562,7 +2642,12 @@ mod tests {
             isolated_position_deposit: None,
         });
         assert!(!is_isolated_deposit(&authority_msg));
-        let result = extract_signed_message_info(&authority_msg, &taker_authority, current_slot);
+        let result = extract_signed_message_info(
+            &authority_msg,
+            &taker_authority,
+            current_slot,
+            velocity_rs::program::math::time::SlotDuration::BASELINE,
+        );
         assert!(result.is_ok_and(|(_, _, is_isolated)| is_isolated.is_none()));
 
         // Test authority order with isolated deposit > 0
@@ -2587,7 +2672,12 @@ mod tests {
             isolated_position_deposit: Some(50_000_000), // 0.05 SOL
         });
         assert!(is_isolated_deposit(&authority_msg));
-        let result = extract_signed_message_info(&authority_msg, &taker_authority, current_slot);
+        let result = extract_signed_message_info(
+            &authority_msg,
+            &taker_authority,
+            current_slot,
+            velocity_rs::program::math::time::SlotDuration::BASELINE,
+        );
         assert!(result.is_ok_and(|(_, _, is_isolated)| is_isolated.is_some()));
     }
 

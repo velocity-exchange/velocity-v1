@@ -16,6 +16,7 @@ use {
             },
             safe_math::SafeMath,
             spot_balance::get_token_amount,
+            time::SlotDuration,
         },
         msg,
         state::{
@@ -48,6 +49,7 @@ pub fn repeg(
     new_peg_candidate: u128,
     clock_slot: u64,
     oracle_guard_rails: &OracleGuardRails,
+    slot_duration: SlotDuration,
 ) -> VelocityResult<i128> {
     // for adhoc admin only repeg
 
@@ -66,6 +68,7 @@ pub fn repeg(
             terminal_price_before,
             clock_slot,
             oracle_guard_rails,
+            slot_duration,
         )?;
 
     // cannot repeg if oracle is invalid
@@ -119,6 +122,7 @@ pub fn update_amms(
             *oracle_price_data,
             clock_slot,
             &state.oracle_guard_rails.validity,
+            state.slot_duration(),
         )?;
 
         // Explicit two-step refresh:
@@ -129,7 +133,13 @@ pub fn update_amms(
         //      because this keeper crank is the one place that touches both.
         let validity = compute_amm_refresh_validity(market, &mm_oracle_price_data, state)?;
         snap_to_oracle(market, &mm_oracle_price_data, validity, clock_slot, now)?;
-        market.update_oracle_derived_stats(&mm_oracle_price_data, validity, now, clock_slot)?;
+        market.update_oracle_derived_stats(
+            &mm_oracle_price_data,
+            validity,
+            now,
+            clock_slot,
+            state.slot_duration(),
+        )?;
     }
 
     Ok(updated)
@@ -148,6 +158,7 @@ pub fn update_amm(
         *oracle_price_data,
         clock.slot,
         &state.oracle_guard_rails.validity,
+        state.slot_duration(),
     )?;
 
     // Same explicit two-step refresh as `update_amms`. See doc there.
@@ -164,6 +175,7 @@ pub fn update_amm(
         validity,
         clock.unix_timestamp,
         clock.slot,
+        state.slot_duration(),
     )?;
 
     Ok(outcome)
@@ -184,7 +196,13 @@ pub fn _update_amm(
 ) -> VelocityResult<i128> {
     let validity = compute_amm_refresh_validity(market, mm_oracle_price_data, state)?;
     let outcome: i128 = snap_to_oracle(market, mm_oracle_price_data, validity, clock_slot, now)?;
-    market.update_oracle_derived_stats(mm_oracle_price_data, validity, now, clock_slot)?;
+    market.update_oracle_derived_stats(
+        mm_oracle_price_data,
+        validity,
+        now,
+        clock_slot,
+        crate::math::time::SlotDuration::BASELINE,
+    )?;
     Ok(outcome)
 }
 
@@ -199,6 +217,7 @@ pub fn compute_amm_refresh_validity(
         market,
         mm_oracle_price_data,
         &state.oracle_guard_rails.validity,
+        state.slot_duration(),
     )
 }
 
@@ -209,6 +228,7 @@ pub fn compute_amm_refresh_validity_with_guard_rails(
     market: &PerpMarket,
     mm_oracle_price_data: &MMOraclePriceData,
     validity_guard_rails: &crate::state::state::ValidityGuardRails,
+    slot_duration: SlotDuration,
 ) -> VelocityResult<Option<OracleValidity>> {
     if matches!(
         market.status,
@@ -232,6 +252,7 @@ pub fn compute_amm_refresh_validity_with_guard_rails(
         market.oracle_slot_delay_override,
         mm_oracle_price_data.is_safe_price_mm_sourced(),
         market.oracle_low_risk_slot_delay_override,
+        slot_duration,
     )?;
     Ok(Some(validity))
 }
@@ -348,7 +369,13 @@ pub fn update_amm_and_check_validity(
     // requested action. AMM mutation happens later in the liquidation
     // fill flow via `Quoter::setup` — not here.
     let validity = compute_amm_refresh_validity(market, mm_oracle_price_data, state)?;
-    market.update_oracle_derived_stats(mm_oracle_price_data, validity, now, clock_slot)?;
+    market.update_oracle_derived_stats(
+        mm_oracle_price_data,
+        validity,
+        now,
+        clock_slot,
+        state.slot_duration(),
+    )?;
 
     // 1 hour EMA
     let risk_ema_price = market
@@ -368,6 +395,7 @@ pub fn update_amm_and_check_validity(
         market.oracle_slot_delay_override,
         mm_oracle_price_data.is_safe_price_mm_sourced(),
         market.oracle_low_risk_slot_delay_override,
+        state.slot_duration(),
     )?;
 
     validate!(

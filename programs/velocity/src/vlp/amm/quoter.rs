@@ -431,6 +431,7 @@ impl<'a> Quoter for AmmQuoter<'a> {
             mm_oracle,
             reserve_price,
             ctx.slot,
+            ctx.slot_duration,
         )?;
         Ok(())
     }
@@ -1051,6 +1052,7 @@ mod amm_maker_tests {
             tick: 1,
             step_size: 1,
             slot: 0,
+            slot_duration: crate::math::time::SlotDuration::BASELINE,
             base_precision: crate::math::constants::BASE_PRECISION as u64,
             market_status: crate::state::market_status::MarketStatus::default(),
             market_config: 0,
@@ -1367,6 +1369,7 @@ mod amm_jit_maker_tests {
             tick: 1,
             step_size: 1,
             slot: 0,
+            slot_duration: crate::math::time::SlotDuration::BASELINE,
             base_precision: BASE_PRECISION as u64,
             market_status: crate::state::market_status::MarketStatus::default(),
             market_config: 0,

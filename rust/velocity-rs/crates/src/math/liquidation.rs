@@ -333,7 +333,8 @@ pub fn calculate_max_pct_to_liquidate(
     margin_shortage: u128,
     slot: u64,
     initial_pct_to_liquidate: u128,
-    liquidation_duration: u128,
+    liquidation_duration: program::math::time::Millis,
+    slot_duration: program::math::time::SlotDuration,
 ) -> SdkResult<u128> {
     // if margin shortage is tiny, accelerate liquidation
     if margin_shortage < 50 * QUOTE_PRECISION {
@@ -343,12 +344,23 @@ pub fn calculate_max_pct_to_liquidate(
     if slot < user.last_active_slot {
         return Err(SdkError::MathError("slot < user.last_active_slot"));
     }
-    let slots_elapsed = slot - user.last_active_slot;
+    // ratio of elapsed slots to the liquidation window in slots (mirrors the
+    // program's calculate_max_pct_to_liquidate). Takes a resolved `SlotDuration`
+    // (not a raw ms number) so a caller cannot pass the pre-switch base while a
+    // staged value is active; the window ceils so the ramp never reaches 100%
+    // earlier than intended; both scale with the slot duration so the ratio is
+    // duration-independent and identity at 400ms. Taking `Millis` keeps the
+    // legacy storage encoding at the account boundary instead of making this
+    // arithmetic helper guess what a bare integer means.
+    let elapsed_slots = slot - user.last_active_slot;
+    let duration_slots = liquidation_duration.to_slots_ceil(slot_duration);
 
-    let pct_freeable = slots_elapsed as u128 * LIQUIDATION_PCT_PRECISION
-        .checked_div(liquidation_duration) // ~ 1 minute if per slot is 400ms
-        .unwrap_or(LIQUIDATION_PCT_PRECISION) // if divide by zero, default to 100%
-        + initial_pct_to_liquidate
+    let ramp = (elapsed_slots as u128)
+        .saturating_mul(LIQUIDATION_PCT_PRECISION)
+        .checked_div(duration_slots as u128) // ~1 minute at the onchain default
+        .unwrap_or(LIQUIDATION_PCT_PRECISION); // if divide by zero, default to 100%
+    let pct_freeable = ramp
+        .saturating_add(initial_pct_to_liquidate)
         .min(LIQUIDATION_PCT_PRECISION);
 
     let total_margin_shortage = margin_shortage + user.liquidation_margin_freed as u128;

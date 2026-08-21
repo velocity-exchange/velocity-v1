@@ -23,6 +23,7 @@ use {
                 VelocityAction,
             },
             safe_math::SafeMath,
+            time::SlotDuration,
         },
         msg,
         state::{
@@ -467,16 +468,16 @@ pub struct PerpMarket {
     pub market_config: u8,
     /// the oracle provider information. used to decode/scale the oracle public key
     pub oracle_source: OracleSource,
-    /// Max oracle delay, in slots, tolerated by immediate (JIT / auction-skipping)
+    /// Max oracle delay (legacy 400ms units) tolerated by immediate (JIT / auction-skipping)
     /// AMM fills. Positive is an explicit threshold. `0` disables immediate AMM
     /// fills entirely. Negative (the init default, `-1`) means unset, which
-    /// resolves by price source: `MM_ORACLE_MIN_SLOT_GAP` for an MM-oracle-sourced
+    /// resolves by price source: `MM_ORACLE_MIN_WRITE_GAP` for an MM-oracle-sourced
     /// price (the tightest window the crank can satisfy, since the program refuses
     /// MM-oracle writes closer together than that) and `0` for an exchange-oracle
     /// price, which can be same-slot fresh. See `math::oracle::oracle_validity`.
     pub oracle_slot_delay_override: i8,
-    /// the override for the state.min_perp_auction_duration
-    /// 0 is no override, -1 is disable speed bump, 1-100 is literal speed bump
+    /// Low-risk oracle delay override (legacy 400ms units): 0 = unset (use the
+    /// guard rail), otherwise a literal threshold. See `math::time::DelayOverride`.
     pub oracle_low_risk_slot_delay_override: i8,
     /// Floor on the unswept IF-fee carveout, as a percentage of open-interest
     /// notional (PERCENTAGE_PRECISION). The fee sweep's IF drain leaves
@@ -709,6 +710,7 @@ impl PerpMarket {
         oracle_validity: Option<crate::math::oracle::OracleValidity>,
         now: i64,
         clock_slot: u64,
+        slot_duration: SlotDuration,
     ) -> VelocityResult<()> {
         let Some(oracle_validity) = oracle_validity else {
             return Ok(());
@@ -727,6 +729,7 @@ impl PerpMarket {
             oracle_validity,
             clock_slot,
             reserve_price_after,
+            slot_duration,
         )
     }
 
@@ -775,6 +778,7 @@ impl PerpMarket {
         mm_oracle_price_data: &crate::state::oracle::MMOraclePriceData,
         oracle_validity: Option<crate::math::oracle::OracleValidity>,
         clock_slot: u64,
+        slot_duration: SlotDuration,
     ) -> VelocityResult<()> {
         let Some(oracle_validity) = oracle_validity else {
             return Ok(());
@@ -786,6 +790,7 @@ impl PerpMarket {
             oracle_validity,
             clock_slot,
             reserve_price_after,
+            slot_duration,
         )
     }
 
@@ -795,6 +800,7 @@ impl PerpMarket {
         oracle_validity: crate::math::oracle::OracleValidity,
         clock_slot: u64,
         reserve_price: u64,
+        slot_duration: SlotDuration,
     ) -> VelocityResult<()> {
         // Refresh the AMM's cached spread state (long/short spread, reference
         // offset, oracle-reserve spread pct, ask/bid reserves) in place, then
@@ -809,6 +815,7 @@ impl PerpMarket {
             mm_oracle_price_data,
             reserve_price,
             clock_slot,
+            slot_duration,
         )?;
         market_stats.last_reference_price_offset = amm.reference_price_offset;
 
@@ -1340,6 +1347,7 @@ impl PerpMarket {
         oracle_price_data: OraclePriceData,
         clock_slot: u64,
         oracle_guard_rails: &ValidityGuardRails,
+        slot_duration: SlotDuration,
     ) -> VelocityResult<MMOraclePriceData> {
         let delay = clock_slot
             .cast::<i64>()?
@@ -1368,6 +1376,7 @@ impl PerpMarket {
                 self.oracle_slot_delay_override,
                 true, // classifying the MM oracle price itself
                 self.oracle_low_risk_slot_delay_override,
+                slot_duration,
             )?
         };
         MMOraclePriceData::new(

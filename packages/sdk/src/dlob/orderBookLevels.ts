@@ -25,6 +25,7 @@ import {
 import { MMOraclePriceData, OraclePriceData } from '../oracles/types';
 import { PublicKey } from '@solana/web3.js';
 import { standardizeBaseAssetAmount, standardizePrice } from '../math/orders';
+import { SlotDurationMs } from '../math/time';
 
 type liquiditySource = 'vamm' | 'dlob' | 'indicative';
 
@@ -268,6 +269,7 @@ export function getVammL2Generator({
 	now = new BN(Math.floor(Date.now() / 1000)),
 	topOfBookQuoteAmounts = [],
 	latestSlot,
+	slotDuration,
 }: {
 	marketAccount: PerpMarketAccount;
 	mmOraclePriceData: MMOraclePriceData;
@@ -275,6 +277,10 @@ export function getVammL2Generator({
 	now?: BN;
 	topOfBookQuoteAmounts?: BN[];
 	latestSlot?: BN;
+	// required: reference-price-offset smoothing depends on the live slot
+	// duration, so a caller must supply it rather than silently defaulting to
+	// the 400ms baseline (which mispredicts quotes once a gate flips)
+	slotDuration: SlotDurationMs;
 }): L2OrderBookGenerator {
 	const updatedAmm = calculateUpdatedAMM(marketAccount.amm, mmOraclePriceData);
 	const paused = isOperationPaused(
@@ -300,7 +306,8 @@ export function getVammL2Generator({
 		marketAccount.marketStats,
 		mmOraclePriceData,
 		now,
-		latestSlot
+		latestSlot,
+		slotDuration
 	);
 
 	const numBaseOrders = Math.max(1, numOrders - topOfBookQuoteAmounts.length);

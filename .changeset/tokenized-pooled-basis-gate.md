@@ -12,6 +12,6 @@ existing holders' loss shelter (OtterSec #140). Clients should surface the new f
 preflight it by comparing the depositor's value against `netDeposits + cumulativeProfitShareAmount`.
 
 Redeeming is unaffected — existing holders can always exit — but a pool that has been under water
-stays closed to *new* tokenizations until the vault recovers past the pooled high-water mark.
+stays closed to _new_ tokenizations until the vault recovers past the pooled high-water mark.
 
 No SDK API change.

@@ -115,6 +115,15 @@ impl AccountsListBuilder {
         }
 
         self.accounts.latest_slot = latest_oracle_slot;
+        // Resolve any staged switch against the slot the maps will be loaded at,
+        // not the raw base field: that field lags a staged switch, which would
+        // size every oracle staleness window off the pre-switch duration.
+        self.accounts.slot_duration_ms = program::math::time::active_slot_duration_ms(
+            velocity_state_account.slot_duration_ms,
+            velocity_state_account.pending_slot_duration_ms,
+            velocity_state_account.slot_duration_effective_slot,
+            latest_oracle_slot,
+        );
         self.accounts.oracle_guard_rails = Some(unsafe {
             std::mem::transmute_copy::<_, program::state::state::OracleGuardRails>(
                 &velocity_state_account.oracle_guard_rails,
@@ -198,6 +207,15 @@ impl AccountsListBuilder {
         }
 
         self.accounts.latest_slot = latest_oracle_slot;
+        // Resolve any staged switch against the slot the maps will be loaded at,
+        // not the raw base field: that field lags a staged switch, which would
+        // size every oracle staleness window off the pre-switch duration.
+        self.accounts.slot_duration_ms = program::math::time::active_slot_duration_ms(
+            velocity_state_account.slot_duration_ms,
+            velocity_state_account.pending_slot_duration_ms,
+            velocity_state_account.slot_duration_effective_slot,
+            latest_oracle_slot,
+        );
         self.accounts.oracle_guard_rails = Some(unsafe {
             std::mem::transmute_copy::<_, program::state::state::OracleGuardRails>(
                 &velocity_state_account.oracle_guard_rails,

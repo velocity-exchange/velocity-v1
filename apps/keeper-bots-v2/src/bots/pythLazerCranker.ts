@@ -37,7 +37,9 @@ setGlobalDispatcher(
 
 const SIM_CU_ESTIMATE_MULTIPLIER = 1.5;
 const DEFAULT_INTEVAL_MS = 30000;
-// ~4 slots at 400ms/slot; ceiling between posts when adaptive cranking is on
+// Ceiling between posts when adaptive cranking is on. A wall-clock interval:
+// no program-side gate for Pyth Lazer is slot-denominated, so this must not
+// scale with slot time or the post rate (and the fee spend) doubles at each gate.
 const DEFAULT_MAX_CRANK_INTERVAL_MS = 1600;
 // A chunk with an unresolved send is not re-gated until this long has passed,
 // so a hung sendTransaction cannot permanently wedge the chunk

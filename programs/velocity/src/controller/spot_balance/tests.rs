@@ -25,6 +25,7 @@ use {
                 calculate_token_utilization_limits, check_deposit_limits, check_withdraw_limits,
             },
             stats::calculate_weighted_average,
+            time::legacy_slot_duration_i64,
         },
         state::{
             margin_calculation::{MarginCalculation, MarginContext},
@@ -130,7 +131,13 @@ fn test_daily_withdraw_limits() {
         PythLazerOracle,
         oracle_account_info
     );
-    let _oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+    let _oracle_map = OracleMap::load_one(
+        &oracle_account_info,
+        slot,
+        crate::math::time::SlotDuration::BASELINE,
+        None,
+    )
+    .unwrap();
 
     let mut market = PerpMarket {
         amm: AMM {
@@ -477,7 +484,13 @@ fn test_check_withdraw_limits() {
         PythLazerOracle,
         oracle_account_info
     );
-    let _oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+    let _oracle_map = OracleMap::load_one(
+        &oracle_account_info,
+        slot,
+        crate::math::time::SlotDuration::BASELINE,
+        None,
+    )
+    .unwrap();
 
     let mut spot_market = SpotMarket {
         market_index: 0,
@@ -795,7 +808,13 @@ fn check_fee_collection() {
         PythLazerOracle,
         oracle_account_info
     );
-    let _oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+    let _oracle_map = OracleMap::load_one(
+        &oracle_account_info,
+        slot,
+        crate::math::time::SlotDuration::BASELINE,
+        None,
+    )
+    .unwrap();
 
     let mut market = PerpMarket {
         amm: AMM {
@@ -1196,7 +1215,13 @@ fn check_fee_collection_larger_nums() {
         PythLazerOracle,
         oracle_account_info
     );
-    let _oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+    let _oracle_map = OracleMap::load_one(
+        &oracle_account_info,
+        slot,
+        crate::math::time::SlotDuration::BASELINE,
+        None,
+    )
+    .unwrap();
 
     let mut market = PerpMarket {
         amm: AMM {
@@ -1616,7 +1641,13 @@ fn attempt_borrow_with_massive_upnl() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+    let mut oracle_map = OracleMap::load_one(
+        &oracle_account_info,
+        slot,
+        crate::math::time::SlotDuration::BASELINE,
+        None,
+    )
+    .unwrap();
 
     // sol coin
     let mut market = PerpMarket {
@@ -2949,8 +2980,8 @@ fn update_and_check_validity_judges_and_snapshots_before_refreshing() {
     };
 
     let guard_rails = ValidityGuardRails {
-        slots_before_stale_for_amm: 10,
-        slots_before_stale_for_margin: 120,
+        slots_before_stale_for_amm: legacy_slot_duration_i64(10),
+        slots_before_stale_for_margin: legacy_slot_duration_i64(120),
         confidence_interval_max_size: 20_000,
         too_volatile_ratio: 5,
     };
@@ -2966,8 +2997,9 @@ fn update_and_check_validity_judges_and_snapshots_before_refreshing() {
             &before.oracle_source,
             LogMode::None,
             -1,
-            false, // exchange-oracle price, never MM-sourced
+            false,
             0,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap()
     };
@@ -2997,6 +3029,7 @@ fn update_and_check_validity_judges_and_snapshots_before_refreshing() {
             later,
             Some(VelocityAction::Liquidate),
             false,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap_err(),
         ErrorCode::InvalidOracle
@@ -3012,6 +3045,7 @@ fn update_and_check_validity_judges_and_snapshots_before_refreshing() {
         later,
         Some(VelocityAction::UpdateTwap),
         false,
+        crate::math::time::SlotDuration::BASELINE,
     )
     .unwrap();
     assert_eq!(refresh.validity, OracleValidity::TooVolatile);

@@ -41,7 +41,7 @@ import {
 	NodeToFillWithContext,
 } from './types';
 import { getVelocityClientFromArgs, serializeNodeToFill } from './utils';
-import { sleepMs } from '../../utils';
+import { currentSlotDuration, sleepMs } from '../../utils';
 import { LRUCache } from 'lru-cache';
 import { sha256 } from '@noble/hashes/sha256';
 
@@ -278,7 +278,16 @@ class DLOBBuilder {
 			takerUserPubkey.toString()
 		);
 
-		const ttl = (maxSlot.toNumber() - this.slotSubscriber.getSlot()) * 500;
+		// cache TTL = remaining validity in real slots x live slot duration,
+		// with the same 25% pad the old hardcoded 500ms/slot figure carried
+		const ttl = Math.ceil(
+			(maxSlot.toNumber() - this.slotSubscriber.getSlot()) *
+				currentSlotDuration(
+					this.velocityClient,
+					this.slotSubscriber.getSlot()
+				) *
+				1.25
+		);
 		this.signedMsgOrders.set(uuid, signedMsgOrderNode, {
 			ttl,
 		});
@@ -306,12 +315,20 @@ class DLOBBuilder {
 				fallbackBid = calculateBidPrice(
 					market,
 					mmOraclePriceData,
-					new BN(this.slotSubscriber.getSlot())
+					new BN(this.slotSubscriber.getSlot()),
+					currentSlotDuration(
+						this.velocityClient,
+						this.slotSubscriber.getSlot()
+					)
 				);
 				fallbackAsk = calculateAskPrice(
 					market,
 					mmOraclePriceData,
-					new BN(this.slotSubscriber.getSlot())
+					new BN(this.slotSubscriber.getSlot()),
+					currentSlotDuration(
+						this.velocityClient,
+						this.slotSubscriber.getSlot()
+					)
 				);
 			} else {
 				market = this.velocityClient.getSpotMarketAccount(marketIndex);

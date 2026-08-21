@@ -8,7 +8,7 @@ use {
         Vault,
     },
     anchor_lang::prelude::*,
-    velocity::{cpi::accounts::UpdateUser, program::Velocity, state::user::User},
+    velocity::{cpi::accounts::UpdateUserWithMarkets, program::Velocity, state::user::User},
 };
 
 pub fn update_margin_trading_enabled<'info>(
@@ -39,6 +39,10 @@ pub struct UpdateMarginTradingEnabled<'info> {
     )]
     /// CHECK: checked in velocity cpi
     pub velocity_user: AccountLoader<'info, User>,
+    /// Velocity's `State`, forwarded so the CPI resolves the live slot duration
+    /// for its oracle staleness windows.
+    /// CHECK: checked in velocity cpi
+    pub velocity_state: AccountInfo<'info>,
     pub velocity_program: Program<'info, Velocity>,
 }
 
@@ -48,9 +52,10 @@ impl<'info> UpdateUserMarginTradingEnabledCPI
     fn velocity_update_user_margin_trading_enabled(&self, enabled: bool) -> Result<()> {
         declare_vault_seeds!(self.accounts.vault, seeds);
 
-        let cpi_accounts = UpdateUser {
+        let cpi_accounts = UpdateUserWithMarkets {
             user: self.accounts.velocity_user.to_account_info().clone(),
             authority: self.accounts.vault.to_account_info().clone(),
+            state: self.accounts.velocity_state.to_account_info().clone(),
         };
 
         let velocity_program = self.accounts.velocity_program.key();

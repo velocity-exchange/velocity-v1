@@ -1,4 +1,8 @@
 import {
+	SlotDurationMs,
+	SLOT_DURATION_BASELINE,
+	msToSlotsCeilNum,
+	activeSlotDurationFromState,
 	BN,
 	BigNum,
 	VelocityClient,
@@ -30,7 +34,8 @@ import { Connection } from '@solana/web3.js';
 import { wsMarketArgs } from 'src/dlob-subscriber/DLOBSubscriberIO';
 import {
 	DEFAULT_AUCTION_PARAMS,
-	FAST_FILL_AUCTION_DURATION,
+	DEFAULT_MARKET_AUCTION_DURATION_MS,
+	FAST_FILL_AUCTION_DURATION_MS,
 	FAST_FILL_AUCTION_START_PRICE_OFFSET,
 	MAJOR_MARKETS,
 	MID_MAJOR_MARKETS,
@@ -652,7 +657,8 @@ export const selectMostRecentBySlot = (
 export function createMarketBasedAuctionParams(
 	args: AuctionParamArgs,
 	overrideDefaults?: Partial<AuctionParamArgs>,
-	version: number = 1
+	version: number = 1,
+	slotDuration: SlotDurationMs = SLOT_DURATION_BASELINE
 ): AuctionParamArgs {
 	// Determine if this is a major market (PERP: SOL, BTC, ETH, HYPE)
 	const isMajorMarket =
@@ -685,9 +691,19 @@ export function createMarketBasedAuctionParams(
 			: args.auctionStartPriceOffset;
 
 	// Set market-specific defaults (only used if values are undefined)
+	// default durations are wall-clock ms, expressed in actual slots so the
+	// auction's ramp is independent of the slot duration
 	const marketSpecificDefaults: Partial<AuctionParamArgs> = {
 		...DEFAULT_AUCTION_PARAMS,
-		...(isFastFill ? { auctionDuration: FAST_FILL_AUCTION_DURATION } : {}),
+		auctionDuration: Math.min(
+			255,
+			msToSlotsCeilNum(
+				isFastFill
+					? FAST_FILL_AUCTION_DURATION_MS
+					: DEFAULT_MARKET_AUCTION_DURATION_MS,
+				slotDuration
+			)
+		),
 		auctionStartPriceOffsetFrom:
 			isMajorMarket && version === 1 ? 'mark' : 'bestOffer',
 		auctionStartPriceOffset: isMajorMarket && version === 1 ? 0 : -0.1,
@@ -920,7 +936,10 @@ export const mapToMarketOrderParams = async (
 	) => Promise<any>,
 	selectMostRecentBySlot?: (responses: any[]) => any,
 	fillQualityInfo?: TakerFillVsOracleBpsRedisResult,
-	apiVersion: number = 1
+	apiVersion: number = 1,
+	// live chain slot, threaded to the vAMM quote/MM-oracle validity so a staged
+	// slot-duration switch is applied; callers should pass `dlobProvider.getSlot()`
+	currentSlot?: number
 ): Promise<{
 	success: boolean;
 	data?: {
@@ -1010,7 +1029,10 @@ export const mapToMarketOrderParams = async (
 				const isSpot = isVariant(marketType, 'spot');
 				const oracleData = isSpot
 					? velocityClient.getOracleDataForSpotMarket(params.marketIndex)
-					: velocityClient.getMMOracleDataForPerpMarket(params.marketIndex);
+					: velocityClient.getMMOracleDataForPerpMarket(
+							params.marketIndex,
+							currentSlot
+					  );
 				const oraclePrice = oracleData.price ?? ZERO;
 
 				// Detect if orderbook is crossed
@@ -1162,7 +1184,8 @@ export const mapToMarketOrderParams = async (
 			const vammQuote = getVammSideQuoteWithMargin(
 				velocityClient,
 				params.marketIndex,
-				direction
+				direction,
+				currentSlot
 			);
 			if (vammQuote) {
 				const isLong = isVariant(direction, 'long');
@@ -1455,23 +1478,32 @@ export const fetchL2FromRedis = async (
 export const getVammSideQuoteWithMargin = (
 	velocityClient: VelocityClient,
 	marketIndex: number,
-	direction: PositionDirection
+	direction: PositionDirection,
+	// live chain slot for the staged slot-duration switch; falls back to the MM
+	// oracle publication slot (best-effort) when the caller has none
+	currentSlot?: number
 ): BN | undefined => {
 	try {
 		const perpMarket = velocityClient.getPerpMarketAccount?.(marketIndex);
 		if (!perpMarket) {
 			return undefined;
 		}
-		const mmOracle = velocityClient.getMMOracleDataForPerpMarket(marketIndex);
+		const mmOracle = velocityClient.getMMOracleDataForPerpMarket(
+			marketIndex,
+			currentSlot
+		);
 		if (!mmOracle?.price || mmOracle.price.isZero()) {
 			return undefined;
 		}
+		const nowSlot =
+			currentSlot !== undefined ? new BN(currentSlot) : mmOracle.slot;
 		const [vammBid, vammAsk] = calculateBidAskPrice(
 			perpMarket.amm,
 			perpMarket.marketStats,
 			mmOracle,
 			true,
-			mmOracle.slot
+			nowSlot,
+			activeSlotDurationFromState(velocityClient.getStateAccount(), nowSlot)
 		);
 		const marginPct = parseFloat(
 			process.env.DYNAMIC_VAMM_QUOTE_MARGIN || '0.15'

@@ -411,7 +411,7 @@ pub struct FeedHealth {
 }
 
 impl FeedHealth {
-    /// gRPC slots arrive ~2.5/s; this much silence means the feed is dead
+    /// gRPC slots arrive at least ~2.5/s (faster as slot time drops); this much silence means the feed is dead
     const GRPC_STALE_LIMIT_MS: u64 = 60_000;
     /// pyth-lazer feeds tick every 50-200ms; this much silence means the feed is dead
     const PYTH_STALE_LIMIT_MS: u64 = 60_000;

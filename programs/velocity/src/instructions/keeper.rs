@@ -30,7 +30,7 @@ use {
             bankruptcy::perp_markets_with_forfeitable_claims,
             casting::Cast,
             constants::{
-                BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT, BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS,
+                BID_ASK_TWAP_MAX_ORACLE_DIVERGENCE_PERCENT, BID_ASK_TWAP_MIN_QUOTE_REST,
                 QUOTE_PRECISION_I128, QUOTE_PRECISION_U64, QUOTE_SPOT_MARKET_INDEX,
             },
             margin::{
@@ -44,6 +44,7 @@ use {
             position::calculate_base_asset_value_and_pnl_with_oracle_price,
             safe_math::SafeMath,
             spot_withdraw::validate_spot_market_vault_amount,
+            time::Millis,
         },
         math_error,
         optional_accounts::{get_token_mint, update_prelaunch_oracle},
@@ -153,6 +154,7 @@ fn fill_order<'c: 'info, 'info>(
         &get_writable_perp_market_set(market_index),
         &MarketSet::new(),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -244,6 +246,7 @@ pub fn handle_trigger_order<'c: 'info, 'info>(
         &writeable_perp_markets,
         &writeable_spot_markets,
         Clock::get()?.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -284,6 +287,7 @@ pub fn handle_force_cancel_orders<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set(QUOTE_SPOT_MARKET_INDEX),
         Clock::get()?.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -327,6 +331,7 @@ pub fn handle_trip_equity_floor_breaker<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         Clock::get()?.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -391,6 +396,7 @@ pub fn handle_update_user_idle<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         Clock::get()?.slot,
+        ctx.accounts.state.load()?.slot_duration(),
         None,
     )?;
 
@@ -400,7 +406,12 @@ pub fn handle_update_user_idle<'c: 'info, 'info>(
     // user flipped to idle faster if equity is less than 1000
     let accelerated = equity < QUOTE_PRECISION_I128 * 1000;
 
-    validate_user_is_idle(&user, clock.slot, accelerated)?;
+    validate_user_is_idle(
+        &user,
+        clock.slot,
+        accelerated,
+        ctx.accounts.state.load()?.slot_duration(),
+    )?;
 
     user.idle = true;
 
@@ -425,6 +436,7 @@ pub fn handle_log_user_balances<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         Clock::get()?.slot,
+        ctx.accounts.state.load()?.slot_duration(),
         None,
     )?;
 
@@ -539,6 +551,7 @@ pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         Clock::get()?.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -668,10 +681,13 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
 
     // Set max slot for the order early so we set correct signed msg order id
     let order_slot = verified_message_and_signature.slot;
-    if order_slot < clock.slot.saturating_sub(500) {
+    // ~200s, expressed in actual slots
+    let max_order_slot_age = Millis::from_secs(200).to_slots(state.slot_duration());
+    if order_slot < clock.slot.saturating_sub(max_order_slot_age) {
         msg!(
-            "SignedMsg order slot {} is too old: must be within 500 slots of current slot",
-            order_slot
+            "SignedMsg order slot {} is too old: must be within {} slots of current slot",
+            order_slot,
+            max_order_slot_age
         );
         return Err(print_error!(ErrorCode::InvalidSignedMsgOrderParam)().into());
     }
@@ -705,9 +721,11 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
     // Dont place order if signed msg order already exists
     let mut signed_msg_order_id =
         SignedMsgOrderId::new(verified_message_and_signature.uuid, max_slot, 0);
-    if signed_msg_account
-        .check_exists_and_prune_stale_signed_msg_order_ids(signed_msg_order_id, clock.slot)
-    {
+    if signed_msg_account.check_exists_and_prune_stale_signed_msg_order_ids(
+        signed_msg_order_id,
+        clock.slot,
+        state.slot_duration(),
+    ) {
         msg!("SignedMsg order already exists for taker {:?}", taker_key);
         return Ok(());
     }
@@ -938,6 +956,7 @@ pub fn handle_settle_pnl<'c: 'info, 'info>(
         &get_writable_perp_market_set(market_index),
         &get_writable_spot_market_set(QUOTE_SPOT_MARKET_INDEX),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -1079,6 +1098,7 @@ pub fn handle_settle_multiple_pnls<'c: 'info, 'info>(
         &get_writable_perp_market_set_from_vec(&market_indexes),
         &get_writable_spot_market_set(QUOTE_SPOT_MARKET_INDEX),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -1222,6 +1242,7 @@ pub fn handle_settle_funding_payment<'c: 'info, 'info>(
         &get_market_set_for_user_positions(&user.perp_positions),
         &MarketSet::new(),
         clock.slot,
+        ctx.accounts.state.load()?.slot_duration(),
         None,
     )?;
 
@@ -1277,6 +1298,7 @@ pub fn handle_liquidate_perp<'c: 'info, 'info>(
         &get_writable_perp_market_set(market_index),
         &MarketSet::new(),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -1330,6 +1352,7 @@ pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
         &get_writable_perp_market_set(market_index),
         &MarketSet::new(),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -1402,6 +1425,7 @@ pub fn handle_liquidate_spot<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set_from_many(vec![asset_market_index, liability_market_index]),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -1481,6 +1505,7 @@ pub fn handle_liquidate_spot_with_swap_begin<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set_from_many(vec![asset_market_index, liability_market_index]),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -1799,6 +1824,7 @@ pub fn handle_liquidate_spot_with_swap_end<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set_from_many(vec![asset_market_index, liability_market_index]),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
     let liability_token_program = get_token_interface(remaining_accounts)?;
@@ -2017,6 +2043,7 @@ pub fn handle_liquidate_borrow_for_perp_pnl<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set(spot_market_index),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2036,7 +2063,7 @@ pub fn handle_liquidate_borrow_for_perp_pnl<'c: 'info, 'info>(
         clock.slot,
         state.liquidation_margin_buffer_ratio,
         state.initial_pct_to_liquidate as u128,
-        state.liquidation_duration as u128,
+        state.liquidation_duration_ms(),
         state.funding_paused()?,
     )?;
 
@@ -2090,6 +2117,7 @@ pub fn handle_liquidate_perp_pnl_for_deposit<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set(spot_market_index),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2109,7 +2137,7 @@ pub fn handle_liquidate_perp_pnl_for_deposit<'c: 'info, 'info>(
         clock.slot,
         state.liquidation_margin_buffer_ratio,
         state.initial_pct_to_liquidate as u128,
-        state.liquidation_duration as u128,
+        state.liquidation_duration_ms(),
         state.funding_paused()?,
     )?;
 
@@ -2135,6 +2163,7 @@ pub fn handle_set_user_status_to_being_liquidated<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2174,6 +2203,7 @@ pub fn handle_resolve_perp_pnl_deficit<'c: 'info, 'info>(
         &get_writable_perp_market_set(perp_market_index),
         &get_writable_spot_market_set(spot_market_index),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2358,6 +2388,7 @@ pub fn handle_resolve_perp_bankruptcy<'c: 'info, 'info>(
         &get_writable_perp_market_set_from_vec(&writable_perp_markets),
         &get_writable_spot_market_set(quote_spot_market_index),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2499,6 +2530,7 @@ pub fn handle_resolve_spot_bankruptcy<'c: 'info, 'info>(
         // account here, because the claim passes read it, but only as read-only.
         &get_writable_spot_market_set_from_many(vec![market_index, QUOTE_SPOT_MARKET_INDEX]),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2610,6 +2642,7 @@ pub fn handle_update_funding_rate(
     let mut oracle_map = OracleMap::load_one(
         &ctx.accounts.oracle,
         clock_slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2618,6 +2651,7 @@ pub fn handle_update_funding_rate(
         *oracle_price_data,
         clock_slot,
         &state.oracle_guard_rails.validity,
+        state.slot_duration(),
     )?;
     // Refresh PerpMarket-level oracle stats. AMM refresh happens inside
     // `update_funding_rate` via the AmmQuoter's setup phase — not here.
@@ -2642,7 +2676,12 @@ pub fn handle_update_funding_rate(
         &mm_oracle_price_data,
         &state,
     )?;
-    perp_market.refresh_amm_quote_state(&mm_oracle_price_data, validity, clock_slot)?;
+    perp_market.refresh_amm_quote_state(
+        &mm_oracle_price_data,
+        validity,
+        clock_slot,
+        state.slot_duration(),
+    )?;
 
     validate!(
         matches!(
@@ -2689,7 +2728,12 @@ pub fn handle_update_funding_rate(
 pub fn handle_update_prelaunch_oracle(ctx: Context<UpdatePrelaunchOracle>) -> Result<()> {
     let clock = Clock::get()?;
     let clock_slot = clock.slot;
-    let oracle_map = OracleMap::load_one(&ctx.accounts.oracle, clock_slot, None)?;
+    let oracle_map = OracleMap::load_one(
+        &ctx.accounts.oracle,
+        clock_slot,
+        ctx.accounts.state.load()?.slot_duration(),
+        None,
+    )?;
 
     let perp_market = &load!(ctx.accounts.perp_market)?;
 
@@ -2732,8 +2776,12 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
     let now = clock.unix_timestamp;
     let slot = clock.slot;
     let state = ctx.accounts.state.load()?;
-    let mut oracle_map =
-        OracleMap::load_one(&ctx.accounts.oracle, slot, Some(state.oracle_guard_rails))?;
+    let mut oracle_map = OracleMap::load_one(
+        &ctx.accounts.oracle,
+        slot,
+        state.slot_duration(),
+        Some(state.oracle_guard_rails),
+    )?;
 
     let keeper_stats = load!(ctx.accounts.keeper_stats)?;
     validate!(
@@ -2756,6 +2804,7 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
         *oracle_price_data,
         slot,
         &state.oracle_guard_rails.validity,
+        state.slot_duration(),
     )?;
     // PerpMarket-level oracle stats only — this ix walks DLOB makers to
     // estimate bid/ask TWAP and does not read AMM peg or reserves. The
@@ -2767,7 +2816,13 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
         &mm_oracle_price_data,
         &state,
     )?;
-    perp_market.update_oracle_derived_stats(&mm_oracle_price_data, validity, now, slot)?;
+    perp_market.update_oracle_derived_stats(
+        &mm_oracle_price_data,
+        validity,
+        now,
+        slot,
+        state.slot_duration(),
+    )?;
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
     let makers = load_user_map(remaining_accounts_iter, false)?;
@@ -2780,7 +2835,7 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
         &makers,
         slot,
         now,
-        BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS,
+        BID_ASK_TWAP_MIN_QUOTE_REST.to_slots_ceil(state.slot_duration()),
     )?;
     let (bids, asks) = filter_bids_asks_by_oracle_divergence(
         bids,
@@ -2815,6 +2870,7 @@ pub fn handle_update_perp_bid_ask_twap<'c: 'info, 'info>(
             &mm_oracle_price_data,
             reserve_price,
             slot,
+            state.slot_duration(),
         )?;
         market_stats.update_mark_twap_crank(
             amm,
@@ -2983,6 +3039,7 @@ pub fn handle_sweep_perp_market_fees(
     let mut oracle_map = OracleMap::load_one(
         &ctx.accounts.oracle,
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -3163,6 +3220,7 @@ pub fn handle_settle_revenue_share<'c: 'info, 'info>(
         &get_writable_perp_market_set(market_index),
         &get_writable_spot_market_set(QUOTE_SPOT_MARKET_INDEX),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -3263,6 +3321,7 @@ pub fn handle_update_spot_market_cumulative_interest(
     let mut oracle_map = OracleMap::load_one(
         &ctx.accounts.oracle,
         clock_slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -3337,6 +3396,7 @@ pub fn handle_refresh_spot_market_interest<'c: 'info, 'info>(
         &MarketSet::new(),
         &writable_spot_markets,
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -3378,6 +3438,7 @@ pub fn handle_update_amms<'c: 'info, 'info>(
         &get_market_set_from_list(market_indexes),
         &MarketSet::new(),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -3404,7 +3465,12 @@ pub fn view_amm_liquidity<'c: 'info, 'info>(
     let state = ctx.accounts.state.load()?;
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
-    let oracle_map = &mut OracleMap::load(remaining_accounts_iter, clock.slot, None)?;
+    let oracle_map = &mut OracleMap::load(
+        remaining_accounts_iter,
+        clock.slot,
+        state.slot_duration(),
+        None,
+    )?;
     let market_map = &mut PerpMarketMap::load(
         &get_market_set_from_list(market_indexes),
         remaining_accounts_iter,
@@ -3488,6 +3554,7 @@ pub fn handle_force_delete_user<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_market_set_for_spot_positions(&user.spot_positions),
         slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -3515,13 +3582,17 @@ pub fn handle_force_delete_user<'c: 'info, 'info>(
 
     #[cfg(not(feature = "anchor-test"))]
     {
-        let slots_since_last_active = slot.safe_sub(user.last_active_slot)?;
+        let time_since_last_active = crate::math::time::Millis::from_slots(
+            slot.safe_sub(user.last_active_slot)?,
+            state.slot_duration(),
+        );
 
         validate!(
-            slots_since_last_active >= 18144000, // 60 * 60 * 24 * 7 * 4 * 3 / .4 (~3 months)
+            // ~3 months (12 weeks)
+            time_since_last_active >= crate::math::time::Millis::from_secs(7_257_600),
             ErrorCode::DefaultError,
-            "user not inactive for long enough: {}",
-            slots_since_last_active
+            "user not inactive for long enough: {} ms",
+            time_since_last_active.as_ms()
         )?;
     }
 
@@ -3758,6 +3829,7 @@ pub fn handle_update_amm_cache<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         Clock::get()?.slot,
+        state.slot_duration(),
         None,
     )?;
     let slot = Clock::get()?.slot;
@@ -3777,8 +3849,12 @@ pub fn handle_update_amm_cache<'c: 'info, 'info>(
 
         let oracle_data = oracle_map.get_price_data(&perp_market.oracle_id())?;
         let validity = ctx.accounts.state.load()?.oracle_guard_rails.validity;
-        let mm_oracle_price_data =
-            perp_market.get_mm_oracle_price_data(*oracle_data, slot, &validity)?;
+        let mm_oracle_price_data = perp_market.get_mm_oracle_price_data(
+            *oracle_data,
+            slot,
+            &validity,
+            state.slot_duration(),
+        )?;
 
         cached_info.update_perp_market_fields(&perp_market)?;
         cached_info.try_update_oracle_info(
@@ -3786,6 +3862,7 @@ pub fn handle_update_amm_cache<'c: 'info, 'info>(
             &mm_oracle_price_data,
             &perp_market,
             &state.oracle_guard_rails,
+            state.slot_duration(),
         )?;
 
         if perp_market.hedge_config.status != 0

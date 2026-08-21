@@ -106,6 +106,23 @@ pub mod usermap;
 
 pub mod dlob;
 
+/// Live slot duration from an already-read `State`, applying a staged switch once
+/// `now_slot` reaches its effective slot. Mirrors the program's
+/// `State::active_slot_duration_ms`. Prefer this over the raw
+/// `State.slot_duration_ms` field, which lags a staged switch until the gate
+/// after it is staged.
+pub fn slot_duration_from_state(
+    state: &State,
+    now_slot: Slot,
+) -> program::math::time::SlotDuration {
+    program::math::time::SlotDuration::from_state_ms(program::math::time::active_slot_duration_ms(
+        state.slot_duration_ms,
+        state.pending_slot_duration_ms,
+        state.slot_duration_effective_slot,
+        now_slot,
+    ))
+}
+
 /// VelocityClient
 ///
 /// It is cheaply clone-able and consumers are encouraged to do so.
@@ -1052,6 +1069,18 @@ impl VelocityClient {
     /// * `market_index` - perp market index
     /// * `current_slot` - current solana slot
     ///
+    /// The live slot duration at `now_slot`, applying a staged switch once its
+    /// effective slot has passed. Mirrors the program's
+    /// `State::active_slot_duration_ms`. The raw `State.slot_duration_ms` field
+    /// lags a staged switch for as long as the gate after it is unstaged, so
+    /// resolve through here rather than reading that field. Falls back to the
+    /// 400ms baseline when `State` is not cached.
+    pub fn slot_duration_at(&self, now_slot: Slot) -> program::math::time::SlotDuration {
+        self.state_account()
+            .map(|s| slot_duration_from_state(&s, now_slot))
+            .unwrap_or(program::math::time::SlotDuration::BASELINE)
+    }
+
     pub fn try_get_mmoracle_for_perp_market(
         &self,
         market_index: u16,
@@ -1061,15 +1090,21 @@ impl VelocityClient {
             .try_get_oracle_price_data_and_slot(MarketId::perp(market_index))
             .ok_or(SdkError::InvalidOracle)?;
         let perp_market = self.try_get_perp_market_account(market_index)?;
-        let oracle_validity_guard_rails = self.state_account().unwrap().oracle_guard_rails.validity;
+        // One `State` read serves both the guard rails and the slot duration:
+        // `state_account()` Borsh-deserializes the whole account, and this is a
+        // per-fill-decision path.
+        let state = self.state_account()?;
+        let oracle_validity_guard_rails = state.oracle_guard_rails.validity;
 
         let velocity_validity_guard_rails: program::state::state::ValidityGuardRails =
             unsafe { std::mem::transmute_copy::<_, _>(&oracle_validity_guard_rails) };
+        let slot_duration = slot_duration_from_state(&state, current_slot);
         perp_market
             .get_mm_oracle_price_data(
                 oracle_data.data,
                 current_slot,
                 &velocity_validity_guard_rails,
+                slot_duration,
             )
             .map(|x| x.get_safe_oracle_price_data())
             .map_err(|e| SdkError::Anchor(Box::new(e.into())))
@@ -1099,7 +1134,9 @@ impl VelocityClient {
             .try_get_oracle_price_data_and_slot(MarketId::perp(market_index))
             .ok_or(SdkError::InvalidOracle)?;
         let mut perp_market = self.try_get_perp_market_account(market_index)?;
-        let oracle_validity_guard_rails = self.state_account().unwrap().oracle_guard_rails.validity;
+        // One `State` read serves both the guard rails and the slot duration.
+        let state = self.state_account()?;
+        let oracle_validity_guard_rails = state.oracle_guard_rails.validity;
         let velocity_validity_guard_rails: program::state::state::ValidityGuardRails =
             unsafe { std::mem::transmute_copy::<_, _>(&oracle_validity_guard_rails) };
 
@@ -1114,6 +1151,7 @@ impl VelocityClient {
             exchange_oracle,
             &velocity_validity_guard_rails,
             slot,
+            slot_duration_from_state(&state, slot),
         )
     }
 

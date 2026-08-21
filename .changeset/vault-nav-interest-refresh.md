@@ -5,7 +5,7 @@
 Every vault instruction that snapshots NAV now CPIs velocity's
 `update_spot_market_cumulative_interest` for the vault's denomination spot market **before** pricing
 shares (OtterSec #136, #137). `Vault::calculate_equity` values the vault's velocity deposit off the
-market's *stored* `cumulative_deposit_interest`; only velocity may write that account, so the vaults
+market's _stored_ `cumulative_deposit_interest`; only velocity may write that account, so the vaults
 program has to refresh it by CPI. Previously `deposit` refreshed it only afterwards (as a side effect
 of the deposit CPI), so an entrant minted shares against a stale index and captured part of the lender
 interest the incumbents had already earned; the withdraw-request and cancel paths never refreshed at

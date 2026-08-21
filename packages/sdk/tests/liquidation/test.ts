@@ -6,6 +6,9 @@ import {
 	QUOTE_PRECISION,
 	LIQUIDATION_PCT_PRECISION,
 	calculateMaxPctToLiquidate,
+	getLiquidationFee,
+	millisFromStoredUnits,
+	slotDurationFromState,
 	calculatePerpIfFee,
 	calculateSpotIfFee,
 	calculateUserProtectiveAssetPrice,
@@ -20,7 +23,7 @@ describe('calculateMaxPctToLiquidate', () => {
 			new BN(1_000_000).mul(QUOTE_PRECISION), // huge margin shortage
 			new BN(0), // slot === lastActiveSlot, no time elapsed
 			new BN(0), // initialPctToLiquidate
-			new BN(1000), // liquidationDuration
+			millisFromStoredUnits(1000), // liquidationDuration
 			true // isIsolatedPosition
 		);
 
@@ -36,11 +39,42 @@ describe('calculateMaxPctToLiquidate', () => {
 			new BN(1000).mul(QUOTE_PRECISION), // margin shortage (above the 50 QUOTE_PRECISION floor)
 			new BN(100), // slot
 			new BN(0), // initialPctToLiquidate
-			new BN(1000) // liquidationDuration
+			millisFromStoredUnits(1000) // liquidationDuration
 		);
 
 		// slotsElapsed = 100, pctFreeable = 100 * 10000 / 1000 = 1000 (10%)
 		assert.isTrue(pct.eq(new BN(1000)));
+	});
+});
+
+describe('getLiquidationFee', () => {
+	it('matches elapsed wall-clock time at 400ms and 200ms', () => {
+		const baseFee = 20_000;
+		const maxFee = 50_000;
+		const baseline = getLiquidationFee(
+			baseFee,
+			maxFee,
+			new BN(0),
+			new BN(10_000),
+			slotDurationFromState(400)
+		);
+		const fast = getLiquidationFee(
+			baseFee,
+			maxFee,
+			new BN(0),
+			new BN(20_000),
+			slotDurationFromState(200)
+		);
+
+		assert.equal(baseline, 30_000);
+		assert.equal(fast, baseline);
+	});
+
+	it('rejects a current slot before the last-active slot like the program', () => {
+		assert.throws(
+			() => getLiquidationFee(20_000, 50_000, new BN(101), new BN(100)),
+			/currentSlot must not precede lastActiveUserSlot/
+		);
 	});
 });
 

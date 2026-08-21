@@ -19,6 +19,7 @@ import { getPerpMarketTierNumber } from './tiers';
 import { MMOraclePriceData } from '../oracles/types';
 import { isLowRiskForAmm, standardizePrice } from './orders';
 import { getOracleValidity } from './oracles';
+import { activeSlotDurationFromState } from './time';
 import { isAmmDrawdownPause, isOperationPaused } from './exchangeStatus';
 
 /** True if `order`'s auction has run its full `auctionDuration` (in slots) as of `slot`, or the order has no auction (`auctionDuration === 0`). */
@@ -92,7 +93,8 @@ export function isFallbackAvailableLiquiditySource(
 		state.oracleGuardRails,
 		new BN(slot),
 		undefined,
-		mmOraclePriceData.isMMSourcedPrice ?? false
+		mmOraclePriceData.isMMSourcedPrice ?? false,
+		activeSlotDurationFromState(state, new BN(slot))
 	);
 	if (oracleValidity <= OracleValidity.StaleForAMMLowRisk) {
 		return false;

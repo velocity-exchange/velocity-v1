@@ -320,7 +320,7 @@ mod get_trigger_price {
 mod amm_can_fill_order_tests {
     use crate::{
         controller::position::PositionDirection,
-        math::oracle::OracleValidity,
+        math::{oracle::OracleValidity, time::legacy_slot_duration_u8},
         state::{
             fill_mode::FillMode,
             oracle::{MMOraclePriceData, OraclePriceData},
@@ -334,7 +334,7 @@ mod amm_can_fill_order_tests {
 
     fn base_state() -> State {
         State {
-            min_perp_auction_duration: 10,
+            min_perp_auction_duration: legacy_slot_duration_u8(10),
             ..State::default()
         }
     }

@@ -572,6 +572,7 @@ pub fn handle_deposit<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set(market_index),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -807,6 +808,7 @@ pub fn handle_withdraw<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set(market_index),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -1048,6 +1050,7 @@ pub fn handle_transfer_deposit_by_delegate<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set(market_index),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -1238,6 +1241,7 @@ pub fn handle_transfer_deposit<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set(market_index),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -1618,6 +1622,7 @@ pub fn handle_transfer_pools<'c: 'info, 'info>(
             borrow_to_market_index,
         ]),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2144,6 +2149,7 @@ pub fn handle_transfer_perp_position<'c: 'info, 'info>(
         &get_writable_perp_market_set(market_index),
         &MarketSet::new(),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2507,6 +2513,7 @@ pub fn handle_deposit_into_isolated_perp_position<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set(spot_market_index),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2590,6 +2597,7 @@ pub fn handle_transfer_isolated_perp_position_deposit<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set(spot_market_index),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2644,6 +2652,7 @@ pub fn handle_withdraw_from_isolated_perp_position<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set(spot_market_index),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2713,6 +2722,7 @@ pub fn handle_place_perp_order<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2780,6 +2790,7 @@ pub fn handle_cancel_order<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2819,6 +2830,7 @@ pub fn handle_cancel_order_by_user_id<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2853,6 +2865,7 @@ pub fn handle_cancel_orders_by_ids<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2891,6 +2904,7 @@ pub fn handle_cancel_orders<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2936,6 +2950,7 @@ pub fn handle_modify_order<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -2978,6 +2993,7 @@ pub fn handle_modify_order_by_user_order_id<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -3040,6 +3056,7 @@ fn place_orders<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -3204,6 +3221,7 @@ pub fn handle_place_and_take_perp_order<'c: 'info, 'info>(
         &get_writable_perp_market_set(params.market_index),
         &MarketSet::new(),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -3347,6 +3365,7 @@ pub fn handle_place_and_make_perp_order<'c: 'info, 'info>(
         &get_writable_perp_market_set(params.market_index),
         &MarketSet::new(),
         Clock::get()?.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -3455,6 +3474,7 @@ pub fn handle_place_and_make_signed_msg_perp_order<'c: 'info, 'info>(
         &get_writable_perp_market_set(params.market_index),
         &MarketSet::new(),
         Clock::get()?.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -3583,7 +3603,7 @@ pub fn handle_update_user_perp_position_custom_margin_ratio(
 }
 
 pub fn handle_update_user_margin_trading_enabled<'c: 'info, 'info>(
-    ctx: Context<'info, UpdateUser<'info>>,
+    ctx: Context<'info, UpdateUserWithMarkets<'info>>,
     _sub_account_id: u16,
     margin_trading_enabled: bool,
 ) -> Result<()> {
@@ -3598,6 +3618,7 @@ pub fn handle_update_user_margin_trading_enabled<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         Clock::get()?.slot,
+        ctx.accounts.state.load()?.slot_duration(),
         None,
     )?;
 
@@ -3611,7 +3632,7 @@ pub fn handle_update_user_margin_trading_enabled<'c: 'info, 'info>(
 }
 
 pub fn handle_update_user_pool_id<'c: 'info, 'info>(
-    ctx: Context<'info, UpdateUser<'info>>,
+    ctx: Context<'info, UpdateUserWithMarkets<'info>>,
     _sub_account_id: u16,
     pool_id: u8,
 ) -> Result<()> {
@@ -3626,6 +3647,7 @@ pub fn handle_update_user_pool_id<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         Clock::get()?.slot,
+        ctx.accounts.state.load()?.slot_duration(),
         None,
     )?;
 
@@ -3932,6 +3954,7 @@ pub fn handle_begin_swap<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set_from_many(vec![in_market_index, out_market_index]),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -4237,6 +4260,7 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set_from_many(vec![in_market_index, out_market_index]),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
     let out_token_program = get_token_interface(remaining_accounts)?;
@@ -4812,6 +4836,7 @@ pub fn handle_special_transfer_perp_position_to_vamm<'c: 'info, 'info>(
         &get_writable_perp_market_set(market_index),
         &MarketSet::new(),
         clock.slot,
+        state.slot_duration(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -5585,6 +5610,30 @@ pub struct UpdateUser<'info> {
     )]
     pub user: AccountLoader<'info, User>,
     pub authority: Signer<'info>,
+}
+
+/// `UpdateUser` plus `State`, for the two handlers that load market/oracle maps
+/// and therefore need the live slot duration. Kept separate so the other
+/// `UpdateUser` handlers, which touch no oracle, keep their account list.
+#[derive(Accounts)]
+#[instruction(sub_account_id: u16)]
+pub struct UpdateUserWithMarkets<'info> {
+    #[account(
+        mut,
+        seeds = [b"user", authority.key.as_ref(), sub_account_id.to_le_bytes().as_ref()],
+        bump,
+    )]
+    pub user: AccountLoader<'info, User>,
+    pub authority: Signer<'info>,
+    /// Read only for the live slot duration. The seed constraint both locks
+    /// the account to the singleton `State` and lets clients resolve it from
+    /// the IDL, so callers that built this instruction before the account
+    /// existed keep working.
+    #[account(
+        seeds = [b"velocity_state".as_ref()],
+        bump,
+    )]
+    pub state: AccountLoader<'info, State>,
 }
 
 #[derive(Accounts)]

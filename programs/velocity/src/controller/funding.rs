@@ -180,13 +180,19 @@ fn refresh_amm_for_funding_gate(
     slot: u64,
     guard_rails: &OracleGuardRails,
 ) -> VelocityResult<()> {
+    let slot_duration = oracle_map.slot_duration;
     let oracle_price_data = *oracle_map.get_price_data(&market.oracle_id())?;
-    let mm_oracle_price_data =
-        market.get_mm_oracle_price_data(oracle_price_data, slot, &guard_rails.validity)?;
+    let mm_oracle_price_data = market.get_mm_oracle_price_data(
+        oracle_price_data,
+        slot,
+        &guard_rails.validity,
+        slot_duration,
+    )?;
     let oracle_validity = compute_amm_refresh_validity_with_guard_rails(
         market,
         &mm_oracle_price_data,
         &guard_rails.validity,
+        slot_duration,
     )?;
     let market_stats_snap = market.market_stats;
     let safe_oracle = mm_oracle_price_data.get_safe_oracle_price_data();
@@ -199,6 +205,7 @@ fn refresh_amm_for_funding_gate(
         tick: market.order_tick_size,
         step_size: market.order_step_size,
         slot,
+        slot_duration,
         base_precision: BASE_PRECISION_U64,
         market_status: market.status,
         market_config: market.market_config,
@@ -225,12 +232,14 @@ pub fn update_funding_rate(
     refresh_amm_for_funding_gate(market, oracle_map, slot, guard_rails)?;
 
     // Pause funding if oracle is invalid or if mark/oracle spread is too divergent
+    let slot_duration = oracle_map.slot_duration;
     let block_funding_rate_update = oracle::block_operation(
         market,
         oracle_map.get_price_data(&market.oracle_id())?,
         guard_rails,
         reserve_price,
         slot,
+        slot_duration,
     )?;
 
     let time_until_next_update = on_the_hour_update(
@@ -245,10 +254,15 @@ pub fn update_funding_rate(
         return Ok(false);
     }
 
+    let mm_slot_duration = oracle_map.slot_duration;
     let oracle_price_data = oracle_map.get_price_data(&market.oracle_id())?;
     let sanitize_clamp_denominator = market.get_sanitize_clamp_denominator()?;
-    let mm_oracle_price_data =
-        market.get_mm_oracle_price_data(*oracle_price_data, slot, &guard_rails.validity)?;
+    let mm_oracle_price_data = market.get_mm_oracle_price_data(
+        *oracle_price_data,
+        slot,
+        &guard_rails.validity,
+        mm_slot_duration,
+    )?;
     let funding_period = market.market_stats.funding_period;
 
     let oracle_price_twap = {
@@ -269,6 +283,7 @@ pub fn update_funding_rate(
         market,
         &mm_oracle_price_data,
         &guard_rails.validity,
+        mm_slot_duration,
     )?;
     let max_price_spread = market.get_max_price_divergence_for_funding_rate(oracle_price_twap)?;
     let k_update_eligible = market.amm.is_curve_update_enabled()
@@ -294,6 +309,7 @@ pub fn update_funding_rate(
         tick: order_tick_size,
         step_size: order_step_size,
         slot,
+        slot_duration: mm_slot_duration,
         base_precision: BASE_PRECISION_U64,
         market_status,
         market_config: market.market_config,
@@ -435,6 +451,7 @@ pub fn update_funding_rate(
         tick: order_tick_size,
         step_size: order_step_size,
         slot,
+        slot_duration: mm_slot_duration,
         base_precision: BASE_PRECISION_U64,
         market_status: MarketStatus::default(),
         market_config: 0,

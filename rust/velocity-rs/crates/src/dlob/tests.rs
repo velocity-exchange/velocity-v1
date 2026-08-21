@@ -4444,9 +4444,14 @@ fn dlob_vamm_taker_candidate_requires_fill_path_quote() {
         has_sufficient_number_of_data_points: true,
         sequence_id: None,
     };
-    let cached_market =
-        project_perp_market_for_quoting(btc_market_fixture(), stale_oracle, &rails, slot - 50)
-            .unwrap();
+    let cached_market = project_perp_market_for_quoting(
+        btc_market_fixture(),
+        stale_oracle,
+        &rails,
+        slot - 50,
+        program::math::time::SlotDuration::BASELINE,
+    )
+    .unwrap();
 
     // Oracle has since moved above the cached curve, mirroring the incident: the
     // program's fill-time quote snaps to the new oracle and re-derives spreads,
@@ -4458,8 +4463,14 @@ fn dlob_vamm_taker_candidate_requires_fill_path_quote() {
         has_sufficient_number_of_data_points: true,
         sequence_id: None,
     };
-    let projected =
-        project_perp_market_for_quoting(cached_market, exchange_oracle, &rails, slot).unwrap();
+    let projected = project_perp_market_for_quoting(
+        cached_market,
+        exchange_oracle,
+        &rails,
+        slot,
+        program::math::time::SlotDuration::BASELINE,
+    )
+    .unwrap();
 
     let vamm_ask = |m: &PerpMarket| {
         let reserve_price = m.amm.reserve_price().unwrap();
@@ -4576,7 +4587,10 @@ fn dlob_vamm_taker_candidate_requires_fill_path_quote() {
 fn post_trigger_price_mirrors_program_trigger_auction_params() {
     use crate::dlob::types::{L3Order, TriggerL3Order};
     use program::{
-        math::auction::{calculate_auction_params_for_trigger_order, calculate_auction_price},
+        math::{
+            auction::{calculate_auction_params_for_trigger_order, calculate_auction_price},
+            time::{Millis, SlotDuration},
+        },
         state::{
             oracle::OraclePriceData,
             user::{Order as VelocityOrder, OrderBitFlag},
@@ -4648,8 +4662,9 @@ fn post_trigger_price_mirrors_program_trigger_auction_params() {
             has_sufficient_number_of_data_points: true,
             sequence_id: None,
         },
-        20, // the program's hardcoded min duration in `controller::orders::trigger_order`
+        20, // ~8s at the 400ms baseline
         Some(&market),
+        program::math::time::SlotDuration::BASELINE,
     )
     .unwrap();
     expected_order.auction_duration = duration;
@@ -4667,6 +4682,40 @@ fn post_trigger_price_mirrors_program_trigger_auction_params() {
         got, expected,
         "trigger-market post-trigger price must mirror the on-chain trigger recipe"
     );
+
+    // Trigger and fill are simulated at the same slot, so the returned price is
+    // the auction start price at every slot-duration gate. The duration changes
+    // in actual slots, but it cannot make this immediate cross appear early.
+    let fast_slot_duration = SlotDuration::from_state_ms(200);
+    let fast_min_duration = Millis::from_secs(8)
+        .to_slots_ceil(fast_slot_duration)
+        .min(u8::MAX as u64) as u8;
+    let (fast_duration, fast_start, fast_end) = calculate_auction_params_for_trigger_order(
+        &expected_order,
+        &OraclePriceData {
+            price: oracle_price as i64,
+            confidence: 0,
+            delay: 0,
+            has_sufficient_number_of_data_points: true,
+            sequence_id: None,
+        },
+        fast_min_duration,
+        Some(&market),
+        fast_slot_duration,
+    )
+    .unwrap();
+    let mut fast_order = expected_order;
+    fast_order.auction_duration = fast_duration;
+    fast_order.auction_start_price = fast_start;
+    fast_order.auction_end_price = fast_end;
+    let fast_price = calculate_auction_price(
+        &fast_order,
+        slot,
+        market.order_tick_size,
+        Some(oracle_price as i64),
+    )
+    .unwrap();
+    assert_eq!(fast_price, expected);
 }
 
 #[test]

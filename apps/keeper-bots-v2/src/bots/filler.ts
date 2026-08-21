@@ -36,6 +36,7 @@ import {
 	PositionDirection,
 	PerpMarkets,
 	MMOraclePriceData,
+	msToSlotsNum,
 } from '@velocity-exchange/sdk';
 import { Mutex, tryAcquire, E_ALREADY_LOCKED } from 'async-mutex';
 
@@ -93,6 +94,7 @@ import {
 	validMinimumGasAmount,
 	validRebalanceSettledPnlThreshold,
 	isFillableByVAMMDetails,
+	currentSlotDuration,
 } from '../utils';
 import { selectMakers } from '../makerSelection';
 import { BundleSender, JITO_METRIC_TYPES } from '../bundleSender';
@@ -114,7 +116,8 @@ const MAX_POSITIONS_PER_USER = 8;
 export const SETTLE_POSITIVE_PNL_COOLDOWN_MS = 60_000;
 export const CONFIRM_TX_INTERVAL_MS = 5_000;
 const SIM_CU_ESTIMATE_MULTIPLIER = 1.15;
-const SLOTS_UNTIL_JITO_LEADER_TO_SEND = 4;
+// wall-clock lead to build+send before the jito leader window (~4 slots at 400ms)
+const JITO_LEADER_LEAD_MS = 1_600;
 export const TX_CONFIRMATION_BATCH_SIZE = 100;
 export const TX_TIMEOUT_THRESHOLD_MS = 60_000; // tx considered stale after this time and give up confirming
 export const CONFIRM_TX_RATE_LIMIT_BACKOFF_MS = 5_000; // wait this long until trying to confirm tx again if rate limited
@@ -783,19 +786,27 @@ export class FillerBot extends TxThreaded implements Bot {
 	} {
 		const marketIndex = market.marketIndex;
 
-		const mmOraclePriceData =
-			this.velocityClient.getMMOracleDataForPerpMarket(marketIndex);
+		const mmOraclePriceData = this.velocityClient.getMMOracleDataForPerpMarket(
+			marketIndex,
+			this.slotSubscriber.getSlot()
+		);
 
 		const slot = new BN(this.slotSubscriber.getSlot());
+		const slotDuration = currentSlotDuration(
+			this.velocityClient,
+			this.slotSubscriber.getSlot()
+		);
 		const vAsk = calculateAskPrice(
 			market,
 			mmOraclePriceData as MMOraclePriceData,
-			slot
+			slot,
+			slotDuration
 		);
 		const vBid = calculateBidPrice(
 			market,
 			mmOraclePriceData as MMOraclePriceData,
-			slot
+			slot,
+			slotDuration
 		);
 
 		const fillSlot = this.getMaxSlot();
@@ -2464,7 +2475,16 @@ export class FillerBot extends TxThreaded implements Bot {
 			if (slotsUntilJito === undefined) {
 				return false;
 			}
-			return slotsUntilJito < SLOTS_UNTIL_JITO_LEADER_TO_SEND;
+			return (
+				slotsUntilJito <
+				msToSlotsNum(
+					JITO_LEADER_LEAD_MS,
+					currentSlotDuration(
+						this.velocityClient,
+						this.slotSubscriber.getSlot()
+					)
+				)
+			);
 		}
 		if (!this.bundleSender?.connected()) {
 			return false;

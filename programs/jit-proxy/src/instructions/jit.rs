@@ -42,6 +42,7 @@ pub fn jit<'c: 'info, 'info>(ctx: Context<'info, Jit<'info>>, params: JitParams)
         &BTreeSet::new(),
         &BTreeSet::new(),
         slot,
+        state.slot_duration(),
         None,
     )?;
 
@@ -58,6 +59,7 @@ pub fn jit<'c: 'info, 'info>(ctx: Context<'info, Jit<'info>>, params: JitParams)
                 *oracle_map.get_price_data(&perp_market.oracle_id())?,
                 clock.slot,
                 &state.oracle_guard_rails.validity,
+                state.slot_duration(),
             )?
             .get_price()
     } else {
@@ -152,6 +154,7 @@ pub fn jit_signed_msg<'c: 'info, 'info>(
         &BTreeSet::new(),
         &BTreeSet::new(),
         slot,
+        state.slot_duration(),
         None,
     )?;
 
@@ -161,6 +164,7 @@ pub fn jit_signed_msg<'c: 'info, 'info>(
             *oracle_map.get_price_data(&perp_market.oracle_id())?,
             clock.slot,
             &state.oracle_guard_rails.validity,
+            state.slot_duration(),
         )?
         .get_price();
     drop(perp_market);

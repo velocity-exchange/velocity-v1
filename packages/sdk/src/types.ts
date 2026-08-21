@@ -1093,7 +1093,7 @@ export type StateAccount = {
 	spotFeeStructure: FeeStructure;
 	/** LIQUIDATION_PCT_PRECISION (1e4); fraction of a position liquidated per partial-liquidation pass */
 	initialPctToLiquidate: number;
-	/** seconds a liquidation is spread over */
+	/** liquidation ramp length, stored in legacy 400ms units (decode with `millisFromStoredUnits`), NOT seconds */
 	liquidationDuration: number;
 	/** max SOL fee `getInitUserFee` may charge to create a new sub-account, in value/100 SOL (e.g. 100 = 1 SOL); ramps from 0 to this max as account-space utilization rises from 80% to 100% of `maxNumberOfSubAccounts` */
 	maxInitializeUserFee: number;
@@ -1105,6 +1105,31 @@ export type StateAccount = {
 	solvencyStatus: number;
 	/** promotional fee-tier floor for every account: effective perp tier = max(volume tier, promoFeeTier); 0 = disabled */
 	promoFeeTier: number;
+	/**
+	 * current Solana slot duration in ms, admin-set as the IBRL feature gates
+	 * activate (400 -> 350 -> 300 -> 250 -> 200). 0 = unset (pre-upgrade
+	 * padding), meaning the 400ms baseline. Do not read directly: the live value
+	 * may be the staged `pendingSlotDurationMs` once the chain reaches
+	 * `slotDurationEffectiveSlot` — resolve with `activeSlotDurationFromState`
+	 * (or `slotDurationFromState` for the base) from `math/time.ts`. Wall-clock
+	 * durations (`Millis`) are expressed in actual slots through this value via
+	 * `millisToSlots`/`millisFromSlots`.
+	 */
+	slotDurationMs: number;
+	/**
+	 * staged next slot duration in ms, set during the target gate's one-epoch
+	 * warmup. 0 = nothing staged. Once the chain slot reaches
+	 * `slotDurationEffectiveSlot`, this is the live value (see
+	 * `activeSlotDurationFromState`).
+	 */
+	pendingSlotDurationMs: number;
+	/** explicit alignment padding (2 bytes) before `slotDurationEffectiveSlot` */
+	slotDurationPad: number[];
+	/**
+	 * slot at which `pendingSlotDurationMs` takes effect (target gate activation
+	 * slot + one-epoch warmup). 0 when nothing is staged.
+	 */
+	slotDurationEffectiveSlot: BN;
 };
 
 /** Decoded mirror of the on-chain `PerpMarket` zero-copy account. */
@@ -2087,9 +2112,9 @@ export type OracleGuardRails = {
 		oracleTwap5MinPercentDivergence: BN;
 	};
 	validity: {
-		/** slots; oracle updates older than this are stale for AMM-facing actions */
+		/** legacy 400ms units; oracle updates older than this wall-clock duration are stale for AMM-facing actions */
 		slotsBeforeStaleForAmm: BN;
-		/** slots; oracle updates older than this are stale for margin/liquidation actions */
+		/** legacy 400ms units; oracle updates older than this wall-clock duration are stale for margin/liquidation actions */
 		slotsBeforeStaleForMargin: BN;
 		/** PERCENTAGE_PRECISION (1e6)-scaled fraction of price; oracle confidence intervals wider than this are rejected */
 		confidenceIntervalMaxSize: BN;

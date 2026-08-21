@@ -2,6 +2,7 @@ use crate::{
     math::{
         constants::{AMM_RESERVE_PRECISION, PEG_PRECISION, PRICE_PRECISION, PRICE_PRECISION_U64},
         oracle::*,
+        time::legacy_slot_duration_i64,
     },
     state::{
         oracle::HistoricalOracleData,
@@ -9,6 +10,65 @@ use crate::{
         state::{OracleGuardRails, PriceDivergenceGuardRails, State, ValidityGuardRails},
     },
 };
+
+#[test]
+fn mm_immediate_threshold_matches_write_gate_at_every_gate() {
+    // The unset MM-sourced immediate-fill threshold in `oracle_validity` and the
+    // crank's write gate in `update_mm_oracle` both convert MM_ORACLE_MIN_WRITE_GAP
+    // to slots and MUST agree at every slot duration — otherwise a quote the crank
+    // was allowed to post reads stale on the fill path. Both ceil; pin the values.
+    use crate::math::{constants::MM_ORACLE_MIN_WRITE_GAP, time::SlotDuration};
+    for (ms, expected) in [(400u16, 2u64), (350, 3), (300, 3), (250, 4), (200, 4)] {
+        let d = SlotDuration::from_state_ms(ms);
+        // the immediate threshold (oracle_validity, `slots_ceil`) and the write
+        // gate (update_mm_oracle, `to_slots_ceil`) are the same expression
+        let threshold = MM_ORACLE_MIN_WRITE_GAP.to_slots_ceil(d);
+        assert_eq!(threshold, expected, "MM write-gap slots wrong at {ms}ms");
+    }
+}
+
+#[test]
+fn staleness_windows_scale_at_non_baseline_duration() {
+    let guard_rails = ValidityGuardRails {
+        slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4 seconds
+        slots_before_stale_for_margin: legacy_slot_duration_i64(120),
+        confidence_interval_max_size: 20_000,
+        too_volatile_ratio: 5,
+    };
+    let oracle_price_data = OraclePriceData {
+        price: (100 * PRICE_PRECISION) as i64,
+        confidence: 1,
+        delay: 15,
+        has_sufficient_number_of_data_points: true,
+        sequence_id: None,
+    };
+    let validity = |slot_duration| {
+        oracle_validity(
+            MarketType::Perp,
+            0,
+            oracle_price_data.price,
+            &oracle_price_data,
+            &guard_rails,
+            1,
+            &OracleSource::PythLazer,
+            LogMode::None,
+            10,
+            false,
+            10,
+            slot_duration,
+        )
+        .unwrap()
+    };
+
+    assert!(matches!(
+        validity(crate::math::time::SlotDuration::BASELINE),
+        OracleValidity::StaleForAMM { .. }
+    ));
+    assert_eq!(
+        validity(crate::math::time::SlotDuration::from_state_ms(200)),
+        OracleValidity::Valid
+    );
+}
 
 #[test]
 fn calculate_oracle_valid() {
@@ -49,7 +109,12 @@ fn calculate_oracle_valid() {
         ..PerpMarket::default()
     };
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, 10000, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            10000,
+            &state.oracle_guard_rails.validity,
+            crate::math::time::SlotDuration::BASELINE,
+        )
         .unwrap();
 
     let state = State {
@@ -59,9 +124,9 @@ fn calculate_oracle_valid() {
                 oracle_twap_5min_percent_divergence: 10,
             },
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,      // 5s
-                slots_before_stale_for_margin: 120,  // 60s
-                confidence_interval_max_size: 20000, // 2%
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
+                confidence_interval_max_size: 20000,                      // 2%
                 too_volatile_ratio: 5,
             },
         },
@@ -73,6 +138,7 @@ fn calculate_oracle_valid() {
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
+        crate::math::time::SlotDuration::BASELINE,
     )
     .unwrap();
 
@@ -104,6 +170,7 @@ fn calculate_oracle_valid() {
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
+        crate::math::time::SlotDuration::BASELINE,
     )
     .unwrap();
     assert!(oracle_status.oracle_validity != OracleValidity::Valid);
@@ -122,6 +189,7 @@ fn calculate_oracle_valid() {
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
+        crate::math::time::SlotDuration::BASELINE,
     )
     .unwrap();
     assert!(oracle_status.oracle_validity == OracleValidity::Valid);
@@ -136,6 +204,7 @@ fn calculate_oracle_valid() {
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
+        crate::math::time::SlotDuration::BASELINE,
     )
     .unwrap();
     assert!(oracle_status.mark_too_divergent);
@@ -147,6 +216,7 @@ fn calculate_oracle_valid() {
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
+        crate::math::time::SlotDuration::BASELINE,
     )
     .unwrap();
     assert!(oracle_status.mark_too_divergent);
@@ -168,8 +238,8 @@ fn calculate_oracle_valid() {
 #[test]
 fn immediate_staleness_threshold_by_override() {
     let guard_rails = ValidityGuardRails {
-        slots_before_stale_for_amm: 10,
-        slots_before_stale_for_margin: 120,
+        slots_before_stale_for_amm: legacy_slot_duration_i64(10),
+        slots_before_stale_for_margin: legacy_slot_duration_i64(120),
         confidence_interval_max_size: 20_000,
         too_volatile_ratio: 5,
     };
@@ -194,14 +264,16 @@ fn immediate_staleness_threshold_by_override() {
             immediate_override,
             mm_sourced,
             0,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
         matches!(validity, OracleValidity::Valid)
     };
 
-    // Unset + MM-sourced resolves to MM_ORACLE_MIN_SLOT_GAP, the tightest
+    // Unset + MM-sourced resolves to MM_ORACLE_MIN_WRITE_GAP, the tightest
     // window the crank can actually satisfy, rather than to zero.
-    let min_gap = MM_ORACLE_MIN_SLOT_GAP as i64;
+    let min_gap = crate::math::constants::MM_ORACLE_MIN_WRITE_GAP
+        .to_slots(crate::math::time::SlotDuration::BASELINE) as i64;
     for delay in 0..=min_gap {
         assert!(
             is_valid(delay, -1, true),
@@ -210,7 +282,7 @@ fn immediate_staleness_threshold_by_override() {
     }
     assert!(
         !is_valid(min_gap + 1, -1, true),
-        "unset must not tolerate more than MM_ORACLE_MIN_SLOT_GAP"
+        "unset must not tolerate more than MM_ORACLE_MIN_WRITE_GAP"
     );
 
     // Unset + exchange-sourced keeps the strict zero threshold: the exchange

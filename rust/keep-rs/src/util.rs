@@ -26,6 +26,49 @@ use {
     },
 };
 
+/// Live slot duration from a `State` snapshot's staging fields, applying a
+/// staged switch once `now_slot` reaches the effective slot (mirrors the
+/// on-chain `State::active_slot_duration_ms` via the shared program helper).
+/// Pass the current chain slot, not the slot State was last written at; `0`
+/// yields the base value. Reads the fields directly so no `State` type import
+/// is needed at the call sites.
+pub fn active_slot_duration(
+    base_ms: u16,
+    pending_ms: u16,
+    effective_slot: u64,
+    now_slot: u64,
+) -> velocity_rs::program::math::time::SlotDuration {
+    velocity_rs::program::math::time::SlotDuration::from_state_ms(
+        velocity_rs::program::math::time::active_slot_duration_ms(
+            base_ms,
+            pending_ms,
+            effective_slot,
+            now_slot,
+        ),
+    )
+}
+
+/// Live slot duration from the client's cached `State`, applying a staged switch
+/// at `now_slot` (see [`active_slot_duration`]); the 400ms baseline when State is
+/// not yet subscribed. Wraps the repeated
+/// `state_account().map(...).unwrap_or(BASELINE)` boilerplate.
+pub fn client_slot_duration(
+    velocity: &velocity_rs::VelocityClient,
+    now_slot: u64,
+) -> velocity_rs::program::math::time::SlotDuration {
+    velocity
+        .state_account()
+        .map(|s| {
+            active_slot_duration(
+                s.slot_duration_ms,
+                s.pending_slot_duration_ms,
+                s.slot_duration_effective_slot,
+                now_slot,
+            )
+        })
+        .unwrap_or(velocity_rs::program::math::time::SlotDuration::BASELINE)
+}
+
 pub struct OrderSlotLimiter<const N: usize> {
     slots: [Vec<u32>; N],
     generations: [u64; N],
@@ -454,11 +497,13 @@ impl<const N: usize> PendingTxs<N> {
     }
 }
 
-/// Max age (in slots) of a swift signed message before the program refuses to place it.
+/// Max age of a swift signed message before the program refuses to place it
+/// (~200s, expressed in actual slots at the current slot duration).
 ///
-/// Mirrors the `order_slot < clock.slot.saturating_sub(500)` gate in
-/// `place_signed_msg_taker_order` (programs/velocity/src/instructions/keeper.rs).
-pub const SWIFT_SIGNED_MSG_MAX_SLOT_AGE: u64 = 500;
+/// Mirrors the staleness gate in `place_signed_msg_taker_order`
+/// (programs/velocity/src/instructions/keeper.rs).
+pub const SWIFT_SIGNED_MSG_MAX_AGE: velocity_rs::program::math::time::Millis =
+    velocity_rs::program::math::time::Millis::from_secs(200);
 
 /// Returns true if a swift (signed-message) order can no longer be usefully *placed* on-chain,
 /// so the bot shouldn't spend a tx trying.
@@ -478,9 +523,10 @@ pub fn swift_placement_expired(
     max_ts: i64,
     current_slot: u64,
     now_ts: i64,
+    slot_duration: velocity_rs::program::math::time::SlotDuration,
 ) -> bool {
     // signed message too old for the program to accept
-    if current_slot > order_slot.saturating_add(SWIFT_SIGNED_MSG_MAX_SLOT_AGE) {
+    if current_slot > order_slot.saturating_add(SWIFT_SIGNED_MSG_MAX_AGE.to_slots(slot_duration)) {
         return true;
     }
     // placement deadline: program no-ops once max_slot < current_slot
@@ -850,27 +896,90 @@ mod tests {
         // `auction_duration` is a u8 (<=255), so the placement deadline
         // (order_slot + auction_duration) always binds before the 500-slot signed-message
         // window. The order is unplaceable one slot past the deadline, well before slot 500.
-        assert!(!swift_placement_expired(0, 255, 0, 255, 0));
-        assert!(swift_placement_expired(0, 255, 0, 256, 0));
+        assert!(!swift_placement_expired(
+            0,
+            255,
+            0,
+            255,
+            0,
+            velocity_rs::program::math::time::SlotDuration::BASELINE
+        ));
+        assert!(swift_placement_expired(
+            0,
+            255,
+            0,
+            256,
+            0,
+            velocity_rs::program::math::time::SlotDuration::BASELINE
+        ));
     }
 
     #[test]
     fn swift_expiry_placement_deadline() {
         // max_slot = order_slot + auction_duration = 130. Program rejects once max_slot < slot.
-        assert!(!swift_placement_expired(100, 30, 0, 130, 0)); // exactly at deadline: still placeable
-        assert!(swift_placement_expired(100, 30, 0, 131, 0)); // one past: gone
-                                                              // Zero auction duration (limit order default): only placeable in the signing slot.
-        assert!(!swift_placement_expired(100, 0, 0, 100, 0));
-        assert!(swift_placement_expired(100, 0, 0, 101, 0));
+        assert!(!swift_placement_expired(
+            100,
+            30,
+            0,
+            130,
+            0,
+            velocity_rs::program::math::time::SlotDuration::BASELINE
+        )); // exactly at deadline: still placeable
+        assert!(swift_placement_expired(
+            100,
+            30,
+            0,
+            131,
+            0,
+            velocity_rs::program::math::time::SlotDuration::BASELINE
+        )); // one past: gone
+            // Zero auction duration (limit order default): only placeable in the signing slot.
+        assert!(!swift_placement_expired(
+            100,
+            0,
+            0,
+            100,
+            0,
+            velocity_rs::program::math::time::SlotDuration::BASELINE
+        ));
+        assert!(swift_placement_expired(
+            100,
+            0,
+            0,
+            101,
+            0,
+            velocity_rs::program::math::time::SlotDuration::BASELINE
+        ));
     }
 
     #[test]
     fn swift_expiry_max_ts() {
         // max_ts == 0 disables the ts check.
-        assert!(!swift_placement_expired(100, 200, 0, 100, i64::MAX));
+        assert!(!swift_placement_expired(
+            100,
+            200,
+            0,
+            100,
+            i64::MAX,
+            velocity_rs::program::math::time::SlotDuration::BASELINE
+        ));
         // now == max_ts is still valid; now > max_ts expires.
-        assert!(!swift_placement_expired(100, 200, 5_000, 100, 5_000));
-        assert!(swift_placement_expired(100, 200, 5_000, 100, 5_001));
+        assert!(!swift_placement_expired(
+            100,
+            200,
+            5_000,
+            100,
+            5_000,
+            velocity_rs::program::math::time::SlotDuration::BASELINE
+        ));
+        assert!(swift_placement_expired(
+            100,
+            200,
+            5_000,
+            100,
+            5_001,
+            velocity_rs::program::math::time::SlotDuration::BASELINE
+        ));
     }
 
     #[test]

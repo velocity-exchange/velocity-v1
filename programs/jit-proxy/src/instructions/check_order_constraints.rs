@@ -5,7 +5,7 @@ use {
     velocity::{
         instructions::optional_accounts::{load_maps, AccountMaps},
         math::{casting::Cast, safe_math::SafeMath},
-        state::user::User,
+        state::{state::State, user::User},
     },
 };
 
@@ -28,6 +28,7 @@ pub fn check_order_constraints<'c: 'info, 'info>(
         &BTreeSet::new(),
         &BTreeSet::new(),
         slot,
+        ctx.accounts.state.load()?.slot_duration(),
         None,
     )?;
 
@@ -67,6 +68,15 @@ pub fn check_order_constraints<'c: 'info, 'info>(
 
 #[derive(Accounts)]
 pub struct CheckOrderConstraints<'info> {
+    /// Velocity's `State`, read for the live slot duration so the oracle
+    /// staleness windows here match the ones velocity itself applies. The PDA
+    /// belongs to the velocity program, so the derivation names it explicitly.
+    #[account(
+        seeds = [b"velocity_state".as_ref()],
+        bump,
+        seeds::program = velocity::id(),
+    )]
+    pub state: AccountLoader<'info, State>,
     pub user: AccountLoader<'info, User>,
 }
 

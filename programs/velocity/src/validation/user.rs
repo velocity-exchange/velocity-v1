@@ -1,6 +1,9 @@
 use crate::{
     error::{ErrorCode, VelocityResult},
-    math::constants::THIRTEEN_DAY,
+    math::{
+        constants::THIRTEEN_DAY,
+        time::{Millis, SlotDuration},
+    },
     msg,
     state::{
         spot_market::SpotBalanceType,
@@ -75,20 +78,28 @@ pub fn validate_user_deletion(
     Ok(())
 }
 
-pub fn validate_user_is_idle(user: &User, slot: u64, accelerated: bool) -> VelocityResult {
-    let slots_since_last_active = slot.saturating_sub(user.last_active_slot);
+pub fn validate_user_is_idle(
+    user: &User,
+    slot: u64,
+    accelerated: bool,
+    slot_duration: SlotDuration,
+) -> VelocityResult {
+    // thresholds are wall-clock; convert the measured slot delta to ms so the
+    // windows hold at any slot duration
+    let time_since_last_active =
+        Millis::from_slots(slot.saturating_sub(user.last_active_slot), slot_duration);
 
-    let slots_before_idle = if accelerated {
-        9000_u64 // 60 * 60 / .4 (~1 hour)
+    let idle_after = if accelerated {
+        Millis::from_secs(3_600) // 1 hour
     } else {
-        1512000_u64 // 60 * 60 * 24 * 7 / .4 (~1 week)
+        Millis::from_secs(604_800) // 1 week
     };
 
     validate!(
-        slots_since_last_active >= slots_before_idle,
+        time_since_last_active >= idle_after,
         ErrorCode::UserNotInactive,
-        "user only been idle for {} slot",
-        slots_since_last_active
+        "user only been idle for {} ms",
+        time_since_last_active.as_ms()
     )?;
 
     validate!(

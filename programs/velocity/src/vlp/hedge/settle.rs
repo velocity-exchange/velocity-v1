@@ -79,6 +79,7 @@ pub fn handle_settle_perp_to_lp_pool<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         slot,
+        state.slot_duration(),
         None,
     )?;
 
@@ -106,7 +107,9 @@ pub fn handle_settle_perp_to_lp_pool<'c: 'info, 'info>(
         let cached_info = amm_cache.get_for_market_index_mut(perp_market.market_index)?;
 
         // Early validation checks
-        if slot.saturating_sub(cached_info.oracle_slot) > SETTLE_AMM_ORACLE_MAX_DELAY {
+        if slot.saturating_sub(cached_info.oracle_slot)
+            > SETTLE_AMM_ORACLE_MAX_DELAY.to_slots(state.slot_duration())
+        {
             msg!(
                 "Skipping settling perp market {} to dlp because oracle slot is not up to date",
                 perp_market.market_index

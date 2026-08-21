@@ -1,8 +1,11 @@
 use {
     crate::{
-        math::constants::{
-            AMM_RESERVE_PRECISION, MAX_CONCENTRATION_COEFFICIENT, PRICE_PRECISION,
-            PRICE_PRECISION_U64, QUOTE_PRECISION,
+        math::{
+            constants::{
+                AMM_RESERVE_PRECISION, MAX_CONCENTRATION_COEFFICIENT, PRICE_PRECISION,
+                PRICE_PRECISION_U64, QUOTE_PRECISION,
+            },
+            time::legacy_slot_duration_i64,
         },
         state::{
             oracle::HistoricalOracleData,
@@ -314,8 +317,8 @@ fn calculate_optimal_peg_and_budget_2_test() {
                 oracle_twap_5min_percent_divergence: 10,
             },
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,     // 5s
-                slots_before_stale_for_margin: 120, // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },

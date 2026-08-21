@@ -8,6 +8,7 @@ import {
 	SlotSource,
 } from './types';
 import { VelocityClient } from '../velocityClient';
+import { activeSlotDurationFromState } from '../math/time';
 import { isVariant, MarketType } from '../types';
 import {
 	DEFAULT_TOP_OF_BOOK_QUOTE_AMOUNTS,
@@ -141,7 +142,8 @@ export class DLOBSubscriber {
 			const perpMarketAccount =
 				this.velocityClient.getPerpMarketAccountOrThrow(marketIndex);
 			const oraclePriceData = this.velocityClient.getMMOracleDataForPerpMarket(
-				perpMarketAccount.marketIndex
+				perpMarketAccount.marketIndex,
+				this.slotSource.getSlot()
 			);
 
 			if (includeVamm) {
@@ -154,14 +156,20 @@ export class DLOBSubscriber {
 				fallbackL2Generators = [
 					getVammL2Generator({
 						marketAccount: perpMarketAccount,
-						mmOraclePriceData:
-							this.velocityClient.getMMOracleDataForPerpMarket(marketIndex),
+						mmOraclePriceData: this.velocityClient.getMMOracleDataForPerpMarket(
+							marketIndex,
+							this.slotSource.getSlot()
+						),
 						numOrders: numVammOrders ?? depth,
 						topOfBookQuoteAmounts:
 							marketIndex < 3
 								? MAJORS_TOP_OF_BOOK_QUOTE_AMOUNTS
 								: DEFAULT_TOP_OF_BOOK_QUOTE_AMOUNTS,
 						latestSlot,
+						slotDuration: activeSlotDurationFromState(
+							this.velocityClient.getStateAccount(),
+							new BN(this.slotSource.getSlot())
+						),
 					}),
 				];
 			}
@@ -231,8 +239,10 @@ export class DLOBSubscriber {
 
 		const isPerp = isVariant(marketType, 'perp');
 		if (isPerp) {
-			const oraclePriceData =
-				this.velocityClient.getMMOracleDataForPerpMarket(marketIndex);
+			const oraclePriceData = this.velocityClient.getMMOracleDataForPerpMarket(
+				marketIndex,
+				this.slotSource.getSlot()
+			);
 			const perpMarketAccount =
 				this.velocityClient.getPerpMarketAccountOrThrow(marketIndex);
 

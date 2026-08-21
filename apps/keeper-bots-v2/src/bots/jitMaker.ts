@@ -22,6 +22,7 @@ import {
 	calculateBaseAmountToMarketMakePerp,
 	calculateBaseAmountToMarketMakeSpot,
 	convertToMarketType,
+	currentSlotDuration,
 	getBestLimitAskExcludePubKey,
 	getBestLimitBidExcludePubKey,
 	isMarketVolatile,
@@ -299,8 +300,10 @@ export class JitMaker implements Bot {
 		const velocityUser = this.velocityClient.getUser(subId);
 		const perpMarketAccount =
 			this.velocityClient.getPerpMarketAccount(perpIdx)!;
-		const mmOraclePriceData =
-			this.velocityClient.getMMOracleDataForPerpMarket(perpIdx);
+		const mmOraclePriceData = this.velocityClient.getMMOracleDataForPerpMarket(
+			perpIdx,
+			this.orderSubscriber.getSlot()
+		);
 
 		const numMarketsForSubaccount = this.subAccountIds.filter(
 			(num) => num === subId
@@ -372,8 +375,10 @@ export class JitMaker implements Bot {
 		const [ammBid, ammAsk] = calculateBidAskPrice(
 			perpMarketAccount.amm,
 			perpMarketAccount.marketStats,
-			this.velocityClient.getMMOracleDataForPerpMarket(perpIdx),
-			true
+			this.velocityClient.getMMOracleDataForPerpMarket(perpIdx, slot),
+			true,
+			new BN(slot),
+			currentSlotDuration(this.velocityClient, slot)
 		);
 
 		let bestBidPrice;

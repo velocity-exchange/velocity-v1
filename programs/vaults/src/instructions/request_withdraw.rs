@@ -48,7 +48,13 @@ pub fn request_withdraw<'info>(
         perp_market_map,
         spot_market_map,
         mut oracle_map,
-    } = ctx.load_maps(clock.slot, None, vp.is_some(), has_fee_update)?;
+    } = ctx.load_maps(
+        clock.slot,
+        None,
+        vp.is_some(),
+        has_fee_update,
+        &ctx.accounts.velocity_state,
+    )?;
 
     let vault_equity =
         vault.calculate_equity(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;

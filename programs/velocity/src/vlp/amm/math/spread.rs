@@ -39,12 +39,13 @@ use {
                 FUNDING_RATE_OFFSET_PERCENTAGE, MAX_BID_ASK_INVENTORY_SKEW_FACTOR, PEG_PRECISION,
                 PERCENTAGE_PRECISION, PERCENTAGE_PRECISION_I128, PRICE_PRECISION,
                 PRICE_PRECISION_I128, PRICE_PRECISION_I64, REF_PRICE_OFFSET_SMOOTHING_MIN_STEP,
-                REF_PRICE_OFFSET_SMOOTHING_PER_SLOT_BUDGET,
+                REF_PRICE_OFFSET_SMOOTHING_PER_PERIOD_BUDGET,
                 REF_PRICE_OFFSET_SMOOTHING_STEP_DIVISOR, SPREAD_CONF_DISCOUNT_DIVISOR,
                 SPREAD_CONF_FULL_WEIGHT_THRESHOLD, SPREAD_REVENUE_RETREAT_MAX_DIVISOR,
                 SPREAD_VOL_STD_DISCOUNT_DIVISOR,
             },
             safe_math::SafeMath,
+            time::{Millis, SlotDuration},
         },
         msg,
         state::{
@@ -87,9 +88,16 @@ pub fn update_amm_quote_state(
     mm_oracle_price_data: &MMOraclePriceData,
     reserve_price: u64,
     slot: u64,
+    slot_duration: SlotDuration,
 ) -> VelocityResult<()> {
-    let quote_state =
-        compute_quote_state(amm, market_stats, mm_oracle_price_data, reserve_price, slot)?;
+    let quote_state = compute_quote_state(
+        amm,
+        market_stats,
+        mm_oracle_price_data,
+        reserve_price,
+        slot,
+        slot_duration,
+    )?;
     commit_quote_state(amm, &quote_state, slot)?;
     validate_amm_quote_state(amm)
 }
@@ -122,6 +130,7 @@ fn compute_quote_state(
     mm_oracle_price_data: &MMOraclePriceData,
     reserve_price: u64,
     slot: u64,
+    slot_duration: SlotDuration,
 ) -> VelocityResult<QuoteState> {
     // last_oracle_reserve_price_spread_pct
     let last_oracle_reserve_price_spread_pct =
@@ -226,18 +235,29 @@ fn compute_quote_state(
         && amm.curve_update_intensity > 100;
 
     let final_reference_price_offset = if do_reference_price_smooth {
-        let slots_passed = slot.saturating_sub(amm.last_spread_update_slot);
+        // The budget is calibrated per 400ms but accrues in proportion to the
+        // elapsed milliseconds, so the smoothing completes over the same wall
+        // clock at any slot duration. Counting whole 400ms periods instead would
+        // floor to zero for every gap under 400ms, which is what a
+        // consecutive-slot crank becomes once slots are faster than that; the
+        // step would then pin to the minimum and converge slower the more often
+        // the market is cranked.
+        let elapsed_ms = Millis::from_slots(
+            slot.saturating_sub(amm.last_spread_update_slot),
+            slot_duration,
+        );
         let reference_price_delta = {
             let full_offset_delta = reference_price_offset
                 .cast::<i128>()?
                 .saturating_sub(last_reference_price_offset.cast::<i128>()?);
+            let budget = elapsed_ms
+                .as_ms()
+                .cast::<i128>()?
+                .safe_mul(REF_PRICE_OFFSET_SMOOTHING_PER_PERIOD_BUDGET)?
+                .safe_div(Millis::UNIT.as_ms().cast::<i128>()?)?;
             let raw = full_offset_delta
                 .abs()
-                .min(
-                    slots_passed
-                        .cast::<i128>()?
-                        .safe_mul(REF_PRICE_OFFSET_SMOOTHING_PER_SLOT_BUDGET)?,
-                )
+                .min(budget)
                 .safe_div(REF_PRICE_OFFSET_SMOOTHING_STEP_DIVISOR)?
                 .cast::<i32>()?;
 

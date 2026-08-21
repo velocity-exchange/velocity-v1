@@ -32,6 +32,7 @@ import {
 	findDirectionToClose,
 	calculateMarketAvailablePNL,
 	RECOMMENDED_JUPITER_API,
+	msToSlotsCeilNum,
 } from '@velocity-exchange/sdk';
 import {
 	ComputeBudgetProgram,
@@ -51,6 +52,7 @@ import {
 	simulateAndGetTxWithCUs,
 	SimulateAndGetTxWithCUsResponse,
 	isSolLstToken,
+	currentSlotDuration,
 } from '../utils';
 
 const BPS_PRECISION = 10000;
@@ -236,7 +238,13 @@ export class LiquidatorDerisk {
 				baseAssetAmount: standardizedTokenAmount,
 				reduceOnly: true,
 				price: limitPrice,
-				auctionDuration: this.config.deriskAuctionDurationSlots!,
+				auctionDuration: Math.min(
+					255,
+					msToSlotsCeilNum(
+						this.config.deriskAuctionDurationMs!,
+						currentSlotDuration(this.velocityClient, this.userMap.getSlot())
+					)
+				),
 				auctionStartPrice,
 				auctionEndPrice: limitPrice,
 			}),
@@ -578,7 +586,8 @@ export class LiquidatorDerisk {
 		}
 
 		const oracle = this.velocityClient.getMMOracleDataForPerpMarket(
-			position.marketIndex
+			position.marketIndex,
+			this.userMap.getSlot()
 		);
 		const direction = findDirectionToClose(position);
 		let entryPrice;
@@ -591,7 +600,9 @@ export class LiquidatorDerisk {
 				this.velocityClient.getPerpMarketAccount(position.marketIndex)!,
 				oracle,
 				dlob,
-				this.userMap.getSlot()
+				this.userMap.getSlot(),
+				undefined,
+				currentSlotDuration(this.velocityClient, this.userMap.getSlot())
 			));
 		} catch (e) {
 			const err = e as Error;
@@ -620,7 +631,13 @@ export class LiquidatorDerisk {
 			baseAssetAmount,
 			reduceOnly: true,
 			marketIndex: position.marketIndex,
-			auctionDuration: this.config.deriskAuctionDurationSlots!,
+			auctionDuration: Math.min(
+				255,
+				msToSlotsCeilNum(
+					this.config.deriskAuctionDurationMs!,
+					currentSlotDuration(this.velocityClient, this.userMap.getSlot())
+				)
+			),
 			auctionStartPrice,
 			auctionEndPrice,
 			oraclePriceOffset,

@@ -49,6 +49,7 @@ pub fn arb_perp<'c: 'info, 'info>(
         &BTreeSet::new(),
         &BTreeSet::new(),
         slot,
+        ctx.accounts.state.load()?.slot_duration(),
         None,
     )?;
 

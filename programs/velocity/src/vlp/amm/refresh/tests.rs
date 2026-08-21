@@ -5,6 +5,7 @@ use crate::{
             PRICE_PRECISION_U64, QUOTE_PRECISION,
         },
         oracle::OracleValidity,
+        time::{legacy_slot_duration_i64, legacy_slot_duration_i64_raw},
     },
     state::{
         oracle::{HistoricalOracleData, OraclePriceData},
@@ -70,8 +71,8 @@ pub fn update_amm_test() {
                 oracle_twap_5min_percent_divergence: 10,
             },
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,     // 5s
-                slots_before_stale_for_margin: 120, // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },
@@ -114,7 +115,12 @@ pub fn update_amm_test() {
     assert!(!too_diverge);
 
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::time::SlotDuration::BASELINE,
+        )
         .unwrap();
     let cost_of_update =
         _update_amm(&mut market, &mm_oracle_price_data, &state, now, slot).unwrap();
@@ -132,9 +138,12 @@ pub fn update_amm_test() {
         market.get_max_confidence_interval_multiplier().unwrap(),
         &market.oracle_source,
         LogMode::ExchangeOracle,
-        state.oracle_guard_rails.validity.slots_before_stale_for_amm as i8,
-        false, // exchange-oracle price, never MM-sourced
-        state.oracle_guard_rails.validity.slots_before_stale_for_amm as i8,
+        legacy_slot_duration_i64_raw(state.oracle_guard_rails.validity.slots_before_stale_for_amm)
+            as i8,
+        false,
+        legacy_slot_duration_i64_raw(state.oracle_guard_rails.validity.slots_before_stale_for_amm)
+            as i8,
+        crate::math::time::SlotDuration::BASELINE,
     )
     .unwrap()
         == OracleValidity::Valid;
@@ -198,6 +207,7 @@ pub fn update_amm_test() {
             &mm_oracle_price_data,
             reserve_price,
             slot,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     }
@@ -291,8 +301,8 @@ pub fn reference_price_offset_smoothing_uses_spread_update_slot() {
 
     let reserve_price = market.amm.reserve_price().unwrap();
     let validity = ValidityGuardRails {
-        slots_before_stale_for_amm: 10,
-        slots_before_stale_for_margin: 120,
+        slots_before_stale_for_amm: legacy_slot_duration_i64(10),
+        slots_before_stale_for_margin: legacy_slot_duration_i64(120),
         confidence_interval_max_size: 1000,
         too_volatile_ratio: 5,
     };
@@ -304,7 +314,12 @@ pub fn reference_price_offset_smoothing_uses_spread_update_slot() {
         sequence_id: None,
     };
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &validity,
+            crate::math::time::SlotDuration::BASELINE,
+        )
         .unwrap();
 
     {
@@ -317,6 +332,7 @@ pub fn reference_price_offset_smoothing_uses_spread_update_slot() {
             &mm_oracle_price_data,
             reserve_price,
             slot,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     }
@@ -363,9 +379,9 @@ pub fn update_amm_test_bad_oracle() {
                 oracle_twap_5min_percent_divergence: 10,
             },
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,      // 5s
-                slots_before_stale_for_margin: 120,  // 60s
-                confidence_interval_max_size: 20000, //2%
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
+                confidence_interval_max_size: 20000,                      //2%
                 too_volatile_ratio: 5,
             },
         },
@@ -382,7 +398,12 @@ pub fn update_amm_test_bad_oracle() {
         sequence_id: None,
     };
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::time::SlotDuration::BASELINE,
+        )
         .unwrap();
 
     let _cost_of_update =
@@ -403,8 +424,9 @@ pub fn update_amm_test_bad_oracle() {
         &market.oracle_source,
         LogMode::None,
         0,
-        false, // exchange-oracle price, never MM-sourced
+        false,
         0,
+        crate::math::time::SlotDuration::BASELINE,
     )
     .unwrap()
         == OracleValidity::Valid;
@@ -426,9 +448,9 @@ pub fn update_amm_larg_conf_test() {
                 oracle_twap_5min_percent_divergence: 10,
             },
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,      // 5s
-                slots_before_stale_for_margin: 120,  // 60s
-                confidence_interval_max_size: 20000, //2%
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
+                confidence_interval_max_size: 20000,                      //2%
                 too_volatile_ratio: 5,
             },
         },
@@ -446,7 +468,12 @@ pub fn update_amm_larg_conf_test() {
         sequence_id: None,
     };
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::time::SlotDuration::BASELINE,
+        )
         .unwrap();
     assert_eq!(0u32, 0);
     assert_eq!(0u32, 0);
@@ -468,6 +495,7 @@ pub fn update_amm_larg_conf_test() {
             &mm_oracle_price_data,
             reserve_price_after,
             slot,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     }
@@ -486,7 +514,12 @@ pub fn update_amm_larg_conf_test() {
         sequence_id: None,
     };
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::time::SlotDuration::BASELINE,
+        )
         .unwrap();
 
     let cost_of_update =
@@ -504,6 +537,7 @@ pub fn update_amm_larg_conf_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     }
@@ -551,7 +585,12 @@ pub fn update_amm_larg_conf_test() {
     assert_eq!(optimal_peg_cost, 30468749);
 
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::time::SlotDuration::BASELINE,
+        )
         .unwrap();
     let cost_of_update =
         _update_amm(&mut market, &mm_oracle_price_data, &state, now, slot).unwrap();
@@ -568,6 +607,7 @@ pub fn update_amm_larg_conf_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     }
@@ -599,7 +639,12 @@ pub fn update_amm_larg_conf_test() {
         sequence_id: None,
     };
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::time::SlotDuration::BASELINE,
+        )
         .unwrap();
 
     let cost_of_update =
@@ -617,6 +662,7 @@ pub fn update_amm_larg_conf_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     }
@@ -657,9 +703,9 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
                 oracle_twap_5min_percent_divergence: 10,
             },
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,      // 5s
-                slots_before_stale_for_margin: 120,  // 60s
-                confidence_interval_max_size: 20000, //2%
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
+                confidence_interval_max_size: 20000,                      //2%
                 too_volatile_ratio: 5,
             },
         },
@@ -677,7 +723,12 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
         sequence_id: None,
     };
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::time::SlotDuration::BASELINE,
+        )
         .unwrap();
     assert_eq!(0u32, 0);
     assert_eq!(0u32, 0);
@@ -720,6 +771,7 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             &mm_oracle_price_data,
             reserve_price_after,
             slot,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     }
@@ -747,7 +799,12 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
         sequence_id: None,
     };
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::time::SlotDuration::BASELINE,
+        )
         .unwrap();
 
     let cost_of_update =
@@ -765,6 +822,7 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     }
@@ -795,7 +853,12 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
         sequence_id: None,
     };
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::time::SlotDuration::BASELINE,
+        )
         .unwrap();
 
     let fee_budget = calculate_fee_pool(&market.amm).unwrap();
@@ -847,6 +910,7 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     }
@@ -893,7 +957,12 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
         sequence_id: None,
     };
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            crate::math::time::SlotDuration::BASELINE,
+        )
         .unwrap();
 
     let cost_of_update =
@@ -911,6 +980,7 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
+            crate::math::time::SlotDuration::BASELINE,
         )
         .unwrap();
     }

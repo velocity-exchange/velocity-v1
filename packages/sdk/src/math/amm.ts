@@ -36,6 +36,12 @@ import {
 } from './repeg';
 
 import { calculateLiveOracleStd, getNewOracleConfPct } from './oracles';
+import {
+	SlotDurationMs,
+	SLOT_DURATION_BASELINE,
+	MILLIS_UNIT,
+	millisFromSlots,
+} from './time';
 
 /**
  * Solves for the `pegMultiplier` that would make the AMM's constant-product price equal
@@ -277,6 +283,7 @@ export function calculateUpdatedAMM(
  * @param direction Which side's spread reserves to return.
  * @param mmOraclePriceData Current MM oracle price data, forwarded to `calculateUpdatedAMM`.
  * @param latestSlot Current slot, forwarded for reference-price-offset smoothing.
+ * @param slotDuration Current slot duration (`slotDurationFromState(state.slotDurationMs)`); the smoothing elapsed time converts through it.
  * @returns `baseAssetReserve`/`quoteAssetReserve` for the requested side (AMM_RESERVE_PRECISION, 1e9), and the post-update `sqrtK`/`newPeg` (AMM_RESERVE_PRECISION 1e9 / PEG_PRECISION 1e6).
  */
 export function calculateUpdatedAMMSpreadReserves(
@@ -284,7 +291,8 @@ export function calculateUpdatedAMMSpreadReserves(
 	marketStats: MarketStats,
 	direction: PositionDirection,
 	mmOraclePriceData?: Pick<MMOraclePriceData, 'price' | 'confidence'>,
-	latestSlot?: BN
+	latestSlot?: BN,
+	slotDuration: SlotDurationMs = SLOT_DURATION_BASELINE
 ): { baseAssetReserve: BN; quoteAssetReserve: BN; sqrtK: BN; newPeg: BN } {
 	const newAmm = calculateUpdatedAMM(amm, mmOraclePriceData);
 	const [shortReserves, longReserves] = calculateSpreadReserves(
@@ -292,7 +300,8 @@ export function calculateUpdatedAMMSpreadReserves(
 		marketStats,
 		mmOraclePriceData,
 		undefined,
-		latestSlot
+		latestSlot,
+		slotDuration
 	);
 
 	const dirReserves = isVariant(direction, 'long')
@@ -317,6 +326,7 @@ export function calculateUpdatedAMMSpreadReserves(
  * @param mmOraclePriceData Current MM oracle price data; used both to repeg (if `withUpdate`) and to compute the spread.
  * @param withUpdate If true (default), repegs `amm` to the oracle price (`calculateUpdatedAMM`) before pricing; if false, prices the AMM's stored reserves as-is.
  * @param latestSlot Current slot, forwarded for reference-price-offset smoothing.
+ * @param slotDuration Current slot duration (`slotDurationFromState(state.slotDurationMs)`); the smoothing elapsed time converts through it.
  * @returns `[bidPrice, askPrice]`, both PRICE_PRECISION (1e6).
  */
 export function calculateBidAskPrice(
@@ -324,7 +334,8 @@ export function calculateBidAskPrice(
 	marketStats: MarketStats,
 	mmOraclePriceData?: Pick<MMOraclePriceData, 'price' | 'confidence'>,
 	withUpdate = true,
-	latestSlot?: BN
+	latestSlot?: BN,
+	slotDuration: SlotDurationMs = SLOT_DURATION_BASELINE
 ): [BN, BN] {
 	let newAmm: AMM;
 	if (withUpdate) {
@@ -338,7 +349,8 @@ export function calculateBidAskPrice(
 		marketStats,
 		mmOraclePriceData,
 		undefined,
-		latestSlot
+		latestSlot,
+		slotDuration
 	);
 
 	const askPrice = calculatePrice(
@@ -1393,13 +1405,14 @@ export function calculateSpread(
  * raw reserve price when inventory skew and recent/24h funding premium agree in direction; a
  * configurable deadband (`referencePriceOffsetDeadbandPct`) suppresses small offsets, and when
  * the offset's sign flips versus the market's last stored offset, the change is smoothed in
- * gradually over elapsed slots (`latestSlot - amm.lastUpdateSlot`) rather than snapping
+ * gradually over elapsed time (`latestSlot - amm.lastSpreadUpdateSlot`, counted in 400ms periods) rather than snapping
  * instantly, to avoid quote whiplash.
  * @param amm AMM state to derive spread reserves for.
  * @param marketStats Market stats needed for spread and reference-price-offset calculation (including `lastReferencePriceOffset` for smoothing).
  * @param mmOraclePriceData Current MM oracle price data, forwarded to `calculateSpread`.
  * @param now Current unix timestamp (seconds), forwarded to `calculateSpread`.
  * @param latestSlot Current slot; required for reference-price-offset smoothing to take effect (treated as 0 slots elapsed if omitted).
+ * @param slotDuration Current slot duration (`slotDurationFromState(state.slotDurationMs)`); the smoothing elapsed time converts through it.
  * @returns `[bidReserves, askReserves]`, each `{ baseAssetReserve, quoteAssetReserve }` in AMM_RESERVE_PRECISION (1e9).
  */
 export function calculateSpreadReserves(
@@ -1407,7 +1420,8 @@ export function calculateSpreadReserves(
 	marketStats: MarketStats,
 	mmOraclePriceData?: Pick<MMOraclePriceData, 'price' | 'confidence'>,
 	now?: BN,
-	latestSlot?: BN
+	latestSlot?: BN,
+	slotDuration: SlotDurationMs = SLOT_DURATION_BASELINE
 ) {
 	function calculateSpreadReserve(
 		spread: number,
@@ -1526,14 +1540,20 @@ export function calculateSpreadReserves(
 		amm.curveUpdateIntensity > 100;
 
 	if (doReferencePricOffsetSmooth) {
-		const slotsPassed =
+		// mirror the program: elapsed milliseconds measured from
+		// lastSpreadUpdateSlot, times the per-400ms budget prorated by that
+		// elapsed time. Counting whole periods would floor to zero for any gap
+		// under 400ms and pin the step to the minimum.
+		const elapsedMs =
 			latestSlot != null
-				? BN.max(latestSlot.sub(amm.lastUpdateSlot), ZERO).toNumber()
+				? millisFromSlots(
+						BN.max(latestSlot.sub(amm.lastSpreadUpdateSlot), ZERO),
+						slotDuration
+				  ).toNumber()
 				: 0;
+		const budget = Math.trunc((elapsedMs * 1000) / MILLIS_UNIT.toNumber());
 		const fullOffsetDelta = referencePriceOffset - lastReferencePriceOffset;
-		const raw = Math.trunc(
-			Math.min(Math.abs(fullOffsetDelta), slotsPassed * 1000) / 10
-		);
+		const raw = Math.trunc(Math.min(Math.abs(fullOffsetDelta), budget) / 10);
 		const maxAllowed =
 			Math.abs(lastReferencePriceOffset) || Math.abs(referencePriceOffset);
 

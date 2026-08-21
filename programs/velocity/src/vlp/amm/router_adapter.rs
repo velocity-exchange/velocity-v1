@@ -305,6 +305,7 @@ mod tests {
         vec![QuoterBook {
             priority: 10,
             levels,
+            withheld: PriceLevel::default(),
         }]
     }
 

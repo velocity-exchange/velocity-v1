@@ -310,6 +310,20 @@ fn quote(ctx: &mut Ctx, direction: Direction, size: u64) -> Vec<(u64, u64)> {
     quote_users(ctx, direction, size, None)
 }
 
+/// `(price, base)` the quote gave up on for want of a loaded user, or `None`
+/// when it reached everything it was asked for.
+fn quote_withheld(
+    ctx: &mut Ctx,
+    direction: Direction,
+    size: u64,
+    users: Option<Vec<Address>>,
+) -> Option<(u64, u64)> {
+    let meta = quote_meta_users(ctx, direction, size, users).unwrap();
+    let bytes = read_response(ctx, &meta);
+    let response = clob::state::QuoteResponseV0::parse(&bytes).expect("quote response");
+    (response.withheld_price != 0).then_some((response.withheld_price, response.withheld_base))
+}
+
 fn execute_meta_users(
     ctx: &mut Ctx,
     direction: Direction,
@@ -922,7 +936,7 @@ fn expired_orders_are_skipped_and_cranked_off() {
 }
 
 #[test]
-fn unknown_user_grace_skips_fresh_orders_and_fails_on_aged_ones() {
+fn unknown_user_grace_skips_fresh_orders_and_stops_on_aged_ones() {
     let mut ctx = setup(); // grace = 2 slots
     let user_a = addr(Pubkey::new_unique());
     let user_b = addr(Pubkey::new_unique());
@@ -931,37 +945,70 @@ fn unknown_user_grace_skips_fresh_orders_and_fails_on_aged_ones() {
     place(&mut ctx, place_args(Side::Ask, 101, 7), user_b);
     ctx.svm.warp_to_slot(11); // both active, age 1 <= grace
 
-    // A's user missing but fresh: skipped, the fill continues past it.
+    // A's user missing but fresh: skipped, the fill continues past it. The
+    // caller could not have heard of it yet, so nothing is reported.
     assert_eq!(
         quote_users(&mut ctx, Direction::Long, 12, Some(vec![user_b])),
         vec![(101, 7)]
+    );
+    assert_eq!(
+        quote_withheld(&mut ctx, Direction::Long, 12, Some(vec![user_b])),
+        None
     );
     let changes = execute_users(&mut ctx, Direction::Long, 7, Some(vec![user_b]));
     assert_eq!(changes, vec![(user_b.to_bytes(), 7, 707, vec![2])]);
     // A's order still resting, untouched.
     assert_eq!(quote(&mut ctx, Direction::Long, 12), vec![(100, 5)]);
 
-    // Past the grace window a missing user means a stale keeper: fail the
-    // whole call rather than fill around the order.
+    // Past the grace window the walk ends at A rather than filling around it.
+    // A is the best price, so a caller that left it out gets nothing from
+    // this book — it can trade less of the book, never a better part of it.
     place(&mut ctx, place_args(Side::Ask, 101, 7), user_b);
     ctx.svm.warp_to_slot(14); // A age 4 > grace
-    assert_clob_err(
-        quote_meta_users(&mut ctx, Direction::Long, 12, Some(vec![user_b])),
-        err_code(clob::error::ClobError::StaleUserSet),
+    assert!(quote_users(&mut ctx, Direction::Long, 12, Some(vec![user_b])).is_empty());
+    assert_eq!(
+        quote_withheld(&mut ctx, Direction::Long, 12, Some(vec![user_b])),
+        Some((100, 5)),
+        "the book says where it stopped and what it was holding there"
     );
-    assert_clob_err(
-        execute_meta_users(&mut ctx, Direction::Long, 12, Some(vec![user_b])),
-        err_code(clob::error::ClobError::StaleUserSet),
+    assert!(
+        execute_users(&mut ctx, Direction::Long, 12, Some(vec![user_b])).is_empty(),
+        "leaving out the best maker forfeits the book, it does not reach past it"
     );
+
     // Complete user set fills both.
     let changes = execute_users(&mut ctx, Direction::Long, 12, Some(vec![user_a, user_b]));
+    assert_eq!(changes.len(), 2);
+}
+
+/// Truncation is the caller's own tradeoff, and it may only cost depth. A
+/// caller that carries the best maker and stops fills that far; the rest of
+/// the book stays resting for a later transaction with a different set.
+#[test]
+fn a_short_user_set_trades_less_of_the_book_not_a_worse_part() {
+    let mut ctx = setup();
+    let best = addr(Pubkey::new_unique());
+    let rest = addr(Pubkey::new_unique());
+    ctx.svm.warp_to_slot(10);
+    place(&mut ctx, place_args(Side::Ask, 100, 5), best);
+    place(&mut ctx, place_args(Side::Ask, 101, 7), rest);
+    ctx.svm.warp_to_slot(20); // both well past the grace window
+
+    // Carrying the best maker alone: its level fills, and the book reports
+    // the depth behind it as withheld.
     assert_eq!(
-        changes,
-        vec![
-            (user_a.to_bytes(), 5, 500, vec![1]),
-            (user_b.to_bytes(), 7, 707, vec![3])
-        ]
+        quote_users(&mut ctx, Direction::Long, 12, Some(vec![best])),
+        vec![(100, 5)]
     );
+    assert_eq!(
+        quote_withheld(&mut ctx, Direction::Long, 12, Some(vec![best])),
+        Some((101, 7))
+    );
+    let changes = execute_users(&mut ctx, Direction::Long, 12, Some(vec![best]));
+    assert_eq!(changes, vec![(best.to_bytes(), 5, 500, vec![1])]);
+
+    // The maker behind is untouched and reachable by the next fill.
+    assert_eq!(quote(&mut ctx, Direction::Long, 12), vec![(101, 7)]);
 }
 
 #[test]

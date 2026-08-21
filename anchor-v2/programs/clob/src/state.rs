@@ -74,10 +74,15 @@ pub const REMOVED_ORDER_BYTES: usize = USER_REF_BYTES + 3 * core::mem::size_of::
 // The per-market operating points live on the header. Partial execution is
 // the interface contract; the router sees smaller balance changes.
 
-/// Ceiling on `max_quote_levels`: a [`QuoteResponseV0`] is a count followed
-/// by that many [`PriceLevel`]s.
+/// Trailing bytes of a [`QuoteResponseV0`]: the withheld price and the base
+/// behind it, written after the ladder.
+pub const WITHHELD_REPORT_BYTES: usize = 2 * core::mem::size_of::<u64>();
+
+/// Ceiling on `max_quote_levels`: a [`QuoteResponseV0`] is a count, that many
+/// [`PriceLevel`]s, then the withheld report.
 pub const QUOTE_LEVELS_CEILING: u16 =
-    ((RESPONSE_BUFFER_BYTES - RESPONSE_LEN_BYTES) / PRICE_LEVEL_BYTES) as u16;
+    ((RESPONSE_BUFFER_BYTES - RESPONSE_LEN_BYTES - WITHHELD_REPORT_BYTES) / PRICE_LEVEL_BYTES)
+        as u16;
 
 /// Orders one `execute_v0` may consume.
 ///
@@ -115,7 +120,8 @@ pub const EXECUTE_USERS_CEILING: u16 = ((RESPONSE_BUFFER_BYTES
 // region, so `ResponseTooLarge` is unreachable for a market whose config the
 // init/update checks accepted.
 const_assert!(
-    RESPONSE_LEN_BYTES + QUOTE_LEVELS_CEILING as usize * PRICE_LEVEL_BYTES <= RESPONSE_BUFFER_BYTES
+    RESPONSE_LEN_BYTES + QUOTE_LEVELS_CEILING as usize * PRICE_LEVEL_BYTES + WITHHELD_REPORT_BYTES
+        <= RESPONSE_BUFFER_BYTES
 );
 const_assert!(
     2 * RESPONSE_LEN_BYTES

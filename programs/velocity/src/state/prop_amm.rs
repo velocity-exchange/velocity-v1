@@ -374,6 +374,14 @@ pub use quoter_spec::QuoteResponseV0;
 /// Declared by `quoter-spec`; the alias keeps velocity's name for it.
 pub type PriceLevel = quoter_spec::PriceLevelV0;
 
+/// What one quoter answered: the ladder it stands behind, and the depth it
+/// says it holds at a better price but cannot reach in this transaction.
+pub struct QuotedLadderV0 {
+    pub levels: Vec<PriceLevel>,
+    /// `price == 0` when the quoter reached everything it was asked for.
+    pub withheld: PriceLevel,
+}
+
 /// Returned via return data by `quote_v0`/`execute_v0`: where in the quoter's
 /// `response_account` the borsh response was written.
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
@@ -1458,7 +1466,7 @@ impl QuoterV0 {
         quoter_signer: &Pubkey,
         quoter_signer_nonce: u8,
         accounts: &[AccountInfo<'info>],
-    ) -> Result<Vec<PriceLevel>> {
+    ) -> Result<QuotedLadderV0> {
         self.gate_for_market(market_index)?;
         let located = self.invoke_quoter(
             &self.quote_v0_discriminator,
@@ -1475,7 +1483,13 @@ impl QuoterV0 {
         // The one copy that earns itself: the quoted ladder is what every
         // later allocation and price check is held to, so it outlives this
         // borrow by the whole fill.
-        Ok(response.levels.to_vec())
+        Ok(QuotedLadderV0 {
+            levels: response.levels.to_vec(),
+            withheld: PriceLevel {
+                price: response.withheld_price,
+                size: response.withheld_base,
+            },
+        })
     }
 
     /// CPI `execute_v0` on the quoter program: commit a fill and return the

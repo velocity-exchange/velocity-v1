@@ -599,6 +599,7 @@ pub mod amm_jit {
         let external_books = [crate::math::router::QuoterBook {
             priority: QuoterType::Clob.default_priority(),
             levels: &external_levels,
+            withheld: PriceLevel::default(),
         }];
         let mut executor = MockClobExecutor {
             user: clob_maker_key,
@@ -929,6 +930,7 @@ pub mod amm_jit {
         let external_books = [crate::math::router::QuoterBook {
             priority: QuoterType::Clob.default_priority(),
             levels: &external_levels,
+            withheld: PriceLevel::default(),
         }];
         let mut executor = HostileClobExecutor {
             user: clob_maker_key,
@@ -1168,6 +1170,7 @@ pub mod amm_jit {
         let external_books = [crate::math::router::QuoterBook {
             priority: QuoterType::Custom.default_priority(),
             levels: &external_levels,
+            withheld: PriceLevel::default(),
         }];
         let mut executor = MockCustomExecutor {
             user: custom_maker_key,

@@ -161,6 +161,7 @@ pub fn router_take(
                 .map(|book| QuoterBook {
                     priority: book.priority,
                     levels: &book.levels[..within_limit(book.levels)],
+                    withheld: PriceLevel::default(),
                 })
                 .chain(
                     quoters
@@ -170,6 +171,7 @@ pub fn router_take(
                         .map(|(quoter, levels)| QuoterBook {
                             priority: quoter.priority(),
                             levels,
+                            withheld: PriceLevel::default(),
                         }),
                 )
                 .collect();
@@ -187,6 +189,7 @@ pub fn router_take(
         .map(|book| QuoterBook {
             priority: book.priority,
             levels: &book.levels[..within_limit(book.levels)],
+            withheld: PriceLevel::default(),
         })
         .chain(
             quoters
@@ -195,10 +198,11 @@ pub fn router_take(
                 .map(|(quoter, levels)| QuoterBook {
                     priority: quoter.priority(),
                     levels,
+                    withheld: PriceLevel::default(),
                 }),
         )
         .collect();
-    let allocations = split_across_quoters(direction, target_size, &books, ctx.step_size)?;
+    let allocations = split_across_quoters(direction, target_size, &books, ctx.step_size, None)?;
     let (external_allocations, internal_allocations) = allocations.split_at(external_books.len());
 
     // Execute each internal allocation against its quoter — the in-program
@@ -304,6 +308,7 @@ mod tests {
         let external_books = [QuoterBook {
             priority: 10,
             levels: &external_levels,
+            withheld: PriceLevel::default(),
         }];
 
         let outcome = {

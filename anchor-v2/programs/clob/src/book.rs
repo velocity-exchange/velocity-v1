@@ -723,6 +723,8 @@ impl ClobBook for ClobMarketV0 {
         // advisory, exactly as it was.
         let mut seen_users = [0u8; USER_EXCLUSION_BITMAP_BYTES];
         let mut distinct_users = 0usize;
+        // Where the walk gave up for want of a loaded user, if it did.
+        let mut withheld: Option<(u64, u64)> = None;
 
         walk_side(self, side, |book, _, node| {
             // Mirrors `execute`'s own stop, in the same place in the walk, so
@@ -730,13 +732,21 @@ impl ClobBook for ClobMarketV0 {
             if remaining == 0 || fills == max_fills {
                 return Ok(Walk::Stop);
             }
-            // Both halves of "pass over this order": the intrinsic and
-            // caller-relative reasons, then the crossed-remainder gate.
-            let owner = users.iter().position(|u| *u == node.user_ref());
-            if !is_matchable(node, users, owner, taker, grace_slots, slot, now)?
-                || gate.skips(book, node)?
-            {
+            // Reasons to pass over an order, cheapest first: the order's own
+            // state, then the crossed-remainder gate, then whether the caller
+            // can settle for its owner. Settleability comes last so an order
+            // the walk would skip anyway never costs the caller two accounts.
+            if !is_matchable(node, taker, slot, now) || gate.skips(book, node)? {
                 return Ok(Walk::Continue);
+            }
+            let owner = users.iter().position(|u| *u == node.user_ref());
+            match settleable(users, owner, node, grace_slots, slot) {
+                Settleable::Yes => {}
+                Settleable::TooFresh => return Ok(Walk::Continue),
+                Settleable::Withheld => {
+                    withheld = Some((node.price, node.base_asset_amount));
+                    return Ok(Walk::Stop);
+                }
             }
             let take = budget.allow(owner, remaining.min(node.base_asset_amount), node.price);
             if take == 0 {
@@ -785,6 +795,11 @@ impl ClobBook for ClobMarketV0 {
         }
 
         writer.patch_count(self, count_offset, levels as usize)?;
+        // The withheld report sits behind the ladder, which is where
+        // `QuoteResponseV0` declares it.
+        let (withheld_price, withheld_base) = withheld.unwrap_or((0, 0));
+        writer.append_u64(self, withheld_price)?;
+        writer.append_u64(self, withheld_base)?;
         Ok(writer.finish())
     }
 
@@ -797,9 +812,8 @@ impl ClobBook for ClobMarketV0 {
     /// (dust can't hold an arena slot); the cull rides the wire response
     /// since that maker was just filled and is therefore loaded. Orders
     /// whose user is outside the caller's set are skipped inside the grace
-    /// window, and fail the call past it (see [`skip_unknown_user`]); the
-    /// taker's own orders are skipped unconditionally (self-trade
-    /// prevention). No price bound: the router already chose this quoter's
+    /// window and end the walk past it (see [`settleable`]); the taker's own
+    /// orders are skipped unconditionally (self-trade prevention). No price bound: the router already chose this quoter's
     /// allocation from its quote.
     ///
     /// Fills merge by user: the records already written into the response
@@ -859,13 +873,16 @@ impl ClobBook for ClobMarketV0 {
             if remaining == 0 || fills.len() == max_fills {
                 return Ok(Walk::Stop);
             }
-            // Both halves of "pass over this order": the intrinsic and
-            // caller-relative reasons, then the crossed-remainder gate.
-            let owner = users.iter().position(|u| *u == node.user_ref());
-            if !is_matchable(node, users, owner, taker, grace_slots, slot, now)?
-                || gate.skips(book, node)?
-            {
+            // The same order of reasons `quote` applies, so the fill ends
+            // exactly where the ladder did.
+            if !is_matchable(node, taker, slot, now) || gate.skips(book, node)? {
                 return Ok(Walk::Continue);
+            }
+            let owner = users.iter().position(|u| *u == node.user_ref());
+            match settleable(users, owner, node, grace_slots, slot) {
+                Settleable::Yes => {}
+                Settleable::TooFresh => return Ok(Walk::Continue),
+                Settleable::Withheld => return Ok(Walk::Stop),
             }
             let take = budget.allow(owner, remaining.min(node.base_asset_amount), node.price);
             if take == 0 {
@@ -1137,22 +1154,54 @@ fn removed_order(node: &OrderNodeV0) -> RemovedOrder {
 /// `index` is where this order's owner sits in `users`, resolved once by the
 /// caller: membership and the per-user budget both need it, and the set is 48
 /// wide, so resolving it twice per order is a walk of the set nobody needs.
-fn is_matchable(
-    node: &OrderNodeV0,
+fn is_matchable(node: &OrderNodeV0, taker: Option<&UserRefV0>, slot: u64, now: i64) -> bool {
+    if node.is_expired(now) || !node.is_active(slot) {
+        return false;
+    }
+    !taker.is_some_and(|t| *t == node.user_ref())
+}
+
+/// Whether the caller can settle for this order's owner, and if not, why that
+/// matters.
+enum Settleable {
+    /// The owner is in the caller's set, or the set is unrestricted.
+    Yes,
+    /// Absent, but the order is younger than the grace window: the caller
+    /// cannot be expected to have heard of it yet. Passed over, and the walk
+    /// carries on to the depth behind it.
+    TooFresh,
+    /// Absent, and old enough that the caller had every chance to carry it.
+    /// The walk ends here.
+    Withheld,
+}
+
+/// A transaction locks at most 64 accounts and a maker costs two, so no
+/// caller can carry every user a book might hold. Ending the walk is what
+/// makes that survivable: the caller fills as deep as the users it brought
+/// and the rest stays resting.
+///
+/// Ending it rather than stepping over it is what keeps the choice honest.
+/// The walk is best-first, so stopping at the first missing owner means a
+/// caller cannot leave out the maker who would have won and go on to fill the
+/// one behind it. It can trade less of the book, never a worse part of it.
+///
+/// Whether the caller *should* have brought more users is not a question this
+/// book can answer — it cannot see the transaction. It reports where it
+/// stopped instead, and the caller's own checks decide.
+fn settleable(
     users: &[UserRefV0],
     index: Option<usize>,
-    taker: Option<&UserRefV0>,
+    node: &OrderNodeV0,
     grace_slots: u32,
     slot: u64,
-    now: i64,
-) -> Result<bool> {
-    if node.is_expired(now) || !node.is_active(slot) {
-        return Ok(false);
+) -> Settleable {
+    if users.is_empty() || index.is_some() {
+        return Settleable::Yes;
     }
-    if taker.is_some_and(|t| *t == node.user_ref()) {
-        return Ok(false);
+    if slot.saturating_sub(node.placed_slot) <= grace_slots as u64 {
+        return Settleable::TooFresh;
     }
-    Ok(!skip_unknown_user(users, index, node, grace_slots, slot)?)
+    Settleable::Withheld
 }
 
 /// Per-user room for one walk, spent as it goes.
@@ -1382,28 +1431,6 @@ fn best_actionable_price(
         Ok(Walk::Stop)
     })?;
     Ok(best)
-}
-
-/// Grace rule for a matchable order whose user is missing from the caller's
-/// set: `Ok(true)` (skip) while the order is at most `grace_slots` old — the
-/// keeper couldn't have known it when the tx's account set was formed — and
-/// [`ClobError::StaleUserSet`] once older, because a keeper that misses an
-/// aged order is stale (or pruning makers) and the whole fill must not land.
-fn skip_unknown_user(
-    users: &[UserRefV0],
-    index: Option<usize>,
-    node: &OrderNodeV0,
-    grace_slots: u32,
-    slot: u64,
-) -> Result<bool> {
-    if users.is_empty() || index.is_some() {
-        return Ok(false);
-    }
-    require!(
-        slot.saturating_sub(node.placed_slot) <= grace_slots as u64,
-        ClobError::StaleUserSet
-    );
-    Ok(true)
 }
 
 /// Append one borsh `PriceLevel` to the quote response, after re-checking on

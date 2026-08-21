@@ -3927,11 +3927,13 @@ fn fulfill_perp_order_router_pass(
                 QuoterBook {
                     priority: book.priority,
                     levels: &levels[..within_limit(levels)],
+                    withheld: book.withheld,
                 }
             })
             .chain(maker_levels.iter().map(|levels| QuoterBook {
                 priority: clob_tier,
                 levels: &levels[..within_limit(levels.as_slice())],
+                withheld: PriceLevel::default(),
             }))
             .collect();
         vamm_quote_levels(
@@ -3957,11 +3959,13 @@ fn fulfill_perp_order_router_pass(
             QuoterBook {
                 priority: book.priority,
                 levels: &levels[..within_limit(levels)],
+                withheld: book.withheld,
             }
         })
         .chain(maker_levels.iter().map(|levels| QuoterBook {
             priority: clob_tier,
             levels: &levels[..within_limit(levels.as_slice())],
+            withheld: PriceLevel::default(),
         }))
         // The vAMM book is NOT re-truncated: `vamm_quote_levels` already
         // capped the ladder at the limit, and its per-rung prices are
@@ -3970,9 +3974,42 @@ fn fulfill_perp_order_router_pass(
         .chain(core::iter::once(QuoterBook {
             priority: QuoterType::Vamm.default_priority(),
             levels: &amm_levels,
+            withheld: PriceLevel::default(),
         }))
         .collect();
-    let allocations = split_across_quoters(direction, target_size, &books, order_step_size)?;
+    // Depth a book is holding at a better price than it could quote, because
+    // the accounts of the user who owns it are not in this transaction. Held
+    // back from the worse-priced sources rather than handed to them: the
+    // taker's leftover rests where that price can still reach it, and filling
+    // it here would lock in a price the book was beating.
+    //
+    // Immediate-or-cancel is the exception. That order bought immediacy, and
+    // there is no next block for it — its leftover cancels rather than rests,
+    // so a worse fill now beats no fill at all.
+    let reserve_level = (!taker.orders[taker_order_index].immediate_or_cancel)
+        .then(|| {
+            books
+                .iter()
+                .map(|book| book.withheld)
+                .filter(|withheld| withheld.price != 0 && withheld.size != 0)
+                .max_by_key(|withheld| match direction {
+                    // Best for the taker is what the book would have beaten
+                    // the rest of the route with.
+                    Direction::Long => u64::MAX - withheld.price,
+                    Direction::Short => withheld.price,
+                })
+        })
+        .flatten();
+    let reserve_slice = reserve_level.map(|level| [level]);
+    let allocations = split_across_quoters(
+        direction,
+        target_size,
+        &books,
+        order_step_size,
+        reserve_slice
+            .as_ref()
+            .map(|level| (clob_tier, level.as_slice())),
+    )?;
     let externals_end = external_books.len();
     let makers_end = externals_end + maker_levels.len();
 

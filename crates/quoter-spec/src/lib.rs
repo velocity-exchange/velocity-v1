@@ -245,10 +245,29 @@ impl<'a> ExecuteResponseV0<'a> {
     }
 }
 
-/// What `quote_v0` answers: the ladder the quoter is standing behind.
+/// What `quote_v0` answers: the ladder the quoter is standing behind, and
+/// what it had to leave out.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, SchemaRead, SchemaWrite)]
 pub struct QuoteResponseV0<'a> {
     pub levels: &'a [PriceLevelV0],
+    /// The best price this quoter could have offered but did not, because the
+    /// liquidity there belongs to a user the caller did not load. Zero when
+    /// nothing was left out.
+    ///
+    /// A caller cannot carry every user a book might hold — a transaction
+    /// locks at most 64 accounts and a maker costs two — so a quoter that
+    /// refused to answer at all whenever one was missing would make a
+    /// fragmented book unfillable. It stops instead, and says where it
+    /// stopped.
+    ///
+    /// That turns depth into the caller's own tradeoff: load more users, win
+    /// more of the book. It is also the number that makes the tradeoff
+    /// enforceable. A caller that skipped this liquidity and filled elsewhere
+    /// at a worse price did not run out of room, it routed around a
+    /// competitor, and this field is how its own checks can tell.
+    pub withheld_price: u64,
+    /// Base resting at [`Self::withheld_price`] that the same skip cost.
+    pub withheld_base: u64,
 }
 
 impl<'a> QuoteResponseV0<'a> {
@@ -408,7 +427,12 @@ mod tests {
                 size: 7,
             },
         ];
-        let bytes = wincode::serialize(&QuoteResponseV0 { levels: &levels }).unwrap();
+        let bytes = wincode::serialize(&QuoteResponseV0 {
+            levels: &levels,
+            withheld_price: 0,
+            withheld_base: 0,
+        })
+        .unwrap();
         let response = QuoteResponseV0::parse(&bytes).unwrap();
         assert_eq!(response.levels, levels.as_slice());
     }
@@ -421,13 +445,31 @@ mod tests {
             PriceLevelV0 { price: 1, size: 2 },
             PriceLevelV0 { price: 3, size: 4 },
         ];
-        let bytes = wincode::serialize(&QuoteResponseV0 { levels: &levels }).unwrap();
+        let bytes = wincode::serialize(&QuoteResponseV0 {
+            levels: &levels,
+            withheld_price: 0,
+            withheld_base: 0,
+        })
+        .unwrap();
         assert_eq!(&bytes[..LEN_BYTES], &len_prefix(levels.len()));
-        assert_eq!(bytes.len(), LEN_BYTES + levels.len() * PRICE_LEVEL_BYTES);
+        // The ladder, then the withheld report behind it.
+        assert_eq!(
+            bytes.len(),
+            LEN_BYTES + levels.len() * PRICE_LEVEL_BYTES + 2 * 8
+        );
+
+        // And the report round trips from that tail.
+        let bytes = wincode::serialize(&QuoteResponseV0 {
+            levels: &levels,
+            withheld_price: 7,
+            withheld_base: 9,
+        })
+        .unwrap();
+        let response = QuoteResponseV0::parse(&bytes).unwrap();
+        assert_eq!(response.levels, levels.as_slice());
+        assert_eq!((response.withheld_price, response.withheld_base), (7, 9));
     }
 
-    /// The record layout is the wire. Pin the offsets so a reordered field
-    /// fails here rather than redefining what the other program reads.
     /// Nine constrained users against eight slots. The eight tightest keep
     /// their exact number; the ninth is excluded rather than dropped, because
     /// dropping it would read as "unconstrained" — the opposite of what its
@@ -480,6 +522,8 @@ mod tests {
         assert!(!set.any_excluded());
     }
 
+    /// The record layout is the wire. Pin the offsets so a reordered field
+    /// fails here rather than redefining what the other program reads.
     #[test]
     fn layout_is_pinned() {
         let change = UserBalanceChangeV0 {

@@ -684,6 +684,12 @@ impl MidpointQuoterV0 {
             quoted_levels += 1;
             wanted -= quoted;
         }
+        // The withheld report behind the ladder. Always empty here: the
+        // midpoint settles against one standing-intent user and holds no
+        // resting orders, so there is no liquidity it could be keeping back
+        // for want of an account.
+        write_wire(&mut cursor, &0u64)?;
+        write_wire(&mut cursor, &0u64)?;
         let len = cursor.position();
         response[..quoter_spec::LEN_BYTES]
             .copy_from_slice(&quoter_spec::len_prefix(quoted_levels as usize));
@@ -797,7 +803,12 @@ mod tests {
             });
             wanted -= quoted;
         }
-        wincode::serialize(&QuoteResponseV0 { levels: &levels }).unwrap()
+        wincode::serialize(&QuoteResponseV0 {
+            levels: &levels,
+            withheld_price: 0,
+            withheld_base: 0,
+        })
+        .unwrap()
     }
 
     fn reference_execute(quoter: &MidpointQuoterV0, change: Option<(u64, u64)>) -> Vec<u8> {
@@ -861,21 +872,23 @@ mod tests {
         }
     }
 
+    /// An empty ladder is its length prefix and the withheld report behind
+    /// it. The report is always empty here: the midpoint holds no resting
+    /// orders, so there is no liquidity it could be keeping back.
+    const EMPTY_QUOTE: usize = quoter_spec::LEN_BYTES + 2 * 8;
+
     #[test]
     fn a_closed_gate_streams_an_empty_level_vec() {
         let mut quoter = quoter(&[(1_000, UNIT)], &[(1_000, UNIT)]);
         let closed = quoter
             .write_quote_response(Direction::Long, UNIT, 0, false)
             .unwrap();
-        assert_eq!(
-            written(&quoter, closed),
-            quoter_spec::len_prefix(0).to_vec()
-        );
+        assert_eq!(written(&quoter, closed), vec![0u8; EMPTY_QUOTE]);
         // A stale mid is the same silence, even with the gate open.
         let stale = quoter
             .write_quote_response(Direction::Long, UNIT, 10_000, true)
             .unwrap();
-        assert_eq!(written(&quoter, stale), quoter_spec::len_prefix(0).to_vec());
+        assert_eq!(written(&quoter, stale), vec![0u8; EMPTY_QUOTE]);
     }
 
     #[test]
@@ -917,7 +930,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             pointer.len as usize,
-            quoter_spec::LEN_BYTES + MAX_SPLINE_LEVELS * quoter_spec::PRICE_LEVEL_BYTES
+            quoter_spec::LEN_BYTES + MAX_SPLINE_LEVELS * quoter_spec::PRICE_LEVEL_BYTES + 2 * 8
         );
         assert!(pointer.len as usize <= RESPONSE_BUFFER_BYTES);
     }

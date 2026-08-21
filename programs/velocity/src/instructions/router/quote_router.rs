@@ -198,16 +198,16 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                 &spot_market_map,
                 &mut oracle_map,
             )?;
-            clamped = truncate_to(&mut levels, cap);
+            clamped = truncate_to(&mut levels.levels, cap);
         }
         buffer.push(
             QuotedSourceKind::Quoter,
             loader.key(),
             priority,
             clamped,
-            &levels,
+            &levels.levels,
         )?;
-        books.push((priority, levels));
+        books.push((priority, levels.levels));
     }
 
     // ---- DLOB makers next: one level per crossing resting order. ----
@@ -273,6 +273,7 @@ pub fn handle_quote_router<'c: 'info, 'info>(
     let rivals: Vec<QuoterBook> = books
         .iter()
         .map(|(priority, levels)| QuoterBook {
+            withheld: crate::state::prop_amm::PriceLevel::default(),
             priority: *priority,
             levels,
         })

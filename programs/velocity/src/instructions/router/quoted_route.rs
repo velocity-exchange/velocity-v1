@@ -58,6 +58,12 @@ pub struct QuotedEntry<'info> {
     /// What it quoted, best price first. Owned because every later allocation
     /// and price check is held to it, long after the quoting CPI returned.
     pub levels: Vec<PriceLevel>,
+    /// Depth it says it holds at a better price than it quoted, and could not
+    /// offer because this transaction does not carry the accounts of the user
+    /// who owns it. A zero price means it reached everything it was asked
+    /// for. Never fillable — it is the number that keeps a worse-priced
+    /// source from taking what the book was standing on.
+    pub withheld: PriceLevel,
 }
 
 pub struct QuotedRoute<'info> {
@@ -181,14 +187,15 @@ impl<'info> QuotedRoute<'info> {
                     levels,
                 )
             };
-            let (quoter_type, user, response_account, priority, levels) = quoted;
+            let (quoter_type, user, response_account, priority, quoted) = quoted;
             route.quoted.push(QuotedEntry {
                 entry: loader,
                 quoter_type,
                 user,
                 response_account,
                 priority,
-                levels,
+                levels: quoted.levels,
+                withheld: quoted.withheld,
             });
         }
         Ok(route)
@@ -258,6 +265,7 @@ impl<'info> QuotedRoute<'info> {
             *slot = QuoterBook {
                 priority: quoted.priority,
                 levels: &quoted.levels,
+                withheld: quoted.withheld,
             };
         }
         &into[..self.quoted.len()]

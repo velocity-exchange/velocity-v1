@@ -20,6 +20,7 @@ use {
             EXECUTE_USERS_CEILING, PRICE_LEVEL_BYTES, QUOTE_LEVELS_CEILING, REMOVED_ORDER_BYTES,
             RESPONSE_BUFFER_BYTES, RESPONSE_LEN_BYTES, RESPONSE_OFFSET, USER_CAPS_BYTES,
             USER_CAPS_CAPACITY, USER_REF_BYTES, USER_SET_BYTES, USER_SET_CAPACITY,
+            WITHHELD_REPORT_BYTES,
         },
     },
 };
@@ -39,7 +40,12 @@ where
 }
 
 pub(super) fn encode_quote(levels: &[PriceLevel]) -> Vec<u8> {
-    wincode::serialize(&QuoteResponseV0 { levels }).unwrap()
+    wincode::serialize(&QuoteResponseV0 {
+        levels,
+        withheld_price: 0,
+        withheld_base: 0,
+    })
+    .unwrap()
 }
 
 fn encode_execute(
@@ -311,9 +317,12 @@ fn wire_widths_match_the_response_types() {
     assert_eq!(encode(&change(user, 1, 2)).len(), CHANGE_MIN_BYTES);
     assert_eq!(encode(&done(0, 1)).len(), quoter_spec::COMPLETED_BYTES);
     assert_eq!(encode(&cull(user, 1, 2)).len(), CANCELLED_BYTES);
-    // An empty section is its length prefix alone, and an empty execute
-    // response is three of them.
-    assert_eq!(encode_quote(&[]).len(), RESPONSE_LEN_BYTES);
+    // An empty quote is its length prefix and the withheld report behind it;
+    // an empty execute response is three prefixes.
+    assert_eq!(
+        encode_quote(&[]).len(),
+        RESPONSE_LEN_BYTES + WITHHELD_REPORT_BYTES
+    );
     assert_eq!(encode_execute(&[], &[], &[]).len(), 3 * RESPONSE_LEN_BYTES);
 }
 
@@ -599,7 +608,9 @@ fn quote_accepts_the_orders_a_healthy_book_produces() {
 /// quote response must fit too.
 #[test]
 fn the_quote_ceiling_fits_the_response_region() {
-    let widest = COUNT_BYTES + QUOTE_LEVELS_CEILING as usize * PRICE_LEVEL_BYTES;
+    // The ladder and the withheld report behind it.
+    let widest =
+        COUNT_BYTES + QUOTE_LEVELS_CEILING as usize * PRICE_LEVEL_BYTES + WITHHELD_REPORT_BYTES;
     assert!(
         widest <= RESPONSE_BUFFER_BYTES,
         "{widest} > the response region"

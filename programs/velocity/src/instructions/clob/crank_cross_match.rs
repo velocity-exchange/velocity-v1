@@ -143,6 +143,9 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         );
         drop(quoter);
         quoted.push(QuotedEntry {
+            // The crank quotes the book unrestricted, so it never falls short
+            // of a user set.
+            withheld: crate::state::prop_amm::PriceLevel::default(),
             entry: loader,
             quoter_type,
             user,
@@ -543,23 +546,27 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
         // User, which quotes nothing anywhere).
         let market_index = ctx.accounts.cross_conditions.load()?.market_index;
         let quote = |direction: crate::state::prop_amm::Direction| -> Result<Vec<PriceLevel>> {
-            quoter.quote(
-                market_index,
-                crate::state::prop_amm::QuoteArgsV0 {
-                    // The crank's taker is the protocol User and the legs it
-                    // matches are the book's own; it constrains no one.
-                    caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
-                    // No budgets to price, so nothing reads this.
-                    reference_price: 0,
-                    direction,
-                    size: u64::MAX / 2,
-                    users: crate::state::prop_amm::QuoterUserSetRef::EMPTY,
-                    taker: None,
-                },
-                &quoter_signer,
-                quoter_signer_nonce,
-                &accounts,
-            )
+            quoter
+                .quote(
+                    market_index,
+                    crate::state::prop_amm::QuoteArgsV0 {
+                        // The crank's taker is the protocol User and the legs it
+                        // matches are the book's own; it constrains no one.
+                        caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
+                        // No budgets to price, so nothing reads this.
+                        reference_price: 0,
+                        direction,
+                        size: u64::MAX / 2,
+                        users: crate::state::prop_amm::QuoterUserSetRef::EMPTY,
+                        taker: None,
+                    },
+                    &quoter_signer,
+                    quoter_signer_nonce,
+                    &accounts,
+                )
+                // The crank routes the book against itself; there is no
+                // caller-supplied user set for it to fall short of.
+                .map(|quoted| quoted.levels)
         };
         let quoter_asks = sanitize_levels(quote(crate::state::prop_amm::Direction::Long)?, true);
         let quoter_bids = sanitize_levels(quote(crate::state::prop_amm::Direction::Short)?, false);

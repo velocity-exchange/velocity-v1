@@ -33,6 +33,14 @@ pub struct QuoterBook<'a> {
     /// Best price first (ascending asks for a long taker, descending bids
     /// for a short taker).
     pub levels: &'a [PriceLevel],
+    /// Depth this book says it holds at a better price than it quoted, and
+    /// could not offer because the accounts of the user who owns it are not
+    /// in this transaction. A zero price means none.
+    ///
+    /// It is not fillable liquidity, so it never appears in `levels`. What it
+    /// is good for is holding worse-priced sources back from taking what it
+    /// was standing on — see `split_across_quoters`.
+    pub withheld: PriceLevel,
 }
 
 /// Router-mode inputs the fill entrypoint threads into the fill controller:
@@ -165,11 +173,22 @@ fn available_at(top: Option<(u64, u64)>, priority: u8, tier: u8, price: u64) -> 
 /// `min(taker_size, total usable depth)` rounded down to the step — every
 /// allocation is a step multiple by construction, so execution never drops
 /// dust the taker was promised.
+///
+/// `reserve` is depth a book says it holds but cannot fill in this
+/// transaction, because the accounts of the user who owns it are not here. It
+/// competes for the taker's size like any other level and is then thrown
+/// away, so nothing worse-priced takes what it was holding. The taker keeps
+/// that base unfilled, which is the better outcome whenever the order can
+/// rest: resting leaves it where the book's own price can reach it next
+/// block, while filling it here locks in a price the book was beating. A
+/// caller that must fill now — immediate-or-cancel — passes `None` and takes
+/// the worse price, which is what immediacy costs.
 pub fn split_across_quoters(
     direction: Direction,
     taker_size: u64,
     books: &[QuoterBook],
     step_size: u64,
+    reserve: Option<(u8, &[PriceLevel])>,
 ) -> VelocityResult<Vec<QuoterAllocation>> {
     validate!(
         !books.is_empty(),
@@ -187,7 +206,16 @@ pub fn split_across_quoters(
             step,
         })
         .collect();
-    let mut allocations = vec![QuoterAllocation::default(); books.len()];
+    if let Some((priority, levels)) = reserve {
+        cursors.push(Cursor {
+            priority,
+            levels,
+            index: 0,
+            consumed: 0,
+            step,
+        });
+    }
+    let mut allocations = vec![QuoterAllocation::default(); cursors.len()];
     let mut remaining = taker_size;
 
     // Round-scratch buffers hoisted out of the loop: Solana's bump allocator
@@ -285,6 +313,10 @@ pub fn split_across_quoters(
         }
     }
 
+    // The reserve's own allocation goes nowhere: it stood in for liquidity
+    // this transaction cannot settle against, and holding it back is the
+    // point.
+    allocations.truncate(books.len());
     Ok(allocations)
 }
 
@@ -502,12 +534,111 @@ mod tests {
             .map(|(priority, levels)| QuoterBook {
                 priority: *priority,
                 levels,
+                withheld: PriceLevel::default(),
             })
             .collect();
-        split_across_quoters(direction, size, &books, 1).unwrap()
+        split_across_quoters(direction, size, &books, 1, None).unwrap()
+    }
+
+    fn split_reserving(
+        direction: Direction,
+        size: u64,
+        books: &[(u8, Vec<PriceLevel>)],
+        reserve: (u8, PriceLevel),
+    ) -> Vec<QuoterAllocation> {
+        let quoter_books: Vec<QuoterBook> = books
+            .iter()
+            .map(|(priority, levels)| QuoterBook {
+                priority: *priority,
+                levels,
+                withheld: PriceLevel::default(),
+            })
+            .collect();
+        let held = [reserve.1];
+        split_across_quoters(direction, size, &quoter_books, 1, Some((reserve.0, &held))).unwrap()
     }
 
     const B: u64 = 1_000_000_000; // one base unit
+
+    /// A book that could not reach its own liquidity keeps a worse-priced
+    /// source off it. The taker takes the depth it can and leaves the rest
+    /// unfilled, which is the outcome worth having when the order can rest:
+    /// the price the book was holding is still there next block.
+    #[test]
+    fn withheld_depth_is_reserved_from_worse_quoters() {
+        // The book quotes 1 @ 100 and says it is holding 2 more @ 101. The
+        // vAMM is offering 5 @ 102 — worse than what the book was holding.
+        let books = vec![
+            (
+                CLOB,
+                vec![PriceLevel {
+                    price: 100,
+                    size: B,
+                }],
+            ),
+            (
+                VAMM,
+                vec![PriceLevel {
+                    price: 102,
+                    size: 5 * B,
+                }],
+            ),
+        ];
+        let reserve = (
+            CLOB,
+            PriceLevel {
+                price: 101,
+                size: 2 * B,
+            },
+        );
+
+        let open = split(Direction::Long, 5 * B, &books);
+        assert_eq!(open[0].base, B, "the book fills what it quoted");
+        assert_eq!(open[1].base, 4 * B, "and the vAMM takes the whole rest");
+
+        let held = split_reserving(Direction::Long, 5 * B, &books, reserve);
+        assert_eq!(held[0].base, B, "the book still fills what it quoted");
+        assert_eq!(
+            held[1].base,
+            2 * B,
+            "the vAMM only gets what is left once the book's own depth is kept back"
+        );
+        // The two reserved units are simply not filled. They are the taker's
+        // remainder, and where that goes is the order's own business.
+        assert_eq!(held.len(), books.len(), "the reserve is not a quoter");
+    }
+
+    /// The reserve only holds back what is worse than it. Depth that beats
+    /// the price the book was holding is still the taker's best fill.
+    #[test]
+    fn a_reserve_does_not_hold_back_a_better_price() {
+        let books = vec![
+            (
+                CLOB,
+                vec![PriceLevel {
+                    price: 100,
+                    size: B,
+                }],
+            ),
+            (
+                VAMM,
+                vec![PriceLevel {
+                    price: 100,
+                    size: 5 * B,
+                }],
+            ),
+        ];
+        let reserve = (
+            CLOB,
+            PriceLevel {
+                price: 101,
+                size: 2 * B,
+            },
+        );
+
+        let held = split_reserving(Direction::Long, 5 * B, &books, reserve);
+        assert_eq!(held[0].base + held[1].base, 5 * B, "nothing is held back");
+    }
 
     #[test]
     fn single_book_partial_and_full() {

@@ -33,12 +33,12 @@ pub use quoter_spec::ExecuteArgsV0;
 /// user's margin before calling and validates at-or-better on its side.
 pub fn handle_execute_v0(
     ctx: &mut Context<ExecuteV0>,
-    args: ExecuteArgsV0,
+    args: ExecuteArgsV0<'_>,
 ) -> Result<ResponsePointerV0> {
     let clock = Clock::get()?;
     let open = caller_gate(
         &ctx.accounts.quoter,
-        args.users.as_slice(),
+        args.users,
         args.taker.as_ref(),
         ctx.accounts.instructions_sysvar.account(),
         ctx.accounts.velocity_state.account(),

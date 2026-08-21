@@ -12,3 +12,12 @@ members = ["programs/clob", "programs/midpoint"]
 [profile.release]
 lto = "fat"
 codegen-units = 1
+
+
+# Anchor v2 comes from a velocity fork, one commit ahead of otter-sec's
+# `4fbe613`. That commit's `#[program]` macro writes lifetime arguments into
+# the CPI wrapper's instruction literal, and Rust cannot parse a struct
+# expression that carries them — so no handler could take an argument that
+# borrows its instruction data. The quoter interface needs exactly that: the
+# CLOB and the midpoint read the caller's user set in place rather than
+# copying it out of the wire. Return to upstream once it carries the fix.

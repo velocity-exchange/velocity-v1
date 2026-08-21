@@ -21,7 +21,7 @@
 use {
     anyhow::{anyhow, Context, Result},
     program::state::{
-        prop_amm::{clob_resting_prefix, ClobSide, ClobUserRefV0, QuoterUserCapsV0, QuoterV0},
+        prop_amm::{ClobUserRefV0, QuoterV0},
         router_quote::QuotedSourceKind,
         state::State,
         user::User,
@@ -109,54 +109,30 @@ fn cross_levels(bids: &QuotedBook, asks: &QuotedBook, base_precision: u128) -> L
     cross
 }
 
-/// Collect maker refs off a CLOB side's crossing prefix, capped, and report
-/// the size that prefix covers.
+/// Collect the makers behind a leg's crossing prefix, capped, and report the
+/// size that prefix covers.
 ///
-/// The walk itself is the program's `clob_resting_prefix`, called rather than
-/// copied: it is a pure function of the account's bytes, and a copy here is
-/// how this list and the one the crank builds on-chain come to disagree about
-/// which orders are matchable.
-fn clob_makers_for(
-    data: &[u8],
-    side: ClobSide,
-    size: u64,
-    slot: u64,
-    now: i64,
-    makers: &mut Vec<ClobUserRefV0>,
-) -> Result<u64> {
-    // The crank's taker is the protocol user, which rests nothing, so no
-    // order on this book is its own.
-    let taker = ClobUserRefV0 {
-        authority: anchor_lang::prelude::Pubkey::default(),
-        sub_account_id: 0,
-    };
+/// The rows come from the quote view, which is where every source says who
+/// its depth belongs to — a book per order, a quoter that fills from one
+/// account against that account. Nothing here decodes a book: the same
+/// simulation that priced the cross also named the accounts it needs.
+fn makers_from_rows(book: &QuotedBook, size: u64, makers: &mut Vec<ClobUserRefV0>) -> u64 {
     let mut covered = 0u64;
-    // Unrestricted and uncapped: the question is who is resting here, not
-    // who this caller may settle for.
-    for order in clob_resting_prefix(
-        data,
-        side,
-        size,
-        &[],
-        &QuoterUserCapsV0::EMPTY,
-        &taker,
-        slot,
-        now,
-    ) {
-        if !makers.contains(&order.user) {
+    for row in &book.rows {
+        if !makers.contains(&row.user) {
             if makers.len() >= MAX_CROSS_MAKERS {
                 break;
             }
-            makers.push(order.user);
+            makers.push(row.user);
         }
         // A crossed taker-origin remainder is not depth this cross can count
         // on: the book passes over it while a counterparty crosses it, which
         // is exactly the situation the crank is resolving.
-        if !order.is_taker_origin {
-            covered = covered.saturating_add(order.base_asset_amount);
+        if !row.is_taker_origin() {
+            covered = covered.saturating_add(row.size);
         }
     }
-    Ok(covered.min(size))
+    covered.min(size)
 }
 
 /// A submittable cross: the executor instruction and the estimate that
@@ -260,47 +236,13 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
     let buy_index = 0u8;
     let sell_index = if entry_keys.len() == 1 { 0u8 } else { 1u8 };
 
-    // Maker pairs per leg, capped; the cross size shrinks to what the
-    // staged makers cover.
-    let clock = source.clock().await?;
+    // Maker pairs per leg, capped; the cross size shrinks to what the staged
+    // makers cover. Both legs answer the same way, because the view
+    // describes every source the same way.
     let mut makers: Vec<ClobUserRefV0> = Vec::new();
     let mut size = cross.size;
-    for (leg_entry, side) in [
-        (&entries[buy_index as usize], ClobSide::Ask),
-        (&entries[sell_index as usize], ClobSide::Bid),
-    ] {
-        if leg_entry.quoter_type == program::state::prop_amm::QuoterType::Clob {
-            let book_account = source
-                .get_multiple_accounts(&[leg_entry.response_account])
-                .await?
-                .pop()
-                .flatten()
-                .ok_or_else(|| anyhow!("clob market account missing"))?;
-            let covered = clob_makers_for(
-                &book_account.data,
-                side,
-                size,
-                clock.slot,
-                clock.unix_timestamp,
-                &mut makers,
-            )?;
-            size = size.min(covered);
-        } else {
-            let user_account = source
-                .get_multiple_accounts(&[leg_entry.user])
-                .await?
-                .pop()
-                .flatten()
-                .ok_or_else(|| anyhow!("quoter user account missing"))?;
-            let user: User = read_zero_copy(&user_account.data)?;
-            let user_ref = ClobUserRefV0 {
-                authority: user.authority,
-                sub_account_id: user.sub_account_id,
-            };
-            if !makers.contains(&user_ref) {
-                makers.push(user_ref);
-            }
-        }
+    for book in [ask_book, bid_book] {
+        size = size.min(makers_from_rows(book, size, &mut makers));
     }
     if size == 0 {
         return Ok(None);

@@ -40,8 +40,8 @@
 
 use {
     crate::{
-        completed_orders_fit, len_prefix, CancelledRemainderV0, CompletedOrderV0, PriceLevelV0,
-        SpecError, UserBalanceChangeV0, LEN_BYTES,
+        completed_orders_fit, len_prefix, CancelledRemainderV0, CompletedOrderV0, L3RowV0,
+        PriceLevelV0, SpecError, UserBalanceChangeV0, LEN_BYTES,
     },
     bytemuck::Pod,
     core::mem::size_of,
@@ -217,6 +217,53 @@ impl QuoteWriter {
         let Self { mut cursor, levels } = self;
         cursor.patch_len(region, 0, levels)?;
         cursor.push(region, withheld)?;
+        Ok(cursor.len)
+    }
+}
+
+/// Writes an [`crate::L3ResponseV0`] as the walk produces it.
+///
+/// Same shape as [`QuoteWriter`], and for the same reason: the row count is
+/// not known until the walk ends, so the prefix is backfilled and the tail
+/// marker is a parameter of [`Self::finish`].
+pub struct L3Writer {
+    cursor: Cursor,
+    rows: usize,
+}
+
+impl Default for L3Writer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl L3Writer {
+    pub const fn new() -> Self {
+        Self {
+            cursor: Cursor::new(),
+            rows: 0,
+        }
+    }
+
+    /// Rows written so far.
+    #[inline]
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+
+    #[inline]
+    pub fn push_row(&mut self, region: &mut [u8], row: L3RowV0) -> Result<(), SpecError> {
+        self.cursor.push(region, row)?;
+        self.rows += 1;
+        Ok(())
+    }
+
+    /// Backfill the row count, mark whether depth remains behind the last
+    /// row, and return the response's length in bytes.
+    pub fn finish(self, region: &mut [u8], more: bool) -> Result<usize, SpecError> {
+        let Self { mut cursor, rows } = self;
+        cursor.patch_len(region, 0, rows)?;
+        cursor.push(region, u8::from(more))?;
         Ok(cursor.len)
     }
 }

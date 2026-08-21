@@ -18,7 +18,7 @@ profile = ["anchor-v2-testing/profile"]
 
 [dependencies]
 # Anchor v2 alpha (anchor-next). Pinned to an exact rev — the alpha branch moves.
-anchor-lang-v2 = { git = "https://github.com/otter-sec/anchor.git", rev = "4fbe613b2dc739a849355889ce1f27eb6d03a148" }
+anchor-lang-v2 = { git = "https://github.com/velocity-exchange/anchor.git", rev = "a8e619f32fcfea63244bc84773edb8a3a6cc140c" }
 bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
 static_assertions = "1.1.0"
 wincode = { version = "0.5", features = ["derive"] }
@@ -27,15 +27,19 @@ wincode = { version = "0.5", features = ["derive"] }
 # reaches this binary: the spec's anchor derives are behind a feature only
 # velocity turns on.
 quoter-spec = { path = "../../../crates/quoter-spec" }
+# The market account's layout, declared where velocity can read it too. The
+# structs below are asserted against it, so a field that moves here fails to
+# compile rather than misparsing on the reader's side.
+clob-spec = { path = "../../../crates/clob-spec" }
 
 [dev-dependencies]
 # `testing` adds the stack-backed AccountBuffer the src/tests/ unit tests
 # build a real ClobMarketV0 over. Dev-only: with resolver 2 the feature is
 # not enabled for the SBF build of the program itself.
-anchor-lang-v2 = { git = "https://github.com/otter-sec/anchor.git", rev = "4fbe613b2dc739a849355889ce1f27eb6d03a148", features = [
+anchor-lang-v2 = { git = "https://github.com/velocity-exchange/anchor.git", rev = "a8e619f32fcfea63244bc84773edb8a3a6cc140c", features = [
     "testing",
 ] }
-anchor-v2-testing = { git = "https://github.com/otter-sec/anchor.git", rev = "4fbe613b2dc739a849355889ce1f27eb6d03a148" }
+anchor-v2-testing = { git = "https://github.com/velocity-exchange/anchor.git", rev = "a8e619f32fcfea63244bc84773edb8a3a6cc140c" }
 litesvm = "0.11.0"
 solana-account = "3.2.0"
 solana-clock = "3"

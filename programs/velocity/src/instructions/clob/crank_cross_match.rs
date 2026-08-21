@@ -407,7 +407,7 @@ fn next_crossable(data: &[u8], cursor: u32, slot: u64, now: i64) -> Option<(u32,
     let mut cursor = cursor;
     loop {
         let (index, node) = next_matchable(data, cursor, slot, now)?;
-        if !node.is_taker_origin {
+        if !node.is_taker_origin() {
             return Some((index, node));
         }
         cursor = node.next;
@@ -557,7 +557,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
                         reference_price: 0,
                         direction,
                         size: u64::MAX / 2,
-                        users: crate::state::prop_amm::QuoterUserSetRef::EMPTY,
+                        users: &[],
                         taker: None,
                     },
                     &quoter_signer,

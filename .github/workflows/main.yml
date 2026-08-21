@@ -201,7 +201,9 @@ jobs:
       - name: Cache build artefacts
         uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
         with:
-          workspaces: integration-tests
+          workspaces: |
+            integration-tests
+            anchor-v2
           cache-on-failure: 'true'
       - uses: ./.github/actions/setup-solana/
       - name: Setup bun
@@ -226,6 +228,16 @@ jobs:
           set -euo pipefail
           bun run program:build:clob
           bun run program:build:midpoint
+      # The quoter programs' own suites, run here because this is the job that
+      # already has their fixtures built: `clob_tests` and `midpoint_tests`
+      # load the .so files from the step above. They are the only gate on the
+      # `quote_v0` / `quote_l3_v0` / `execute_v0` wire, on the response-region
+      # ceilings, and on the layout assertions that hold `ClobHeaderV0` and
+      # `OrderNodeV0` against `clob-spec` — which velocity reads through, from
+      # a workspace that cannot see these types.
+      - name: cargo test anchor-v2 (clob, midpoint)
+        working-directory: anchor-v2
+        run: cargo test --locked
       - name: cargo test integration-tests
         working-directory: integration-tests
         run: cargo test --locked

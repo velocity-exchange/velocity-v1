@@ -60,17 +60,18 @@ use {
         error::ClobError,
         events::FillSlimV0,
         state::{
-            response_pointer, CancelAllOutcome, CancelSidesExt, CancelSidesV0,
-            CancelledRemainderV0, ClobDirectionExt, ClobHeaderV0, ClobMarketV0, ClobSideExt,
-            CompletedOrderV0, Direction, ExecuteOutcome, MarketConfigV0, OrderBitFlag, OrderNodeV0,
-            OrderRefV0, PlaceOrderParams, PriceLevel, RemovedOrder, ResponsePointerV0, Side,
-            UserBalanceChangeV0, UserCapsV0, UserRefV0, BASE_PRECISION, CANCEL_ALL_ORDERS_CEILING,
-            EXECUTE_FILLS_CEILING, EXECUTE_USERS_CEILING, QUOTE_LEVELS_CEILING, USER_CAPS_CAPACITY,
-            USER_EXCLUSION_BITMAP_BYTES, USER_SET_CAPACITY, ZERO_ADDRESS,
+            response_pointer, user_set_within_capacity, CancelAllOutcome, CancelSidesExt,
+            CancelSidesV0, CancelledRemainderV0, ClobDirectionExt, ClobHeaderV0, ClobMarketV0,
+            ClobSideExt, CompletedOrderV0, Direction, ExecuteOutcome, L3RowV0, MarketConfigV0,
+            OrderBitFlag, OrderNodeV0, OrderRefV0, PlaceOrderParams, PriceLevel, RemovedOrder,
+            ResponsePointerV0, Side, UserBalanceChangeV0, UserCapsV0, UserRefV0, BASE_PRECISION,
+            CANCEL_ALL_ORDERS_CEILING, EXECUTE_FILLS_CEILING, EXECUTE_USERS_CEILING,
+            L3_ROWS_CEILING, QUOTE_LEVELS_CEILING, USER_CAPS_CAPACITY, USER_EXCLUSION_BITMAP_BYTES,
+            USER_SET_CAPACITY, ZERO_ADDRESS,
         },
     },
     anchor_lang_v2::{address_eq, prelude::*},
-    quoter_spec::{ExecuteWriter, QuoteWriter},
+    quoter_spec::{ExecuteWriter, L3Writer, QuoteWriter},
 };
 
 /// Null link sentinel. The account zero-inits and 0 is a valid node index,
@@ -116,6 +117,14 @@ pub trait ClobBook {
         caps: &UserCapsV0,
         reference_price: i64,
         taker: Option<&UserRefV0>,
+        slot: u64,
+        now: i64,
+    ) -> Result<ResponsePointerV0>;
+    fn quote_l3(
+        &mut self,
+        direction: Direction,
+        size: u64,
+        max_rows: u16,
         slot: u64,
         now: i64,
     ) -> Result<ResponsePointerV0>;
@@ -662,6 +671,7 @@ impl ClobBook for ClobMarketV0 {
         slot: u64,
         now: i64,
     ) -> Result<ResponsePointerV0> {
+        require!(user_set_within_capacity(users), ClobError::OversizedUserSet);
         let side = direction.book_side();
         let max_levels = self.max_quote_levels.min(QUOTE_LEVELS_CEILING) as usize;
         // A quote promises what `execute` can deliver, so it spends `execute`'s
@@ -791,6 +801,71 @@ impl ClobBook for ClobMarketV0 {
         Ok(response_pointer(len))
     }
 
+    /// Describe the resting orders behind the ladder, best price first.
+    ///
+    /// The sister of [`Self::quote`]: same walk, same skip rules, one row per
+    /// order instead of one level per price. It exists because a book is the
+    /// one quoter whose ladder stands on other people's orders — a caller
+    /// that has to carry those users' accounts, or draw the book, cannot get
+    /// that from an aggregated ladder, and the alternative is decoding this
+    /// account from outside.
+    ///
+    /// No user set and no caps: the caller asks precisely because it does not
+    /// know yet whose accounts to bring, so an order is reported whatever the
+    /// caller could settle today. The taker's own orders are reported too and
+    /// the caller drops them, since only the caller knows who it is.
+    fn quote_l3(
+        &mut self,
+        direction: Direction,
+        size: u64,
+        max_rows: u16,
+        slot: u64,
+        now: i64,
+    ) -> Result<ResponsePointerV0> {
+        let side = direction.book_side();
+        let rows_wanted = max_rows.min(L3_ROWS_CEILING) as usize;
+        let mut writer = L3Writer::new();
+        // Zero asks for the side, not for nothing: a caller drawing a book
+        // has no size in mind.
+        let mut remaining = if size == 0 { u64::MAX } else { size };
+        // Depth the walk left behind, so a caller knows its list is a prefix.
+        let mut more = false;
+
+        walk_side(self, side, |book, _, node| {
+            if remaining == 0 || writer.rows() == rows_wanted {
+                more = true;
+                return Ok(Walk::Stop);
+            }
+            if !is_matchable(node, None, slot, now) {
+                return Ok(Walk::Continue);
+            }
+            writer
+                .push_row(
+                    &mut book.response,
+                    L3RowV0 {
+                        price: node.price,
+                        size: node.base_asset_amount,
+                        order_id: node.order_id,
+                        user: node.user_ref(),
+                        flags: if node.is_taker_origin() {
+                            quoter_spec::L3_ROW_FLAG_TAKER_ORIGIN
+                        } else {
+                            0
+                        },
+                        _pad: [0; 5],
+                    },
+                )
+                .map_err(ClobError::from)?;
+            remaining = remaining.saturating_sub(node.base_asset_amount);
+            Ok(Walk::Continue)
+        })?;
+
+        let len = writer
+            .finish(&mut self.response, more)
+            .map_err(ClobError::from)?;
+        Ok(response_pointer(len))
+    }
+
     /// Consume matchable orders best-first, removing filled orders and
     /// streaming each maker's share into the response region as borsh
     /// [`crate::state::ExecuteResponseV0`] for velocity to apply. Expired
@@ -825,6 +900,7 @@ impl ClobBook for ClobMarketV0 {
         slot: u64,
         now: i64,
     ) -> Result<ExecuteOutcome> {
+        require!(user_set_within_capacity(users), ClobError::OversizedUserSet);
         let side = direction.book_side();
         let max_fills = self.max_execute_fills.min(EXECUTE_FILLS_CEILING) as usize;
         let max_users = self.max_execute_users.min(EXECUTE_USERS_CEILING) as usize;
@@ -1187,7 +1263,16 @@ fn settleable(
     if users.is_empty() || index.is_some() {
         return Settleable::Yes;
     }
-    if slot.saturating_sub(node.placed_slot) <= grace_slots as u64 {
+    // Aged from the slot the order became matchable, not the slot it was
+    // placed. An order inside its activation delay is invisible to every
+    // reader of this book — quotes, fills and the cranks all skip it — so a
+    // caller cannot have carried its owner, whatever its age. Measuring from
+    // placement would make an auction order (up to `max_activation_delay_slots`
+    // out) *born* past the window: the first walk to see it would end there
+    // and forfeit the depth behind, and anyone could arrange that on purpose
+    // by resting a well-priced order on a fresh sub-account. The two are the
+    // same slot for an order that activates immediately.
+    if slot.saturating_sub(node.activation_slot) <= grace_slots as u64 {
         return Settleable::TooFresh;
     }
     Settleable::Withheld

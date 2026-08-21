@@ -911,6 +911,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "clob-spec"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "quoter-spec",
+ "solana-address 2.6.1",
+ "static_assertions",
+]
+
+[[package]]
 name = "cmov"
 version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4670,6 +4680,7 @@ dependencies = [
  "borsh",
  "bytemuck",
  "byteorder",
+ "clob-spec",
  "enumflags2",
  "hex",
  "num-integer",

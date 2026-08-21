@@ -67,6 +67,8 @@ pub enum ClobError {
     /// on-chain identity of this and every later variant: do not delete or reuse.
     #[msg("Deprecated: a crossed taker-origin order is skipped, not rejected")]
     TakerOriginCrossPending,
+    #[msg("User set holds more entries than USER_SET_CAPACITY")]
+    OversizedUserSet,
 }
 
 impl From<quoter_spec::SpecError> for ClobError {

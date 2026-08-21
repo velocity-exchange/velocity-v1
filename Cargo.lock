@@ -593,6 +593,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "clob-spec"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "quoter-spec",
+ "solana-address 2.6.0",
+ "static_assertions",
+]
+
+[[package]]
 name = "const-crypto"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3185,6 +3195,7 @@ dependencies = [
  "bytemuck",
  "byteorder",
  "bytes",
+ "clob-spec",
  "enumflags2",
  "hex",
  "num-integer",

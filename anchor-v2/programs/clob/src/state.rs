@@ -85,6 +85,20 @@ pub const QUOTE_LEVELS_CEILING: u16 =
     ((RESPONSE_BUFFER_BYTES - RESPONSE_LEN_BYTES - WITHHELD_REPORT_BYTES) / PRICE_LEVEL_BYTES)
         as u16;
 
+/// Width of an [`L3RowV0`].
+pub const L3_ROW_BYTES: usize = quoter_spec::L3_ROW_BYTES;
+
+/// Rows one `quote_l3_v0` may report: a count, that many rows, then the
+/// one-byte marker saying whether depth remains.
+///
+/// Derived from the region rather than chosen, and deliberately not allowed
+/// to widen it: the market account rides every CPI and the runtime charges
+/// compute per byte of it, so paying for a bigger region on every fill to
+/// describe a deeper book once is the wrong trade. A caller wanting more of
+/// the book asks again from where this stopped.
+pub const L3_ROWS_CEILING: u16 =
+    ((RESPONSE_BUFFER_BYTES - RESPONSE_LEN_BYTES - 1) / L3_ROW_BYTES) as u16;
+
 /// Orders one `execute_v0` may consume.
 ///
 /// Held where the response region stays near its original size rather than
@@ -212,32 +226,8 @@ impl ClobSideExt for Side {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum OrderBitFlag {
-    /// Node holds a live order (clear = node is on the free list).
-    Open = 1,
-    /// Order is an ask (clear = bid).
-    Ask = 2,
-    /// The order is an unfilled taker remainder migrated onto the book rather
-    /// than a quote someone chose to post: it demands liquidity, and in a
-    /// cross it is the aggressor, so the cross prices at the counterparty's
-    /// side. Velocity is the only caller and sets it at migration; the CLOB
-    /// itself still fills the order at its own stored price like any other,
-    /// and only reports the fact (see [`RemovedOrderV0::taker_origin`]).
-    TakerOrigin = 4,
-}
-
-impl OrderBitFlag {
-    /// This bit when `set`, nothing otherwise — mirrors [`Side::side_bit`] for
-    /// composing a node's `bit_flags`.
-    pub fn bit_if(self, set: bool) -> u8 {
-        if set {
-            self as u8
-        } else {
-            0
-        }
-    }
-}
+/// Flags on a node's `bit_flags` byte, declared with the node itself.
+pub use clob_spec::OrderBitFlag;
 
 #[account]
 pub struct ClobHeaderV0 {
@@ -277,7 +267,9 @@ pub struct ClobHeaderV0 {
     /// Fills race the tx's fixed account set: quote and execute take the set
     /// of users the caller can settle, and an order whose owner is absent is
     /// skipped while younger than this many slots — the caller cannot be
-    /// expected to have heard of it yet — and ends the walk once older.
+    /// expected to have heard of it yet — and ends the walk once older. Age
+    /// runs from `activation_slot`, the slot the order first became visible
+    /// to any reader of this book, not from when it was placed.
     ///
     /// So this is how far the caller's account set is allowed to lag the
     /// book. Below that age a new maker costs the caller nothing; above it,
@@ -322,9 +314,61 @@ pub struct ClobHeaderV0 {
 // Pinned because velocity mirrors these offsets by hand to read the book, and
 // the e2e harness copies them again — a header that changes size without those
 // following reads live orders as zeros.
-const_assert_eq!(core::mem::size_of::<ClobHeaderV0>(), 8504);
+// The header's shape is what every off-chain and cross-program reader
+// indexes with, and `clob-spec` is where those readers get it. Asserting each
+// field against that declaration is what makes a move here a compile error
+// rather than a wrong answer on the other side of the wire.
+const_assert_eq!(
+    core::mem::size_of::<ClobHeaderV0>(),
+    clob_spec::HEADER_BYTES
+);
 const_assert_eq!(RESPONSE_BUFFER_BYTES, 8216);
-const_assert_eq!(ORDERS_OFFSET, 8520);
+const_assert_eq!(ORDERS_OFFSET, clob_spec::ORDERS_OFFSET);
+
+const _: () = {
+    use core::mem::offset_of;
+    const D: usize = clob_spec::DISCRIMINATOR_BYTES;
+    const_assert_eq!(
+        D + offset_of!(ClobHeaderV0, best_bid),
+        clob_spec::BEST_BID_OFFSET
+    );
+    const_assert_eq!(
+        D + offset_of!(ClobHeaderV0, best_ask),
+        clob_spec::BEST_ASK_OFFSET
+    );
+    const_assert_eq!(
+        D + offset_of!(ClobHeaderV0, worst_bid),
+        clob_spec::WORST_BID_OFFSET
+    );
+    const_assert_eq!(
+        D + offset_of!(ClobHeaderV0, worst_ask),
+        clob_spec::WORST_ASK_OFFSET
+    );
+    const_assert_eq!(
+        D + offset_of!(ClobHeaderV0, bid_count),
+        clob_spec::BID_COUNT_OFFSET
+    );
+    const_assert_eq!(
+        D + offset_of!(ClobHeaderV0, ask_count),
+        clob_spec::ASK_COUNT_OFFSET
+    );
+    const_assert_eq!(
+        D + offset_of!(ClobHeaderV0, default_activation_delay_slots),
+        clob_spec::DEFAULT_ACTIVATION_DELAY_OFFSET
+    );
+    const_assert_eq!(
+        D + offset_of!(ClobHeaderV0, min_order_size),
+        clob_spec::MIN_ORDER_SIZE_OFFSET
+    );
+    const_assert_eq!(
+        D + offset_of!(ClobHeaderV0, evict_threshold_per_side),
+        clob_spec::EVICT_THRESHOLD_OFFSET
+    );
+    const_assert_eq!(
+        D + offset_of!(ClobHeaderV0, market_index),
+        clob_spec::MARKET_INDEX_OFFSET
+    );
+};
 
 // Both programs cast the response records onto these bytes, so the region has
 // to start on the step they are read at. Solana gives account data an 8-byte
@@ -350,80 +394,9 @@ pub fn response_pointer(len: usize) -> ResponsePointerV0 {
 /// to the node's 8-byte alignment.
 pub const ORDERS_OFFSET: usize = (8 + core::mem::size_of::<ClobHeaderV0>() + 4).next_multiple_of(8);
 
-/// One arena slot: a live order threaded into a side's price-time list, or a
-/// free node threaded into the free list via `next`. The velocity `User` is
-/// stored inline (no seat table): user capacity is order capacity, governed
-/// by the one eviction rule.
-///
-/// Deliberately kept at 96 bytes with only the five spare bytes below: the
-/// node is the per-order cost of a market (capacity × this size is the
-/// account's rent), so growth room lives on [`ClobHeaderV0`] instead. A
-/// future field wider than those spare bytes needs a `OrderNodeV1` arena.
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct OrderNodeV0 {
-    /// Authority wallet of the velocity `User` fills settle against
-    /// (velocity verifies control before it CPIs place/cancel). Paired with
-    /// `sub_account_id` below — see [`UserRefV0`] for why identity is stored
-    /// in derivable form.
-    pub authority: Address,
-    /// PRICE_PRECISION.
-    pub price: u64,
-    /// Remaining unfilled size, base precision.
-    pub base_asset_amount: u64,
-    /// First slot at which this order may match, in either direction.
-    pub activation_slot: u64,
-    /// Timestamp after which the order is expired (0 = good-till-cancelled).
-    pub max_ts: i64,
-    pub order_id: u64,
-    /// Slot the order was placed — age input for the unknown-user grace
-    /// check (see `ClobHeaderV0::unknown_user_grace_slots`).
-    pub placed_slot: u64,
-    /// Toward the best of book; `NIL` if head.
-    pub prev: u32,
-    /// Away from the best of book (or next free node); `NIL` if tail.
-    pub next: u32,
-    pub bit_flags: u8,
-    pub padding0: u8,
-    /// Sub-account half of the user identity (see `authority`).
-    pub sub_account_id: u16,
-    pub padding: [u8; 4],
-}
-
-const_assert_eq!(core::mem::size_of::<OrderNodeV0>(), 96);
-
-impl OrderNodeV0 {
-    pub fn user_ref(&self) -> UserRefV0 {
-        UserRefV0 {
-            authority: self.authority,
-            sub_account_id: self.sub_account_id,
-        }
-    }
-
-    pub fn is_bit_flag_set(&self, flag: OrderBitFlag) -> bool {
-        self.bit_flags & flag as u8 != 0
-    }
-
-    pub fn side(&self) -> Side {
-        if self.is_bit_flag_set(OrderBitFlag::Ask) {
-            Side::Ask
-        } else {
-            Side::Bid
-        }
-    }
-
-    pub fn is_taker_origin(&self) -> bool {
-        self.is_bit_flag_set(OrderBitFlag::TakerOrigin)
-    }
-
-    pub fn is_expired(&self, now: i64) -> bool {
-        self.max_ts != 0 && self.max_ts < now
-    }
-
-    pub fn is_active(&self, slot: u64) -> bool {
-        self.activation_slot <= slot
-    }
-}
+/// One arena slot, declared by `clob-spec` so velocity's cranks read the
+/// same struct this program writes rather than a restatement of it.
+pub use clob_spec::OrderNodeV0;
 
 /// Order handle: an O(1) node hint verified against the order id, so a stale
 /// hint (node freed/reused) fails closed.
@@ -451,8 +424,8 @@ pub use quoter_spec::UserRefV0;
 /// spends before its first maker, minus one for the `UserStats` those makers
 /// share in the best case.
 pub use quoter_spec::{
-    UserCapV0, UserCapsV0, UserSetV0, BASE_PRECISION, USER_CAPS_BYTES, USER_CAPS_CAPACITY,
-    USER_EXCLUSION_BITMAP_BYTES, USER_SET_BYTES, USER_SET_CAPACITY,
+    user_set_within_capacity, UserCapV0, UserCapsV0, BASE_PRECISION, USER_CAPS_BYTES,
+    USER_CAPS_CAPACITY, USER_EXCLUSION_BITMAP_BYTES, USER_SET_CAPACITY, USER_SET_MAX_BYTES,
 };
 
 /// Declared by `quoter-spec`; the alias keeps this program's name for it.
@@ -472,7 +445,7 @@ pub use quoter_spec::ResponsePointerV0;
 /// remains the schema of record for that layout, and the response unit
 /// tests pin the two against each other.
 pub use quoter_spec::UserBalanceChangeV0;
-pub use quoter_spec::{ExecuteResponseV0, QuoteResponseV0};
+pub use quoter_spec::{ExecuteResponseV0, L3ArgsV0, L3ResponseV0, L3RowV0, QuoteResponseV0};
 
 /// What the wire's named sides mean to a book: the lists to walk.
 pub trait CancelSidesExt {

@@ -26,6 +26,8 @@ pub enum MidpointError {
     InvalidVelocityState,
     #[msg("Post-operation invariant check failed")]
     InvariantViolated,
+    #[msg("User set holds more entries than USER_SET_CAPACITY")]
+    OversizedUserSet,
 }
 
 impl From<quoter_spec::SpecError> for MidpointError {

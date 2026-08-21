@@ -80,6 +80,12 @@ pub struct QuoterV0 {
     /// derived so non-Anchor programs can participate.
     pub quote_v0_discriminator: [u8; 8],
     pub execute_v0_discriminator: [u8; 8],
+    /// The optional third leg: `quote_l3_v0`, which reports the resting
+    /// orders behind a ladder and who each belongs to. Zero means the quoter
+    /// does not implement it, and a reader attributes the whole ladder to
+    /// [`Self::user`] — which is right for every quoter that fills from one
+    /// account. A book is the exception, and this is how it says so.
+    pub quote_l3_v0_discriminator: [u8; 8],
     /// Accounts forwarded to `quote_v0`, in order. Only the first
     /// `quote_accounts_count` entries are live.
     pub quote_accounts: [AmmAccountMeta; MAX_QUOTER_ACCOUNTS],
@@ -109,15 +115,18 @@ pub struct QuoterV0 {
     pub watch_offset: u32,
     pub watch_len: u32,
     pub watch_account: Pubkey,
+    /// Room for the next field, so adding one does not move the account's
+    /// size or its alignment invariant.
+    pub padding: [u8; 8],
 }
 
 // Zero-copy layout invariant (see docs/alignment-and-native-offsets.md):
 // no u128 fields, size (incl. 8-byte discriminator) ≡ 8 (mod 16).
-const_assert_eq!(std::mem::size_of::<QuoterV0>(), 2752);
+const_assert_eq!(std::mem::size_of::<QuoterV0>(), 2768);
 const_assert_eq!((QuoterV0::SIZE - 8) % 16, 0);
 
 impl Size for QuoterV0 {
-    const SIZE: usize = 2760;
+    const SIZE: usize = 2776;
 }
 
 /// PDA: one entry per (perp market, quoter program, quoted user).
@@ -240,60 +249,67 @@ pub type ClobUserRefV0 = quoter_spec::UserRefV0;
 pub const CLOB_USER_REF_BYTES: usize = quoter_spec::UserRefV0::SIZE;
 const_assert_eq!(std::mem::size_of::<ClobUserRefV0>(), CLOB_USER_REF_BYTES);
 
-/// The loaded-user set on the quoter wire: a fixed array plus a live count,
-/// so passing it costs no allocation on a path that runs it once per quoter
-/// per fill. Fixed width is also what lets both sides of the CPI decode it
-/// zero-copy from a layout neither has to negotiate.
+/// The loaded-user set on the quoter wire: a length prefix and that many
+/// entries.
 ///
-/// An empty set means unrestricted — what a `None` meant before — and is
-/// only used by callers that settle nothing (the quote view, cross
-/// discovery). A quoter reading a non-empty set must skip liquidity whose
-/// owner is absent from it: velocity cannot settle a balance change for a
-/// `User` it did not load, so such a fill is refused wholesale.
+/// An empty set means unrestricted, and is only used by callers that settle
+/// nothing (the quote view, cross discovery). A quoter reading a non-empty
+/// set must skip liquidity whose owner is absent from it: velocity cannot
+/// settle a balance change for a `User` it did not load, so such a fill is
+/// refused wholesale.
+///
 /// The request half of the quoter wire is declared in `quoter-spec`, the same
 /// place the responses are: velocity writes these bytes and a quoter reads
 /// them, so a second declaration here would be a second thing to keep in
 /// step. The aliases keep velocity's names for them.
 pub use quoter_spec::{
-    UserCapV0 as QuoterUserCapV0, UserCapsV0 as QuoterUserCapsV0, UserSetV0 as QuoterUserSetV0,
-    USER_CAPS_BYTES as QUOTER_USER_CAPS_BYTES, USER_CAPS_CAPACITY as MAX_CONSTRAINED_WIRE_USERS,
-    USER_EXCLUSION_BITMAP_BYTES, USER_SET_BYTES as QUOTER_USER_SET_BYTES,
-    USER_SET_CAPACITY as MAX_QUOTER_WIRE_USERS,
+    user_set_bytes as quoter_user_set_bytes, UserCapV0 as QuoterUserCapV0,
+    UserCapsV0 as QuoterUserCapsV0, USER_CAPS_BYTES as QUOTER_USER_CAPS_BYTES,
+    USER_CAPS_CAPACITY as MAX_CONSTRAINED_WIRE_USERS, USER_EXCLUSION_BITMAP_BYTES,
+    USER_SET_CAPACITY as MAX_QUOTER_WIRE_USERS, USER_SET_MAX_BYTES as QUOTER_USER_SET_MAX_BYTES,
 };
 
-/// Upper bound on a quote/execute CPI's instruction data: discriminator,
-/// direction, size, the fixed-width user set, and an optional taker ref.
-/// Reserved in one shot so no intermediate buffer is leaked.
 /// Upper bound on a CLOB CPI's instruction data: discriminator plus the widest
 /// args on that interface, which is `place` — a side, two `u64`s, an optional
 /// delay, a timestamp, a user ref and the taker-origin flag.
 ///
-/// Reserved in one shot for the same reason [`QUOTER_CPI_DATA_CAPACITY`] is: a
+/// Reserved in one shot for the same reason [`quoter_cpi_data_len`] is: a
 /// `Vec` that starts at the discriminator and doubles into place leaks every
 /// intermediate buffer, and velocity's bump allocator never reclaims. This path
 /// runs on every order placed on the book and every removal crank, so it is the
 /// busier of the two.
 pub const CLOB_CPI_DATA_CAPACITY: usize = 8 + 1 + 8 + 8 + 5 + 8 + CLOB_USER_REF_BYTES + 1;
 
-/// Discriminator, direction, size, the user set, the caps, the reference
-/// price, and the taker behind its option tag. Every field the args
+/// Bytes a quote or execute CPI's instruction data takes: discriminator,
+/// direction, size, the user set, the caps, the reference price, and the
+/// taker behind its option tag.
+///
+/// A size rather than a constant, because the user set is length-prefixed.
+/// The caller reserves exactly this much in one shot. Every field the args
 /// serializer writes has to be counted here: one byte short and the `Vec`
 /// doubles, which on this heap means the fill runs out of memory rather than
 /// slowing down.
-pub const QUOTER_CPI_DATA_CAPACITY: usize =
-    8 + 1 + 8 + QUOTER_USER_SET_BYTES + QUOTER_USER_CAPS_BYTES + 8 + 1 + CLOB_USER_REF_BYTES;
+pub const fn quoter_cpi_data_len(users: usize, taker: bool) -> usize {
+    8 + 1
+        + 8
+        + quoter_user_set_bytes(users)
+        + QUOTER_USER_CAPS_BYTES
+        + 8
+        + 1
+        + if taker { CLOB_USER_REF_BYTES } else { 0 }
+}
+
+/// Widest one quote or execute CPI can be: a full user set and a taker.
+pub const QUOTER_CPI_DATA_MAX: usize = quoter_cpi_data_len(MAX_QUOTER_WIRE_USERS, true);
 
 /// The loaded-user set as velocity holds it: a heap slice, capped at the
-/// wire's capacity, serialized to the wire's fixed width by
-/// [`QuoterUserSetRef`].
+/// wire's capacity, written to the wire by [`QuoterUserSetRef`].
 ///
-/// Velocity deliberately never materializes a [`QuoterUserSetV0`] value. At
-/// 1,633 bytes, one lands in a 4 KB SBF frame and the fill and cross-match
-/// entrypoints overflow it — the linker says so at build time ("overflows
-/// the maximum allowed frame space"), and at runtime it is an access
-/// violation several frames deep. The fixed array is a property of the
-/// *wire*, which is what lets each quoter decode it in place; it is not a
-/// shape velocity has to hold in a register window.
+/// Velocity never holds the set by value. A full one is 1,633 bytes, and one
+/// of those lands in a 4 KB SBF frame: the fill and cross-match entrypoints
+/// overflow it, the linker says so at build time ("overflows the maximum
+/// allowed frame space"), and at runtime it is an access violation several
+/// frames deep.
 pub fn quoter_wire_users(
     refs: impl IntoIterator<Item = ClobUserRefV0>,
 ) -> crate::error::VelocityResult<Vec<ClobUserRefV0>> {
@@ -308,68 +324,31 @@ pub fn quoter_wire_users(
     Ok(users)
 }
 
-/// A borrowed user set, written to the wire at [`QuoterUserSetV0`]'s exact
-/// fixed width: the live count, the live entries, then a zeroed tail. Byte
-/// for byte what serializing a `QuoterUserSetV0` produces, with nothing
-/// larger than one entry ever on the stack.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct QuoterUserSetRef<'a>(pub &'a [ClobUserRefV0]);
-
-impl QuoterUserSetRef<'_> {
-    /// Unrestricted — used by callers that settle nothing (the quote view,
-    /// cross discovery).
-    pub const EMPTY: Self = Self(&[]);
-}
-
-impl AnchorSerialize for QuoterUserSetRef<'_> {
-    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
-        (self.0.len() as u8).serialize(writer)?;
-        for user in self.0 {
-            user.serialize(writer)?;
-        }
-        for _ in self.0.len()..MAX_QUOTER_WIRE_USERS {
-            ClobUserRefV0::ZERO.serialize(writer)?;
-        }
-        Ok(())
-    }
-}
-
-/// Borrowed, not owned: a [`QuoterUserSetV0`] is 1,633 bytes, and an SBF
-/// stack frame is 4 KB. Owning it here put one copy in the caller's frame
-/// per quoter plus another inside the CPI leg, which overflowed the fill
-/// path's frame at runtime while every host-side test passed. These args are
-/// only ever serialized (each quoter decodes its own mirror), so a reference
-/// costs nothing on the wire.
-///
-/// `AnchorSerialize` is written by hand rather than derived: the derive also
-/// emits an `IdlBuild` impl under the `idl-build` feature, and anchor's IDL
-/// generator rejects a type with a lifetime ("Unsupported generic
-/// argument"). These args are outbound CPI data that no client decodes from
-/// our IDL, so they belong nowhere in it.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct QuoteArgsV0<'a> {
-    pub direction: Direction,
-    /// Base size the taker wants filled.
-    pub size: u64,
-    /// `User`s velocity has loaded and can settle balance changes for.
-    /// Quoters must not fill anyone else (velocity rejects the response
-    /// otherwise). Empty = unrestricted, for off-chain quote discovery.
-    pub users: QuoterUserSetRef<'a>,
-    /// How much quote each named user may still lose on the swept side.
-    /// Anyone absent is unconstrained; an excluded one is skipped entirely.
-    pub caps: QuoterUserCapsV0,
-    /// The mark a quoter prices a capped user's loss against. Velocity sends
-    /// the market's oracle price. It constrains nothing but the budgets.
-    pub reference_price: i64,
-    /// The taker's `User`: quoters must skip the taker's own resting
-    /// liquidity (self-trade prevention) — a balance change for this user
-    /// is rejected.
-    pub taker: Option<ClobUserRefV0>,
-}
-
 /// The quote response, read in place for the same reason
 /// [`ExecuteResponseV0`] is.
 pub use quoter_spec::QuoteResponseV0;
+/// Write `quote_l3_v0` args in the framing the wire declares, for an
+/// off-chain caller that asks a book directly rather than through the router.
+pub fn write_l3_args(dst: &mut Vec<u8>, args: &L3ArgsV0) -> crate::error::VelocityResult<()> {
+    quoter_spec::write_args(dst, args).map_err(|_| {
+        msg!("could not serialize l3 args");
+        ErrorCode::DefaultError
+    })?;
+    Ok(())
+}
+
+/// The request half of the quoter wire, declared by `quoter-spec` — the same
+/// crate that declares the responses, so the bytes velocity writes and the
+/// bytes a quoter reads come from one declaration.
+///
+/// Both carry the user set as a borrowed slice. A full set is 1,633 bytes and
+/// an SBF stack frame is 4 KB, so owning one put a copy in this frame per
+/// quoter and another inside the CPI leg, which overflowed the fill path at
+/// runtime while every host-side test passed. The quoter reads it in place
+/// too, straight out of its instruction data.
+pub use quoter_spec::{
+    ExecuteArgsV0, L3ArgsV0, L3ResponseV0, L3RowV0, QuoteArgsV0, L3_ROW_FLAG_TAKER_ORIGIN,
+};
 
 /// Declared by `quoter-spec`; the alias keeps velocity's name for it.
 pub type PriceLevel = quoter_spec::PriceLevelV0;
@@ -380,54 +359,6 @@ pub struct QuotedLadderV0 {
     pub levels: Vec<PriceLevel>,
     /// `price == 0` when the quoter reached everything it was asked for.
     pub withheld: PriceLevel,
-}
-
-/// Returned via return data by `quote_v0`/`execute_v0`: where in the quoter's
-/// `response_account` the borsh response was written. Declared by
-/// `quoter-spec`, which owns every shape on this wire.
-pub use quoter_spec::ResponsePointerV0;
-
-/// Borrowed, and hand-serialized, for the same reasons as [`QuoteArgsV0`].
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct ExecuteArgsV0<'a> {
-    pub direction: Direction,
-    /// Base size to fill. The quoter may partially fill; the actual fill is
-    /// whatever the returned balance changes sum to.
-    pub size: u64,
-    /// Same contract as [`QuoteArgsV0::users`]; velocity always passes the
-    /// loaded set here.
-    pub users: QuoterUserSetRef<'a>,
-    /// Same contract as [`QuoteArgsV0::caps`], and always the same values the
-    /// quote was taken with: the two walks skip identically or the executed
-    /// prices fall outside the prefix the split bound them to.
-    pub caps: QuoterUserCapsV0,
-    /// Same contract as [`QuoteArgsV0::reference_price`], and the same value
-    /// the quote was taken with for the same reason.
-    pub reference_price: i64,
-    /// Same contract as [`QuoteArgsV0::taker`].
-    pub taker: Option<ClobUserRefV0>,
-}
-
-impl AnchorSerialize for QuoteArgsV0<'_> {
-    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
-        self.direction.serialize(writer)?;
-        self.size.serialize(writer)?;
-        self.users.serialize(writer)?;
-        self.caps.serialize(writer)?;
-        self.reference_price.serialize(writer)?;
-        self.taker.serialize(writer)
-    }
-}
-
-impl AnchorSerialize for ExecuteArgsV0<'_> {
-    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
-        self.direction.serialize(writer)?;
-        self.size.serialize(writer)?;
-        self.users.serialize(writer)?;
-        self.caps.serialize(writer)?;
-        self.reference_price.serialize(writer)?;
-        self.taker.serialize(writer)
-    }
 }
 
 /// One order a CLOB removed as a sub-min remainder of a fill.
@@ -465,6 +396,10 @@ pub use quoter_spec::CompletedOrderV0;
 /// spend heap per quoter per fill that nothing gives back. The caller holds
 /// the account guard (see [`ResponseLocationV0`]) for as long as it reads.
 pub use quoter_spec::ExecuteResponseV0;
+/// Returned via return data by `quote_v0`/`execute_v0`: where in the quoter's
+/// `response_account` the borsh response was written. Declared by
+/// `quoter-spec`, which owns every shape on this wire.
+pub use quoter_spec::ResponsePointerV0;
 
 /// Order handle on the CLOB: an O(1) node hint verified against the order id
 /// there, so a stale hint fails closed on the CLOB side.
@@ -809,135 +744,42 @@ impl<'a, 'info> ClobMarket<'a, 'info> {
 // The crank resolvers (and the executor's expiry-hint repair) read the CLOB
 // market account's bytes directly: there is no CLOB instruction that answers
 // "which order is the tail" or "which order is expired", and the removal ixs
-// take the answer as a hint. These offsets mirror `ClobHeaderV0`/`OrderNodeV0`
-// in `anchor-v2/programs/clob/src/state.rs` — that program lives in a separate
-// workspace (anchor v2), so the layout can't be imported and is pinned here
-// instead; the litesvm crank tests exercise these reads against the real .so,
-// so a layout drift fails them. Every value is an *account-data* offset
+// take the answer as a hint.
+//
+// The layout is `clob-spec`'s, not this file's. The book asserts its own
+// header and node against that crate, so a field that moves there fails to
+// compile rather than misparsing here — which would read as an empty or
+// nonsense book rather than as an error. The aliases below keep velocity's
+// names for what the crate declares. Every offset is an *account-data* offset
 // (anchor's 8-byte discriminator included).
+pub use clob_spec::{
+    node as read_clob_node, u16_at as read_clob_u16, u32_at as read_clob_u32,
+    u64_at as read_clob_u64, ASK_COUNT_OFFSET as CLOB_ASK_COUNT_OFFSET,
+    BEST_ASK_OFFSET as CLOB_BEST_ASK_OFFSET, BEST_BID_OFFSET as CLOB_BEST_BID_OFFSET,
+    BID_COUNT_OFFSET as CLOB_BID_COUNT_OFFSET,
+    DEFAULT_ACTIVATION_DELAY_OFFSET as CLOB_DEFAULT_ACTIVATION_DELAY_OFFSET,
+    EVICT_THRESHOLD_OFFSET as CLOB_EVICT_THRESHOLD_OFFSET,
+    MARKET_INDEX_OFFSET as CLOB_MARKET_INDEX_OFFSET,
+    MIN_ORDER_SIZE_OFFSET as CLOB_MIN_ORDER_SIZE_OFFSET, NIL as CLOB_NIL,
+    NODE_BYTES as CLOB_NODE_LEN, ORDERS_OFFSET as CLOB_ORDERS_OFFSET,
+    WORST_ASK_OFFSET as CLOB_WORST_ASK_OFFSET, WORST_BID_OFFSET as CLOB_WORST_BID_OFFSET,
+};
+/// One arena slot, as the book declares it. The cranks read whole nodes now
+/// rather than a hand-decoded subset of one.
+pub use clob_spec::{OrderBitFlag as ClobOrderBitFlag, OrderNodeV0 as ClobNodeView};
 
-/// `ClobHeaderV0.best_bid` / `.best_ask` — the side heads. The cross
-/// condition's change-watch covers both u32s in one 8-byte window: a
-/// crossing order is by definition better than the opposite side's best, so
-/// it always lands as a new best and moves one of these.
-pub const CLOB_BEST_BID_OFFSET: usize = 112;
-pub const CLOB_BEST_ASK_OFFSET: usize = 116;
-/// `ClobHeaderV0.worst_bid` / `.worst_ask` — the side tails, what
-/// `evict_worst_v0` removes.
-pub const CLOB_WORST_BID_OFFSET: usize = 120;
-pub const CLOB_WORST_ASK_OFFSET: usize = 124;
-/// `ClobHeaderV0.bid_count` — first of the two adjacent u32 counts the evict
-/// condition's change-watch covers (`bid_count` then `ask_count`).
-pub const CLOB_BID_COUNT_OFFSET: usize = 136;
-pub const CLOB_ASK_COUNT_OFFSET: usize = 140;
-/// `ClobHeaderV0.default_activation_delay_slots` — what a placement's
-/// `activation_slot` becomes when the caller doesn't choose a delay;
-/// velocity mirrors the CLOB's `slot + delay` computation to maintain the
-/// activation wake hint.
-pub const CLOB_DEFAULT_ACTIVATION_DELAY_OFFSET: usize = 144;
-/// `ClobHeaderV0.min_order_size` — the floor on a resting order's size. What
-/// a re-placed remainder has to clear: below it the book culls rather than
-/// rests, so velocity must not offer it one.
-pub const CLOB_MIN_ORDER_SIZE_OFFSET: usize = 88;
-/// `ClobHeaderV0.evict_threshold_per_side` — the soft cap.
-pub const CLOB_EVICT_THRESHOLD_OFFSET: usize = 156;
-/// `ClobHeaderV0.market_index`.
-pub const CLOB_MARKET_INDEX_OFFSET: usize = 160;
-/// Start of the `OrderNodeV0` arena: `[disc][header][len: u32]` padded to the
-/// node's 8-byte alignment. The CLOB const-asserts its header at 8504 and its
-/// own `ORDERS_OFFSET` at this number, and this must move with them — reading
-/// the arena at a stale offset silently misparses every node, which reads as
-/// an empty or nonsense book rather than as an error.
-pub const CLOB_ORDERS_OFFSET: usize = 8520;
-/// `size_of::<OrderNodeV0>()`.
-pub const CLOB_NODE_LEN: usize = 96;
-/// The CLOB's list terminator.
-pub const CLOB_NIL: u32 = u32::MAX;
 /// `OrderBitFlag::Open` — set on a live order, clear on a free node.
-pub const CLOB_ORDER_BIT_FLAG_OPEN: u8 = 1;
+pub const CLOB_ORDER_BIT_FLAG_OPEN: u8 = ClobOrderBitFlag::Open as u8;
 /// `OrderBitFlag::TakerOrigin` — the order is a migrated taker remainder, so
 /// in a cross it is the aggressor and the match settles at the counterparty's
 /// price. Velocity sets it at migration and reads it back here to *find* a
 /// cross to resolve; the authoritative report is `ClobRemovedOrderV0`, which
 /// is what the resolution checks before settling.
-pub const CLOB_ORDER_BIT_FLAG_TAKER_ORIGIN: u8 = 4;
-
-/// The slice of an `OrderNodeV0` the cranks care about, copied out of the
-/// account bytes.
-#[derive(Clone, Copy, Debug)]
-pub struct ClobNodeView {
-    pub authority: Pubkey,
-    pub price: u64,
-    pub base_asset_amount: u64,
-    /// First slot the order may match.
-    pub activation_slot: u64,
-    pub max_ts: i64,
-    pub order_id: u64,
-    /// Slot the order was placed — the age the crank reward's time-based
-    /// component is measured against, exactly as `Order.slot` is for a DLOB
-    /// fill.
-    pub placed_slot: u64,
-    /// Next node away from the best of book ([`CLOB_NIL`] at the tail).
-    pub next: u32,
-    pub sub_account_id: u16,
-    pub is_open: bool,
-    /// The order is a migrated taker remainder (`OrderBitFlag::TakerOrigin`).
-    pub is_taker_origin: bool,
-}
-
-impl ClobNodeView {
-    /// Live and matchable right now: open, activated, not expired.
-    pub fn is_matchable(&self, slot: u64, now: i64) -> bool {
-        self.is_open && self.activation_slot <= slot && !(self.max_ts != 0 && self.max_ts < now)
-    }
-
-    pub fn user_ref(&self) -> ClobUserRefV0 {
-        ClobUserRefV0 {
-            authority: self.authority,
-            sub_account_id: self.sub_account_id.into(),
-        }
-    }
-}
-
-/// Read a u32 header field at an account-data offset.
-pub fn read_clob_u32(data: &[u8], offset: usize) -> Option<u32> {
-    Some(u32::from_le_bytes(
-        data.get(offset..offset + 4)?.try_into().ok()?,
-    ))
-}
-
-/// Read a u16 header field at an account-data offset. `market_index` and the
-/// per-market tuning fields are u16 and packed adjacently, so reading one as
-/// a u32 silently picks up the next.
-pub fn read_clob_u16(data: &[u8], offset: usize) -> Option<u16> {
-    Some(u16::from_le_bytes(
-        data.get(offset..offset + 2)?.try_into().ok()?,
-    ))
-}
+pub const CLOB_ORDER_BIT_FLAG_TAKER_ORIGIN: u8 = ClobOrderBitFlag::TakerOrigin as u8;
 
 /// Node-arena capacity implied by the account's length.
 pub fn clob_node_capacity(data_len: usize) -> usize {
-    data_len.saturating_sub(CLOB_ORDERS_OFFSET) / CLOB_NODE_LEN
-}
-
-/// Read node `index` out of a CLOB market account's data. `None` past the
-/// arena.
-pub fn read_clob_node(data: &[u8], index: u32) -> Option<ClobNodeView> {
-    let start = CLOB_ORDERS_OFFSET + (index as usize).checked_mul(CLOB_NODE_LEN)?;
-    let node = data.get(start..start + CLOB_NODE_LEN)?;
-    Some(ClobNodeView {
-        authority: Pubkey::new_from_array(node[..32].try_into().ok()?),
-        price: u64::from_le_bytes(node[32..40].try_into().ok()?),
-        base_asset_amount: u64::from_le_bytes(node[40..48].try_into().ok()?),
-        activation_slot: u64::from_le_bytes(node[48..56].try_into().ok()?),
-        max_ts: i64::from_le_bytes(node[56..64].try_into().ok()?),
-        order_id: u64::from_le_bytes(node[64..72].try_into().ok()?),
-        placed_slot: u64::from_le_bytes(node[72..80].try_into().ok()?),
-        next: u32::from_le_bytes(node[84..88].try_into().ok()?),
-        sub_account_id: u16::from_le_bytes(node[90..92].try_into().ok()?),
-        is_open: node[88] & CLOB_ORDER_BIT_FLAG_OPEN != 0,
-        is_taker_origin: node[88] & CLOB_ORDER_BIT_FLAG_TAKER_ORIGIN != 0,
-    })
+    clob_spec::capacity(data_len)
 }
 
 /// One pass over the arena for both wake hints: the minimum expiry over
@@ -947,7 +789,7 @@ pub fn read_clob_node(data: &[u8], index: u32) -> Option<ClobNodeView> {
 pub fn clob_hint_scan(data: &[u8], current_slot: u64) -> (i64, u64) {
     (0..clob_node_capacity(data.len()) as u32)
         .filter_map(|i| read_clob_node(data, i))
-        .filter(|node| node.is_open)
+        .filter(|node| node.is_open())
         .fold((i64::MAX, u64::MAX), |(min_ts, min_slot), node| {
             (
                 if node.max_ts != 0 {
@@ -969,7 +811,7 @@ pub fn clob_hint_scan(data: &[u8], current_slot: u64) -> (i64, u64) {
 pub fn clob_find_expired(data: &[u8], now: i64) -> Option<(u32, ClobNodeView)> {
     (0..clob_node_capacity(data.len()) as u32).find_map(|i| {
         read_clob_node(data, i)
-            .filter(|node| node.is_open && node.max_ts != 0 && node.max_ts <= now)
+            .filter(|node| node.is_open() && node.max_ts != 0 && node.max_ts <= now)
             .map(|node| (i, node))
     })
 }
@@ -986,6 +828,35 @@ pub struct ClobRestingOrderV0 {
     /// count on execute consuming — see the sweep accounting in
     /// [`clob_resting_prefix`].
     pub is_taker_origin: bool,
+}
+
+/// The resting run as price levels, for a caller that has no quote to bind
+/// against and must take the book itself as the quote.
+///
+/// That caller is a cross crank: its account list carries only the execute
+/// leg, so there is no `quote_v0` response to hold the fill to, and the run
+/// velocity reads off the book stands in as one. It is not a check of the
+/// book against velocity — the arena is the book's own state — but of the
+/// executed notional against the prices those orders rest at, which is what
+/// makes "the counterparty's price" a fact the crank can be held to.
+#[allow(clippy::too_many_arguments)]
+pub fn clob_resting_levels(
+    data: &[u8],
+    side: ClobSide,
+    size: u64,
+    users: &[ClobUserRefV0],
+    caps: &QuoterUserCapsV0,
+    taker: &ClobUserRefV0,
+    slot: u64,
+    now: i64,
+) -> Vec<PriceLevel> {
+    clob_resting_prefix(data, side, size, users, caps, taker, slot, now)
+        .into_iter()
+        .map(|order| PriceLevel {
+            price: order.price,
+            size: order.base_asset_amount,
+        })
+        .collect()
 }
 
 /// First-allocation size for a resting-prefix read. Not a cap — a deeper sweep
@@ -1066,7 +937,7 @@ pub fn clob_resting_prefix(
                 user,
                 price: node.price,
                 base_asset_amount: node.base_asset_amount,
-                is_taker_origin: node.is_taker_origin,
+                is_taker_origin: node.is_taker_origin(),
             });
             // A taker-origin order's base does not count toward the sweep.
             //
@@ -1084,7 +955,7 @@ pub fn clob_resting_prefix(
             // fill under either outcome, which is all the subject check needs,
             // and it keeps the gate's rule in one program instead of two that
             // can drift apart.
-            if !node.is_taker_origin {
+            if !node.is_taker_origin() {
                 swept = swept.saturating_add(node.base_asset_amount);
             }
         }
@@ -1163,7 +1034,7 @@ pub fn release_swept_trigger_shadows(
             // index counts as gone for the same reason the CLOB treats an
             // out-of-range hint as stale rather than as corruption.
             !read_clob_node(book, node_index)
-                .is_some_and(|node| node.is_open && node.order_id == clob_order_id)
+                .is_some_and(|node| node.is_open() && node.order_id == clob_order_id)
         })
         .map(|(index, _)| index)
         .collect();
@@ -1174,19 +1045,31 @@ pub fn release_swept_trigger_shadows(
 }
 
 /// Who a quoter's `execute_v0` response is allowed to move balances for.
-/// Every registry type answers this from its own state, never from the
-/// response: a quoter that could name any loaded user could mint a position
-/// onto another quoter's maker, or onto the taker, at a price of its choosing.
 pub enum QuoterSubjects {
     /// A Custom entry fills against exactly one margin account — the entry's
     /// `user`, whose authority created the entry, so registration is that
-    /// user's consent. Nothing else it names is settleable.
+    /// user's consent. Nothing else it names is settleable, and velocity
+    /// knows that from the registry rather than from anything the quoter
+    /// says.
     Account(Pubkey),
-    /// A CLOB entry's makers are velocity users resting on *its* book, so its
-    /// permitted set isn't declarable on the entry; it is read off the book
-    /// (best-first, before execute consumes it), which also yields the prices
-    /// those orders rest at.
-    Book(Vec<ClobRestingOrderV0>),
+    /// A book fills against whoever rests on it, and velocity takes its word
+    /// for who that is.
+    ///
+    /// It used to read the book's arena and hold the response to the users
+    /// resting there. That check was the program against itself: the arena is
+    /// the book program's own state, so a book that wanted to name a stranger
+    /// would write the stranger into a node first. It bought no safety, it
+    /// cost a walk of the swept prefix on every leg, and it was the last of
+    /// velocity's CLOB-specific logic on the fill path.
+    ///
+    /// What actually bounds a book, then: the admin approves the program
+    /// behind a `Clob` entry — and approving a third party's is what would
+    /// make this an exposure, exactly as it would for the removal reports
+    /// velocity already takes on faith (see [`ClobRemovedOrderV0`]) — the
+    /// response may only name users the transaction already carries, every
+    /// balance change is held to the quoted prices, and every user it touches
+    /// is margin-checked after the fill.
+    Book,
 }
 
 impl QuoterSubjects {
@@ -1205,26 +1088,7 @@ impl QuoterSubjects {
         }
         match self {
             QuoterSubjects::Account(quoted) => quoted == key,
-            QuoterSubjects::Book(resting) => resting.iter().any(|order| &order.user == user),
-        }
-    }
-
-    /// The resting run as price levels, for callers that have no quote to bind
-    /// against and must take the book itself as the quote (the cross-match
-    /// crank, whose account list carries only the execute leg). `None` for
-    /// entry types whose liquidity velocity cannot read.
-    pub fn as_levels(&self) -> Option<Vec<PriceLevel>> {
-        match self {
-            QuoterSubjects::Account(_) => None,
-            QuoterSubjects::Book(resting) => Some(
-                resting
-                    .iter()
-                    .map(|order| PriceLevel {
-                        price: order.price.into(),
-                        size: order.base_asset_amount.into(),
-                    })
-                    .collect(),
-            ),
+            QuoterSubjects::Book => true,
         }
     }
 }
@@ -1302,6 +1166,36 @@ impl<'info> ResponseLocationV0<'info> {
             ErrorCode::DefaultError
         })
     }
+
+    /// The rows behind a ladder, read in place out of a guard taken by
+    /// [`Self::borrow`].
+    pub fn l3_response<'a>(
+        &self,
+        data: &'a [u8],
+    ) -> crate::error::VelocityResult<L3ResponseV0<'a>> {
+        let bytes = data.get(self.start..self.end).ok_or_else(|| {
+            msg!("prop amm response pointer out of bounds");
+            ErrorCode::DefaultError
+        })?;
+        L3ResponseV0::parse(bytes).map_err(|_| {
+            msg!("prop amm quoter returned an undecodable l3 response");
+            ErrorCode::DefaultError
+        })
+    }
+
+    /// The quote response, checked against the level contract.
+    ///
+    /// Every reader owes the ladder this check before it routes against it,
+    /// so it lives beside the read rather than in each caller.
+    pub fn checked_quote_response<'a>(
+        &self,
+        data: &'a [u8],
+        direction: Direction,
+    ) -> crate::error::VelocityResult<QuoteResponseV0<'a>> {
+        let response = self.quote_response(data)?;
+        crate::math::router::validate_quoted_levels(direction, response.levels)?;
+        Ok(response)
+    }
 }
 
 pub trait ExternalQuoterExecutor<'info> {
@@ -1322,10 +1216,23 @@ pub trait ExternalQuoterExecutor<'info> {
     /// entry key says which maker to hold responsible.
     fn quoter_key(&self, index: usize) -> Pubkey;
 
-    /// The users quoter `index` may return balance changes for on a fill of
-    /// `direction`/`size`. Must be called before [`Self::execute`]: for a
-    /// book-backed quoter the answer lives in state execute is about to
-    /// consume.
+    /// The prices quoter `index`'s liquidity rests at, for a caller with no
+    /// quote leg to bind its fill against — the cross cranks, whose account
+    /// list carries only the execute surface.
+    ///
+    /// Must be called before [`Self::execute`]: it reads state execute is
+    /// about to consume. `None` when velocity cannot read the quoter's
+    /// liquidity, which is every quoter that is not a book.
+    fn resting_levels(
+        &self,
+        _index: usize,
+        _direction: Direction,
+        _size: u64,
+    ) -> crate::error::VelocityResult<Option<Vec<PriceLevel>>> {
+        Ok(None)
+    }
+
+    /// The users quoter `index` may return balance changes for.
     fn subjects(
         &self,
         index: usize,
@@ -1396,7 +1303,7 @@ impl<'info> ExternalQuoterExecutor<'info> for NoExternalQuoters {
         _direction: Direction,
         _size: u64,
     ) -> crate::error::VelocityResult<QuoterSubjects> {
-        Ok(QuoterSubjects::Book(vec![]))
+        Ok(QuoterSubjects::Book)
     }
 
     fn execute(
@@ -1479,8 +1386,39 @@ impl QuoterV0 {
         quoter_signer_nonce: u8,
         accounts: &[AccountInfo<'info>],
     ) -> Result<QuotedLadderV0> {
+        let located = self.quote_in_place(
+            market_index,
+            args,
+            quoter_signer,
+            quoter_signer_nonce,
+            accounts,
+        )?;
+        let data = located.borrow()?;
+        let response = located.checked_quote_response(&data, args.direction)?;
+        // The copy a fill earns: the split reads every book at once, and the
+        // execute leg then writes the very accounts these levels sit in, so
+        // the ladder has to outlive this borrow.
+        Ok(QuotedLadderV0 {
+            levels: response.levels.to_vec(),
+            withheld: response.withheld,
+        })
+    }
+
+    /// CPI `quote_v0` and leave the ladder where the quoter wrote it.
+    ///
+    /// A reader that consumes the levels before the next CPI takes this and
+    /// pays no heap for the book. [`Self::quote`] is the same call for a
+    /// caller that needs the ladder to outlive the borrow.
+    pub fn quote_in_place<'info>(
+        &self,
+        market_index: u16,
+        args: QuoteArgsV0<'_>,
+        quoter_signer: &Pubkey,
+        quoter_signer_nonce: u8,
+        accounts: &[AccountInfo<'info>],
+    ) -> Result<ResponseLocationV0<'info>> {
         self.gate_for_market(market_index)?;
-        let located = self.invoke_quoter(
+        self.invoke_quoter(
             &self.quote_v0_discriminator,
             &self.quote_accounts,
             self.quote_accounts_count,
@@ -1488,17 +1426,41 @@ impl QuoterV0 {
             quoter_signer,
             quoter_signer_nonce,
             accounts,
-        )?;
-        let data = located.borrow()?;
-        let response = located.quote_response(&data)?;
-        crate::math::router::validate_quoted_levels(args.direction, response.levels)?;
-        // The one copy that earns itself: the quoted ladder is what every
-        // later allocation and price check is held to, so it outlives this
-        // borrow by the whole fill.
-        Ok(QuotedLadderV0 {
-            levels: response.levels.to_vec(),
-            withheld: response.withheld,
-        })
+        )
+    }
+
+    /// CPI `quote_l3_v0` and leave the rows where the quoter wrote them.
+    ///
+    /// `None` when the entry declares no leg, which is every quoter whose
+    /// ladder stands on the one account the registry names for it. The
+    /// caller attributes the ladder to [`Self::user`] in that case, so a
+    /// missing leg costs nothing but per-order detail.
+    ///
+    /// Carries the quote leg's accounts: the two legs read the same state,
+    /// and a second registered list would be a second thing an admin has to
+    /// vet and keep in step.
+    pub fn quote_l3<'info>(
+        &self,
+        market_index: u16,
+        args: L3ArgsV0,
+        quoter_signer: &Pubkey,
+        quoter_signer_nonce: u8,
+        accounts: &[AccountInfo<'info>],
+    ) -> Result<Option<ResponseLocationV0<'info>>> {
+        if self.quote_l3_v0_discriminator == [0u8; 8] {
+            return Ok(None);
+        }
+        self.gate_for_market(market_index)?;
+        self.invoke_quoter(
+            &self.quote_l3_v0_discriminator,
+            &self.quote_accounts,
+            self.quote_accounts_count,
+            &args,
+            quoter_signer,
+            quoter_signer_nonce,
+            accounts,
+        )
+        .map(Some)
     }
 
     /// CPI `execute_v0` on the quoter program: commit a fill and return the
@@ -1528,7 +1490,10 @@ impl QuoterV0 {
     /// Shared CPI leg: forward the registered accounts, send
     /// `discriminator ++ borsh(args)`, and decode the borsh response from the
     /// quoter's response account at the pointer returned via return data.
-    fn invoke_quoter<'info, A: AnchorSerialize>(
+    fn invoke_quoter<
+        'info,
+        A: quoter_spec::wincode::SchemaWrite<quoter_spec::ArgsConfig, Src = A>,
+    >(
         &self,
         discriminator: &[u8; 8],
         registered: &[AmmAccountMeta],
@@ -1562,14 +1527,18 @@ impl QuoterV0 {
         })?;
         account_infos.push(program_info.clone());
 
-        // Sized exactly, once. The fixed-width user set makes these args
-        // ~1.7 KB, and a `Vec` that grows into that by doubling leaks every
-        // intermediate buffer: velocity's bump allocator never reclaims, and
-        // one fill CPIs every registered quoter twice. Growing rather than
-        // reserving exhausted the 32 KB heap outright.
-        let mut data = Vec::with_capacity(QUOTER_CPI_DATA_CAPACITY);
+        // Sized exactly, once, by the schema that writes the bytes. A `Vec`
+        // that grows into place by doubling leaks every intermediate buffer:
+        // velocity's bump allocator never reclaims, and one fill CPIs every
+        // registered quoter twice. Growing rather than reserving exhausted
+        // the 32 KB heap outright.
+        let args_len = quoter_spec::args_size(args).map_err(|_| {
+            msg!("prop amm failed to size cpi args");
+            ErrorCode::DefaultError
+        })?;
+        let mut data = Vec::with_capacity(discriminator.len() + args_len);
         data.extend_from_slice(discriminator);
-        args.serialize(&mut data).map_err(|_| {
+        quoter_spec::write_args(&mut data, args).map_err(|_| {
             msg!("prop amm failed to serialize cpi args");
             ErrorCode::DefaultError
         })?;

@@ -334,6 +334,7 @@ fn register_clob_quoter(
     let ix = Instruction {
         program_id: velocity_id(),
         accounts: velocity::accounts::InitializeQuoter {
+            state: state_pda(),
             payer: admin.pubkey(),
             authority: admin.pubkey(),
             quoter,
@@ -352,6 +353,7 @@ fn register_clob_quoter(
                 quoter_type: QuoterType::Clob,
                 response_account: market,
                 quote_v0_discriminator: ix_discriminator("quote_v0"),
+                quote_l3_v0_discriminator: ix_discriminator("quote_l3_v0"),
                 execute_v0_discriminator: ix_discriminator("execute_v0"),
             },
         }
@@ -1798,6 +1800,32 @@ fn quote_router_returns_verified_books_for_every_source() {
     let amm_levels = &buffer.levels[2][..sources[2].level_count as usize];
     assert!(!amm_levels.is_empty(), "vamm quoted something");
     assert!(amm_levels.windows(2).all(|w| w[0].price <= w[1].price));
+
+    // Who each ladder stands on. The CLOB answers for itself through its
+    // `quote_l3_v0` leg — one row per resting order, with the order's own id —
+    // so nothing off chain has to decode the book to know whose accounts a
+    // fill must carry.
+    let clob_rows = &buffer.rows[sources[0].row_start as usize..][..sources[0].row_len as usize];
+    assert_eq!(clob_rows.len(), 1);
+    assert_eq!(clob_rows[0].price, 99 * PRICE);
+    assert_eq!(clob_rows[0].size, UNIT / 2);
+    assert_eq!(
+        clob_rows[0].authority,
+        fixture.clob_maker_authority.pubkey()
+    );
+    assert_eq!(clob_rows[0].sub_account_id, 0);
+    assert_ne!(clob_rows[0].order_id, 0, "a book row is an order");
+
+    // A DLOB order is one row against its maker, and velocity knows that
+    // without asking anyone.
+    let dlob_rows = &buffer.rows[sources[1].row_start as usize..][..sources[1].row_len as usize];
+    assert_eq!(dlob_rows.len(), 1);
+    assert_eq!(dlob_rows[0].authority, dlob_maker_authority.pubkey());
+    assert_eq!(dlob_rows[0].order_id, 1);
+
+    // The vAMM stands on nobody.
+    assert_eq!(sources[2].row_len, 0);
+    assert!(!buffer.rows_truncated);
 
     // Quoting must not move the market: the AMM is quoted off a copy.
     let market: velocity::state::perp_market::PerpMarket =
@@ -4069,6 +4097,7 @@ fn setup_midpoint_maker(fixture: &mut Fixture, deposit: u64, side_size: u64) -> 
     let ix = Instruction {
         program_id: velocity_id(),
         accounts: velocity::accounts::InitializeQuoter {
+            state: state_pda(),
             payer: fixture.keeper.pubkey(),
             authority: authority.pubkey(),
             quoter: entry,
@@ -4087,6 +4116,9 @@ fn setup_midpoint_maker(fixture: &mut Fixture, deposit: u64, side_size: u64) -> 
                 quoter_type: QuoterType::Custom,
                 response_account: instance,
                 quote_v0_discriminator: ix_discriminator("quote_v0"),
+                // The midpoint fills from one account, so it declares no L3
+                // leg and the view attributes its ladder to that user.
+                quote_l3_v0_discriminator: [0u8; 8],
                 execute_v0_discriminator: ix_discriminator("execute_v0"),
             },
         }
@@ -7682,4 +7714,353 @@ fn a_pass_that_clears_include_vamm_returns_only_its_quoters() {
         cu_without < cu_with,
         "clearing the flag must not cost more: {cu_without} vs {cu_with}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Wall-clock bench: what one published book costs to produce.
+// ---------------------------------------------------------------------------
+
+/// Rearm a midpoint instance with `rungs` levels per side, so the bench
+/// quotes a spline rather than a single price.
+fn set_midpoint_rungs(fixture: &mut Fixture, maker: &MidpointMaker, rungs: usize, size: u64) {
+    let side: Vec<(u64, u64)> = (1..=rungs).map(|i| (1_000 * i as u64, size)).collect();
+    let mut data = ix_discriminator("set_levels_v0").to_vec();
+    data.push(1);
+    data.extend_from_slice(&(100 * PRICE).to_le_bytes());
+    data.push(0);
+    encode_side(&side, &mut data);
+    encode_side(&side, &mut data);
+    let ix = Instruction {
+        program_id: midpoint_id(),
+        accounts: vec![
+            AccountMeta::new(maker.instance, false),
+            AccountMeta::new_readonly(maker.hot.pubkey(), true),
+        ],
+        data,
+    };
+    send(&mut fixture.svm, &fixture.keeper, ix, &[&maker.hot]).unwrap();
+}
+
+/// Build the transaction the book publisher runs once per side per tick: a
+/// `quote_router` over the market's CLOB, `propamms` midpoint quoters, and
+/// the vAMM.
+fn bench_quote_case(
+    propamms: usize,
+    clob_orders: usize,
+    rungs: usize,
+    heap_bytes: Option<u32>,
+    quoters_only: bool,
+) -> (
+    Fixture,
+    solana_transaction::versioned::VersionedTransaction,
+    Vec<MidpointMaker>,
+    Pubkey,
+) {
+    use solana_message::{Message, VersionedMessage};
+
+    let mut fixture = setup();
+    for i in 0..clob_orders {
+        place_clob_ask(&mut fixture, (100 + i as u64) * PRICE, UNIT / 2);
+    }
+    let makers: Vec<MidpointMaker> = (0..propamms)
+        .map(|_| setup_midpoint_maker(&mut fixture, 10_000 * SPOT_BALANCE_PRECISION_U64, UNIT / 2))
+        .collect();
+    for maker in &makers {
+        set_midpoint_rungs(&mut fixture, maker, rungs, UNIT / 2);
+    }
+
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    let router = Keypair::new();
+    fixture
+        .svm
+        .airdrop(&router.pubkey(), 10_000_000_000)
+        .unwrap();
+    let quote_buffer = Pubkey::new_unique();
+    fixture
+        .svm
+        .set_account(
+            quote_buffer,
+            Account {
+                lamports: 10_000_000_000,
+                data: vec![0u8; velocity::state::router_quote::RouterQuoteBufferV0::SIZE],
+                owner: velocity_id(),
+                executable: false,
+                rent_epoch: 0,
+            },
+        )
+        .unwrap();
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::InitializeRouterQuoteBuffer {
+            quote_buffer,
+            authority: router.pubkey(),
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::InitializeRouterQuoteBuffer { market_index: 0 }.data(),
+    };
+    send(&mut fixture.svm, &router, ix, &[]).unwrap();
+
+    let (quoter_signer, _) = quoter_signer_pda();
+    let mut accounts = velocity::accounts::QuoteRouter {
+        state: state_pda(),
+        authority: router.pubkey(),
+        quote_buffer,
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    // User map: every custom quoter's user, for the margin clamp.
+    for maker in &makers {
+        accounts.push(AccountMeta::new(maker.user, false));
+        accounts.push(AccountMeta::new(maker.stats, false));
+    }
+    // Quoter section: the CLOB entry, then each midpoint entry. A later pass
+    // of the publisher's plan carries neither the CLOB nor the vAMM.
+    if !quoters_only {
+        accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    }
+    for maker in &makers {
+        accounts.push(AccountMeta::new_readonly(maker.entry, false));
+    }
+    // CPI union.
+    if !quoters_only {
+        accounts.push(AccountMeta::new(fixture.clob_market, false));
+        accounts.push(AccountMeta::new_readonly(clob_id(), false));
+    }
+    accounts.push(AccountMeta::new_readonly(quoter_signer, false));
+    for maker in &makers {
+        accounts.push(AccountMeta::new(maker.instance, false));
+    }
+    if !makers.is_empty() {
+        accounts.push(AccountMeta::new_readonly(instructions_sysvar(), false));
+        // The midpoint's quote leg names velocity's State; the instruction's
+        // own `state` account is not part of the map, so it rides here too.
+        accounts.push(AccountMeta::new_readonly(state_pda(), false));
+        accounts.push(AccountMeta::new_readonly(midpoint_id(), false));
+    }
+
+    let quote = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::QuoteRouter {
+            args: velocity::instructions::QuoteRouterArgs {
+                market_index: 0,
+                direction: velocity::state::prop_amm::Direction::Long,
+                size: 1_000 * UNIT,
+                quoter_count: makers.len() as u8 + u8::from(!quoters_only),
+                include_vamm: !quoters_only,
+            },
+        }
+        .data(),
+    };
+    let mut ixs = vec![compute_unit_limit_ix(1_400_000)];
+    if let Some(bytes) = heap_bytes {
+        let mut data = vec![1u8];
+        data.extend_from_slice(&bytes.to_le_bytes());
+        ixs.push(Instruction {
+            program_id: "ComputeBudget111111111111111111111111111111"
+                .parse()
+                .unwrap(),
+            accounts: vec![],
+            data,
+        });
+    }
+    ixs.push(quote);
+    let msg = Message::new_with_blockhash(
+        &ixs,
+        Some(&router.pubkey()),
+        &fixture.svm.latest_blockhash(),
+    );
+    let tx = solana_transaction::versioned::VersionedTransaction::try_new(
+        VersionedMessage::Legacy(msg),
+        &[&router],
+    )
+    .unwrap();
+    (fixture, tx, makers, quote_buffer)
+}
+
+/// How long one side of one market's book takes to produce.
+///
+/// Run with:
+/// `cargo test --release bench_quote_router_wall_clock -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn bench_quote_router_wall_clock() {
+    use std::time::Instant;
+
+    println!("propamms clob_orders rungs heap_kb       cu    p50us    p90us   meanus  seededus");
+    // Eight quoters is what this fixture's transaction holds, not what the
+    // program can carry: a midpoint quoter costs four account slots (its
+    // entry, its instance, and its user pair), and a legacy message addresses
+    // at most `PACKET_DATA_SIZE / 32` static keys. Past that the runtime
+    // rejects the transaction before velocity runs.
+    for (propamms, clob_orders, rungs, heap, quoters_only) in [
+        (0usize, 20usize, 0usize, None, false),
+        (1, 20, 8, None, false),
+        (2, 20, 8, None, false),
+        (4, 20, 8, None, false),
+        (6, 20, 8, None, false),
+        (8, 20, 8, None, false),
+        // A deep spline each, so the heap is asked for four times the levels.
+        (8, 20, 32, None, false),
+        // A later pass carries quoters only.
+        (8, 0, 8, None, true),
+    ] {
+        let (fixture, tx, _, _) =
+            bench_quote_case(propamms, clob_orders, rungs, heap, quoters_only);
+        let heap_kb = heap.unwrap_or(32 * 1024) / 1024;
+        let mut cu = 0;
+        let mut failed = None;
+        for _ in 0..20 {
+            match fixture.svm.simulate_transaction(tx.clone()) {
+                Ok(info) => cu = info.meta.compute_units_consumed,
+                Err(fail) => {
+                    failed = Some(format!(
+                        "{:?} | {}",
+                        fail.err,
+                        fail.meta
+                            .logs
+                            .iter()
+                            .filter(|line| line.contains("Error:") || line.contains("panicked"))
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(" ; ")
+                    ));
+                    break;
+                }
+            }
+        }
+        if let Some(err) = failed {
+            println!("{propamms:8} {clob_orders:11} {rungs:5} {heap_kb:7}  FAILED  {err}");
+            continue;
+        }
+        let runs = 200;
+        let mut times: Vec<u128> = Vec::with_capacity(runs);
+        for _ in 0..runs {
+            let started = Instant::now();
+            let info = fixture.svm.simulate_transaction(tx.clone()).unwrap();
+            times.push(started.elapsed().as_micros());
+            std::hint::black_box(info.meta.compute_units_consumed);
+        }
+        times.sort_unstable();
+        let mean = times.iter().sum::<u128>() / runs as u128;
+
+        // The publisher seeds every account a transaction names into a
+        // pooled bank before each simulation. Measure that too.
+        let keys: Vec<Pubkey> = tx.message.static_account_keys().to_vec();
+        let seed: Vec<(Pubkey, Account)> = keys
+            .iter()
+            .filter_map(|key| {
+                let account = fixture.svm.get_account(key)?;
+                (!account.executable).then_some((*key, account))
+            })
+            .collect();
+        let mut fixture = fixture;
+        let mut seeded: Vec<u128> = Vec::with_capacity(runs);
+        for _ in 0..runs {
+            let started = Instant::now();
+            for (key, account) in &seed {
+                fixture.svm.set_account(*key, account.clone()).unwrap();
+            }
+            let info = fixture.svm.simulate_transaction(tx.clone()).unwrap();
+            seeded.push(started.elapsed().as_micros());
+            std::hint::black_box(info.meta.compute_units_consumed);
+        }
+        seeded.sort_unstable();
+        println!(
+            "{propamms:8} {clob_orders:11} {rungs:5} {heap_kb:7} {cu:8} {:8} {:8} {mean:8} {:9}",
+            times[runs / 2],
+            times[runs * 9 / 10],
+            seeded[runs / 2],
+        );
+    }
+}
+
+/// A quoter that fills from one account has no orders to describe, so it
+/// declares no `quote_l3_v0` leg and the view attributes its whole ladder to
+/// the user its registry entry names. One shape either way: a consumer reads
+/// rows, never a quoter type.
+#[test]
+fn a_quoter_without_the_l3_leg_has_its_ladder_attributed_to_its_user() {
+    let (fixture, tx, makers, quote_buffer) = bench_quote_case(1, 20, 8, None, false);
+    // The view is a simulation, so its answer lives in the post-simulation
+    // account rather than in the ledger.
+    let info = fixture.svm.simulate_transaction(tx).expect("quote view");
+    let data = info
+        .post_accounts
+        .iter()
+        .find(|(key, _)| *key == quote_buffer)
+        .map(|(_, account)| {
+            use solana_account::ReadableAccount;
+            account.data().to_vec()
+        })
+        .expect("the buffer rode the simulation");
+    let buffer: velocity::state::router_quote::RouterQuoteBufferV0 = *bytemuck::from_bytes(
+        &data[8..8 + core::mem::size_of::<velocity::state::router_quote::RouterQuoteBufferV0>()],
+    );
+
+    let maker = &makers[0];
+    let index = (0..buffer.source_count as usize)
+        .find(|index| buffer.sources[*index].key == maker.entry)
+        .expect("the midpoint entry was quoted");
+    let source = &buffer.sources[index];
+    let rows = &buffer.rows[source.row_start as usize..][..source.row_len as usize];
+
+    assert_eq!(
+        rows.len(),
+        source.level_count as usize,
+        "one row per rung of the ladder"
+    );
+    assert!(rows
+        .iter()
+        .all(|row| row.authority == maker.authority.pubkey()));
+    assert!(
+        rows.iter().all(|row| row.order_id == 0),
+        "a spline rung is not an order"
+    );
+    // And the rows carry the ladder's own prices and sizes.
+    let levels = &buffer.levels[index][..source.level_count as usize];
+    for (row, level) in rows.iter().zip(levels) {
+        assert_eq!((row.price, row.size), (level.price, level.size));
+    }
+}
+
+/// A crossed taker remainder is on the book but is not depth a cross can
+/// count on, so the row that carries it says so. The publisher's cross
+/// discovery reads that flag instead of the book's bytes.
+#[test]
+fn a_taker_origin_row_is_flagged_for_whoever_reads_it() {
+    let (fixture, tx, _, quote_buffer) = bench_quote_case(0, 4, 0, None, false);
+    let info = fixture.svm.simulate_transaction(tx).expect("quote view");
+    let data = info
+        .post_accounts
+        .iter()
+        .find(|(key, _)| *key == quote_buffer)
+        .map(|(_, account)| {
+            use solana_account::ReadableAccount;
+            account.data().to_vec()
+        })
+        .expect("the buffer rode the simulation");
+    let buffer: velocity::state::router_quote::RouterQuoteBufferV0 = *bytemuck::from_bytes(
+        &data[8..8 + core::mem::size_of::<velocity::state::router_quote::RouterQuoteBufferV0>()],
+    );
+
+    let source = &buffer.sources[0];
+    let rows = &buffer.rows[source.row_start as usize..][..source.row_len as usize];
+    assert_eq!(rows.len(), 4, "one row per resting order");
+    assert!(
+        rows.iter()
+            .all(|row| row.flags & velocity::state::prop_amm::L3_ROW_FLAG_TAKER_ORIGIN == 0),
+        "ordinary maker orders are not taker remainders"
+    );
+    // Rows are best-first, which is the order a fill would take them in.
+    assert!(rows.windows(2).all(|w| w[0].price <= w[1].price));
 }

@@ -22,6 +22,8 @@ pub struct UpdateQuoterConfig<'info> {
 pub struct UpdateQuoterConfigArgs {
     pub response_account: Option<Pubkey>,
     pub quote_v0_discriminator: Option<[u8; 8]>,
+    /// Set to all-zero to withdraw the leg.
+    pub quote_l3_v0_discriminator: Option<[u8; 8]>,
     pub execute_v0_discriminator: Option<[u8; 8]>,
 }
 
@@ -32,6 +34,9 @@ pub fn handle_update_quoter_config(
     let mut quoter = ctx.accounts.quoter.load_mut()?;
     if let Some(response_account) = args.response_account {
         quoter.response_account = response_account;
+    }
+    if let Some(discriminator) = args.quote_l3_v0_discriminator {
+        quoter.quote_l3_v0_discriminator = discriminator;
     }
     if let Some(discriminator) = args.quote_v0_discriminator {
         quoter.quote_v0_discriminator = discriminator;

@@ -1,13 +1,16 @@
-//! Which crossing prefix the cross resolver offers `crank_cross_match`. The
-//! node bytes here mirror [`crate::state::prop_amm::read_clob_node`]'s offsets;
-//! the litesvm crank tests pin those offsets against the real CLOB program.
+//! Which crossing prefix the cross resolver offers `crank_cross_match`.
+//!
+//! The book is built from `clob-spec`'s own node, so these fixtures cannot
+//! drift from the layout the book writes; the litesvm crank tests pin the same
+//! declaration against the real CLOB program.
 
 use {
     super::*,
     crate::state::prop_amm::{
-        ClobUserRefV0, CLOB_BEST_ASK_OFFSET, CLOB_BEST_BID_OFFSET, CLOB_NIL, CLOB_NODE_LEN,
-        CLOB_ORDERS_OFFSET, CLOB_ORDER_BIT_FLAG_OPEN, CLOB_ORDER_BIT_FLAG_TAKER_ORIGIN,
+        ClobNodeView, ClobOrderBitFlag, ClobUserRefV0, CLOB_BEST_ASK_OFFSET, CLOB_BEST_BID_OFFSET,
+        CLOB_NIL, CLOB_NODE_LEN, CLOB_ORDERS_OFFSET,
     },
+    bytemuck::Zeroable,
 };
 
 const UNIT: u64 = crate::math::constants::BASE_PRECISION_U64;
@@ -60,16 +63,15 @@ fn book_bytes(bids: &[Node], asks: &[Node]) -> Vec<u8> {
             } else {
                 index + 1
             };
-            data[at..at + 32].copy_from_slice(&[node.authority; 32]);
-            data[at + 32..at + 40].copy_from_slice(&node.price.to_le_bytes());
-            data[at + 40..at + 48].copy_from_slice(&node.base_asset_amount.to_le_bytes());
-            data[at + 84..at + 88].copy_from_slice(&next.to_le_bytes());
-            data[at + 88] = CLOB_ORDER_BIT_FLAG_OPEN
-                | if node.taker_origin {
-                    CLOB_ORDER_BIT_FLAG_TAKER_ORIGIN
-                } else {
-                    0
-                };
+            let mut slot = ClobNodeView::zeroed();
+            slot.authority = Pubkey::new_from_array([node.authority; 32]);
+            slot.price = node.price;
+            slot.base_asset_amount = node.base_asset_amount;
+            slot.next = next;
+            slot.prev = CLOB_NIL;
+            slot.bit_flags = ClobOrderBitFlag::Open as u8
+                | ClobOrderBitFlag::TakerOrigin.bit_if(node.taker_origin);
+            data[at..at + CLOB_NODE_LEN].copy_from_slice(bytemuck::bytes_of(&slot));
             index += 1;
         }
     }

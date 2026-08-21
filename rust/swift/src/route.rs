@@ -378,6 +378,7 @@ pub async fn route_quote(
                         quoted_size: quoted.quoted_size,
                         slot: quoted.slot,
                         books: quoted.books,
+                        rows_truncated: quoted.rows_truncated,
                     },
                     route,
                 ));
@@ -423,15 +424,26 @@ pub async fn route_quote(
 
     let filled_base: u64 = allocations.iter().map(|a| a.base).sum();
     let filled_quote: u64 = allocations.iter().map(|a| a.quote).sum();
-    let clob_makers = clob_makers_for_route(&ctx.source, &ctx.velocity, &view, direction, &query)
-        .await
-        .unwrap_or_else(|err| {
-            // A book that cannot be read costs the caller the maker half of
-            // its answer, not the whole route: the split above stands on the
-            // simulation, which already succeeded.
-            log::warn!(target: "route", "clob makers unavailable: {err:#}");
-            Vec::new()
-        });
+    // The users a fill would settle for, out of the view that was already
+    // simulated. They come from the same walk, at the same slot, against the
+    // same book state as the ladders above — which is what a second read of
+    // the book could never promise.
+    let clob_makers: Vec<MakerOut> = view
+        .settleable_users()
+        .into_iter()
+        .filter(|user| *user != taker_ref(&query))
+        .map(|user| {
+            let authority = Pubkey::new_from_array(user.authority.to_bytes());
+            let (user_key, user_stats) =
+                derive_user_accounts(&ctx.velocity, &authority, user.sub_account_id);
+            MakerOut {
+                authority: authority.to_string(),
+                sub_account_id: user.sub_account_id,
+                user: user_key.to_string(),
+                user_stats: user_stats.to_string(),
+            }
+        })
+        .collect();
     Ok(Json(RouteResponse {
         market_index: view.market,
         direction: direction_label,
@@ -475,99 +487,33 @@ pub async fn route_quote(
     }))
 }
 
-/// The makers a fill would sweep off every CLOB book on the route.
-///
-/// Walked at the taker's whole size rather than at what the split allocated:
-/// on-chain the book is quoted before anything is split, so the makers it
-/// touches are the ones within the full size. Sizing this to the allocation
-/// would name fewer accounts than the fill needs.
-async fn clob_makers_for_route(
-    source: &RpcSource,
-    velocity: &Pubkey,
-    view: &velocity_router_sim::quote_view::QuoteView,
-    direction: Direction,
-    query: &RouteQuery,
-) -> anyhow::Result<Vec<MakerOut>> {
-    use velocity_rs::program::state::prop_amm::{QuoterType, QuoterV0};
-
-    let taker = ClobUserRefV0 {
-        authority: match query.taker_authority.as_deref() {
-            Some(text) => anchor_lang::prelude::Pubkey::new_from_array(
-                text.parse::<Pubkey>()
-                    .map_err(|err| anyhow::anyhow!("takerAuthority: {err}"))?
-                    .to_bytes(),
-            ),
-            None => anchor_lang::prelude::Pubkey::default(),
-        },
+/// The taker as the wire names it, so a route never reports the caller to
+/// itself as one of its own makers.
+fn taker_ref(query: &RouteQuery) -> ClobUserRefV0 {
+    ClobUserRefV0 {
+        authority: query
+            .taker_authority
+            .as_deref()
+            .and_then(|text| text.parse::<Pubkey>().ok())
+            .map(|key| anchor_lang::prelude::Pubkey::new_from_array(key.to_bytes()))
+            .unwrap_or_default(),
         sub_account_id: query.taker_sub_account_id,
-    };
+    }
+}
 
-    let entry_keys: Vec<Pubkey> = view
-        .books
-        .iter()
-        .filter(|book| book.kind == QuotedSourceKind::Quoter)
-        .map(|book| book.key)
-        .collect();
-    if entry_keys.is_empty() {
-        return Ok(Vec::new());
-    }
-    let entries = source.get_multiple_accounts(&entry_keys).await?;
-
-    let mut books = Vec::new();
-    for account in entries.into_iter().flatten() {
-        let entry: QuoterV0 = read_zero_copy(&account.data)?;
-        if entry.quoter_type == QuoterType::Clob {
-            books.push(entry.response_account);
-        }
-    }
-    if books.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let side = velocity_rs::clob::swept_side(match direction {
-        Direction::Long => velocity_rs::program::controller::position::PositionDirection::Long,
-        Direction::Short => velocity_rs::program::controller::position::PositionDirection::Short,
-    });
-    let mut out = Vec::new();
-    for (key, account) in books
-        .iter()
-        .zip(source.get_multiple_accounts(&books).await?)
-    {
-        let Some(account) = account else {
-            anyhow::bail!("clob market {key} missing");
-        };
-        // No cap: the endpoint reports what the book holds and the caller
-        // decides how much of it fits in a transaction.
-        for maker in velocity_rs::clob::resting_makers(
-            &account.data,
-            side,
-            query.size,
-            taker,
-            view.slot,
-            chrono_now(),
-            usize::MAX,
-        ) {
-            let authority = Pubkey::new_from_array(maker.authority.to_bytes());
-            let user = Pubkey::find_program_address(
-                &[
-                    b"user",
-                    authority.as_ref(),
-                    &maker.sub_account_id.to_le_bytes(),
-                ],
-                velocity,
-            )
-            .0;
-            let user_stats =
-                Pubkey::find_program_address(&[b"user_stats", authority.as_ref()], velocity).0;
-            out.push(MakerOut {
-                authority: authority.to_string(),
-                sub_account_id: maker.sub_account_id,
-                user: user.to_string(),
-                user_stats: user_stats.to_string(),
-            });
-        }
-    }
-    Ok(out)
+/// The two accounts a maker's identity derives to.
+fn derive_user_accounts(
+    velocity: &Pubkey,
+    authority: &Pubkey,
+    sub_account_id: u16,
+) -> (Pubkey, Pubkey) {
+    let user = Pubkey::find_program_address(
+        &[b"user", authority.as_ref(), &sub_account_id.to_le_bytes()],
+        velocity,
+    )
+    .0;
+    let stats = Pubkey::find_program_address(&[b"user_stats", authority.as_ref()], velocity).0;
+    (user, stats)
 }
 
 /// Wall clock in seconds, for the book walk's expiry check.

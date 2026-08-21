@@ -101,11 +101,11 @@ pub use quoter_spec::UserCapsV0;
 /// why identity is stored as `(authority, sub_account_id)` rather than the
 /// `User` account key.
 pub use quoter_spec::UserRefV0;
-/// The caller's settleable-user set, its capacity, and its encoded width, as
-/// `quoter-spec` declares them. Every program on this wire reads the one
-/// declaration: a mirror that drifts by a field decodes the args at the wrong
-/// offsets and reports it as nothing at all.
-pub use quoter_spec::{UserSetV0, USER_SET_BYTES, USER_SET_CAPACITY};
+/// The caller's settleable-user set: its capacity, the check a reader owes
+/// it, and its widest encoded form, as `quoter-spec` declares them. Every
+/// program on this wire reads the one declaration: a mirror that drifts by a
+/// field decodes the args wrong and reports it as nothing at all.
+pub use quoter_spec::{user_set_within_capacity, USER_SET_CAPACITY, USER_SET_MAX_BYTES};
 
 /// Declared by `quoter-spec`; the alias keeps this program's name for it.
 pub type PriceLevel = quoter_spec::PriceLevelV0;

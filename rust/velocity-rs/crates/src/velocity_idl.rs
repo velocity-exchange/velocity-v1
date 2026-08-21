@@ -3997,6 +3997,7 @@ pub mod types {
         pub quoter_type: QuoterType,
         pub response_account: Pubkey,
         pub quote_v0_discriminator: [u8; 8],
+        pub quote_l3_v0_discriminator: [u8; 8],
         pub execute_v0_discriminator: [u8; 8],
     }
     #[repr(C)]
@@ -5355,6 +5356,29 @@ pub mod types {
         pub price: u64,
         pub size: u64,
     }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct QuotedRowV0 {
+        pub price: u64,
+        pub size: u64,
+        pub order_id: u64,
+        pub authority: Pubkey,
+        pub sub_account_id: u16,
+        pub flags: u8,
+        #[serde(skip)]
+        pub padding: Padding<5>,
+    }
     #[derive(
         AnchorSerialize,
         AnchorDeserialize,
@@ -5392,8 +5416,10 @@ pub mod types {
         pub priority: u8,
         pub kind: QuotedSourceKind,
         pub clamped: bool,
+        pub row_start: u8,
+        pub row_len: u8,
         #[serde(skip)]
-        pub padding: Padding<3>,
+        pub padding: Padding<1>,
     }
     #[repr(C)]
     #[derive(
@@ -5492,6 +5518,7 @@ pub mod types {
         pub authority: Pubkey,
         pub quote_v0_discriminator: [u8; 8],
         pub execute_v0_discriminator: [u8; 8],
+        pub quote_l3_v0_discriminator: [u8; 8],
         pub quote_accounts: [AmmAccountMeta; 32],
         pub execute_accounts: [AmmAccountMeta; 32],
         pub market: u16,
@@ -5504,6 +5531,8 @@ pub mod types {
         pub watch_offset: u32,
         pub watch_len: u32,
         pub watch_account: Pubkey,
+        #[serde(skip)]
+        pub padding: Padding<8>,
     }
     #[repr(C)]
     #[derive(
@@ -5690,11 +5719,14 @@ pub mod types {
         pub slot: u64,
         pub market: u16,
         pub source_count: u8,
+        pub row_count: u8,
+        pub rows_truncated: bool,
         pub direction: u8,
         #[serde(skip)]
-        pub padding: Padding<76>,
+        pub padding: Padding<74>,
         pub sources: [QuotedSourceV0; 16],
         pub levels: [BigArray<QuotedLevelV0, 128>; 16],
+        pub rows: BigArray<QuotedRowV0, 128>,
     }
     #[repr(C)]
     #[derive(
@@ -6399,6 +6431,7 @@ pub mod types {
     pub struct UpdateQuoterConfigArgs {
         pub response_account: Option<Pubkey>,
         pub quote_v0_discriminator: Option<[u8; 8]>,
+        pub quote_l3_v0_discriminator: Option<[u8; 8]>,
         pub execute_v0_discriminator: Option<[u8; 8]>,
     }
     #[repr(C)]
@@ -7381,6 +7414,7 @@ pub mod accounts {
         pub authority: Pubkey,
         pub quote_v0_discriminator: [u8; 8],
         pub execute_v0_discriminator: [u8; 8],
+        pub quote_l3_v0_discriminator: [u8; 8],
         pub quote_accounts: [AmmAccountMeta; 32],
         pub execute_accounts: [AmmAccountMeta; 32],
         pub market: u16,
@@ -7393,6 +7427,8 @@ pub mod accounts {
         pub watch_offset: u32,
         pub watch_len: u32,
         pub watch_account: Pubkey,
+        #[serde(skip)]
+        pub padding: Padding<8>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for QuoterV0 {
@@ -7670,11 +7706,14 @@ pub mod accounts {
         pub slot: u64,
         pub market: u16,
         pub source_count: u8,
+        pub row_count: u8,
+        pub rows_truncated: bool,
         pub direction: u8,
         #[serde(skip)]
-        pub padding: Padding<76>,
+        pub padding: Padding<74>,
         pub sources: [QuotedSourceV0; 16],
         pub levels: [BigArray<QuotedLevelV0, 128>; 16],
+        pub rows: BigArray<QuotedRowV0, 128>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for RouterQuoteBufferV0 {
@@ -12952,6 +12991,7 @@ pub mod accounts {
         pub authority: Pubkey,
         pub quoter: Pubkey,
         pub perp_market: Pubkey,
+        pub state: Pubkey,
         pub quoter_program: Pubkey,
         pub user: Pubkey,
         pub rent: Pubkey,
@@ -12990,6 +13030,11 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.perp_market,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.state,
                     is_signer: false,
                     is_writable: false,
                 },

@@ -19,7 +19,7 @@ use {
         instruction,
         state::{
             CancelSidesV0, Direction, MidpointQuoterV0, QuoterConfigV0, SplineLevelInputV0,
-            UserCapsV0, UserRefV0, UserSetV0, RESPONSE_OFFSET,
+            UserCapsV0, UserRefV0, RESPONSE_OFFSET,
         },
         velocity::STATE_HOT_FLOW_AUTHORITY_OFFSET,
         CancelAllArgsV0, ExecuteArgsV0, QuoteArgsV0, SetLevelsArgsV0, SetMidArgsV0,
@@ -346,18 +346,18 @@ fn arm(ctx: &mut Ctx) {
     .unwrap();
 }
 
-fn quote_args(direction: Direction, size: u64) -> QuoteArgsV0 {
+fn quote_args<'a>(direction: Direction, size: u64) -> QuoteArgsV0<'a> {
     QuoteArgsV0 {
         direction,
         size,
-        users: UserSetV0::EMPTY,
+        users: &[],
         caps: UserCapsV0::EMPTY,
         reference_price: 0,
         taker: None,
     }
 }
 
-fn quote_ix_with(ctx: &Ctx, args: QuoteArgsV0) -> Instruction {
+fn quote_ix_with(ctx: &Ctx, args: QuoteArgsV0<'_>) -> Instruction {
     instruction::QuoteV0 { args }.to_instruction(accounts::QuoteV0 {
         quoter: addr(ctx.quoter),
         instructions_sysvar: addr(instructions_sysvar()),
@@ -374,7 +374,7 @@ fn execute_ix(ctx: &Ctx, direction: Direction, size: u64) -> Instruction {
         args: ExecuteArgsV0 {
             direction,
             size,
-            users: UserSetV0::EMPTY,
+            users: &[],
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             taker: None,
@@ -713,7 +713,7 @@ fn quoted_user_gates_apply() {
     let ix = quote_ix_with(
         &ctx,
         QuoteArgsV0 {
-            users: UserSetV0::from_refs(&[stranger]).unwrap(),
+            users: &[stranger],
             ..quote_args(Direction::Long, UNIT)
         },
     );
@@ -737,7 +737,7 @@ fn quoted_user_gates_apply() {
     let ix = quote_ix_with(
         &ctx,
         QuoteArgsV0 {
-            users: UserSetV0::from_refs(&[stranger, quoted]).unwrap(),
+            users: &[stranger, quoted],
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             taker: Some(stranger),

@@ -56,11 +56,10 @@ use {
             pdas,
             perp_market_map::{get_writable_perp_market_set, MarketSet},
             prop_amm::{
-                clob_hint_scan, clob_resting_prefix, read_clob_u32, ClobCancelOrderArgsV0,
+                clob_hint_scan, clob_resting_levels, read_clob_u32, ClobCancelOrderArgsV0,
                 ClobMarket, ClobNodeView, ClobOrderRefV0, ClobPlaceOrderArgsV0, ClobRemovedOrderV0,
-                ClobSide, ClobUserRefV0, Direction, ExecuteArgsV0, QuoterSubjects,
-                QuoterUserSetRef, QuoterV0, WireDirectionExt, CLOB_BEST_ASK_OFFSET,
-                CLOB_BEST_BID_OFFSET,
+                ClobSide, ClobUserRefV0, Direction, ExecuteArgsV0, QuoterSubjects, QuoterV0,
+                WireDirectionExt, CLOB_BEST_ASK_OFFSET, CLOB_BEST_BID_OFFSET,
             },
             state::State,
             user::{OrderStatus, User, UserStats},
@@ -225,7 +224,7 @@ pub(crate) fn find_taker_origin_cross(
     let bid_aggresses = (ClobSide::Bid, bid_node, bid, ask, ask_node);
     let ask_aggresses = (ClobSide::Ask, ask_node, ask, bid, bid_node);
     let (side, taker_origin_node, taker_origin, counterparty, counterparty_node) =
-        match (bid.is_taker_origin, ask.is_taker_origin) {
+        match (bid.is_taker_origin(), ask.is_taker_origin()) {
             (false, false) => return Ok(None),
             (true, false) => bid_aggresses,
             (false, true) => ask_aggresses,
@@ -240,7 +239,7 @@ pub(crate) fn find_taker_origin_cross(
         taker_origin_node,
         counterparty,
         side,
-        kind: if counterparty.is_taker_origin {
+        kind: if counterparty.is_taker_origin() {
             TakerOriginCrossKind::Pair { counterparty_node }
         } else {
             TakerOriginCrossKind::Maker
@@ -449,7 +448,9 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
                 PositionDirection::Short => Direction::Short,
             };
             let users = [taker_ref, cross.counterparty.user_ref()];
-            let subjects = QuoterSubjects::Book(clob_resting_prefix(
+            // The book is the quote here: the crank carries no quote leg, so
+            // the run these orders rest at is what the response is held to.
+            let levels = clob_resting_levels(
                 &ctx.accounts.clob_market.try_borrow_data()?,
                 direction.side(),
                 size,
@@ -458,7 +459,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
                 &taker_ref,
                 clock.slot,
                 clock.unix_timestamp,
-            ));
+            );
             // The execute leg's account list is the registry's, resolved
             // against the accounts this instruction already names — the book,
             // the CPI signer, and the program.
@@ -475,7 +476,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
                     reference_price: 0,
                     direction,
                     size,
-                    users: QuoterUserSetRef(&users),
+                    users: &users,
                     taker: Some(taker_ref),
                 },
                 &ctx.accounts.quoter_signer.key(),
@@ -486,7 +487,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
             // out of the response, and it is three fixed-width records.
             let data = located.borrow()?;
             let response = located.execute_response(&data)?;
-            TakerOriginCounterparty::executed(&response, subjects)?
+            TakerOriginCounterparty::executed(&response, QuoterSubjects::Book, levels)?
         }
         // A second taker remainder: cancel it too. It cannot be consumed —
         // `execute_v0` skips a crossed taker-origin order and would fill past

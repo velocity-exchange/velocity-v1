@@ -123,6 +123,10 @@ export function registerQuoter(parent: Command): void {
 				'-a, --authority <pubkey>',
 				'entry authority (must sign; defaults to the wallet)'
 			)
+			.option(
+				'--l3-disc <hex|name>',
+				'discriminator of the optional quote_l3_v0 leg, which reports the resting orders behind a ladder and who each belongs to (omit for a quoter that fills from one account)'
+			)
 	).action(
 		async (
 			market: string,
@@ -131,7 +135,7 @@ export function registerQuoter(parent: Command): void {
 			responseAccountArg: string,
 			quoteDisc: string,
 			executeDisc: string,
-			flags: { type: string; authority?: string },
+			flags: { type: string; authority?: string; l3Disc?: string },
 			cmd: Command
 		) => {
 			const marketIndex = Number.parseInt(market, 10);
@@ -156,10 +160,14 @@ export function registerQuoter(parent: Command): void {
 						quoterType: parseQuoterType(flags.type),
 						responseAccount: new PublicKey(responseAccountArg),
 						quoteV0Discriminator: parseDiscriminator(quoteDisc),
+						quoteL3V0Discriminator: flags.l3Disc
+							? parseDiscriminator(flags.l3Disc)
+							: new Array(8).fill(0),
 						executeV0Discriminator: parseDiscriminator(executeDisc),
 					},
 					{
 						accounts: {
+							state: await client.getStatePublicKey(),
 							payer: authority,
 							authority,
 							quoter: quoterPda,
@@ -259,6 +267,10 @@ export function registerQuoter(parent: Command): void {
 			.option('--response-account <pubkey>', 'new response account')
 			.option('--quote-disc <hex>', 'new quote_v0 discriminator (16 hex chars)')
 			.option(
+				'--l3-disc <hex>',
+				'new quote_l3_v0 discriminator (16 hex chars); all-zero withdraws the leg'
+			)
+			.option(
 				'--execute-disc <hex>',
 				'new execute_v0 discriminator (16 hex chars)'
 			)
@@ -272,14 +284,20 @@ export function registerQuoter(parent: Command): void {
 			flags: {
 				responseAccount?: string;
 				quoteDisc?: string;
+				l3Disc?: string;
 				executeDisc?: string;
 				authority?: string;
 			},
 			cmd: Command
 		) => {
-			if (!flags.responseAccount && !flags.quoteDisc && !flags.executeDisc) {
+			if (
+				!flags.responseAccount &&
+				!flags.quoteDisc &&
+				!flags.l3Disc &&
+				!flags.executeDisc
+			) {
 				throw new Error(
-					'nothing to update — pass at least one of --response-account, --quote-disc, --execute-disc'
+					'nothing to update — pass at least one of --response-account, --quote-disc, --l3-disc, --execute-disc'
 				);
 			}
 			const opts = readGlobalOpts(cmd);
@@ -293,6 +311,9 @@ export function registerQuoter(parent: Command): void {
 							: null,
 						quoteV0Discriminator: flags.quoteDisc
 							? parseDiscriminator(flags.quoteDisc)
+							: null,
+						quoteL3V0Discriminator: flags.l3Disc
+							? parseDiscriminator(flags.l3Disc)
 							: null,
 						executeV0Discriminator: flags.executeDisc
 							? parseDiscriminator(flags.executeDisc)

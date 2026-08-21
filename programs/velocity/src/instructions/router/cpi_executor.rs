@@ -10,9 +10,9 @@ use {
         error::{ErrorCode, VelocityResult},
         msg,
         state::prop_amm::{
-            clob_resting_prefix, find_account, read_clob_u16, ClobCancelAllArgsV0,
+            clob_resting_levels, find_account, read_clob_u16, ClobCancelAllArgsV0,
             ClobCancelAllOutcomeV0, ClobCancelSides, ClobMarket, ClobUserRefV0, Direction,
-            ExecuteArgsV0, ExternalQuoterExecutor, QuoterSubjects, QuoterType, QuoterUserSetRef,
+            ExecuteArgsV0, ExternalQuoterExecutor, PriceLevel, QuoterSubjects, QuoterType,
             ResponseLocationV0, CLOB_MARKET_INDEX_OFFSET,
         },
         validate,
@@ -71,14 +71,14 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
             .unwrap_or_default()
     }
 
-    fn subjects(
+    fn resting_levels(
         &self,
         index: usize,
         direction: Direction,
         size: u64,
-    ) -> VelocityResult<QuoterSubjects> {
+    ) -> VelocityResult<Option<Vec<PriceLevel>>> {
         if self.quoter_type(index) != QuoterType::Clob {
-            return Ok(QuoterSubjects::Account(self.quoter_user(index)));
+            return Ok(None);
         }
         let book_key = self
             .quoted
@@ -98,8 +98,8 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
         })?;
         // The registry says this account holds the entry's responses; that it
         // is also the book serving this market is re-derived from its bytes,
-        // so a misregistered entry reads as an error rather than as an empty
-        // — and therefore permissive-of-nothing — book.
+        // so a misregistered entry reads as an error rather than as a book
+        // with no prices to bind against.
         validate!(
             read_clob_u16(&data, CLOB_MARKET_INDEX_OFFSET) == Some(self.market_index),
             ErrorCode::InvalidQuoterConfig,
@@ -107,7 +107,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
             book_key,
             self.market_index
         )?;
-        Ok(QuoterSubjects::Book(clob_resting_prefix(
+        Ok(Some(clob_resting_levels(
             &data,
             direction.side(),
             size,
@@ -117,6 +117,19 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
             self.slot,
             self.now,
         )))
+    }
+
+    fn subjects(
+        &self,
+        index: usize,
+        _direction: Direction,
+        _size: u64,
+    ) -> VelocityResult<QuoterSubjects> {
+        Ok(if self.quoter_type(index) == QuoterType::Clob {
+            QuoterSubjects::Book
+        } else {
+            QuoterSubjects::Account(self.quoter_user(index))
+        })
     }
 
     fn with_book(&self, index: usize, f: &mut dyn FnMut(&[u8])) -> VelocityResult<bool> {
@@ -219,7 +232,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                     reference_price: self.reference_price,
                     direction,
                     size,
-                    users: QuoterUserSetRef(self.users),
+                    users: self.users,
                     taker: Some(self.taker),
                 },
                 &self.quoter_signer,

@@ -414,6 +414,34 @@ export type QuotedSourceV0 = {
 	kind: QuotedSourceKind;
 	/** verification reduced this book — a Custom quoter advertised more depth than its `User`'s margin supports */
 	clamped: boolean;
+	/** this source's slice of the buffer's `rows`: where it starts */
+	rowStart: number;
+	/** how many rows it holds; 0 for a source with no per-order detail (the vAMM) */
+	rowLen: number;
+	padding: number[];
+};
+
+/**
+ * One resting order behind a quoted book, with the user it settles against.
+ *
+ * A book's ladder aggregates orders belonging to different people, and a
+ * caller that has to carry those accounts — or draw the book — needs them
+ * apart. A quoter that fills from one account reports its ladder against that
+ * account instead, with no `orderId`, so a consumer reads one shape either
+ * way.
+ */
+export type QuotedRowV0 = {
+	/** PRICE_PRECISION */
+	price: BN;
+	/** base precision */
+	size: BN;
+	/** the quoter's own handle for the order; zero when the row is not an order */
+	orderId: BN;
+	/** authority half of the user this row settles against */
+	authority: PublicKey;
+	subAccountId: number;
+	/** `L3_ROW_FLAG_*`: bit 0 = the row is a migrated taker remainder */
+	flags: number;
 	padding: number[];
 };
 
@@ -434,10 +462,16 @@ export type RouterQuoteBufferV0Account = {
 	sourceCount: number;
 	/** taker direction quoted: 0 = long, 1 = short */
 	direction: number;
+	/** live entries in `rows` */
+	rowCount: number;
+	/** the row region filled before every source was described, so the last sources carry fewer rows than their books hold; the ladders are unaffected */
+	rowsTruncated: boolean;
 	padding: number[];
 	sources: QuotedSourceV0[];
-	/** one 32-level slot per source, parallel to `sources` */
+	/** one 128-level slot per source, parallel to `sources` */
 	levels: QuotedLevelV0[][];
+	/** the orders behind the ladders, in the order the sources were quoted; each source names its own run through `rowStart`/`rowLen` */
+	rows: QuotedRowV0[];
 };
 
 /**
@@ -2914,6 +2948,8 @@ export type QuoterV0Account = {
 	authority: PublicKey;
 	/** raw 8-byte instruction discriminator of `quoteV0` on `programId` */
 	quoteV0Discriminator: number[];
+	/** raw 8-byte instruction discriminator of the optional `quoteL3V0` leg, which reports the resting orders behind a ladder and who each belongs to; all-zero = the quoter does not implement it, and a reader attributes the whole ladder to `user` */
+	quoteL3V0Discriminator: number[];
 	/** raw 8-byte instruction discriminator of `executeV0` on `programId` */
 	executeV0Discriminator: number[];
 	/** accounts forwarded to `quoteV0`, in order; only the first `quoteAccountsCount` entries are live */
@@ -2935,4 +2971,5 @@ export type QuoterV0Account = {
 	watchOffset: number;
 	watchLen: number;
 	watchAccount: PublicKey;
+	padding: number[];
 };

@@ -26,7 +26,7 @@ use {
         instructions::QuoteRouterArgs,
         state::{
             perp_market::PerpMarket,
-            prop_amm::{Direction, QuoterType, QuoterV0},
+            prop_amm::{ClobUserRefV0 as UserRefV0, Direction, QuoterType, QuoterV0},
             router_quote::{QuotedLevelV0, QuotedSourceKind, RouterQuoteBufferV0},
             traits::Size,
             user::User,
@@ -40,7 +40,7 @@ use {
         transaction::Transaction,
     },
     solana_system_interface::instruction as system_instruction,
-    std::collections::BTreeMap,
+    std::collections::{BTreeMap, BTreeSet},
     velocity_quoter_health::EntryRef,
 };
 
@@ -102,6 +102,33 @@ pub struct QuotedBook {
     /// Margin verification reduced this book below what the source quoted.
     pub clamped: bool,
     pub levels: Vec<QuotedLevelV0>,
+    /// The orders behind the ladder, best price first, each with the user it
+    /// settles against. A quoter that fills from one account reports its
+    /// ladder as rows against that account; a book reports its orders. Empty
+    /// when the quoter said nothing and the caller has no account for it.
+    pub rows: Vec<QuotedRow>,
+}
+
+/// One resting order behind a book, as the view reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuotedRow {
+    pub price: u64,
+    pub size: u64,
+    /// The quoter's handle for the order, zero when the row is not an order.
+    pub order_id: u64,
+    /// Who the row settles against. Both the `User` and its `UserStats`
+    /// derive from this, which is why the book stores identity this way.
+    pub user: UserRefV0,
+    /// `L3_ROW_FLAG_*`, as the quoter reported them.
+    pub flags: u8,
+}
+
+impl QuotedRow {
+    /// The row is a migrated taker remainder: it demands liquidity rather
+    /// than offering it, so a cross cannot count the depth it holds.
+    pub fn is_taker_origin(&self) -> bool {
+        self.flags & program::state::prop_amm::L3_ROW_FLAG_TAKER_ORIGIN != 0
+    }
 }
 
 /// A decoded quote view: per-source verified books for one taker direction,
@@ -115,6 +142,27 @@ pub struct QuoteView {
     /// Slot the simulation ran at — the staleness check for consumers.
     pub slot: u64,
     pub books: Vec<QuotedBook>,
+    /// The row region filled before every book had been described, so the
+    /// last books carry fewer rows than they hold.
+    pub rows_truncated: bool,
+}
+
+impl QuoteView {
+    /// The users a fill against these books would settle for, in the order
+    /// the books would take them.
+    ///
+    /// The order is the answer, not a detail of it: a book stops at the first
+    /// maker the transaction did not carry, so a prefix of this list fills
+    /// and a gap forfeits everything behind it.
+    pub fn settleable_users(&self) -> Vec<UserRefV0> {
+        let mut users: Vec<UserRefV0> = Vec::new();
+        for row in self.books.iter().flat_map(|book| book.rows.iter()) {
+            if !users.contains(&row.user) {
+                users.push(row.user);
+            }
+        }
+        users
+    }
 }
 
 /// Decode a `RouterQuoteBufferV0` account's post-simulation bytes.
@@ -123,12 +171,26 @@ pub fn decode_quote_buffer(data: &[u8]) -> Result<QuoteView> {
     let books = (0..buffer.source_count as usize)
         .map(|i| {
             let source = &buffer.sources[i];
+            let start = source.row_start as usize;
             QuotedBook {
                 key: source.key,
                 kind: source.kind,
                 priority: source.priority,
                 clamped: source.clamped,
                 levels: buffer.levels[i][..source.level_count as usize].to_vec(),
+                rows: buffer.rows[start..start + source.row_len as usize]
+                    .iter()
+                    .map(|row| QuotedRow {
+                        price: row.price,
+                        size: row.size,
+                        order_id: row.order_id,
+                        user: UserRefV0 {
+                            authority: row.authority,
+                            sub_account_id: row.sub_account_id,
+                        },
+                        flags: row.flags,
+                    })
+                    .collect(),
             }
         })
         .collect();
@@ -138,7 +200,56 @@ pub fn decode_quote_buffer(data: &[u8]) -> Result<QuoteView> {
         quoted_size: buffer.quoted_size,
         slot: buffer.slot,
         books,
+        rows_truncated: buffer.rows_truncated,
     })
+}
+
+/// Static account keys one pass of the view can carry.
+///
+/// The binding resource is the transaction, not the buffer. A pass is one
+/// legacy message, and a message spends 32 bytes on each key plus the byte
+/// that indexes it in the instruction; what is left of the 1,232-byte packet
+/// after the signature, the header, the blockhash, the compact counts and the
+/// instruction's own data is the budget below. Overrunning it is not a
+/// degraded book — the runtime rejects the transaction before velocity runs,
+/// so the market publishes nothing.
+pub const PASS_ACCOUNT_BUDGET: usize = {
+    // Signature and its count, the three header bytes, the blockhash, the
+    // key and account-index counts, the program index, the data length, and
+    // `QuoteRouterArgs` behind its discriminator.
+    const ENVELOPE: usize = 64 + 1 + 3 + 32 + 2 + 1 + 2 + 2 + 24;
+    (PACKET_DATA_SIZE - ENVELOPE) / (32 + 1)
+};
+
+/// What one transaction may weigh: an IPv6 MTU less the UDP and IP headers.
+pub const PACKET_DATA_SIZE: usize = 1280 - 40 - 8;
+
+/// Keys every pass carries whatever it quotes: the instruction's own three
+/// accounts, the oracle/spot/perp map, the quoter signer, and velocity
+/// itself as the program the message invokes.
+pub const PASS_FIXED_ACCOUNTS: usize = 3 + 3 + 1 + 1;
+
+/// Static account keys a pass carrying `entries` and `dlob_makers` needs.
+///
+/// The same set [`build_quote_router_ix`] assembles, counted rather than
+/// built: entry keys, the union of their registered CPI accounts, and two
+/// accounts for every user a book has to load. It rounds up rather than down
+/// where the builder would dedup further — a pass that plans too small is a
+/// pass that publishes nothing.
+pub fn pass_account_cost(entries: &[QuoterV0], dlob_makers: usize) -> usize {
+    let mut cpi: BTreeSet<Pubkey> = BTreeSet::new();
+    let mut users: BTreeSet<Pubkey> = BTreeSet::new();
+    for entry in entries {
+        for meta in &entry.quote_accounts[..entry.quote_accounts_count as usize] {
+            cpi.insert(meta.pubkey);
+        }
+        cpi.insert(entry.response_account);
+        cpi.insert(entry.program_id);
+        if entry.quoter_type == QuoterType::Custom {
+            users.insert(entry.user);
+        }
+    }
+    PASS_FIXED_ACCOUNTS + entries.len() + cpi.len() + 2 * (users.len() + dlob_makers)
 }
 
 /// Instructions creating + initializing a quote buffer for `(authority,
@@ -440,6 +551,18 @@ pub async fn simulate_quote_view_with_cost<S: ChainSource>(
 ) -> Result<(QuoteView, u64)> {
     let blockhash = source.latest_blockhash().await?;
     let message = Message::new_with_blockhash(&[instruction], Some(payer), &blockhash.hash);
+    // The planner sizes passes to fit this; measuring the built message is
+    // what keeps a disagreement between the two from reaching the runtime,
+    // which answers an oversized transaction with a panic in its own
+    // sanitization rather than an error a caller can read.
+    let wire = message.serialize().len() + 1 + 64;
+    if wire > PACKET_DATA_SIZE {
+        bail!(
+            "quote pass needs {wire} bytes over the wire, past the {PACKET_DATA_SIZE}-byte \
+             packet: {} accounts",
+            message.account_keys.len()
+        );
+    }
     let tx = Transaction::new_unsigned(message);
     let outcome = source
         .simulate_transaction(&tx, &[*quote_buffer])
@@ -471,18 +594,21 @@ mod tests {
         buffer.market = 3;
         buffer.begin(1, 500, 42);
         let quoter = Pubkey::new_unique();
-        buffer
-            .push(
+        // Capped below what the book quotes, so the decoder is given a
+        // clamped source to report: 12 base offered, 11 admitted.
+        let clamped = buffer
+            .push_capped(
                 QuotedSourceKind::Quoter,
                 quoter,
                 10,
-                true,
                 &[
                     program::state::prop_amm::PriceLevel { price: 99, size: 5 },
                     program::state::prop_amm::PriceLevel { price: 98, size: 7 },
                 ],
+                11,
             )
             .unwrap();
+        assert!(clamped);
 
         let mut data = RouterQuoteBufferV0::DISCRIMINATOR.to_vec();
         data.extend_from_slice(bytemuck::bytes_of(&buffer));
@@ -500,7 +626,7 @@ mod tests {
         assert!(book.clamped);
         assert_eq!(book.levels.len(), 2);
         assert_eq!(book.levels[0].price, 99);
-        assert_eq!(book.levels[1].size, 7);
+        assert_eq!(book.levels[1].size, 6, "the second level took the cap");
         let _ = MAX_QUOTED_SOURCES;
     }
 

@@ -20,8 +20,7 @@ use {
         error::ErrorCode,
         math::router::QuoterBook,
         state::prop_amm::{
-            ClobUserRefV0, Direction, PriceLevel, QuoteArgsV0, QuoterType, QuoterUserSetRef,
-            QuoterV0,
+            ClobUserRefV0, Direction, PriceLevel, QuoteArgsV0, QuoterType, QuoterV0,
         },
         validate,
     },
@@ -172,7 +171,7 @@ impl<'info> QuotedRoute<'info> {
                         reference_price: inputs.reference_price,
                         direction: inputs.direction,
                         size: inputs.size,
-                        users: QuoterUserSetRef(inputs.users),
+                        users: inputs.users,
                         taker: Some(inputs.taker),
                     },
                     &inputs.quoter_signer,

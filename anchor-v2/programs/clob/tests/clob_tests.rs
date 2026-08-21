@@ -15,8 +15,7 @@ use {
         state::{
             CancelSidesV0, ClobDirectionExt, ClobHeaderV0, ClobMarketV0, ClobSideExt, Direction,
             MarketConfigV0, OrderBitFlag, OrderNodeV0, OrderRefV0, Side, UserCapsV0, UserRefV0,
-            UserSetV0, CANCEL_ALL_ORDERS_CEILING, EXECUTE_FILLS_CEILING, ORDERS_OFFSET,
-            REMOVED_ORDER_BYTES,
+            CANCEL_ALL_ORDERS_CEILING, EXECUTE_FILLS_CEILING, ORDERS_OFFSET, REMOVED_ORDER_BYTES,
         },
         CancelAllArgsV0, CancelOrderArgsV0, EvictWorstArgsV0, ExecuteArgsV0, PlaceOrderArgsV0,
         QuoteArgsV0, RemoveExpiredArgsV0, ResizeMarketArgsV0, UpdateMarketArgsV0,
@@ -264,13 +263,10 @@ fn place(ctx: &mut Ctx, args: PlaceOrderArgsV0, user: Address) -> OrderRefV0 {
 
 /// The wire's settleable-user set from a test's `Option<Vec<Address>>`:
 /// `None` is the unrestricted set.
-fn user_set(users: Option<Vec<Address>>) -> UserSetV0 {
+fn user_set(users: Option<Vec<Address>>) -> Vec<UserRefV0> {
     match users {
-        None => UserSetV0::EMPTY,
-        Some(users) => {
-            let refs: Vec<_> = users.into_iter().map(uref).collect();
-            UserSetV0::from_refs(&refs).unwrap()
-        }
+        None => Vec::new(),
+        Some(users) => users.into_iter().map(uref).collect(),
     }
 }
 
@@ -286,7 +282,7 @@ fn quote_meta_users(
             reference_price: 0,
             direction,
             size,
-            users: user_set(users),
+            users: &user_set(users),
             taker: None,
         },
     }
@@ -336,7 +332,7 @@ fn execute_meta_users(
             reference_price: 0,
             direction,
             size,
-            users: user_set(users),
+            users: &user_set(users),
             taker: None,
         },
     }
@@ -703,7 +699,7 @@ fn execute_rejects_unauthorized_caller() {
         reference_price: 0,
         direction: Direction::Long,
         size: 5,
-        users: UserSetV0::EMPTY,
+        users: &[],
         taker: None,
     };
     let execute_ix = |authority: Pubkey| {
@@ -1168,7 +1164,7 @@ fn cu_benchmarks() {
             reference_price: 0,
             direction: Direction::Short,
             size: u64::MAX,
-            users: UserSetV0::EMPTY,
+            users: &[],
             taker: None,
         },
     }
@@ -1385,7 +1381,7 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
             reference_price: 0,
             direction: Direction::Long,
             size: fills as u64,
-            users: UserSetV0::EMPTY,
+            users: &[],
             taker: None,
         },
     }
@@ -1485,7 +1481,7 @@ fn quote_taker(ctx: &mut Ctx, direction: Direction, size: u64, taker: Address) -
             reference_price: 0,
             direction,
             size,
-            users: UserSetV0::EMPTY,
+            users: &[],
             taker: Some(uref(taker)),
         },
     }
@@ -1508,7 +1504,7 @@ fn execute_taker(
             reference_price: 0,
             direction,
             size,
-            users: UserSetV0::EMPTY,
+            users: &[],
             taker: Some(uref(taker)),
         },
     }
@@ -1795,7 +1791,7 @@ fn cu_benchmark_quote_with_a_taker_origin_head() {
             reference_price: 0,
             direction: Direction::Short,
             size: u64::MAX,
-            users: UserSetV0::EMPTY,
+            users: &[],
             taker: None,
         },
     }
@@ -1810,5 +1806,176 @@ fn cu_benchmark_quote_with_a_taker_origin_head() {
     println!(
         "CU — quote(full side, uncrossed taker-origin at head): {}",
         meta.compute_units_consumed
+    );
+}
+
+/// One row per resting order, with the user each stands on — the answer a
+/// caller needs to know whose accounts its fill must carry, and the reason it
+/// never has to decode this account from outside.
+#[test]
+fn quote_l3_reports_the_orders_behind_the_ladder() {
+    use clob::state::{L3ArgsV0, L3ResponseV0, L3_ROWS_CEILING};
+
+    let mut ctx = setup();
+    let user_a = addr(Pubkey::new_unique());
+    let user_b = addr(Pubkey::new_unique());
+
+    place(&mut ctx, place_args(Side::Ask, 101, 10), user_b);
+    place(&mut ctx, place_args(Side::Ask, 100, 5), user_a);
+    place(&mut ctx, place_args(Side::Ask, 100, 7), user_b);
+    advance_slot(&mut ctx, 1);
+
+    let l3 = |ctx: &mut Ctx, size: u64, max_rows: u16| {
+        let ix = instruction::QuoteL3V0 {
+            args: L3ArgsV0 {
+                direction: Direction::Long,
+                size,
+                max_rows,
+            },
+        }
+        .to_instruction(accounts::QuoteL3V0 {
+            market: addr(ctx.market),
+        });
+        let meta = send(ctx, ix).unwrap();
+        let bytes = read_response(ctx, &meta);
+        let response = L3ResponseV0::parse(&bytes).expect("l3 response");
+        (
+            response
+                .rows
+                .iter()
+                .map(|row| (row.price, row.size, row.user.authority.to_bytes()))
+                .collect::<Vec<_>>(),
+            response.more == 1,
+        )
+    };
+
+    // The ladder aggregates the two orders at 100; the rows keep them apart,
+    // in the order the fill would take them.
+    assert_eq!(
+        quote(&mut ctx, Direction::Long, 100),
+        vec![(100, 12), (101, 10)]
+    );
+    let (rows, more) = l3(&mut ctx, 0, L3_ROWS_CEILING);
+    assert_eq!(
+        rows,
+        vec![
+            (100, 5, user_a.to_bytes()),
+            (100, 7, user_b.to_bytes()),
+            (101, 10, user_b.to_bytes()),
+        ]
+    );
+    assert!(!more, "the whole side fit");
+
+    // Order ids are the book's own, so a caller can act on a row.
+    let ix = instruction::QuoteL3V0 {
+        args: L3ArgsV0 {
+            direction: Direction::Long,
+            size: 0,
+            max_rows: L3_ROWS_CEILING,
+        },
+    }
+    .to_instruction(accounts::QuoteL3V0 {
+        market: addr(ctx.market),
+    });
+    let meta = send(&mut ctx, ix).unwrap();
+    let bytes = read_response(&ctx, &meta);
+    let response = L3ResponseV0::parse(&bytes).expect("l3 response");
+    assert!(response.rows.iter().all(|row| row.order_id != 0));
+
+    // A size bound stops the walk where a taker of that size would stop, and
+    // says depth remains.
+    let (rows, more) = l3(&mut ctx, 6, L3_ROWS_CEILING);
+    assert_eq!(rows.len(), 2, "the second order carries past the size");
+    assert!(more);
+
+    // So does a row bound.
+    let (rows, more) = l3(&mut ctx, 0, 1);
+    assert_eq!(rows.len(), 1);
+    assert!(more);
+
+    // An order that is not matchable yet is not a row: a fresh placement is
+    // behind the speed bump.
+    let user_c = addr(Pubkey::new_unique());
+    place(&mut ctx, place_args(Side::Ask, 99, 3), user_c);
+    let (rows, _) = l3(&mut ctx, 0, L3_ROWS_CEILING);
+    assert_eq!(rows.len(), 3, "the unactivated order is not reported");
+    advance_slot(&mut ctx, 1);
+    let (rows, _) = l3(&mut ctx, 0, L3_ROWS_CEILING);
+    assert_eq!(rows.len(), 4);
+    assert_eq!(rows[0], (99, 3, user_c.to_bytes()), "best price first");
+}
+
+/// The rows a market may report are bounded by the response region it already
+/// has, so describing a book never widens the account every CPI carries.
+#[test]
+fn the_l3_ceiling_fits_the_region_the_market_already_pays_for() {
+    use clob::state::{L3_ROWS_CEILING, L3_ROW_BYTES, RESPONSE_BUFFER_BYTES, RESPONSE_LEN_BYTES};
+    assert_eq!(L3_ROWS_CEILING, 128);
+    assert!(
+        RESPONSE_LEN_BYTES + L3_ROWS_CEILING as usize * L3_ROW_BYTES + 1 <= RESPONSE_BUFFER_BYTES
+    );
+}
+
+/// The grace window runs from the slot an order becomes matchable, because
+/// that is the first slot anyone could have seen it.
+///
+/// An order inside its activation delay is invisible to every reader of this
+/// book. Aging it from placement would let an auction-style order — placed
+/// far enough ahead that it is already past the window when it activates —
+/// end the first walk that ever sees it, forfeiting the depth behind. Since
+/// the walk is best-first and stopping is free for the maker, that is a lever
+/// anyone could pull on purpose: rest a well-priced order on a sub-account
+/// nobody carries, and every fill stops there the moment it wakes.
+#[test]
+fn an_order_waking_from_its_speed_bump_gets_the_grace_window() {
+    let mut ctx = setup(); // grace = 2 slots, max activation delay = 20
+    let auction = addr(Pubkey::new_unique());
+    let user_b = addr(Pubkey::new_unique());
+    ctx.svm.warp_to_slot(10);
+
+    // The auction order rests ten slots before it can match; the ordinary
+    // one is takeable next slot.
+    place(
+        &mut ctx,
+        PlaceOrderArgsV0 {
+            activation_delay_slots: Some(10),
+            ..place_args(Side::Ask, 100, 5)
+        },
+        auction,
+    );
+    place(&mut ctx, place_args(Side::Ask, 101, 7), user_b);
+
+    // Before it wakes it is nobody's problem: not quoted, not in the way.
+    ctx.svm.warp_to_slot(12);
+    assert_eq!(
+        quote_users(&mut ctx, Direction::Long, 12, Some(vec![user_b])),
+        vec![(101, 7)]
+    );
+
+    // The slot it wakes on, it is ten slots old by placement and zero slots
+    // old by visibility. A caller that read the book a moment ago could not
+    // have carried it, so the walk steps over it and keeps going.
+    ctx.svm.warp_to_slot(20);
+    assert_eq!(
+        quote_users(&mut ctx, Direction::Long, 12, Some(vec![user_b])),
+        vec![(101, 7)],
+        "the depth behind a just-woken order is still reachable"
+    );
+    assert_eq!(
+        quote_withheld(&mut ctx, Direction::Long, 12, Some(vec![user_b])),
+        None
+    );
+    let changes = execute_users(&mut ctx, Direction::Long, 7, Some(vec![user_b]));
+    assert_eq!(changes.len(), 1, "the reachable maker filled");
+
+    // The window still closes: once it has been awake longer than the grace,
+    // a caller that leaves it out gets nothing past it.
+    place(&mut ctx, place_args(Side::Ask, 101, 7), user_b);
+    ctx.svm.warp_to_slot(24);
+    assert!(quote_users(&mut ctx, Direction::Long, 12, Some(vec![user_b])).is_empty());
+    assert_eq!(
+        quote_withheld(&mut ctx, Direction::Long, 12, Some(vec![user_b])),
+        Some((100, 5)),
+        "awake and unclaimed for longer than the window: the walk stops here"
     );
 }

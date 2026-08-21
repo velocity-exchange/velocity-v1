@@ -301,7 +301,7 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
             .iter()
             .filter_map(|order_ref| {
                 let node = read_clob_node(&book, order_ref.order_ref.node_index)?;
-                if !node.is_open || node.order_id != order_ref.order_ref.order_id {
+                if !node.is_open() || node.order_id != order_ref.order_ref.order_id {
                     return None;
                 }
                 Some((order_ref, node))

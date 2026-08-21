@@ -25,7 +25,7 @@ pub fn handle_quote_v0(ctx: &mut Context<QuoteV0>, args: QuoteArgsV0) -> Result<
     ctx.accounts.market.quote(
         args.direction,
         args.size,
-        args.users.as_slice(),
+        args.users,
         &args.caps,
         args.reference_price,
         args.taker.as_ref(),

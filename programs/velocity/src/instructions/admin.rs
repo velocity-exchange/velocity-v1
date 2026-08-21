@@ -2503,6 +2503,20 @@ pub fn handle_update_perp_market_clob_quoter(
         initial_activation_wake_slot,
     )?;
 
+    // A market names its book once. Re-pricing the crank config above is
+    // fine, and pointing the market at a *different* entry is not: a book
+    // settles for whoever rests on it, so swapping one in later would let
+    // whoever holds the admin key move every user a fill carries. Attaching
+    // is therefore a one-way door, and the way out of a bad book is the
+    // maker's kill switch and the approval flag, not a replacement.
+    validate!(
+        perp_market.clob_quoter == Pubkey::default()
+            || perp_market.clob_quoter == ctx.accounts.quoter.key(),
+        ErrorCode::DefaultError,
+        "perp market {} already names clob quoter {}",
+        perp_market.market_index,
+        perp_market.clob_quoter
+    )?;
     msg!(
         "perp_market.clob_quoter: {} -> {}",
         perp_market.clob_quoter,

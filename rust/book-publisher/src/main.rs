@@ -148,13 +148,26 @@ async fn ensure_buffer(
     buffer: &Keypair,
     market_index: u16,
 ) -> Result<()> {
-    if source
+    if let Some(existing) = source
         .get_multiple_accounts(&[buffer.pubkey()])
         .await?
         .pop()
         .flatten()
-        .is_some()
     {
+        // A buffer persists across restarts, so one created before the layout
+        // grew is still on chain and still too small — every quote into it
+        // would fail on a push. Say so rather than run: the old account holds
+        // rent this process cannot reclaim, so replacing it is the operator's
+        // call.
+        let wanted = program::state::router_quote::RouterQuoteBufferV0::SIZE;
+        if existing.data.len() < wanted {
+            bail!(
+                "quote buffer {} for market {market_index} is {} bytes, the layout needs {wanted}. \
+                 Close it, delete its keypair from the buffer directory, and restart to create a new one.",
+                buffer.pubkey(),
+                existing.data.len()
+            );
+        }
         return Ok(());
     }
     let rent = solana_rent::Rent::default()
@@ -450,6 +463,7 @@ async fn publish_market(
         quoted_size: asks_quote.quoted_size,
         slot: asks_quote.slot,
         books: asks_quote.books,
+        rows_truncated: asks_quote.rows_truncated,
     };
     let bids = QuoteView {
         market: market_index,
@@ -457,6 +471,7 @@ async fn publish_market(
         quoted_size: bids_quote.quoted_size,
         slot: bids_quote.slot,
         books: bids_quote.books,
+        rows_truncated: bids_quote.rows_truncated,
     };
 
     let ts_ms = SystemTime::now()
@@ -506,50 +521,41 @@ async fn publish_market(
             .await?;
     }
 
-    // L3 + best makers come off the CLOB book directly (per-order data the
-    // quote view deliberately flattens away).
-    if let Some(book_key) = clob_book_key {
-        if let Some(book) = source
-            .get_multiple_accounts(&[book_key])
-            .await?
-            .pop()
-            .flatten()
-        {
-            let l3 = payload::l3_payload(
-                velocity,
-                market_index,
-                &name,
-                &book.data,
-                clock.slot,
-                clock.unix_timestamp,
-                &decorations,
-                ts_ms,
-                payload::propamm_rows(&bids, &bids_quote.entries),
-                payload::propamm_rows(&asks, &asks_quote.entries),
-                quote_size,
-            );
-            redis
-                .set::<_, _, ()>(
-                    format!("{prefix}last_update_orderbook_l3_perp_{market_index}"),
-                    l3.to_string(),
-                )
-                .await?;
-            let best_makers = payload::best_makers_payload(
-                velocity,
-                &book.data,
-                clock.slot,
-                clock.unix_timestamp,
-                payload::propamm_rows(&bids, &bids_quote.entries),
-                payload::propamm_rows(&asks, &asks_quote.entries),
-            );
-            redis
-                .set::<_, _, ()>(
-                    format!("{prefix}last_update_orderbook_best_makers_perp_{market_index}"),
-                    best_makers.to_string(),
-                )
-                .await?;
-        }
+    // L3 and best makers, out of the same view the ladders came from. Every
+    // source describes who its depth belongs to — a book through its
+    // `quote_l3_v0` leg, everything else against the one user its registry
+    // entry names — so this reads rows rather than decoding a book.
+    let l3_bids = payload::view_rows(velocity, &bids, &bids_quote.entries);
+    let l3_asks = payload::view_rows(velocity, &asks, &asks_quote.entries);
+    if bids_quote.rows_truncated || asks_quote.rows_truncated {
+        warn!(
+            market_index,
+            "a pass filled its row region; L3 describes part of the book"
+        );
     }
+    let l3 = payload::l3_payload(
+        market_index,
+        &name,
+        clock.slot,
+        &decorations,
+        ts_ms,
+        l3_bids.clone(),
+        l3_asks.clone(),
+        quote_size,
+    );
+    redis
+        .set::<_, _, ()>(
+            format!("{prefix}last_update_orderbook_l3_perp_{market_index}"),
+            l3.to_string(),
+        )
+        .await?;
+    let best_makers = payload::best_makers_payload(clock.slot, l3_bids, l3_asks);
+    redis
+        .set::<_, _, ()>(
+            format!("{prefix}last_update_orderbook_best_makers_perp_{market_index}"),
+            best_makers.to_string(),
+        )
+        .await?;
 
     // Fast-path cross matching: books in hand, a cross is free to see.
     // Simulate before sending — the executor is its own predicate, so a

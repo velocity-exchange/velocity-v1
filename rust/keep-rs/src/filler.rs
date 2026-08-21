@@ -1040,44 +1040,49 @@ async fn try_trigger_order(
 /// the next fill rather than being handed to a worse price.
 const CLOB_MAKERS_PER_FILL: usize = 6;
 
-/// The `User` accounts of the makers a fill would sweep off `book`.
+/// The `User` accounts of the makers a fill would sweep off the book.
 ///
 /// The DLOB cross cannot name these. Its orders live in `User.orders`, which
 /// is why finding them is a matter of reading loaded accounts; a book order
-/// lives on the book, and the only record of who owns it is a
-/// `(authority, sub_account_id)` on a node. Reading it through the program's
-/// own walk is what keeps this list from disagreeing with the one the fill
-/// will build on-chain.
+/// lives on the book, and the only record of who owns it is an authority and
+/// a sub-account on the order. The book answers for itself through its
+/// `quote_l3_v0` leg, simulated — so this keeper never decodes a book, and
+/// the book may change its data structures without breaking it.
 async fn clob_makers(
     velocity: &'static VelocityClient,
-    book: Pubkey,
+    entry: &QuoterV0,
     direction: PositionDirection,
     size: u64,
     taker: ClobUserRefV0,
     metrics: &Metrics,
 ) -> Vec<User> {
-    let Ok(data) = velocity.rpc().get_account_data(&book).await else {
-        log::warn!(target: TARGET, "clob makers: book {book} unreadable");
-        return Vec::new();
-    };
-    let slot = velocity.get_slot().await.unwrap_or_default();
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or_default();
+    let source = relay_chain_source::RpcSource::new(velocity.rpc().url());
     // Asked for without a budget first, so what the budget leaves behind is
     // countable. A book stops at the first maker the transaction did not
     // bring, so every one dropped here is depth the taker did not get, and
     // whether that is worth designing around turns on how often it happens.
-    let reachable = velocity_rs::clob::resting_makers(
-        &data,
-        velocity_rs::clob::swept_side(direction),
+    let reachable = match velocity_router_sim::l3::resting_makers(
+        &source,
+        entry,
+        match direction {
+            PositionDirection::Long => velocity_router_sim::Direction::Long,
+            PositionDirection::Short => velocity_router_sim::Direction::Short,
+        },
         size,
-        taker,
-        slot,
-        now,
         usize::MAX,
-    );
+    )
+    .await
+    {
+        Ok(makers) => makers,
+        Err(err) => {
+            log::warn!(target: TARGET, "clob makers: {err:#}");
+            return Vec::new();
+        }
+    };
+    let reachable: Vec<ClobUserRefV0> = reachable
+        .into_iter()
+        .filter(|maker| *maker != taker)
+        .collect();
     let carried = reachable.len().min(CLOB_MAKERS_PER_FILL);
     metrics.clob_makers_carried.inc_by(carried as u64);
     if reachable.len() > carried {
@@ -1085,7 +1090,7 @@ async fn clob_makers(
         metrics.clob_makers_dropped.inc_by(dropped as u64);
         log::info!(
             target: TARGET,
-            "clob makers: book {book} had {} in reach, carrying {carried}, {dropped} left resting",
+            "clob makers: {} in reach, carrying {carried}, {dropped} left resting",
             reachable.len()
         );
     }
@@ -1169,18 +1174,18 @@ async fn try_swift_fill(
     // market's CLOB rather than in `User.orders`. A signed-message order
     // cannot be IOC, so without this its leftover stays on the DLOB, where
     // nothing but another keeper's fill can reach it.
-    let clob_fill = velocity
+    let clob_entry = velocity
         .get_account_value::<QuoterV0>(&clob_quoter)
         .await
-        .ok()
-        .map(|entry| ClobFillAccounts {
-            market_index: taker_order.market_index,
-            quoter: clob_quoter,
-            clob_market: entry.response_account,
-            clob_program: entry.program_id,
-            quoter_signer: derive_quoter_signer(),
-            crank_conditions: Some(derive_clob_crank_conditions(taker_order.market_index)),
-        });
+        .ok();
+    let clob_fill = clob_entry.as_ref().map(|entry| ClobFillAccounts {
+        market_index: taker_order.market_index,
+        quoter: clob_quoter,
+        clob_market: entry.response_account,
+        clob_program: entry.program_id,
+        quoter_signer: derive_quoter_signer(),
+        crank_conditions: Some(derive_clob_crank_conditions(taker_order.market_index)),
+    });
 
     // The book's own makers. The DLOB cross above cannot name them: its
     // orders live in `User.orders`, and a book order lives on the book. A
@@ -1189,11 +1194,11 @@ async fn try_swift_fill(
     // first one missing, so leaving out the best maker forfeits the rest of
     // it too.
     let mut maker_accounts = maker_accounts;
-    if let Some(clob) = clob_fill.as_ref() {
+    if let Some(clob_entry) = clob_entry.as_ref() {
         maker_accounts.extend(
             clob_makers(
                 velocity,
-                clob.clob_market,
+                &clob_entry,
                 taker_order.direction,
                 taker_order.base_asset_amount,
                 ClobUserRefV0 {

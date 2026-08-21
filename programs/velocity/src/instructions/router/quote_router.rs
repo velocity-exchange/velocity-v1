@@ -41,11 +41,11 @@ use {
         state::{
             perp_market_map::{get_writable_perp_market_set, MarketSet},
             prop_amm::{
-                Direction, PriceLevel, QuoteArgsV0, QuoterType, QuoterUserSetRef, QuoterV0,
+                ClobUserRefV0, Direction, L3ArgsV0, PriceLevel, QuoteArgsV0, QuoterType, QuoterV0,
                 WireDirectionExt,
             },
             quoter::MarketQuoteInputs,
-            router_quote::{QuotedSourceKind, RouterQuoteBufferV0},
+            router_quote::{QuotedRowV0, QuotedSourceKind, RouterQuoteBufferV0},
             state::State,
             user_map::load_user_maps,
         },
@@ -139,12 +139,12 @@ pub fn handle_quote_router<'c: 'info, 'info>(
     buffer.begin(args.direction as u8, args.size, clock.slot);
 
     // ---- Externals first: their books are the vAMM's last look. ----
-    // Books are held as owned levels so they can be handed to the ladder as
-    // rivals after the CPI borrow ends.
+    // A book is read straight out of the quoter's response account and copied
+    // once, into the buffer. Nothing holds a second copy: velocity's heap is
+    // 32 KB and never reclaims, and this runs once per quoter.
     let (quoter_signer, quoter_signer_nonce) = crate::signer::find_quoter_signer();
-    let mut books: Vec<(u8, Vec<PriceLevel>)> = Vec::with_capacity(quoter_count);
     for loader in &quoters {
-        let (priority, quoter_type, quoter_user, mut levels) = {
+        let (priority, quoter_type, quoter_user, located) = {
             let quoter = loader.load()?;
             validate!(
                 quoter.market == market_index,
@@ -156,8 +156,8 @@ pub fn handle_quote_router<'c: 'info, 'info>(
             if !(quoter.is_active && quoter.is_approved) {
                 continue;
             }
-            let levels = quoter
-                .quote(
+            let located = quoter
+                .quote_in_place(
                     market_index,
                     QuoteArgsV0 {
                         // The view settles nothing, so it constrains nothing:
@@ -169,7 +169,7 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                         size: args.size,
                         // A view has no settlement, so no loaded-user
                         // restriction: quote everything the book holds.
-                        users: QuoterUserSetRef::EMPTY,
+                        users: &[],
                         taker: None,
                     },
                     &quoter_signer,
@@ -180,12 +180,13 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                     msg!("quoter {} quote failed: {}", loader.key(), e);
                     ErrorCode::DefaultError
                 })?;
-            (quoter.priority, quoter.quoter_type, quoter.user, levels)
+            (quoter.priority, quoter.quoter_type, quoter.user, located)
         };
 
         // Verification: a Custom quoter's depth is never margin-reserved, so
         // clamp it to what its user can actually support. CLOB depth was
-        // gated at placement, so it stands as quoted here.
+        // gated at placement, so it stands as quoted here. The cap is taken
+        // before the response is borrowed, because it reads the maps.
         //
         // The fill cuts a CLOB book once more, at the first order resting
         // under a maker whose equity floor it cannot verify
@@ -196,9 +197,8 @@ pub fn handle_quote_router<'c: 'info, 'info>(
         // one of that maker's oracles is invalid — and it errs by showing
         // depth the fill routes elsewhere, not by hiding depth that exists.
         // Loading the makers is what it would take to close it.
-        let mut clamped = false;
-        if quoter_type == QuoterType::Custom {
-            let cap = margin_cap(
+        let cap = if quoter_type == QuoterType::Custom {
+            margin_cap(
                 &makers,
                 &quoter_user,
                 market_index,
@@ -206,17 +206,60 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                 &perp_market_map,
                 &spot_market_map,
                 &mut oracle_map,
+            )?
+        } else {
+            u64::MAX
+        };
+
+        // The borrow ends with this block, before the next quoter's CPI: a
+        // live borrow of a response account would fail the CPI that writes
+        // it.
+        let admitted = {
+            let data = located.borrow()?;
+            let response = located.checked_quote_response(&data, args.direction)?;
+            buffer.push_capped(
+                QuotedSourceKind::Quoter,
+                loader.key(),
+                priority,
+                response.levels,
+                cap,
             )?;
-            clamped = truncate_to(&mut levels.levels, cap);
+            buffer
+                .levels_for(buffer.source_count as usize - 1)
+                .iter()
+                .map(|level| level.size)
+                .fold(0u64, u64::saturating_add)
+        };
+
+        // Who the ladder stands on. A quoter that holds other people's orders
+        // says so itself, through the optional third leg; every other quoter
+        // fills from the one account the registry names, so its rows say that
+        // instead. Either way a reader gets one shape and never has to decode
+        // a quoter's account from outside.
+        let rows_wanted = buffer.rows_remaining();
+        if rows_wanted > 0 {
+            // A Custom entry is bound to the user it registered for; a book
+            // is not bound to anyone velocity can name, which is the same
+            // split settlement makes.
+            let bound_to = (quoter_type == QuoterType::Custom)
+                .then(|| user_ref(&makers, &quoter_user))
+                .flatten();
+            let described = quoter_rows(
+                loader,
+                market_index,
+                args.direction,
+                admitted,
+                rows_wanted,
+                &quoter_signer,
+                quoter_signer_nonce,
+                &accounts,
+                bound_to,
+                &mut buffer,
+            )?;
+            if !described {
+                attribute_to_user(&makers, &quoter_user, admitted, &mut buffer)?;
+            }
         }
-        buffer.push(
-            QuotedSourceKind::Quoter,
-            loader.key(),
-            priority,
-            clamped,
-            &levels.levels,
-        )?;
-        books.push((priority, levels.levels));
     }
 
     // ---- DLOB makers next: one level per crossing resting order. ----
@@ -255,14 +298,16 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                 price: price.into(),
                 size: size.into(),
             }];
-            buffer.push(
-                QuotedSourceKind::DlobOrder,
-                *maker_key,
-                clob_tier,
-                false,
-                &levels,
-            )?;
-            books.push((clob_tier, levels.to_vec()));
+            buffer.push(QuotedSourceKind::DlobOrder, *maker_key, clob_tier, &levels)?;
+            buffer.push_row(QuotedRowV0 {
+                price: price.into(),
+                size: size.into(),
+                order_id: maker.orders[order_index].order_id.into(),
+                authority: maker.authority,
+                sub_account_id: maker.sub_account_id,
+                flags: 0,
+                padding: [0; 5],
+            })?;
         }
     }
 
@@ -284,12 +329,15 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                 &state.oracle_guard_rails.validity,
             )?
         };
-        let rivals: Vec<QuoterBook> = books
-            .iter()
-            .map(|(priority, levels)| QuoterBook {
+        // Every book quoted above is already in the buffer, in fill order, so
+        // the rivals are views onto it rather than copies of it. The two
+        // level types are the same 16 bytes — one is the borsh wire's, one is
+        // the buffer's Pod form — which is what makes the cast free.
+        let rivals: Vec<QuoterBook> = (0..buffer.source_count as usize)
+            .map(|index| QuoterBook {
                 withheld: crate::state::prop_amm::PriceLevel::default(),
-                priority: *priority,
-                levels,
+                priority: buffer.sources[index].priority,
+                levels: bytemuck::cast_slice(buffer.levels_for(index)),
             })
             .collect();
         let ctx = inputs.ctx(clock.slot);
@@ -309,7 +357,6 @@ pub fn handle_quote_router<'c: 'info, 'info>(
             QuotedSourceKind::Vamm,
             perp_market_map.get_ref(&market_index)?.pubkey,
             QuoterType::Vamm.default_priority(),
-            false,
             &amm_levels,
         )?;
     }
@@ -320,6 +367,132 @@ pub fn handle_quote_router<'c: 'info, 'info>(
         market_index,
         args.size
     );
+    Ok(())
+}
+
+/// Ask a quoter which orders its ladder stands on, and record them.
+///
+/// `false` when the entry declares no `quote_l3_v0` leg, which is every
+/// quoter that fills from one account.
+#[allow(clippy::too_many_arguments)]
+fn quoter_rows<'info>(
+    loader: &AccountLoader<'info, QuoterV0>,
+    market_index: u16,
+    direction: Direction,
+    admitted: u64,
+    rows_wanted: usize,
+    quoter_signer: &Pubkey,
+    quoter_signer_nonce: u8,
+    accounts: &[AccountInfo<'info>],
+    // The one user a Custom entry may name, `None` for a book. The same rule
+    // settlement applies, applied to what the entry says about itself.
+    bound_to: Option<ClobUserRefV0>,
+    buffer: &mut RouterQuoteBufferV0,
+) -> Result<bool> {
+    let located = {
+        let quoter = loader.load()?;
+        quoter.quote_l3(
+            market_index,
+            L3ArgsV0 {
+                direction,
+                size: admitted,
+                max_rows: rows_wanted.min(u16::MAX as usize) as u16,
+            },
+            quoter_signer,
+            quoter_signer_nonce,
+            accounts,
+        )?
+    };
+    let Some(located) = located else {
+        return Ok(false);
+    };
+    let data = located.borrow()?;
+    // Cut to what the ladder admitted: a book whose depth verification
+    // clamped must not name makers whose orders that clamp took away.
+    let mut remaining = admitted;
+    for row in located.l3_response(&data)?.rows {
+        if remaining == 0 {
+            break;
+        }
+        // A quoter that fills from one account may only describe that
+        // account. Settlement refuses anything else, so a row naming a
+        // stranger is a quoter asking the caller to carry an account it
+        // could never move — reported rather than quietly corrected, so the
+        // health layer can hold it responsible.
+        if let Some(bound_to) = bound_to {
+            validate!(
+                row.user == bound_to,
+                ErrorCode::QuoterSubjectNotPermitted,
+                "quoter {} described a row for user {}/{}, which it cannot settle",
+                loader.key(),
+                row.user.authority,
+                row.user.sub_account_id
+            )?;
+        }
+        let size = row.size.min(remaining);
+        if !buffer.push_row(QuotedRowV0 {
+            price: row.price,
+            size,
+            order_id: row.order_id,
+            authority: row.user.authority,
+            sub_account_id: row.user.sub_account_id,
+            flags: row.flags,
+            padding: [0; 5],
+        })? {
+            break;
+        }
+        remaining -= size;
+    }
+    Ok(true)
+}
+
+/// The loaded user's identity in derivable form, `None` when the call did not
+/// carry its account.
+fn user_ref(makers: &crate::state::user_map::UserMap, user: &Pubkey) -> Option<ClobUserRefV0> {
+    let maker = makers.get_ref(user).ok()?;
+    Some(ClobUserRefV0 {
+        authority: maker.authority,
+        sub_account_id: maker.sub_account_id,
+    })
+}
+
+/// Record a ladder as one row against the user the registry names for it.
+///
+/// The whole ladder, because that is what a quoter without orders means: it
+/// fills from one account at whatever prices it quoted. The row carries no
+/// order id for the same reason. Nothing is recorded when the user's account
+/// did not ride the call — the identity a caller needs lives inside it.
+fn attribute_to_user(
+    makers: &crate::state::user_map::UserMap,
+    user: &Pubkey,
+    admitted: u64,
+    buffer: &mut RouterQuoteBufferV0,
+) -> Result<()> {
+    if admitted == 0 {
+        return Ok(());
+    }
+    let Some(user) = user_ref(makers, user) else {
+        return Ok(());
+    };
+    let index = buffer.source_count as usize - 1;
+    let levels: Vec<(u64, u64)> = buffer
+        .levels_for(index)
+        .iter()
+        .map(|level| (level.price, level.size))
+        .collect();
+    for (price, size) in levels {
+        if !buffer.push_row(QuotedRowV0 {
+            price,
+            size,
+            order_id: 0,
+            authority: user.authority,
+            sub_account_id: user.sub_account_id,
+            flags: 0,
+            padding: [0; 5],
+        })? {
+            break;
+        }
+    }
     Ok(())
 }
 
@@ -379,22 +552,4 @@ fn margin_cap(
         spot_market_map,
         oracle_map,
     )?)
-}
-
-/// Truncate a book to `cap` total base, best levels first. Returns whether it
-/// bit — the caller records that on the source so a consumer can tell a thin
-/// quoter from a clamped one.
-fn truncate_to(levels: &mut Vec<PriceLevel>, cap: u64) -> bool {
-    let total: u64 = levels.iter().map(|l| l.size).fold(0, u64::saturating_add);
-    if total <= cap {
-        return false;
-    }
-    let mut remaining = cap;
-    levels.retain_mut(|level| {
-        let take = level.size.min(remaining);
-        remaining -= take;
-        level.size = take.into();
-        take > 0
-    });
-    true
 }

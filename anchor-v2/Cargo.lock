@@ -137,7 +137,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 [[package]]
 name = "anchor-derive-accounts-v2"
 version = "2.0.0"
-source = "git+https://github.com/otter-sec/anchor.git?rev=4fbe613b2dc739a849355889ce1f27eb6d03a148#4fbe613b2dc739a849355889ce1f27eb6d03a148"
+source = "git+https://github.com/velocity-exchange/anchor.git?rev=a8e619f32fcfea63244bc84773edb8a3a6cc140c#a8e619f32fcfea63244bc84773edb8a3a6cc140c"
 dependencies = [
  "anchor-lang-idl",
  "bs58",
@@ -152,7 +152,7 @@ dependencies = [
 [[package]]
 name = "anchor-lang-idl"
 version = "0.1.2"
-source = "git+https://github.com/otter-sec/anchor.git?rev=4fbe613b2dc739a849355889ce1f27eb6d03a148#4fbe613b2dc739a849355889ce1f27eb6d03a148"
+source = "git+https://github.com/velocity-exchange/anchor.git?rev=a8e619f32fcfea63244bc84773edb8a3a6cc140c#a8e619f32fcfea63244bc84773edb8a3a6cc140c"
 dependencies = [
  "anchor-lang-idl-spec",
  "anyhow",
@@ -165,7 +165,7 @@ dependencies = [
 [[package]]
 name = "anchor-lang-idl-spec"
 version = "0.1.0"
-source = "git+https://github.com/otter-sec/anchor.git?rev=4fbe613b2dc739a849355889ce1f27eb6d03a148#4fbe613b2dc739a849355889ce1f27eb6d03a148"
+source = "git+https://github.com/velocity-exchange/anchor.git?rev=a8e619f32fcfea63244bc84773edb8a3a6cc140c#a8e619f32fcfea63244bc84773edb8a3a6cc140c"
 dependencies = [
  "anyhow",
  "serde",
@@ -174,7 +174,7 @@ dependencies = [
 [[package]]
 name = "anchor-lang-v2"
 version = "2.0.0"
-source = "git+https://github.com/otter-sec/anchor.git?rev=4fbe613b2dc739a849355889ce1f27eb6d03a148#4fbe613b2dc739a849355889ce1f27eb6d03a148"
+source = "git+https://github.com/velocity-exchange/anchor.git?rev=a8e619f32fcfea63244bc84773edb8a3a6cc140c#a8e619f32fcfea63244bc84773edb8a3a6cc140c"
 dependencies = [
  "anchor-derive-accounts-v2",
  "bytemuck",
@@ -197,7 +197,7 @@ dependencies = [
 [[package]]
 name = "anchor-v2-testing"
 version = "0.1.0"
-source = "git+https://github.com/otter-sec/anchor.git?rev=4fbe613b2dc739a849355889ce1f27eb6d03a148#4fbe613b2dc739a849355889ce1f27eb6d03a148"
+source = "git+https://github.com/velocity-exchange/anchor.git?rev=a8e619f32fcfea63244bc84773edb8a3a6cc140c#a8e619f32fcfea63244bc84773edb8a3a6cc140c"
 dependencies = [
  "litesvm",
  "solana-keypair",
@@ -707,6 +707,7 @@ dependencies = [
  "anchor-lang-v2",
  "anchor-v2-testing",
  "bytemuck",
+ "clob-spec",
  "litesvm",
  "quoter-spec",
  "solana-account",
@@ -714,6 +715,16 @@ dependencies = [
  "solana-pubkey 3.0.0",
  "static_assertions",
  "wincode",
+]
+
+[[package]]
+name = "clob-spec"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "quoter-spec",
+ "solana-address 2.6.1",
+ "static_assertions",
 ]
 
 [[package]]

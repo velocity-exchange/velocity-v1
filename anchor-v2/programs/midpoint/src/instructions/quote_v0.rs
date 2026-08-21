@@ -25,9 +25,9 @@ pub struct QuoteV0 {
 }
 
 /// Declared by `quoter-spec`, which owns every shape on this wire. A local
-/// mirror is not a convenience here: the args are a fixed-offset layout, so a
-/// mirror that is missing a field reads every field after it from the wrong
-/// place and reports nothing wrong.
+/// mirror is not a convenience here: the fields are read in declaration
+/// order, so a mirror that is missing one reads every field after it from the
+/// wrong place and reports nothing wrong.
 ///
 /// The midpoint reads `users` and `taker`. It ignores `caps` and
 /// `reference_price`: it settles against one standing-intent user and holds
@@ -50,6 +50,13 @@ pub fn caller_gate(
     instructions_sysvar: &anchor_lang_v2::pinocchio::account::AccountView,
     velocity_state: &anchor_lang_v2::pinocchio::account::AccountView,
 ) -> Result<bool> {
+    // The caps address a user by its index in this set, and the exclusion
+    // bitmap holds one bit per slot up to the capacity. A longer set carries
+    // users no bit can exclude.
+    require!(
+        crate::state::user_set_within_capacity(users),
+        crate::error::MidpointError::OversizedUserSet
+    );
     let quoted = quoter.user_ref();
     if !users.is_empty() && !users.contains(&quoted) {
         return Ok(false);
@@ -75,7 +82,7 @@ pub fn handle_quote_v0(ctx: &mut Context<QuoteV0>, args: QuoteArgsV0) -> Result<
     let clock = Clock::get()?;
     let open = caller_gate(
         &ctx.accounts.quoter,
-        args.users.as_slice(),
+        args.users,
         args.taker.as_ref(),
         ctx.accounts.instructions_sysvar.account(),
         ctx.accounts.velocity_state.account(),

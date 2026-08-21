@@ -381,16 +381,9 @@ pub mod amm_jit {
                 &self,
                 _index: usize,
                 _direction: Direction,
-                size: u64,
+                _size: u64,
             ) -> crate::error::VelocityResult<crate::state::prop_amm::QuoterSubjects> {
-                Ok(crate::state::prop_amm::QuoterSubjects::Book(vec![
-                    crate::state::prop_amm::ClobRestingOrderV0 {
-                        user: self.user_ref,
-                        price: self.price,
-                        base_asset_amount: size,
-                        is_taker_origin: false,
-                    },
-                ]))
+                Ok(crate::state::prop_amm::QuoterSubjects::Book)
             }
             fn execute(
                 &mut self,
@@ -685,16 +678,18 @@ pub mod amm_jit {
         );
     }
 
-    /// A quoter's response is only allowed to name subjects that quoter may
-    /// act against. The loaded-user set is much wider than that — it holds the
-    /// taker and every rival source's makers — so a quoter naming one of those
-    /// would be minting a position onto a stranger at a price it chose.
+    /// A Custom quoter's response may name one subject: the account its
+    /// registration consented for. The loaded-user set is much wider than
+    /// that — it holds the taker and every rival source's makers — so naming
+    /// one of those would be minting a position onto a stranger at a price
+    /// the quoter chose, and velocity refuses the whole fill.
     ///
     /// Same fixture as the fill above, except the external quoter's response
-    /// names the *DLOB* maker (its own book holds only the CLOB maker). The
-    /// whole fill must fail rather than settle it: this is the wiring test for
-    /// the rule `QuoterSubjects::permits` states, which
-    /// `state::prop_amm::tests` covers case by case.
+    /// names the *DLOB* maker. This is the wiring test for the rule
+    /// `QuoterSubjects::permits` states, which `state::prop_amm::tests`
+    /// covers case by case — including why a book, whose subjects velocity
+    /// cannot establish independently, is bound by the price and margin
+    /// checks instead.
     #[test]
     fn router_pass_rejects_an_external_quoter_naming_another_sources_maker() {
         use crate::state::prop_amm::{
@@ -703,15 +698,15 @@ pub mod amm_jit {
         };
 
         /// Its book rests `resting`; its response names `names`.
-        struct HostileClobExecutor {
+        struct HostileCustomExecutor {
             user: Pubkey,
             resting: ClobUserRefV0,
             names: ClobUserRefV0,
             price: u64,
         }
-        impl ExternalQuoterExecutor<'static> for HostileClobExecutor {
+        impl ExternalQuoterExecutor<'static> for HostileCustomExecutor {
             fn quoter_type(&self, _index: usize) -> QuoterType {
-                QuoterType::Clob
+                QuoterType::Custom
             }
             fn quoter_user(&self, _index: usize) -> Pubkey {
                 self.user
@@ -723,14 +718,9 @@ pub mod amm_jit {
                 &self,
                 _index: usize,
                 _direction: Direction,
-                size: u64,
+                _size: u64,
             ) -> crate::error::VelocityResult<QuoterSubjects> {
-                Ok(QuoterSubjects::Book(vec![ClobRestingOrderV0 {
-                    user: self.resting,
-                    price: self.price,
-                    base_asset_amount: size,
-                    is_taker_origin: false,
-                }]))
+                Ok(QuoterSubjects::Account(self.user))
             }
             fn execute(
                 &mut self,
@@ -938,7 +928,7 @@ pub mod amm_jit {
             levels: &external_levels,
             withheld: PriceLevel::default(),
         }];
-        let mut executor = HostileClobExecutor {
+        let mut executor = HostileCustomExecutor {
             user: clob_maker_key,
             resting: ClobUserRefV0 {
                 authority: clob_maker_authority,

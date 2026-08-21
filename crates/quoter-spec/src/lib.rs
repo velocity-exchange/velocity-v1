@@ -69,7 +69,7 @@
 // is too.
 pub use wincode;
 pub mod write;
-pub use write::{ExecuteWriter, QuoteWriter};
+pub use write::{ExecuteWriter, L3Writer, QuoteWriter};
 use {
     bytemuck::{Pod, Zeroable},
     solana_address::Address as Pubkey,
@@ -330,6 +330,9 @@ pub enum SpecError {
     /// The region does not start on the step its records need. A response
     /// written there could not be read in place.
     RegionMisaligned,
+    /// The args could not be measured or written. The caller logs the
+    /// underlying `wincode` error, which does not survive as a copyable value.
+    Write,
 }
 
 /// Whether every completed order names a balance change that exists.
@@ -341,6 +344,488 @@ pub(crate) fn completed_orders_fit(completed: &[CompletedOrderV0], changes: usiz
     completed
         .iter()
         .all(|entry| (entry.change_index as usize) < changes)
+}
+
+/// Users a quote or execute may fill, and how much room each has left.
+///
+/// The request half of the wire, declared here for the reason the responses
+/// are: velocity writes these bytes and a quoter reads them, and two
+/// hand-mirrored declarations are two programs that can drift into
+/// self-consistent disagreement. A cap misread as a taker, or a side read off
+/// by one, silently turns a skip into a fill.
+///
+/// Most a call may name. The bound is the account-lock budget of the
+/// transaction that carries the set, and it is also what [`UserCapsV0`] can
+/// address: a cap names a user by its index here, and the exclusion bitmap
+/// holds one bit per slot up to this number.
+pub const USER_SET_CAPACITY: usize = 48;
+
+/// Users that can carry a *partial* cap on one call.
+///
+/// Only partials need a slot. A user with no room at all rides
+/// [`UserCapsV0::excluded_bid`] / `excluded_ask`, one bit each, so every user
+/// in the set can be excluded at once — which is what one sharp move
+/// produces, and the moment a book most needs to stay usable. What is left
+/// here is the narrow band with room for some of what they rest, and an
+/// overflow there costs no more than a revert that was already coming.
+pub const USER_CAPS_CAPACITY: usize = 8;
+
+/// Bytes of bitmap for one bit per user in the set.
+pub const USER_EXCLUSION_BITMAP_BYTES: usize = USER_SET_CAPACITY.div_ceil(8);
+
+/// Taker direction, from the taker's perspective.
+///
+/// Encoded as its discriminant, `Long = 0`, and every program on this wire
+/// reads the same declaration — a taker direction inverted across the
+/// boundary would fill the wrong side of a book.
+#[cfg_attr(
+    feature = "anchor-derive",
+    derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
+)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
+pub enum DirectionV0 {
+    Long,
+    Short,
+}
+
+impl DirectionV0 {
+    /// The side a taker of this direction consumes.
+    pub fn side(self) -> SideV0 {
+        match self {
+            DirectionV0::Long => SideV0::Ask,
+            DirectionV0::Short => SideV0::Bid,
+        }
+    }
+}
+
+/// Where in the quoter's response account it wrote the response. Return data
+/// of `quote_v0` and `execute_v0`.
+///
+/// The one shape a caller reads back from every quoter, whatever it is: the
+/// response itself lives in an account the caller then borrows, and this says
+/// where to look. Declared here rather than per program for the same reason
+/// the rest of the wire is — three copies of two `u32`s are three chances to
+/// disagree about which comes first.
+#[repr(C)]
+#[cfg_attr(
+    feature = "anchor-derive",
+    derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
+)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, SchemaRead, SchemaWrite)]
+pub struct ResponsePointerV0 {
+    pub offset: u32,
+    pub len: u32,
+}
+
+/// Which sides a `cancel_all_v0` withdraws.
+///
+/// Named sides rather than a pair of bools, because the wire must not be able
+/// to express "neither" — that is a maker believing their quotes are gone
+/// when nothing happened.
+///
+/// What the sides *mean* differs by who is reading: a book walks them as book
+/// sides, a caller unwinds them as position directions, a spline reads them as
+/// taker directions. Each program adds that reading itself; the tags are the
+/// part that has to agree.
+#[cfg_attr(
+    feature = "anchor-derive",
+    derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
+)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
+pub enum CancelSidesV0 {
+    Bids,
+    Asks,
+    Both,
+}
+
+/// Which side an order rests on: a bid makes its owner long, an ask short.
+#[cfg_attr(
+    feature = "anchor-derive",
+    derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
+)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
+pub enum SideV0 {
+    Bid,
+    Ask,
+}
+
+/// Base units in one whole base asset. The denominator that turns a base
+/// amount and a price difference into a quote amount, and the reason a budget
+/// can be spent identically by every quoter.
+pub const BASE_PRECISION: u64 = 1_000_000_000;
+
+/// What one named user may still lose on the side this call sweeps, in quote.
+///
+/// A budget rather than a base amount, because the caller cannot convert the
+/// one into the other. What a fill costs a maker is collateral, and the
+/// conversion needs the price each order fills at — which the caller does not
+/// have and the quoter does. So the caller sends what it knows and the quoter
+/// spends it:
+///
+/// ```text
+/// cost = base * |price - reference_price| / BASE_PRECISION
+/// ```
+///
+/// counted only where the fill moves against the owner: an order resting on
+/// the bid side costs its owner when it fills *above* the reference, an ask
+/// when it fills *below*. An order priced in the owner's favour costs nothing
+/// and is filled whole. Once the budget is spent, that user's remaining
+/// orders are passed over and the depth behind them is still filled.
+///
+/// Why this is the cost that matters: a resting order is normally already
+/// collateralized against the position it would become, priced at the
+/// reference. Filling it converts that reservation into the position it stood
+/// for. What the reservation does not price is the owner paying its own limit
+/// price for a position marked at the reference, and that difference scales
+/// with size.
+///
+/// One number, not one per side, because a call sweeps one side of the book:
+/// [`QuoteArgsV0::direction`] says which, and the budget is for that side.
+///
+/// `u64::MAX` means unbounded. Zero means the user is excluded outright, and
+/// belongs in the bitmap rather than here.
+#[repr(C)]
+#[cfg_attr(
+    feature = "anchor-derive",
+    derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
+)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, SchemaRead, SchemaWrite)]
+pub struct UserCapV0 {
+    /// Quote this user may lose filling on the swept side.
+    pub budget: u64,
+    /// Index into the accompanying user set.
+    pub index: u8,
+}
+
+/// Per-user room, parallel to the caller's user set.
+///
+/// A user absent from all of this is unconstrained. An excluded user has
+/// their orders passed over entirely — the caller has said it cannot settle a
+/// fill against them, so quoting depth standing on their orders would promise
+/// depth the fill declines.
+///
+/// Distinct from membership of the user set: absent from *that* means the
+/// caller's account set is stale and, past the grace window, the whole call
+/// fails. An exclusion is a deliberate constraint, not a mistake, and never
+/// fails the call.
+///
+/// **Not a trust boundary.** A quoter that ignores these leaves its caller
+/// exactly where it stands without them — the caller's own post-fill checks
+/// still refuse the fill. What honouring them buys is that the honest case
+/// stops reverting. The exclusions are firmer than the budgets: a caller may
+/// also refuse a response that names an excluded user, while a budget it
+/// cannot reprice is left to those post-fill checks.
+#[repr(C)]
+#[cfg_attr(
+    feature = "anchor-derive",
+    derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
+)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
+pub struct UserCapsV0 {
+    /// One bit per index in the set: set means no room on the swept side, so
+    /// pass that user's orders over.
+    pub excluded: [u8; USER_EXCLUSION_BITMAP_BYTES],
+    /// Live entries at the head of `caps`; the tail is undefined.
+    pub len: u8,
+    pub caps: [UserCapV0; USER_CAPS_CAPACITY],
+}
+
+/// Encoded width of a [`UserCapsV0`]. One constant rather than an assertion
+/// per program, which is the point of declaring the shape once.
+pub const USER_CAPS_BYTES: usize = USER_EXCLUSION_BITMAP_BYTES + 1 + USER_CAPS_CAPACITY * (8 + 1);
+
+impl Default for UserCapsV0 {
+    fn default() -> Self {
+        Self::EMPTY
+    }
+}
+
+impl UserCapsV0 {
+    pub const EMPTY: Self = Self {
+        excluded: [0; USER_EXCLUSION_BITMAP_BYTES],
+        len: 0,
+        caps: [UserCapV0 {
+            index: 0,
+            budget: 0,
+        }; USER_CAPS_CAPACITY],
+    };
+
+    /// The live prefix. `len` crosses a program boundary, so it is clamped
+    /// rather than trusted.
+    pub fn as_slice(&self) -> &[UserCapV0] {
+        &self.caps[..(self.len as usize).min(USER_CAPS_CAPACITY)]
+    }
+
+    /// Mark the user at `index` as having no room.
+    pub fn exclude(&mut self, index: usize) {
+        if index >= USER_SET_CAPACITY {
+            return;
+        }
+        self.excluded[index / 8] |= 1 << (index % 8);
+    }
+
+    /// Whether the user at `index` has no room. An index past the set is the
+    /// caller disagreeing with itself, and constrains nobody.
+    pub fn is_excluded(&self, index: usize) -> bool {
+        index < USER_SET_CAPACITY && self.excluded[index / 8] & (1 << (index % 8)) != 0
+    }
+
+    /// Whether anyone is excluded — the check that keeps an ordinary walk
+    /// from paying for a lookup it never needs.
+    pub fn any_excluded(&self) -> bool {
+        self.excluded.iter().any(|byte| *byte != 0)
+    }
+
+    /// Build from per-user budgets. No room becomes a bitmap bit, which never
+    /// overflows; the rest take the scarce slots, tightest first, so an
+    /// overflow drops the entries with the most room.
+    pub fn from_caps(caps: impl IntoIterator<Item = UserCapV0>) -> Self {
+        let mut set = Self::EMPTY;
+        let mut partial: [UserCapV0; USER_CAPS_CAPACITY] =
+            [UserCapV0::default(); USER_CAPS_CAPACITY];
+        let mut partial_len = 0usize;
+        for cap in caps {
+            // An unbounded budget says nothing and an empty one is a bitmap
+            // bit, so neither is worth a slot.
+            if cap.budget == 0 {
+                set.exclude(cap.index as usize);
+                continue;
+            }
+            if cap.budget == u64::MAX {
+                continue;
+            }
+            // Insertion sort into a fixed array: the list is eight long and
+            // this runs on a frame that cannot afford a heap round trip. The
+            // tightest budgets are the ones worth a slot, so a full array
+            // evicts its loosest.
+            let mut slot = partial_len;
+            while slot > 0 && partial[slot - 1].budget > cap.budget {
+                slot -= 1;
+            }
+            // A budget that cannot be carried becomes an exclusion rather
+            // than a drop. Dropping it would offer the user its whole resting
+            // depth, which is the reading the budget exists to correct;
+            // excluding it offers none, which costs liquidity and nothing
+            // else.
+            if partial_len < USER_CAPS_CAPACITY {
+                let mut index = partial_len;
+                while index > slot {
+                    partial[index] = partial[index - 1];
+                    index -= 1;
+                }
+                partial[slot] = cap;
+                partial_len += 1;
+            } else if slot < USER_CAPS_CAPACITY {
+                let evicted = partial[USER_CAPS_CAPACITY - 1];
+                let mut index = USER_CAPS_CAPACITY - 1;
+                while index > slot {
+                    partial[index] = partial[index - 1];
+                    index -= 1;
+                }
+                partial[slot] = cap;
+                set.exclude(evicted.index as usize);
+            } else {
+                set.exclude(cap.index as usize);
+            }
+        }
+        set.caps = partial;
+        set.len = partial_len as u8;
+        set
+    }
+}
+
+/// Encoded width of a user set of `len` entries.
+///
+/// The set a call may settle against is a sequence, not a padded array:
+/// `len` refs behind a four-byte count, which is what a borsh sequence
+/// writes. Empty means unrestricted, and only a caller that settles nothing
+/// (quote discovery) sends that. Otherwise it is the caller's loaded users,
+/// and liquidity owned by anyone else must be passed over — the caller cannot
+/// settle a balance change for a user it did not load, and refuses the whole
+/// response if one appears.
+///
+/// A padded set cost 1,633 bytes on every call. The caller builds those bytes
+/// on a 32 KB heap that never reclaims, once per quoter, so a quote view —
+/// which names no users at all — paid the full width for a run of zeros, and
+/// a market with five quoters ran out of heap.
+pub const fn user_set_bytes(len: usize) -> usize {
+    4 + len * UserRefV0::SIZE
+}
+
+/// Widest a user set can be on the wire.
+pub const USER_SET_MAX_BYTES: usize = user_set_bytes(USER_SET_CAPACITY);
+
+/// Whether a received user set is within what the wire allows.
+///
+/// A quoter checks this before it reads the set. [`UserCapsV0`] addresses a
+/// user by its index in this set, and the exclusion bitmap holds one bit per
+/// slot up to [`USER_SET_CAPACITY`]. A user past that has no bit, so an
+/// oversized set would present an excluded user as settleable.
+pub fn user_set_within_capacity(users: &[UserRefV0]) -> bool {
+    users.len() <= USER_SET_CAPACITY
+}
+
+/// One resting order behind a quoted book, as `quote_l3_v0` reports it.
+///
+/// A quoter that holds discrete orders — a book — has more to say than its
+/// aggregated ladder: each rung stands on somebody's order, and a caller that
+/// has to *carry* those users' accounts, or display the book, needs the
+/// attribution. A quoter that has no orders does not implement the leg at
+/// all, and its caller attributes the whole ladder to the one user the
+/// registry names for it.
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Pod, Zeroable, SchemaRead, SchemaWrite)]
+#[wincode(assert_zero_copy)]
+pub struct L3RowV0 {
+    pub price: u64,
+    pub size: u64,
+    /// The quoter's own handle for the order, for a caller that wants to
+    /// cancel or track it. Zero when the row is not an order.
+    pub order_id: u64,
+    /// Who this row settles against.
+    pub user: UserRefV0,
+    /// [`L3_ROW_FLAG_TAKER_ORIGIN`], and room for the next fact a row has to
+    /// carry.
+    pub flags: u8,
+    pub _pad: [u8; 5],
+}
+
+/// The row is an unfilled taker remainder the caller migrated onto the book,
+/// not liquidity someone chose to post. It demands liquidity rather than
+/// offering it, so depth behind it is not depth a cross can count on.
+pub const L3_ROW_FLAG_TAKER_ORIGIN: u8 = 1;
+
+/// Encoded width of an [`L3RowV0`].
+pub const L3_ROW_BYTES: usize = core::mem::size_of::<L3RowV0>();
+
+/// The answer to `quote_l3_v0`: the resting orders behind a quoted book, best
+/// price first.
+///
+/// Read in place out of the quoter's response account, like every response
+/// here.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
+pub struct L3ResponseV0<'a> {
+    pub rows: &'a [L3RowV0],
+    /// The walk stopped on a bound rather than on the end of the book, so
+    /// there is depth behind the last row. A caller displaying a book says
+    /// so; a caller collecting users knows its list is a prefix.
+    pub more: u8,
+}
+
+impl<'a> L3ResponseV0<'a> {
+    pub fn parse(bytes: &'a [u8]) -> Result<Self, SpecError> {
+        wincode::deserialize(bytes).map_err(|_| SpecError::Read)
+    }
+}
+
+/// Arguments to `quote_l3_v0`: how much of a side to describe.
+///
+/// No user set and no caps. The question is what rests on the book, not what
+/// this caller may settle — a caller asks it precisely because it does not
+/// know yet whose accounts to bring — so the filtering a quote applies is the
+/// reader's to apply here.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
+pub struct L3ArgsV0 {
+    pub direction: DirectionV0,
+    /// Stop once this much base is described. Zero describes the side up to
+    /// `max_rows`.
+    pub size: u64,
+    /// Stop after this many rows, whatever `size` is left.
+    pub max_rows: u16,
+}
+
+/// Arguments to `quote_v0`: what a taker wants, and who the caller can settle
+/// against.
+///
+/// A quote is a promise about what `execute_v0` will deliver, so it is given
+/// the same `users` and `caps` and must spend them the same way. A ladder
+/// standing on liquidity the matching execute would decline is a ladder its
+/// reader cannot route against.
+///
+/// Read in place, like the responses: `users` is a slice into the caller's
+/// instruction data, so a quoter walks the set without allocating and without
+/// standing a copy of it in a 4 KB frame. It leads the struct for that to be
+/// sound — the count puts the refs four bytes in, which is the two-byte
+/// alignment a [`UserRefV0`] reference needs. A field added ahead of it must
+/// keep that offset even.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
+pub struct QuoteArgsV0<'a> {
+    /// The loaded-user set, at most [`USER_SET_CAPACITY`] entries — which a
+    /// reader checks with [`user_set_within_capacity`], since the count comes
+    /// off the wire.
+    pub users: &'a [UserRefV0],
+    pub direction: DirectionV0,
+    /// Base the taker wants filled.
+    pub size: u64,
+    pub caps: UserCapsV0,
+    /// The price the caller marks a filled position at, in PRICE_PRECISION.
+    /// Only [`UserCapV0`] budgets are spent against it; it does not bound
+    /// what a quoter may fill at.
+    pub reference_price: i64,
+    /// The taker's own user, whose resting liquidity is skipped
+    /// unconditionally (self-trade prevention).
+    pub taker: Option<UserRefV0>,
+}
+
+/// Arguments to `execute_v0`: commit a fill.
+///
+/// The same shape as [`QuoteArgsV0`] because it answers the same question,
+/// having committed to it. A quoter may fill less than `size`; what it
+/// actually filled is whatever its returned balance changes sum to.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
+pub struct ExecuteArgsV0<'a> {
+    /// Same contract as [`QuoteArgsV0::users`], and it leads for the same
+    /// reason.
+    pub users: &'a [UserRefV0],
+    pub direction: DirectionV0,
+    pub size: u64,
+    pub caps: UserCapsV0,
+    /// The same mark the quote was taken against. A quoter that spends
+    /// budgets must be handed the identical price here, or it passes over a
+    /// different set of orders than the one it quoted.
+    pub reference_price: i64,
+    pub taker: Option<UserRefV0>,
+}
+
+/// The framing of the request half.
+///
+/// Borsh-compatible, which is what a v2 program's instruction dispatch reads
+/// (`anchor_lang_v2::BORSH_CONFIG`), and named here so the writer and the
+/// reader agree by declaration rather than by coincidence. The responses use
+/// wincode's own configuration, whose length prefix is eight bytes wide
+/// instead of four — reading one for the other shifts every field behind it.
+pub type ArgsConfig = wincode::config::Configuration<
+    false,
+    { wincode::config::DEFAULT_PREALLOCATION_SIZE_LIMIT },
+    wincode::len::FixIntLen<u32>,
+    wincode::int_encoding::LittleEndian,
+    wincode::int_encoding::FixInt,
+    u8,
+>;
+
+/// The one value of [`ArgsConfig`].
+pub const ARGS_CONFIG: ArgsConfig = wincode::config::Configuration::new();
+
+/// Bytes `args` takes on the wire.
+///
+/// A caller reserves this before it writes: it builds the buffer on a 32 KB
+/// heap that never reclaims, once per quoter per call, and a `Vec` that
+/// doubles into place leaks every intermediate buffer.
+pub fn args_size<T>(args: &T) -> Result<usize, SpecError>
+where
+    T: wincode::SchemaWrite<ArgsConfig, Src = T>,
+{
+    wincode::config::serialized_size(args, ARGS_CONFIG)
+        .map(|size| size as usize)
+        .map_err(|_| SpecError::Write)
+}
+
+/// Append `args` to `dst` in the framing a quoter reads.
+pub fn write_args<T>(dst: &mut Vec<u8>, args: &T) -> Result<(), SpecError>
+where
+    T: wincode::SchemaWrite<ArgsConfig, Src = T>,
+{
+    wincode::config::serialize_into(dst, args, ARGS_CONFIG).map_err(|_| SpecError::Write)
 }
 
 #[cfg(test)]
@@ -647,6 +1132,127 @@ mod tests {
 
     /// The writers lay the prefix down themselves, so what this crate says it
     /// is has to be what wincode actually writes.
+    /// The request half is read in place, and its framing is not the
+    /// responses': a four-byte count, so a quoter's dispatch decodes it
+    /// borsh-compatibly. The offsets are pinned here because velocity writes
+    /// these bytes from another workspace, where the agreement can only be
+    /// held as numbers.
+    #[test]
+    fn the_args_put_the_user_set_first_and_count_it_in_four_bytes() {
+        let users = [user(1, 0), user(2, 7)];
+        let args = QuoteArgsV0 {
+            users: &users,
+            direction: DirectionV0::Long,
+            size: 12,
+            caps: UserCapsV0::EMPTY,
+            reference_price: -5,
+            taker: Some(user(3, 1)),
+        };
+        let bytes = wincode::config::serialize(&args, ARGS_CONFIG).unwrap();
+
+        assert_eq!(&bytes[..4], &2u32.to_le_bytes());
+        assert_eq!(&bytes[4..4 + UserRefV0::SIZE], &user(1, 0).to_bytes());
+        let after_set = user_set_bytes(users.len());
+        assert_eq!(bytes[after_set], 0, "Long is the zero discriminant");
+        assert_eq!(
+            &bytes[after_set + 1..after_set + 9],
+            &12u64.to_le_bytes(),
+            "size follows the direction"
+        );
+        assert_eq!(bytes.len(), args_size(&args).unwrap());
+        assert_eq!(
+            bytes.len(),
+            after_set + 1 + 8 + USER_CAPS_BYTES + 8 + 1 + UserRefV0::SIZE
+        );
+
+        // And it reads back as a slice into those bytes, not a copy of them.
+        let read: QuoteArgsV0 = wincode::config::deserialize(&bytes, ARGS_CONFIG).unwrap();
+        assert_eq!(read, args);
+        assert_eq!(read.users.as_ptr() as usize, bytes[4..].as_ptr() as usize);
+    }
+
+    /// An empty set is what a quote view sends, and it is the case the heap
+    /// cared about.
+    #[test]
+    fn an_unrestricted_set_costs_four_bytes() {
+        let args = ExecuteArgsV0 {
+            users: &[],
+            direction: DirectionV0::Short,
+            size: 1,
+            caps: UserCapsV0::EMPTY,
+            reference_price: 0,
+            taker: None,
+        };
+        let bytes = wincode::config::serialize(&args, ARGS_CONFIG).unwrap();
+        assert_eq!(&bytes[..4], &0u32.to_le_bytes());
+        assert_eq!(bytes.len(), 4 + 1 + 8 + USER_CAPS_BYTES + 8 + 1);
+        assert_eq!(bytes.len(), args_size(&args).unwrap());
+
+        let read: ExecuteArgsV0 = wincode::config::deserialize(&bytes, ARGS_CONFIG).unwrap();
+        assert!(read.users.is_empty());
+        assert!(user_set_within_capacity(read.users));
+    }
+
+    #[test]
+    fn a_set_past_the_capacity_is_refused_by_the_check_a_reader_owes_it() {
+        let full = vec![user(1, 0); USER_SET_CAPACITY];
+        assert!(user_set_within_capacity(&full));
+        assert_eq!(user_set_bytes(full.len()), USER_SET_MAX_BYTES);
+        let over = vec![user(1, 0); USER_SET_CAPACITY + 1];
+        assert!(!user_set_within_capacity(&over));
+    }
+
+    /// The L3 leg is the one place a quoter says who is behind its ladder, so
+    /// a row round-trips whole and the reader borrows the rows in place.
+    #[test]
+    fn an_l3_response_round_trips_through_its_writer() {
+        let rows = [
+            L3RowV0 {
+                price: 100,
+                size: 5,
+                order_id: 7,
+                user: user(1, 0),
+                flags: L3_ROW_FLAG_TAKER_ORIGIN,
+                _pad: [0; 5],
+            },
+            L3RowV0 {
+                price: 101,
+                size: 6,
+                order_id: 8,
+                user: user(2, 3),
+                flags: 0,
+                _pad: [0; 5],
+            },
+        ];
+
+        let mut region = Region::new(LEN_BYTES + rows.len() * L3_ROW_BYTES + 1);
+        let bytes = region.bytes();
+        let mut writer = L3Writer::new();
+        for row in rows {
+            writer.push_row(bytes, row).unwrap();
+        }
+        assert_eq!(writer.rows(), 2);
+        let len = writer.finish(bytes, true).unwrap();
+        assert_eq!(len, LEN_BYTES + 2 * L3_ROW_BYTES + 1);
+
+        let response = L3ResponseV0::parse(&bytes[..len]).unwrap();
+        assert_eq!(response.rows, &rows[..]);
+        assert_eq!(response.more, 1, "the walk stopped on a bound");
+        assert_eq!(
+            response.rows.as_ptr() as usize,
+            bytes[LEN_BYTES..].as_ptr() as usize,
+            "rows are read in place"
+        );
+    }
+
+    /// A row is 64 bytes with no implicit padding — what `Pod` and the
+    /// in-place read both need.
+    #[test]
+    fn the_l3_row_is_the_width_the_region_is_sized_from() {
+        assert_eq!(L3_ROW_BYTES, 64);
+        assert_eq!(L3_ROW_BYTES, 3 * 8 + UserRefV0::SIZE + 1 + 5);
+    }
+
     #[test]
     fn the_length_prefix_is_what_wincode_writes() {
         let levels = [
@@ -746,399 +1352,4 @@ mod tests {
         assert_eq!(&bytes[48..50], &[0x01, 0x02]);
         assert_eq!(bytes.len(), CHANGE_BYTES);
     }
-}
-
-/// Users a quote or execute may fill, and how much room each has left.
-///
-/// The request half of the wire, declared here for the reason the responses
-/// are: velocity writes these bytes and a quoter reads them, and two
-/// hand-mirrored declarations are two programs that can drift into
-/// self-consistent disagreement. A cap misread as a taker, or a side read off
-/// by one, silently turns a skip into a fill.
-pub const USER_SET_CAPACITY: usize = 48;
-
-/// Users that can carry a *partial* cap on one call.
-///
-/// Only partials need a slot. A user with no room at all rides
-/// [`UserCapsV0::excluded_bid`] / `excluded_ask`, one bit each, so every user
-/// in the set can be excluded at once — which is what one sharp move
-/// produces, and the moment a book most needs to stay usable. What is left
-/// here is the narrow band with room for some of what they rest, and an
-/// overflow there costs no more than a revert that was already coming.
-pub const USER_CAPS_CAPACITY: usize = 8;
-
-/// Bytes of bitmap for one bit per user in the set.
-pub const USER_EXCLUSION_BITMAP_BYTES: usize = USER_SET_CAPACITY.div_ceil(8);
-
-/// Taker direction, from the taker's perspective.
-///
-/// Encoded as its discriminant, `Long = 0`, and every program on this wire
-/// reads the same declaration — a taker direction inverted across the
-/// boundary would fill the wrong side of a book.
-#[cfg_attr(
-    feature = "anchor-derive",
-    derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
-)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
-pub enum DirectionV0 {
-    Long,
-    Short,
-}
-
-impl DirectionV0 {
-    /// The side a taker of this direction consumes.
-    pub fn side(self) -> SideV0 {
-        match self {
-            DirectionV0::Long => SideV0::Ask,
-            DirectionV0::Short => SideV0::Bid,
-        }
-    }
-}
-
-/// Where in the quoter's response account it wrote the response. Return data
-/// of `quote_v0` and `execute_v0`.
-///
-/// The one shape a caller reads back from every quoter, whatever it is: the
-/// response itself lives in an account the caller then borrows, and this says
-/// where to look. Declared here rather than per program for the same reason
-/// the rest of the wire is — three copies of two `u32`s are three chances to
-/// disagree about which comes first.
-#[repr(C)]
-#[cfg_attr(
-    feature = "anchor-derive",
-    derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
-)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, SchemaRead, SchemaWrite)]
-pub struct ResponsePointerV0 {
-    pub offset: u32,
-    pub len: u32,
-}
-
-/// Which sides a `cancel_all_v0` withdraws.
-///
-/// Named sides rather than a pair of bools, because the wire must not be able
-/// to express "neither" — that is a maker believing their quotes are gone
-/// when nothing happened.
-///
-/// What the sides *mean* differs by who is reading: a book walks them as book
-/// sides, a caller unwinds them as position directions, a spline reads them as
-/// taker directions. Each program adds that reading itself; the tags are the
-/// part that has to agree.
-#[cfg_attr(
-    feature = "anchor-derive",
-    derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
-)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
-pub enum CancelSidesV0 {
-    Bids,
-    Asks,
-    Both,
-}
-
-/// Which side an order rests on: a bid makes its owner long, an ask short.
-#[cfg_attr(
-    feature = "anchor-derive",
-    derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
-)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
-pub enum SideV0 {
-    Bid,
-    Ask,
-}
-
-/// Base units in one whole base asset. The denominator that turns a base
-/// amount and a price difference into a quote amount, and the reason a budget
-/// can be spent identically by every quoter.
-pub const BASE_PRECISION: u64 = 1_000_000_000;
-
-/// What one named user may still lose on the side this call sweeps, in quote.
-///
-/// A budget rather than a base amount, because the caller cannot convert the
-/// one into the other. What a fill costs a maker is collateral, and the
-/// conversion needs the price each order fills at — which the caller does not
-/// have and the quoter does. So the caller sends what it knows and the quoter
-/// spends it:
-///
-/// ```text
-/// cost = base * |price - reference_price| / BASE_PRECISION
-/// ```
-///
-/// counted only where the fill moves against the owner: an order resting on
-/// the bid side costs its owner when it fills *above* the reference, an ask
-/// when it fills *below*. An order priced in the owner's favour costs nothing
-/// and is filled whole. Once the budget is spent, that user's remaining
-/// orders are passed over and the depth behind them is still filled.
-///
-/// Why this is the cost that matters: a resting order is normally already
-/// collateralized against the position it would become, priced at the
-/// reference. Filling it converts that reservation into the position it stood
-/// for. What the reservation does not price is the owner paying its own limit
-/// price for a position marked at the reference, and that difference scales
-/// with size.
-///
-/// One number, not one per side, because a call sweeps one side of the book:
-/// [`QuoteArgsV0::direction`] says which, and the budget is for that side.
-///
-/// `u64::MAX` means unbounded. Zero means the user is excluded outright, and
-/// belongs in the bitmap rather than here.
-#[repr(C)]
-#[cfg_attr(
-    feature = "anchor-derive",
-    derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
-)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, SchemaRead, SchemaWrite)]
-pub struct UserCapV0 {
-    /// Quote this user may lose filling on the swept side.
-    pub budget: u64,
-    /// Index into the accompanying user set.
-    pub index: u8,
-}
-
-/// Per-user room, parallel to the caller's user set.
-///
-/// A user absent from all of this is unconstrained. An excluded user has
-/// their orders passed over entirely — the caller has said it cannot settle a
-/// fill against them, so quoting depth standing on their orders would promise
-/// depth the fill declines.
-///
-/// Distinct from membership of the user set: absent from *that* means the
-/// caller's account set is stale and, past the grace window, the whole call
-/// fails. An exclusion is a deliberate constraint, not a mistake, and never
-/// fails the call.
-///
-/// **Not a trust boundary.** A quoter that ignores these leaves its caller
-/// exactly where it stands without them — the caller's own post-fill checks
-/// still refuse the fill. What honouring them buys is that the honest case
-/// stops reverting. The exclusions are firmer than the budgets: a caller may
-/// also refuse a response that names an excluded user, while a budget it
-/// cannot reprice is left to those post-fill checks.
-#[repr(C)]
-#[cfg_attr(
-    feature = "anchor-derive",
-    derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
-)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
-pub struct UserCapsV0 {
-    /// One bit per index in the set: set means no room on the swept side, so
-    /// pass that user's orders over.
-    pub excluded: [u8; USER_EXCLUSION_BITMAP_BYTES],
-    /// Live entries at the head of `caps`; the tail is undefined.
-    pub len: u8,
-    pub caps: [UserCapV0; USER_CAPS_CAPACITY],
-}
-
-/// Encoded width of a [`UserCapsV0`]. One constant rather than an assertion
-/// per program, which is the point of declaring the shape once.
-pub const USER_CAPS_BYTES: usize = USER_EXCLUSION_BITMAP_BYTES + 1 + USER_CAPS_CAPACITY * (8 + 1);
-
-impl Default for UserCapsV0 {
-    fn default() -> Self {
-        Self::EMPTY
-    }
-}
-
-impl UserCapsV0 {
-    pub const EMPTY: Self = Self {
-        excluded: [0; USER_EXCLUSION_BITMAP_BYTES],
-        len: 0,
-        caps: [UserCapV0 {
-            index: 0,
-            budget: 0,
-        }; USER_CAPS_CAPACITY],
-    };
-
-    /// The live prefix. `len` crosses a program boundary, so it is clamped
-    /// rather than trusted.
-    pub fn as_slice(&self) -> &[UserCapV0] {
-        &self.caps[..(self.len as usize).min(USER_CAPS_CAPACITY)]
-    }
-
-    /// Mark the user at `index` as having no room.
-    pub fn exclude(&mut self, index: usize) {
-        if index >= USER_SET_CAPACITY {
-            return;
-        }
-        self.excluded[index / 8] |= 1 << (index % 8);
-    }
-
-    /// Whether the user at `index` has no room. An index past the set is the
-    /// caller disagreeing with itself, and constrains nobody.
-    pub fn is_excluded(&self, index: usize) -> bool {
-        index < USER_SET_CAPACITY && self.excluded[index / 8] & (1 << (index % 8)) != 0
-    }
-
-    /// Whether anyone is excluded — the check that keeps an ordinary walk
-    /// from paying for a lookup it never needs.
-    pub fn any_excluded(&self) -> bool {
-        self.excluded.iter().any(|byte| *byte != 0)
-    }
-
-    /// Build from per-user budgets. No room becomes a bitmap bit, which never
-    /// overflows; the rest take the scarce slots, tightest first, so an
-    /// overflow drops the entries with the most room.
-    pub fn from_caps(caps: impl IntoIterator<Item = UserCapV0>) -> Self {
-        let mut set = Self::EMPTY;
-        let mut partial: [UserCapV0; USER_CAPS_CAPACITY] =
-            [UserCapV0::default(); USER_CAPS_CAPACITY];
-        let mut partial_len = 0usize;
-        for cap in caps {
-            // An unbounded budget says nothing and an empty one is a bitmap
-            // bit, so neither is worth a slot.
-            if cap.budget == 0 {
-                set.exclude(cap.index as usize);
-                continue;
-            }
-            if cap.budget == u64::MAX {
-                continue;
-            }
-            // Insertion sort into a fixed array: the list is eight long and
-            // this runs on a frame that cannot afford a heap round trip. The
-            // tightest budgets are the ones worth a slot, so a full array
-            // evicts its loosest.
-            let mut slot = partial_len;
-            while slot > 0 && partial[slot - 1].budget > cap.budget {
-                slot -= 1;
-            }
-            // A budget that cannot be carried becomes an exclusion rather
-            // than a drop. Dropping it would offer the user its whole resting
-            // depth, which is the reading the budget exists to correct;
-            // excluding it offers none, which costs liquidity and nothing
-            // else.
-            if partial_len < USER_CAPS_CAPACITY {
-                let mut index = partial_len;
-                while index > slot {
-                    partial[index] = partial[index - 1];
-                    index -= 1;
-                }
-                partial[slot] = cap;
-                partial_len += 1;
-            } else if slot < USER_CAPS_CAPACITY {
-                let evicted = partial[USER_CAPS_CAPACITY - 1];
-                let mut index = USER_CAPS_CAPACITY - 1;
-                while index > slot {
-                    partial[index] = partial[index - 1];
-                    index -= 1;
-                }
-                partial[slot] = cap;
-                set.exclude(evicted.index as usize);
-            } else {
-                set.exclude(cap.index as usize);
-            }
-        }
-        set.caps = partial;
-        set.len = partial_len as u8;
-        set
-    }
-}
-
-/// The loaded-user set a call may settle against.
-///
-/// Empty means unrestricted, which only a caller that settles nothing (quote
-/// discovery) uses. Otherwise it is the set of the caller's loaded users, and
-/// liquidity owned by anyone else must be passed over — the caller cannot
-/// settle a balance change for a user it did not load, and refuses the whole
-/// response if one appears.
-///
-/// Fixed width so both sides decode it without negotiating a length, and so
-/// the size of a request never moves with its contents.
-#[repr(C)]
-#[cfg_attr(
-    feature = "anchor-derive",
-    derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
-)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
-pub struct UserSetV0 {
-    /// Live entries at the head of `users`; the tail is undefined.
-    pub len: u8,
-    pub users: [UserRefV0; USER_SET_CAPACITY],
-}
-
-/// Encoded width of a [`UserSetV0`].
-pub const USER_SET_BYTES: usize = 1 + USER_SET_CAPACITY * UserRefV0::SIZE;
-
-impl Default for UserSetV0 {
-    fn default() -> Self {
-        Self::EMPTY
-    }
-}
-
-impl UserSetV0 {
-    pub const EMPTY: Self = Self {
-        len: 0,
-        users: [UserRefV0::ZERO; USER_SET_CAPACITY],
-    };
-
-    /// The live prefix. `len` crosses a program boundary, so it is clamped
-    /// rather than trusted.
-    pub fn as_slice(&self) -> &[UserRefV0] {
-        &self.users[..(self.len as usize).min(USER_SET_CAPACITY)]
-    }
-
-    /// Whether `user` is in the live prefix.
-    pub fn contains(&self, user: &UserRefV0) -> bool {
-        self.as_slice().contains(user)
-    }
-
-    /// `None` when the set does not fit — a caller with more loaded users
-    /// than the wire carries must not silently match against a truncated set.
-    pub fn from_refs(refs: &[UserRefV0]) -> Option<Self> {
-        if refs.len() > USER_SET_CAPACITY {
-            return None;
-        }
-        let mut set = Self::EMPTY;
-        set.len = refs.len() as u8;
-        set.users[..refs.len()].copy_from_slice(refs);
-        Some(set)
-    }
-}
-
-/// Arguments to `quote_v0`: what a taker wants, and who the caller can settle
-/// against.
-///
-/// A quote is a promise about what `execute_v0` will deliver, so it is given
-/// the same `users` and `caps` and must spend them the same way. A ladder
-/// standing on liquidity the matching execute would decline is a ladder its
-/// reader cannot route against.
-#[repr(C)]
-#[cfg_attr(
-    feature = "anchor-derive",
-    derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
-)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
-pub struct QuoteArgsV0 {
-    pub direction: DirectionV0,
-    /// Base the taker wants filled.
-    pub size: u64,
-    pub users: UserSetV0,
-    pub caps: UserCapsV0,
-    /// The price the caller marks a filled position at, in PRICE_PRECISION.
-    /// Only [`UserCapV0`] budgets are spent against it; it does not bound
-    /// what a quoter may fill at.
-    pub reference_price: i64,
-    /// The taker's own user, whose resting liquidity is skipped
-    /// unconditionally (self-trade prevention).
-    pub taker: Option<UserRefV0>,
-}
-
-/// Arguments to `execute_v0`: commit a fill.
-///
-/// The same shape as [`QuoteArgsV0`] because it answers the same question,
-/// having committed to it. A quoter may fill less than `size`; what it
-/// actually filled is whatever its returned balance changes sum to.
-#[repr(C)]
-#[cfg_attr(
-    feature = "anchor-derive",
-    derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
-)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
-pub struct ExecuteArgsV0 {
-    pub direction: DirectionV0,
-    pub size: u64,
-    pub users: UserSetV0,
-    pub caps: UserCapsV0,
-    /// The same mark the quote was taken against. A quoter that spends
-    /// budgets must be handed the identical price here, or it passes over a
-    /// different set of orders than the one it quoted.
-    pub reference_price: i64,
-    pub taker: Option<UserRefV0>,
 }

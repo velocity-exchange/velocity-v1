@@ -18,10 +18,12 @@
 
 use {
     crate::quote_view::{
-        build_quote_router_ix, simulate_quote_view_with_cost, CarriedEntry, QuoteRouterParams,
-        QuoteSimFailure, QuoteView,
+        build_quote_router_ix, pass_account_cost, read_zero_copy, simulate_quote_view_with_cost,
+        CarriedEntry, QuoteRouterParams, QuoteSimFailure, QuoteView, PASS_ACCOUNT_BUDGET,
+        PASS_FIXED_ACCOUNTS,
     },
     anyhow::Result,
+    program::state::prop_amm::QuoterV0,
     relay_chain_source::ChainSource,
     solana_sdk::pubkey::Pubkey,
     velocity_quoter_health::{
@@ -431,6 +433,104 @@ pub struct MarketQuote {
     pub quoted_size: u64,
     pub units_consumed: u64,
     pub excluded: Vec<Pubkey>,
+    /// A pass filled its row region, so some book's orders are described
+    /// only in part. The ladders are whole either way.
+    pub rows_truncated: bool,
+}
+
+/// One simulated call: the entries it carries, and whether the DLOB makers
+/// and the vAMM ride with them.
+struct Pass {
+    entries: Vec<Pubkey>,
+    include_vamm: bool,
+    with_dlob: bool,
+}
+
+/// How a market's quoters divide into passes that fit.
+struct Plan {
+    passes: Vec<Pass>,
+    /// DLOB makers the first pass could take. Cutting understates depth;
+    /// overflowing publishes nothing at all.
+    carried_dlob: usize,
+    /// Entries no pass can carry even alone, because their own CPI surface
+    /// outgrows a transaction. Reported rather than dropped silently.
+    unquotable: Vec<Pubkey>,
+}
+
+/// Split a market's quoters into passes, under both ceilings that bind.
+///
+/// They bind differently, which is why counting one is not enough. The buffer
+/// holds [`SOURCES_PER_PASS`] sources and refuses a push past it, so a pass
+/// that overruns *it* fails inside velocity and takes that pass's book down.
+/// The transaction holds [`PASS_ACCOUNT_BUDGET`] keys, and a pass that
+/// overruns *that* is rejected by the runtime before velocity runs at all.
+///
+/// Sources used to be the only ceiling this planner counted. Sixteen of them
+/// is far more than a transaction can address — a quoter with its own user
+/// pair and CPI accounts costs four keys — so a market with a handful of
+/// quoters planned as one pass and then could not be sent.
+fn plan_passes(entries: &[(Pubkey, QuoterV0)], dlob_makers: usize) -> Plan {
+    // The vAMM takes a source slot on the pass that carries it and no
+    // accounts of its own: the perp market it reads is already there.
+    let carried_dlob = dlob_makers
+        .min(SOURCES_PER_PASS - 1)
+        .min((PASS_ACCOUNT_BUDGET.saturating_sub(PASS_FIXED_ACCOUNTS)) / 2);
+
+    let mut passes: Vec<Pass> = Vec::new();
+    let mut unquotable: Vec<Pubkey> = Vec::new();
+    let mut open: Vec<(Pubkey, QuoterV0)> = Vec::new();
+    let mut first = true;
+
+    // A pass in progress, plus one more entry: does it still fit?
+    let fits = |held: &[(Pubkey, QuoterV0)], first: bool| {
+        let dlob = if first { carried_dlob } else { 0 };
+        let sources = held.len() + dlob + usize::from(first);
+        let data: Vec<QuoterV0> = held.iter().map(|(_, entry)| *entry).collect();
+        sources <= SOURCES_PER_PASS && pass_account_cost(&data, dlob) <= PASS_ACCOUNT_BUDGET
+    };
+
+    for (key, entry) in entries {
+        open.push((*key, *entry));
+        if fits(&open, first) {
+            continue;
+        }
+        open.pop();
+
+        // It did not fit, so close the pass in progress and try it on a
+        // fresh one. The first pass closes even holding no quoters at all:
+        // the makers and the vAMM can fill it on their own, and it is still
+        // the pass that carries them.
+        if !open.is_empty() || first {
+            passes.push(Pass {
+                entries: open.iter().map(|(key, _)| *key).collect(),
+                include_vamm: first,
+                with_dlob: first,
+            });
+            first = false;
+            open.clear();
+        }
+
+        open.push((*key, *entry));
+        if !fits(&open, first) {
+            // Alone on an empty pass and still too wide: nothing can carry
+            // it, so the market publishes without it rather than not at all.
+            open.pop();
+            unquotable.push(*key);
+        }
+    }
+    if !open.is_empty() || passes.is_empty() {
+        passes.push(Pass {
+            entries: open.iter().map(|(key, _)| *key).collect(),
+            include_vamm: first,
+            with_dlob: first,
+        });
+    }
+
+    Plan {
+        passes,
+        carried_dlob,
+        unquotable,
+    }
 }
 
 /// Quote a whole market, in as many passes as its quoters need.
@@ -451,31 +551,36 @@ pub async fn quote_market<S: ChainSource>(
     request: &QuoteRequest<'_>,
     entries: &[Pubkey],
 ) -> Result<MarketQuote> {
-    // The DLOB makers and the vAMM take slots of their own on the pass that
-    // carries them, so that pass holds fewer quoters, sometimes none. Later
-    // passes still carry the rest, so the plan advances either way.
-    //
-    // More makers than a pass can hold would fail it outright, so the list is
-    // cut to what fits. Cutting understates depth; overflowing publishes
-    // nothing at all.
-    let maker_room = SOURCES_PER_PASS - 1;
-    let dlob_makers = &request.dlob_makers[..request.dlob_makers.len().min(maker_room)];
-    if dlob_makers.len() < request.dlob_makers.len() {
+    // The planner sizes a pass by what it costs to *send*, so it needs each
+    // entry's registered CPI surface. The accounts are already resident —
+    // this is the read the builder does again a moment later.
+    let carried: Vec<(Pubkey, QuoterV0)> = entries
+        .iter()
+        .copied()
+        .zip(source.get_multiple_accounts(entries).await?)
+        .filter_map(|(key, account)| {
+            let entry = read_zero_copy::<QuoterV0>(&account?.data).ok()?;
+            Some((key, entry))
+        })
+        .collect();
+    let plan = plan_passes(&carried, request.dlob_makers.len());
+
+    if plan.carried_dlob < request.dlob_makers.len() {
         tracing::warn!(
             market = request.market_index,
             passed = request.dlob_makers.len(),
-            carried = dlob_makers.len(),
+            carried = plan.carried_dlob,
             "more DLOB makers than one pass holds; the rest are not quoted"
         );
     }
-    let first_pass_room = maker_room - dlob_makers.len();
-
-    let (first, rest) = entries.split_at(first_pass_room.min(entries.len()));
-    let mut passes: Vec<(&[Pubkey], bool, bool)> = vec![(first, true, true)];
-    passes.extend(
-        rest.chunks(SOURCES_PER_PASS)
-            .map(|chunk| (chunk, false, false)),
-    );
+    for key in &plan.unquotable {
+        tracing::warn!(
+            market = request.market_index,
+            quoter = %key,
+            "quoter needs more accounts than one transaction holds; not quoted"
+        );
+    }
+    let dlob_makers = &request.dlob_makers[..plan.carried_dlob];
 
     let mut merged = MarketQuote {
         books: Vec::new(),
@@ -484,18 +589,20 @@ pub async fn quote_market<S: ChainSource>(
         quoted_size: request.size,
         units_consumed: 0,
         excluded: Vec::new(),
+        rows_truncated: false,
     };
-    for (only, include_vamm, with_dlob) in passes {
+    for planned in &plan.passes {
         let pass = QuoteRequest {
-            only: Some(only),
-            include_vamm,
-            dlob_makers: if with_dlob { dlob_makers } else { &[] },
+            only: Some(&planned.entries),
+            include_vamm: planned.include_vamm,
+            dlob_makers: if planned.with_dlob { dlob_makers } else { &[] },
             ..*request
         };
         let quoted = quote_with_health(source, health, &pass).await?;
         merged.slot = merged.slot.min(quoted.view.slot);
         merged.units_consumed += quoted.units_consumed;
         merged.books.extend(quoted.view.books);
+        merged.rows_truncated |= quoted.view.rows_truncated;
         merged.entries.extend(quoted.entries);
         for key in quoted.excluded {
             if !merged.excluded.contains(&key) {
@@ -508,47 +615,135 @@ pub async fn quote_market<S: ChainSource>(
     }
     Ok(merged)
 }
-
 #[cfg(test)]
 mod pass_tests {
-    use super::*;
+    use {
+        super::*,
+        program::state::prop_amm::{AmmAccountMeta, QuoterType, MAX_QUOTER_ACCOUNTS},
+    };
 
-    /// The pass plan a market of `entries` quoters and `dlob` makers produces.
-    fn plan(entries: usize, dlob: usize) -> Vec<(usize, bool)> {
-        let keys: Vec<Pubkey> = (0..entries).map(|_| Pubkey::new_unique()).collect();
-        let maker_room = SOURCES_PER_PASS - 1;
-        let carried_dlob = dlob.min(maker_room);
-        let room = maker_room - carried_dlob;
-        let (first, rest) = keys.split_at(room.min(keys.len()));
-        let mut out = vec![(first.len(), true)];
-        out.extend(rest.chunks(SOURCES_PER_PASS).map(|c| (c.len(), false)));
-        out
+    fn sysvar() -> Pubkey {
+        Pubkey::new_from_array([1; 32])
+    }
+
+    fn state() -> Pubkey {
+        Pubkey::new_from_array([2; 32])
+    }
+
+    /// A quoter shaped like the midpoint: an instance of a shared program,
+    /// filling for its own user. Four keys a pass has to find room for — the
+    /// entry, the instance, and the user's two accounts — plus the program
+    /// and the sysvar every instance shares.
+    fn custom(program: Pubkey) -> (Pubkey, QuoterV0) {
+        let mut entry: QuoterV0 = bytemuck::Zeroable::zeroed();
+        let instance = Pubkey::new_unique();
+        entry.program_id = program;
+        entry.response_account = instance;
+        entry.user = Pubkey::new_unique();
+        entry.quoter_type = QuoterType::Custom;
+        entry.quote_accounts_count = 3;
+        for (slot, pubkey) in [instance, sysvar(), state()].into_iter().enumerate() {
+            entry.quote_accounts[slot] = AmmAccountMeta {
+                pubkey,
+                is_writable: slot == 0,
+                padding: [0; 7],
+            };
+        }
+        (Pubkey::new_unique(), entry)
+    }
+
+    /// One quoter whose own CPI surface is wider than a whole transaction.
+    fn oversized() -> (Pubkey, QuoterV0) {
+        let (key, mut entry) = custom(Pubkey::new_unique());
+        // Every slot the registry gives one entry, which is already more
+        // keys than a transaction has room for.
+        entry.quote_accounts_count = MAX_QUOTER_ACCOUNTS as u8;
+        for slot in 0..entry.quote_accounts_count as usize {
+            entry.quote_accounts[slot] = AmmAccountMeta {
+                pubkey: Pubkey::new_unique(),
+                is_writable: false,
+                padding: [0; 7],
+            };
+        }
+        (key, entry)
+    }
+
+    /// A market of `count` midpoint-shaped quoters on one program.
+    fn market(count: usize) -> Vec<(Pubkey, QuoterV0)> {
+        let program = Pubkey::new_unique();
+        (0..count).map(|_| custom(program)).collect()
+    }
+
+    /// What every pass costs, as the transaction counts it.
+    fn accounts_per_pass(entries: &[(Pubkey, QuoterV0)], plan: &Plan) -> Vec<usize> {
+        plan.passes
+            .iter()
+            .map(|pass| {
+                let data: Vec<QuoterV0> = pass
+                    .entries
+                    .iter()
+                    .map(|key| {
+                        entries
+                            .iter()
+                            .find(|(entry_key, _)| entry_key == key)
+                            .expect("a planned entry is one of the market's")
+                            .1
+                    })
+                    .collect();
+                pass_account_cost(&data, if pass.with_dlob { plan.carried_dlob } else { 0 })
+            })
+            .collect()
     }
 
     #[test]
     fn a_small_market_is_read_in_one_pass() {
-        assert_eq!(plan(3, 0), vec![(3, true)]);
+        let plan = plan_passes(&market(3), 0);
+        assert_eq!(plan.passes.len(), 1);
+        assert_eq!(plan.passes[0].entries.len(), 3);
     }
 
     #[test]
     fn the_vamm_rides_exactly_one_pass() {
         // Two vAMM ladders in a merged book would be two different answers to
         // the same question, because each shades against its own pass.
-        let vamm_passes = plan(40, 0).iter().filter(|(_, vamm)| *vamm).count();
-        assert_eq!(vamm_passes, 1);
+        let plan = plan_passes(&market(40), 0);
+        assert_eq!(
+            plan.passes.iter().filter(|pass| pass.include_vamm).count(),
+            1
+        );
+    }
+
+    /// The ceiling this planner used to miss. Sixteen sources is far more
+    /// than a transaction can address — a quoter with its own user pair and
+    /// CPI accounts costs four keys — so counting sources alone planned
+    /// passes the runtime rejected before velocity ran.
+    #[test]
+    fn no_pass_outgrows_the_transaction_that_has_to_carry_it() {
+        for (count, dlob) in [(1, 0), (4, 0), (8, 0), (40, 0), (8, 4), (4, 20), (100, 3)] {
+            let entries = market(count);
+            let plan = plan_passes(&entries, dlob);
+            for (index, accounts) in accounts_per_pass(&entries, &plan).iter().enumerate() {
+                assert!(
+                    *accounts <= PASS_ACCOUNT_BUDGET,
+                    "pass {index} of ({count}, {dlob}) needs {accounts} keys"
+                );
+            }
+        }
     }
 
     #[test]
     fn no_pass_can_overflow_the_buffer() {
         // The buffer errors rather than truncating, so a pass that would
-        // exceed it takes the whole market's quote down.
-        for (entries, dlob) in [(40, 0), (100, 0), (17, 0), (40, 10), (5, 15)] {
-            for (i, (count, vamm)) in plan(entries, dlob).iter().enumerate() {
-                let carried_dlob = dlob.min(SOURCES_PER_PASS - 1);
-                let sources = count + usize::from(*vamm) + if i == 0 { carried_dlob } else { 0 };
+        // exceed it takes that pass's book down.
+        for (count, dlob) in [(40, 0), (100, 0), (17, 0), (40, 10), (5, 15)] {
+            let plan = plan_passes(&market(count), dlob);
+            for (index, pass) in plan.passes.iter().enumerate() {
+                let sources = pass.entries.len()
+                    + usize::from(pass.include_vamm)
+                    + if pass.with_dlob { plan.carried_dlob } else { 0 };
                 assert!(
                     sources <= SOURCES_PER_PASS,
-                    "pass {i} of ({entries}, {dlob}) holds {sources} sources"
+                    "pass {index} of ({count}, {dlob}) holds {sources} sources"
                 );
             }
         }
@@ -556,19 +751,53 @@ mod pass_tests {
 
     #[test]
     fn every_quoter_lands_on_exactly_one_pass() {
-        for entries in [0, 1, 15, 16, 17, 100] {
-            let total: usize = plan(entries, 0).iter().map(|(count, _)| count).sum();
-            assert_eq!(total, entries);
+        for count in [0, 1, 15, 16, 17, 100] {
+            let entries = market(count);
+            let plan = plan_passes(&entries, 0);
+            let mut planned: Vec<Pubkey> = plan
+                .passes
+                .iter()
+                .flat_map(|pass| pass.entries.iter().copied())
+                .collect();
+            planned.sort();
+            let before = planned.len();
+            planned.dedup();
+            assert_eq!(planned.len(), before, "a quoter rode two passes");
+            assert_eq!(planned.len(), count);
+            assert!(plan.unquotable.is_empty());
         }
+    }
+
+    /// A quoter no transaction can carry is named, not silently skipped: the
+    /// market publishes without it, and an operator can see why.
+    #[test]
+    fn a_quoter_wider_than_a_transaction_is_reported() {
+        let mut entries = market(2);
+        let (wide, entry) = oversized();
+        entries.insert(1, (wide, entry));
+        let plan = plan_passes(&entries, 0);
+        assert_eq!(plan.unquotable, vec![wide]);
+        let planned: Vec<Pubkey> = plan
+            .passes
+            .iter()
+            .flat_map(|pass| pass.entries.iter().copied())
+            .collect();
+        assert_eq!(planned.len(), 2, "the other two still quote");
+        assert!(!planned.contains(&wide));
     }
 
     #[test]
     fn a_market_crowded_with_dlob_makers_still_quotes_every_quoter() {
-        // The makers and the vAMM can fill the first pass on their own. The
-        // quoters then ride later passes rather than being squeezed into a
-        // pass that would overflow and take the whole market down.
-        let plan = plan(4, 20);
-        assert_eq!(plan[0].0, 0, "no room left on the vAMM pass");
-        assert_eq!(plan.iter().map(|(c, _)| c).sum::<usize>(), 4);
+        // The makers can fill the first pass on their own. The quoters then
+        // ride later passes rather than being squeezed into one that cannot
+        // be sent.
+        let entries = market(4);
+        let plan = plan_passes(&entries, 20);
+        assert!(plan.carried_dlob > 0 && plan.carried_dlob < 20);
+        let planned: usize = plan.passes.iter().map(|pass| pass.entries.len()).sum();
+        assert_eq!(planned, 4);
+        for accounts in accounts_per_pass(&entries, &plan) {
+            assert!(accounts <= PASS_ACCOUNT_BUDGET);
+        }
     }
 }

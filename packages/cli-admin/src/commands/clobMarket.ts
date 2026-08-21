@@ -284,10 +284,14 @@ export function registerClobMarket(parent: Command): void {
 						quoterType: QuoterType.CLOB,
 						responseAccount: book.publicKey,
 						quoteV0Discriminator: Array.from(ixDiscriminator('quote_v0')),
+						// The book answers who rests on it through this leg, so a
+						// router never has to decode the book to build a fill.
+						quoteL3V0Discriminator: Array.from(ixDiscriminator('quote_l3_v0')),
 						executeV0Discriminator: Array.from(ixDiscriminator('execute_v0')),
 					},
 					{
 						accounts: {
+							state: await client.getStatePublicKey(),
 							payer: wallet,
 							authority: wallet,
 							quoter: quoterPda,

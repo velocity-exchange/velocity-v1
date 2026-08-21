@@ -656,6 +656,9 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		quoterProgram: PublicKey;
 		responseAccount: PublicKey;
 		user: PublicKey;
+		/** The optional leg that reports who a ladder stands on. A book has
+		 * one; a quoter that fills from its own account does not. */
+		quoteL3Discriminator?: number[];
 		quoteLeg: { pubkey: PublicKey; isWritable: boolean }[];
 		executeLeg: { pubkey: PublicKey; isWritable: boolean }[];
 	}): Promise<{ quoter: PublicKey; ixs: TransactionInstruction[] }> => {
@@ -674,10 +677,13 @@ describe('e2e localnet: programs + publisher + redis', function () {
 						quoterType: args.quoterType,
 						responseAccount: args.responseAccount,
 						quoteV0Discriminator: Array.from(ixDiscriminator('quote_v0')),
+						quoteL3V0Discriminator:
+							args.quoteL3Discriminator ?? new Array(8).fill(0),
 						executeV0Discriminator: Array.from(ixDiscriminator('execute_v0')),
 					},
 					{
 						accounts: {
+							state: statePdaCache,
 							payer: payer.publicKey,
 							authority: args.authority,
 							quoter,
@@ -728,6 +734,8 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			quoterProgram: CLOB_ID,
 			responseAccount: clobBook.publicKey,
 			user: PublicKey.default,
+			// The book answers who rests on it, so no reader decodes it.
+			quoteL3Discriminator: Array.from(ixDiscriminator('quote_l3_v0')),
 			quoteLeg: [{ pubkey: clobBook.publicKey, isWritable: true }],
 			executeLeg: [
 				{ pubkey: clobBook.publicKey, isWritable: true },
@@ -1423,22 +1431,44 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		assert.equal(doc.oracle, 100 * 1e6);
 		assert.isAbove(Number(doc.marketSlot), 0);
 
-		// L3: per-order CLOB data with derived maker User PDAs.
+		// L3: attributed depth, every source the L2 ladder holds, with the
+		// account each line settles against. Best price first, so the
+		// midpoint's rung leads the same way it leads L2.
 		const l3 = JSON.parse(
 			(await redis.get('last_update_orderbook_l3_perp_0'))!
 		);
 		const makerPda = userOf(clobMakerKp.publicKey).toBase58();
-		assert.equal(l3.asks[0].price, String(100.5 * 1e6));
-		assert.equal(l3.asks[0].maker, makerPda);
-		assert.equal(l3.bids[0].maker, makerPda);
-		assert.isAbove(Number(l3.asks[0].orderId), 0);
+		const midMakerPda = userOf(midMakerKp.publicKey).toBase58();
+		assert.equal(l3.asks[0].price, String(100.1 * 1e6));
+		assert.equal(l3.asks[0].source, 'propamm');
+		assert.equal(l3.asks[0].maker, midMakerPda);
+		assert.isNull(
+			l3.asks[0].orderId,
+			'a spline rung is not an order: nothing to cancel, no queue to be behind'
+		);
 
-		// Best makers key.
+		// The book's own orders carry an id and the maker resting them.
+		const clobAskRow = l3.asks.find((row: any) => row.source === 'clob');
+		assert.equal(clobAskRow.price, String(100.5 * 1e6));
+		assert.equal(clobAskRow.maker, makerPda);
+		assert.isAbove(Number(clobAskRow.orderId), 0);
+		const clobBidRow = l3.bids.find((row: any) => row.source === 'clob');
+		assert.equal(clobBidRow.maker, makerPda);
+
+		// The vAMM is in the picture too, settled by the market itself.
+		const vammRow = l3.asks.find((row: any) => row.source === 'vamm');
+		assert.equal(vammRow.maker, perpMarket.toBase58());
+		assert.isNull(vammRow.orderId);
+
+		// Best makers names accounts a fill has to carry, so the market is
+		// not one of them.
 		const bestMakers = JSON.parse(
 			(await redis.get('last_update_orderbook_best_makers_perp_0'))!
 		);
-		assert.deepEqual(bestMakers.bids, [makerPda]);
-		assert.deepEqual(bestMakers.asks, [makerPda]);
+		assert.include(bestMakers.asks, makerPda);
+		assert.include(bestMakers.asks, midMakerPda);
+		assert.include(bestMakers.bids, makerPda);
+		assert.notInclude(bestMakers.asks, perpMarket.toBase58());
 
 		// Grouped channel publishes.
 		const sub = new Redis(REDIS_URL);

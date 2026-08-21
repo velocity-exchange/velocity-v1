@@ -26,7 +26,7 @@ pub use quoter_spec::ExecuteArgsV0;
 /// and validates the changes on its side.
 pub fn handle_execute_v0(
     ctx: &mut Context<ExecuteV0>,
-    args: ExecuteArgsV0,
+    args: ExecuteArgsV0<'_>,
 ) -> Result<ResponsePointerV0> {
     let clock = Clock::get()?;
     let market = &mut ctx.accounts.market;
@@ -34,7 +34,7 @@ pub fn handle_execute_v0(
     let outcome = market.execute(
         args.direction,
         args.size,
-        args.users.as_slice(),
+        args.users,
         &args.caps,
         args.reference_price,
         args.taker.as_ref(),

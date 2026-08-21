@@ -4961,6 +4961,11 @@ export type Velocity = {
         },
         {
           "name": "perpMarket",
+          "docs": [
+            "Written when the entry is the market's book: a Clob-type entry becomes",
+            "the market's `clob_quoter` here, once and for good."
+          ],
+          "writable": true,
           "pda": {
             "seeds": [
               {
@@ -4985,6 +4990,12 @@ export type Velocity = {
               }
             ]
           }
+        },
+        {
+          "name": "state",
+          "docs": [
+            "Read for the admin check a non-Custom type needs."
+          ]
         },
         {
           "name": "quoterProgram"
@@ -23106,6 +23117,19 @@ export type Velocity = {
             }
           },
           {
+            "name": "quoteL3V0Discriminator",
+            "docs": [
+              "Zero when the quoter has no `quote_l3_v0` leg, which is every quoter",
+              "that fills from one account."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
+          },
+          {
             "name": "executeV0Discriminator",
             "type": {
               "array": [
@@ -27209,6 +27233,71 @@ export type Velocity = {
       }
     },
     {
+      "name": "quotedRowV0",
+      "docs": [
+        "One resting order behind a quoted book, in the buffer's Pod form (the wire",
+        "`L3RowV0` is the same bytes).",
+        "",
+        "A book's ladder aggregates orders that belong to different people, and a",
+        "caller that has to carry those accounts — or draw the book — needs them",
+        "apart. Every other quoter fills from the one account its registry entry",
+        "names, so its rows say that instead, and a consumer reads one shape either",
+        "way."
+      ],
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "price",
+            "type": "u64"
+          },
+          {
+            "name": "size",
+            "type": "u64"
+          },
+          {
+            "name": "orderId",
+            "docs": [
+              "The quoter's own handle for the order. Zero when the row is not an",
+              "order but a rung attributed to the quoter's user."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "authority",
+            "docs": [
+              "Authority of the `User` this row settles against."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "subAccountId",
+            "type": "u16"
+          },
+          {
+            "name": "flags",
+            "docs": [
+              "`L3_ROW_FLAG_*`, as the quoter reported them."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "padding",
+            "type": {
+              "array": [
+                "u8",
+                5
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
       "name": "quotedSourceKind",
       "docs": [
         "Which kind of liquidity a quoted book came from. The router needs this to",
@@ -27288,11 +27377,23 @@ export type Velocity = {
             "type": "bool"
           },
           {
+            "name": "rowStart",
+            "docs": [
+              "This source's slice of `rows`: where it starts and how long it is. A",
+              "source with no per-order detail has none."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "rowLen",
+            "type": "u8"
+          },
+          {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                3
+                1
               ]
             }
           }
@@ -27518,6 +27619,22 @@ export type Velocity = {
             }
           },
           {
+            "name": "quoteL3V0Discriminator",
+            "docs": [
+              "The optional third leg: `quote_l3_v0`, which reports the resting",
+              "orders behind a ladder and who each belongs to. Zero means the quoter",
+              "does not implement it, and a reader attributes the whole ladder to",
+              "[`Self::user`] — which is right for every quoter that fills from one",
+              "account. A book is the exception, and this is how it says so."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
+          },
+          {
             "name": "quoteAccounts",
             "docs": [
               "Accounts forwarded to `quote_v0`, in order. Only the first",
@@ -27617,6 +27734,19 @@ export type Velocity = {
           {
             "name": "watchAccount",
             "type": "pubkey"
+          },
+          {
+            "name": "padding",
+            "docs": [
+              "Room for the next field, so adding one does not move the account's",
+              "size or its alignment invariant."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
           }
         ]
       }
@@ -28027,6 +28157,22 @@ export type Velocity = {
             "type": "u8"
           },
           {
+            "name": "rowCount",
+            "docs": [
+              "Live entries in `rows`."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "rowsTruncated",
+            "docs": [
+              "The rows region filled before every source had been described, so the",
+              "last sources carry fewer rows than their books hold. The ladders are",
+              "unaffected — a row is detail about a level, never the level itself."
+            ],
+            "type": "bool"
+          },
+          {
             "name": "direction",
             "docs": [
               "Taker direction quoted (`Direction` as u8: 0 = long, 1 = short)."
@@ -28045,7 +28191,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                76
+                74
               ]
             }
           },
@@ -28080,6 +28226,23 @@ export type Velocity = {
                   ]
                 },
                 16
+              ]
+            }
+          },
+          {
+            "name": "rows",
+            "docs": [
+              "The orders behind the ladders, in the order the sources were quoted.",
+              "Each source names its own run through `row_start`/`row_len`."
+            ],
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "quotedRowV0"
+                  }
+                },
+                128
               ]
             }
           }
@@ -30180,6 +30343,20 @@ export type Velocity = {
           },
           {
             "name": "quoteV0Discriminator",
+            "type": {
+              "option": {
+                "array": [
+                  "u8",
+                  8
+                ]
+              }
+            }
+          },
+          {
+            "name": "quoteL3V0Discriminator",
+            "docs": [
+              "Set to all-zero to withdraw the leg."
+            ],
             "type": {
               "option": {
                 "array": [

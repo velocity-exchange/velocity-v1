@@ -78,14 +78,14 @@ pub mod midpoint {
 
     pub fn quote_v0(
         ctx: &mut Context<QuoteV0>,
-        args: QuoteArgsV0,
+        args: QuoteArgsV0<'_>,
     ) -> Result<state::ResponsePointerV0> {
         instructions::quote_v0::handle_quote_v0(ctx, args)
     }
 
     pub fn execute_v0(
         ctx: &mut Context<ExecuteV0>,
-        args: ExecuteArgsV0,
+        args: ExecuteArgsV0<'_>,
     ) -> Result<state::ResponsePointerV0> {
         instructions::execute_v0::handle_execute_v0(ctx, args)
     }

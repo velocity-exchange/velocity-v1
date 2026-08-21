@@ -216,7 +216,7 @@ pub fn handle_modify_clob_order<'c: 'info, 'info>(
             ErrorCode::DefaultError
         })?;
         validate!(
-            node.is_open
+            node.is_open()
                 && node.order_id == params.order_ref.order_id
                 && node.user_ref() == user_ref,
             ErrorCode::OrderDoesNotExist,

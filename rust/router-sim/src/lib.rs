@@ -235,3 +235,119 @@ mod tests {
 /// `split_across_quoters` the chain will run — no port, no mirror to drift.
 pub use program::math::router::{split_across_quoters, QuoterAllocation, QuoterBook};
 pub use program::state::prop_amm::{Direction, PriceLevel};
+
+/// Asking a book who rests on it.
+///
+/// A fill settles only for users whose accounts the transaction carries, and
+/// a book stores its makers as an authority and a sub-account on an order, so
+/// whoever assembles a fill has to learn whose accounts to bring. Reading the
+/// book from outside is how that used to work, and it made every caller a
+/// second reader of a layout the book is entitled to change.
+///
+/// So the book answers for itself, through the optional `quote_l3_v0` leg of
+/// the quoter interface, and this crate asks it the way it asks a quoter
+/// anything: by simulation. A caller already holding a [`quote_view::QuoteView`]
+/// wants [`quote_view::QuoteView::settleable_users`] instead — the rows are
+/// in the view it already paid for.
+pub mod l3 {
+    use {
+        super::*,
+        anyhow::{anyhow, bail},
+        program::state::prop_amm::{
+            ClobUserRefV0, Direction, L3ArgsV0, L3ResponseV0, QuoterV0, ResponsePointerV0,
+        },
+        solana_sdk::{
+            instruction::{AccountMeta, Instruction},
+            message::Message,
+        },
+    };
+
+    /// Distinct makers a taker of `size` would sweep off `entry`'s book, best
+    /// price first.
+    ///
+    /// The order is the answer, not a detail of it: the book stops at the
+    /// first maker the transaction did not carry, so a prefix of this list
+    /// fills and a gap forfeits everything behind it. `limit` bounds how many
+    /// the caller wants to hear about — every maker costs two accounts.
+    ///
+    /// Empty when the entry declares no L3 leg, which is every quoter that
+    /// fills from the one account its registry entry names: there is nothing
+    /// to discover, the caller already has it.
+    pub async fn resting_makers<S: ChainSource + ?Sized>(
+        source: &S,
+        entry: &QuoterV0,
+        direction: Direction,
+        size: u64,
+        limit: usize,
+    ) -> Result<Vec<ClobUserRefV0>> {
+        if entry.quote_l3_v0_discriminator == [0u8; 8] {
+            return Ok(Vec::new());
+        }
+        let mut data = entry.quote_l3_v0_discriminator.to_vec();
+        program::state::prop_amm::write_l3_args(
+            &mut data,
+            &L3ArgsV0 {
+                direction,
+                size,
+                max_rows: limit.min(u16::MAX as usize) as u16,
+            },
+        )
+        .map_err(|err| anyhow!("serialize l3 args: {err}"))?;
+
+        let book = entry.response_account;
+        let payer = Pubkey::new_unique();
+        let blockhash = source.latest_blockhash().await?;
+        let tx = Transaction::new_unsigned(Message::new_with_blockhash(
+            &[Instruction {
+                program_id: entry.program_id,
+                accounts: vec![AccountMeta::new(book, false)],
+                data,
+            }],
+            Some(&payer),
+            &blockhash.hash,
+        ));
+        // The rows land in the book's own account and return data carries only
+        // the pointer, so the simulation has to hand back the account too.
+        let outcome = source.simulate_transaction(&tx, &[book]).await?;
+        if let Some(err) = outcome.err {
+            bail!("l3 simulation failed: {err}");
+        }
+        let pointer: ResponsePointerV0 = outcome
+            .return_data
+            .as_deref()
+            .map(|bytes| {
+                anchor_lang::AnchorDeserialize::deserialize(&mut &bytes[..])
+                    .map_err(|_| anyhow!("undecodable l3 response pointer"))
+            })
+            .transpose()?
+            .ok_or_else(|| anyhow!("l3 simulation set no return data"))?;
+        let account = outcome
+            .accounts
+            .first()
+            .cloned()
+            .flatten()
+            .ok_or_else(|| anyhow!("l3 simulation returned no book state"))?;
+
+        let start = pointer.offset as usize;
+        let end = start
+            .checked_add(pointer.len as usize)
+            .ok_or_else(|| anyhow!("l3 response pointer overflows"))?;
+        let bytes = account
+            .data
+            .get(start..end)
+            .ok_or_else(|| anyhow!("l3 response pointer out of bounds"))?;
+        let response =
+            L3ResponseV0::parse(bytes).map_err(|_| anyhow!("undecodable l3 response"))?;
+
+        let mut makers: Vec<ClobUserRefV0> = Vec::new();
+        for row in response.rows {
+            if makers.len() == limit {
+                break;
+            }
+            if !makers.contains(&row.user) {
+                makers.push(row.user);
+            }
+        }
+        Ok(makers)
+    }
+}

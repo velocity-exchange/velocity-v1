@@ -49,6 +49,7 @@ fn quoter_registry_lifecycle() {
     let init = |authority: Pubkey| Instruction {
         program_id: velocity_id(),
         accounts: velocity::accounts::InitializeQuoter {
+            state: state_pda(),
             payer: authority,
             authority,
             quoter,
@@ -65,6 +66,7 @@ fn quoter_registry_lifecycle() {
                 quoter_type: QuoterType::Custom,
                 response_account,
                 quote_v0_discriminator: [1; 8],
+                quote_l3_v0_discriminator: [0; 8],
                 execute_v0_discriminator: [2; 8],
             },
         }
@@ -164,6 +166,7 @@ fn quoter_registry_lifecycle() {
             args: UpdateQuoterConfigArgs {
                 response_account: Some(Pubkey::new_unique().to_bytes().into()),
                 quote_v0_discriminator: None,
+                quote_l3_v0_discriminator: None,
                 execute_v0_discriminator: None,
             },
         }
@@ -172,4 +175,98 @@ fn quoter_registry_lifecycle() {
     send(&mut svm, &maker, ix, &[]).unwrap();
     let entry: QuoterV0 = read_zero_copy(&svm, &quoter);
     assert!(entry.is_active && !entry.is_approved);
+}
+
+/// The entry's *type* is the whole boundary now: a Custom entry may only
+/// settle for the one account it registered, while a book settles for
+/// whoever a fill carries. So typing an entry as a book is the admin's call,
+/// and a maker asking for it is refused.
+#[test]
+fn only_the_admin_may_register_a_book() {
+    let mut svm = svm();
+    let admin = Keypair::new();
+    let maker = Keypair::new();
+    for key in [&admin, &maker] {
+        svm.airdrop(&key.pubkey(), 10_000_000_000).unwrap();
+    }
+    set_state(&mut svm, &admin.pubkey());
+    set_perp_market(&mut svm, 0);
+    let user = Pubkey::new_unique();
+    set_user(&mut svm, user, &maker.pubkey());
+
+    let quoter = quoter_pda(0, &clob_id(), &user);
+    let init = |authority: Pubkey| Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::InitializeQuoter {
+            state: state_pda(),
+            payer: authority,
+            authority,
+            quoter,
+            perp_market: perp_market_pda(0),
+            quoter_program: clob_id(),
+            user,
+            rent: rent_sysvar(),
+            system_program: system_program(),
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::InitializeQuoter {
+            args: InitializeQuoterArgs {
+                market_index: 0,
+                quoter_type: QuoterType::Clob,
+                response_account: Pubkey::new_unique(),
+                quote_v0_discriminator: [1; 8],
+                quote_l3_v0_discriminator: [3; 8],
+                execute_v0_discriminator: [2; 8],
+            },
+        }
+        .data(),
+    };
+
+    assert!(
+        send(&mut svm, &maker, init(maker.pubkey()), &[]).is_err(),
+        "a maker cannot type its own entry as a book"
+    );
+    send(&mut svm, &admin, init(admin.pubkey()), &[]).unwrap();
+
+    // Registering the book is the market's designation of it, and the
+    // designation is one-way: a second book cannot take the market over, so
+    // whoever holds the admin key later cannot point the market at a book
+    // that would settle for every user a fill carries.
+    let market: velocity::state::perp_market::PerpMarket =
+        read_zero_copy(&svm, &perp_market_pda(0));
+    assert_eq!(market.clob_quoter, quoter);
+
+    let other_user = Pubkey::new_unique();
+    set_user(&mut svm, other_user, &admin.pubkey());
+    let second = quoter_pda(0, &clob_id(), &other_user);
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::InitializeQuoter {
+            state: state_pda(),
+            payer: admin.pubkey(),
+            authority: admin.pubkey(),
+            quoter: second,
+            perp_market: perp_market_pda(0),
+            quoter_program: clob_id(),
+            user: other_user,
+            rent: rent_sysvar(),
+            system_program: system_program(),
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::InitializeQuoter {
+            args: InitializeQuoterArgs {
+                market_index: 0,
+                quoter_type: QuoterType::Clob,
+                response_account: Pubkey::new_unique(),
+                quote_v0_discriminator: [1; 8],
+                quote_l3_v0_discriminator: [3; 8],
+                execute_v0_discriminator: [2; 8],
+            },
+        }
+        .data(),
+    };
+    assert!(send(&mut svm, &admin, ix, &[]).is_err());
+    let market: velocity::state::perp_market::PerpMarket =
+        read_zero_copy(&svm, &perp_market_pda(0));
+    assert_eq!(market.clob_quoter, quoter, "the market kept its book");
 }

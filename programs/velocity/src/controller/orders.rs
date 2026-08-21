@@ -4807,14 +4807,14 @@ pub fn cross_match(
             PositionDirection::Long => crate::state::prop_amm::Direction::Long,
             PositionDirection::Short => crate::state::prop_amm::Direction::Short,
         };
-        // Read before the CPI: whom this leg's quoter may move, and — for a
-        // book velocity can read — the prices those orders rest at. A cross
-        // has no `quote_v0` leg to bind against (the crank's account list
-        // carries only the execute surface), so the book's own resting run
-        // stands in as the quote. A Custom entry offers neither, and there it
-        // is the entry's single consenting `user` plus the surplus check that
-        // bound the leg.
         let subjects = executor.subjects(book_index, cpi_direction, leg_size)?;
+        // Read before the CPI, because execute consumes the orders it is read
+        // from. A cross has no `quote_v0` leg to bind against (the crank's
+        // account list carries only the execute surface), so the run these
+        // orders rest at stands in as the quote. A Custom entry offers none,
+        // and there it is the entry's single consenting `user` plus the
+        // surplus check that bound the leg.
+        let resting = executor.resting_levels(book_index, cpi_direction, leg_size)?;
         let located = executor.execute(book_index, cpi_direction, leg_size)?;
         let data = located.borrow()?;
         let response = located.execute_response(&data)?;
@@ -4833,7 +4833,7 @@ pub fn cross_match(
         )?;
         // These are real orders rather than a quoted ladder, so they price at
         // their own size with no step quantization.
-        let quoted = match subjects.as_levels() {
+        let quoted = match resting {
             Some(levels) if leg_base > 0 => {
                 Some(crate::math::router::quoted_prefix(&levels, 1, leg_base)?)
             }
@@ -5193,7 +5193,7 @@ pub struct TakerOriginCrossFill {
 /// deeper depth instead. So the crank cancels both, and the price comes from
 /// two removals the book itself vouched for.
 pub enum TakerOriginCounterparty {
-    /// Filled through the book. `subjects` is the resting run velocity read
+    /// Filled through the book. `levels` is the resting run velocity read
     /// before the CPI — the quote the response is held to — and the response's
     /// retired order ids are what unwind the maker's open-order slots.
     Executed {
@@ -5207,6 +5207,10 @@ pub enum TakerOriginCounterparty {
         /// The sub-min remainder the book culled with it, if any.
         cancelled: Option<crate::state::prop_amm::CancelledRemainderV0>,
         subjects: crate::state::prop_amm::QuoterSubjects,
+        /// The prices the counterparty's side rested at, read before the CPI
+        /// consumed it. The cross has no quote leg, so this is what the
+        /// executed notional is held to.
+        levels: Vec<crate::state::prop_amm::PriceLevel>,
     },
     /// Cancelled off the book by the crank, and settled at its own price for
     /// `base_asset_amount` of its size. Its order left the book whole, so its
@@ -5240,6 +5244,7 @@ impl TakerOriginCounterparty {
     pub(crate) fn executed(
         response: &crate::state::prop_amm::ExecuteResponseV0<'_>,
         subjects: crate::state::prop_amm::QuoterSubjects,
+        levels: Vec<crate::state::prop_amm::PriceLevel>,
     ) -> VelocityResult<Self> {
         let mut filled = response
             .changes
@@ -5271,6 +5276,7 @@ impl TakerOriginCounterparty {
             consumed: first,
             cancelled: response.cancelled.first().copied(),
             subjects,
+            levels,
         })
     }
 
@@ -5389,7 +5395,10 @@ pub fn settle_taker_origin_cross(
             );
             ErrorCode::UserNotFound
         })?;
-    if let TakerOriginCounterparty::Executed { subjects, .. } = counterparty {
+    if let TakerOriginCounterparty::Executed {
+        subjects, levels, ..
+    } = counterparty
+    {
         validate!(
             subjects.permits(&leg.user, &maker_key, &taker_ref),
             ErrorCode::QuoterSubjectNotPermitted,
@@ -5401,11 +5410,7 @@ pub fn settle_taker_origin_cross(
         // makes "the counterparty's price" a fact rather than the book's claim.
         // A cancelled counterparty needs none of it: velocity priced that leg
         // itself, off a removal the book reported.
-        let levels = subjects.as_levels().ok_or_else(|| {
-            msg!("taker-origin cross needs a readable book");
-            ErrorCode::InvalidQuoterResponse
-        })?;
-        let quoted = crate::math::router::quoted_prefix(&levels, 1, leg.base_asset_amount)?;
+        let quoted = crate::math::router::quoted_prefix(levels, 1, leg.base_asset_amount)?;
         validate!(
             crate::math::router::validate_executed_notional(&quoted, leg.quote_asset_amount)?,
             ErrorCode::QuoterFillOffQuote,

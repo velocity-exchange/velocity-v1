@@ -102,7 +102,6 @@ pub mod oraclemap;
 pub mod slot_subscriber;
 pub mod usermap;
 
-pub mod clob;
 pub mod dlob;
 
 /// VelocityClient

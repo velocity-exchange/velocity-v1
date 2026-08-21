@@ -105,65 +105,31 @@ fn a_custom_quoter_may_only_move_its_registry_user() {
 fn the_taker_is_never_a_subject() {
     let taker = user_ref(7, 0);
     assert!(!QuoterSubjects::Account(key(7)).permits(&taker, &key(7), &taker));
-    assert!(!QuoterSubjects::Book(vec![ClobRestingOrderV0 {
-        user: taker,
-        price: 100,
-        base_asset_amount: 5,
-        is_taker_origin: false,
-    }])
-    .permits(&taker, &key(7), &taker));
+    assert!(!QuoterSubjects::Book.permits(&taker, &key(7), &taker));
 }
 
-/// A CLOB entry's permitted set is whoever rests on its own book, so a
-/// user loaded in the transaction but resting elsewhere is not a subject.
+/// A book settles for whoever rests on it, and velocity cannot establish who
+/// that is: the arena is the book program's own state, so holding a response
+/// to it would check the program against itself. What is left is the rule
+/// that does not depend on the book — never the taker — plus the loaded-user
+/// bound the caller applies, the quoted-price binding, and the post-fill
+/// margin check on everyone touched.
 #[test]
-fn a_clob_quoter_may_only_move_the_makers_on_its_book() {
+fn a_book_may_move_any_loaded_user_but_the_taker() {
     let taker = user_ref(7, 0);
-    let subjects = QuoterSubjects::Book(vec![ClobRestingOrderV0 {
-        user: user_ref(1, 0),
-        price: 100,
-        base_asset_amount: 5,
-        is_taker_origin: false,
-    }]);
+    assert!(QuoterSubjects::Book.permits(&user_ref(1, 0), &key(1), &taker));
+    assert!(QuoterSubjects::Book.permits(&user_ref(2, 9), &key(2), &taker));
+    assert!(!QuoterSubjects::Book.permits(&taker, &key(7), &taker));
+}
+
+/// A Custom entry stays bound to the one account its registration consented
+/// for, which velocity reads off the registry rather than off the quoter.
+#[test]
+fn a_custom_quoter_still_moves_only_its_registered_user() {
+    let taker = user_ref(7, 0);
+    let subjects = QuoterSubjects::Account(key(1));
     assert!(subjects.permits(&user_ref(1, 0), &key(1), &taker));
     assert!(!subjects.permits(&user_ref(2, 0), &key(2), &taker));
-    assert!(!subjects.permits(&user_ref(1, 1), &key(1), &taker));
-    // An empty book permits nobody rather than everybody.
-    assert!(!QuoterSubjects::Book(vec![]).permits(&user_ref(1, 0), &key(1), &taker));
-}
-
-#[test]
-fn a_books_resting_run_reads_back_as_price_levels() {
-    let subjects = QuoterSubjects::Book(vec![
-        ClobRestingOrderV0 {
-            user: user_ref(1, 0),
-            price: 100,
-            base_asset_amount: 5,
-            is_taker_origin: false,
-        },
-        ClobRestingOrderV0 {
-            user: user_ref(2, 0),
-            price: 101,
-            base_asset_amount: 7,
-            is_taker_origin: false,
-        },
-    ]);
-    assert_eq!(
-        subjects.as_levels(),
-        Some(vec![
-            PriceLevel {
-                price: 100,
-                size: 5
-            },
-            PriceLevel {
-                price: 101,
-                size: 7
-            },
-        ])
-    );
-    // A Custom entry has no book velocity can read, so there is nothing to
-    // take as a quote.
-    assert_eq!(QuoterSubjects::Account(key(1)).as_levels(), None);
 }
 
 /// One live order in a synthetic book's node arena. Mirrors
@@ -494,40 +460,47 @@ fn the_cap_list_puts_no_ceiling_on_exclusions() {
     );
 }
 
+/// A set costs the entries it carries, not the capacity it could carry. The
+/// quote view sends none at all, and it is the path that runs once per quoter
+/// per tick on a heap that never reclaims.
+///
+/// These are the bytes a quoter reads. The quoter programs live in another
+/// workspace, so the agreement between the two can only be held as numbers —
+/// the CLOB pins the same ones from its side.
 #[test]
-fn the_user_set_encodes_to_a_fixed_width() {
+fn the_user_set_encodes_to_what_it_carries() {
     assert_eq!(MAX_QUOTER_WIRE_USERS, 48);
-    assert_eq!(QUOTER_USER_SET_BYTES, 1633);
-    fn encode<T: AnchorSerialize>(value: &T) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        value.serialize(&mut bytes).unwrap();
-        bytes
-    }
-    assert_eq!(encode(&QuoterUserSetV0::EMPTY).len(), QUOTER_USER_SET_BYTES);
-    assert_eq!(
-        encode(&QuoterUserSetRef::EMPTY),
-        encode(&QuoterUserSetV0::EMPTY)
-    );
+    assert_eq!(QUOTER_USER_SET_MAX_BYTES, 4 + 48 * CLOB_USER_REF_BYTES);
+    assert_eq!(quoter_user_set_bytes(0), 4);
 
     let live = [user_ref(1, 0), user_ref(2, 7)];
-    let mut expected = QuoterUserSetV0::EMPTY;
-    expected.len = live.len() as u8;
-    expected.users[..live.len()].copy_from_slice(&live);
-    let bytes = encode(&QuoterUserSetRef(&live));
-    assert_eq!(bytes, encode(&expected));
-    assert_eq!(bytes.len(), QUOTER_USER_SET_BYTES);
-    assert_eq!(bytes[0], 2);
+    let args = QuoteArgsV0 {
+        users: &live,
+        direction: Direction::Long,
+        size: 1,
+        caps: QuoterUserCapsV0::EMPTY,
+        reference_price: 0,
+        taker: None,
+    };
+    let mut bytes = Vec::new();
+    quoter_spec::write_args(&mut bytes, &args).unwrap();
+
+    // The set leads, counted in four bytes, and its refs follow in order.
+    assert_eq!(bytes[..4], 2u32.to_le_bytes());
+    assert_eq!(bytes[4..4 + CLOB_USER_REF_BYTES], user_ref(1, 0).to_bytes());
     assert_eq!(
-        bytes[1..1 + CLOB_USER_REF_BYTES],
-        encode(&user_ref(1, 0))[..]
+        bytes[4 + CLOB_USER_REF_BYTES..quoter_user_set_bytes(live.len())],
+        user_ref(2, 7).to_bytes()
     );
-    // The tail past the live entries is zeroed, not stale.
-    assert!(bytes[1 + live.len() * CLOB_USER_REF_BYTES..]
-        .iter()
-        .all(|b| *b == 0));
-    assert_eq!(expected.as_slice(), &live[..]);
-    assert!(expected.contains(&user_ref(2, 7)));
-    assert!(!expected.contains(&user_ref(3, 0)));
+
+    let empty = QuoteArgsV0 { users: &[], ..args };
+    let mut bytes = Vec::new();
+    quoter_spec::write_args(&mut bytes, &empty).unwrap();
+    assert_eq!(
+        bytes[..4],
+        0u32.to_le_bytes(),
+        "a length prefix, then the rest"
+    );
 }
 
 /// The capacity is an upper bound on what a transaction can lock, so
@@ -614,40 +587,56 @@ fn the_reader_agrees_with_the_specs_writer() {
 }
 
 /// The CPI buffer is reserved once, at exactly the width the args serialize
-/// to. A field added to the args without being counted in the reservation
-/// makes the `Vec` double instead, and a doubling leaks its old buffer on a
-/// heap that never gives memory back — the fill runs out of memory rather
-/// than merely slowing down. So the two are pinned to each other here.
+/// to. A `Vec` that reserves short doubles instead, and a doubling leaks its
+/// old buffer on a heap that never gives memory back — the fill runs out of
+/// memory rather than merely slowing down. The size and the bytes come from
+/// the same schema, so the two are pinned to each other here.
 #[test]
 fn the_cpi_buffer_holds_exactly_what_the_args_serialize_to() {
-    fn encode<T: AnchorSerialize>(value: &T) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        value.serialize(&mut bytes).unwrap();
-        bytes
-    }
-    // The widest each field can be: a full user set and a taker present.
-    let users: Vec<ClobUserRefV0> = (0..MAX_QUOTER_WIRE_USERS)
+    let all: Vec<ClobUserRefV0> = (0..MAX_QUOTER_WIRE_USERS)
         .map(|index| user_ref(index as u8, 0))
         .collect();
-    let taker = Some(user_ref(0xFF, 0));
-    let quote = encode(&QuoteArgsV0 {
-        direction: Direction::Long,
-        size: u64::MAX,
-        users: QuoterUserSetRef(&users),
-        caps: QuoterUserCapsV0::EMPTY,
-        reference_price: i64::MAX,
-        taker,
-    });
-    let execute = encode(&ExecuteArgsV0 {
-        direction: Direction::Long,
-        size: u64::MAX,
-        users: QuoterUserSetRef(&users),
-        caps: QuoterUserCapsV0::EMPTY,
-        reference_price: i64::MAX,
-        taker,
-    });
 
+    // The widest each leg can be: a full user set and a taker present.
+    let quote = QuoteArgsV0 {
+        users: &all,
+        direction: Direction::Long,
+        size: u64::MAX,
+        caps: QuoterUserCapsV0::EMPTY,
+        reference_price: i64::MAX,
+        taker: Some(user_ref(0xFF, 0)),
+    };
+    let execute = ExecuteArgsV0 {
+        users: &all,
+        direction: Direction::Long,
+        size: u64::MAX,
+        caps: QuoterUserCapsV0::EMPTY,
+        reference_price: i64::MAX,
+        taker: Some(user_ref(0xFF, 0)),
+    };
     // Eight for the anchor discriminator the caller writes ahead of the args.
-    assert_eq!(quote.len() + 8, QUOTER_CPI_DATA_CAPACITY);
-    assert_eq!(execute.len() + 8, QUOTER_CPI_DATA_CAPACITY);
+    assert_eq!(
+        quoter_spec::args_size(&quote).unwrap() + 8,
+        QUOTER_CPI_DATA_MAX
+    );
+    assert_eq!(
+        quoter_spec::args_size(&execute).unwrap() + 8,
+        QUOTER_CPI_DATA_MAX
+    );
+
+    // And a call that carries fewer users costs less, exactly. A quote view
+    // carries none.
+    for count in [0, 1, MAX_QUOTER_WIRE_USERS] {
+        for taker in [None, Some(user_ref(0xFF, 0))] {
+            let args = QuoteArgsV0 {
+                users: &all[..count],
+                taker,
+                ..quote
+            };
+            let mut bytes = Vec::new();
+            quoter_spec::write_args(&mut bytes, &args).unwrap();
+            assert_eq!(bytes.len(), quoter_spec::args_size(&args).unwrap());
+            assert_eq!(bytes.len() + 8, quoter_cpi_data_len(count, taker.is_some()));
+        }
+    }
 }

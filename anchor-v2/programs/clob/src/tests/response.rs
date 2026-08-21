@@ -20,11 +20,11 @@ use {
         state::{
             CancelledRemainderV0, ClobMarketV0, ClobSideExt, CompletedOrderV0, Direction,
             ExecuteResponseV0, MarketConfigV0, PriceLevel, QuoteResponseV0, RemovedOrderV0,
-            ResponsePointerV0, Side, UserBalanceChangeV0, UserCapsV0, UserRefV0, UserSetV0,
-            CANCELLED_BYTES, CHANGE_BYTES, COMPLETED_BYTES, COUNT_BYTES, EXECUTE_FILLS_CEILING,
+            ResponsePointerV0, Side, UserBalanceChangeV0, UserCapsV0, UserRefV0, CANCELLED_BYTES,
+            CHANGE_BYTES, COMPLETED_BYTES, COUNT_BYTES, EXECUTE_FILLS_CEILING,
             EXECUTE_USERS_CEILING, PRICE_LEVEL_BYTES, QUOTE_LEVELS_CEILING, REMOVED_ORDER_BYTES,
             RESPONSE_BUFFER_BYTES, RESPONSE_LEN_BYTES, RESPONSE_OFFSET, USER_CAPS_BYTES,
-            USER_CAPS_CAPACITY, USER_REF_BYTES, USER_SET_BYTES, USER_SET_CAPACITY,
+            USER_CAPS_CAPACITY, USER_REF_BYTES, USER_SET_CAPACITY, USER_SET_MAX_BYTES,
             WITHHELD_REPORT_BYTES,
         },
     },
@@ -398,14 +398,6 @@ fn execute_totals_the_floor_of_the_whole_sweeps_notional() {
     );
 }
 
-/// The user set is the one wire type velocity *sends* rather than reads, and
-/// it is fixed-width by design: both sides address it by offset, so its
-/// encoded size must not move with its contents.
-///
-/// The literals here are what velocity's `QUOTER_USER_SET_BYTES` /
-/// `MAX_QUOTER_WIRE_USERS` say (that crate is a separate workspace, so the
-/// agreement can only be pinned as numbers): a one-byte count followed by 48
-/// fixed 34-byte refs, 1633 bytes whatever `len` is.
 /// The caps sit between the user set and the taker on the wire, so a
 /// disagreement between their write schema and their read schema would land
 /// on the taker — silently turning self-trade prevention off. Round-trip the
@@ -417,7 +409,7 @@ fn the_args_round_trip_with_caps_between_the_set_and_the_taker() {
     let args = QuoteArgsV0 {
         direction: crate::state::Direction::Long,
         size: 12,
-        users: UserSetV0::EMPTY,
+        users: &[],
         caps: UserCapsV0::EMPTY,
         reference_price: 0,
         taker: Some(taker),
@@ -443,32 +435,76 @@ fn the_cap_list_is_fixed_width_on_the_wire() {
     assert_eq!(encode(&full).len(), USER_CAPS_BYTES);
 }
 
+/// The user set is the one wire type velocity *sends* rather than reads, and
+/// this program reads it in place: `users` is a slice into the instruction
+/// data, not a copy lifted out of it. The literals here are what velocity's
+/// `QUOTER_USER_SET_MAX_BYTES` / `MAX_QUOTER_WIRE_USERS` say (that crate is a
+/// separate workspace, so the agreement can only be pinned as numbers): a
+/// four-byte count, then that many 34-byte refs, at most 48 of them.
+///
+/// The count is four bytes because these args ride borsh's framing. The
+/// responses in this file use wincode's own configuration, whose prefix is
+/// eight — reading one width for the other shifts every field behind it.
 #[test]
-fn the_user_set_is_fixed_width_on_the_wire() {
+fn the_user_set_is_read_in_place_and_costs_only_what_it_carries() {
+    use crate::instructions::quote_v0::QuoteArgsV0;
+
     assert_eq!(USER_SET_CAPACITY, 48);
-    assert_eq!(USER_SET_BYTES, 1633);
-    assert_eq!(USER_SET_BYTES, 1 + USER_SET_CAPACITY * USER_REF_BYTES);
+    assert_eq!(USER_SET_MAX_BYTES, 1636);
+    assert_eq!(USER_SET_MAX_BYTES, 4 + USER_SET_CAPACITY * USER_REF_BYTES);
 
-    assert_eq!(encode(&UserSetV0::EMPTY).len(), USER_SET_BYTES);
-    let full = UserSetV0::from_refs(&vec![user(0xA); USER_SET_CAPACITY]).unwrap();
-    assert_eq!(encode(&full).len(), USER_SET_BYTES);
-    assert_eq!(full.as_slice().len(), USER_SET_CAPACITY);
-    assert!(UserSetV0::from_refs(&vec![user(0xA); USER_SET_CAPACITY + 1]).is_none());
-
-    // The count is the first byte, then the live refs in order; the tail is
-    // encoded but not addressed.
-    let one = UserSetV0::from_refs(&[user(0xB)]).unwrap();
-    let bytes = encode(&one);
-    assert_eq!(bytes[0], 1);
-    assert_eq!(bytes[1..1 + USER_REF_BYTES], encode(&user(0xB))[..]);
-    assert_eq!(one.as_slice(), &[user(0xB)]);
-
-    // A `len` past the array is a foreign caller's problem, not a panic.
-    let hostile = UserSetV0 {
-        len: u8::MAX,
-        ..UserSetV0::EMPTY
+    let users = [user(0xA), user(0xB)];
+    let args = QuoteArgsV0 {
+        users: &users,
+        direction: crate::state::Direction::Long,
+        size: 7,
+        caps: UserCapsV0::EMPTY,
+        reference_price: 0,
+        taker: None,
     };
-    assert_eq!(hostile.as_slice().len(), USER_SET_CAPACITY);
+    let bytes = encode(&args);
+
+    // The set leads, counted in four bytes, so its refs land on an even
+    // offset — which is the alignment a `UserRefV0` reference needs.
+    assert_eq!(bytes[..4], 2u32.to_le_bytes());
+    assert_eq!(bytes[4..4 + USER_REF_BYTES], encode(&user(0xA))[..]);
+    assert_eq!(
+        bytes.len(),
+        4 + 2 * USER_REF_BYTES + 1 + 8 + USER_CAPS_BYTES + 8 + 1
+    );
+
+    let decoded: QuoteArgsV0 =
+        anchor_lang_v2::wincode::config::deserialize(&bytes, anchor_lang_v2::BORSH_CONFIG).unwrap();
+    assert_eq!(decoded.users, &users[..]);
+    assert_eq!(
+        decoded.users.as_ptr() as usize,
+        bytes[4..].as_ptr() as usize,
+        "the set is borrowed from the instruction data, not copied out of it"
+    );
+
+    // An empty set is unrestricted, and it is what a quote view sends.
+    let empty = QuoteArgsV0 { users: &[], ..args };
+    let bytes = encode(&empty);
+    assert_eq!(bytes[..4], 0u32.to_le_bytes());
+    let decoded: QuoteArgsV0 =
+        anchor_lang_v2::wincode::config::deserialize(&bytes, anchor_lang_v2::BORSH_CONFIG).unwrap();
+    assert!(decoded.users.is_empty());
+}
+
+/// The length is structural now, so nothing about the encoding stops a caller
+/// from claiming more users than the caps can address. The book refuses such
+/// a set rather than treating an unaddressable user as settleable.
+#[test]
+fn a_user_set_past_the_capacity_is_refused() {
+    use crate::state::user_set_within_capacity;
+    assert!(user_set_within_capacity(&vec![
+        user(0xA);
+        USER_SET_CAPACITY
+    ]));
+    assert!(!user_set_within_capacity(&vec![
+        user(0xA);
+        USER_SET_CAPACITY + 1
+    ]));
 }
 
 /// A market configured at the ceilings has to be able to emit the widest

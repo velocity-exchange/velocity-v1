@@ -15,6 +15,9 @@ clap = { version = "4.5.40", "features" = ["env", "derive"] }
 crossbeam = { version = "0.8.4", features = ["crossbeam-channel"] }
 dotenv = "0.15.0"
 velocity-rs = { path = "../velocity-rs", features = ["unsafe_pub", "titan"] }
+# Simulation lives here, and asking a book who rests on it is a simulation.
+velocity-router-sim = { path = "../router-sim" }
+relay-chain-source = { git = "https://github.com/velocity-exchange/relay", rev = "88419fd1de3ee189e44ef591d9e8f5c558d58a9d" }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 base64 = "0.22"
 bincode = "1"

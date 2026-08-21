@@ -18,6 +18,10 @@ program = { package = "velocity", path = "../../programs/velocity", default-feat
   "isolated-position",
   "vlp-hedge",
 ] }
+# The health layer is a leaf with no chain access, so depending on it here
+# keeps the attribute-and-retry loop in the router library every consumer
+# already uses, rather than in each service.
+velocity-quoter-health = { path = "../quoter-health" }
 anchor-lang = "1.0.2"
 bytemuck = "1"
 solana-system-interface = "3"
@@ -27,4 +31,8 @@ solana-sdk = "3"
 tracing = "0.1"
 
 [dev-dependencies]
+# Only to pin the deploy-record layout the health watcher reads by offset.
+solana-loader-v3-interface = { version = "*", features = ["bincode"] }
+bincode = "1"
+solana-sdk-ids = "3"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

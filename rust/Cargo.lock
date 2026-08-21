@@ -1132,9 +1132,12 @@ version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "anyhow",
+ "axum 0.8.9",
  "clap",
+ "prometheus",
  "redis",
  "relay-chain-source",
+ "serde",
  "serde_json",
  "solana-rent 3.1.0",
  "solana-sdk",
@@ -1142,6 +1145,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "velocity",
+ "velocity-quoter-health",
  "velocity-router-sim",
 ]
 
@@ -3247,6 +3251,7 @@ dependencies = [
  "solana-transaction-status",
  "solana-transaction-status-client-types",
  "tokio",
+ "velocity-quoter-health",
  "velocity-rs",
 ]
 
@@ -8030,6 +8035,7 @@ dependencies = [
  "tower-http 0.6.11",
  "urlencoding",
  "uuid",
+ "velocity-quoter-health",
  "velocity-router-sim",
  "velocity-rs",
  "zstd",
@@ -8975,19 +8981,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "velocity-quoter-health"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dashmap 6.2.1",
+ "prometheus",
+ "redis",
+ "serde",
+ "serde_json",
+ "solana-sdk",
+ "tracing",
+]
+
+[[package]]
 name = "velocity-router-sim"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
  "anyhow",
  "async-trait",
+ "bincode",
  "bytemuck",
  "relay-chain-source",
+ "solana-loader-v3-interface",
  "solana-sdk",
+ "solana-sdk-ids",
  "solana-system-interface 3.2.0",
  "tokio",
  "tracing",
  "velocity",
+ "velocity-quoter-health",
 ]
 
 [[package]]

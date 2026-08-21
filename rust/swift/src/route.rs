@@ -19,14 +19,17 @@ use {
         response::IntoResponse,
         Json,
     },
+    prometheus::Registry,
     relay_chain_source::{ChainSource, RpcSource},
     serde::{Deserialize, Serialize},
     solana_pubkey::Pubkey,
-    std::collections::HashMap,
+    std::{collections::HashMap, sync::Arc},
     tokio::sync::RwLock,
+    velocity_quoter_health::{metrics::Metrics as QuoterMetrics, Health, Policy},
     velocity_router_sim::{
         find_quote_buffer,
-        quote_view::{build_quote_router_ix, perp_market_pda, read_zero_copy, simulate_quote_view},
+        health::{quote_market, QuoteRequest},
+        quote_view::{perp_market_pda, read_zero_copy, QuoteView},
         split_across_quoters, Direction, PriceLevel, QuoterBook,
     },
     velocity_rs::program::state::{prop_amm::ClobUserRefV0, router_quote::QuotedSourceKind},
@@ -41,13 +44,21 @@ pub struct RouteContext {
     /// `(buffer, authority, step_size)` per market. Re-discovered when a
     /// cached buffer stops simulating (closed, republished elsewhere).
     markets: RwLock<HashMap<u16, MarketRoute>>,
+    /// Which quoters this endpoint is willing to carry. A quoter that keeps
+    /// breaking the simulation is dropped from the route instead of turning
+    /// every request for that market into an error.
+    health: Arc<Health>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct MarketRoute {
     buffer: Pubkey,
     authority: Pubkey,
     step_size: u64,
+    /// Live registry entries, so planning the view's passes costs no extra
+    /// read. Refreshed with the rest of the route when a buffer stops
+    /// simulating, which is also when an entry set is most likely stale.
+    quoters: Vec<Pubkey>,
 }
 
 impl RouteContext {
@@ -56,12 +67,49 @@ impl RouteContext {
             source: RpcSource::new(rpc_url),
             velocity,
             markets: RwLock::new(HashMap::new()),
+            health: Arc::new(Health::new(Policy::default())),
         }
+    }
+
+    /// Report quoter health into `registry` as well as acting on it.
+    pub fn with_metrics(rpc_url: String, velocity: Pubkey, registry: &Registry) -> Self {
+        Self {
+            health: Arc::new(Health::with_metrics(
+                Policy::default(),
+                Arc::new(QuoterMetrics::register(registry)),
+            )),
+            ..Self::new(rpc_url, velocity)
+        }
+    }
+
+    /// Live registry entries for a market, so the view can be read in as
+    /// many passes as they need.
+    async fn market_quoters(&self, market_index: u16) -> Result<Vec<Pubkey>, RouteError> {
+        let entries =
+            velocity_router_sim::quoter_entries(&self.source, &self.velocity, market_index)
+                .await
+                .map_err(RouteError::internal)?;
+        Ok(entries
+            .into_iter()
+            .filter_map(|(key, account)| {
+                let entry = read_zero_copy::<velocity_rs::program::state::prop_amm::QuoterV0>(
+                    &account.data,
+                )
+                .ok()?;
+                (entry.is_active && entry.is_approved).then_some(key)
+            })
+            .collect())
+    }
+
+    /// The health state behind this endpoint, for the metrics exporter and
+    /// the operator surface.
+    pub fn health(&self) -> &Arc<Health> {
+        &self.health
     }
 
     async fn market_route(&self, market_index: u16) -> Result<MarketRoute, RouteError> {
         if let Some(route) = self.markets.read().await.get(&market_index) {
-            return Ok(*route);
+            return Ok(route.clone());
         }
         let (buffer, authority) = find_quote_buffer(&self.source, &self.velocity, market_index)
             .await
@@ -77,12 +125,29 @@ impl RouteContext {
                 .ok_or(RouteError::NoMarket(market_index))?;
         let market: velocity_rs::program::state::perp_market::PerpMarket =
             read_zero_copy(&account.data).map_err(RouteError::internal)?;
+        let quoters =
+            velocity_router_sim::quoter_entries(&self.source, &self.velocity, market_index)
+                .await
+                .map_err(RouteError::internal)?
+                .into_iter()
+                .filter_map(|(key, account)| {
+                    let entry = read_zero_copy::<velocity_rs::program::state::prop_amm::QuoterV0>(
+                        &account.data,
+                    )
+                    .ok()?;
+                    (entry.is_active && entry.is_approved).then_some(key)
+                })
+                .collect();
         let route = MarketRoute {
             buffer,
             authority,
             step_size: market.order_step_size,
+            quoters,
         };
-        self.markets.write().await.insert(market_index, route);
+        self.markets
+            .write()
+            .await
+            .insert(market_index, route.clone());
         Ok(route)
     }
 
@@ -280,25 +345,42 @@ pub async fn route_quote(
     };
 
     // One retry through rediscovery: the cached buffer may have been closed
-    // or the publisher may have moved markets since we last looked.
+    // or the publisher may have moved markets since we last looked. That
+    // retry rebuilds the same account set, so it only helps when the buffer
+    // moved. A quoter that reverts is handled a layer down, by dropping the
+    // quoter the logs name and quoting the rest of the market.
     let mut view = None;
     for attempt in 0..2 {
         let route = ctx.market_route(query.market_index).await?;
-        let ix = build_quote_router_ix(
-            &ctx.source,
-            &ctx.velocity,
-            &route.authority,
-            &route.buffer,
+        let request = QuoteRequest::whole_market(
+            ctx.velocity,
+            route.authority,
+            route.buffer,
             query.market_index,
             direction,
             query.size,
             &dlob_makers,
-        )
-        .await
-        .map_err(RouteError::internal)?;
-        match simulate_quote_view(&ctx.source, ix, &route.authority, &route.buffer).await {
+        );
+        match quote_market(&ctx.source, &ctx.health, &request, &route.quoters).await {
             Ok(quoted) => {
-                view = Some((quoted, route));
+                if !quoted.excluded.is_empty() {
+                    log::warn!(
+                        target: "route",
+                        "market {} routed without {:?}",
+                        query.market_index,
+                        quoted.excluded
+                    );
+                }
+                view = Some((
+                    QuoteView {
+                        market: query.market_index,
+                        direction: direction as u8,
+                        quoted_size: quoted.quoted_size,
+                        slot: quoted.slot,
+                        books: quoted.books,
+                    },
+                    route,
+                ));
                 break;
             }
             Err(err) if attempt == 0 => {

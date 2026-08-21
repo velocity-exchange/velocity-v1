@@ -5336,6 +5336,7 @@ pub mod types {
         pub direction: DirectionV0,
         pub size: u64,
         pub quoter_count: u8,
+        pub include_vamm: bool,
     }
     #[repr(C)]
     #[derive(

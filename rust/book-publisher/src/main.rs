@@ -18,6 +18,7 @@
 //! quote view is built without `(User, UserStats)` maker pairs).
 
 mod cross;
+mod metrics_server;
 mod payload;
 
 use {
@@ -33,18 +34,23 @@ use {
     solana_sdk::{pubkey::Pubkey, signature::Keypair, signer::Signer, transaction::Transaction},
     std::{
         str::FromStr,
-        sync::Arc,
+        sync::{Arc, Mutex},
         time::{Duration, SystemTime, UNIX_EPOCH},
     },
     tracing::{info, warn},
+    velocity_quoter_health::{metrics::Metrics, EntryRef, Health, Policy},
     velocity_router_sim::{
+        health::{quote_market, watch_program_deploys, QuoteRequest},
         quote_view::{
-            build_quote_router_ix, create_quote_buffer_ixs, perp_market_pda, read_zero_copy,
-            simulate_quote_view, state_pda,
+            create_quote_buffer_ixs, perp_market_pda, read_zero_copy, state_pda, QuoteView,
         },
         router_subscriptions, Direction,
     },
 };
+
+/// Ticks between deploy-record checks. At the default 400 ms tick this is
+/// about a minute, which is prompt for something that happens rarely.
+const DEPLOY_WATCH_TICKS: u32 = 150;
 
 #[derive(Parser, Debug)]
 #[clap(version)]
@@ -78,6 +84,10 @@ pub struct Config {
     /// prefix (ioredis applies it implicitly; here it is explicit).
     #[clap(long, env = "REDIS_KEY_PREFIX", default_value = "")]
     pub redis_prefix: String,
+    /// Where `/metrics` is served. 9464 matches the exporters the rest of
+    /// the stack already uses.
+    #[clap(long, env = "METRICS_ADDR", default_value = "0.0.0.0:9464")]
+    pub metrics_addr: std::net::SocketAddr,
     #[clap(long, env = "TICK_MS", default_value = "400")]
     pub tick_ms: u64,
     /// Size each side is quoted for, base precision.
@@ -282,6 +292,19 @@ async fn main() -> Result<()> {
         .await
         .context("connect redis")?;
 
+    // The publisher simulates every market every tick, so it exercises every
+    // registered quoter continuously — including ones no taker is routing
+    // to. That makes it the router stack's health probe, at no extra cost.
+    let registry = std::sync::Arc::new(prometheus::Registry::new());
+    let metrics = std::sync::Arc::new(Metrics::register(&registry));
+    let health = std::sync::Arc::new(Health::with_metrics(Policy::default(), metrics.clone()));
+    metrics_server::serve(config.metrics_addr, registry, metrics, health.clone());
+
+    // Registry entries seen on the last pass, for the deploy watch. Held
+    // apart from the health layer because the layer holds no chain state.
+    let carried: Arc<Mutex<Vec<EntryRef>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut deploy_watch = DEPLOY_WATCH_TICKS;
+
     let mut tick = tokio::time::interval(Duration::from_millis(config.tick_ms));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     info!(markets = ?markets, tick_ms = config.tick_ms, cross_match = config.cross_match, "publishing");
@@ -299,10 +322,26 @@ async fn main() -> Result<()> {
                 *market_index,
                 config.quote_size,
                 config.cross_match,
+                health.as_ref(),
+                &carried,
             )
             .await
             {
                 warn!(market_index, error = %format!("{err:#}"), "tick failed");
+            }
+        }
+        // Expiry is evaluated when a quoter is looked at, so a quarantine on
+        // a quoter no market carries needs this to end.
+        health.sweep();
+        // A redeploy makes a quoter's score describe code that no longer
+        // runs. Checked on a slow cadence: a deploy is rare, and the check
+        // costs one account read per distinct quoter program.
+        deploy_watch = deploy_watch.saturating_sub(1);
+        if deploy_watch == 0 {
+            deploy_watch = DEPLOY_WATCH_TICKS;
+            let entries = carried.lock().expect("deploy watch lock").clone();
+            if let Err(err) = watch_program_deploys(&source, &health, &entries).await {
+                warn!(error = %format!("{err:#}"), "deploy watch failed");
             }
         }
     }
@@ -319,6 +358,8 @@ async fn publish_market(
     market_index: u16,
     quote_size: u64,
     cross_match: bool,
+    health: &Health,
+    carried: &Mutex<Vec<EntryRef>>,
 ) -> Result<()> {
     let authority = &payer.pubkey();
     let perp_market_account = source
@@ -357,35 +398,66 @@ async fn publish_market(
         .transpose()?
         .map(|entry| entry.response_account);
 
-    // A long taker consumes asks; a short taker consumes bids.
-    let asks_ix = build_quote_router_ix(
-        source,
-        velocity,
-        authority,
-        buffer,
-        market_index,
-        Direction::Long,
-        quote_size,
-        // The publisher holds no DLOB view; its books come from the
-        // TypeScript publisher until that dies.
-        &[],
-    )
-    .await?;
-    let asks = simulate_quote_view(source, asks_ix, authority, buffer).await?;
-    let bids_ix = build_quote_router_ix(
-        source,
-        velocity,
-        authority,
-        buffer,
-        market_index,
-        Direction::Short,
-        quote_size,
-        // The publisher holds no DLOB view; its books come from the
-        // TypeScript publisher until that dies.
-        &[],
-    )
-    .await?;
-    let bids = simulate_quote_view(source, bids_ix, authority, buffer).await?;
+    // A long taker consumes asks; a short taker consumes bids. Both go
+    // through the health layer, so a quoter that breaks the simulation costs
+    // the market that one source instead of its whole book.
+    let request = |direction| {
+        QuoteRequest::whole_market(
+            *velocity,
+            *authority,
+            *buffer,
+            market_index,
+            direction,
+            quote_size,
+            // The publisher holds no DLOB view; its books come from the
+            // TypeScript publisher until that dies.
+            &[],
+        )
+    };
+    // Read in as many passes as the market's quoters need. One pass holds a
+    // fixed number of sources, and the buffer refuses a push past it rather
+    // than truncating, so a market that outgrew a single pass would publish
+    // nothing at all.
+    let live: Vec<Pubkey> = velocity_router_sim::quoter_entries(source, velocity, market_index)
+        .await?
+        .into_iter()
+        .filter_map(|(key, account)| {
+            let entry = read_zero_copy::<program::state::prop_amm::QuoterV0>(&account.data).ok()?;
+            (entry.is_active && entry.is_approved).then_some(key)
+        })
+        .collect();
+    let asks_quote = quote_market(source, health, &request(Direction::Long), &live).await?;
+    let bids_quote = quote_market(source, health, &request(Direction::Short), &live).await?;
+    if !asks_quote.excluded.is_empty() || !bids_quote.excluded.is_empty() {
+        warn!(
+            market_index,
+            excluded = ?asks_quote.excluded,
+            "publishing without unhealthy quoters"
+        );
+    }
+    {
+        let mut seen = carried.lock().expect("deploy watch lock");
+        for entry in asks_quote.entries.iter().chain(&bids_quote.entries) {
+            let entry = entry.as_entry_ref();
+            if !seen.contains(&entry) {
+                seen.push(entry);
+            }
+        }
+    }
+    let asks = QuoteView {
+        market: market_index,
+        direction: 0,
+        quoted_size: asks_quote.quoted_size,
+        slot: asks_quote.slot,
+        books: asks_quote.books,
+    };
+    let bids = QuoteView {
+        market: market_index,
+        direction: 1,
+        quoted_size: bids_quote.quoted_size,
+        slot: bids_quote.slot,
+        books: bids_quote.books,
+    };
 
     let ts_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -452,6 +524,9 @@ async fn publish_market(
                 clock.unix_timestamp,
                 &decorations,
                 ts_ms,
+                payload::propamm_rows(&bids, &bids_quote.entries),
+                payload::propamm_rows(&asks, &asks_quote.entries),
+                quote_size,
             );
             redis
                 .set::<_, _, ()>(
@@ -464,6 +539,8 @@ async fn publish_market(
                 &book.data,
                 clock.slot,
                 clock.unix_timestamp,
+                payload::propamm_rows(&bids, &bids_quote.entries),
+                payload::propamm_rows(&asks, &asks_quote.entries),
             );
             redis
                 .set::<_, _, ()>(

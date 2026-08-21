@@ -1314,6 +1314,14 @@ pub trait ExternalQuoterExecutor<'info> {
     /// account the pre-execute clamp sizes Custom books against.
     fn quoter_user(&self, index: usize) -> Pubkey;
 
+    /// The registry entry of quoter `index`.
+    ///
+    /// Failure messages name this rather than the index. An off-chain router
+    /// reading the logs of a failed fill knows the program from the runtime's
+    /// CPI brackets, but one quoter program serves many entries, so only the
+    /// entry key says which maker to hold responsible.
+    fn quoter_key(&self, index: usize) -> Pubkey;
+
     /// The users quoter `index` may return balance changes for on a fill of
     /// `direction`/`size`. Must be called before [`Self::execute`]: for a
     /// book-backed quoter the answer lives in state execute is about to
@@ -1375,6 +1383,10 @@ impl<'info> ExternalQuoterExecutor<'info> for NoExternalQuoters {
     }
 
     fn quoter_user(&self, _index: usize) -> Pubkey {
+        Pubkey::default()
+    }
+
+    fn quoter_key(&self, _index: usize) -> Pubkey {
         Pubkey::default()
     }
 

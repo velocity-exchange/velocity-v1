@@ -41,6 +41,7 @@ use {
     },
     solana_system_interface::instruction as system_instruction,
     std::collections::BTreeMap,
+    velocity_quoter_health::EntryRef,
 };
 
 pub fn state_pda(velocity: &Pubkey) -> Pubkey {
@@ -172,24 +173,98 @@ pub fn create_quote_buffer_ixs(
     ]
 }
 
+/// A built `quote_router` instruction, with the entries it carries.
+///
+/// The entries are in the order the on-chain router walks them. That order is
+/// what lets a runtime CPI bracket in a failed simulation's logs be matched
+/// back to a registry entry, which is the only attribution available when a
+/// quoter exhausts the compute budget and leaves the router no room to log.
+pub struct QuoteRouterIx {
+    pub instruction: Instruction,
+    pub entries: Vec<CarriedEntry>,
+}
+
+/// A registry entry a pass carried, with what a consumer needs to attribute
+/// its levels.
+///
+/// `user` is the account a Custom entry settles against: one maker, named at
+/// registration. A Custom quoter's levels therefore have a maker even though
+/// they have no resting order, which is what lets them appear in an L3 book.
+/// For a CLOB entry it is the registrant, not the makers resting on the book,
+/// so it must not be used to attribute CLOB depth.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CarriedEntry {
+    pub quoter: Pubkey,
+    pub program: Pubkey,
+    pub user: Pubkey,
+    pub quoter_type: QuoterType,
+}
+
+impl CarriedEntry {
+    /// True when this entry's levels all belong to the one maker it names.
+    pub fn attributes_to_one_maker(&self) -> bool {
+        self.quoter_type == QuoterType::Custom
+    }
+
+    pub fn as_entry_ref(&self) -> EntryRef {
+        EntryRef {
+            quoter: self.quoter,
+            program: self.program,
+        }
+    }
+}
+
 /// Build the `quote_router` instruction for a market from live chain state:
 /// the market's oracle, every active + approved registry entry, each Custom
 /// quoter's `(User, UserStats)` pair (the margin clamp reads them), and the
 /// union of the entries' registered quote-leg CPI accounts.
+/// What one pass of the quote view should carry.
+#[derive(Clone, Copy)]
+pub struct QuoteRouterParams<'a> {
+    pub velocity: &'a Pubkey,
+    pub authority: &'a Pubkey,
+    pub quote_buffer: &'a Pubkey,
+    pub market_index: u16,
+    pub direction: Direction,
+    pub size: u64,
+    /// `User` accounts of DLOB makers to bridge, from whatever holds the
+    /// caller's DLOB view. Each costs the transaction two accounts and one of
+    /// the buffer's source slots, so a caller passes candidates rather than
+    /// the whole book; the split reports which of them the fill would reach.
+    pub dlob_makers: &'a [Pubkey],
+    /// Registry entries to leave out. A quoter proven to break this market's
+    /// simulation is dropped here, so the rest of the market still quotes.
+    /// Without this the only way to route around a bad quoter is the on-chain
+    /// approval flags, which no router holds.
+    pub exclude: &'a [Pubkey],
+    /// Carry only these entries, when set.
+    ///
+    /// The buffer holds a fixed number of sources and a transaction a fixed
+    /// number of accounts, so a market with more quoters than either allows
+    /// is read in several passes. This is how a caller says which pass it is
+    /// building.
+    pub only: Option<&'a [Pubkey]>,
+    /// Quote the vAMM into this pass. Exactly one pass of a market should,
+    /// because the vAMM shades against the books carried alongside it.
+    pub include_vamm: bool,
+}
+
 pub async fn build_quote_router_ix<S: ChainSource>(
     source: &S,
-    velocity: &Pubkey,
-    authority: &Pubkey,
-    quote_buffer: &Pubkey,
-    market_index: u16,
-    direction: Direction,
-    size: u64,
-    // `User` accounts of DLOB makers to bridge, from whatever holds the
-    // caller's DLOB view. Each costs the transaction two accounts, so a
-    // caller passes candidates rather than the whole book; the split reports
-    // which of them the fill would actually reach.
-    dlob_makers: &[Pubkey],
-) -> Result<Instruction> {
+    params: &QuoteRouterParams<'_>,
+) -> Result<QuoteRouterIx> {
+    let QuoteRouterParams {
+        velocity,
+        authority,
+        quote_buffer,
+        market_index,
+        direction,
+        size,
+        dlob_makers,
+        exclude,
+        only,
+        include_vamm,
+    } = *params;
     let perp_market_key = perp_market_pda(velocity, market_index);
     let perp_market_account = source
         .get_multiple_accounts(&[perp_market_key])
@@ -206,7 +281,12 @@ pub async fn build_quote_router_ix<S: ChainSource>(
         .into_iter()
         .map(|(key, account)| Ok((key, read_zero_copy::<QuoterV0>(&account.data)?)))
         .collect::<Result<_>>()?;
-    entries.retain(|(_, entry)| entry.is_active && entry.is_approved);
+    entries.retain(|(key, entry)| {
+        entry.is_active
+            && entry.is_approved
+            && !exclude.contains(key)
+            && only.map(|only| only.contains(key)).unwrap_or(true)
+    });
     entries.sort_by_key(|(key, _)| *key);
 
     // The user map the view walks: custom quoters' users, which the margin
@@ -279,18 +359,30 @@ pub async fn build_quote_router_ix<S: ChainSource>(
         });
     }
 
-    Ok(Instruction {
-        program_id: *velocity,
-        accounts,
-        data: program::instruction::QuoteRouter {
-            args: QuoteRouterArgs {
-                market_index,
-                direction,
-                size,
-                quoter_count: entries.len() as u8,
-            },
-        }
-        .data(),
+    Ok(QuoteRouterIx {
+        instruction: Instruction {
+            program_id: *velocity,
+            accounts,
+            data: program::instruction::QuoteRouter {
+                args: QuoteRouterArgs {
+                    market_index,
+                    direction,
+                    size,
+                    quoter_count: entries.len() as u8,
+                    include_vamm,
+                },
+            }
+            .data(),
+        },
+        entries: entries
+            .iter()
+            .map(|(key, entry)| CarriedEntry {
+                quoter: *key,
+                program: entry.program_id,
+                user: entry.user,
+                quoter_type: entry.quoter_type,
+            })
+            .collect(),
     })
 }
 
@@ -303,6 +395,49 @@ pub async fn simulate_quote_view<S: ChainSource>(
     payer: &Pubkey,
     quote_buffer: &Pubkey,
 ) -> Result<QuoteView> {
+    simulate_quote_view_with_cost(source, instruction, payer, quote_buffer)
+        .await
+        .map(|(view, _)| view)
+}
+
+/// A simulation that did not succeed, with the evidence needed to say who
+/// caused it.
+///
+/// The logs name the quoter: `quote_router` logs `quoter <key> quote failed`
+/// for every entry whose CPI it could not use. Rendering them into a message
+/// and dropping the vector would leave every caller unable to tell a maker's
+/// failure from its own, so they are carried as data. Reach them with
+/// `anyhow::Error::downcast_ref::<QuoteSimFailure>`.
+#[derive(Debug, Clone)]
+pub struct QuoteSimFailure {
+    pub err: String,
+    pub logs: Vec<String>,
+    pub units_consumed: u64,
+}
+
+impl std::fmt::Display for QuoteSimFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "quote_router failed: {}; logs: {:?}",
+            self.err, self.logs
+        )
+    }
+}
+
+impl std::error::Error for QuoteSimFailure {}
+
+/// Simulate a built quote view and report what the simulation cost.
+///
+/// The compute figure is the whole view's, not one quoter's. It still bounds
+/// a single quoter: a view that costs little cannot hold a quoter that costs
+/// much.
+pub async fn simulate_quote_view_with_cost<S: ChainSource>(
+    source: &S,
+    instruction: Instruction,
+    payer: &Pubkey,
+    quote_buffer: &Pubkey,
+) -> Result<(QuoteView, u64)> {
     let blockhash = source.latest_blockhash().await?;
     let message = Message::new_with_blockhash(&[instruction], Some(payer), &blockhash.hash);
     let tx = Transaction::new_unsigned(message);
@@ -311,7 +446,11 @@ pub async fn simulate_quote_view<S: ChainSource>(
         .await
         .context("simulate quote_router")?;
     if let Some(err) = outcome.err {
-        bail!("quote_router failed: {err}; logs: {:?}", outcome.logs);
+        return Err(anyhow::Error::new(QuoteSimFailure {
+            err,
+            logs: outcome.logs,
+            units_consumed: outcome.units_consumed,
+        }));
     }
     let account = outcome
         .accounts
@@ -319,7 +458,7 @@ pub async fn simulate_quote_view<S: ChainSource>(
         .cloned()
         .flatten()
         .ok_or_else(|| anyhow!("simulation returned no quote buffer state"))?;
-    decode_quote_buffer(&account.data)
+    decode_quote_buffer(&account.data).map(|view| (view, outcome.units_consumed))
 }
 
 #[cfg(test)]

@@ -374,6 +374,9 @@ pub mod amm_jit {
             fn quoter_user(&self, _index: usize) -> Pubkey {
                 self.user
             }
+            fn quoter_key(&self, _index: usize) -> Pubkey {
+                self.user
+            }
             fn subjects(
                 &self,
                 _index: usize,
@@ -713,6 +716,9 @@ pub mod amm_jit {
             fn quoter_user(&self, _index: usize) -> Pubkey {
                 self.user
             }
+            fn quoter_key(&self, _index: usize) -> Pubkey {
+                self.user
+            }
             fn subjects(
                 &self,
                 _index: usize,
@@ -1007,6 +1013,9 @@ pub mod amm_jit {
                 QuoterType::Custom
             }
             fn quoter_user(&self, _index: usize) -> Pubkey {
+                self.user
+            }
+            fn quoter_key(&self, _index: usize) -> Pubkey {
                 self.user
             }
             fn subjects(

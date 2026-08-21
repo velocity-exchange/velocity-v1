@@ -12,6 +12,9 @@ use {
     serde::{Deserialize, Serialize},
     std::sync::Arc,
     tokio::sync::RwLock,
+    velocity_quoter_health::{
+        metrics::Metrics as QuoterMetrics, store::now_ms, Health, Policy as QuoterPolicy,
+    },
 };
 
 /// Margin status indicating liquidation risk level
@@ -81,12 +84,25 @@ pub struct Metrics {
     pub titan_quote_failures: IntCounter,
     pub confirmation_slots: HistogramVec,
     pub cu_spent: HistogramVec,
+    /// Quoter health, reported from what the filler's own simulations show.
+    ///
+    /// The filler sees a class of failure nothing else does: a quoter whose
+    /// execute leg breaks a real fill. It does not exclude the quoter itself,
+    /// because a signed route is enforced on chain and dropping an entry the
+    /// taker named only trades one rejection for another. Exclusion belongs
+    /// where the route is chosen, before it is signed.
+    pub quoter_health: Arc<Health>,
     pub registry: Registry,
 }
 
 impl Metrics {
     pub fn new() -> Self {
         let registry = Registry::new();
+        let quoter_metrics = Arc::new(QuoterMetrics::register(&registry));
+        let quoter_health = Arc::new(Health::with_metrics(
+            QuoterPolicy::default(),
+            quoter_metrics,
+        ));
 
         let tx_sent = IntCounterVec::new(
             prometheus::Opts::new("rfb_tx_sent_total", "Number of transactions sent"),
@@ -321,6 +337,7 @@ impl Metrics {
             titan_quote_failures,
             confirmation_slots,
             cu_spent,
+            quoter_health,
             registry,
             trigger_expected,
             trigger_actual,
@@ -333,6 +350,11 @@ impl Metrics {
 }
 
 pub async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
+    // Quoter gauges describe the state as it stands, so they are refreshed
+    // here. The counters beside them were written as observations arrived.
+    if let Some(quoter) = state.metrics.quoter_health.metrics() {
+        quoter.sync(&state.metrics.quoter_health, now_ms());
+    }
     let metric_families = state.metrics.registry.gather();
     let mut buffer = Vec::new();
     let encoder = TextEncoder::new();

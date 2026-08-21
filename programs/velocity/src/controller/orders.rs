@@ -4302,8 +4302,8 @@ fn fulfill_perp_order_router_pass(
         validate!(
             ext_base == allocation.base,
             ErrorCode::QuoterOverfilled,
-            "router external quoter {} filled {} of the {} it quoted",
-            i,
+            "quoter {} filled {} of the {} it quoted",
+            router.executor.quoter_key(i),
             ext_base,
             allocation.base
         )?;
@@ -4312,8 +4312,8 @@ fn fulfill_perp_order_router_pass(
         validate!(
             crate::math::router::validate_allocated_notional(allocation, ext_quote)?,
             ErrorCode::QuoterFillOffQuote,
-            "router external quoter {} filled {}/{} off its quote of {}",
-            i,
+            "quoter {} filled {}/{} off its quote of {}",
+            router.executor.quoter_key(i),
             ext_quote,
             ext_base,
             allocation.scaled_quote
@@ -4327,8 +4327,8 @@ fn fulfill_perp_order_router_pass(
             validate!(
                 subjects.permits(&change.user, &maker_key, &taker_ref),
                 ErrorCode::QuoterSubjectNotPermitted,
-                "router external quoter {} may not act against user {}",
-                i,
+                "quoter {} may not act against user {}",
+                router.executor.quoter_key(i),
                 maker_key
             )?;
             validate!(
@@ -4339,8 +4339,8 @@ fn fulfill_perp_order_router_pass(
                     merged_orders(response.completed_count(change_index))?,
                 )?,
                 ErrorCode::QuoterFillOffQuote,
-                "router external quoter {} priced user {} outside its quoted band",
-                i,
+                "quoter {} priced user {} outside its quoted band",
+                router.executor.quoter_key(i),
                 maker_key
             )?;
             let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
@@ -4422,8 +4422,8 @@ fn fulfill_perp_order_router_pass(
                 validate!(
                     subjects.permits(&cancelled.user, &maker_key, &taker_ref),
                     ErrorCode::QuoterSubjectNotPermitted,
-                    "router external quoter {} may not cancel for user {}",
-                    i,
+                    "quoter {} may not cancel for user {}",
+                    router.executor.quoter_key(i),
                     maker_key
                 )?;
                 let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
@@ -4843,8 +4843,8 @@ pub fn cross_match(
             validate!(
                 crate::math::router::validate_executed_notional(&quoted, leg_quote)?,
                 ErrorCode::QuoterFillOffQuote,
-                "cross leg {} filled {}/{} outside the book it swept ({}..{})",
-                leg,
+                "quoter {} filled {}/{} outside the book it swept ({}..{})",
+                executor.quoter_key(book_index),
                 leg_quote,
                 leg_base,
                 quoted.best_price,
@@ -4861,9 +4861,9 @@ pub fn cross_match(
             validate!(
                 subjects.permits(&change.user, &maker_key, &taker_ref),
                 ErrorCode::QuoterSubjectNotPermitted,
-                "cross leg {} quoter may not act against user {} (the protocol \
-                 user itself is never a subject)",
-                leg,
+                "quoter {} may not act against user {} (the protocol user \
+                 itself is never a subject)",
+                executor.quoter_key(book_index),
                 maker_key
             )?;
             if let Some(quoted) = quoted.as_ref() {
@@ -4875,8 +4875,8 @@ pub fn cross_match(
                         merged_orders(response.completed_count(change_index))?,
                     )?,
                     ErrorCode::QuoterFillOffQuote,
-                    "cross leg {} priced user {} outside the book it swept",
-                    leg,
+                    "quoter {} priced user {} outside the book it swept",
+                    executor.quoter_key(book_index),
                     maker_key
                 )?;
             }
@@ -4946,8 +4946,8 @@ pub fn cross_match(
                 validate!(
                     subjects.permits(&cancelled.user, &maker_key, &taker_ref),
                     ErrorCode::QuoterSubjectNotPermitted,
-                    "cross leg {} quoter may not cancel for user {}",
-                    leg,
+                    "quoter {} may not cancel for user {}",
+                    executor.quoter_key(book_index),
                     maker_key
                 )?;
                 let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;

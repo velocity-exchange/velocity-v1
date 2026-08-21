@@ -76,6 +76,15 @@ pub struct QuoteRouterArgs {
     /// `QuoterV0` entries at the head of the quoter section of
     /// `remaining_accounts`; the rest of that section is their CPI accounts.
     pub quoter_count: u8,
+    /// Quote the vAMM into the buffer as well.
+    ///
+    /// A market with more quoters than one view can carry is read in several
+    /// passes. The vAMM prices against every other book in the same call, so
+    /// a pass holding a subset would shade it against a subset and each pass
+    /// would return a different vAMM. Exactly one pass sets this, and the
+    /// caller merges the vAMM from that one. The passes that clear it also
+    /// stop paying to compute a ladder they would discard.
+    pub include_vamm: bool,
 }
 
 pub fn handle_quote_router<'c: 'info, 'info>(
@@ -258,46 +267,52 @@ pub fn handle_quote_router<'c: 'info, 'info>(
     }
 
     // ---- vAMM last, with everything above as its rivals (last look). ----
-    // Quoted off a copy: `refresh` projects the curve, and this instruction
-    // must not move the market's AMM.
-    let mut amm: AMM = amm_snapshot;
-    let inputs = {
-        let market = perp_market_map.get_ref(&market_index)?;
-        MarketQuoteInputs::load(
-            &market,
-            oracle_price,
-            clock.slot,
-            &state.oracle_guard_rails.validity,
-        )?
-    };
-    let rivals: Vec<QuoterBook> = books
-        .iter()
-        .map(|(priority, levels)| QuoterBook {
-            withheld: crate::state::prop_amm::PriceLevel::default(),
-            priority: *priority,
-            levels,
-        })
-        .collect();
-    let ctx = inputs.ctx(clock.slot);
-    let amm_levels = {
-        let mut quoter = AmmQuoter::for_amm(&mut amm);
-        quoter.refresh(&ctx)?;
-        vamm_quote_levels(
-            quoter.amm,
-            args.direction,
-            args.size,
-            ctx.step_size,
-            &rivals,
-            None,
-        )?
-    };
-    buffer.push(
-        QuotedSourceKind::Vamm,
-        perp_market_map.get_ref(&market_index)?.pubkey,
-        QuoterType::Vamm.default_priority(),
-        false,
-        &amm_levels,
-    )?;
+    // Only on the pass that asked for it. The shading reads every other book
+    // in this call, so a pass carrying a subset would return a vAMM shaded
+    // against a subset, and a caller reading a market in several passes would
+    // get a different vAMM from each.
+    if args.include_vamm {
+        // Quoted off a copy: `refresh` projects the curve, and this
+        // instruction must not move the market's AMM.
+        let mut amm: AMM = amm_snapshot;
+        let inputs = {
+            let market = perp_market_map.get_ref(&market_index)?;
+            MarketQuoteInputs::load(
+                &market,
+                oracle_price,
+                clock.slot,
+                &state.oracle_guard_rails.validity,
+            )?
+        };
+        let rivals: Vec<QuoterBook> = books
+            .iter()
+            .map(|(priority, levels)| QuoterBook {
+                withheld: crate::state::prop_amm::PriceLevel::default(),
+                priority: *priority,
+                levels,
+            })
+            .collect();
+        let ctx = inputs.ctx(clock.slot);
+        let amm_levels = {
+            let mut quoter = AmmQuoter::for_amm(&mut amm);
+            quoter.refresh(&ctx)?;
+            vamm_quote_levels(
+                quoter.amm,
+                args.direction,
+                args.size,
+                ctx.step_size,
+                &rivals,
+                None,
+            )?
+        };
+        buffer.push(
+            QuotedSourceKind::Vamm,
+            perp_market_map.get_ref(&market_index)?.pubkey,
+            QuoterType::Vamm.default_priority(),
+            false,
+            &amm_levels,
+        )?;
+    }
 
     msg!(
         "quoted {} sources for market {} at size {}",

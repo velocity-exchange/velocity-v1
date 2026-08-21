@@ -30,6 +30,7 @@ use {
     solana_sdk::{pubkey::Pubkey, transaction::Transaction},
 };
 
+pub mod health;
 pub mod quote_view;
 
 /// Byte length of a `QuoterV0` account, from the program.

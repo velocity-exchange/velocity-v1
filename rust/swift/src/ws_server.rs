@@ -882,7 +882,12 @@ pub async fn start_server() {
 
     // Metrics
     let registry = Arc::new(registry);
-    let server_metrics_state = MetricsServerParams { registry };
+    // The websocket server holds no route context, so it has no quoter
+    // health to report.
+    let server_metrics_state = MetricsServerParams {
+        registry,
+        quoter_health: None,
+    };
     let metrics_addr: SocketAddr = format!(
         "0.0.0.0:{}",
         env::var("METRICS_PORT").unwrap_or("9464".to_string())

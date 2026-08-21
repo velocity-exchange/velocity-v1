@@ -165,7 +165,7 @@ async fn main() {
         false,
     )
     .with_priority_fee(1_000, Some(200_000))
-    .place_and_take(order, &makers, referrer, None, None)
+    .place_and_take(order, &makers, referrer, None)
     .build();
 
     match velocity.sign_and_send(tx).await {

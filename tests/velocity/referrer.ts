@@ -43,6 +43,18 @@ import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
 import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
 
+// `calculate_taker_fee` ceils the tier fee (safe_div_ceil), then each referral
+// proportion floors. Mirror both or the expectation drifts by one for quotes that do
+// not divide evenly.
+const takerFeeFor = (
+	quoteAssetAmountFilled: BN | number | string,
+	feeTier: { feeNumerator: number; feeDenominator: number }
+): BN =>
+	new BN(quoteAssetAmountFilled)
+		.muln(feeTier.feeNumerator)
+		.addn(feeTier.feeDenominator - 1)
+		.divn(feeTier.feeDenominator);
+
 describe('referrer', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 
@@ -436,9 +448,7 @@ describe('referrer', () => {
 		const referrerReward = new BN(eventRecord.referrerReward);
 		const feeTier =
 			refereeVelocityClient.getStateAccount().perpFeeStructure.feeTiers[0];
-		const grossFee = new BN(eventRecord.quoteAssetAmountFilled)
-			.muln(feeTier.feeNumerator)
-			.divn(feeTier.feeDenominator);
+		const grossFee = takerFeeFor(eventRecord.quoteAssetAmountFilled, feeTier);
 		const expectedStandardReward = grossFee
 			.muln(feeTier.referrerRewardNumerator)
 			.divn(feeTier.referrerRewardDenominator);
@@ -574,9 +584,7 @@ describe('referrer', () => {
 		const eventRecord = eventSubscriber.getEventsArray('OrderActionRecord')[0];
 		const feeTier =
 			refereeVelocityClient.getStateAccount().perpFeeStructure.feeTiers[0];
-		const grossFee = new BN(eventRecord.quoteAssetAmountFilled)
-			.muln(feeTier.feeNumerator)
-			.divn(feeTier.feeDenominator);
+		const grossFee = takerFeeFor(eventRecord.quoteAssetAmountFilled, feeTier);
 		const expectedAcceleratedReward = grossFee
 			.muln(ACCELERATED_REFERRER_REWARD_PERCENT)
 			.divn(feeTier.referrerRewardDenominator);
@@ -637,9 +645,7 @@ describe('referrer', () => {
 		const eventRecord = eventSubscriber.getEventsArray('OrderActionRecord')[0];
 		const feeTier =
 			refereeVelocityClient.getStateAccount().perpFeeStructure.feeTiers[0];
-		const grossFee = new BN(eventRecord.quoteAssetAmountFilled)
-			.muln(feeTier.feeNumerator)
-			.divn(feeTier.feeDenominator);
+		const grossFee = takerFeeFor(eventRecord.quoteAssetAmountFilled, feeTier);
 		const expectedStandardReward = grossFee
 			.muln(feeTier.referrerRewardNumerator)
 			.divn(feeTier.referrerRewardDenominator);

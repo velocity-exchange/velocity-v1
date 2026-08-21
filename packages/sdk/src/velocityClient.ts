@@ -7581,7 +7581,9 @@ export class VelocityClient {
 		fillerSubAccountId?: number,
 		fillerAuthority?: PublicKey,
 		hasBuilderFee?: boolean,
-		takerEscrow?: RevenueShareEscrowAccount
+		takerEscrow?: RevenueShareEscrowAccount,
+		takerIsReferred?: boolean,
+		takerReferrer?: PublicKey
 	): Promise<TransactionSignature> {
 		const { txSig } = await this.sendTransaction(
 			await this.buildTransaction(
@@ -7594,7 +7596,9 @@ export class VelocityClient {
 					undefined,
 					fillerAuthority,
 					hasBuilderFee,
-					takerEscrow
+					takerEscrow,
+					takerIsReferred,
+					takerReferrer
 				),
 				txParams
 			),

@@ -227,17 +227,26 @@ export class JitProxyClient {
 				: [],
 		});
 
-		if (referrerInfo) {
+		// The taker's escrow is required whenever their order carries a builder code or
+		// they are referred, and the referrer's readonly UserStats follows it to select the
+		// Accelerated reward rate. Same group, same order as the program reads it, before
+		// the spot vaults.
+		if (hasBuilder(order) || referrerInfo) {
 			remainingAccounts.push({
-				pubkey: referrerInfo.referrer,
+				pubkey: getRevenueShareEscrowAccountPublicKey(
+					this.velocityClient.program.programId,
+					taker.authority
+				),
 				isWritable: true,
 				isSigner: false,
 			});
-			remainingAccounts.push({
-				pubkey: referrerInfo.referrerStats,
-				isWritable: true,
-				isSigner: false,
-			});
+			if (referrerInfo) {
+				remainingAccounts.push({
+					pubkey: referrerInfo.referrerStats,
+					isWritable: false,
+					isSigner: false,
+				});
+			}
 		}
 
 		if (isVariant(order.marketType, 'spot')) {
@@ -252,17 +261,6 @@ export class JitProxyClient {
 				isWritable: false,
 				isSigner: false,
 			});
-		} else {
-			if (hasBuilder(order)) {
-				remainingAccounts.push({
-					pubkey: getRevenueShareEscrowAccountPublicKey(
-						this.velocityClient.program.programId,
-						taker.authority
-					),
-					isWritable: true,
-					isSigner: false,
-				});
-			}
 		}
 
 		const jitParams = {
@@ -315,19 +313,6 @@ export class JitProxyClient {
 			writablePerpMarketIndexes: [marketIndex],
 		});
 
-		if (referrerInfo) {
-			remainingAccounts.push({
-				pubkey: referrerInfo.referrer,
-				isWritable: true,
-				isSigner: false,
-			});
-			remainingAccounts.push({
-				pubkey: referrerInfo.referrerStats,
-				isWritable: true,
-				isSigner: false,
-			});
-		}
-
 		const isDelegateSigner = authorityToUse.equals(taker.delegate);
 		const borshBuf = Buffer.from(
 			signedMsgOrderParams.orderParams.toString(),
@@ -338,10 +323,12 @@ export class JitProxyClient {
 			borshBuf,
 			isDelegateSigner
 		);
-		if (
+		// See getJitIx: escrow when the order has a builder code or the taker is referred,
+		// then the referrer's readonly UserStats.
+		const signedMsgHasBuilder =
 			signedMessage.builderFeeTenthBps !== null &&
-			signedMessage.builderIdx !== null
-		) {
+			signedMessage.builderIdx !== null;
+		if (signedMsgHasBuilder || referrerInfo) {
 			remainingAccounts.push({
 				pubkey: getRevenueShareEscrowAccountPublicKey(
 					this.velocityClient.program.programId,
@@ -350,6 +337,13 @@ export class JitProxyClient {
 				isWritable: true,
 				isSigner: false,
 			});
+			if (referrerInfo) {
+				remainingAccounts.push({
+					pubkey: referrerInfo.referrerStats,
+					isWritable: false,
+					isSigner: false,
+				});
+			}
 		}
 
 		const jitSignedMsgParams = {
@@ -468,23 +462,25 @@ export class JitProxyClient {
 			});
 		}
 
+		// arb_perp CPIs into place_and_take with the arbing user as the taker, so a referred
+		// arber needs their own escrow, followed by the referrer's readonly UserStats.
 		if (referrerInfo) {
-			const referrerIsMaker =
-				makerInfos.find((maker) =>
-					maker.maker.equals(referrerInfo.referrer)
-				) !== undefined;
-			if (!referrerIsMaker) {
-				remainingAccounts.push({
-					pubkey: referrerInfo.referrer,
-					isWritable: true,
-					isSigner: false,
-				});
-				remainingAccounts.push({
-					pubkey: referrerInfo.referrerStats,
-					isWritable: true,
-					isSigner: false,
-				});
-			}
+			const authority =
+				this.velocityClient.getUserAccount()?.authority ??
+				this.velocityClient.authority;
+			remainingAccounts.push({
+				pubkey: getRevenueShareEscrowAccountPublicKey(
+					this.velocityClient.program.programId,
+					authority
+				),
+				isWritable: true,
+				isSigner: false,
+			});
+			remainingAccounts.push({
+				pubkey: referrerInfo.referrerStats,
+				isWritable: false,
+				isSigner: false,
+			});
 		}
 
 		return this.program.methods

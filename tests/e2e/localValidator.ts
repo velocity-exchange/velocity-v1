@@ -370,6 +370,9 @@ describe('e2e localnet: programs + publisher + redis', function () {
 
 	// Actors.
 	const clobMakerKp = Keypair.generate();
+	/** A second maker on the book, so a fill can carry one and not the other —
+	 * which is the only way to reach the withheld path. */
+	const clobMaker2Kp = Keypair.generate();
 	const midMakerKp = Keypair.generate();
 	const midConfigKp = Keypair.generate();
 	const midHotKp = Keypair.generate();
@@ -380,6 +383,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 
 	let admin: TestClient;
 	let clobMaker: TestClient;
+	let clobMaker2: TestClient;
 	let midMaker: TestClient;
 	let dlobMaker: TestClient;
 	let taker: TestClient;
@@ -1125,6 +1129,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		for (const kp of [
 			payer,
 			clobMakerKp,
+			clobMaker2Kp,
 			midMakerKp,
 			midHotKp,
 			dlobMakerKp,
@@ -1208,12 +1213,14 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// Actors with deposits (the midpoint's quoted User must exist before
 		// its Custom entry is created — consent reads User.authority).
 		clobMaker = newClient(clobMakerKp);
+		clobMaker2 = newClient(clobMaker2Kp);
 		midMaker = newClient(midMakerKp);
 		dlobMaker = newClient(dlobMakerKp);
 		taker = newClient(takerKp);
 		crosser = newClient(crosserKp);
 		for (const [client, kp] of [
 			[clobMaker, clobMakerKp],
+			[clobMaker2, clobMaker2Kp],
 			[midMaker, midMakerKp],
 			[dlobMaker, dlobMakerKp],
 			[taker, takerKp],
@@ -2181,6 +2188,204 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		assert.isTrue(
 			midAfter.lt(midBefore),
 			`midpoint maker filled attested flow (before=${midBefore} after=${midAfter})`
+		);
+	});
+	it('forfeits book depth it cannot carry rather than routing it worse', async function () {
+		this.timeout(120_000);
+		// Two makers on the book, the second better than everything else the
+		// route offers. The fill carries the first and not the second, which
+		// is what happens whenever a book holds more makers than a
+		// transaction has account locks for.
+		//
+		// The book stops at the maker it was not given and reports what it
+		// was holding. The router reserves that depth instead of handing it
+		// to the midpoint or the vAMM, so the taker keeps it unfilled — it
+		// rests where the book's own price can still reach it, rather than
+		// locking in a price the book was beating.
+		await placeClobOrder(
+			clobMaker,
+			clobMakerKp,
+			PositionDirection.SHORT,
+			usd(100.2),
+			UNIT.divn(2)
+		);
+		await placeClobOrder(
+			clobMaker2,
+			clobMaker2Kp,
+			PositionDirection.SHORT,
+			usd(100.4),
+			UNIT.divn(2)
+		);
+		// The book skips an order whose owner is missing while it is younger
+		// than `unknown_user_grace_slots` — the caller could not have heard
+		// of it yet — and only stops on it once older. Both of this test's
+		// makers have to be past that window for the fill to see the second
+		// one at all.
+		await sleep(2_000);
+
+		// The midpoint quotes worse than both, so it is what the reserve has
+		// to keep off the withheld depth.
+		await setMidpointLevels(usd(100), [
+			{ offsetPpm: 8000, size: UNIT.muln(2) },
+		]);
+
+		const before = {
+			maker1: (await clobMaker.forceGetUserAccount())?.perpPositions.find(
+				(p) => p.marketIndex === 0
+			)?.baseAssetAmount,
+			maker2: (await clobMaker2.forceGetUserAccount())?.perpPositions.find(
+				(p) => p.marketIndex === 0
+			)?.baseAssetAmount,
+		};
+
+		const size = UNIT.muln(15).divn(10);
+		// The id up front, for the same reason the route test takes it that
+		// way: matching an order by its size finds whichever one matches.
+		const orderId = (await taker.forceGetUserAccount())!.nextOrderId;
+		await taker.placePerpOrder(
+			getMarketOrderParams({
+				marketIndex: 0,
+				direction: PositionDirection.LONG,
+				baseAssetAmount: size,
+				price: usd(102),
+			})
+		);
+
+		// The whole point: `clobMaker2Kp` is deliberately absent.
+		await sendFill(
+			await fillPerpOrderIx(orderId, takerKp.publicKey, [
+				clobMakerKp,
+				midMakerKp,
+			])
+		);
+
+		// The maker it could not carry is untouched, and still on the book.
+		await clobMaker2.fetchAccounts();
+		const maker2After = clobMaker2
+			.getUser()
+			.getPerpPosition(0)!.baseAssetAmount;
+		assert.equal(
+			maker2After.toString(),
+			(before.maker2 ?? new BN(0)).toString(),
+			'the maker the fill could not carry is not filled'
+		);
+		const book = await readClob();
+		assert.isAtLeast(book.askCount, 1, 'its ask is still resting');
+
+		// The maker it *could* carry did fill, which is what says the walk
+		// reached the book and got past the first order — so stopping at the
+		// second is the withheld path and not simply never arriving.
+		await clobMaker.fetchAccounts();
+		const maker1After = clobMaker.getUser().getPerpPosition(0)!.baseAssetAmount;
+		assert.isTrue(
+			maker1After.lt(before.maker1 ?? new BN(0)),
+			'the carried maker filled, so the walk did reach the book'
+		);
+	});
+
+	it('builds a landing fill out of the accounts /route names', async function () {
+		this.timeout(120_000);
+		// The question a transaction builder actually has is "which accounts
+		// do I need", and the book's makers are the half it cannot answer
+		// itself: a book order lives on the book, and the only record of who
+		// owns it is an authority and a sub-account on a node. This asserts
+		// the endpoint answers it, and that the answer is enough to build a
+		// fill that lands.
+		await placeClobOrder(
+			clobMaker,
+			clobMakerKp,
+			PositionDirection.SHORT,
+			usd(100.5),
+			UNIT
+		);
+
+		const size = UNIT.divn(2);
+		const route = await pollUntil(
+			'a route quoting the book',
+			60_000,
+			async () => {
+				const res = await fetch(
+					`${SWIFT_URL}/route?marketIndex=0&direction=long&size=${size.toString()}` +
+						`&dlobMakers=${userOf(dlobMakerKp.publicKey).toBase58()}`
+				);
+				if (!res.ok) {
+					return undefined;
+				}
+				const body: any = await res.json();
+				// The publisher's buffer has to have seen the ask we just placed,
+				// and the route has to think this size is fillable at all — by
+				// now the suite has moved the oracle around, so what the book is
+				// worth is not something this test gets to assume.
+				return body.clobMakers?.length && body.filledBase !== '0'
+					? body
+					: undefined;
+			}
+		);
+
+		// Whichever maker is at the touch by now, the endpoint has to have
+		// read it off the book rather than guessed: a real actor, with the
+		// `UserStats` that goes with it. Which one it is depends on what the
+		// suite left resting, and that is not what this is testing.
+		const byUser = new Map(
+			[clobMakerKp, clobMaker2Kp, dlobMakerKp, midMakerKp, takerKp].map(
+				(kp) => [userOf(kp.publicKey).toBase58(), kp]
+			)
+		);
+		const named = route.clobMakers[0];
+		const namedKp = byUser.get(named.user);
+		assert.isDefined(
+			namedKp,
+			`/route named ${named.user}, which is not a maker in this suite`
+		);
+		assert.equal(
+			named.userStats,
+			statsOf(namedKp!.publicKey).toBase58(),
+			'and pairs it with its own stats account'
+		);
+		const namedKps = route.clobMakers.map((m: any) => {
+			const kp = byUser.get(m.user);
+			assert.isDefined(kp, `/route named an unknown maker ${m.user}`);
+			return kp!;
+		});
+		// A bound taken from the route rather than from a number this test
+		// picked: the worst price it quoted, with room over it, so the taker
+		// crosses everything the route says it would reach.
+		const worstQuoted = route.books
+			.flatMap((b: any) => b.levels ?? [])
+			.reduce((worst: BN, l: any) => BN.max(worst, new BN(l.price)), new BN(0));
+		assert.isTrue(worstQuoted.gt(new BN(0)), 'the route quoted something');
+
+		// The id up front, not matched by size afterwards: by now the taker
+		// has older orders of every common size, and `find` would happily
+		// return a closed one — a fill against which lands and does nothing.
+		const orderId = (await taker.forceGetUserAccount())!.nextOrderId;
+		await taker.placePerpOrder(
+			getMarketOrderParams({
+				marketIndex: 0,
+				direction: PositionDirection.LONG,
+				baseAssetAmount: size,
+				price: worstQuoted.muln(102).divn(100),
+			})
+		);
+		const before = (await taker.forceGetUserAccount())!.perpPositions.find(
+			(p) => p.marketIndex === 0
+		)!.baseAssetAmount;
+
+		await sendFill(
+			await fillPerpOrderIx(orderId, takerKp.publicKey, [
+				...namedKps,
+				midMakerKp,
+			])
+		);
+
+		await taker.fetchAccounts();
+		const filled = taker
+			.getUser()
+			.getPerpPosition(0)!
+			.baseAssetAmount.sub(before);
+		assert.isTrue(
+			filled.gt(new BN(0)),
+			"a fill built from the endpoint's account list lands and fills"
 		);
 	});
 });

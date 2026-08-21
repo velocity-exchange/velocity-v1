@@ -7,6 +7,7 @@ publish = false
 [dependencies]
 # Quote-view assembly + decoding over a chain source.
 velocity-router-sim = { path = "../router-sim" }
+velocity-quoter-health = { path = "../quoter-health" }
 relay-chain-source = { git = "https://github.com/velocity-exchange/relay", rev = "88419fd1de3ee189e44ef591d9e8f5c558d58a9d" }
 program = { package = "velocity", path = "../../programs/velocity", default-features = false, features = [
   "velocity-rs",
@@ -17,9 +18,12 @@ program = { package = "velocity", path = "../../programs/velocity", default-feat
 ] }
 
 anchor-lang = "1.0.2"
+axum = "0.8"
+prometheus = { version = "0.13", default-features = false }
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
 redis = { version = "0.29.1", features = ["tokio-comp", "tokio-native-tls-comp"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 solana-sdk = "3"
 solana-rent = "3"

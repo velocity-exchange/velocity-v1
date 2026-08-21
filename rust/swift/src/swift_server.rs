@@ -865,7 +865,11 @@ pub async fn start_server() {
 
     let state: &'static ServerParams = Box::leak(Box::new(ServerParams {
         attest: crate::attest::AttestContext::from_env(),
-        route: crate::route::RouteContext::new(rpc_endpoint, velocity_rs::constants::PROGRAM_ID),
+        route: crate::route::RouteContext::with_metrics(
+            rpc_endpoint,
+            velocity_rs::constants::PROGRAM_ID,
+            &registry,
+        ),
         velocity: client,
         slot_subscriber: Arc::new(slot_subscriber),
         metrics,
@@ -932,7 +936,10 @@ pub async fn start_server() {
 
     // Metrics
     let registry = Arc::new(registry);
-    let server_metrics_state = MetricsServerParams { registry };
+    let server_metrics_state = MetricsServerParams {
+        registry,
+        quoter_health: Some(state.route.health().clone()),
+    };
     let metrics_addr: SocketAddr = format!(
         "0.0.0.0:{}",
         env::var("METRICS_PORT").unwrap_or("9464".to_string())

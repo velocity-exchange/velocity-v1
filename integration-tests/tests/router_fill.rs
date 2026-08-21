@@ -1758,6 +1758,7 @@ fn quote_router_returns_verified_books_for_every_source() {
                 direction: velocity::state::prop_amm::Direction::Long,
                 size: 2 * UNIT,
                 quoter_count: 1,
+                include_vamm: true,
             },
         }
         .data(),
@@ -7328,4 +7329,357 @@ fn the_arb_crank_refuses_a_book_holding_a_crossed_taker_remainder() {
         "the remainder was not filled"
     );
     assert_eq!(clob_bid_count(&fixture.svm, &fixture.clob_market), 1);
+}
+
+/// A quoter whose CPI reverts is identifiable only from the runtime's own
+/// CPI frames.
+///
+/// A failed CPI ends the calling instruction, so velocity never reaches the
+/// line where it would name the entry it could not use. What survives is the
+/// runtime's bracketing: the callee's program id, its `invoke [2]` frame, and
+/// its failure. A program id is not an entry, because one quoter program
+/// serves many registry entries, so an off-chain router resolves it by
+/// counting frames against the order it built the route in.
+///
+/// Nothing lands when a simulation fails, so these logs are the only record
+/// the failure leaves. This test pins the shape `rust/quoter-health` parses.
+/// If it fails after a message or a runtime changes, re-capture the fixture
+/// it prints into `rust/quoter-health/tests/fixtures/`.
+#[test]
+fn a_reverting_quoter_leaves_only_its_cpi_frame_in_the_logs() {
+    let mut fixture = setup();
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+
+    let router = Keypair::new();
+    fixture
+        .svm
+        .airdrop(&router.pubkey(), 10_000_000_000)
+        .unwrap();
+    // Larger than a CPI can allocate, so the caller pre-creates it.
+    let quote_buffer = Pubkey::new_unique();
+    fixture
+        .svm
+        .set_account(
+            quote_buffer,
+            Account {
+                lamports: 10_000_000_000,
+                data: vec![0u8; velocity::state::router_quote::RouterQuoteBufferV0::SIZE],
+                owner: velocity_id(),
+                executable: false,
+                rent_epoch: 0,
+            },
+        )
+        .unwrap();
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::InitializeRouterQuoteBuffer {
+            quote_buffer,
+            authority: router.pubkey(),
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::InitializeRouterQuoteBuffer { market_index: 0 }.data(),
+    };
+    send(&mut fixture.svm, &router, ix, &[]).unwrap();
+
+    // Break the entry's quote-leg discriminator. The CPI now names an
+    // instruction the CLOB does not have, so the callee errors and velocity
+    // reports the entry it could not use.
+    let mut entry = fixture.svm.get_account(&fixture.quoter).unwrap();
+    let offset =
+        8 + core::mem::offset_of!(velocity::state::prop_amm::QuoterV0, quote_v0_discriminator);
+    entry.data[offset..offset + 8].copy_from_slice(&[0xAA; 8]);
+    fixture.svm.set_account(fixture.quoter, entry).unwrap();
+
+    let (quoter_signer, _) = quoter_signer_pda();
+    let mut accounts = velocity::accounts::QuoteRouter {
+        state: state_pda(),
+        authority: router.pubkey(),
+        quote_buffer,
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(quoter_signer, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::QuoteRouter {
+            args: velocity::instructions::QuoteRouterArgs {
+                market_index: 0,
+                direction: velocity::state::prop_amm::Direction::Long,
+                size: 2 * UNIT,
+                quoter_count: 1,
+                include_vamm: true,
+            },
+        }
+        .data(),
+    };
+    let failure = send_with_ixs(
+        &mut fixture.svm,
+        &router,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .expect_err("a quoter that cannot be called must fail the quote");
+
+    // Printed so the fixture the off-chain parser tests against can be
+    // re-captured when this changes.
+    println!("--- BEGIN QUOTE FAILURE LOGS ---");
+    for line in &failure.meta.logs {
+        println!("{line}");
+    }
+    println!("--- END QUOTE FAILURE LOGS ---");
+
+    // Velocity does not get to speak. The CPI failure ends its instruction
+    // before the line that would name the entry, so a router must not be
+    // built to expect one here.
+    assert!(
+        !failure
+            .meta
+            .logs
+            .iter()
+            .any(|line| line.starts_with("Program log: quoter ")),
+        "a failed CPI ends the caller, so velocity cannot name the entry"
+    );
+
+    // What does survive: the callee's frame, and its failure.
+    assert!(
+        failure
+            .meta
+            .logs
+            .iter()
+            .any(|line| line == &format!("Program {} invoke [2]", clob_id())),
+        "the callee's CPI frame must be visible"
+    );
+    assert!(
+        failure
+            .meta
+            .logs
+            .iter()
+            .any(|line| line.starts_with(&format!("Program {} failed:", clob_id()))),
+        "the callee's failure must be visible"
+    );
+}
+
+/// A quoter that returns but breaks velocity's own checks is named outright.
+///
+/// The pre-CPI and post-CPI checks around the quoter call are velocity's own
+/// code, so they run and log. This is the half of the failure surface a
+/// router can attribute from a single line: everything velocity decides
+/// about a quoter's answer, as opposed to the quoter refusing to answer.
+/// The contract violations an off-chain router punishes hardest all land
+/// here.
+#[test]
+fn a_quoter_velocity_refuses_is_named_in_the_logs() {
+    let mut fixture = setup();
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+
+    let router = Keypair::new();
+    fixture
+        .svm
+        .airdrop(&router.pubkey(), 10_000_000_000)
+        .unwrap();
+    let quote_buffer = Pubkey::new_unique();
+    fixture
+        .svm
+        .set_account(
+            quote_buffer,
+            Account {
+                lamports: 10_000_000_000,
+                data: vec![0u8; velocity::state::router_quote::RouterQuoteBufferV0::SIZE],
+                owner: velocity_id(),
+                executable: false,
+                rent_epoch: 0,
+            },
+        )
+        .unwrap();
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::InitializeRouterQuoteBuffer {
+            quote_buffer,
+            authority: router.pubkey(),
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::InitializeRouterQuoteBuffer { market_index: 0 }.data(),
+    };
+    send(&mut fixture.svm, &router, ix, &[]).unwrap();
+
+    // Claim one more registered account than the entry holds. The extra slot
+    // is zeroed, so velocity cannot resolve it and refuses before any CPI.
+    let mut entry = fixture.svm.get_account(&fixture.quoter).unwrap();
+    let offset =
+        8 + core::mem::offset_of!(velocity::state::prop_amm::QuoterV0, quote_accounts_count);
+    entry.data[offset] += 1;
+    fixture.svm.set_account(fixture.quoter, entry).unwrap();
+
+    let (quoter_signer, _) = quoter_signer_pda();
+    let mut accounts = velocity::accounts::QuoteRouter {
+        state: state_pda(),
+        authority: router.pubkey(),
+        quote_buffer,
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(quoter_signer, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::QuoteRouter {
+            args: velocity::instructions::QuoteRouterArgs {
+                market_index: 0,
+                direction: velocity::state::prop_amm::Direction::Long,
+                size: 2 * UNIT,
+                quoter_count: 1,
+                include_vamm: true,
+            },
+        }
+        .data(),
+    };
+    let failure = send_with_ixs(
+        &mut fixture.svm,
+        &router,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .expect_err("an unresolvable account must fail the quote");
+
+    println!("--- BEGIN QUOTE REFUSAL LOGS ---");
+    for line in &failure.meta.logs {
+        println!("{line}");
+    }
+    println!("--- END QUOTE REFUSAL LOGS ---");
+
+    let named = failure
+        .meta
+        .logs
+        .iter()
+        .find(|line| line.starts_with(&format!("Program log: quoter {}", fixture.quoter)))
+        .expect("velocity must name the entry whose answer it refused");
+    assert!(
+        named.contains("quote failed"),
+        "the message must say which leg it was: {named}"
+    );
+}
+
+/// A market with more quoters than one view can carry is read in passes, and
+/// only one pass may quote the vAMM.
+///
+/// The vAMM prices against every other book in the same call, so a pass
+/// holding a subset would return a vAMM shaded against a subset. Two passes
+/// that both quoted it would put two different answers to the same question
+/// into one merged book.
+#[test]
+fn a_pass_that_clears_include_vamm_returns_only_its_quoters() {
+    let mut fixture = setup();
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+
+    let router = Keypair::new();
+    fixture
+        .svm
+        .airdrop(&router.pubkey(), 10_000_000_000)
+        .unwrap();
+    let quote_buffer = Pubkey::new_unique();
+    fixture
+        .svm
+        .set_account(
+            quote_buffer,
+            Account {
+                lamports: 10_000_000_000,
+                data: vec![0u8; velocity::state::router_quote::RouterQuoteBufferV0::SIZE],
+                owner: velocity_id(),
+                executable: false,
+                rent_epoch: 0,
+            },
+        )
+        .unwrap();
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::InitializeRouterQuoteBuffer {
+            quote_buffer,
+            authority: router.pubkey(),
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::InitializeRouterQuoteBuffer { market_index: 0 }.data(),
+    };
+    send(&mut fixture.svm, &router, ix, &[]).unwrap();
+
+    let (quoter_signer, _) = quoter_signer_pda();
+    let quote = |fixture: &mut Fixture, include_vamm: bool| {
+        let mut accounts = velocity::accounts::QuoteRouter {
+            state: state_pda(),
+            authority: router.pubkey(),
+            quote_buffer,
+        }
+        .to_account_metas(None);
+        accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+        accounts.push(AccountMeta::new(spot_market_pda(0), false));
+        accounts.push(AccountMeta::new(perp_market_pda(0), false));
+        accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+        accounts.push(AccountMeta::new(fixture.clob_market, false));
+        accounts.push(AccountMeta::new_readonly(quoter_signer, false));
+        accounts.push(AccountMeta::new_readonly(clob_id(), false));
+        let ix = Instruction {
+            program_id: velocity_id(),
+            accounts,
+            data: velocity::instruction::QuoteRouter {
+                args: velocity::instructions::QuoteRouterArgs {
+                    market_index: 0,
+                    direction: velocity::state::prop_amm::Direction::Long,
+                    size: 2 * UNIT,
+                    quoter_count: 1,
+                    include_vamm,
+                },
+            }
+            .data(),
+        };
+        let meta = send_with_ixs(
+            &mut fixture.svm,
+            &router,
+            &[compute_unit_limit_ix(400_000), ix],
+            &[],
+        )
+        .unwrap();
+        let buffer: velocity::state::router_quote::RouterQuoteBufferV0 =
+            read_zero_copy(&fixture.svm, &quote_buffer);
+        (buffer, meta.compute_units_consumed)
+    };
+
+    let (with_vamm, cu_with) = quote(&mut fixture, true);
+    let (without_vamm, cu_without) = quote(&mut fixture, false);
+
+    assert_eq!(with_vamm.source_count, 2, "clob + vamm");
+    assert_eq!(
+        with_vamm.sources[1].kind,
+        velocity::state::router_quote::QuotedSourceKind::Vamm
+    );
+
+    assert_eq!(without_vamm.source_count, 1, "clob only");
+    assert!(
+        without_vamm.sources[..1]
+            .iter()
+            .all(|source| source.kind != velocity::state::router_quote::QuotedSourceKind::Vamm),
+        "a pass that cleared the flag must carry no vAMM"
+    );
+    // The quoter's own book is unchanged by the flag, so passes merge.
+    assert_eq!(with_vamm.sources[0].key, without_vamm.sources[0].key);
+    assert_eq!(
+        with_vamm.sources[0].level_count,
+        without_vamm.sources[0].level_count
+    );
+    // Skipping the ladder is also why extra passes are affordable.
+    assert!(
+        cu_without < cu_with,
+        "clearing the flag must not cost more: {cu_without} vs {cu_with}"
+    );
 }

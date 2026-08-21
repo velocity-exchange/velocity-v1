@@ -10,11 +10,20 @@ use {
 #[derive(Clone)]
 pub struct MetricsServerParams {
     pub registry: Arc<Registry>,
+    /// Quoter health behind `/route`. Its gauges describe the state as it
+    /// stands, so they are refreshed at scrape time; the counters beside
+    /// them were written as observations arrived.
+    pub quoter_health: Option<Arc<velocity_quoter_health::Health>>,
 }
 
 pub async fn metrics_handler(
     State(state): State<MetricsServerParams>,
 ) -> impl axum::response::IntoResponse {
+    if let Some(health) = &state.quoter_health {
+        if let Some(quoter) = health.metrics() {
+            quoter.sync(health, velocity_quoter_health::store::now_ms());
+        }
+    }
     let metric_families = state.registry.gather();
     let mut buffer = Vec::new();
     let encoder = TextEncoder::new();

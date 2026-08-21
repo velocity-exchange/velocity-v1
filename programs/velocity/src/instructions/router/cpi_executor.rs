@@ -64,6 +64,13 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
             .unwrap_or_default()
     }
 
+    fn quoter_key(&self, index: usize) -> Pubkey {
+        self.quoted
+            .get(index)
+            .map(|quoted| quoted.entry.key())
+            .unwrap_or_default()
+    }
+
     fn subjects(
         &self,
         index: usize,
@@ -220,7 +227,11 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                 self.accounts,
             )
             .map_err(|e| {
-                msg!("external quoter execute failed: {}", e);
+                // Name the entry, not just the failure. A quoter program
+                // serves many registry entries, so the program id an
+                // off-chain router reads out of the runtime's CPI brackets
+                // does not identify which entry failed. The key does.
+                msg!("quoter {} execute failed: {}", loader.key(), e);
                 ErrorCode::DefaultError
             })
     }

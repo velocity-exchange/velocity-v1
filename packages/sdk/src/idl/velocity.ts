@@ -27167,6 +27167,20 @@ export type Velocity = {
               "`remaining_accounts`; the rest of that section is their CPI accounts."
             ],
             "type": "u8"
+          },
+          {
+            "name": "includeVamm",
+            "docs": [
+              "Quote the vAMM into the buffer as well.",
+              "",
+              "A market with more quoters than one view can carry is read in several",
+              "passes. The vAMM prices against every other book in the same call, so",
+              "a pass holding a subset would shade it against a subset and each pass",
+              "would return a different vAMM. Exactly one pass sets this, and the",
+              "caller merges the vAMM from that one. The passes that clear it also",
+              "stop paying to compute a ladder they would discard."
+            ],
+            "type": "bool"
           }
         ]
       }

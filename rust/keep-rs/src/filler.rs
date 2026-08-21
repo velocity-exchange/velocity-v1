@@ -29,6 +29,11 @@ use {
         time::{Duration, SystemTime, UNIX_EPOCH},
     },
     tokio::{runtime::Handle, sync::RwLock},
+    velocity_quoter_health::{
+        attribute,
+        observe::{Observation, Report},
+        RouteContext,
+    },
     velocity_rs::{
         constants::{derive_clob_crank_conditions, derive_quoter_signer, PROGRAM_ID},
         dlob::{
@@ -1326,6 +1331,44 @@ async fn try_swift_fill(
 /// program itself skips inactive/unapproved entries, and losing a custom entry
 /// only costs the taker that one source. A missing *CLOB* entry is logged
 /// loudly, because the fill that follows will be rejected.
+/// Charge a failed simulation to the quoters the program named in its logs.
+///
+/// Only named failures are charged. A simulation carrying several quoters
+/// fails for reasons that belong to nobody, and the CPI-bracket inference
+/// that resolves the rest needs the route's entry order, which the fill path
+/// does not assemble. Charging a maker for an unproven failure would be
+/// worse than missing one, so what is not named is counted against this bot.
+fn charge_quoter_failures(
+    metrics: &Metrics,
+    logs: &[String],
+    err: &str,
+    market_index: Option<u16>,
+) {
+    let verdict = attribute(logs, Some(err), RouteContext { entries: &[] });
+    if verdict.is_empty() && verdict.unattributed.is_none() {
+        return;
+    }
+    let market = market_index.unwrap_or_default();
+    for charge in &verdict.charges {
+        log::warn!(
+            target: TARGET,
+            "quoter {} broke a fill simulation: {:?}",
+            charge.quoter,
+            charge.reason
+        );
+        metrics.quoter_health.record(Report::new(
+            charge.quoter,
+            market,
+            Observation::ExecuteFail {
+                reason: charge.reason,
+            },
+        ));
+    }
+    if let Some(reason) = verdict.unattributed {
+        metrics.quoter_health.record_unattributed(reason);
+    }
+}
+
 async fn route_quoter_metas(
     velocity: &VelocityClient,
     clob_quoter: Pubkey,
@@ -2696,6 +2739,18 @@ impl TxWorker {
                             intent.liquidatee(),
                             intent.slot()
                         );
+                        // The program names the quoter it could not use, so
+                        // a simulation that a maker broke is separable from
+                        // one this bot broke. Nothing lands, so these logs
+                        // are the only record this failure ever leaves.
+                        if let Some(logs) = sim_result.logs.as_deref() {
+                            charge_quoter_failures(
+                                &metrics,
+                                logs,
+                                &format!("{err:?}"),
+                                intent.market_index(),
+                            );
+                        }
                         // Log simulation logs for liquidation and uncross intents to help
                         // diagnose failures
                         if intent.is_liquidation()

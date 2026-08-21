@@ -32,7 +32,7 @@ use {
     serde_json::{json, Map, Value},
     solana_sdk::pubkey::Pubkey,
     std::collections::BTreeMap,
-    velocity_router_sim::quote_view::QuoteView,
+    velocity_router_sim::quote_view::{CarriedEntry, QuoteView},
 };
 
 /// Aggregated levels for one side: price → (source label → size).
@@ -348,10 +348,103 @@ fn walk_clob_side(data: &[u8], head_offset: usize, slot: u64, now: i64) -> Vec<C
     nodes
 }
 
-/// Build the per-order L3 document from the CLOB market account's bytes.
-/// Only the CLOB contributes: the vAMM and PropAMMs have no resting orders,
-/// and DLOB L3 stays with the TS publisher until the DLOB dies. `maker` is
-/// the node's derived `User` PDA, matching the DLOB L3's maker field.
+/// One attributed line of a book.
+///
+/// A CLOB row is a resting order: it has an id, a queue position, and it can
+/// be cancelled. A PropAMM row is none of those. It is a quote the maker
+/// would honour at the size the view was taken at, so it carries a maker but
+/// no id, and it means nothing without the document's `quotedSize`. The
+/// `source` field is what lets a consumer tell them apart.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BookRow {
+    pub price: u64,
+    pub size: u64,
+    pub maker: Pubkey,
+    pub quoter: Option<Pubkey>,
+    pub order_id: Option<u64>,
+    pub source: &'static str,
+}
+
+impl BookRow {
+    fn to_json(&self) -> Value {
+        json!({
+            "price": self.price.to_string(),
+            "size": self.size.to_string(),
+            "maker": self.maker.to_string(),
+            "orderId": self.order_id,
+            "quoter": self.quoter.map(|key| key.to_string()),
+            "source": self.source,
+        })
+    }
+}
+
+/// Resting CLOB orders on one side, best first.
+pub fn clob_rows(
+    velocity: &Pubkey,
+    book_data: &[u8],
+    head_offset: usize,
+    slot: u64,
+    now: i64,
+) -> Vec<BookRow> {
+    walk_clob_side(book_data, head_offset, slot, now)
+        .iter()
+        .map(|node| BookRow {
+            price: node.price,
+            size: node.base_asset_amount,
+            maker: clob_user_pda(velocity, node),
+            quoter: None,
+            order_id: Some(node.order_id),
+            source: "clob",
+        })
+        .collect()
+}
+
+/// PropAMM levels on one side, attributed to the maker each entry names.
+///
+/// A Custom entry settles against exactly one `User`, fixed at registration,
+/// so every level it quotes belongs to that maker. A CLOB entry names its
+/// registrant rather than the makers resting on its book, so it is skipped
+/// here; its depth is attributed per order by [`clob_rows`].
+pub fn propamm_rows(view: &QuoteView, entries: &[CarriedEntry]) -> Vec<BookRow> {
+    view.books
+        .iter()
+        .filter(|book| book.kind == QuotedSourceKind::Quoter)
+        .filter_map(|book| {
+            let entry = entries.iter().find(|entry| entry.quoter == book.key)?;
+            entry.attributes_to_one_maker().then_some((book, entry))
+        })
+        .flat_map(|(book, entry)| {
+            book.levels.iter().map(move |level| BookRow {
+                price: level.price,
+                size: level.size,
+                maker: entry.user,
+                quoter: Some(entry.quoter),
+                order_id: None,
+                source: "propamm",
+            })
+        })
+        .collect()
+}
+
+/// Merge two best-first sides into one, still best first.
+fn merge_side(is_ask: bool, mut rows: Vec<BookRow>) -> Vec<BookRow> {
+    rows.sort_by(|a, b| {
+        if is_ask {
+            a.price.cmp(&b.price)
+        } else {
+            b.price.cmp(&a.price)
+        }
+    });
+    rows
+}
+
+/// Build the per-order L3 document.
+///
+/// The CLOB contributes resting orders and PropAMMs contribute attributed
+/// quotes; the two are distinguished by `source`, because only the first can
+/// be cancelled or holds a queue position. The vAMM contributes nothing: it
+/// has no maker to attribute to. DLOB L3 stays with the TypeScript publisher
+/// until the DLOB dies.
 #[allow(clippy::too_many_arguments)]
 pub fn l3_payload(
     velocity: &Pubkey,
@@ -362,29 +455,24 @@ pub fn l3_payload(
     now: i64,
     decorations: &Decorations,
     ts_ms: u128,
+    propamm_bids: Vec<BookRow>,
+    propamm_asks: Vec<BookRow>,
+    quoted_size: u64,
 ) -> Value {
-    let level = |node: &ClobNodeView| {
-        json!({
-            "price": node.price.to_string(),
-            "size": node.base_asset_amount.to_string(),
-            "maker": clob_user_pda(velocity, node).to_string(),
-            "orderId": node.order_id,
-        })
-    };
-    let bids: Vec<Value> = walk_clob_side(book_data, CLOB_BEST_BID_OFFSET, slot, now)
-        .iter()
-        .map(level)
-        .collect();
-    let asks: Vec<Value> = walk_clob_side(book_data, CLOB_BEST_ASK_OFFSET, slot, now)
-        .iter()
-        .map(level)
-        .collect();
+    let mut bids = clob_rows(velocity, book_data, CLOB_BEST_BID_OFFSET, slot, now);
+    bids.extend(propamm_bids);
+    let mut asks = clob_rows(velocity, book_data, CLOB_BEST_ASK_OFFSET, slot, now);
+    asks.extend(propamm_asks);
+    let render = |rows: Vec<BookRow>| -> Vec<Value> { rows.iter().map(BookRow::to_json).collect() };
     json!({
-        "bids": bids,
-        "asks": asks,
+        "bids": render(merge_side(false, bids)),
+        "asks": render(merge_side(true, asks)),
         "marketName": market_name,
         "marketType": "perp",
         "marketIndex": market_index,
+        // PropAMM rows are a quote at this size, not a standing book. Their
+        // depth means nothing without it.
+        "quotedSize": quoted_size.to_string(),
         "ts": ts_ms as u64,
         "slot": slot,
         "oracle": decorations.oracle,
@@ -399,12 +487,26 @@ pub fn l3_payload(
 const BEST_MAKERS: usize = 4;
 
 /// Build the `last_update_orderbook_best_makers_*` document: the first
-/// distinct maker `User` PDAs on each side, best-first, from the CLOB book.
-pub fn best_makers_payload(velocity: &Pubkey, book_data: &[u8], slot: u64, now: i64) -> Value {
-    let side = |head_offset: usize| -> Vec<String> {
+/// distinct maker `User` PDAs on each side, best first.
+///
+/// PropAMM makers count. A taker routed to the best price does not care
+/// whether the maker behind it rested an order or quoted on request, and a
+/// list that named only resting makers would miss whoever is actually on the
+/// top of book.
+pub fn best_makers_payload(
+    velocity: &Pubkey,
+    book_data: &[u8],
+    slot: u64,
+    now: i64,
+    propamm_bids: Vec<BookRow>,
+    propamm_asks: Vec<BookRow>,
+) -> Value {
+    let side = |head_offset: usize, is_ask: bool, propamm: Vec<BookRow>| -> Vec<String> {
+        let mut rows = clob_rows(velocity, book_data, head_offset, slot, now);
+        rows.extend(propamm);
         let mut makers: Vec<String> = Vec::new();
-        for node in walk_clob_side(book_data, head_offset, slot, now) {
-            let maker = clob_user_pda(velocity, &node).to_string();
+        for row in merge_side(is_ask, rows) {
+            let maker = row.maker.to_string();
             if !makers.contains(&maker) {
                 makers.push(maker);
                 if makers.len() >= BEST_MAKERS {
@@ -415,8 +517,8 @@ pub fn best_makers_payload(velocity: &Pubkey, book_data: &[u8], slot: u64, now: 
         makers
     };
     json!({
-        "bids": side(CLOB_BEST_BID_OFFSET),
-        "asks": side(CLOB_BEST_ASK_OFFSET),
+        "bids": side(CLOB_BEST_BID_OFFSET, false, propamm_bids),
+        "asks": side(CLOB_BEST_ASK_OFFSET, true, propamm_asks),
         "slot": slot,
     })
 }
@@ -641,6 +743,9 @@ mod tests {
             1_000,
             &decorations(),
             7,
+            Vec::new(),
+            Vec::new(),
+            1_000,
         );
         assert_eq!(payload["bids"][0]["price"], "97");
         assert_eq!(payload["bids"][0]["size"], "4");
@@ -678,7 +783,7 @@ mod tests {
             .map(|(i, maker)| (*maker, 0u16, 100 + i as u64, 1u64, 10 + i as u64))
             .collect();
         let data = clob_book(&bids, &asks);
-        let payload = best_makers_payload(&velocity, &data, 50, 1_000);
+        let payload = best_makers_payload(&velocity, &data, 50, 1_000, Vec::new(), Vec::new());
         assert_eq!(payload["bids"].as_array().unwrap().len(), 2);
         assert_eq!(payload["asks"].as_array().unwrap().len(), 4);
         assert_eq!(payload["slot"], 50);
@@ -688,5 +793,142 @@ mod tests {
         )
         .0;
         assert_eq!(payload["bids"][0], bid_maker.to_string());
+    }
+
+    fn custom(quoter: Pubkey, user: Pubkey) -> CarriedEntry {
+        CarriedEntry {
+            quoter,
+            program: Pubkey::new_unique(),
+            user,
+            quoter_type: program::state::prop_amm::QuoterType::Custom,
+        }
+    }
+
+    #[test]
+    fn a_propamm_level_carries_the_maker_its_entry_names() {
+        // A Custom entry settles against exactly one User, so every level it
+        // quotes belongs to that maker even though no order rests anywhere.
+        let quoter = Pubkey::new_unique();
+        let user = Pubkey::new_unique();
+        let rows = propamm_rows(
+            &view(0, vec![book(QuotedSourceKind::Quoter, quoter, &[(100, 5)])]),
+            &[custom(quoter, user)],
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].maker, user);
+        assert_eq!(rows[0].quoter, Some(quoter));
+        assert_eq!(rows[0].source, "propamm");
+        assert!(
+            rows[0].order_id.is_none(),
+            "a quote is not an order and has no id to cancel"
+        );
+    }
+
+    #[test]
+    fn a_clob_entrys_levels_are_not_attributed_to_its_registrant() {
+        // The entry names whoever registered the book, not the makers
+        // resting on it. Those are attributed per order off the book bytes.
+        let quoter = Pubkey::new_unique();
+        let entry = CarriedEntry {
+            quoter,
+            program: Pubkey::new_unique(),
+            user: Pubkey::new_unique(),
+            quoter_type: program::state::prop_amm::QuoterType::Clob,
+        };
+        let rows = propamm_rows(
+            &view(0, vec![book(QuotedSourceKind::Quoter, quoter, &[(100, 5)])]),
+            &[entry],
+        );
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn the_vamm_contributes_no_attributed_levels() {
+        // There is no maker behind the curve to name.
+        let rows = propamm_rows(
+            &view(
+                0,
+                vec![book(
+                    QuotedSourceKind::Vamm,
+                    Pubkey::new_unique(),
+                    &[(100, 5)],
+                )],
+            ),
+            &[],
+        );
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn an_unknown_entry_is_never_attributed() {
+        // A source whose entry did not come back from the registry read has
+        // no maker the publisher can stand behind.
+        let rows = propamm_rows(
+            &view(
+                0,
+                vec![book(
+                    QuotedSourceKind::Quoter,
+                    Pubkey::new_unique(),
+                    &[(100, 5)],
+                )],
+            ),
+            &[],
+        );
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn merged_sides_stay_best_first() {
+        let row = |price: u64, source: &'static str| BookRow {
+            price,
+            size: 1,
+            maker: Pubkey::new_unique(),
+            quoter: None,
+            order_id: None,
+            source,
+        };
+        let asks = merge_side(
+            true,
+            vec![row(102, "clob"), row(100, "propamm"), row(101, "clob")],
+        );
+        assert_eq!(
+            asks.iter().map(|r| r.price).collect::<Vec<_>>(),
+            vec![100, 101, 102],
+            "an ask book reads cheapest first"
+        );
+        let bids = merge_side(
+            false,
+            vec![row(98, "clob"), row(100, "propamm"), row(99, "clob")],
+        );
+        assert_eq!(
+            bids.iter().map(|r| r.price).collect::<Vec<_>>(),
+            vec![100, 99, 98],
+            "a bid book reads dearest first"
+        );
+    }
+
+    #[test]
+    fn a_propamm_on_the_top_of_book_is_named_among_the_best_makers() {
+        // A taker routed to the best price does not care whether the maker
+        // rested an order or quoted on request.
+        let user = Pubkey::new_unique();
+        let propamm = vec![BookRow {
+            price: 1_000,
+            size: 5,
+            maker: user,
+            quoter: Some(Pubkey::new_unique()),
+            order_id: None,
+            source: "propamm",
+        }];
+        let payload = best_makers_payload(
+            &Pubkey::new_unique(),
+            &[0u8; 0],
+            50,
+            1_000,
+            propamm.clone(),
+            propamm,
+        );
+        assert_eq!(payload["bids"][0], json!(user.to_string()));
+        assert_eq!(payload["asks"][0], json!(user.to_string()));
     }
 }

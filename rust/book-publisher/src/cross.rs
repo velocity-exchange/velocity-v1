@@ -21,10 +21,7 @@
 use {
     anyhow::{anyhow, Context, Result},
     program::state::{
-        prop_amm::{
-            read_clob_node, read_clob_u32, ClobUserRefV0, QuoterV0, CLOB_BEST_ASK_OFFSET,
-            CLOB_BEST_BID_OFFSET, CLOB_NIL,
-        },
+        prop_amm::{clob_resting_prefix, ClobSide, ClobUserRefV0, QuoterUserCapsV0, QuoterV0},
         router_quote::QuotedSourceKind,
         state::State,
         user::User,
@@ -112,33 +109,52 @@ fn cross_levels(bids: &QuotedBook, asks: &QuotedBook, base_precision: u128) -> L
     cross
 }
 
-/// Walk a CLOB side's crossing prefix and collect maker refs, capped. Stops
-/// before admitting a maker past the cap and returns the covered size.
+/// Collect maker refs off a CLOB side's crossing prefix, capped, and report
+/// the size that prefix covers.
+///
+/// The walk itself is the program's `clob_resting_prefix`, called rather than
+/// copied: it is a pure function of the account's bytes, and a copy here is
+/// how this list and the one the crank builds on-chain come to disagree about
+/// which orders are matchable.
 fn clob_makers_for(
     data: &[u8],
-    head_offset: usize,
+    side: ClobSide,
     size: u64,
     slot: u64,
     now: i64,
     makers: &mut Vec<ClobUserRefV0>,
 ) -> Result<u64> {
+    // The crank's taker is the protocol user, which rests nothing, so no
+    // order on this book is its own.
+    let taker = ClobUserRefV0 {
+        authority: anchor_lang::prelude::Pubkey::default(),
+        sub_account_id: 0,
+    };
     let mut covered = 0u64;
-    let mut cursor =
-        read_clob_u32(data, head_offset).ok_or_else(|| anyhow!("clob header truncated"))?;
-    while cursor != CLOB_NIL && covered < size {
-        let node = read_clob_node(data, cursor).ok_or_else(|| anyhow!("clob node truncated"))?;
-        cursor = node.next;
-        if !node.is_matchable(slot, now) {
-            continue;
-        }
-        let user = node.user_ref();
-        if !makers.contains(&user) {
+    // Unrestricted and uncapped: the question is who is resting here, not
+    // who this caller may settle for.
+    for order in clob_resting_prefix(
+        data,
+        side,
+        size,
+        &[],
+        &QuoterUserCapsV0::EMPTY,
+        &taker,
+        slot,
+        now,
+    ) {
+        if !makers.contains(&order.user) {
             if makers.len() >= MAX_CROSS_MAKERS {
                 break;
             }
-            makers.push(user);
+            makers.push(order.user);
         }
-        covered = covered.saturating_add(node.base_asset_amount);
+        // A crossed taker-origin remainder is not depth this cross can count
+        // on: the book passes over it while a counterparty crosses it, which
+        // is exactly the situation the crank is resolving.
+        if !order.is_taker_origin {
+            covered = covered.saturating_add(order.base_asset_amount);
+        }
     }
     Ok(covered.min(size))
 }
@@ -249,9 +265,9 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
     let clock = source.clock().await?;
     let mut makers: Vec<ClobUserRefV0> = Vec::new();
     let mut size = cross.size;
-    for (leg_entry, head_offset) in [
-        (&entries[buy_index as usize], CLOB_BEST_ASK_OFFSET),
-        (&entries[sell_index as usize], CLOB_BEST_BID_OFFSET),
+    for (leg_entry, side) in [
+        (&entries[buy_index as usize], ClobSide::Ask),
+        (&entries[sell_index as usize], ClobSide::Bid),
     ] {
         if leg_entry.quoter_type == program::state::prop_amm::QuoterType::Clob {
             let book_account = source
@@ -262,7 +278,7 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
                 .ok_or_else(|| anyhow!("clob market account missing"))?;
             let covered = clob_makers_for(
                 &book_account.data,
-                head_offset,
+                side,
                 size,
                 clock.slot,
                 clock.unix_timestamp,

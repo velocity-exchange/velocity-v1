@@ -55,8 +55,8 @@ use {
             perp_market_map::MarketSet,
             prop_amm::{
                 clob_hint_scan, read_clob_node, ClobCancelAllArgsV0, ClobCancelOrderArgsV0,
-                ClobCancelSides, ClobMarket, ClobOrderRefV0, ClobRemovedOrderV0, ClobSide,
-                ClobUserRefV0, QuoterV0, WireDirectionExt,
+                ClobCancelSides, ClobCancelSidesExt, ClobMarket, ClobOrderRefV0,
+                ClobRemovedOrderV0, ClobSide, ClobUserRefV0, QuoterV0, WireDirectionExt,
             },
             spot_market_map::get_writable_spot_market_set,
             state::State,

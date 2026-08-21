@@ -1,7 +1,7 @@
 use {
     crate::{
         error::MidpointError,
-        state::{CancelAllOutcomeV0, CancelSidesV0, Direction, MidpointQuoterV0},
+        state::{CancelAllOutcomeV0, CancelSidesExt, CancelSidesV0, Direction, MidpointQuoterV0},
     },
     anchor_lang_v2::prelude::*,
 };

@@ -425,6 +425,12 @@ pub use quoter_spec::{
 /// Declared by `quoter-spec`; the alias keeps this program's name for it.
 pub type PriceLevel = quoter_spec::PriceLevelV0;
 
+/// Which sides a `cancel_all_v0` withdraws. Declared by `quoter-spec`; this
+/// program's reading of them is [`CancelSidesExt`].
+pub use quoter_spec::CancelSidesV0;
+/// Where in the market account the borsh response was written. Declared by
+/// `quoter-spec`, which owns every shape on this wire.
+pub use quoter_spec::ResponsePointerV0;
 /// One user's share of an executed fill. Mirrors velocity's quoter-interface
 /// `UserBalanceChangeV0`.
 ///
@@ -433,30 +439,17 @@ pub type PriceLevel = quoter_spec::PriceLevelV0;
 /// remains the schema of record for that layout, and the response unit
 /// tests pin the two against each other.
 pub use quoter_spec::UserBalanceChangeV0;
-
-/// Where in the market account the borsh response was written. Returned via
-/// return data by `quote_v0`/`execute_v0`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct ResponsePointerV0 {
-    pub offset: u32,
-    pub len: u32,
-}
-
 pub use quoter_spec::{ExecuteResponseV0, QuoteResponseV0};
 
-/// Which sides a `cancel_all_v0` withdraws. Named sides rather than a pair of
-/// bools so the wire cannot express "neither", which is a maker believing
-/// their quotes are gone when nothing happened.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
-pub enum CancelSidesV0 {
-    Bids,
-    Asks,
-    Both,
+/// What the wire's named sides mean to a book: the lists to walk.
+pub trait CancelSidesExt {
+    fn sides(self) -> &'static [Side];
+    fn includes(self, side: Side) -> bool;
 }
 
-impl CancelSidesV0 {
+impl CancelSidesExt for CancelSidesV0 {
     /// The sides to walk, in book order.
-    pub fn sides(self) -> &'static [Side] {
+    fn sides(self) -> &'static [Side] {
         match self {
             CancelSidesV0::Bids => &[Side::Bid],
             CancelSidesV0::Asks => &[Side::Ask],
@@ -464,7 +457,7 @@ impl CancelSidesV0 {
         }
     }
 
-    pub fn includes(self, side: Side) -> bool {
+    fn includes(self, side: Side) -> bool {
         matches!(
             (self, side),
             (CancelSidesV0::Both, _)

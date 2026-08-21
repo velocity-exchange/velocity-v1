@@ -588,6 +588,46 @@ impl DirectionV0 {
     }
 }
 
+/// Where in the quoter's response account it wrote the response. Return data
+/// of `quote_v0` and `execute_v0`.
+///
+/// The one shape a caller reads back from every quoter, whatever it is: the
+/// response itself lives in an account the caller then borrows, and this says
+/// where to look. Declared here rather than per program for the same reason
+/// the rest of the wire is — three copies of two `u32`s are three chances to
+/// disagree about which comes first.
+#[repr(C)]
+#[cfg_attr(
+    feature = "anchor-derive",
+    derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
+)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, SchemaRead, SchemaWrite)]
+pub struct ResponsePointerV0 {
+    pub offset: u32,
+    pub len: u32,
+}
+
+/// Which sides a `cancel_all_v0` withdraws.
+///
+/// Named sides rather than a pair of bools, because the wire must not be able
+/// to express "neither" — that is a maker believing their quotes are gone
+/// when nothing happened.
+///
+/// What the sides *mean* differs by who is reading: a book walks them as book
+/// sides, a caller unwinds them as position directions, a spline reads them as
+/// taker directions. Each program adds that reading itself; the tags are the
+/// part that has to agree.
+#[cfg_attr(
+    feature = "anchor-derive",
+    derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
+)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
+pub enum CancelSidesV0 {
+    Bids,
+    Asks,
+    Both,
+}
+
 /// Which side an order rests on: a bid makes its owner long, an ask short.
 #[cfg_attr(
     feature = "anchor-derive",

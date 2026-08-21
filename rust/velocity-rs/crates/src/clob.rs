@@ -17,6 +17,32 @@ use program::{
     state::prop_amm::{clob_resting_prefix, ClobSide, ClobUserRefV0, QuoterUserCapsV0},
 };
 
+/// The run of resting orders a taker of `size` would sweep, best price first,
+/// straight from the program's walk.
+///
+/// The skip rules are the program's: unactivated, expired, self-traded. What
+/// a caller does with the run — count it, name its owners, size a cross
+/// against it — is its own business, but the run itself has one definition.
+pub fn resting_orders(
+    book_data: &[u8],
+    side: ClobSide,
+    size: u64,
+    taker: ClobUserRefV0,
+    slot: u64,
+    now: i64,
+) -> Vec<program::state::prop_amm::ClobRestingOrderV0> {
+    clob_resting_prefix(
+        book_data,
+        side,
+        size,
+        &[],
+        &QuoterUserCapsV0::EMPTY,
+        &taker,
+        slot,
+        now,
+    )
+}
+
 /// Distinct makers a taker of `size` would sweep, best price first.
 ///
 /// `taker` is skipped, since a fill never settles a user against itself.
@@ -37,16 +63,7 @@ pub fn resting_makers(
     // Unrestricted and uncapped: this is the question "who is here", and the
     // caller is deciding what to carry, not what it may settle.
     let mut makers: Vec<ClobUserRefV0> = Vec::new();
-    for order in clob_resting_prefix(
-        book_data,
-        side,
-        size,
-        &[],
-        &QuoterUserCapsV0::EMPTY,
-        &taker,
-        slot,
-        now,
-    ) {
+    for order in resting_orders(book_data, side, size, taker, slot, now) {
         if makers.contains(&order.user) {
             continue;
         }

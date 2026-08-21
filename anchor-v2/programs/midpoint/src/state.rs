@@ -47,26 +47,26 @@ pub const RESPONSE_BUFFER_BYTES: usize = 2048;
 
 pub const ZERO_ADDRESS: Address = Address::new_from_array([0u8; 32]);
 
-/// Taker direction, as passed through the quoter interface. Declared once by
-/// `quoter-spec`, which owns every shape on this wire.
-pub use quoter_spec::DirectionV0 as Direction;
-
 /// Which sides a `cancel_all_v0` withdraws. The same wire enum (and the same
 /// borsh tags) as the CLOB's, so a client speaks one shape to either quoter
 /// type. Named sides rather than a pair of bools because the wire must not be
 /// able to express "neither" — that is a maker believing their quotes are gone
 /// when nothing happened.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
-pub enum CancelSidesV0 {
-    Bids,
-    Asks,
-    Both,
+pub use quoter_spec::CancelSidesV0;
+/// Taker direction, as passed through the quoter interface. Declared once by
+/// `quoter-spec`, which owns every shape on this wire.
+pub use quoter_spec::DirectionV0 as Direction;
+
+/// What the wire's named sides mean to a spline, which holds no orders and
+/// reads them as the flow that would consume its rungs.
+pub trait CancelSidesExt {
+    fn directions(self) -> &'static [Direction];
 }
 
-impl CancelSidesV0 {
+impl CancelSidesExt for CancelSidesV0 {
     /// The taker directions that consume the named sides. A bid is what a
     /// `Short` taker hits, an ask what a `Long` taker hits.
-    pub fn directions(self) -> &'static [Direction] {
+    fn directions(self) -> &'static [Direction] {
         match self {
             CancelSidesV0::Bids => &[Direction::Short],
             CancelSidesV0::Asks => &[Direction::Long],
@@ -114,6 +114,9 @@ pub type PriceLevel = quoter_spec::PriceLevelV0;
 /// interface; the midpoint never emits one (spline intent has no orders to
 /// cancel, a dusty level is simply not quoted).
 pub use quoter_spec::CancelledRemainderV0;
+/// Where in the quoter account the borsh response was written. Declared by
+/// `quoter-spec`, which owns every shape on this wire.
+pub use quoter_spec::ResponsePointerV0;
 /// One user's share of an executed fill. Mirrors velocity's quoter-interface
 /// `UserBalanceChangeV0`; the midpoint always has exactly one (the quoted
 /// user) and never completes orders (the ladder has none).
@@ -122,15 +125,6 @@ pub use quoter_spec::CancelledRemainderV0;
 /// field (see [`MidpointQuoterV0::write_execute_response`]) rather than
 /// building one of these, and a unit test pins the two encodings equal.
 pub use quoter_spec::UserBalanceChangeV0;
-
-/// Where in the quoter account the borsh response was written. Returned via
-/// return data by `quote_v0`/`execute_v0`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct ResponsePointerV0 {
-    pub offset: u32,
-    pub len: u32,
-}
-
 pub use quoter_spec::{ExecuteResponseV0, QuoteResponseV0};
 
 /// One rung of the spline: standing intent `size` at `mid ± offset`, with

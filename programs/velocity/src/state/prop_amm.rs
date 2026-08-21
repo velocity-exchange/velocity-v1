@@ -383,12 +383,9 @@ pub struct QuotedLadderV0 {
 }
 
 /// Returned via return data by `quote_v0`/`execute_v0`: where in the quoter's
-/// `response_account` the borsh response was written.
-#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
-pub struct ResponsePointerV0 {
-    pub offset: u32,
-    pub len: u32,
-}
+/// `response_account` the borsh response was written. Declared by
+/// `quoter-spec`, which owns every shape on this wire.
+pub use quoter_spec::ResponsePointerV0;
 
 /// Borrowed, and hand-serialized, for the same reasons as [`QuoteArgsV0`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -527,18 +524,21 @@ pub struct ClobCancelOrderArgsV0 {
     pub user: ClobUserRefV0,
 }
 
-/// Which sides a `cancel_all_v0` withdraws, on the CLOB wire.
-#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
-pub enum ClobCancelSides {
-    Bids,
-    Asks,
-    Both,
-}
+/// Which sides a `cancel_all_v0` withdraws, on the CLOB wire. Declared by
+/// `quoter-spec`; the alias keeps velocity's name for it.
+pub use quoter_spec::CancelSidesV0 as ClobCancelSides;
 
-impl ClobCancelSides {
+/// What the wire's named sides mean to velocity: the maker positions they
+/// unwind.
+pub trait ClobCancelSidesExt {
     /// The maker position directions the named sides represent — a resting bid
     /// is a long, a resting ask a short. What the aggregate unwind iterates.
-    pub fn directions(self) -> &'static [crate::controller::position::PositionDirection] {
+    fn directions(self) -> &'static [crate::controller::position::PositionDirection];
+    fn includes(self, direction: crate::controller::position::PositionDirection) -> bool;
+}
+
+impl ClobCancelSidesExt for ClobCancelSides {
+    fn directions(self) -> &'static [crate::controller::position::PositionDirection] {
         use crate::controller::position::PositionDirection;
         match self {
             ClobCancelSides::Bids => &[PositionDirection::Long],
@@ -547,7 +547,7 @@ impl ClobCancelSides {
         }
     }
 
-    pub fn includes(self, direction: crate::controller::position::PositionDirection) -> bool {
+    fn includes(self, direction: crate::controller::position::PositionDirection) -> bool {
         use crate::controller::position::PositionDirection;
         matches!(
             (self, direction),

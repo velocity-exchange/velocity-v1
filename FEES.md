@@ -55,14 +55,16 @@ builder_fee = notional × fee_tenth_bps / 100_000   ADDED on top of taker_fee; p
   bankruptcy-clawback tranche.
 - DLOB matches split the same way; the AMM's provision is credited to its books
   (`apply_fill_fees`) and tokenized by the sweep.
-- Referral rewards are 10% of the referee's taker fee for Standard referrers and
-  a fixed 20% for Accelerated referrers; the rates are independent and the referee
-  discount remains 5% in both cases. Accelerated is a
-  persistent flag on `UserStats`. While
-  `State.accelerated_referral_enrollment_enabled` is set, creating a user account or
-  completing a trade grants it automatically; the warm admin can also grant or
-  revoke it with `update_user_accelerated_referral_status`. A revoke blocks automatic
-  reenrollment until a later admin grant.
+- Referral rewards come at two independent rates. Standard is the active fee tier's
+  `referrer_reward_numerator`, which a fresh deployment defaults to 10% of the referee's
+  taker fee (existing deployments keep whatever the tier already holds until
+  `update_perp_fee_structure` changes it); Accelerated is a fixed 20% that ignores the
+  tier. The referee discount remains 5% in both cases. Accelerated is a persistent flag on
+  `UserStats`. While `State.accelerated_referral_enrollment_enabled` is set, creating a
+  user account, filling a perp order as taker or maker, or completing a swap grants it
+  automatically; a liquidation does not grant it to the liquidatee. The warm admin can also
+  grant or revoke it with `update_user_accelerated_referral_status`. A revoke blocks
+  automatic reenrollment until a later admin grant.
 - `calculate_fee_for_fulfillment_with_amm` / `_with_match`
   (`math/fees.rs`, `split_fee_remainder`).
 

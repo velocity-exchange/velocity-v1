@@ -683,6 +683,7 @@ export const mockStateAccount: StateAccount = {
 	pendingSlotDurationMs: 0,
 	slotDurationPad: [0, 0],
 	slotDurationEffectiveSlot: new BN(0),
+	acceleratedReferralEnrollmentEnabled: 0,
 };
 
 export class MockUserMap implements UserMapInterface {

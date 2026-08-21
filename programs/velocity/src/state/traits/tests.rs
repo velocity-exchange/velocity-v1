@@ -55,6 +55,10 @@ mod size {
         // around it must not move for existing on-chain accounts to stay valid.
         assert_eq!(std::mem::offset_of!(UserStats, padding1), 159);
         assert_eq!(std::mem::offset_of!(UserStats, delegate_permissions), 168);
+        assert_eq!(
+            std::mem::offset_of!(UserStats, accelerated_referral_status),
+            170
+        );
     }
 
     #[test]
@@ -175,6 +179,11 @@ mod native_instruction_offsets {
             std::mem::offset_of!(State, slot_duration_effective_slot) + DISC,
             1512,
             "State::slot_duration_effective_slot offset changed — update read_native_state_slot_duration"
+        );
+        assert_eq!(
+            std::mem::offset_of!(State, accelerated_referral_enrollment_enabled) + DISC,
+            1520,
+            "State::accelerated_referral_enrollment_enabled must remain in former padding"
         );
     }
 

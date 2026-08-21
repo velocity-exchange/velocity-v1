@@ -284,6 +284,36 @@ pub fn get_revenue_share_escrow_account<'a>(
     Ok(Some(escrow))
 }
 
+/// Reads the referrer's `UserStats` immediately after a referred taker's
+/// `RevenueShareEscrow` in remaining accounts and returns its persistent Accelerated
+/// status. The account is intentionally readonly: popular referrers must not
+/// become writable lock hotspots on every referee fill.
+pub fn get_referrer_accelerated_status<'a>(
+    account_info_iter: &mut Peekable<Iter<'a, AccountInfo<'a>>>,
+    escrow: Option<&RevenueShareEscrowZeroCopyMut<'a>>,
+) -> VelocityResult<bool> {
+    let Some(referrer) = escrow.and_then(|escrow| escrow.get_referrer()) else {
+        return Ok(false);
+    };
+
+    let referrer_stats_account_info =
+        next_account_info(account_info_iter).or(Err(ErrorCode::ReferrerStatsNotFound))?;
+
+    let referrer_stats: AccountLoader<UserStats> =
+        AccountLoader::try_from(referrer_stats_account_info)
+            .or(Err(ErrorCode::CouldNotDeserializeReferrerStats))?;
+    let referrer_stats = referrer_stats
+        .load()
+        .or(Err(ErrorCode::UnableToLoadUserStatsAccount))?;
+
+    validate!(
+        referrer_stats.authority == referrer,
+        ErrorCode::ReferrerAndReferrerStatsAuthorityUnequal
+    )?;
+
+    Ok(referrer_stats.is_accelerated_referrer())
+}
+
 /// Loads `count` read-only `User` accounts of `escrow_authority` from the front of the
 /// remaining-account iterator. The caller runs `RevenueShareEscrow::revoke_completed_orders` on
 /// each one.

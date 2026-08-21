@@ -1,8 +1,8 @@
 use crate::{
     error::{ErrorCode, VelocityResult},
     math::constants::{
-        FEE_DENOMINATOR, FEE_PERCENTAGE_DENOMINATOR, OPEN_ORDER_MARGIN_REQUIREMENT,
-        PERCENTAGE_PRECISION,
+        ACCELERATED_REFERRER_REWARD_NUMERATOR, FEE_DENOMINATOR, FEE_PERCENTAGE_DENOMINATOR,
+        OPEN_ORDER_MARGIN_REQUIREMENT, PERCENTAGE_PRECISION,
     },
     msg,
     state::state::{FeeStructure, FeeTier},
@@ -109,9 +109,21 @@ pub fn validate_fee_tier(
         fee_tier.referrer_reward_denominator
     )?;
 
+    let max_referrer_reward_numerator = fee_tier
+        .referrer_reward_numerator
+        .max(ACCELERATED_REFERRER_REWARD_NUMERATOR);
+    validate!(
+        max_referrer_reward_numerator + filler_reward_numerator <= FEE_PERCENTAGE_DENOMINATOR,
+        ErrorCode::InvalidFeeStructure,
+        "referrer reward ({}) plus filler reward ({}) exceeds 100%",
+        max_referrer_reward_numerator,
+        filler_reward_numerator
+    )?;
+
     let taker_fee = fee_tier.fee_numerator * (100 - fee_tier.referee_fee_numerator) / 100;
-    let fee_to_market_pre_maker = taker_fee
-        - taker_fee * (fee_tier.referrer_reward_numerator + filler_reward_numerator) / 100;
+    // Validate against whichever configured mode pays more.
+    let fee_to_market_pre_maker =
+        taker_fee - taker_fee * (max_referrer_reward_numerator + filler_reward_numerator) / 100;
 
     validate!(
         fee_to_market_pre_maker <= fee_tier.fee_numerator,

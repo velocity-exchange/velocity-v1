@@ -287,6 +287,7 @@ import { hasBuilder } from './math/orders';
 import { RevenueShareEscrowMap } from './userMap/revenueShareEscrowMap';
 import {
 	isBuilderOrderReferral,
+	isBuilderReferral,
 	isBuilderOrderCompleted,
 	isBuilderOrderOpen,
 	escrowHasReferrer,
@@ -6538,42 +6539,76 @@ export class VelocityClient {
 	/**
 	 * Returns the AccountMeta for the taker's RevenueShareEscrow when a fill of the
 	 * taker's order must include it: the order carries a builder code, or the taker
-	 * is referred (their escrow was initialized with a referrer). Returns `undefined`
-	 * when neither applies so no account meta is added to the transaction. The
-	 * on-chain handlers peek for this account last in `remaining_accounts`, so
-	 * callers must push it after the market/oracle/maker accounts.
+	 * is referred (their escrow was initialized with a referrer). Returns an empty
+	 * list when neither applies. The
+	 * onchain handlers read this group after the market/oracle/maker accounts;
+	 * a referred taker's referrer UserStats follows the escrow.
 	 *
 	 * Throws when `takerEscrow` does not belong to `takerAuthority`.
 	 */
-	private getTakerEscrowAccountMeta(
+	private async getTakerRevenueShareAccountMetas(
 		takerAuthority: PublicKey,
 		orderHasBuilder: boolean,
 		takerEscrow?: RevenueShareEscrowAccount,
 		takerIsReferred?: boolean
-	): AccountMeta | undefined {
+	): Promise<AccountMeta[]> {
 		if (takerEscrow && !takerEscrow.authority.equals(takerAuthority)) {
 			throw new Error(
 				'takerEscrow.authority does not match the taker user account authority'
 			);
 		}
-		// A taker is "referred" when their RevenueShareEscrow was initialized with a
-		// referrer. Callers can signal this directly (`takerIsReferred`, e.g. from
-		// the taker's UserStats.referrerStatus BuilderReferral bit — exactly what the
-		// on-chain fill gate reads) or implicitly via a decoded escrow with a
-		// referrer. The escrow PDA is deterministic, so no escrow data is required.
-		const referred =
-			!!takerIsReferred || (!!takerEscrow && escrowHasReferrer(takerEscrow));
-		if (!orderHasBuilder && !referred) {
-			return undefined;
-		}
-		return {
-			pubkey: getRevenueShareEscrowAccountPublicKey(
-				this.program.programId,
+		let takerStats: UserStatsAccount | undefined;
+		if (!takerEscrow && takerIsReferred === undefined) {
+			takerStats = await fetchUserStatsAccount(
+				this.connection,
+				this.program,
 				takerAuthority
-			),
-			isWritable: true,
-			isSigner: false,
-		};
+			);
+		}
+
+		// A taker is referred when their escrow was initialized with a referrer.
+		// Resolve this automatically for immediate fill builders so their default
+		// call path cannot omit mandatory referral accounts.
+		const referred =
+			!!takerIsReferred ||
+			(!!takerEscrow && escrowHasReferrer(takerEscrow)) ||
+			(!!takerStats && isBuilderReferral(takerStats));
+		if (!orderHasBuilder && !referred) {
+			return [];
+		}
+
+		const metas: AccountMeta[] = [
+			{
+				pubkey: getRevenueShareEscrowAccountPublicKey(
+					this.program.programId,
+					takerAuthority
+				),
+				isWritable: true,
+				isSigner: false,
+			},
+		];
+
+		// The program reads the referrer's persistent Accelerated status immediately after
+		// the taker's escrow. Keep this account readonly so a popular referrer does
+		// not become a write lock bottleneck for every referee fill.
+		let referrer = takerEscrow?.referrer ?? takerStats?.referrer;
+		if (!referrer) {
+			takerStats ??= await fetchUserStatsAccount(
+				this.connection,
+				this.program,
+				takerAuthority
+			);
+			referrer = takerStats?.referrer;
+		}
+		if (referrer && !referrer.equals(PublicKey.default)) {
+			metas.push({
+				pubkey: getUserStatsAccountPublicKey(this.program.programId, referrer),
+				isWritable: false,
+				isSigner: false,
+			});
+		}
+
+		return metas;
 	}
 
 	/**
@@ -7499,9 +7534,8 @@ export class VelocityClient {
 	 * from this authority instead of `this.wallet.publicKey`.
 	 * @param hasBuilderFee - Force-attach the taker's `RevenueShareEscrow` account, bypassing the
 	 * automatic builder-code detection performed by `getFillPerpOrderIx`.
-	 * @param takerEscrow - The taker's decoded `RevenueShareEscrow`. Required whenever the order
-	 * carries a builder code or the taker is referred — the program rejects the fill if the escrow
-	 * is owed but not attached.
+	 * @param takerEscrow - Optional decoded escrow. Supplying it avoids a UserStats fetch; the SDK
+	 * otherwise discovers referral status and the referrer automatically.
 	 * @returns The transaction signature.
 	 */
 	public async fillPerpOrder(
@@ -7539,8 +7573,9 @@ export class VelocityClient {
 	/**
 	 * Builds the `fillPerpOrder` instruction. See `fillPerpOrder` for semantics. Assembles maker
 	 * accounts and the taker's `RevenueShareEscrow` (when owed) into `remainingAccounts` in the
-	 * order the on-chain handler expects: user/maker market+oracle accounts first, then each
-	 * maker's `(maker, makerStats)` pair, then the taker escrow meta last.
+	 * order the onchain handler expects: user/maker market+oracle accounts first, then each
+	 * maker's `(maker, makerStats)` pair, then the taker escrow and, for a referred taker, the
+	 * referrer's readonly `UserStats`.
 	 * @param userAccountPublicKey - Public key of the order owner's user account.
 	 * @param userAccount - Decoded user account of the order owner.
 	 * @param order - The order to fill (`marketIndex`/`orderId`); defaults to the owner's most
@@ -7548,14 +7583,13 @@ export class VelocityClient {
 	 * @param makerInfo - Maker(s) to attempt to cross against.
 	 * @param fillerSubAccountId - Filler's sub-account to credit; defaults to the active sub-account.
 	 * @param isSignedMsg - Whether this fills a signed-msg (swift) order that has not yet been
-	 * placed on-chain; when true, `order` is not required and the builder-escrow attachment is
+	 * placed onchain; when true, `order` is not required and the builder escrow attachment is
 	 * done optimistically (the order's builder flag cannot be inspected before it lands).
 	 * @param fillerAuthority - Filler's authority if different from this client's wallet; the
 	 * filler user/user-stats PDAs are derived from this authority.
 	 * @param hasBuilderFee - Force-attach the taker escrow regardless of the detected builder flag.
-	 * @param takerEscrow - The taker's decoded `RevenueShareEscrow`. Required to attach the escrow
-	 * when the order has a builder code or the taker is referred with an initialized escrow — the
-	 * on-chain handler rejects the fill if an owed escrow is missing from `remainingAccounts`.
+	 * @param takerEscrow - Optional decoded escrow. Supplying it avoids a UserStats fetch; referral
+	 * accounts are otherwise discovered automatically.
 	 * @throws If no order can be resolved to fill, or (for a non-signed-msg fill) `order` is omitted.
 	 * @returns The instruction.
 	 */
@@ -7663,15 +7697,13 @@ export class VelocityClient {
 			}
 		}
 
-		const takerEscrowMeta = this.getTakerEscrowAccountMeta(
+		const takerRevenueShareMetas = await this.getTakerRevenueShareAccountMetas(
 			userAccount.authority,
 			withBuilder,
 			takerEscrow,
 			takerIsReferred
 		);
-		if (takerEscrowMeta) {
-			remainingAccounts.push(takerEscrowMeta);
-		}
+		remainingAccounts.push(...takerRevenueShareMetas);
 
 		let orderId: number | null = null;
 		if (!isSignedMsg) {
@@ -8752,7 +8784,7 @@ export class VelocityClient {
 	/**
 	 * Places a perp order and immediately attempts to fill it in the same instruction against the
 	 * AMM and/or the supplied `makerInfo`. `orderParams.postOnly` must be `PostOnlyParams.NONE` —
-	 * the on-chain handler rejects post-only orders here (use `placeAndMakePerpOrder` instead for a
+	 * the onchain handler rejects post only orders here (use `placeAndMakePerpOrder` instead for a
 	 * post-only maker order). If the order is immediate-or-cancel (or `successCondition`/
 	 * `auctionDurationPercentage` is set) and still open after the fill attempt, it is cancelled
 	 * in the same instruction.
@@ -8763,12 +8795,10 @@ export class VelocityClient {
 	 * instruction reverts with `PlaceAndTakeOrderSuccessConditionFailed` if not met. Omit for no check.
 	 * @param auctionDurationPercentage - Percent (0-100, default 100) of the order's auction that
 	 * must have elapsed before this fill attempt is allowed to cross the AMM/makers at the current
-	 * auction price; packed on-chain into the same `u32` as `successCondition`.
+	 * auction price; packed onchain into the same `u32` as `successCondition`.
 	 * @param txParams - Optional compute-unit/priority-fee overrides.
 	 * @param subAccountId - Sub-account to place the order for; defaults to the active sub-account.
-	 * @param takerEscrow - The placing user's (taker's) decoded `RevenueShareEscrow`. Required to
-	 * attach the escrow account when the taker is referred but the order itself carries no builder
-	 * code — the builder case is detected automatically from `orderParams`.
+	 * @param takerEscrow - Optional decoded escrow used to avoid automatic UserStats lookup.
 	 * @returns The transaction signature.
 	 */
 	public async placeAndTakePerpOrder(
@@ -9124,9 +9154,9 @@ export class VelocityClient {
 			authority?: PublicKey;
 		},
 		// place_and_take fills the placing user's (the taker's) order in-instruction, so
-		// their RevenueShareEscrow must be attached for BOTH builder fees and referrer
-		// revenue share. The builder case is detected from orderParams; pass the user's
-		// decoded escrow (e.g. from a RevenueShareEscrowMap) to cover the referred case.
+		// their RevenueShareEscrow must be attached for both builder fees and referrer
+		// revenue share. Referral accounts are discovered automatically when no decoded
+		// escrow is supplied.
 		takerEscrow?: RevenueShareEscrowAccount
 	): Promise<TransactionInstruction> {
 		orderParams = getOrderParams(orderParams, { marketType: MarketType.PERP });
@@ -9163,14 +9193,12 @@ export class VelocityClient {
 			});
 		}
 
-		const takerEscrowMeta = this.getTakerEscrowAccountMeta(
+		const takerRevenueShareMetas = await this.getTakerRevenueShareAccountMetas(
 			this.getUserAccount(subAccountId)?.authority ?? this.authority,
 			hasBuilderParams(orderParams),
 			takerEscrow
 		);
-		if (takerEscrowMeta) {
-			remainingAccounts.push(takerEscrowMeta);
-		}
+		remainingAccounts.push(...takerRevenueShareMetas);
 
 		let optionalParams = null;
 		if (auctionDurationPercentage || successCondition) {
@@ -9195,16 +9223,14 @@ export class VelocityClient {
 	/**
 	 * Places a resting maker order and, in the same instruction, fills a specific counterparty
 	 * taker order (`takerInfo.order`) against it. `orderParams` must be an immediate-or-cancel,
-	 * post-only (not `PostOnlyParams.NONE`) limit order — the on-chain handler rejects any other
+	 * post only (not `PostOnlyParams.NONE`) limit order — the onchain handler rejects any other
 	 * shape with `InvalidOrderIOCPostOnly`.
 	 * @param orderParams - Maker order to place; `baseAssetAmount` is BASE_PRECISION (1e9), `price`
 	 * is PRICE_PRECISION (1e6). Must have `orderType: LIMIT`, `postOnly` set, and be IOC.
 	 * @param takerInfo - The taker account/order to fill against (`takerInfo.order.orderId` must be open).
 	 * @param txParams - Optional compute-unit/priority-fee overrides.
 	 * @param subAccountId - Sub-account placing the maker order; defaults to the active sub-account.
-	 * @param takerEscrow - The taker's decoded `RevenueShareEscrow`. Required to attach the escrow
-	 * when the taker is referred but their order carries no builder code — the builder case is
-	 * detected automatically from `takerInfo.order`.
+	 * @param takerEscrow - Optional decoded escrow used to avoid automatic UserStats lookup.
 	 * @returns The transaction signature.
 	 */
 	public async placeAndMakePerpOrder(
@@ -9248,8 +9274,8 @@ export class VelocityClient {
 		subAccountId?: number,
 		// place_and_make fills the taker's order in-instruction, so the TAKER's
 		// RevenueShareEscrow must be attached when their order has a builder or they
-		// are referred with an escrow. The builder case is detected from the taker
-		// order bitflags; pass the taker's decoded escrow to cover the referred case.
+		// are referred. Referral accounts are discovered automatically when no decoded
+		// escrow is supplied.
 		takerEscrow?: RevenueShareEscrowAccount
 	): Promise<TransactionInstruction> {
 		orderParams = getOrderParams(orderParams, { marketType: MarketType.PERP });
@@ -9266,14 +9292,12 @@ export class VelocityClient {
 		});
 
 		const takerOrderId = takerInfo.order.orderId;
-		const takerEscrowMeta = this.getTakerEscrowAccountMeta(
+		const takerRevenueShareMetas = await this.getTakerRevenueShareAccountMetas(
 			takerInfo.takerUserAccount.authority,
 			hasBuilder(takerInfo.order),
 			takerEscrow
 		);
-		if (takerEscrowMeta) {
-			remainingAccounts.push(takerEscrowMeta);
-		}
+		remainingAccounts.push(...takerRevenueShareMetas);
 		return await VelocityCore.buildPlaceAndMakePerpOrderInstruction({
 			program: this.program,
 			orderParams,
@@ -9584,8 +9608,7 @@ export class VelocityClient {
 	 * @param precedingIxs - Instructions preceding these in the final transaction (used only to
 	 * compute the ed25519-verify instruction's sysvar index).
 	 * @param overrideCustomIxIndex - Explicit sysvar-instructions index override.
-	 * @param takerEscrow - The taker's decoded `RevenueShareEscrow`. Required to attach the escrow
-	 * when the taker is referred but the signed order carries no builder code.
+	 * @param takerEscrow - Optional decoded escrow used to avoid automatic UserStats lookup.
 	 * @returns The transaction signature.
 	 */
 	public async placeAndMakeSignedMsgPerpOrder(
@@ -9654,9 +9677,8 @@ export class VelocityClient {
 		subAccountId?: number,
 		precedingIxs: TransactionInstruction[] = [],
 		overrideCustomIxIndex?: number,
-		// fills the taker's order in-instruction; pass the taker's decoded escrow so a
-		// referred taker's escrow is attached even when the signed order carries no
-		// builder fee
+		// Fills the taker's order in the same instruction. Referral accounts are
+		// discovered automatically when no decoded escrow is supplied.
 		takerEscrow?: RevenueShareEscrowAccount
 	): Promise<TransactionInstruction[]> {
 		const [signedMsgOrderSignatureIx, placeTakerSignedMsgPerpOrderIx] =
@@ -9693,14 +9715,12 @@ export class VelocityClient {
 			borshBuf,
 			isDelegateSigner
 		);
-		const takerEscrowMeta = this.getTakerEscrowAccountMeta(
+		const takerRevenueShareMetas = await this.getTakerRevenueShareAccountMetas(
 			takerInfo.takerUserAccount.authority,
 			hasBuilderParams(signedMessage),
 			takerEscrow
 		);
-		if (takerEscrowMeta) {
-			remainingAccounts.push(takerEscrowMeta);
-		}
+		remainingAccounts.push(...takerRevenueShareMetas);
 
 		const placeAndMakeIx =
 			await this.program.instruction.placeAndMakeSignedMsgPerpOrder(

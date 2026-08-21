@@ -1130,6 +1130,8 @@ export type StateAccount = {
 	 * slot + one-epoch warmup). 0 when nothing is staged.
 	 */
 	slotDurationEffectiveSlot: BN;
+	/** nonzero while successful account initialization and trades permanently grant Accelerated referral status */
+	acceleratedReferralEnrollmentEnabled: number;
 };
 
 /** Decoded mirror of the on-chain `PerpMarket` zero-copy account. */
@@ -1681,6 +1683,8 @@ export type UserStatsAccount = {
 	delegatePermissions: number;
 	/** non-zero when the permissionless `tripEquityFloorBreaker` fired: every subaccount of the authority rejects risk-increasing fills, withdrawals and transfers out until the warm admin resets */
 	equityBreakerTripped: number;
+	/** bitmask, see `AcceleratedReferralStatus` */
+	acceleratedReferralStatus: number;
 };
 
 /** Decoded mirror of the on-chain `User` (sub-account) zero-copy account. */
@@ -1995,6 +1999,13 @@ export enum ReferrerStatus {
 	IsReferred = 2,
 	/** set when the user's RevenueShareEscrow was initialized with a referrer */
 	BuilderReferral = 4,
+}
+
+/** Persistent referral reward flags stored on `UserStatsAccount.acceleratedReferralStatus`. */
+export enum AcceleratedReferralStatus {
+	Accelerated = 1,
+	/** prevents an admin revoked user from being immediately reenrolled by another trade */
+	AutoEnrollmentBlocked = 2,
 }
 
 /** Which fill outcome counts as "success" for a `placeAndTake*` instruction's on-chain success check. */

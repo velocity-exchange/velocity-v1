@@ -1509,7 +1509,7 @@ pub struct Order {
     pub trigger_condition: OrderTriggerCondition,
     /// How many slots the auction lasts
     pub auction_duration: u8,
-    /// Last 8 bits of the slot the order was posted on-chain (not order slot for signed msg orders)
+    /// Last 8 bits of the slot the order was posted onchain (not order slot for signed msg orders)
     pub posted_slot_tail: u8,
     /// Bitflags for further classification
     /// 0: is_signed_message
@@ -1944,7 +1944,12 @@ pub struct UserStats {
     /// While set, every subaccount of the authority rejects risk-increasing
     /// fills, withdrawals and transfers out. Cleared only by the warm admin.
     pub equity_breaker_tripped: u8,
-    pub padding: [u8; 62],
+    /// Persistent referral reward status. See [`AcceleratedReferralStatus`]. Kept
+    /// separate from `referrer_status`, which describes whether this authority
+    /// refers or was referred by somebody else. Carved out of former padding so
+    /// preupgrade accounts read `0` (standard, automatic enrollment allowed).
+    pub accelerated_referral_status: u8,
+    pub padding: [u8; 61],
 }
 
 impl Default for UserStats {
@@ -1968,7 +1973,8 @@ impl Default for UserStats {
             padding1: [0; 9],
             delegate_permissions: 0,
             equity_breaker_tripped: 0,
-            padding: [0; 62],
+            accelerated_referral_status: 0,
+            padding: [0; 61],
         }
     }
 }
@@ -1996,11 +2002,62 @@ impl ReferrerStatus {
     }
 }
 
+/// Flags stored in [`UserStats::accelerated_referral_status`]. Accelerated status and automatic enrollment
+/// blocking are independent so an admin downgrade remains effective while an
+/// enrollment campaign is still running or is reopened later.
+#[derive(Clone, Copy, BorshSerialize, BorshDeserialize, PartialEq, Debug, Eq)]
+#[borsh(use_discriminant = true)]
+#[repr(u8)]
+pub enum AcceleratedReferralStatus {
+    Accelerated = 0b00000001,
+    AutoEnrollmentBlocked = 0b00000010,
+}
+
 impl Size for UserStats {
     const SIZE: usize = 240;
 }
 
 impl UserStats {
+    pub fn is_accelerated_referrer(&self) -> bool {
+        self.accelerated_referral_status & AcceleratedReferralStatus::Accelerated as u8 != 0
+    }
+
+    pub fn is_accelerated_auto_enrollment_blocked(&self) -> bool {
+        self.accelerated_referral_status & AcceleratedReferralStatus::AutoEnrollmentBlocked as u8
+            != 0
+    }
+
+    /// Permanently grants Accelerated status when enrollment is enabled, unless an admin has
+    /// explicitly revoked and blocked automatic reenrollment. Returns whether
+    /// the stored status changed so callers emit exactly one transition event.
+    pub fn try_auto_enroll_accelerated_referral(&mut self, enrollment_enabled: bool) -> bool {
+        if !enrollment_enabled
+            || self.is_accelerated_referrer()
+            || self.is_accelerated_auto_enrollment_blocked()
+        {
+            return false;
+        }
+
+        self.accelerated_referral_status |= AcceleratedReferralStatus::Accelerated as u8;
+        true
+    }
+
+    /// Admin grants clear a prior enrollment block. Admin revocations set the
+    /// block so the next trade cannot immediately undo the downgrade.
+    pub fn set_accelerated_referral_by_admin(&mut self, accelerated: bool) -> bool {
+        let previous_status = self.accelerated_referral_status;
+        if accelerated {
+            self.accelerated_referral_status |= AcceleratedReferralStatus::Accelerated as u8;
+            self.accelerated_referral_status &=
+                !(AcceleratedReferralStatus::AutoEnrollmentBlocked as u8);
+        } else {
+            self.accelerated_referral_status &= !(AcceleratedReferralStatus::Accelerated as u8);
+            self.accelerated_referral_status |=
+                AcceleratedReferralStatus::AutoEnrollmentBlocked as u8;
+        }
+        self.accelerated_referral_status != previous_status
+    }
+
     pub fn update_allow_delegate_transfer(
         &mut self,
         allow_delegate_transfer: bool,

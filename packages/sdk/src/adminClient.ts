@@ -2538,13 +2538,16 @@ export class AdminClient extends VelocityClient {
 	 * @returns The unsigned `updatePerpFeeStructure` instruction.
 	 */
 	public async getUpdatePerpFeeStructureIx(
-		feeStructure: FeeStructure
+		feeStructure: FeeStructure,
+		admin?: PublicKey
 	): Promise<TransactionInstruction> {
 		return this.program.instruction.updatePerpFeeStructure(feeStructure, {
 			accounts: {
-				admin: this.isSubscribed
-					? this.getStateAccount().coldAdmin
-					: this.wallet.publicKey,
+				admin:
+					admin ??
+					(this.isSubscribed
+						? this.getStateAccount().coldAdmin
+						: this.wallet.publicKey),
 				state: await this.getStatePublicKey(),
 			},
 		});
@@ -5221,6 +5224,67 @@ export class AdminClient extends VelocityClient {
 				state: await this.getStatePublicKey(),
 			},
 		});
+	}
+
+	/** Enables or disables automatic, permanent Accelerated referral enrollment. Requires warm or cold admin. */
+	public async updateAcceleratedReferralEnrollment(
+		enabled: boolean
+	): Promise<TransactionSignature> {
+		const ix = await this.getUpdateAcceleratedReferralEnrollmentIx(enabled);
+		const tx = await this.buildTransaction(ix);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	/** Builds `updateAcceleratedReferralEnrollment` without sending it. */
+	public async getUpdateAcceleratedReferralEnrollmentIx(
+		enabled: boolean,
+		admin: PublicKey = this.wallet.publicKey
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.updateAcceleratedReferralEnrollment(
+			enabled,
+			{
+				accounts: {
+					admin,
+					state: await this.getStatePublicKey(),
+				},
+			}
+		);
+	}
+
+	/** Permanently grants or explicitly revokes one authority's Accelerated referral status. Requires warm or cold admin. */
+	public async updateUserAcceleratedReferralStatus(
+		userAuthority: PublicKey,
+		accelerated: boolean
+	): Promise<TransactionSignature> {
+		const ix = await this.getUpdateUserAcceleratedReferralStatusIx(
+			userAuthority,
+			accelerated
+		);
+		const tx = await this.buildTransaction(ix);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	/** Builds `updateUserAcceleratedReferralStatus` without sending it. */
+	public async getUpdateUserAcceleratedReferralStatusIx(
+		userAuthority: PublicKey,
+		accelerated: boolean,
+		admin: PublicKey = this.wallet.publicKey
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.updateUserAcceleratedReferralStatus(
+			accelerated,
+			{
+				accounts: {
+					admin,
+					state: await this.getStatePublicKey(),
+					userStats: getUserStatsAccountPublicKey(
+						this.program.programId,
+						userAuthority
+					),
+				},
+			}
+		);
 	}
 
 	/**

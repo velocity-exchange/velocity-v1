@@ -8833,6 +8833,35 @@ export type Velocity = {
       "args": []
     },
     {
+      "name": "updateAcceleratedReferralEnrollment",
+      "discriminator": [
+        190,
+        111,
+        21,
+        165,
+        106,
+        186,
+        104,
+        77
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "enabled",
+          "type": "bool"
+        }
+      ]
+    },
+    {
       "name": "updateAdmin",
       "discriminator": [
         161,
@@ -12897,6 +12926,38 @@ export type Velocity = {
       ]
     },
     {
+      "name": "updateUserAcceleratedReferralStatus",
+      "discriminator": [
+        109,
+        217,
+        221,
+        89,
+        216,
+        127,
+        12,
+        120
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "userStats",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "accelerated",
+          "type": "bool"
+        }
+      ]
+    },
+    {
       "name": "updateUserAllowDelegateTransfer",
       "discriminator": [
         235,
@@ -14895,6 +14956,19 @@ export type Velocity = {
     }
   ],
   "events": [
+    {
+      "name": "acceleratedReferralStatusChangedRecord",
+      "discriminator": [
+        95,
+        227,
+        167,
+        93,
+        152,
+        42,
+        2,
+        91
+      ]
+    },
     {
       "name": "ammCurveChanged",
       "discriminator": [
@@ -17427,6 +17501,58 @@ export type Velocity = {
                 "u8",
                 2
               ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "acceleratedReferralStatusChange",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "autoEnrollment"
+          },
+          {
+            "name": "adminGrant"
+          },
+          {
+            "name": "adminRevoke"
+          }
+        ]
+      }
+    },
+    {
+      "name": "acceleratedReferralStatusChangedRecord",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ts",
+            "docs": [
+              "unix_timestamp of action"
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "previousStatus",
+            "type": "u8"
+          },
+          {
+            "name": "newStatus",
+            "type": "u8"
+          },
+          {
+            "name": "action",
+            "type": {
+              "defined": {
+                "name": "acceleratedReferralStatusChange"
+              }
             }
           }
         ]
@@ -20824,7 +20950,7 @@ export type Velocity = {
           {
             "name": "postedSlotTail",
             "docs": [
-              "Last 8 bits of the slot the order was posted on-chain (not order slot for signed msg orders)"
+              "Last 8 bits of the slot the order was posted onchain (not order slot for signed msg orders)"
             ],
             "type": "u8"
           },
@@ -24373,7 +24499,7 @@ export type Velocity = {
           {
             "name": "pauseAdmin",
             "docs": [
-              "Emergency-pause authority. No on-chain timelock — intended to live behind a",
+              "Emergency pause authority. No onchain timelock — intended to live behind a",
               "fast-acting multisig that can flip pause flags without delay. May only *add*",
               "pause bits (never clear them); cold/warm retain full pause + unpause power.",
               "`Pubkey::default()` means unassigned (only cold/warm can pause)."
@@ -24504,7 +24630,7 @@ export type Velocity = {
             "docs": [
               "Default time-in-force for market orders, in seconds. `Order.max_ts` is a",
               "unix timestamp, so this never converts through the slot length and stays",
-              "a raw integer. It currently has no on-chain reader."
+              "a raw integer. It currently has no onchain reader."
             ],
             "type": "u8"
           },
@@ -24512,7 +24638,7 @@ export type Velocity = {
             "name": "defaultSpotAuctionDuration",
             "docs": [
               "An actual slot-count setting, not a wall-clock duration. It currently has",
-              "no on-chain reader (spot DLOB trading is disabled), so it intentionally",
+              "no onchain reader (spot DLOB trading is disabled), so it intentionally",
               "remains raw rather than using `StoredSlotDuration`."
             ],
             "type": "u8"
@@ -24658,9 +24784,19 @@ export type Velocity = {
             "type": "u64"
           },
           {
+            "name": "acceleratedReferralEnrollmentEnabled",
+            "docs": [
+              "When nonzero, successful user initialization and trades permanently",
+              "enroll eligible authorities into Accelerated referral rewards. Turning this off",
+              "stops new enrollment without changing users already tagged Accelerated."
+            ],
+            "type": "u8"
+          },
+          {
             "name": "padding",
             "docs": [
-              "232 = the former 244-byte padding minus the 12 bytes taken above",
+              "231 = the former 244-byte padding minus the 12 bytes taken above and the",
+              "one byte Accelerated referral enrollment switch",
               "(`pending_slot_duration_ms` 2 + `slot_duration_pad` 2 + the 8-byte",
               "`slot_duration_effective_slot`). The padding still absorbs the 8 bytes that",
               "were previously *implicit* trailing padding on x86_64 (State contains a",
@@ -24671,7 +24807,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                232
+                231
               ]
             }
           }
@@ -25319,11 +25455,21 @@ export type Velocity = {
             "type": "u8"
           },
           {
+            "name": "acceleratedReferralStatus",
+            "docs": [
+              "Persistent referral reward status. See [`AcceleratedReferralStatus`]. Kept",
+              "separate from `referrer_status`, which describes whether this authority",
+              "refers or was referred by somebody else. Carved out of former padding so",
+              "preupgrade accounts read `0` (standard, automatic enrollment allowed)."
+            ],
+            "type": "u8"
+          },
+          {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                62
+                61
               ]
             }
           }

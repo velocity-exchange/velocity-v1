@@ -42,6 +42,7 @@ use {
         safe_decrement, safe_increment,
         state::{
             events::{
+                emit_accelerated_referral_status_changed, AcceleratedReferralStatusChange,
                 DepositDirection, DepositExplanation, DepositRecord, SpotMarketVaultDepositRecord,
             },
             market_status::MarketStatus,
@@ -168,7 +169,8 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         pending_slot_duration_ms: 0,
         slot_duration_pad: [0; 2],
         slot_duration_effective_slot: 0,
-        padding: [0; 232],
+        accelerated_referral_enrollment_enabled: 0,
+        padding: [0; 231],
     };
 
     Ok(())
@@ -2554,6 +2556,44 @@ pub fn handle_update_promo_fee_tier(
     );
 
     state.promo_fee_tier = promo_fee_tier;
+    Ok(())
+}
+
+pub fn handle_update_accelerated_referral_enrollment(
+    ctx: Context<AdminUpdateState>,
+    enabled: bool,
+) -> Result<()> {
+    let mut state = ctx.accounts.state.load_mut()?;
+    msg!(
+        "state.accelerated_referral_enrollment_enabled: {:?} -> {:?}",
+        state.accelerated_referral_enrollment_enabled,
+        enabled as u8
+    );
+    state.accelerated_referral_enrollment_enabled = enabled as u8;
+    Ok(())
+}
+
+pub fn handle_update_user_accelerated_referral_status(
+    ctx: Context<AdminUpdateUserStats>,
+    accelerated: bool,
+) -> Result<()> {
+    let mut user_stats = ctx.accounts.user_stats.load_mut()?;
+    let previous_status = user_stats.accelerated_referral_status;
+
+    if user_stats.set_accelerated_referral_by_admin(accelerated) {
+        emit_accelerated_referral_status_changed(
+            Clock::get()?.unix_timestamp,
+            user_stats.authority,
+            previous_status,
+            user_stats.accelerated_referral_status,
+            if accelerated {
+                AcceleratedReferralStatusChange::AdminGrant
+            } else {
+                AcceleratedReferralStatusChange::AdminRevoke
+            },
+        );
+    }
+
     Ok(())
 }
 
@@ -5026,6 +5066,15 @@ pub struct AdminUpdateState<'info> {
     pub admin: Signer<'info>,
     #[account(mut)]
     pub state: AccountLoader<'info, State>,
+}
+
+#[derive(Accounts)]
+pub struct AdminUpdateUserStats<'info> {
+    #[account(constraint = check_warm(&admin.key(), &state)?)]
+    pub admin: Signer<'info>,
+    pub state: AccountLoader<'info, State>,
+    #[account(mut)]
+    pub user_stats: AccountLoader<'info, UserStats>,
 }
 
 #[derive(Accounts)]

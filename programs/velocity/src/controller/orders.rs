@@ -41,7 +41,8 @@ use {
         msg, print_error,
         state::{
             events::{
-                emit_stack, get_order_action_record, OrderAction, OrderActionExplanation,
+                emit_accelerated_referral_status_changed, emit_stack, get_order_action_record,
+                AcceleratedReferralStatusChange, OrderAction, OrderActionExplanation,
                 OrderActionRecord, OrderRecord,
             },
             fill_mode::FillMode,
@@ -1057,6 +1058,7 @@ pub fn fill_perp_order(
     clock: &Clock,
     fill_mode: FillMode,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
+    referrer_is_accelerated: bool,
 ) -> VelocityResult<(u64, u64)> {
     let now = clock.unix_timestamp;
     let slot = clock.slot;
@@ -1447,8 +1449,10 @@ pub fn fill_perp_order(
         fill_mode,
         oracle_stale_for_margin,
         rev_share_escrow,
+        referrer_is_accelerated,
         state.vamm_maker_rebate_enabled(),
         state.promo_fee_tier,
+        state.accelerated_referral_enrollment_enabled(),
     )?;
 
     if base_asset_amount != 0 {
@@ -1980,6 +1984,7 @@ fn get_builder_escrow_info(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fulfill_perp_order(
     user: &mut User,
     user_order_index: usize,
@@ -2005,8 +2010,10 @@ fn fulfill_perp_order(
     fill_mode: FillMode,
     oracle_stale_for_margin: bool,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
+    referrer_is_accelerated: bool,
     vamm_maker_rebate: bool,
     promo_fee_tier: u8,
+    accelerated_referral_enrollment_enabled: bool,
 ) -> VelocityResult<(u64, u64)> {
     let market_index = user.orders[user_order_index].market_index;
 
@@ -2208,6 +2215,7 @@ fn fulfill_perp_order(
                     fill_mode.is_liquidation(),
                     amm_jit_allowed,
                     rev_share_escrow,
+                    referrer_is_accelerated,
                     vamm_maker_rebate,
                     promo_fee_tier,
                     builder_fee_allowed,
@@ -2251,6 +2259,7 @@ fn fulfill_perp_order(
                     fill_mode.is_liquidation(),
                     amm_jit_allowed,
                     rev_share_escrow,
+                    referrer_is_accelerated,
                     vamm_maker_rebate,
                     promo_fee_tier,
                     builder_fee_allowed,
@@ -2605,6 +2614,23 @@ fn fulfill_perp_order(
                 )?;
             }
         }
+
+        if maker.authority != user.authority {
+            let mut maker_stats = makers_and_referrer_stats.get_ref_mut(&maker.authority)?;
+            try_auto_enroll_accelerated_referral(
+                &mut maker_stats,
+                accelerated_referral_enrollment_enabled,
+                now,
+            );
+        }
+    }
+
+    if base_asset_amount != 0 {
+        try_auto_enroll_accelerated_referral(
+            user_stats,
+            accelerated_referral_enrollment_enabled,
+            now,
+        );
     }
 
     if oracle_stale_for_margin {
@@ -2617,6 +2643,19 @@ fn fulfill_perp_order(
     }
 
     Ok((base_asset_amount, quote_asset_amount))
+}
+
+fn try_auto_enroll_accelerated_referral(user_stats: &mut UserStats, enabled: bool, now: i64) {
+    let previous_status = user_stats.accelerated_referral_status;
+    if user_stats.try_auto_enroll_accelerated_referral(enabled) {
+        emit_accelerated_referral_status_changed(
+            now,
+            user_stats.authority,
+            previous_status,
+            user_stats.accelerated_referral_status,
+            AcceleratedReferralStatusChange::AutoEnrollment,
+        );
+    }
 }
 
 #[inline(always)]
@@ -2778,6 +2817,7 @@ fn settle_amm_house_fill(
     filler_stats: &mut Option<&mut UserStats>,
     filler_key: &Pubkey,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
+    referrer_is_accelerated: bool,
     fee_structure: &FeeStructure,
     oracle_map: &mut OracleMap,
     now: i64,
@@ -2839,6 +2879,7 @@ fn settle_amm_house_fill(
         slot,
         reward_filler,
         reward_referrer,
+        referrer_is_accelerated,
         taker_surplus,
         order_post_only,
         market.fee_adjustment,
@@ -3079,6 +3120,7 @@ fn settle_dlob_match_fill(
     filler_stats: &mut Option<&mut UserStats>,
     filler_key: &Pubkey,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
+    referrer_is_accelerated: bool,
     fee_structure: &FeeStructure,
     oracle_map: &mut OracleMap,
     is_liquidation: bool,
@@ -3187,6 +3229,7 @@ fn settle_dlob_match_fill(
         slot,
         filler_multiplier,
         reward_referrer,
+        referrer_is_accelerated,
         &MarketType::Perp,
         market.fee_adjustment,
         builder_order_fee_bps,
@@ -3414,6 +3457,7 @@ pub fn fulfill_perp_order_step(
     // AMM JIT in the Match branch. Excludes auction-timing gates.
     amm_jit_allowed: bool,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
+    referrer_is_accelerated: bool,
     vamm_maker_rebate: bool,
     promo_fee_tier: u8,
     // False when the taker does not meet initial margin. The fill proceeds and
@@ -3773,6 +3817,7 @@ pub fn fulfill_perp_order_step(
                     filler_stats,
                     filler_key,
                     rev_share_escrow,
+                    referrer_is_accelerated,
                     fee_structure,
                     oracle_map,
                     now,
@@ -3807,6 +3852,7 @@ pub fn fulfill_perp_order_step(
                     filler_stats,
                     filler_key,
                     rev_share_escrow,
+                    referrer_is_accelerated,
                     fee_structure,
                     oracle_map,
                     is_liquidation,

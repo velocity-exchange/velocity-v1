@@ -39,7 +39,7 @@ pub struct State {
     /// Operational authority (e.g. multisig+timelock). Can rotate the 10 hot keys
     /// below. `Pubkey::default()` means unset — only `cold_admin` can act in that case.
     pub warm_admin: Pubkey,
-    /// Emergency-pause authority. No on-chain timelock — intended to live behind a
+    /// Emergency pause authority. No onchain timelock — intended to live behind a
     /// fast-acting multisig that can flip pause flags without delay. May only *add*
     /// pause bits (never clear them); cold/warm retain full pause + unpause power.
     /// `Pubkey::default()` means unassigned (only cold/warm can pause).
@@ -75,10 +75,10 @@ pub struct State {
     pub min_perp_auction_duration: LegacySlotDurationU8,
     /// Default time-in-force for market orders, in seconds. `Order.max_ts` is a
     /// unix timestamp, so this never converts through the slot length and stays
-    /// a raw integer. It currently has no on-chain reader.
+    /// a raw integer. It currently has no onchain reader.
     pub default_market_order_time_in_force: u8,
     /// An actual slot-count setting, not a wall-clock duration. It currently has
-    /// no on-chain reader (spot DLOB trading is disabled), so it intentionally
+    /// no onchain reader (spot DLOB trading is disabled), so it intentionally
     /// remains raw rather than using `StoredSlotDuration`.
     pub default_spot_auction_duration: u8,
     pub exchange_status: u8,
@@ -143,14 +143,19 @@ pub struct State {
     /// activation slot + the one-epoch (432,000-slot) warmup, read from the IBRL
     /// feature account when the switch is staged. `0` when nothing is staged.
     pub slot_duration_effective_slot: u64,
-    /// 232 = the former 244-byte padding minus the 12 bytes taken above
+    /// When nonzero, successful user initialization and trades permanently
+    /// enroll eligible authorities into Accelerated referral rewards. Turning this off
+    /// stops new enrollment without changing users already tagged Accelerated.
+    pub accelerated_referral_enrollment_enabled: u8,
+    /// 231 = the former 244-byte padding minus the 12 bytes taken above and the
+    /// one byte Accelerated referral enrollment switch
     /// (`pending_slot_duration_ms` 2 + `slot_duration_pad` 2 + the 8-byte
     /// `slot_duration_effective_slot`). The padding still absorbs the 8 bytes that
     /// were previously *implicit* trailing padding on x86_64 (State contains a
     /// u128, align 16 on the host but 8 on SBF; explicit padding keeps
     /// `size_of::<State>()` 1744 on both targets, per the alignment invariant in
     /// docs/alignment-and-native-offsets.md).
-    pub padding: [u8; 232],
+    pub padding: [u8; 231],
 }
 
 /// Purpose-specific hot role keys held on `State`. Each variant maps to one of the
@@ -257,12 +262,17 @@ impl Default for State {
             pending_slot_duration_ms: 0,
             slot_duration_pad: [0; 2],
             slot_duration_effective_slot: 0,
-            padding: [0; 232],
+            accelerated_referral_enrollment_enabled: 0,
+            padding: [0; 231],
         }
     }
 }
 
 impl State {
+    pub fn accelerated_referral_enrollment_enabled(&self) -> bool {
+        self.accelerated_referral_enrollment_enabled != 0
+    }
+
     /// The live slot length, applying a staged switch once its effective slot has
     /// passed. Reads the current slot from the Clock sysvar so every existing
     /// caller keeps its signature; if the sysvar is unavailable (unit tests) it
@@ -760,8 +770,8 @@ impl FeeStructure {
             fee_denominator: FEE_DENOMINATOR, // 4 bps
             maker_rebate_numerator: 25,
             maker_rebate_denominator: 10 * FEE_DENOMINATOR, // 0.25bp
-            referrer_reward_numerator: 15,
-            referrer_reward_denominator: FEE_PERCENTAGE_DENOMINATOR, // 15% of taker fee
+            referrer_reward_numerator: 10,
+            referrer_reward_denominator: FEE_PERCENTAGE_DENOMINATOR, // 10% of taker fee
             referee_fee_numerator: 5,
             referee_fee_denominator: FEE_PERCENTAGE_DENOMINATOR, // 5%
         };
@@ -770,8 +780,8 @@ impl FeeStructure {
             fee_denominator: FEE_DENOMINATOR, // 3 bps
             maker_rebate_numerator: 25,
             maker_rebate_denominator: 10 * FEE_DENOMINATOR, // 0.25bp
-            referrer_reward_numerator: 15,
-            referrer_reward_denominator: FEE_PERCENTAGE_DENOMINATOR, // 15% of taker fee
+            referrer_reward_numerator: 10,
+            referrer_reward_denominator: FEE_PERCENTAGE_DENOMINATOR, // 10% of taker fee
             referee_fee_numerator: 5,
             referee_fee_denominator: FEE_PERCENTAGE_DENOMINATOR, // 5%
         };
@@ -780,8 +790,8 @@ impl FeeStructure {
             fee_denominator: FEE_DENOMINATOR, // 2 bps
             maker_rebate_numerator: 25,
             maker_rebate_denominator: 10 * FEE_DENOMINATOR, // 0.25bp
-            referrer_reward_numerator: 15,
-            referrer_reward_denominator: FEE_PERCENTAGE_DENOMINATOR, // 15% of taker fee
+            referrer_reward_numerator: 10,
+            referrer_reward_denominator: FEE_PERCENTAGE_DENOMINATOR, // 10% of taker fee
             referee_fee_numerator: 5,
             referee_fee_denominator: FEE_PERCENTAGE_DENOMINATOR, // 5%
         };

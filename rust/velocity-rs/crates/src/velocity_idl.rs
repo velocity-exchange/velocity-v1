@@ -1219,6 +1219,16 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for TripEquityFloorBreaker {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct UpdateAcceleratedReferralEnrollment {
+        pub enabled: bool,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateAcceleratedReferralEnrollment {
+        const DISCRIMINATOR: &[u8] = &[190, 111, 21, 165, 106, 186, 104, 77];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateAcceleratedReferralEnrollment {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdateAdmin {
         pub admin: Pubkey,
     }
@@ -2335,6 +2345,16 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for UpdateStateSlotDurationMs {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct UpdateUserAcceleratedReferralStatus {
+        pub accelerated: bool,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateUserAcceleratedReferralStatus {
+        const DISCRIMINATOR: &[u8] = &[109, 217, 221, 89, 216, 127, 12, 120];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateUserAcceleratedReferralStatus {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdateUserAllowDelegateTransfer {
         pub allow_delegate_transfer: bool,
     }
@@ -2746,6 +2766,44 @@ pub mod types {
         pub funding_bias_sensitivity: u8,
         #[serde(skip)]
         pub padding_post_amm: Padding<2>,
+    }
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub enum AcceleratedReferralStatusChange {
+        #[default]
+        AutoEnrollment,
+        AdminGrant,
+        AdminRevoke,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct AcceleratedReferralStatusChangedRecord {
+        pub ts: i64,
+        pub authority: Pubkey,
+        pub previous_status: u8,
+        pub new_status: u8,
+        pub action: AcceleratedReferralStatusChange,
     }
     #[repr(C)]
     #[derive(
@@ -5188,8 +5246,9 @@ pub mod types {
         pub pending_slot_duration_ms: u16,
         pub slot_duration_pad: [u8; 2],
         pub slot_duration_effective_slot: u64,
+        pub accelerated_referral_enrollment_enabled: u8,
         #[serde(skip)]
-        pub padding: Padding<232>,
+        pub padding: Padding<231>,
     }
     #[repr(C)]
     #[derive(
@@ -5406,8 +5465,9 @@ pub mod types {
         pub padding1: Padding<9>,
         pub delegate_permissions: u8,
         pub equity_breaker_tripped: u8,
+        pub accelerated_referral_status: u8,
         #[serde(skip)]
-        pub padding: Padding<62>,
+        pub padding: Padding<61>,
     }
     #[repr(C)]
     #[derive(
@@ -6534,8 +6594,9 @@ pub mod accounts {
         pub pending_slot_duration_ms: u16,
         pub slot_duration_pad: [u8; 2],
         pub slot_duration_effective_slot: u64,
+        pub accelerated_referral_enrollment_enabled: u8,
         #[serde(skip)]
-        pub padding: Padding<232>,
+        pub padding: Padding<231>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for State {
@@ -6694,8 +6755,9 @@ pub mod accounts {
         pub padding1: Padding<9>,
         pub delegate_permissions: u8,
         pub equity_breaker_tripped: u8,
+        pub accelerated_referral_status: u8,
         #[serde(skip)]
-        pub padding: Padding<62>,
+        pub padding: Padding<61>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UserStats {
@@ -16338,6 +16400,70 @@ pub mod accounts {
     }
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct UpdateAcceleratedReferralEnrollment {
+        pub admin: Pubkey,
+        pub state: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateAcceleratedReferralEnrollment {
+        const DISCRIMINATOR: &[u8] = &[147, 110, 1, 134, 44, 225, 118, 211];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for UpdateAcceleratedReferralEnrollment {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for UpdateAcceleratedReferralEnrollment {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for UpdateAcceleratedReferralEnrollment {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateAcceleratedReferralEnrollment {}
+    #[automatically_derived]
+    impl ToAccountMetas for UpdateAcceleratedReferralEnrollment {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.admin,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: true,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for UpdateAcceleratedReferralEnrollment {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for UpdateAcceleratedReferralEnrollment {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct UpdateAdmin {
         pub state: Pubkey,
         pub admin: Pubkey,
@@ -24059,6 +24185,76 @@ pub mod accounts {
     }
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct UpdateUserAcceleratedReferralStatus {
+        pub admin: Pubkey,
+        pub state: Pubkey,
+        pub user_stats: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateUserAcceleratedReferralStatus {
+        const DISCRIMINATOR: &[u8] = &[102, 147, 157, 81, 204, 101, 190, 121];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for UpdateUserAcceleratedReferralStatus {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for UpdateUserAcceleratedReferralStatus {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for UpdateUserAcceleratedReferralStatus {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateUserAcceleratedReferralStatus {}
+    #[automatically_derived]
+    impl ToAccountMetas for UpdateUserAcceleratedReferralStatus {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.admin,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.user_stats,
+                    is_signer: false,
+                    is_writable: true,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for UpdateUserAcceleratedReferralStatus {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for UpdateUserAcceleratedReferralStatus {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct UpdateUserAllowDelegateTransfer {
         pub user_stats: Pubkey,
         pub authority: Pubkey,
@@ -26791,6 +26987,15 @@ pub mod errors {
 pub mod events {
     #![doc = r" IDL event types"]
     use super::{types::*, *};
+    #[derive(Clone, Debug, PartialEq, Default)]
+    #[event]
+    pub struct AcceleratedReferralStatusChangedRecord {
+        pub ts: i64,
+        pub authority: Pubkey,
+        pub previous_status: u8,
+        pub new_status: u8,
+        pub action: AcceleratedReferralStatusChange,
+    }
     #[derive(Clone, Debug, PartialEq, Default)]
     #[event]
     pub struct AmmCurveChanged {

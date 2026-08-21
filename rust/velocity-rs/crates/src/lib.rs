@@ -2564,7 +2564,7 @@ impl<'a> TransactionBuilder<'a> {
     /// * `order` - the order to place
     /// * `taker_info` - taker account address and data
     /// * `taker_order_id` - the id of the taker's order to match with
-    /// * `referrer` - pubkey of the taker's referrer account, if any
+    /// * `referrer` - authority of the taker's referrer, if any
     pub fn place_and_make(
         mut self,
         order: OrderParams,
@@ -2602,12 +2602,22 @@ impl<'a> TransactionBuilder<'a> {
             accounts.push(AccountMeta::new(*high_leverage_mode_account(), false));
         }
 
-        if let Some(referrer) = referrer {
+        let taker_order_has_builder = taker_account
+            .orders
+            .iter()
+            .find(|order| order.order_id == taker_order_id)
+            .is_none_or(|order| order.has_builder());
+        if taker_order_has_builder || referrer.is_some() {
             accounts.push(AccountMeta::new(
-                Wallet::derive_stats_account(&referrer),
+                derive_revenue_share_escrow(&taker_account.authority),
                 false,
             ));
-            accounts.push(AccountMeta::new(referrer, false));
+            if let Some(referrer) = referrer {
+                accounts.push(AccountMeta::new_readonly(
+                    Wallet::derive_stats_account(&referrer),
+                    false,
+                ));
+            }
         }
 
         let ix = Instruction {
@@ -2627,7 +2637,7 @@ impl<'a> TransactionBuilder<'a> {
     ///
     /// * `order` - the order to place
     /// * `maker_info` - pubkey of the maker/counter-party(s) to take against and account data
-    /// * `referrer` - pubkey of the maker's referrer account, if any
+    /// * `referrer` - authority of the placing taker's referrer, if any
     pub fn place_and_take(
         mut self,
         order: OrderParams,
@@ -2667,16 +2677,6 @@ impl<'a> TransactionBuilder<'a> {
             accounts.push(AccountMeta::new(*high_leverage_mode_account(), false));
         }
 
-        // if referrer is maker don't add account again
-        if referrer.is_some_and(|r| !maker_info.iter().any(|(m, _)| *m == r)) {
-            let referrer = referrer.unwrap();
-            accounts.push(AccountMeta::new(
-                Wallet::derive_stats_account(&referrer),
-                false,
-            ));
-            accounts.push(AccountMeta::new(referrer, false));
-        }
-
         for (maker, maker_account) in maker_info {
             accounts.push(AccountMeta::new(*maker, false));
             accounts.push(AccountMeta::new(
@@ -2685,7 +2685,21 @@ impl<'a> TransactionBuilder<'a> {
             ));
         }
 
-        let _ = is_perp;
+        let order_has_builder =
+            order.builder_idx.is_some() && order.builder_fee_tenth_bps.is_some();
+        if order_has_builder || referrer.is_some() {
+            accounts.push(AccountMeta::new(
+                derive_revenue_share_escrow(&self.owner()),
+                false,
+            ));
+            if let Some(referrer) = referrer {
+                accounts.push(AccountMeta::new_readonly(
+                    Wallet::derive_stats_account(&referrer),
+                    false,
+                ));
+            }
+        }
+
         let ix = Instruction {
             program_id: constants::PROGRAM_ID,
             accounts,
@@ -2704,7 +2718,7 @@ impl<'a> TransactionBuilder<'a> {
     /// * `maker_order` - order params defined by the maker, e.g. partial or full fill
     /// * `signed_order_info` - the signed swift order info (i.e from taker)
     /// * `taker_account` - taker account data
-    /// * `taker_account_referrer` - taker account referrer key
+    /// * `taker_account_referrer` - authority of the taker's referrer
     ///
     pub fn place_and_make_swift_order(
         mut self,
@@ -2741,19 +2755,17 @@ impl<'a> TransactionBuilder<'a> {
                 .chain(self.force_markets.writeable.iter()),
         );
 
-        if taker_account_referrer != &DEFAULT_PUBKEY {
-            accounts.push(AccountMeta::new(*taker_account_referrer, false));
-            accounts.push(AccountMeta::new(
-                Wallet::derive_stats_account(taker_account_referrer),
-                false,
-            ));
-        }
-
-        if signed_order_info.has_builder() {
+        if signed_order_info.has_builder() || taker_account_referrer != &DEFAULT_PUBKEY {
             accounts.push(AccountMeta::new(
                 derive_revenue_share_escrow(&taker_account.authority),
                 false,
             ));
+            if taker_account_referrer != &DEFAULT_PUBKEY {
+                accounts.push(AccountMeta::new_readonly(
+                    Wallet::derive_stats_account(taker_account_referrer),
+                    false,
+                ));
+            }
         }
 
         self.ixs.push(Instruction {
@@ -3528,14 +3540,7 @@ impl<'a> TransactionBuilder<'a> {
             ]);
         }
 
-        if taker_stats.is_referred() {
-            accounts.extend([
-                AccountMeta::new(Wallet::derive_user_account(&taker_stats.referrer, 0), false),
-                AccountMeta::new(Wallet::derive_stats_account(&taker_stats.referrer), false),
-            ]);
-        }
-
-        // The on-chain FillPerpOrder (programs/velocity/src/controller/orders.rs)
+        // The onchain FillPerpOrder (programs/velocity/src/controller/orders.rs)
         // requires the taker's RevenueShareEscrow in two independent cases: the
         // order carries a builder code, OR the taker is referred (their escrow was
         // initialized with a referrer, i.e. the `BuilderReferral` status bit).
@@ -3555,7 +3560,13 @@ impl<'a> TransactionBuilder<'a> {
             accounts.push(AccountMeta::new(
                 derive_revenue_share_escrow(&taker_account.authority),
                 false,
-            ))
+            ));
+            if taker_stats.has_builder_referral() {
+                accounts.push(AccountMeta::new_readonly(
+                    Wallet::derive_stats_account(&taker_stats.referrer),
+                    false,
+                ));
+            }
         }
 
         let ix = Instruction {
@@ -4620,7 +4631,7 @@ mod tests {
     /// Regression: a fill of a *referred* taker's order (their RevenueShareEscrow
     /// was initialized with a referrer -> `BuilderReferral` status bit) must attach
     /// the escrow account even when the order itself carries no builder code, or the
-    /// on-chain `FillPerpOrder` reverts with `UnableToLoadRevenueShareAccount`.
+    /// onchain `FillPerpOrder` reverts with `UnableToLoadRevenueShareAccount`.
     #[test]
     fn fill_perp_order_attaches_escrow_for_referred_taker() {
         let program_data = ProgramData::new(
@@ -4642,6 +4653,7 @@ mod tests {
         // Referred taker (BuilderReferral bit set): escrow MUST be attached even
         // though the order has no builder. This is the regressed case.
         let mut referred_stats = UserStats::default();
+        referred_stats.referrer = Pubkey::new_unique();
         referred_stats.referrer_status = 0b0000_0100;
         assert!(referred_stats.has_builder_referral());
         let tx = TransactionBuilder::new(&program_data, filler, Cow::Owned(User::default()), false)
@@ -4658,6 +4670,11 @@ mod tests {
         assert!(
             tx.static_account_keys().contains(&escrow),
             "referred taker's fill must include the RevenueShareEscrow account"
+        );
+        assert!(
+            tx.static_account_keys()
+                .contains(&Wallet::derive_stats_account(&referred_stats.referrer)),
+            "referred taker's fill must include the referrer's UserStats account"
         );
 
         // Control: not referred and order has no builder -> escrow omitted.

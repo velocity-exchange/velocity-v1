@@ -382,7 +382,9 @@ pub mod amm_jit {
             false,
             &mut None,
             false,
+            false,
             0,
+            false,
         )
         .unwrap();
 
@@ -593,7 +595,9 @@ pub mod amm_jit {
             false,
             &mut None,
             false,
+            false,
             0,
+            false,
         )
         .unwrap();
 
@@ -812,7 +816,9 @@ pub mod amm_jit {
             false,
             &mut None,
             false,
+            false,
             0,
+            false,
         )
         .unwrap();
 
@@ -1027,7 +1033,9 @@ pub mod amm_jit {
             false,
             &mut None,
             false,
+            false,
             0,
+            false,
         )
         .unwrap();
 
@@ -1234,7 +1242,9 @@ pub mod amm_jit {
             false,
             &mut None,
             false,
+            false,
             0,
+            false,
         )
         .unwrap();
 
@@ -1467,7 +1477,9 @@ pub mod amm_jit {
             false,
             &mut None,
             false,
+            false,
             0,
+            false,
         )
         .unwrap();
 
@@ -1683,7 +1695,9 @@ pub mod amm_jit {
             false,
             &mut None,
             false,
+            false,
             0,
+            false,
         )
         .unwrap();
 
@@ -1906,7 +1920,9 @@ pub mod amm_jit {
             false,
             &mut None,
             false,
+            false,
             0,
+            false,
         )
         .unwrap();
 
@@ -2115,7 +2131,9 @@ pub mod amm_jit {
             false,
             &mut None,
             false,
+            false,
             0,
+            false,
         )
         .unwrap();
 
@@ -2336,7 +2354,9 @@ pub mod amm_jit {
             false,
             &mut None,
             false,
+            false,
             0,
+            false,
         )
         .unwrap();
 
@@ -2595,7 +2615,9 @@ pub mod amm_jit {
                 false,
                 &mut None,
                 false,
+                false,
                 0,
+                false,
             )
             .unwrap();
 
@@ -2900,7 +2922,9 @@ pub mod amm_jit {
                 false,
                 &mut None,
                 false,
+                false,
                 0,
+                false,
             )
             .unwrap();
 
@@ -3164,7 +3188,9 @@ pub mod amm_jit {
             false,
             &mut None,
             false,
+            false,
             0,
+            false,
         )
         .unwrap();
 

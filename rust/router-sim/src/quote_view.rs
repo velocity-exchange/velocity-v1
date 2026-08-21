@@ -10,10 +10,13 @@
 //! payloads, so it works identically over RPC, a subscription cache, or a
 //! pooled in-process SVM.
 //!
-//! What this deliberately does not do yet: assemble DLOB `(User, UserStats)`
-//! maker pairs. Until the DLOB dies, its books keep coming from the
-//! TypeScript publisher; the quote view without makers still returns the
-//! CLOB, every PropAMM (margin-clamped), and the vAMM shaded against them.
+//! DLOB makers are the caller's to supply. The view bridges one level per
+//! crossing resting order out of the user map it is handed, and nothing
+//! on-chain can enumerate that map for it — a DLOB order lives in a `User`
+//! account, so knowing which accounts to pass is the whole problem, and only
+//! something holding a DLOB view can answer it. Pass none and the view still
+//! returns the CLOB, every PropAMM (margin-clamped), and the vAMM shaded
+//! against them.
 
 use {
     crate::quoter_entries,
@@ -181,6 +184,11 @@ pub async fn build_quote_router_ix<S: ChainSource>(
     market_index: u16,
     direction: Direction,
     size: u64,
+    // `User` accounts of DLOB makers to bridge, from whatever holds the
+    // caller's DLOB view. Each costs the transaction two accounts, so a
+    // caller passes candidates rather than the whole book; the split reports
+    // which of them the fill would actually reach.
+    dlob_makers: &[Pubkey],
 ) -> Result<Instruction> {
     let perp_market_key = perp_market_pda(velocity, market_index);
     let perp_market_account = source
@@ -201,24 +209,27 @@ pub async fn build_quote_router_ix<S: ChainSource>(
     entries.retain(|(_, entry)| entry.is_active && entry.is_approved);
     entries.sort_by_key(|(key, _)| *key);
 
-    // Custom quoters' (User, UserStats) pairs for the clamp. Deduped and
-    // fetched in one round trip.
-    let custom_users: Vec<Pubkey> = {
+    // The user map the view walks: custom quoters' users, which the margin
+    // clamp needs, and the DLOB makers the caller wants bridged. One section,
+    // because the instruction reads one map — a custom quoter that is also a
+    // DLOB maker appears once.
+    let map_users: Vec<Pubkey> = {
         let mut users: Vec<Pubkey> = entries
             .iter()
             .filter(|(_, entry)| entry.quoter_type == QuoterType::Custom)
             .map(|(_, entry)| entry.user)
+            .chain(dlob_makers.iter().copied())
             .collect();
         users.sort();
         users.dedup();
         users
     };
-    let user_accounts = source.get_multiple_accounts(&custom_users).await?;
-    let user_pairs: Vec<(Pubkey, Pubkey)> = custom_users
+    let user_accounts = source.get_multiple_accounts(&map_users).await?;
+    let user_pairs: Vec<(Pubkey, Pubkey)> = map_users
         .iter()
         .zip(user_accounts)
         .map(|(key, account)| {
-            let account = account.ok_or_else(|| anyhow!("custom quoter user {key} not found"))?;
+            let account = account.ok_or_else(|| anyhow!("quote-view user {key} not found"))?;
             let user: User = read_zero_copy(&account.data)?;
             Ok((*key, user_stats_pda(velocity, &user.authority)))
         })
@@ -248,7 +259,7 @@ pub async fn build_quote_router_ix<S: ChainSource>(
     accounts.push(AccountMeta::new_readonly(perp_market.oracle, false));
     accounts.push(AccountMeta::new(quote_spot_market, false));
     accounts.push(AccountMeta::new(perp_market_key, false));
-    // User-map section: custom quoters' (User, UserStats) pairs. Writable,
+    // User-map section: the (User, UserStats) pairs above. Writable,
     // matching the fill's convention — the margin clamp opens a fresh
     // maker's position slot the way a fill would, and a read-only user
     // degrades that maker's book to zero.

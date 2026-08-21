@@ -366,6 +366,9 @@ async fn publish_market(
         market_index,
         Direction::Long,
         quote_size,
+        // The publisher holds no DLOB view; its books come from the
+        // TypeScript publisher until that dies.
+        &[],
     )
     .await?;
     let asks = simulate_quote_view(source, asks_ix, authority, buffer).await?;
@@ -377,6 +380,9 @@ async fn publish_market(
         market_index,
         Direction::Short,
         quote_size,
+        // The publisher holds no DLOB view; its books come from the
+        // TypeScript publisher until that dies.
+        &[],
     )
     .await?;
     let bids = simulate_quote_view(source, bids_ix, authority, buffer).await?;

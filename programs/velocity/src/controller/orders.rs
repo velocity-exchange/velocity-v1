@@ -3983,10 +3983,13 @@ fn fulfill_perp_order_router_pass(
     // taker's leftover rests where that price can still reach it, and filling
     // it here would lock in a price the book was beating.
     //
-    // Immediate-or-cancel is the exception. That order bought immediacy, and
-    // there is no next block for it — its leftover cancels rather than rests,
-    // so a worse fill now beats no fill at all.
-    let reserve_level = (!taker.orders[taker_order_index].immediate_or_cancel)
+    // Two orders get no say in it. Immediate-or-cancel bought immediacy and
+    // has no next block — its leftover cancels rather than rests, so a worse
+    // fill now beats no fill. A liquidation is the same in a harder way: it
+    // exists to cover a shortage that does not wait, and its order is
+    // reduce-only, so an unfilled remainder cannot even migrate to the book.
+    // Holding depth back from either one is holding it back forever.
+    let reserve_level = (!taker.orders[taker_order_index].immediate_or_cancel && !is_liquidation)
         .then(|| {
             books
                 .iter()

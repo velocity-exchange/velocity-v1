@@ -214,8 +214,11 @@ pub const ACCELERATED_REFERRER_REWARD_NUMERATOR: u32 = 20;
 /// stop new enrollment. There is no runtime switch, so this takes a program upgrade.
 ///
 /// Temporary. When enrollment ends, delete this constant and the branches that read it
-/// (`rg ACCELERATED_REFERRAL_ENROLLMENT_ENABLED`). `UserStats::accelerated_referral_status`
-/// and `update_user_accelerated_referral_status` stay.
+/// (`rg ACCELERATED_REFERRAL_ENROLLMENT_ENABLED`), plus
+/// `AcceleratedReferralStatus::AutoEnrollmentBlocked` and
+/// `AcceleratedReferralStatusChange::AutoEnrollment`, which exist only to serve automatic
+/// enrollment. `UserStats::accelerated_referral_status` and
+/// `update_user_accelerated_referral_status` stay.
 pub const ACCELERATED_REFERRAL_ENROLLMENT_ENABLED: bool = true;
 /// Global ceiling on a builder-code fee, in tenths of a bps (fee =
 /// quote * fee_tenth_bps / `FEE_DENOMINATOR`, so `FEE_DENOMINATOR` = 100%).

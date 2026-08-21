@@ -2771,9 +2771,9 @@ pub mod types {
     )]
     pub enum AcceleratedReferralStatusChange {
         #[default]
-        AutoEnrollment,
         AdminGrant,
         AdminRevoke,
+        AutoEnrollment,
     }
     #[repr(C)]
     #[derive(

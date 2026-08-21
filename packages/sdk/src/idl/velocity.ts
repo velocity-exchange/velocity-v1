@@ -17479,17 +17479,22 @@ export type Velocity = {
     },
     {
       "name": "acceleratedReferralStatusChange",
+      "docs": [
+        "Consumers decode `action` by discriminant, so the order is ABI. `AutoEnrollment` is last",
+        "because it is deleted with `ACCELERATED_REFERRAL_ENROLLMENT_ENABLED`; removing a trailing",
+        "variant leaves the admin discriminants where they are."
+      ],
       "type": {
         "kind": "enum",
         "variants": [
-          {
-            "name": "autoEnrollment"
-          },
           {
             "name": "adminGrant"
           },
           {
             "name": "adminRevoke"
+          },
+          {
+            "name": "autoEnrollment"
           }
         ]
       }

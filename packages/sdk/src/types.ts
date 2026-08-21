@@ -468,9 +468,9 @@ export type NewUserRecord = {
 
 /** Which code path changed an authority's Accelerated referral status. */
 export class AcceleratedReferralStatusChange {
-	static readonly AUTO_ENROLLMENT = { autoEnrollment: {} };
 	static readonly ADMIN_GRANT = { adminGrant: {} };
 	static readonly ADMIN_REVOKE = { adminRevoke: {} };
+	static readonly AUTO_ENROLLMENT = { autoEnrollment: {} };
 }
 
 /**
@@ -484,9 +484,9 @@ export type AcceleratedReferralStatusChangedRecord = {
 	previousStatus: number;
 	newStatus: number;
 	action: {
-		autoEnrollment?: any;
 		adminGrant?: any;
 		adminRevoke?: any;
+		autoEnrollment?: any;
 	};
 };
 

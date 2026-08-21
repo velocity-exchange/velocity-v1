@@ -88,7 +88,7 @@ pub struct Config {
     /// the stack already uses.
     #[clap(long, env = "METRICS_ADDR", default_value = "0.0.0.0:9464")]
     pub metrics_addr: std::net::SocketAddr,
-    #[clap(long, env = "TICK_MS", default_value = "400")]
+    #[clap(long, env = "TICK_MS", default_value = "200")]
     pub tick_ms: u64,
     /// Size each side is quoted for, base precision.
     #[clap(long, env = "QUOTE_SIZE", default_value = "1000000000000")]

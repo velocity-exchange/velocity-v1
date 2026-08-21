@@ -3470,16 +3470,18 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
         )?;
     }
 
-    // V1 route only: a plain limit remainder lives on the book, not in
+    // V1 route only: a restable remainder lives on the book, not in
     // `User.orders`, so migrate it instead of leaving it resting on the DLOB.
-    // Only a *restable* remainder migrates — market orders, oracle-offset
-    // prices and reduce-only orders keep DLOB behaviour (the CLOB has no
-    // oracle-floating or reduce-only semantics) — and any can't-rest outcome
-    // downgrades to a cancel rather than reverting the fill that already
-    // landed. The CLOB's `OrderRef` is left as the transaction's return data
-    // for the client to persist as its cancel hint.
+    // `restable_remainder_price` is the whole rule, shared with the keeper
+    // fill route — a remainder that rests on one route and not the other is a
+    // remainder whose fate depends on which one reached it, and once the DLOB
+    // is gone the one that does not rest is an order nothing will fill.
+    //
+    // Any can't-rest outcome downgrades to a cancel rather than reverting the
+    // fill that already landed. The CLOB's `OrderRef` is left as the
+    // transaction's return data for the client to persist as its cancel hint.
     if let Some(clob) = clob {
-        if !is_immediate_or_cancel && order_unfilled && params.order_type == OrderType::Limit {
+        if !is_immediate_or_cancel && order_unfilled {
             let remainder = {
                 let user = load!(user_loader)?;
                 let order_index = user.get_order_index(order_id)?;
@@ -3488,10 +3490,10 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
                     .get_perp_position(params.market_index)
                     .map(|position| position.base_asset_amount)
                     .unwrap_or(0);
-                (!order.has_oracle_price_offset() && !order.reduce_only).then(|| {
+                crate::instructions::restable_remainder_price(order).map(|price| {
                     (
                         order.direction,
-                        order.price,
+                        price,
                         order
                             .get_base_asset_amount_unfilled(Some(position_base))
                             .unwrap_or(0),

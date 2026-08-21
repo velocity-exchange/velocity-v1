@@ -271,6 +271,39 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
     Ok(())
 }
 
+/// The price an unfilled remainder can rest at on the book, or `None` when it
+/// cannot rest at all.
+///
+/// One rule for both fill routes, because a remainder that rests on one and
+/// not the other is a remainder whose fate depends on which keeper reached it.
+/// Once the DLOB is gone, "kept DLOB behaviour" is not a fallback — it is an
+/// order nothing will ever fill again.
+///
+/// A `Market` order's own `price` is zero; its bound lives in
+/// `auction_end_price`, the worst fill it already agreed to. That is the only
+/// price it can rest at, and resting there is safe *because* a migrated
+/// remainder is taker-origin: it cannot be taken while a live counterparty
+/// crosses it, and a cross settles at the counterparty's price, so a maker
+/// that lines up during the activation window competes on price rather than
+/// on transaction landing. Without that protection this would be a free
+/// option written at the taker's own worst price.
+///
+/// Everything else stays behind. An oracle-floating price has nothing fixed
+/// to rest at, reduce-only has no meaning on the book, and a trigger has its
+/// own placement path.
+pub fn restable_remainder_price(order: &crate::state::user::Order) -> Option<u64> {
+    use crate::state::user::{OrderStatus, OrderType};
+    if order.status != OrderStatus::Open || order.has_oracle_price_offset() || order.reduce_only {
+        return None;
+    }
+    let price = match order.order_type {
+        OrderType::Limit => order.price,
+        OrderType::Market => order.auction_end_price.max(0).unsigned_abs(),
+        _ => return None,
+    };
+    (price != 0).then_some(price)
+}
+
 /// Rest an unfilled `place_and_take` remainder on the CLOB: if it can rest
 /// and be matched, it lives on the book, not in `User.orders`. Degrades
 /// gracefully — a dead quoter entry or a failed margin re-reserve returns

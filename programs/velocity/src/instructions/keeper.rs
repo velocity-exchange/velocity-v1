@@ -350,11 +350,10 @@ fn fill_order<'c: 'info, 'info>(
     //
     // Restable means the same thing it means on the place-and-take route: a
     // fixed price, no oracle offset, not reduce-only, since the CLOB has
-    // neither oracle-floating nor reduce-only semantics. Market orders are
-    // deliberately excluded here even though they have an
-    // `auction_end_price`: resting at a slippage bound is only safe once a
-    // taker-origin cross pays the taker the improvement, and that does not
-    // exist yet (docs/taker-remainder-auction.md).
+    // neither oracle-floating nor reduce-only semantics. A market order rests
+    // at its `auction_end_price`. `restable_remainder_price` is the whole
+    // rule, shared with the place-and-take route so a remainder's fate does
+    // not depend on which one reached it.
     if let Some(clob) = clob {
         let remainder = {
             let user = load!(accounts.user)?;
@@ -366,33 +365,9 @@ fn fill_order<'c: 'info, 'info>(
                 .get_perp_position(market_index)
                 .map(|position| position.base_asset_amount)
                 .unwrap_or(0);
-            if order.status != OrderStatus::Open
-                || order.has_oracle_price_offset()
-                || order.reduce_only
-            {
+            let Some(rest_price) = crate::instructions::restable_remainder_price(order) else {
                 return Ok(());
-            }
-            // A `Market` order's own `price` is 0 — its bound lives in
-            // `auction_end_price`, the worst fill it already agreed to. That
-            // is the only price it can rest at, and resting there is safe
-            // *because* a migrated remainder is taker-origin: it cannot be
-            // taken while a live counterparty crosses it, and a cross settles
-            // at the counterparty's price, so a maker that lines up during the
-            // activation window competes on price rather than on transaction
-            // landing. Without that protection this would be a free option
-            // written at the taker's own worst price.
-            //
-            // `Oracle` and the trigger variants are excluded: an
-            // oracle-floating price has nothing fixed to rest at, and a
-            // trigger has its own placement path.
-            let rest_price = match order.order_type {
-                OrderType::Limit => order.price,
-                OrderType::Market => order.auction_end_price.max(0).unsigned_abs(),
-                _ => return Ok(()),
             };
-            if rest_price == 0 {
-                return Ok(());
-            }
             Some((
                 order.direction,
                 rest_price,

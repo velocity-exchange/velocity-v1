@@ -3823,6 +3823,121 @@ fn place_and_take_rests_the_remainder_on_the_clob() {
     assert!(order_ref.order_id > 0, "order ref returned to the client");
 }
 
+/// A market order's remainder rests on the book too, at the worst price the
+/// order already agreed to.
+///
+/// It used to keep DLOB behaviour on this route while the keeper route rested
+/// it, so the same order ended up in a different place depending on which one
+/// reached it. That is not a fallback once the DLOB is gone — it is an order
+/// nothing will fill. A market order's own `price` is zero, so it rests at
+/// `auction_end_price`, which is safe because a migrated remainder is
+/// taker-origin: nobody can take it at that bound while a counterparty
+/// crosses it, and the cross settles at the counterparty's price.
+#[test]
+fn place_and_take_rests_a_market_order_remainder_on_the_clob() {
+    use velocity::state::order_params::{OrderParams, PostOnlyParam};
+
+    let mut fixture = setup();
+    // A CLOB ask 0.5 @ 99 to take, leaving half the order unfilled.
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+
+    let taker_authority = Keypair::new();
+    let taker_user = Pubkey::new_unique();
+    let taker_stats = Pubkey::new_unique();
+    fixture
+        .svm
+        .airdrop(&taker_authority.pubkey(), 10_000_000_000)
+        .unwrap();
+    let mut taker_state = trading_user(
+        &taker_authority.pubkey(),
+        10_000 * SPOT_BALANCE_PRECISION_U64,
+        None,
+    );
+    taker_state.next_order_id = 1;
+    set_user_account(&mut fixture.svm, taker_user, &taker_state);
+    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
+
+    let maker_stats = maker_stats_address(&fixture);
+    set_user_stats_account(
+        &mut fixture.svm,
+        maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    let (quoter_signer, _) = quoter_signer_pda();
+    let mut accounts = velocity::accounts::PlaceAndTakeV1 {
+        state: state_pda(),
+        user: taker_user,
+        user_stats: taker_stats,
+        authority: taker_authority.pubkey(),
+        quoter: fixture.quoter,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+        quoter_signer,
+        crank_conditions: None,
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
+    accounts.push(AccountMeta::new(maker_stats, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(quoter_signer, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::PlaceAndTakePerpOrderV1 {
+            params: OrderParams {
+                order_type: OrderType::Market,
+                market_type: MarketType::Perp,
+                direction: PositionDirection::Long,
+                base_asset_amount: UNIT,
+                // A market order's bound: the worst fill it agreed to, and
+                // the only price its remainder can rest at.
+                auction_end_price: Some((101 * PRICE) as i64),
+                market_index: 0,
+                post_only: PostOnlyParam::None,
+                ..OrderParams::default()
+            },
+            success_condition: None,
+        }
+        .data(),
+    };
+    send_with_ixs(
+        &mut fixture.svm,
+        &taker_authority,
+        &[compute_unit_limit_ix(800_000), ix],
+        &[],
+    )
+    .expect("market order fills what it can and rests the rest");
+
+    let taker: User = read_zero_copy(&fixture.svm, &taker_user);
+    assert!(
+        taker
+            .orders
+            .iter()
+            .all(|order| order.status != OrderStatus::Open),
+        "nothing is left on the DLOB, where nothing would fill it"
+    );
+    assert_eq!(
+        clob_bid_count(&fixture.svm, &fixture.clob_market),
+        1,
+        "the remainder rests on the book instead"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Midpoint spline quoter: a maker's PDA instance of the midpoint program,
 // registered as a Custom entry, quoting offsets around a maker-fed mid.

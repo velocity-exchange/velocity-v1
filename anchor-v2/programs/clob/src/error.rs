@@ -30,7 +30,17 @@ pub enum ClobError {
     InvalidCapacity,
     #[msg("Market config out of bounds")]
     InvalidConfig,
-    #[msg("An order older than the grace window has a user missing from the passed set")]
+    /// @deprecated Nothing raises this any more, and the numeric code stays
+    /// so nothing else claims it.
+    ///
+    /// It used to mean two things, and both were refusals a caller could not
+    /// act on. An order past the grace window whose owner was missing failed
+    /// the call, which made a book with more makers than a transaction can
+    /// carry unfillable by anyone; the walk ends there instead and reports
+    /// what it was holding. A user set wider than `max_execute_users` also
+    /// failed, which counted accounts that cost the response nothing, since
+    /// `execute` bounds its own records where it writes them.
+    #[msg("Deprecated: an unreachable maker ends the walk and is reported, it no longer fails")]
     StaleUserSet,
     #[msg("Side is below evict_threshold_per_side; nothing to evict")]
     BelowEvictThreshold,

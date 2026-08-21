@@ -273,10 +273,24 @@ pub struct ClobHeaderV0 {
     pub default_activation_delay_slots: u32,
     /// Upper bound on a caller-chosen activation delay (auction flow).
     pub max_activation_delay_slots: u32,
-    /// Fills race the tx's fixed account set: quote/execute take the set of
-    /// users the caller can settle, and an order whose user is absent is
-    /// skipped while younger than this many slots (the keeper couldn't have
-    /// known it) but fails the call once older (the keeper is stale).
+    /// Fills race the tx's fixed account set: quote and execute take the set
+    /// of users the caller can settle, and an order whose owner is absent is
+    /// skipped while younger than this many slots — the caller cannot be
+    /// expected to have heard of it yet — and ends the walk once older.
+    ///
+    /// So this is how far the caller's account set is allowed to lag the
+    /// book. Below that age a new maker costs the caller nothing; above it,
+    /// a maker the caller did not bring is where its fill stops, and the book
+    /// reports the depth behind as withheld.
+    ///
+    /// Sizing it is a question about how the callers of this market build
+    /// their account sets. A set assembled from a live subscription can lag
+    /// by a slot or two; one assembled from an address lookup table cannot
+    /// name a maker until the table has been extended and that extension has
+    /// landed, which is longer. Too small and every fresh quote stops fills
+    /// at the top of book; too large and a caller can leave out a maker it
+    /// did know about, and the depth behind that maker goes untraded rather
+    /// than to a worse price.
     pub unknown_user_grace_slots: u32,
     /// Soft cap: `evict_worst` is allowed once a side holds at least this
     /// many orders. Eviction is crank-mediated through velocity (so the

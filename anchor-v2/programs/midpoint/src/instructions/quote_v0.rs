@@ -1,7 +1,7 @@
 use {
     crate::{
         introspection::tx_co_signed_by,
-        state::{Direction, MidpointQuoterV0, ResponsePointerV0, UserRefV0, UserSetV0},
+        state::{MidpointQuoterV0, ResponsePointerV0, UserRefV0},
         velocity::{hot_flow_authority, VELOCITY_STATE},
     },
     anchor_lang_v2::prelude::*,

@@ -4,7 +4,7 @@ use {
         error::MidpointError,
         events::{MidpointExecuteRecordV0, MIDPOINT_EVENT_VERSION},
         instructions::quote_v0::caller_gate,
-        state::{Direction, MidpointQuoterV0, ResponsePointerV0, UserRefV0, UserSetV0},
+        state::{Direction, MidpointQuoterV0, ResponsePointerV0},
         velocity::VELOCITY_STATE,
     },
     anchor_lang_v2::prelude::*,

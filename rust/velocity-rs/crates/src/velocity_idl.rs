@@ -198,7 +198,7 @@ pub mod instructions {
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct CrankClobEvict {
         pub market_index: u16,
-        pub side: ClobSide,
+        pub side: SideV0,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for CrankClobEvict {
@@ -3492,23 +3492,6 @@ pub mod types {
         pub node_index: u32,
         pub order_id: u64,
     }
-    #[derive(
-        AnchorSerialize,
-        AnchorDeserialize,
-        InitSpace,
-        Serialize,
-        Deserialize,
-        Copy,
-        Clone,
-        Default,
-        Debug,
-        PartialEq,
-    )]
-    pub enum ClobSide {
-        #[default]
-        Bid,
-        Ask,
-    }
     #[repr(C)]
     #[derive(
         AnchorSerialize,
@@ -3769,7 +3752,7 @@ pub mod types {
         Debug,
         PartialEq,
     )]
-    pub enum Direction {
+    pub enum DirectionV0 {
         #[default]
         Long,
         Short,
@@ -3853,7 +3836,7 @@ pub mod types {
     )]
     pub struct ForceCancelClobRefV0 {
         pub order_ref: ClobOrderRefV0,
-        pub side: ClobSide,
+        pub side: SideV0,
     }
     #[repr(C)]
     #[derive(
@@ -5350,7 +5333,7 @@ pub mod types {
     )]
     pub struct QuoteRouterArgs {
         pub market_index: u16,
-        pub direction: Direction,
+        pub direction: DirectionV0,
         pub size: u64,
         pub quoter_count: u8,
     }
@@ -5796,6 +5779,23 @@ pub mod types {
         pub quote_entry_amount: i64,
         pub settle_price: i64,
         pub explanation: SettlePnlExplanation,
+    }
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub enum SideV0 {
+        #[default]
+        Bid,
+        Ask,
     }
     #[repr(C)]
     #[derive(

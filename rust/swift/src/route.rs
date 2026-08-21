@@ -259,9 +259,12 @@ pub async fn route_quote(
         .map(|(book, levels)| QuoterBook {
             priority: book.priority,
             levels,
+            // The view quotes unrestricted, so no book falls short of a user
+            // set and none of them holds anything back.
+            withheld: Default::default(),
         })
         .collect();
-    let allocations = split_across_quoters(direction, query.size, &books, route.step_size)
+    let allocations = split_across_quoters(direction, query.size, &books, route.step_size, None)
         .map_err(|err| RouteError::Simulation(format!("split failed: {err:?}")))?;
 
     let filled_base: u64 = allocations.iter().map(|a| a.base).sum();

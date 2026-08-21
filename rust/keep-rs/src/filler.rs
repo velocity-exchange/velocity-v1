@@ -41,7 +41,10 @@ use {
             AccountUpdate, TransactionUpdate,
         },
         priority_fee_subscriber::PriorityFeeSubscriber,
-        program::{math::auction::calculate_auction_price, state::prop_amm::QuoterV0},
+        program::{
+            math::auction::calculate_auction_price,
+            state::prop_amm::{ClobUserRefV0, QuoterV0},
+        },
         swift_order_subscriber::{SignedOrderInfo, SwiftOrderStream},
         types::{
             accounts::{PerpMarket, User, UserStats},
@@ -1022,6 +1025,63 @@ async fn try_trigger_order(
         .await;
 }
 
+/// How many of a book's makers one fill carries.
+///
+/// A transaction locks 64 accounts and a maker costs two, so this is a budget,
+/// not a limit on what the book holds. The book stops at the first maker the
+/// transaction did not bring, so the ones worth carrying are the best-priced
+/// ones in order — and the depth behind them is not lost, it stays resting for
+/// the next fill rather than being handed to a worse price.
+const CLOB_MAKERS_PER_FILL: usize = 6;
+
+/// The `User` accounts of the makers a fill would sweep off `book`.
+///
+/// The DLOB cross cannot name these. Its orders live in `User.orders`, which
+/// is why finding them is a matter of reading loaded accounts; a book order
+/// lives on the book, and the only record of who owns it is a
+/// `(authority, sub_account_id)` on a node. Reading it through the program's
+/// own walk is what keeps this list from disagreeing with the one the fill
+/// will build on-chain.
+async fn clob_makers(
+    velocity: &'static VelocityClient,
+    book: Pubkey,
+    direction: PositionDirection,
+    size: u64,
+    taker: ClobUserRefV0,
+) -> Vec<User> {
+    let Ok(data) = velocity.rpc().get_account_data(&book).await else {
+        log::warn!(target: TARGET, "clob makers: book {book} unreadable");
+        return Vec::new();
+    };
+    let slot = velocity.get_slot().await.unwrap_or_default();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default();
+    let makers = velocity_rs::clob::resting_makers(
+        &data,
+        velocity_rs::clob::swept_side(direction),
+        size,
+        taker,
+        slot,
+        now,
+        CLOB_MAKERS_PER_FILL,
+    );
+    // A maker missing from the cache is dropped rather than fatal, the same
+    // way a DLOB maker is: the book simply stops there and the fill takes
+    // what it can reach.
+    makers
+        .iter()
+        .filter_map(|maker| {
+            let key = Wallet::derive_user_account(
+                &Pubkey::new_from_array(maker.authority.to_bytes()),
+                maker.sub_account_id,
+            );
+            velocity.try_get_account::<User>(&key).ok()
+        })
+        .collect()
+}
+
 /// Try to fill a swift order
 #[allow(clippy::too_many_arguments)]
 async fn try_swift_fill(
@@ -1097,6 +1157,31 @@ async fn try_swift_fill(
             quoter_signer: derive_quoter_signer(),
             crank_conditions: Some(derive_clob_crank_conditions(taker_order.market_index)),
         });
+
+    // The book's own makers. The DLOB cross above cannot name them: its
+    // orders live in `User.orders`, and a book order lives on the book. A
+    // fill only settles for users it carries, so a book maker left out is
+    // liquidity the fill walks straight past — and the book stops at the
+    // first one missing, so leaving out the best maker forfeits the rest of
+    // it too.
+    let mut maker_accounts = maker_accounts;
+    if let Some(clob) = clob_fill.as_ref() {
+        maker_accounts.extend(
+            clob_makers(
+                velocity,
+                clob.clob_market,
+                taker_order.direction,
+                taker_order.base_asset_amount,
+                ClobUserRefV0 {
+                    authority: anchor_lang::prelude::Pubkey::new_from_array(
+                        taker_authority.to_bytes(),
+                    ),
+                    sub_account_id: taker_account_data.sub_account_id,
+                },
+            )
+            .await,
+        );
+    }
 
     // The whole fill is assembled twice at most: once with the flow
     // authority riding a compute-budget instruction as a read-only

@@ -13,7 +13,8 @@ Correct the slot-duration scaling in the off-chain mirrors and the staged-switch
   pre-switch duration.
 - `update_state_slot_duration_ms` commits an already-effective promotion when the gate
   schedule is exhausted instead of reverting it, so the base field never stays a step behind
-  the live value.
+  the live value. After the final 200ms switch, operators finalize the raw base field with one
+  additional `set-slot-duration-ms 200` transaction.
 - Reference-price-offset smoothing accrues its budget per elapsed millisecond instead of per
   whole 400ms period. Flooring to whole periods zeroed the budget for any crank gap under
   400ms, which pinned the step to the minimum and made convergence slower the more often a

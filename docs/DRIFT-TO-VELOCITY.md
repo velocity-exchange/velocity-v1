@@ -558,9 +558,10 @@ accounts/events with the previous TS shapes should note:
   it accepts only the exact next value on the 400 -> 350 -> 300 -> 250 -> 200 schedule and reads the
   effective slot from the gate's feature account (passed as a remaining account; the SDK/CLI fill it
   in from the target value). `StateAccount.slotDurationMs`, `pendingSlotDurationMs`,
-  `slotDurationEffectiveSlot` added. Calling it once the schedule is exhausted is a no-op
-  success that only promotes an already-effective staged value, so `slot_duration_ms` never
-  stays behind the live value.
+  `slotDurationEffectiveSlot` added. After the final 200ms switch is effective, call the setter
+  once more with `200`: that bookkeeping transaction promotes the already-effective staged value
+  into the raw base field, so `slot_duration_ms` does not stay behind the live value. It does not
+  affect the automatic boundary switch.
 - **Three instructions gained a required `State` account** (slot-duration-scaling), because they
   load market/oracle maps and so need the live slot duration: velocity's
   `update_user_margin_trading_enabled` and `update_user_pool_id` (now on a separate

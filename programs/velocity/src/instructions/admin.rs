@@ -2802,6 +2802,13 @@ fn prepare_slot_duration_stage(
             current_ms,
             slot_duration_ms
         )?;
+        validate!(
+            slot_duration_ms as u64 == current_ms,
+            ErrorCode::DefaultError,
+            "terminal slot-duration promotion must confirm {}ms, got {}ms",
+            current_ms,
+            slot_duration_ms
+        )?;
         msg!(
             "slot_duration_ms: promoted to {}, the last value on the schedule; nothing left to stage",
             current_ms
@@ -7002,6 +7009,16 @@ mod feature_gate_tests {
         // The base and the resolved live value now agree, which is what every
         // consumer that reads the raw field depends on.
         assert_eq!(state.active_slot_duration_ms(2_000), 200);
+
+        // The promote-only call must confirm the value that became effective;
+        // an unrelated request cannot succeed merely because promotion happened.
+        let mut invalid_request = State {
+            slot_duration_ms: 250,
+            pending_slot_duration_ms: 200,
+            slot_duration_effective_slot: 1_000,
+            ..State::default()
+        };
+        assert!(prepare_slot_duration_stage(&mut invalid_request, 1_000, 350).is_err());
 
         // Already at the terminal value with nothing left to promote: there is no
         // work to do, so the call is rejected rather than silently accepted.

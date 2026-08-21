@@ -84,9 +84,16 @@ Runbook, in full:
 # during the target gate's warmup epoch (feature activated, not yet effective),
 # once the Feature Gate Tracker shows it activated for the *next* epoch:
 velocity-admin exchange set-slot-duration-ms 350   # then 300, 250, 200 as each is activated
+
+# once the 200ms transition is effective, finalize the raw base field
+velocity-admin exchange set-slot-duration-ms 200
 ```
 
-Nothing else. No guard-rail retunes, no per-market updates, no bot restarts (the off-chain mirrors
+Each transition itself still needs only its one staging transaction: State switches automatically
+at the effective slot. The final 200ms command is a bookkeeping transaction after the last switch;
+it promotes the already-effective pending value into `slot_duration_ms` because there is no later
+gate whose staging transaction could perform that promotion. It does not control or delay the live
+switch. No guard-rail retunes, per-market updates, or bot restarts are needed (the off-chain mirrors
 read the same fields from their state subscription and apply the switch against a live chain slot).
 
 ### The one residual: measurements that straddle the switch
@@ -378,6 +385,6 @@ subscription; no service needs a restart at a gate flip.
 | Slot length type | `SlotDuration` / `SlotDurationMs`, sole source `State::slot_duration()` |
 | Legacy encoding | `STORED_UNIT_MS` = 400, carried in the stored fields' Rust types and normalized to `Millis` |
 | Legacy rate period | `Millis::UNIT` (400ms), explicit at each rate site |
-| Ops per gate | one instruction, four gates total |
+| Ops | one staging instruction per gate, plus one post-200ms base-field finalization |
 | Behavior at 400ms | identity: every conversion reproduces the historical slot counts exactly |
 | Known compression | max auction length ~51s at 200ms (u8 `Order.auction_duration` ceiling) |

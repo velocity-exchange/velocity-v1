@@ -153,8 +153,14 @@ class Cursor {
  *   book was standing on. The taker keeps that base unfilled, which is the
  *   better outcome whenever the order can rest — resting leaves it where the
  *   book's own price can reach it next block, while filling it here locks in
- *   a price the book was beating. Omit it for an immediate-or-cancel order,
- *   which has no next block and takes the worse price instead.
+ *   a price the book was beating.
+ *
+ *   Omit it whenever the taker's remainder cannot wait: an immediate-or-cancel
+ *   order, whose leftover cancels rather than rests; a liquidation, which
+ *   covers a shortage that is already there; and any order with nowhere to
+ *   rest — an oracle-floating price has nothing fixed to rest at, and the
+ *   book has no meaning for reduce-only. Reserving for one of those holds
+ *   depth back forever.
  */
 export function splitAcrossQuoters(
 	direction: PositionDirection,

@@ -3983,26 +3983,40 @@ fn fulfill_perp_order_router_pass(
     // taker's leftover rests where that price can still reach it, and filling
     // it here would lock in a price the book was beating.
     //
-    // Two orders get no say in it. Immediate-or-cancel bought immediacy and
-    // has no next block — its leftover cancels rather than rests, so a worse
-    // fill now beats no fill. A liquidation is the same in a harder way: it
-    // exists to cover a shortage that does not wait, and its order is
-    // reduce-only, so an unfilled remainder cannot even migrate to the book.
-    // Holding depth back from either one is holding it back forever.
-    let reserve_level = (!taker.orders[taker_order_index].immediate_or_cancel && !is_liquidation)
-        .then(|| {
-            books
-                .iter()
-                .map(|book| book.withheld)
-                .filter(|withheld| withheld.price != 0 && withheld.size != 0)
-                .max_by_key(|withheld| match direction {
-                    // Best for the taker is what the book would have beaten
-                    // the rest of the route with.
-                    Direction::Long => u64::MAX - withheld.price,
-                    Direction::Short => withheld.price,
-                })
-        })
-        .flatten();
+    // Only for an order whose remainder can actually wait, which is three
+    // separate questions.
+    //
+    // It has to have somewhere to wait: `restable_remainder_price` answers
+    // that, and an order it turns down — an oracle-floating price with
+    // nothing fixed to rest at, a reduce-only that the book has no meaning
+    // for — leaves its remainder in `User.orders`, which is not a place a
+    // fill comes looking any more.
+    //
+    // It has to be allowed to wait: immediate-or-cancel bought immediacy, and
+    // its leftover cancels rather than rests, so a worse fill now beats no
+    // fill at all.
+    //
+    // And it has to be able to afford to: a liquidation covers a shortage
+    // that is already there. Its order is reduce-only so the first test
+    // already excludes it, but the reason is its own and does not depend on
+    // that staying true.
+    let reserve_level = (!taker.orders[taker_order_index].immediate_or_cancel
+        && !is_liquidation
+        && crate::instructions::restable_remainder_price(&taker.orders[taker_order_index])
+            .is_some())
+    .then(|| {
+        books
+            .iter()
+            .map(|book| book.withheld)
+            .filter(|withheld| withheld.price != 0 && withheld.size != 0)
+            .max_by_key(|withheld| match direction {
+                // Best for the taker is what the book would have beaten
+                // the rest of the route with.
+                Direction::Long => u64::MAX - withheld.price,
+                Direction::Short => withheld.price,
+            })
+    })
+    .flatten();
     let reserve_slice = reserve_level.map(|level| [level]);
     let allocations = split_across_quoters(
         direction,

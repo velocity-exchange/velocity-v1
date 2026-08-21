@@ -1889,6 +1889,7 @@ dependencies = [
 name = "quoter-spec"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "solana-address 2.6.1",
  "wincode",
 ]

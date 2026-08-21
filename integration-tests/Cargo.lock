@@ -2236,6 +2236,7 @@ name = "quoter-spec"
 version = "0.1.0"
 dependencies = [
  "anchor-lang",
+ "bytemuck",
  "solana-address 2.6.1",
  "wincode 0.5.5",
 ]

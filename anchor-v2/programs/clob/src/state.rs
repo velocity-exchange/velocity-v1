@@ -7,8 +7,8 @@
 //!
 //! This module is layout only. The book algorithm over these structs — free
 //! list, the two best-first sorted intrusive lists, and every arena access —
-//! lives in [`crate::book`]; the response encoder lives in
-//! [`crate::response`].
+//! lives in [`crate::book`]. The response framing is `quoter-spec`'s, and
+//! `quote_v0`/`execute_v0` stream into the region below through its writers.
 
 use {
     anchor_lang_v2::{accounts::Slab, prelude::*},
@@ -22,18 +22,18 @@ pub const ZERO_ADDRESS: Address = Address::new_from_array([0u8; 32]);
 /// bound by the 1024-byte return-data cap.
 pub const RESPONSE_BUFFER_BYTES: usize = {
     let widest = 3 * RESPONSE_LEN_BYTES
-        + EXECUTE_FILLS_CEILING as usize * (CHANGE_MIN_BYTES + quoter_spec::COMPLETED_BYTES)
+        + EXECUTE_FILLS_CEILING as usize * (CHANGE_BYTES + COMPLETED_BYTES)
         + CANCELLED_BYTES;
     // The region must start on an 8-byte step for its records to be read in
     // place, and it sits at the end of the header, so its size carries that.
     widest.next_multiple_of(quoter_spec::LEN_BYTES)
 };
 
-// Borsh widths of the response wire types. Each is built from the field
-// types of the struct it measures, and
-// `tests::response::wire_widths_match_the_response_types` pins every one
-// against wincode's encoding of that struct — so a field added to a wire type
-// fails a test instead of silently shifting the ceilings below.
+// Widths of the response wire types, each taken from `quoter-spec`'s
+// declaration of the record it measures rather than restated here. The
+// ceilings below are arithmetic over them, so a field added to a record moves
+// them, and `tests::response::wire_widths_match_the_response_types` pins every
+// one against wincode's encoding of that record.
 
 /// Byte width of a borsh sequence count (a `Vec`'s length prefix).
 pub const COUNT_BYTES: usize = core::mem::size_of::<u32>();
@@ -44,26 +44,27 @@ pub const COUNT_BYTES: usize = core::mem::size_of::<u32>();
 /// an emitted event before the two were separated.
 pub const RESPONSE_LEN_BYTES: usize = quoter_spec::LEN_BYTES;
 
-/// Borsh width of a [`UserRefV0`]: 32-byte authority + u16 sub-account. The
-/// response encoder compares and writes users in this form, so the constant
-/// is the single definition of that width.
+/// Width of a [`UserRefV0`]: 32-byte authority + u16 sub-account.
 pub const USER_REF_BYTES: usize = quoter_spec::UserRefV0::SIZE;
 
 /// Borsh width of a [`PriceLevel`].
 pub const PRICE_LEVEL_BYTES: usize = quoter_spec::PRICE_LEVEL_BYTES;
 
-/// Borsh width of one `completed_order_ids` entry.
+/// Width of an order id in an event payload. Events are borsh, not the
+/// response wire — [`crate::emit`] sizes its buffers from this.
 pub const ORDER_ID_BYTES: usize = core::mem::size_of::<u64>();
 
-/// Borsh width of a [`UserBalanceChangeV0`] that completed no orders — the
-/// narrowest a balance-change record can be, and the width a full response of
-/// them is derived from.
-pub const CHANGE_MIN_BYTES: usize = quoter_spec::CHANGE_BYTES;
+/// Width of a [`UserBalanceChangeV0`]. One fixed stride: the orders a change
+/// consumed ride their own section, so a change cannot grow.
+pub const CHANGE_BYTES: usize = quoter_spec::CHANGE_BYTES;
 
-/// Borsh width of a [`CancelledRemainderV0`].
+/// Width of a [`CancelledRemainderV0`].
 pub const CANCELLED_BYTES: usize = quoter_spec::CANCELLED_BYTES;
 
-/// Borsh width of a [`RemovedOrderV0`] — the return data of
+/// Width of a [`CompletedOrderV0`].
+pub const COMPLETED_BYTES: usize = quoter_spec::COMPLETED_BYTES;
+
+/// Width of a [`RemovedOrderV0`] — the return data of
 /// `cancel_order_v0`/`evict_worst_v0`/`remove_expired_v0`. Not used to size
 /// anything here (anchor serializes the value), but velocity reads those bytes
 /// by offset, so the width is pinned rather than assumed.
@@ -74,9 +75,9 @@ pub const REMOVED_ORDER_BYTES: usize = USER_REF_BYTES + 3 * core::mem::size_of::
 // The per-market operating points live on the header. Partial execution is
 // the interface contract; the router sees smaller balance changes.
 
-/// Trailing bytes of a [`QuoteResponseV0`]: the withheld price and the base
-/// behind it, written after the ladder.
-pub const WITHHELD_REPORT_BYTES: usize = 2 * core::mem::size_of::<u64>();
+/// Trailing bytes of a [`QuoteResponseV0`]: the withheld report, which is one
+/// [`PriceLevel`] written after the ladder.
+pub const WITHHELD_REPORT_BYTES: usize = PRICE_LEVEL_BYTES;
 
 /// Ceiling on `max_quote_levels`: a [`QuoteResponseV0`] is a count, that many
 /// [`PriceLevel`]s, then the withheld report.
@@ -102,19 +103,19 @@ pub const EXECUTE_FILLS_CEILING: u16 = 113;
 /// [`CancelAllOutcome::exhaustive`]).
 pub const CANCEL_ALL_ORDERS_CEILING: u16 = 128;
 
-/// Ceiling on `max_execute_users`. An [`ExecuteResponseV0`] is
-/// `[changes count][records…][cancelled count][at most one cancelled]`, and a
-/// record is [`CHANGE_MIN_BYTES`] plus [`ORDER_ID_BYTES`] per order it
-/// completed. Every completed id belongs to a fill, so the whole id space is
-/// bounded by `EXECUTE_FILLS_CEILING`: reserving it here — rather than
-/// dividing the region by the record width alone — is what makes a market
-/// configured *at* this ceiling unable to overrun the response region,
-/// whatever the book holds.
+/// Ceiling on `max_execute_users`: how many balance changes fit the region
+/// once the other three sections have taken their worst case.
+///
+/// Every completed order belongs to a fill, so the completed section is
+/// bounded by `EXECUTE_FILLS_CEILING` rather than by anything about users, and
+/// reserving it here — rather than dividing the region by the change width
+/// alone — is what makes a market configured *at* this ceiling unable to
+/// overrun the region, whatever the book holds.
 pub const EXECUTE_USERS_CEILING: u16 = ((RESPONSE_BUFFER_BYTES
     - 2 * RESPONSE_LEN_BYTES
     - CANCELLED_BYTES
-    - EXECUTE_FILLS_CEILING as usize * ORDER_ID_BYTES)
-    / CHANGE_MIN_BYTES) as u16;
+    - EXECUTE_FILLS_CEILING as usize * COMPLETED_BYTES)
+    / CHANGE_BYTES) as u16;
 
 // The widest response either instruction can produce at the ceilings fits the
 // region, so `ResponseTooLarge` is unreachable for a market whose config the
@@ -126,8 +127,8 @@ const_assert!(
 const_assert!(
     2 * RESPONSE_LEN_BYTES
         + CANCELLED_BYTES
-        + EXECUTE_FILLS_CEILING as usize * ORDER_ID_BYTES
-        + EXECUTE_USERS_CEILING as usize * CHANGE_MIN_BYTES
+        + EXECUTE_FILLS_CEILING as usize * COMPLETED_BYTES
+        + EXECUTE_USERS_CEILING as usize * CHANGE_BYTES
         <= RESPONSE_BUFFER_BYTES
 );
 
@@ -308,9 +309,13 @@ pub struct ClobHeaderV0 {
     /// can be added without moving `response`, changing the account size, or
     /// migrating every live market. Must stay zero until claimed.
     pub padding: [u8; 128],
-    /// Scratch region `quote_v0`/`execute_v0` write their borsh response
-    /// into; return data carries a [`ResponsePointerV0`] locating it. Last
-    /// field, so [`RESPONSE_OFFSET`] is the header size minus its length.
+    /// Scratch region `quote_v0`/`execute_v0` stream their response into;
+    /// return data carries a [`ResponsePointerV0`] locating it. Last field, so
+    /// [`RESPONSE_OFFSET`] is the header size minus its length.
+    ///
+    /// Its size carries the region's 8-byte start (see
+    /// [`RESPONSE_BUFFER_BYTES`]), which is what lets both programs cast the
+    /// records in place instead of copying them field by field.
     pub response: [u8; RESPONSE_BUFFER_BYTES],
 }
 
@@ -321,11 +326,25 @@ const_assert_eq!(core::mem::size_of::<ClobHeaderV0>(), 8504);
 const_assert_eq!(RESPONSE_BUFFER_BYTES, 8216);
 const_assert_eq!(ORDERS_OFFSET, 8520);
 
+// Both programs cast the response records onto these bytes, so the region has
+// to start on the step they are read at. Solana gives account data an 8-byte
+// start, and every record's alignment divides 8, so this offset is the whole
+// condition.
+const_assert_eq!(RESPONSE_OFFSET % RESPONSE_LEN_BYTES, 0);
+
 /// The market account: header + order-node tail, capacity from data length.
 pub type ClobMarketV0 = Slab<ClobHeaderV0, OrderNodeV0>;
 
 /// Account-data offset of the header's `response` region.
 pub const RESPONSE_OFFSET: usize = 8 + core::mem::size_of::<ClobHeaderV0>() - RESPONSE_BUFFER_BYTES;
+
+/// The pointer `quote_v0`/`execute_v0` return for a response of `len` bytes.
+pub fn response_pointer(len: usize) -> ResponsePointerV0 {
+    ResponsePointerV0 {
+        offset: RESPONSE_OFFSET as u32,
+        len: len as u32,
+    }
+}
 
 /// Account-data offset of the order-node tail: `[disc][H][len: u32]` padded
 /// to the node's 8-byte alignment.

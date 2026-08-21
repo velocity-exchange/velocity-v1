@@ -321,7 +321,7 @@ fn quote_withheld(
     let meta = quote_meta_users(ctx, direction, size, users).unwrap();
     let bytes = read_response(ctx, &meta);
     let response = clob::state::QuoteResponseV0::parse(&bytes).expect("quote response");
-    (response.withheld_price != 0).then_some((response.withheld_price, response.withheld_base))
+    (response.withheld.price != 0).then_some((response.withheld.price, response.withheld.size))
 }
 
 fn execute_meta_users(

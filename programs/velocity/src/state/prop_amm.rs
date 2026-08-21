@@ -1485,10 +1485,7 @@ impl QuoterV0 {
         // borrow by the whole fill.
         Ok(QuotedLadderV0 {
             levels: response.levels.to_vec(),
-            withheld: PriceLevel {
-                price: response.withheld_price,
-                size: response.withheld_base,
-            },
+            withheld: response.withheld,
         })
     }
 

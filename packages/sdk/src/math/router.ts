@@ -35,7 +35,8 @@ export type RouterQuoterBook = {
 	/**
 	 * Depth the quoter says it holds at a better price than it quoted, and
 	 * could not offer because the accounts of the user who owns it are not in
-	 * the transaction. `quote_v0` returns it as `withheldPrice`/`withheldBase`.
+	 * the transaction. `quote_v0` returns it as `withheld`, one price level
+	 * behind the ladder.
 	 *
 	 * Not fillable, so it never belongs in `levels`. Pass it to
 	 * {@link splitAcrossQuoters} as the reserve — see there for what it does.

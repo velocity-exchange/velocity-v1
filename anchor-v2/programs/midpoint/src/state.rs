@@ -28,9 +28,9 @@
 
 use {
     crate::error::MidpointError,
-    anchor_lang_v2::{prelude::*, BorshConfig, BORSH_CONFIG},
+    anchor_lang_v2::prelude::*,
+    quoter_spec::{ExecuteWriter, QuoteWriter},
     static_assertions::const_assert_eq,
-    wincode::io::Cursor,
 };
 
 /// Offsets are parts-per-million of mid (velocity's PERCENTAGE_PRECISION).
@@ -220,6 +220,12 @@ const_assert_eq!(4 * 32 + 8 * 8 + 8 + 72, 272);
 /// Account-data offset of the `response` region.
 pub const RESPONSE_OFFSET: usize =
     8 + core::mem::size_of::<MidpointQuoterV0>() - RESPONSE_BUFFER_BYTES;
+
+// Both programs cast the response records onto these bytes, so the region has
+// to start on the step they are read at. Solana gives account data an 8-byte
+// start, and every record's alignment divides 8, so this offset is the whole
+// condition.
+const_assert_eq!(RESPONSE_OFFSET % quoter_spec::LEN_BYTES, 0);
 
 /// Immutable + rarely-changed config, set at init (the addresses ride the
 /// accounts list — duplicated accounts cost one index byte in the tx).
@@ -651,10 +657,7 @@ impl MidpointQuoterV0 {
             Direction::Short => &bids[..count],
         };
 
-        let mut cursor = Cursor::new(&mut response[..]);
-        // Length prefix, backfilled once the walk knows the count.
-        write_wire(&mut cursor, &quoter_spec::len_prefix(0))?;
-        let mut quoted_levels: usize = 0;
+        let mut writer = QuoteWriter::new();
         let mut wanted = size;
         for level in side {
             if wanted == 0 {
@@ -668,25 +671,25 @@ impl MidpointQuoterV0 {
                 continue;
             };
             let quoted = remaining.min(wanted);
-            write_wire(
-                &mut cursor,
-                &PriceLevel {
-                    price,
-                    size: quoted,
-                },
-            )?;
-            quoted_levels += 1;
+            writer
+                .push_level(
+                    &mut response[..],
+                    PriceLevel {
+                        price,
+                        size: quoted,
+                    },
+                )
+                .map_err(MidpointError::from)?;
             wanted -= quoted;
         }
-        // The withheld report behind the ladder. Always empty here: the
-        // midpoint settles against one standing-intent user and holds no
-        // resting orders, so there is no liquidity it could be keeping back
-        // for want of an account.
-        write_wire(&mut cursor, &0u64)?;
-        write_wire(&mut cursor, &0u64)?;
-        let len = cursor.position();
-        response[..quoter_spec::LEN_BYTES]
-            .copy_from_slice(&quoter_spec::len_prefix(quoted_levels as usize));
+        // `finish` backfills the ladder's count and writes the withheld report
+        // behind it. The report is always empty here: the midpoint settles
+        // against one standing-intent user and holds no resting orders, so
+        // there is no liquidity it could be keeping back for want of an
+        // account.
+        let len = writer
+            .finish(&mut response[..], PriceLevel::default())
+            .map_err(MidpointError::from)?;
         Ok(response_pointer(len))
     }
 
@@ -698,37 +701,32 @@ impl MidpointQuoterV0 {
         change: Option<(u64, u64)>,
     ) -> Result<ResponsePointerV0> {
         let user = self.user_ref();
-        // At most one change, and never a cancelled remainder or a completed
-        // order: standing intent has no resting orders to consume or cull.
-        let change = change.map(|(base_size, quote_size)| UserBalanceChangeV0 {
-            base_size,
-            quote_size,
-            user,
-            _pad: [0; 6],
-        });
-        let response = ExecuteResponseV0 {
-            changes: change.as_slice(),
-            cancelled: &[],
-            completed: &[],
-        };
-        let mut cursor = Cursor::new(&mut self.response[..]);
-        wincode::serialize_into(&mut cursor, &response)
-            .map_err(|_| MidpointError::ResponseTooLarge)?;
-        Ok(response_pointer(cursor.position()))
+        let mut writer = ExecuteWriter::new();
+        if let Some((base_size, quote_size)) = change {
+            writer
+                .push_change(
+                    &mut self.response[..],
+                    UserBalanceChangeV0 {
+                        base_size,
+                        quote_size,
+                        user,
+                        _pad: [0; 6],
+                    },
+                )
+                .map_err(MidpointError::from)?;
+        }
+        // Never a cancelled remainder or a completed order: standing intent
+        // has no resting orders to consume or cull.
+        let len = writer
+            .finish(&mut self.response[..], &[], &[])
+            .map_err(MidpointError::from)?;
+        Ok(response_pointer(len))
     }
 }
 
 /// Borsh-encode one value at the cursor. The wire config is anchor's
 /// borsh-compatible one, so streaming field by field is byte-identical to
 /// serializing the whole response struct.
-fn write_wire<T>(cursor: &mut Cursor<&mut [u8]>, value: &T) -> Result<()>
-where
-    T: wincode::SchemaWrite<BorshConfig, Src = T> + ?Sized,
-{
-    wincode::config::serialize_into(cursor, value, BORSH_CONFIG)
-        .map_err(|_| MidpointError::ResponseTooLarge.into())
-}
-
 fn response_pointer(len: usize) -> ResponsePointerV0 {
     ResponsePointerV0 {
         offset: RESPONSE_OFFSET as u32,
@@ -799,8 +797,7 @@ mod tests {
         }
         wincode::serialize(&QuoteResponseV0 {
             levels: &levels,
-            withheld_price: 0,
-            withheld_base: 0,
+            withheld: PriceLevel::default(),
         })
         .unwrap()
     }

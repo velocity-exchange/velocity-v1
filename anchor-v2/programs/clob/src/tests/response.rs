@@ -1,22 +1,27 @@
-//! Response-encoder tests.
+//! Response tests.
 //!
-//! The point of these: `quote`/`execute` hand-write borsh into the response
-//! region instead of serializing [`QuoteResponseV0`] / [`ExecuteResponseV0`],
-//! so each test rebuilds the expected value as those types and compares
-//! against wincode's own encoding. A divergence between the streamed bytes
-//! and the declared schema fails here rather than in velocity.
+//! The point of these: `quote`/`execute` stream their records into the
+//! response region as the walk produces them, so no test can read back a
+//! response type the code serialized. Each one rebuilds the expected value as
+//! [`QuoteResponseV0`] / [`ExecuteResponseV0`] and compares against wincode's
+//! own encoding of it. A divergence between what the walk wrote and the
+//! declared schema fails here rather than in velocity.
+//!
+//! The framing and the writers themselves are `quoter-spec`'s, and its own
+//! tests hold them against its reader. What is left here is this program's
+//! half: that the walk produces the right records, in the right order, in a
+//! region shaped to hold them.
 
 use {
     super::market::{assert_err, place, test_config, user, TestMarket},
     crate::{
         book::{ClobBook, NodeArena},
         error::ClobError,
-        response::ResponseWriter,
         state::{
             CancelledRemainderV0, ClobMarketV0, ClobSideExt, CompletedOrderV0, Direction,
             ExecuteResponseV0, MarketConfigV0, PriceLevel, QuoteResponseV0, RemovedOrderV0,
             ResponsePointerV0, Side, UserBalanceChangeV0, UserCapsV0, UserRefV0, UserSetV0,
-            CANCELLED_BYTES, CHANGE_MIN_BYTES, COUNT_BYTES, EXECUTE_FILLS_CEILING,
+            CANCELLED_BYTES, CHANGE_BYTES, COMPLETED_BYTES, COUNT_BYTES, EXECUTE_FILLS_CEILING,
             EXECUTE_USERS_CEILING, PRICE_LEVEL_BYTES, QUOTE_LEVELS_CEILING, REMOVED_ORDER_BYTES,
             RESPONSE_BUFFER_BYTES, RESPONSE_LEN_BYTES, RESPONSE_OFFSET, USER_CAPS_BYTES,
             USER_CAPS_CAPACITY, USER_REF_BYTES, USER_SET_BYTES, USER_SET_CAPACITY,
@@ -42,8 +47,7 @@ where
 pub(super) fn encode_quote(levels: &[PriceLevel]) -> Vec<u8> {
     wincode::serialize(&QuoteResponseV0 {
         levels,
-        withheld_price: 0,
-        withheld_base: 0,
+        withheld: PriceLevel::default(),
     })
     .unwrap()
 }
@@ -314,8 +318,18 @@ fn wire_widths_match_the_response_types() {
     );
     // Every record is one fixed stride: a change carries no ids, so it cannot
     // grow, and a consumed order is its own record in the trailing section.
-    assert_eq!(encode(&change(user, 1, 2)).len(), CHANGE_MIN_BYTES);
-    assert_eq!(encode(&done(0, 1)).len(), quoter_spec::COMPLETED_BYTES);
+    assert_eq!(encode(&change(user, 1, 2)).len(), CHANGE_BYTES);
+    assert_eq!(encode(&done(0, 1)).len(), COMPLETED_BYTES);
+    // And every stride keeps the section after it on the step the records are
+    // cast at, which is what lets both programs read them in place.
+    for width in [
+        CHANGE_BYTES,
+        CANCELLED_BYTES,
+        COMPLETED_BYTES,
+        PRICE_LEVEL_BYTES,
+    ] {
+        assert_eq!(width % RESPONSE_LEN_BYTES, 0, "{width}");
+    }
     assert_eq!(encode(&cull(user, 1, 2)).len(), CANCELLED_BYTES);
     // An empty quote is its length prefix and the withheld report behind it;
     // an empty execute response is three prefixes.
@@ -458,11 +472,11 @@ fn the_user_set_is_fixed_width_on_the_wire() {
 }
 
 /// A market configured at the ceilings has to be able to emit the widest
-/// response the encoder can produce. The narrowest balance-change record is
-/// [`CHANGE_MIN_BYTES`] wide, but a maker only enters the response by being
-/// filled, and a full fill also appends the completed order id — so the widest
-/// response is one record per fill, each carrying its id, and the record count
-/// is bounded by `max_execute_fills` rather than by `max_execute_users`.
+/// response the walk can produce. A maker only enters the response by being
+/// filled, and a full fill also writes a completed order — so the widest
+/// response is one change per fill plus one completed order each, and both
+/// counts are bounded by `max_execute_fills` rather than by
+/// `max_execute_users`.
 #[test]
 fn a_market_at_the_execute_ceilings_streams_a_full_width_response() {
     let fills = EXECUTE_FILLS_CEILING as usize;
@@ -513,7 +527,7 @@ fn a_market_at_the_execute_ceilings_streams_a_full_width_response() {
 
     // The widest response the encoder can produce, and it fits with room to
     // spare — `ResponseTooLarge` is unreachable at the configured ceilings.
-    let widest = 3 * RESPONSE_LEN_BYTES + fills * (CHANGE_MIN_BYTES + quoter_spec::COMPLETED_BYTES);
+    let widest = 3 * RESPONSE_LEN_BYTES + fills * (CHANGE_BYTES + COMPLETED_BYTES);
     assert_eq!(outcome.response.len as usize, widest);
     assert!(
         widest <= RESPONSE_BUFFER_BYTES,
@@ -619,71 +633,15 @@ fn the_quote_ceiling_fits_the_response_region() {
     assert!(widest + PRICE_LEVEL_BYTES > RESPONSE_BUFFER_BYTES);
 }
 
+/// The writers cast each record onto the region, so a region that does not
+/// start on an 8-byte step could not hold a readable response. `RESPONSE_OFFSET`
+/// carries that at compile time; this is the runtime half of it, on an account
+/// laid out the way the program is handed one.
 #[test]
-fn writer_appends_are_bounded_by_the_response_region() {
+fn the_response_region_is_aligned_for_its_records() {
     let market = TestMarket::new(4);
-    let mut book = market.book();
-    let mut writer = ResponseWriter::new();
-
-    assert!(writer.is_empty());
-    writer
-        .append(&mut book, &vec![0u8; RESPONSE_BUFFER_BYTES - 1])
-        .unwrap();
-    assert_err(writer.append_u64(&mut book, 0), ClobError::ResponseTooLarge);
-    assert_eq!(writer.len(), RESPONSE_BUFFER_BYTES - 1);
-    assert_eq!(writer.finish().len as usize, RESPONSE_BUFFER_BYTES - 1);
-}
-
-#[test]
-fn writer_patches_stay_inside_what_was_written() {
-    let market = TestMarket::new(4);
-    let mut book = market.book();
-    let mut writer = ResponseWriter::new();
-
-    // Nothing written yet: every patch target is out of bounds.
-    assert_err(
-        writer.patch_count(&mut book, 0, 1),
-        ClobError::ResponseTooLarge,
-    );
-    assert_err(writer.read_count(&book, 0), ClobError::ResponseTooLarge);
-
-    let count = writer.reserve_count(&mut book).unwrap();
-    let value = writer.append_u64(&mut book, 7).unwrap();
-    writer.patch_count(&mut book, count, 3).unwrap();
-    writer.add_u64(&mut book, value, 5).unwrap();
-    assert_eq!(writer.read_count(&book, count).unwrap(), 3);
-    assert_eq!(writer.read_u64(&book, value).unwrap(), 12);
-    // One byte past the written region is still out of bounds.
-    assert_err(
-        writer.patch_count(&mut book, writer.len() - 3, 1),
-        ClobError::ResponseTooLarge,
-    );
-    assert_err(
-        writer.insert_u64(&mut book, writer.len() + 1, 1),
-        ClobError::ResponseTooLarge,
-    );
-}
-
-#[test]
-fn writer_inserts_shift_the_tail() {
-    let market = TestMarket::new(4);
-    let mut book = market.book();
-    let mut writer = ResponseWriter::new();
-    writer.append(&mut book, &[1, 2, 3, 4]).unwrap();
-    writer.append(&mut book, &[9; 8]).unwrap();
-
-    writer
-        .insert_u64(&mut book, 4, u64::from_le_bytes([5; 8]))
-        .unwrap();
-    assert_eq!(writer.len(), 20);
-    assert_eq!(&book.response[..4], &[1, 2, 3, 4]);
-    assert_eq!(&book.response[4..12], &[5; 8]);
-    assert_eq!(&book.response[12..20], &[9; 8]);
-
-    // An insert at the cursor is a plain append — nothing to move.
-    writer.insert_u64(&mut book, 20, 0).unwrap();
-    assert_eq!(writer.len(), 28);
-    assert_eq!(&book.response[20..28], &[0; 8]);
+    let book = market.book();
+    assert_eq!(book.response.as_ptr() as usize % RESPONSE_LEN_BYTES, 0);
 }
 
 /// The tests above compare the streamed bytes against wincode's encoding of

@@ -21,7 +21,7 @@ repository = "https://github.com/velocity-exchange/velocity-v1/crates/quoter-spe
 # unsatisfied bounds; integration-tests hit exactly that. anchor-lang-v2 is
 # pinned to a rev on 0.5, so 2.6 is what all three workspaces can agree on.
 # Move this and the wincode dependency together, or neither.
-solana-address = { version = "~2.6", features = ["copy", "wincode"] }
+solana-address = { version = "~2.6", features = ["bytemuck", "copy", "wincode"] }
 
 # Serialization is per-consumer, because the two halves of the wire do not agree
 # on a framework: velocity decodes the response with borsh, and the v2 programs
@@ -37,6 +37,13 @@ solana-address = { version = "~2.6", features = ["copy", "wincode"] }
 # the v2 programs enable neither, so no anchor code reaches them.
 anchor-lang = { version = "1.0.2", optional = true }
 wincode = { version = "0.5", features = ["derive"] }
+
+# The records are cast onto the response region at both ends of the wire, so
+# every one of them is `Pod`. The derive is also the layout check: a field
+# reordered into a padding hole stops compiling here rather than changing the
+# bytes the other program reads. `solana-address/bytemuck` is what makes
+# `Address` usable in a `Pod` record.
+bytemuck = { version = "1", features = ["derive"] }
 
 [features]
 default = []

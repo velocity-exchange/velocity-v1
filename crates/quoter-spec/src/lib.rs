@@ -40,6 +40,13 @@
 //! records per section, in declaration order. Sections are contiguous; the
 //! caller owns anything past the last one.
 //!
+//! A quoter does not serialize a response, it streams one: the records come
+//! out of a book walk that does not know a section's count until it ends. The
+//! streaming writers are [`QuoteWriter`] and [`ExecuteWriter`], and they live
+//! here for the reason the records do. A section a quoter forgets to write is
+//! the same disagreement as a field read at the wrong offset. The sections are
+//! `finish`'s parameters, so a new one stops every quoter compiling.
+//!
 //! An execute response is [`ExecuteHeaderV0`], then [`UserBalanceChangeV0`],
 //! then [`CancelledRemainderV0`], then [`CompletedOrderV0`]. Completed order
 //! ids are their own section rather than a list inside each change: a quoter
@@ -61,7 +68,10 @@
 // wincode dependency — the framing is this crate's to define, so the encoder
 // is too.
 pub use wincode;
+pub mod write;
+pub use write::{ExecuteWriter, QuoteWriter};
 use {
+    bytemuck::{Pod, Zeroable},
     solana_address::Address as Pubkey,
     wincode::{SchemaRead, SchemaWrite},
 };
@@ -80,7 +90,7 @@ use {
     feature = "anchor-derive",
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, SchemaRead, SchemaWrite)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Pod, Zeroable, SchemaRead, SchemaWrite)]
 #[wincode(assert_zero_copy)]
 pub struct UserRefV0 {
     pub authority: Pubkey,
@@ -113,7 +123,7 @@ impl UserRefV0 {
 /// base from them — and added when the taker went short. `quote_size` moves
 /// the opposite way.
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, SchemaRead, SchemaWrite)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Pod, Zeroable, SchemaRead, SchemaWrite)]
 #[wincode(assert_zero_copy)]
 pub struct UserBalanceChangeV0 {
     pub base_size: u64,
@@ -129,7 +139,7 @@ pub struct UserBalanceChangeV0 {
 /// Both unwind the maker's aggregates, but only this one carries a size to
 /// release.
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, SchemaRead, SchemaWrite)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Pod, Zeroable, SchemaRead, SchemaWrite)]
 #[wincode(assert_zero_copy)]
 pub struct CancelledRemainderV0 {
     pub order_id: u64,
@@ -145,7 +155,7 @@ pub struct CancelledRemainderV0 {
 /// releases any per-order state it keeps against the book, so an id for an
 /// order still live on the book frees a live order's shadow.
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, SchemaRead, SchemaWrite)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Pod, Zeroable, SchemaRead, SchemaWrite)]
 #[wincode(assert_zero_copy)]
 pub struct CompletedOrderV0 {
     pub order_id: u64,
@@ -184,7 +194,7 @@ pub struct CompletedOrderV0 {
 
 /// One rung of a quoted ladder: `size` available at `price`.
 #[repr(C)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, SchemaRead, SchemaWrite)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Pod, Zeroable, SchemaRead, SchemaWrite)]
 #[wincode(assert_zero_copy)]
 pub struct PriceLevelV0 {
     pub price: u64,
@@ -246,11 +256,7 @@ impl<'a> ExecuteResponseV0<'a> {
     /// move the amounts it reported.
     pub fn parse(bytes: &'a [u8]) -> Result<Self, SpecError> {
         let response: Self = wincode::deserialize(bytes).map_err(|_| SpecError::Read)?;
-        if response
-            .completed
-            .iter()
-            .any(|entry| entry.change_index as usize >= response.changes.len())
-        {
+        if !completed_orders_fit(response.completed, response.changes.len()) {
             return Err(SpecError::DanglingCompletedOrder);
         }
         Ok(response)
@@ -279,9 +285,13 @@ impl<'a> ExecuteResponseV0<'a> {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, SchemaRead, SchemaWrite)]
 pub struct QuoteResponseV0<'a> {
     pub levels: &'a [PriceLevelV0],
-    /// The best price this quoter could have offered but did not, because the
-    /// liquidity there belongs to a user the caller did not load. Zero when
-    /// nothing was left out.
+    /// The best price this quoter could have offered but did not, and the base
+    /// resting there, because that liquidity belongs to a user the caller did
+    /// not load. Zeroed when nothing was left out.
+    ///
+    /// A [`PriceLevelV0`] because that is what it is: one rung the ladder
+    /// stops short of. It also keeps the tail of this response one record, so
+    /// a quoter writes it the way it writes a rung.
     ///
     /// A caller cannot carry every user a book might hold — a transaction
     /// locks at most 64 accounts and a maker costs two — so a quoter that
@@ -294,9 +304,7 @@ pub struct QuoteResponseV0<'a> {
     /// enforceable. A caller that skipped this liquidity and filled elsewhere
     /// at a worse price did not run out of room, it routed around a
     /// competitor, and this field is how its own checks can tell.
-    pub withheld_price: u64,
-    /// Base resting at [`Self::withheld_price`] that the same skip cost.
-    pub withheld_base: u64,
+    pub withheld: PriceLevelV0,
 }
 
 impl<'a> QuoteResponseV0<'a> {
@@ -317,11 +325,42 @@ pub enum SpecError {
     Read,
     /// A `change_index` names a balance change the response does not contain.
     DanglingCompletedOrder,
+    /// The region cannot hold another record of the response being written.
+    RegionTooSmall,
+    /// The region does not start on the step its records need. A response
+    /// written there could not be read in place.
+    RegionMisaligned,
+}
+
+/// Whether every completed order names a balance change that exists.
+///
+/// The bound both halves of the wire hold: [`ExecuteResponseV0::parse`]
+/// refuses a response that breaks it, and [`ExecuteWriter::finish`] refuses to
+/// write one.
+pub(crate) fn completed_orders_fit(completed: &[CompletedOrderV0], changes: usize) -> bool {
+    completed
+        .iter()
+        .all(|entry| (entry.change_index as usize) < changes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A response region on the 8-byte step a real account gives one. Backed
+    /// by `u64`s because the records are cast in place at both ends of the
+    /// wire, and a `Vec<u8>` promises no more than byte alignment.
+    struct Region(Vec<u64>);
+
+    impl Region {
+        fn new(bytes: usize) -> Self {
+            Self(vec![0; bytes.div_ceil(LEN_BYTES)])
+        }
+
+        fn bytes(&mut self) -> &mut [u8] {
+            bytemuck::cast_slice_mut(&mut self.0)
+        }
+    }
 
     fn user(seed: u8, sub: u16) -> UserRefV0 {
         UserRefV0 {
@@ -458,16 +497,156 @@ mod tests {
         ];
         let bytes = wincode::serialize(&QuoteResponseV0 {
             levels: &levels,
-            withheld_price: 0,
-            withheld_base: 0,
+            withheld: PriceLevelV0::default(),
         })
         .unwrap();
         let response = QuoteResponseV0::parse(&bytes).unwrap();
         assert_eq!(response.levels, levels.as_slice());
     }
 
-    /// A streaming writer lays the prefix down itself, so what this crate
-    /// says it is has to be what wincode actually writes.
+    /// The writers and the reader are the two halves of this crate, and this is
+    /// what holds them together: bytes a writer produced must equal wincode's
+    /// encoding of the same response, and must parse back.
+    #[test]
+    fn the_execute_writer_writes_what_the_reader_reads() {
+        let (c, x, d) = (changes(), cancelled(), completed());
+        let mut region = Region::new(512);
+
+        let mut writer = ExecuteWriter::new();
+        // Streamed the way a fill produces them: two changes appended, then
+        // the first one found again and added into, as a repeat maker does.
+        let first = writer.push_change(region.bytes(), c[0]).unwrap();
+        writer.push_change(region.bytes(), c[1]).unwrap();
+        let found = writer
+            .changes(region.bytes())
+            .unwrap()
+            .iter()
+            .position(|change| change.user == c[0].user)
+            .unwrap();
+        assert_eq!(found as u32, first);
+        let record = writer.change_mut(region.bytes(), first).unwrap();
+        record.base_size += 3;
+        record.quote_size += 4;
+        let len = writer.finish(region.bytes(), &x, &d).unwrap();
+
+        let mut merged = c;
+        merged[0].base_size += 3;
+        merged[0].quote_size += 4;
+        let expected = ExecuteResponseV0 {
+            changes: &merged,
+            cancelled: &x,
+            completed: &d,
+        };
+        assert_eq!(
+            &region.bytes()[..len],
+            wincode::serialize(&expected).unwrap().as_slice()
+        );
+        assert_eq!(
+            ExecuteResponseV0::parse(&region.bytes()[..len]).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn the_quote_writer_writes_what_the_reader_reads() {
+        let levels = [
+            PriceLevelV0 {
+                price: 100,
+                size: 5,
+            },
+            PriceLevelV0 { price: 99, size: 7 },
+        ];
+        let withheld = PriceLevelV0 {
+            price: 98,
+            size: 11,
+        };
+        let mut region = Region::new(256);
+
+        let mut writer = QuoteWriter::new();
+        for level in levels {
+            writer.push_level(region.bytes(), level).unwrap();
+        }
+        assert_eq!(writer.levels(), levels.len());
+        let len = writer.finish(region.bytes(), withheld).unwrap();
+
+        assert_eq!(
+            &region.bytes()[..len],
+            wincode::serialize(&QuoteResponseV0 {
+                levels: &levels,
+                withheld,
+            })
+            .unwrap()
+            .as_slice()
+        );
+        let response = QuoteResponseV0::parse(&region.bytes()[..len]).unwrap();
+        assert_eq!(response.levels, levels.as_slice());
+        assert_eq!(response.withheld, withheld);
+    }
+
+    /// The writer holds the bound the reader checks, so a quoter fails on its
+    /// own bug instead of on the router's rejection of the response.
+    #[test]
+    fn a_dangling_completed_order_is_refused_at_write_time() {
+        let mut region = Region::new(256);
+        let mut writer = ExecuteWriter::new();
+        writer.push_change(region.bytes(), changes()[0]).unwrap();
+        assert_eq!(
+            writer.finish(
+                region.bytes(),
+                &[],
+                &[CompletedOrderV0 {
+                    order_id: 1,
+                    change_index: 1,
+                    _pad: 0,
+                }],
+            ),
+            Err(SpecError::DanglingCompletedOrder)
+        );
+    }
+
+    /// A region the records cannot be read at is refused rather than written.
+    /// The response would be unreadable, and its reader is a CPI away.
+    #[test]
+    fn a_misaligned_region_is_an_error_not_a_panic() {
+        let mut region = Region::new(256);
+        let skewed = &mut region.bytes()[1..];
+        let mut writer = QuoteWriter::new();
+        assert_eq!(
+            writer.push_level(skewed, PriceLevelV0 { price: 1, size: 2 }),
+            Err(SpecError::RegionMisaligned)
+        );
+        // And a response with no records at all is refused too, on the report
+        // behind the empty ladder.
+        assert_eq!(
+            QuoteWriter::new().finish(skewed, PriceLevelV0::default()),
+            Err(SpecError::RegionMisaligned)
+        );
+    }
+
+    /// A region too small fails on the record that does not fit, and never
+    /// writes past its end.
+    #[test]
+    fn a_full_region_stops_the_writer() {
+        let mut region = Region::new(LEN_BYTES + 2 * PRICE_LEVEL_BYTES);
+        // Room for the prefix and one rung, and nothing after them.
+        let bytes = &mut region.bytes()[..LEN_BYTES + PRICE_LEVEL_BYTES];
+        let mut writer = QuoteWriter::new();
+        writer
+            .push_level(bytes, PriceLevelV0 { price: 1, size: 2 })
+            .unwrap();
+        assert_eq!(
+            writer.push_level(bytes, PriceLevelV0 { price: 3, size: 4 }),
+            Err(SpecError::RegionTooSmall)
+        );
+        // And the withheld report has nowhere to go either.
+        assert_eq!(
+            writer.finish(bytes, PriceLevelV0::default()),
+            Err(SpecError::RegionTooSmall)
+        );
+    }
+
+    /// The writers lay the prefix down themselves, so what this crate says it
+    /// is has to be what wincode actually writes.
     #[test]
     fn the_length_prefix_is_what_wincode_writes() {
         let levels = [
@@ -476,8 +655,7 @@ mod tests {
         ];
         let bytes = wincode::serialize(&QuoteResponseV0 {
             levels: &levels,
-            withheld_price: 0,
-            withheld_base: 0,
+            withheld: PriceLevelV0::default(),
         })
         .unwrap();
         assert_eq!(&bytes[..LEN_BYTES], &len_prefix(levels.len()));
@@ -488,15 +666,15 @@ mod tests {
         );
 
         // And the report round trips from that tail.
+        let withheld = PriceLevelV0 { price: 7, size: 9 };
         let bytes = wincode::serialize(&QuoteResponseV0 {
             levels: &levels,
-            withheld_price: 7,
-            withheld_base: 9,
+            withheld,
         })
         .unwrap();
         let response = QuoteResponseV0::parse(&bytes).unwrap();
         assert_eq!(response.levels, levels.as_slice());
-        assert_eq!((response.withheld_price, response.withheld_base), (7, 9));
+        assert_eq!(response.withheld, withheld);
     }
 
     /// Nine constrained users against eight slots. The eight tightest keep

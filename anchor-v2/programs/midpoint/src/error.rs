@@ -27,3 +27,16 @@ pub enum MidpointError {
     #[msg("Post-operation invariant check failed")]
     InvariantViolated,
 }
+
+impl From<quoter_spec::SpecError> for MidpointError {
+    /// A response this quoter's own region could not hold, or could not be
+    /// read at, is a program bug rather than a caller's: the region size and
+    /// every record stride are fixed at compile time, and
+    /// `state::tests` pins the widest response against the region.
+    fn from(error: quoter_spec::SpecError) -> Self {
+        match error {
+            quoter_spec::SpecError::DanglingCompletedOrder => MidpointError::InvariantViolated,
+            _ => MidpointError::ResponseTooLarge,
+        }
+    }
+}

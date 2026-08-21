@@ -27,7 +27,6 @@ pub mod emit;
 pub mod error;
 pub mod events;
 pub mod instructions;
-pub mod response;
 pub mod state;
 
 #[cfg(test)]

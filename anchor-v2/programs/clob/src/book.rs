@@ -59,18 +59,18 @@ use {
     crate::{
         error::ClobError,
         events::FillSlimV0,
-        response::ResponseWriter,
         state::{
-            CancelAllOutcome, CancelSidesExt, CancelSidesV0, CancelledRemainderV0,
-            ClobDirectionExt, ClobHeaderV0, ClobMarketV0, ClobSideExt, CompletedOrderV0, Direction,
-            ExecuteOutcome, MarketConfigV0, OrderBitFlag, OrderNodeV0, OrderRefV0,
-            PlaceOrderParams, RemovedOrder, ResponsePointerV0, Side, UserCapsV0, UserRefV0,
-            BASE_PRECISION, CANCEL_ALL_ORDERS_CEILING, CHANGE_MIN_BYTES, EXECUTE_FILLS_CEILING,
-            EXECUTE_USERS_CEILING, QUOTE_LEVELS_CEILING, USER_CAPS_CAPACITY,
-            USER_EXCLUSION_BITMAP_BYTES, USER_REF_BYTES, USER_SET_CAPACITY, ZERO_ADDRESS,
+            response_pointer, CancelAllOutcome, CancelSidesExt, CancelSidesV0,
+            CancelledRemainderV0, ClobDirectionExt, ClobHeaderV0, ClobMarketV0, ClobSideExt,
+            CompletedOrderV0, Direction, ExecuteOutcome, MarketConfigV0, OrderBitFlag, OrderNodeV0,
+            OrderRefV0, PlaceOrderParams, PriceLevel, RemovedOrder, ResponsePointerV0, Side,
+            UserBalanceChangeV0, UserCapsV0, UserRefV0, BASE_PRECISION, CANCEL_ALL_ORDERS_CEILING,
+            EXECUTE_FILLS_CEILING, EXECUTE_USERS_CEILING, QUOTE_LEVELS_CEILING, USER_CAPS_CAPACITY,
+            USER_EXCLUSION_BITMAP_BYTES, USER_SET_CAPACITY, ZERO_ADDRESS,
         },
     },
     anchor_lang_v2::{address_eq, prelude::*},
+    quoter_spec::{ExecuteWriter, QuoteWriter},
 };
 
 /// Null link sentinel. The account zero-inits and 0 is a valid node index,
@@ -87,19 +87,6 @@ pub const NIL: u32 = u32::MAX;
 const fn both_or_neither(a: bool, b: bool) -> bool {
     a == b
 }
-
-/// Field offsets inside a `UserBalanceChangeV0` record as written into the
-/// response region: `[base u64][quote u64][user 34][pad 6]`. The record is
-/// fixed-width, so a fill that lands on a user already in the response edits
-/// its two totals in place and nothing after it moves. The widths themselves
-/// live in `quoter-spec`, which declares the record.
-/// Explicit tail padding on the two 56-byte records, carried so the layout
-/// has no implicit hole for the record's alignment to fill.
-const CHANGE_PAD_BYTES: usize = 6;
-
-const CHANGE_BASE: usize = 0;
-const CHANGE_QUOTE: usize = CHANGE_BASE + core::mem::size_of::<u64>();
-const CHANGE_USER: usize = CHANGE_QUOTE + core::mem::size_of::<u64>();
 
 /// Book operations over the market slab. A trait because inherent impls
 /// aren't allowed on the foreign `Slab` type.
@@ -686,8 +673,7 @@ impl ClobBook for ClobMarketV0 {
         let max_fills = self.max_execute_fills.min(EXECUTE_FILLS_CEILING) as usize;
         let max_users = self.max_execute_users.min(EXECUTE_USERS_CEILING) as usize;
         let grace_slots = self.unknown_user_grace_slots;
-        let mut writer = ResponseWriter::new();
-        let count_offset = writer.reserve_count(self)?;
+        let mut writer = QuoteWriter::new();
         let mut levels = 0usize;
         // Orders promised so far, against `execute`'s budget rather than this
         // walk's own.
@@ -724,7 +710,7 @@ impl ClobBook for ClobMarketV0 {
         let mut seen_users = [0u8; USER_EXCLUSION_BITMAP_BYTES];
         let mut distinct_users = 0usize;
         // Where the walk gave up for want of a loaded user, if it did.
-        let mut withheld: Option<(u64, u64)> = None;
+        let mut withheld: Option<PriceLevel> = None;
 
         walk_side(self, side, |book, _, node| {
             // Mirrors `execute`'s own stop, in the same place in the walk, so
@@ -744,7 +730,10 @@ impl ClobBook for ClobMarketV0 {
                 Settleable::Yes => {}
                 Settleable::TooFresh => return Ok(Walk::Continue),
                 Settleable::Withheld => {
-                    withheld = Some((node.price, node.base_asset_amount));
+                    withheld = Some(PriceLevel {
+                        price: node.price,
+                        size: node.base_asset_amount,
+                    });
                     return Ok(Walk::Stop);
                 }
             }
@@ -794,13 +783,12 @@ impl ClobBook for ClobMarketV0 {
             write_level(self, &mut writer, side, &mut written, price, aggregate)?;
         }
 
-        writer.patch_count(self, count_offset, levels as usize)?;
-        // The withheld report sits behind the ladder, which is where
-        // `QuoteResponseV0` declares it.
-        let (withheld_price, withheld_base) = withheld.unwrap_or((0, 0));
-        writer.append_u64(self, withheld_price)?;
-        writer.append_u64(self, withheld_base)?;
-        Ok(writer.finish())
+        // `finish` backfills the ladder's count and writes the withheld report
+        // behind it, which is the shape `QuoteResponseV0` declares.
+        let len = writer
+            .finish(&mut self.response, withheld.unwrap_or_default())
+            .map_err(ClobError::from)?;
+        Ok(response_pointer(len))
     }
 
     /// Consume matchable orders best-first, removing filled orders and
@@ -845,10 +833,7 @@ impl ClobBook for ClobMarketV0 {
         let base_precision = self.base_precision.max(1) as u128;
         let count_before = self.node_count(side);
 
-        let mut writer = ResponseWriter::new();
-        let changes_count_offset = writer.reserve_count(self)?;
-        let records_start = writer.len();
-        let mut change_count = 0usize;
+        let mut writer = ExecuteWriter::new();
         // Only the event needs per-order detail (the response merges by
         // user), so this is the one collection execute still builds.
         let mut fills: Vec<FillSlimV0> = Vec::with_capacity(max_fills);
@@ -878,7 +863,8 @@ impl ClobBook for ClobMarketV0 {
             if !is_matchable(node, taker, slot, now) || gate.skips(book, node)? {
                 return Ok(Walk::Continue);
             }
-            let owner = users.iter().position(|u| *u == node.user_ref());
+            let user = node.user_ref();
+            let owner = users.iter().position(|u| *u == user);
             match settleable(users, owner, node, grace_slots, slot) {
                 Settleable::Yes => {}
                 Settleable::TooFresh => return Ok(Walk::Continue),
@@ -888,10 +874,15 @@ impl ClobBook for ClobMarketV0 {
             if take == 0 {
                 return Ok(Walk::Continue);
             }
-            let user_key = node.user_ref().to_bytes();
-            let existing =
-                find_change_record(book, &writer, records_start, change_count, &user_key)?;
-            if existing.is_none() && change_count == max_users {
+            // The records already written are the accumulator, so a repeat
+            // maker is a scan of them rather than a table this frame has no
+            // room for.
+            let existing = writer
+                .changes(&book.response)
+                .map_err(ClobError::from)?
+                .iter()
+                .position(|change| change.user == user);
+            if existing.is_none() && writer.changes_len() == max_users {
                 return Ok(Walk::Stop);
             }
             check_fill_price(side, filled, node.price, take)?;
@@ -916,20 +907,33 @@ impl ClobBook for ClobMarketV0 {
                 .try_into()
                 .map_err(|_| ClobError::MathError)?;
             paid = swept_quote;
-            let record = match existing {
-                Some(offset) => {
-                    writer.add_u64(book, offset + CHANGE_BASE, take)?;
-                    writer.add_u64(book, offset + CHANGE_QUOTE, quote_size)?;
-                    offset
+            let change_index = match existing {
+                Some(index) => {
+                    let index = index as u32;
+                    let record = writer
+                        .change_mut(&mut book.response, index)
+                        .map_err(ClobError::from)?;
+                    record.base_size = record
+                        .base_size
+                        .checked_add(take)
+                        .ok_or(ClobError::MathError)?;
+                    record.quote_size = record
+                        .quote_size
+                        .checked_add(quote_size)
+                        .ok_or(ClobError::MathError)?;
+                    index
                 }
-                None => {
-                    let offset = writer.append_u64(book, take)?;
-                    writer.append_u64(book, quote_size)?;
-                    writer.append(book, &user_key)?;
-                    writer.append(book, &[0u8; CHANGE_PAD_BYTES])?;
-                    change_count += 1;
-                    offset
-                }
+                None => writer
+                    .push_change(
+                        &mut book.response,
+                        UserBalanceChangeV0 {
+                            base_size: take,
+                            quote_size,
+                            user,
+                            _pad: [0; 6],
+                        },
+                    )
+                    .map_err(ClobError::from)?,
             };
             fills.push(FillSlimV0 {
                 order_id: node.order_id,
@@ -941,13 +945,9 @@ impl ClobBook for ClobMarketV0 {
                 // its own, written once the changes are done. Growing the
                 // record in place would mean shifting every record after it on
                 // every consumed order.
-                let change_index = record
-                    .checked_sub(records_start)
-                    .map(|delta| delta / CHANGE_MIN_BYTES)
-                    .ok_or(ClobError::ResponseTooLarge)?;
                 completed.push(CompletedOrderV0 {
                     order_id: node.order_id,
-                    change_index: change_index as u32,
+                    change_index,
                     _pad: 0,
                 });
                 remove_order(book, index)?;
@@ -981,24 +981,13 @@ impl ClobBook for ClobMarketV0 {
             })
         })?;
 
-        writer.patch_count(self, changes_count_offset, change_count)?;
-
-        let cancelled_count_offset = writer.reserve_count(self)?;
-        if let Some(cull) = cancelled {
-            writer.append_u64(self, cull.order_id)?;
-            writer.append_u64(self, cull.base_asset_amount)?;
-            writer.append(self, &cull.user.to_bytes())?;
-            writer.append(self, &[0u8; CHANGE_PAD_BYTES])?;
-            writer.patch_count(self, cancelled_count_offset, 1)?;
-        }
-
-        let completed_count_offset = writer.reserve_count(self)?;
-        for entry in &completed {
-            writer.append_u64(self, entry.order_id)?;
-            writer.append(self, &entry.change_index.to_le_bytes())?;
-            writer.append(self, &entry._pad.to_le_bytes())?;
-        }
-        writer.patch_count(self, completed_count_offset, completed.len())?;
+        // `finish` backfills the change count and writes the two remaining
+        // sections in the order `ExecuteResponseV0` declares them.
+        let response = response_pointer(
+            writer
+                .finish(&mut self.response, cancelled.as_slice(), &completed)
+                .map_err(ClobError::from)?,
+        );
 
         // Every removal the walk made came off this side.
         let expected_count = count_before
@@ -1011,7 +1000,7 @@ impl ClobBook for ClobMarketV0 {
         self.validate_book()?;
 
         Ok(ExecuteOutcome {
-            response: writer.finish(),
+            response,
             fills,
             cancelled_order_id: cancelled.map(|cull| cull.order_id),
         })
@@ -1447,7 +1436,7 @@ fn best_actionable_price(
 /// so.
 fn write_level(
     book: &mut ClobMarketV0,
-    writer: &mut ResponseWriter,
+    writer: &mut QuoteWriter,
     side: Side,
     written: &mut Option<u64>,
     price: u64,
@@ -1458,8 +1447,9 @@ fn write_level(
         written.is_none_or(|before| side.is_worse_price(price, before)),
         ClobError::InvalidResponseLevel
     );
-    writer.append_u64(book, price)?;
-    writer.append_u64(book, size)?;
+    writer
+        .push_level(&mut book.response, PriceLevel { price, size })
+        .map_err(ClobError::from)?;
     *written = Some(price);
     Ok(())
 }
@@ -1477,30 +1467,6 @@ fn check_fill_price(side: Side, filled: Option<u64>, price: u64, take: u64) -> R
         ClobError::InvalidResponseLevel
     );
     Ok(())
-}
-
-/// Offset of the balance-change record already written for `user_key`, by
-/// walking the record stream (records are variable length — the completed-id
-/// list grows). The scan is the same O(users) the heap-`Vec` version did.
-fn find_change_record(
-    book: &ClobMarketV0,
-    writer: &ResponseWriter,
-    start: usize,
-    count: usize,
-    user_key: &[u8; USER_REF_BYTES],
-) -> Result<Option<usize>> {
-    for i in 0..count {
-        let offset = start
-            .checked_add(
-                i.checked_mul(CHANGE_MIN_BYTES)
-                    .ok_or(ClobError::MathError)?,
-            )
-            .ok_or(ClobError::ResponseTooLarge)?;
-        if writer.matches(book, offset + CHANGE_USER, user_key)? {
-            return Ok(Some(offset));
-        }
-    }
-    Ok(None)
 }
 
 /// Postcondition for an operation that removed exactly one order: the list

@@ -68,3 +68,18 @@ pub enum ClobError {
     #[msg("Deprecated: a crossed taker-origin order is skipped, not rejected")]
     TakerOriginCrossPending,
 }
+
+impl From<quoter_spec::SpecError> for ClobError {
+    /// A response the market's own region could not hold or could not be read
+    /// at is a program bug, not a caller's: the region size and every record
+    /// stride are fixed at compile time, and `state`'s ceilings are what make
+    /// both unreachable for a market whose config the init/update checks
+    /// accepted. A dangling completed order is the same kind of bug one step
+    /// further in — the walk named a balance change it never wrote.
+    fn from(error: quoter_spec::SpecError) -> Self {
+        match error {
+            quoter_spec::SpecError::DanglingCompletedOrder => ClobError::BookInvariantViolated,
+            _ => ClobError::ResponseTooLarge,
+        }
+    }
+}

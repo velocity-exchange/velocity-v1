@@ -41,7 +41,70 @@ function split(
 	return splitAcrossQuoters(direction, size, shaped, step);
 }
 
+function splitReserving(
+	direction: PositionDirection,
+	size: BN,
+	books: [number, ReturnType<typeof level>[]][],
+	reserve: [number, ReturnType<typeof level>],
+	step: BN = ONE
+) {
+	const shaped: RouterQuoterBook[] = books.map(([priority, levels]) => ({
+		priority,
+		levels,
+	}));
+	return splitAcrossQuoters(direction, size, shaped, step, {
+		priority: reserve[0],
+		level: reserve[1],
+	});
+}
+
 describe('router split (mirror of math/router.rs)', () => {
+	// `withheld_depth_is_reserved_from_worse_quoters`
+	it('reserves withheld depth from worse quoters', () => {
+		const books: [number, ReturnType<typeof level>[]][] = [
+			[CLOB_PRIORITY, [level(100, B)]],
+			[VAMM_PRIORITY, [level(102, B.muln(5))]],
+		];
+		const reserve: [number, ReturnType<typeof level>] = [
+			CLOB_PRIORITY,
+			level(101, B.muln(2)),
+		];
+
+		const open = split(PositionDirection.LONG, B.muln(5), books);
+		assert.isTrue(open[0].base.eq(B), 'the book fills what it quoted');
+		assert.isTrue(open[1].base.eq(B.muln(4)), 'the vAMM takes the whole rest');
+
+		const held = splitReserving(
+			PositionDirection.LONG,
+			B.muln(5),
+			books,
+			reserve
+		);
+		assert.isTrue(held[0].base.eq(B), 'the book still fills what it quoted');
+		assert.isTrue(
+			held[1].base.eq(B.muln(2)),
+			"the vAMM only gets what is left once the book's own depth is kept back"
+		);
+		assert.equal(held.length, books.length, 'the reserve is not a quoter');
+	});
+
+	// `a_reserve_does_not_hold_back_a_better_price`
+	it('does not hold back a better price than the one withheld', () => {
+		const held = splitReserving(
+			PositionDirection.LONG,
+			B.muln(5),
+			[
+				[CLOB_PRIORITY, [level(100, B)]],
+				[VAMM_PRIORITY, [level(100, B.muln(5))]],
+			],
+			[CLOB_PRIORITY, level(101, B.muln(2))]
+		);
+		assert.isTrue(
+			held[0].base.add(held[1].base).eq(B.muln(5)),
+			'nothing is held back'
+		);
+	});
+
 	it('fills one book partially then caps at its depth', () => {
 		let out = split(PositionDirection.LONG, B.muln(3), [
 			[CLOB_PRIORITY, [level(100, B.muln(2)), level(101, B.muln(2))]],

@@ -45,7 +45,6 @@ velocity-admin spot-market set-deposit-cap <market> <threshold> <pctPerDay>
 velocity-admin exchange set-status <bitfield>
 velocity-admin exchange set-slot-duration-ms <ms>      # warm admin; stage next gate value (400->350->300->250->200) during its warmup (previews the gate's activation/effective slots); State auto-switches at the boundary
 velocity-admin exchange set-solvency-status <bitfield>  # cold admin; gates solvency-repair ixs (1=solvencyRepairPaused)
-velocity-admin exchange set-accelerated-referral-enrollment <enabled>  # warm/cold admin; while enabled, account init and eligible fills/swaps permanently grant Accelerated referral status
 
 velocity-admin feature-flags median-trigger-price <true|false>  # bit 2; enabling requires cold admin
 velocity-admin feature-flags builder-codes <true|false>  # bit 4; enabling requires cold admin

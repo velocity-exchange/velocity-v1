@@ -3230,7 +3230,6 @@ pub mod liquidate_perp_with_fill {
             liquidation_margin_buffer_ratio: 10,
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
             liquidation_duration: legacy_slot_duration_u8(150),
-            accelerated_referral_enrollment_enabled: 1,
             ..Default::default()
         };
 
@@ -3314,9 +3313,8 @@ pub mod liquidate_perp_with_fill {
         let market_after = perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 360000);
 
-        // Being liquidated is not an eligible interaction: the liquidatee holds the taker
-        // seat but did not initiate the fill. The maker seat is a voluntary fill and does
-        // enroll, the same as in any other fill.
+        // A liquidation does not enroll the liquidatee, who holds the taker seat without
+        // having placed the fill. The maker seat enrolls as it would on any other fill.
         assert!(!user_stats_account_loader
             .load()
             .unwrap()

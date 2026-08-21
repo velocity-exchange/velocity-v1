@@ -289,10 +289,10 @@ pub fn get_revenue_share_escrow_account<'a>(
 /// status. The account is intentionally readonly: popular referrers must not
 /// become writable lock hotspots on every referee fill.
 ///
-/// The account is optional and is only consumed when it is present, is a `UserStats`, and
-/// belongs to the escrow's referrer. Anything else leaves the iterator untouched and yields
-/// the standard reward rate, so a caller that does not supply it still fills. The flag only
-/// selects between two reward rates, which is not worth failing a fill over.
+/// The account is optional. It is consumed only when it is present, is a `UserStats`, and
+/// belongs to the escrow's referrer. Anything else leaves the iterator untouched and returns
+/// the standard rate, so a caller that omits it still fills. The account selects a reward
+/// rate and nothing else, so a missing one does not fail the fill.
 pub fn get_referrer_accelerated_status<'a>(
     account_info_iter: &mut Peekable<Iter<'a, AccountInfo<'a>>>,
     escrow: Option<&RevenueShareEscrowZeroCopyMut<'a>>,

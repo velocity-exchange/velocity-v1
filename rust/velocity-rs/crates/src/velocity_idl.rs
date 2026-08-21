@@ -1219,16 +1219,6 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for TripEquityFloorBreaker {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
-    pub struct UpdateAcceleratedReferralEnrollment {
-        pub enabled: bool,
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for UpdateAcceleratedReferralEnrollment {
-        const DISCRIMINATOR: &[u8] = &[190, 111, 21, 165, 106, 186, 104, 77];
-    }
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for UpdateAcceleratedReferralEnrollment {}
-    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdateAdmin {
         pub admin: Pubkey,
     }
@@ -5246,9 +5236,8 @@ pub mod types {
         pub pending_slot_duration_ms: u16,
         pub slot_duration_pad: [u8; 2],
         pub slot_duration_effective_slot: u64,
-        pub accelerated_referral_enrollment_enabled: u8,
         #[serde(skip)]
-        pub padding: Padding<231>,
+        pub padding: Padding<232>,
     }
     #[repr(C)]
     #[derive(
@@ -6594,9 +6583,8 @@ pub mod accounts {
         pub pending_slot_duration_ms: u16,
         pub slot_duration_pad: [u8; 2],
         pub slot_duration_effective_slot: u64,
-        pub accelerated_referral_enrollment_enabled: u8,
         #[serde(skip)]
-        pub padding: Padding<231>,
+        pub padding: Padding<232>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for State {
@@ -16383,70 +16371,6 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for TripEquityFloorBreaker {
-        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let given_disc = &buf[..8];
-            if Self::DISCRIMINATOR != given_disc {
-                return Err(anchor_lang::error!(
-                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
-                ));
-            }
-            Self::try_deserialize_unchecked(buf)
-        }
-        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let mut data: &[u8] = &buf[8..];
-            AnchorDeserialize::deserialize(&mut data)
-                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
-        }
-    }
-    #[repr(C)]
-    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
-    pub struct UpdateAcceleratedReferralEnrollment {
-        pub admin: Pubkey,
-        pub state: Pubkey,
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for UpdateAcceleratedReferralEnrollment {
-        const DISCRIMINATOR: &[u8] = &[147, 110, 1, 134, 44, 225, 118, 211];
-    }
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Pod for UpdateAcceleratedReferralEnrollment {}
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Zeroable for UpdateAcceleratedReferralEnrollment {}
-    #[automatically_derived]
-    impl anchor_lang::ZeroCopy for UpdateAcceleratedReferralEnrollment {}
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for UpdateAcceleratedReferralEnrollment {}
-    #[automatically_derived]
-    impl ToAccountMetas for UpdateAcceleratedReferralEnrollment {
-        fn to_account_metas(&self) -> Vec<AccountMeta> {
-            vec![
-                AccountMeta {
-                    pubkey: self.admin,
-                    is_signer: true,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.state,
-                    is_signer: false,
-                    is_writable: true,
-                },
-            ]
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountSerialize for UpdateAcceleratedReferralEnrollment {
-        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
-            if writer.write_all(Self::DISCRIMINATOR).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            if AnchorSerialize::serialize(self, writer).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            Ok(())
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountDeserialize for UpdateAcceleratedReferralEnrollment {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {

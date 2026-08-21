@@ -169,8 +169,7 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         pending_slot_duration_ms: 0,
         slot_duration_pad: [0; 2],
         slot_duration_effective_slot: 0,
-        accelerated_referral_enrollment_enabled: 0,
-        padding: [0; 231],
+        padding: [0; 232],
     };
 
     Ok(())
@@ -2556,20 +2555,6 @@ pub fn handle_update_promo_fee_tier(
     );
 
     state.promo_fee_tier = promo_fee_tier;
-    Ok(())
-}
-
-pub fn handle_update_accelerated_referral_enrollment(
-    ctx: Context<AdminUpdateState>,
-    enabled: bool,
-) -> Result<()> {
-    let mut state = ctx.accounts.state.load_mut()?;
-    msg!(
-        "state.accelerated_referral_enrollment_enabled: {:?} -> {:?}",
-        state.accelerated_referral_enrollment_enabled,
-        enabled as u8
-    );
-    state.accelerated_referral_enrollment_enabled = enabled as u8;
     Ok(())
 }
 

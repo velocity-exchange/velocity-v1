@@ -1451,7 +1451,6 @@ pub fn fill_perp_order(
         referrer_is_accelerated,
         state.vamm_maker_rebate_enabled(),
         state.promo_fee_tier,
-        state.accelerated_referral_enrollment_enabled(),
     )?;
 
     if base_asset_amount != 0 {
@@ -2012,7 +2011,6 @@ fn fulfill_perp_order(
     referrer_is_accelerated: bool,
     vamm_maker_rebate: bool,
     promo_fee_tier: u8,
-    accelerated_referral_enrollment_enabled: bool,
 ) -> VelocityResult<(u64, u64)> {
     let market_index = user.orders[user_order_index].market_index;
 
@@ -2616,20 +2614,14 @@ fn fulfill_perp_order(
 
         if maker.authority != user.authority {
             let mut maker_stats = makers_and_referrer_stats.get_ref_mut(&maker.authority)?;
-            maker_stats.try_auto_enroll_accelerated_referral_and_emit(
-                accelerated_referral_enrollment_enabled,
-                now,
-            );
+            maker_stats.try_auto_enroll_accelerated_referral_and_emit(now);
         }
     }
 
-    // The maker seat above is a voluntary fill even during a liquidation, so it stays eligible.
-    // The taker seat of a liquidation fill is the liquidatee, who did not initiate anything.
+    // On a liquidation fill the taker seat is the liquidatee, who did not place the fill, so
+    // it does not enroll. The maker seat above is unaffected.
     if base_asset_amount != 0 && !fill_mode.is_liquidation() {
-        user_stats.try_auto_enroll_accelerated_referral_and_emit(
-            accelerated_referral_enrollment_enabled,
-            now,
-        );
+        user_stats.try_auto_enroll_accelerated_referral_and_emit(now);
     }
 
     if oracle_stale_for_margin {

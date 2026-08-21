@@ -8833,35 +8833,6 @@ export type Velocity = {
       "args": []
     },
     {
-      "name": "updateAcceleratedReferralEnrollment",
-      "discriminator": [
-        190,
-        111,
-        21,
-        165,
-        106,
-        186,
-        104,
-        77
-      ],
-      "accounts": [
-        {
-          "name": "admin",
-          "signer": true
-        },
-        {
-          "name": "state",
-          "writable": true
-        }
-      ],
-      "args": [
-        {
-          "name": "enabled",
-          "type": "bool"
-        }
-      ]
-    },
-    {
       "name": "updateAdmin",
       "discriminator": [
         161,
@@ -24784,19 +24755,9 @@ export type Velocity = {
             "type": "u64"
           },
           {
-            "name": "acceleratedReferralEnrollmentEnabled",
-            "docs": [
-              "When nonzero, successful user initialization and trades permanently",
-              "enroll eligible authorities into Accelerated referral rewards. Turning this off",
-              "stops new enrollment without changing users already tagged Accelerated."
-            ],
-            "type": "u8"
-          },
-          {
             "name": "padding",
             "docs": [
-              "231 = the former 244-byte padding minus the 12 bytes taken above and the",
-              "one byte Accelerated referral enrollment switch",
+              "232 = the former 244-byte padding minus the 12 bytes taken above",
               "(`pending_slot_duration_ms` 2 + `slot_duration_pad` 2 + the 8-byte",
               "`slot_duration_effective_slot`). The padding still absorbs the 8 bytes that",
               "were previously *implicit* trailing padding on x86_64 (State contains a",
@@ -24807,7 +24768,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                231
+                232
               ]
             }
           }

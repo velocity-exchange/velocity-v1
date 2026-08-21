@@ -7,8 +7,9 @@ use {
             auction::{calculate_auction_price, is_auction_complete},
             casting::Cast,
             constants::{
-                OPEN_ORDER_MARGIN_REQUIREMENT, QUOTE_SPOT_MARKET_INDEX, SPOT_WEIGHT_PRECISION,
-                SPOT_WEIGHT_PRECISION_I128, THIRTY_DAY,
+                ACCELERATED_REFERRAL_ENROLLMENT_ENABLED, OPEN_ORDER_MARGIN_REQUIREMENT,
+                QUOTE_SPOT_MARKET_INDEX, SPOT_WEIGHT_PRECISION, SPOT_WEIGHT_PRECISION_I128,
+                THIRTY_DAY,
             },
             margin::{
                 calculate_margin_requirement_and_total_collateral_and_liability_info,
@@ -2045,13 +2046,10 @@ impl UserStats {
 
     /// `try_auto_enroll_accelerated_referral` plus the transition event, for the eligible
     /// interactions (user initialization, perp fills, swaps) that all enroll the same way.
-    pub fn try_auto_enroll_accelerated_referral_and_emit(
-        &mut self,
-        enrollment_enabled: bool,
-        now: i64,
-    ) {
+    /// Reads `ACCELERATED_REFERRAL_ENROLLMENT_ENABLED` here so callers do not pass it down.
+    pub fn try_auto_enroll_accelerated_referral_and_emit(&mut self, now: i64) {
         let previous_status = self.accelerated_referral_status;
-        if self.try_auto_enroll_accelerated_referral(enrollment_enabled) {
+        if self.try_auto_enroll_accelerated_referral(ACCELERATED_REFERRAL_ENROLLMENT_ENABLED) {
             emit_accelerated_referral_status_changed(
                 now,
                 self.authority,

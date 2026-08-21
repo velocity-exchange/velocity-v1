@@ -143,19 +143,14 @@ pub struct State {
     /// activation slot + the one-epoch (432,000-slot) warmup, read from the IBRL
     /// feature account when the switch is staged. `0` when nothing is staged.
     pub slot_duration_effective_slot: u64,
-    /// When nonzero, successful user initialization and trades permanently
-    /// enroll eligible authorities into Accelerated referral rewards. Turning this off
-    /// stops new enrollment without changing users already tagged Accelerated.
-    pub accelerated_referral_enrollment_enabled: u8,
-    /// 231 = the former 244-byte padding minus the 12 bytes taken above and the
-    /// one byte Accelerated referral enrollment switch
+    /// 232 = the former 244-byte padding minus the 12 bytes taken above
     /// (`pending_slot_duration_ms` 2 + `slot_duration_pad` 2 + the 8-byte
     /// `slot_duration_effective_slot`). The padding still absorbs the 8 bytes that
     /// were previously *implicit* trailing padding on x86_64 (State contains a
     /// u128, align 16 on the host but 8 on SBF; explicit padding keeps
     /// `size_of::<State>()` 1744 on both targets, per the alignment invariant in
     /// docs/alignment-and-native-offsets.md).
-    pub padding: [u8; 231],
+    pub padding: [u8; 232],
 }
 
 /// Purpose-specific hot role keys held on `State`. Each variant maps to one of the
@@ -262,17 +257,12 @@ impl Default for State {
             pending_slot_duration_ms: 0,
             slot_duration_pad: [0; 2],
             slot_duration_effective_slot: 0,
-            accelerated_referral_enrollment_enabled: 0,
-            padding: [0; 231],
+            padding: [0; 232],
         }
     }
 }
 
 impl State {
-    pub fn accelerated_referral_enrollment_enabled(&self) -> bool {
-        self.accelerated_referral_enrollment_enabled != 0
-    }
-
     /// The live slot length, applying a staged switch once its effective slot has
     /// passed. Reads the current slot from the Clock sysvar so every existing
     /// caller keeps its signature; if the sysvar is unavailable (unit tests) it

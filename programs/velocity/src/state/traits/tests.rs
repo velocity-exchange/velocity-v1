@@ -180,11 +180,6 @@ mod native_instruction_offsets {
             1512,
             "State::slot_duration_effective_slot offset changed — update read_native_state_slot_duration"
         );
-        assert_eq!(
-            std::mem::offset_of!(State, accelerated_referral_enrollment_enabled) + DISC,
-            1520,
-            "State::accelerated_referral_enrollment_enabled must remain in former padding"
-        );
     }
 
     /// A staged switch takes effect exactly at its effective slot and not before;

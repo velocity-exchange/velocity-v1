@@ -1154,8 +1154,6 @@ export type StateAccount = {
 	 * slot + one-epoch warmup). 0 when nothing is staged.
 	 */
 	slotDurationEffectiveSlot: BN;
-	/** nonzero while successful account initialization and trades permanently grant Accelerated referral status */
-	acceleratedReferralEnrollmentEnabled: number;
 };
 
 /** Decoded mirror of the on-chain `PerpMarket` zero-copy account. */

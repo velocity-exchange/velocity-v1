@@ -3210,7 +3210,6 @@ pub mod fulfill_order {
             false,
             false,
             0,
-            true,
         )
         .unwrap();
 
@@ -3425,7 +3424,6 @@ pub mod fulfill_order {
             false,
             false,
             0,
-            false,
         )
         .unwrap();
 
@@ -3598,7 +3596,6 @@ pub mod fulfill_order {
             false,
             false,
             0,
-            false,
         )
         .unwrap();
 
@@ -3766,7 +3763,6 @@ pub mod fulfill_order {
             false,
             false,
             0,
-            false,
         )
         .unwrap();
 
@@ -3989,7 +3985,6 @@ pub mod fulfill_order {
             false,
             false,
             0,
-            false,
         )
         .unwrap();
 
@@ -4203,7 +4198,6 @@ pub mod fulfill_order {
             false,
             false,
             0,
-            false,
         )
         .unwrap();
 
@@ -4426,7 +4420,6 @@ pub mod fulfill_order {
             false,
             false,
             0,
-            false,
         )
         .unwrap();
 
@@ -4619,7 +4612,6 @@ pub mod fulfill_order {
             false,
             false,
             0,
-            false,
         )
         .unwrap();
 
@@ -4844,7 +4836,6 @@ pub mod fulfill_order {
             false,
             false,
             0,
-            false,
         );
 
         assert!(result.is_ok());
@@ -5055,7 +5046,6 @@ pub mod fulfill_order {
             false,
             false,
             0,
-            false,
         );
 
         assert_eq!(result, Err(ErrorCode::InsufficientCollateral));
@@ -5219,7 +5209,6 @@ pub mod fulfill_order {
             false,
             false,
             0,
-            false,
         )
         .unwrap();
 
@@ -5413,7 +5402,6 @@ pub mod fulfill_order {
             false,
             false,
             0,
-            false,
         )
         .unwrap();
 
@@ -6028,7 +6016,6 @@ pub mod fulfill_order {
             false,
             false,
             0,
-            false,
         )
         .unwrap();
 
@@ -6299,7 +6286,6 @@ pub mod fulfill_order {
             false,
             false,
             0,
-            false,
         )
         .unwrap();
 
@@ -6517,7 +6503,6 @@ pub mod fulfill_order {
             false,
             false,
             0,
-            false,
         )
         .unwrap();
 
@@ -6703,7 +6688,6 @@ pub mod fulfill_order {
             false,
             false,
             0,
-            false,
         )
         .unwrap();
 
@@ -10426,7 +10410,6 @@ pub mod builder_fee_margin_gate {
             false,
             false,
             0,
-            false,
         )
         .unwrap();
 
@@ -10781,7 +10764,6 @@ mod fill_gates_apply_to_a_reducing_fill {
             false,
             false,
             0,
-            false,
         )
         .map(|_| ())
     }

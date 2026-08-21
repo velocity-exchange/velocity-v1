@@ -189,10 +189,7 @@ pub fn handle_initialize_user<'c: 'info, 'info>(
 
     let mut state = ctx.accounts.state.load_mut()?;
     let now_ts = Clock::get()?.unix_timestamp;
-    user_stats.try_auto_enroll_accelerated_referral_and_emit(
-        state.accelerated_referral_enrollment_enabled(),
-        now_ts,
-    );
+    user_stats.try_auto_enroll_accelerated_referral_and_emit(now_ts);
     safe_increment!(state.number_of_sub_accounts, 1);
 
     let max_number_of_sub_accounts = state.max_number_of_sub_accounts();
@@ -271,10 +268,7 @@ pub fn handle_initialize_user_stats<'c: 'info, 'info>(
     };
 
     let mut state = ctx.accounts.state.load_mut()?;
-    user_stats.try_auto_enroll_accelerated_referral_and_emit(
-        state.accelerated_referral_enrollment_enabled(),
-        clock.unix_timestamp,
-    );
+    user_stats.try_auto_enroll_accelerated_referral_and_emit(clock.unix_timestamp);
     safe_increment!(state.number_of_authorities, 1);
 
     let max_number_of_sub_accounts = state.max_number_of_sub_accounts();
@@ -4808,10 +4802,7 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         now,
     )?;
 
-    user_stats.try_auto_enroll_accelerated_referral_and_emit(
-        state.accelerated_referral_enrollment_enabled(),
-        now,
-    );
+    user_stats.try_auto_enroll_accelerated_referral_and_emit(now);
 
     Ok(())
 }

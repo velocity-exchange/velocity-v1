@@ -60,11 +60,13 @@ builder_fee = notional × fee_tenth_bps / 100_000   ADDED on top of taker_fee; p
   taker fee (existing deployments keep whatever the tier already holds until
   `update_perp_fee_structure` changes it); Accelerated is a fixed 20% that ignores the
   tier. The referee discount remains 5% in both cases. Accelerated is a persistent flag on
-  `UserStats`. While `State.accelerated_referral_enrollment_enabled` is set, creating a
-  user account, filling a perp order as taker or maker, or completing a swap grants it
-  automatically; a liquidation does not grant it to the liquidatee. The warm admin can also
-  grant or revoke it with `update_user_accelerated_referral_status`. A revoke blocks
-  automatic reenrollment until a later admin grant.
+  `UserStats`. While the beta-scoped `ACCELERATED_REFERRAL_ENROLLMENT_ENABLED` constant is
+  true, creating a user account, filling a perp order as taker or maker, or completing a
+  swap grants it automatically; a liquidation does not grant it to the liquidatee. Ending
+  enrollment is a program upgrade, not a config change: flip the constant and delete the
+  branches that read it. The warm admin can grant or revoke per user at any time with
+  `update_user_accelerated_referral_status`, and a revoke blocks automatic reenrollment
+  until a later admin grant.
 - `calculate_fee_for_fulfillment_with_amm` / `_with_match`
   (`math/fees.rs`, `split_fee_remainder`).
 
@@ -310,7 +312,7 @@ flowchart LR
 | Lending carveouts | `controller/spot_balance.rs:update_spot_market_cumulative_interest`; `InsuranceFund.if_fee_factor`, `SpotMarket.protocol_fee_factor` |
 | IF bootstrap | `controller/insurance.rs` (`settle_revenue_to_insurance_fund`, `add_insurance_fund_stake`) |
 | Withdrawal | `instructions/protocol_fees/`; `State.protocol_fee_recipient_perp`/`_spot` + `hot_fee_withdraw`; `HotRole::FeeWithdraw` |
-| Admin setters | `update_perp/spot_market_liquidation_fee` (+protocol rate), `update_spot_market_if_factor` (if_fee_factor, protocol_fee_factor), `update_protocol_fee_recipient`, `update_perp/spot_fee_structure`, `update_perp_market_fee_pool_buffer_target`, `update_accelerated_referral_enrollment`, `update_user_accelerated_referral_status` |
+| Admin setters | `update_perp/spot_market_liquidation_fee` (+protocol rate), `update_spot_market_if_factor` (if_fee_factor, protocol_fee_factor), `update_protocol_fee_recipient`, `update_perp/spot_fee_structure`, `update_perp_market_fee_pool_buffer_target`, `update_user_accelerated_referral_status` |
 | Event | `ProtocolFeeWithdrawRecord`, `AcceleratedReferralStatusChangedRecord`; `protocol_fee` on liquidation records |
 
 ---

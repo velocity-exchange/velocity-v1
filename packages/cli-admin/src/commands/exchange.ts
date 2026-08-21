@@ -6,11 +6,7 @@ import {
 	getIbrlFeatureGate,
 	IBRL_FEATURE_WARMUP_SLOTS,
 } from '@velocity-exchange/sdk';
-import {
-	parseBoolean,
-	readGlobalOpts,
-	withGlobalOptions,
-} from '../lib/options';
+import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
 import {
 	reportDispatch,
@@ -20,37 +16,6 @@ import {
 
 export function registerExchange(parent: Command): void {
 	const ex = parent.command('exchange').description('Whole-protocol controls.');
-
-	withGlobalOptions(
-		ex
-			.command('set-accelerated-referral-enrollment <enabled>')
-			.description(
-				'Enable or disable automatic permanent Accelerated referral enrollment. Warm or cold admin. <enabled> is true or false.'
-			)
-	).action(async (enabledArg: string, _flags, cmd: Command) => {
-		const enabled = parseBoolean(enabledArg, 'enabled');
-		const opts = readGlobalOpts(cmd);
-		const provider = buildProvider(opts);
-		const client = await buildAdminClient(opts);
-		try {
-			const multisigPda = opts.multisig
-				? new PublicKey(opts.multisig)
-				: undefined;
-			const ix = await client.getUpdateAcceleratedReferralEnrollmentIx(
-				enabled,
-				resolveAdminAuthority(provider, multisigPda)
-			);
-			const result = await sendOrPropose(
-				provider,
-				[ix],
-				multisigPda,
-				'velocity-admin exchange set-accelerated-referral-enrollment'
-			);
-			reportDispatch(`Accelerated referral enrollment = ${enabled}`, result);
-		} finally {
-			await client.unsubscribe();
-		}
-	});
 
 	withGlobalOptions(
 		ex

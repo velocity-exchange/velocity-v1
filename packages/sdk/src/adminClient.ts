@@ -5226,32 +5226,6 @@ export class AdminClient extends VelocityClient {
 		});
 	}
 
-	/** Enables or disables automatic, permanent Accelerated referral enrollment. Requires warm or cold admin. */
-	public async updateAcceleratedReferralEnrollment(
-		enabled: boolean
-	): Promise<TransactionSignature> {
-		const ix = await this.getUpdateAcceleratedReferralEnrollmentIx(enabled);
-		const tx = await this.buildTransaction(ix);
-		const { txSig } = await this.sendTransaction(tx, [], this.opts);
-		return txSig;
-	}
-
-	/** Builds `updateAcceleratedReferralEnrollment` without sending it. */
-	public async getUpdateAcceleratedReferralEnrollmentIx(
-		enabled: boolean,
-		admin: PublicKey = this.wallet.publicKey
-	): Promise<TransactionInstruction> {
-		return await this.program.instruction.updateAcceleratedReferralEnrollment(
-			enabled,
-			{
-				accounts: {
-					admin,
-					state: await this.getStatePublicKey(),
-				},
-			}
-		);
-	}
-
 	/** Permanently grants or explicitly revokes one authority's Accelerated referral status. Requires warm or cold admin. */
 	public async updateUserAcceleratedReferralStatus(
 		userAuthority: PublicKey,

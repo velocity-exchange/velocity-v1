@@ -223,8 +223,9 @@ describe('referrer', () => {
 		await eventSubscriber.unsubscribe();
 	});
 
-	it('automatically accelerates new user creation while enrollment is enabled', async () => {
-		await referrerVelocityClient.updateAcceleratedReferralEnrollment(true);
+	it('automatically accelerates new user creation', async () => {
+		// ACCELERATED_REFERRAL_ENROLLMENT_ENABLED is a beta-scoped constant, so every new
+		// account is enrolled. There is no runtime switch to toggle.
 		const [acceleratedClient] = await createUserWithUSDCAccount(
 			bankrunContextWrapper,
 			usdcMint,
@@ -253,7 +254,6 @@ describe('referrer', () => {
 			);
 		} finally {
 			await acceleratedClient.unsubscribe();
-			await referrerVelocityClient.updateAcceleratedReferralEnrollment(false);
 		}
 	});
 
@@ -416,6 +416,14 @@ describe('referrer', () => {
 
 	it('fill order accrues a referral reward to the escrow and settles it', async () => {
 		const marketIndex = 0;
+		// Enrollment is a const during the beta, so the referrer was auto-accelerated when
+		// their account was created. An admin revoke is the only way back to the Standard
+		// rate, and it blocks reenrollment so the revoke survives their next fill.
+		await referrerVelocityClient.updateUserAcceleratedReferralStatus(
+			referrerVelocityClient.authority,
+			false
+		);
+		await referrerVelocityClient.fetchAccounts();
 
 		// Referee places a crossing limit long order, filled against the vAMM by
 		// the filler. The SDK detects referral status and attaches the escrow plus

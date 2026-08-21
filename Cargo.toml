@@ -6,7 +6,6 @@ members = [
 	"programs/pyth-lazer",
 	"programs/token_faucet",
 	"crates/velocity-macros",
-  "crates/velocity-mm-interface",
   "crates/quoter-spec",
 ]
 # The `rust/` directory is a SEPARATE Cargo workspace (velocity-rs/keep-rs/swift).

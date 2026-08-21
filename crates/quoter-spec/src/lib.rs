@@ -149,6 +149,35 @@ pub struct CancelledRemainderV0 {
 #[wincode(assert_zero_copy)]
 pub struct CompletedOrderV0 {
     pub order_id: u64,
+    /// Which entry of [`ExecuteResponseV0::changes`] this order belongs to.
+    ///
+    /// The two lists are not the same length, which is the whole reason this
+    /// field exists. Balance changes merge by user — a maker whose three
+    /// orders a sweep consumed gets *one* change carrying the summed base and
+    /// quote — while a completed entry is per order, so three of them point
+    /// at that one change.
+    ///
+    /// An index rather than a [`UserRefV0`] because a ref is 34 bytes and
+    /// this record is 16. Repeating the owner on every consumed order would
+    /// cost more than the orders do.
+    ///
+    /// A quoter fills it in as it walks: when an order is consumed whole, the
+    /// index is the position of the change record its owner already has, or
+    /// the position of the one about to be written for them.
+    ///
+    /// What a caller does with it is the reason to get it right. The change
+    /// moves the position; these ids do the per-order bookkeeping the change
+    /// cannot express — closing out each order, and freeing whatever the
+    /// caller keeps per order against the book. Velocity also counts them per
+    /// change to widen the rounding it allows: a change merged from N orders
+    /// was priced across N levels, so it is held to N roundings rather than
+    /// one, and under-reporting them prices the maker's fill outside its own
+    /// quote.
+    ///
+    /// [`ExecuteResponseV0::parse`] refuses an index past the end of
+    /// `changes`. It has to: the reader indexes with it, so a dangling one
+    /// unwinds whichever record happens to sit there, which is some other
+    /// user's live margin.
     pub change_index: u32,
     pub _pad: u32,
 }

@@ -21667,7 +21667,7 @@ export type Velocity = {
             "name": "sides",
             "type": {
               "defined": {
-                "name": "clobCancelSides"
+                "name": "cancelSidesV0"
               }
             }
           }
@@ -21698,9 +21698,18 @@ export type Velocity = {
       }
     },
     {
-      "name": "clobCancelSides",
+      "name": "cancelSidesV0",
       "docs": [
-        "Which sides a `cancel_all_v0` withdraws, on the CLOB wire."
+        "Which sides a `cancel_all_v0` withdraws.",
+        "",
+        "Named sides rather than a pair of bools, because the wire must not be able",
+        "to express \"neither\" — that is a maker believing their quotes are gone",
+        "when nothing happened.",
+        "",
+        "What the sides *mean* differs by who is reading: a book walks them as book",
+        "sides, a caller unwinds them as position directions, a spline reads them as",
+        "taker directions. Each program adds that reading itself; the tags are the",
+        "part that has to agree."
       ],
       "type": {
         "kind": "enum",

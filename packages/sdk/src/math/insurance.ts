@@ -4,6 +4,20 @@ import { BN } from '../isomorphic/anchor';
 import { SpotBalanceType, SpotMarketAccount } from '../types';
 
 /**
+ * Returns insurance fund economic value used for share pricing. Revenue already
+ * allocated during a withdrawal pause remains in the spot vault as a receivable
+ * until its token transfer can complete.
+ */
+export function getInsuranceFundNav(
+	spotMarket: SpotMarketAccount,
+	insuranceFundVaultBalance: BN
+): BN {
+	return insuranceFundVaultBalance.add(
+		spotMarket.insuranceFundRevenueReceivable
+	);
+}
+
+/**
  * Estimates the annualized yield (APR) insurance fund stakers would earn if the market's revenue
  * pool were settled into the insurance fund vault right now, projected forward assuming the same
  * revenue pool size settles at the market's configured `revenueSettlePeriod` cadence for a year.
@@ -77,7 +91,7 @@ export function nextRevenuePoolSettleApr(
  *
  * @param {BN} amount - Token amount being staked, market's token decimals
  * @param {BN} totalIfShares - Current total insurance fund shares outstanding
- * @param {BN} insuranceFundVaultBalance - Current insurance fund vault token amount, market's token decimals
+ * @param {BN} insuranceFundVaultBalance - Insurance fund NAV from {@link getInsuranceFundNav}, market's token decimals
  * @return {BN} Shares minted
  */
 export function stakeAmountToShares(
@@ -112,7 +126,7 @@ export function stakeAmountToShares(
  *
  * @param {BN} amount - Token amount the caller wants to stake, market's token decimals
  * @param {BN} totalIfShares - Current total insurance fund shares outstanding
- * @param {BN} insuranceFundVaultBalance - Current insurance fund vault token amount, market's token decimals
+ * @param {BN} insuranceFundVaultBalance - Insurance fund NAV from {@link getInsuranceFundNav}, market's token decimals
  * @throws If the vault is empty while shares are outstanding, which on-chain reverts with
  *   `InvalidIFSharesDetected`.
  * @return {{amountToDeposit: BN, nShares: BN}} The amount that will be debited (never more than
@@ -155,7 +169,7 @@ export function depositAmountAndSharesForIfStake(
  *
  * @param {BN} nShares - Number of insurance fund shares
  * @param {BN} totalIfShares - Current total insurance fund shares outstanding
- * @param {BN} insuranceFundVaultBalance - Current insurance fund vault token amount, market's token decimals
+ * @param {BN} insuranceFundVaultBalance - Insurance fund NAV from {@link getInsuranceFundNav}, market's token decimals
  * @return {BN} Token value of `nShares`, market's token decimals; floored at zero
  */
 export function unstakeSharesToAmount(
@@ -190,7 +204,7 @@ export function unstakeSharesToAmount(
  * @param {BN} withdrawRequestAmount - The token amount locked in at request time
  *   (`InsuranceFundStake.lastWithdrawRequestValue`), market's token decimals
  * @param {BN} totalIfShares - Current total insurance fund shares outstanding
- * @param {BN} insuranceFundVaultBalance - Current insurance fund vault token amount, market's token decimals
+ * @param {BN} insuranceFundVaultBalance - Insurance fund NAV from {@link getInsuranceFundNav}, market's token decimals
  * @return {BN} `stakedAmount + withdrawAmount`: the current value of `nShares - withdrawRequestShares`
  *   (floored at zero) at today's vault price, plus `min(withdrawRequestAmount, withdrawRequestShares'
  *   value at today's vault price)` — the pending withdrawal is whichever is lower of its

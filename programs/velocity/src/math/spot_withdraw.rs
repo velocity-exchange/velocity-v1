@@ -404,6 +404,8 @@ pub fn get_max_withdraw_for_market_with_token_amount(
         spot_market,
         &SpotBalanceType::Borrow,
     )?;
+    let insurance_fund_revenue_receivable =
+        get_insurance_fund_revenue_receivable_token_amount(spot_market)?;
 
     // if leaving velocity, need to consider utilization limits
     let (min_deposit_token_for_utilization, max_borrow_token_for_utilization) =
@@ -429,7 +431,10 @@ pub fn get_max_withdraw_for_market_with_token_amount(
 
         let token_amount = token_amount.unsigned_abs();
         if withdraw_limit <= token_amount && is_leaving_velocity {
-            return Ok(withdraw_limit);
+            let unreserved_liquidity = deposit_token_amount
+                .saturating_sub(borrow_token_amount)
+                .saturating_sub(insurance_fund_revenue_receivable);
+            return Ok(withdraw_limit.min(unreserved_liquidity));
         }
 
         max_withdraw_amount = token_amount;
@@ -471,7 +476,22 @@ pub fn get_max_withdraw_for_market_with_token_amount(
         borrow_limit = borrow_limit.min(max_token_borrows.saturating_sub(borrows));
     }
 
-    max_withdraw_amount.safe_add(borrow_limit)
+    let max_withdraw_and_borrow = max_withdraw_amount.safe_add(borrow_limit)?;
+
+    if is_leaving_velocity && insurance_fund_revenue_receivable > 0 {
+        let unreserved_liquidity = deposit_token_amount
+            .saturating_sub(borrow_token_amount)
+            .saturating_sub(insurance_fund_revenue_receivable);
+        Ok(max_withdraw_and_borrow.min(unreserved_liquidity))
+    } else {
+        Ok(max_withdraw_and_borrow)
+    }
+}
+
+pub fn get_insurance_fund_revenue_receivable_token_amount(
+    spot_market: &SpotMarket,
+) -> VelocityResult<u128> {
+    Ok(spot_market.insurance_fund_revenue_receivable as u128)
 }
 
 pub fn validate_spot_balances(spot_market: &SpotMarket) -> VelocityResult<i64> {
@@ -502,11 +522,14 @@ pub fn validate_spot_balances(spot_market: &SpotMarket) -> VelocityResult<i64> {
     )?
     .cast()?;
 
+    let insurance_fund_revenue_receivable: u64 =
+        get_insurance_fund_revenue_receivable_token_amount(spot_market)?.cast()?;
+
     let depositors_claim = depositors_amount
         .cast::<i64>()?
         .safe_sub(borrowers_amount.cast()?)?;
 
-    // revenue_pool and protocol_fee_pool are Deposit-type balances counted
+    // These pools are Deposit-type balances counted
     // INSIDE deposit_balance (crediting a pool also credits the market
     // total), so these disjoint subsets summed can never exceed the total.
     // This is a corruption tripwire (a pool credited without the total, or
@@ -516,14 +539,26 @@ pub fn validate_spot_balances(spot_market: &SpotMarket) -> VelocityResult<i64> {
     // deposit_balance but are not visible from the spot account alone, so
     // this check is necessarily partial.
     validate!(
-        revenue_amount.safe_add(protocol_fee_amount)? <= depositors_amount,
+        revenue_amount
+            .safe_add(protocol_fee_amount)?
+            .safe_add(insurance_fund_revenue_receivable)?
+            <= depositors_amount,
         ErrorCode::SpotMarketVaultInvariantViolated,
-        "revenue_amount={} + protocol_fee_amount={} greater than depositors_amount={} (depositors_claim={}, spot_market.deposit_balance={})",
+        "revenue_amount={} + protocol_fee_amount={} + insurance_fund_revenue_receivable={} greater than depositors_amount={} (depositors_claim={}, spot_market.deposit_balance={})",
         revenue_amount,
         protocol_fee_amount,
+        insurance_fund_revenue_receivable,
         depositors_amount,
         depositors_claim,
         spot_market.deposit_balance
+    )?;
+
+    validate!(
+        depositors_claim >= insurance_fund_revenue_receivable.cast::<i64>()?,
+        ErrorCode::SpotMarketVaultInvariantViolated,
+        "depositors_claim={} lower than reserved insurance fund revenue receivable={}",
+        depositors_claim,
+        insurance_fund_revenue_receivable
     )?;
 
     Ok(depositors_claim)
@@ -541,6 +576,16 @@ pub fn validate_spot_market_vault_amount(
         "spot market vault ={} holds less than remaining depositor claims = {}",
         vault_amount,
         depositors_claim
+    )?;
+
+    let insurance_fund_revenue_receivable =
+        get_insurance_fund_revenue_receivable_token_amount(spot_market)?.cast::<u64>()?;
+    validate!(
+        vault_amount >= insurance_fund_revenue_receivable,
+        ErrorCode::SpotMarketVaultInvariantViolated,
+        "spot market vault={} lower than reserved insurance fund revenue receivable={}",
+        vault_amount,
+        insurance_fund_revenue_receivable
     )?;
 
     Ok(depositors_claim)
@@ -609,6 +654,46 @@ mod tests {
         let pct = (BPS_PRECISION / 5) as u16; // 2000 bps = 20%
         let max = calculate_max_deposit_token_amount(twap, guard, pct).unwrap();
         assert_eq!(max, guard);
+    }
+
+    #[test]
+    fn insurance_fund_revenue_receivable_is_reserved_from_withdrawals_and_borrows() {
+        let mut market = SpotMarket {
+            market_index: 0,
+            decimals: 6,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            deposit_balance: scaled(1_000 * QUOTE_PRECISION),
+            borrow_balance: scaled(100 * QUOTE_PRECISION),
+            insurance_fund_revenue_receivable: (200 * QUOTE_PRECISION) as u64,
+            ..SpotMarket::default()
+        };
+
+        let max_withdraw = get_max_withdraw_for_market_with_token_amount(
+            &market,
+            (900 * QUOTE_PRECISION) as i128,
+            true,
+        )
+        .unwrap();
+        let deposits =
+            get_token_amount(market.deposit_balance, &market, &SpotBalanceType::Deposit).unwrap();
+        let borrows =
+            get_token_amount(market.borrow_balance, &market, &SpotBalanceType::Borrow).unwrap();
+        let receivable = get_insurance_fund_revenue_receivable_token_amount(&market).unwrap();
+        assert_eq!(
+            max_withdraw,
+            deposits.saturating_sub(borrows).saturating_sub(receivable)
+        );
+
+        market.borrow_balance = scaled(801 * QUOTE_PRECISION);
+        assert!(validate_spot_balances(&market).is_err());
+
+        market.borrow_balance = scaled(800 * QUOTE_PRECISION);
+        assert!(validate_spot_balances(&market).is_ok());
+        assert!(validate_spot_market_vault_amount(&market, (200 * QUOTE_PRECISION) as u64).is_ok());
+        assert!(
+            validate_spot_market_vault_amount(&market, (200 * QUOTE_PRECISION - 1) as u64).is_err()
+        );
     }
 
     // Fixture for the withdraw-limit exception budget.

@@ -7,6 +7,10 @@ use {
     crate::{
         controller::{
             funding::settle_funding_payment,
+            insurance::{
+                consume_insurance_fund_revenue_receivable,
+                transfer_insurance_fund_revenue_receivable_to_pool,
+            },
             orders::{self, cancel_order, fill_perp_order, place_perp_order},
             position::{
                 get_position_index, update_position_and_market, update_quote_asset_amount,
@@ -15,8 +19,7 @@ use {
             spot_balance::{
                 check_spot_oracle_validity, transfer_spot_balances,
                 update_protocol_fee_pool_balances, update_revenue_pool_balances,
-                update_spot_balances, update_spot_market_and_check_validity,
-                update_spot_market_cumulative_interest,
+                update_spot_market_and_check_validity, update_spot_market_cumulative_interest,
             },
             spot_position::update_spot_balances_and_cumulative_deposits,
         },
@@ -4362,8 +4365,9 @@ pub fn resolve_perp_bankruptcy(
 
     let loss_after_pending = loss.safe_add(pending_if_payment.cast::<i128>()?)?;
 
-    // Tranche 2: the shared insurance fund vault
-    let if_payment = {
+    // Tranche 2: allocated IF revenue in the spot vault, followed by physical
+    // cash in the shared insurance fund vault.
+    let (if_payment, if_vault_payment) = {
         let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
         let max_insurance_withdraw = perp_market
             .insurance_claim
@@ -4371,9 +4375,14 @@ pub fn resolve_perp_bankruptcy(
             .safe_sub(perp_market.insurance_claim.quote_settled_insurance)?
             .cast::<u128>()?;
 
+        let available_if_capital = spot_market_map
+            .get_ref(&QUOTE_SPOT_MARKET_INDEX)?
+            .insurance_fund_revenue_receivable
+            .cast::<u128>()?
+            .safe_add(insurance_fund_vault_balance.saturating_sub(1).cast()?)?;
         let if_payment = loss_after_pending
             .unsigned_abs()
-            .min(insurance_fund_vault_balance.saturating_sub(1).cast()?)
+            .min(available_if_capital)
             .min(max_insurance_withdraw);
 
         perp_market.insurance_claim.quote_settled_insurance = perp_market
@@ -4391,15 +4400,14 @@ pub fn resolve_perp_bankruptcy(
             funding_paused,
         )?;
 
-        update_spot_balances(
-            if_payment,
-            &SpotBalanceType::Deposit,
+        let receivable_payment = transfer_insurance_fund_revenue_receivable_to_pool(
             spot_market,
             &mut perp_market.pnl_pool,
-            false,
+            if_payment,
         )?;
+        let if_vault_payment = if_payment.safe_sub(receivable_payment)?;
 
-        if_payment
+        (if_payment, if_vault_payment)
     };
 
     let losses_remaining: i128 = loss_after_pending.safe_add(if_payment.cast::<i128>()?)?;
@@ -4611,7 +4619,7 @@ pub fn resolve_perp_bankruptcy(
         ..LiquidationRecord::default()
     });
 
-    if_payment.cast()
+    if_vault_payment.cast()
 }
 
 pub fn resolve_spot_bankruptcy(
@@ -4829,11 +4837,22 @@ pub fn resolve_spot_bankruptcy(
         payment
     };
 
-    // Tranche 2: the staker-owned insurance fund vault.
-    // subtract 1 so insurance_fund_vault_balance always stays >= 1
-    let if_payment = borrow_amount
+    // Tranche 2: allocated IF revenue already held in this spot vault.
+    let receivable_payment = {
+        let mut spot_market = spot_market_map.get_ref_mut(&market_index)?;
+        consume_insurance_fund_revenue_receivable(
+            &mut spot_market,
+            borrow_amount.safe_sub(revenue_pool_payment)?,
+        )?
+    };
+
+    // Tranche 3: physical insurance fund cash. Subtract 1 so the vault always
+    // remains initialized.
+    let if_vault_payment = borrow_amount
         .safe_sub(revenue_pool_payment)?
+        .safe_sub(receivable_payment)?
         .min(insurance_fund_vault_balance.saturating_sub(1).cast()?);
+    let if_payment = receivable_payment.safe_add(if_vault_payment)?;
 
     let loss_to_socialize = borrow_amount
         .safe_sub(revenue_pool_payment)?
@@ -4907,7 +4926,7 @@ pub fn resolve_spot_bankruptcy(
         ..LiquidationRecord::default()
     });
 
-    if_payment.cast()
+    if_vault_payment.cast()
 }
 
 pub fn calculate_margin_freed(

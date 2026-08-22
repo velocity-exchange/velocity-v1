@@ -1,10 +1,7 @@
 use {
     crate::{
         controller::{
-            spot_balance::{
-                update_revenue_pool_balances, update_spot_balances,
-                update_spot_market_cumulative_interest,
-            },
+            spot_balance::{update_spot_balances, update_spot_market_cumulative_interest},
             token::send_from_program_vault,
         },
         emit,
@@ -23,8 +20,11 @@ use {
                 deposit_amount_and_shares_for_if_stake, if_shares_to_vault_amount,
             },
             safe_math::SafeMath,
-            spot_balance::get_token_amount,
-            spot_withdraw::validate_spot_market_vault_amount,
+            spot_balance::{get_spot_balance, get_token_amount},
+            spot_withdraw::{
+                get_insurance_fund_revenue_receivable_token_amount,
+                validate_spot_market_vault_amount,
+            },
         },
         msg,
         state::{
@@ -59,14 +59,25 @@ mod tests;
 /// `insurance_vault_amount` is the balance before the outflow. The subtraction
 /// saturates rather than errors. A cap base of `0` only settles less revenue for the
 /// rest of the period. An error would revert a bankruptcy or deficit resolution.
+pub fn get_insurance_fund_nav(
+    insurance_vault_amount: u64,
+    spot_market: &SpotMarket,
+) -> VelocityResult<u64> {
+    insurance_vault_amount.safe_add(spot_market.insurance_fund_revenue_receivable)
+}
+
 pub fn record_insurance_fund_outflow(
     spot_market: &mut SpotMarket,
     insurance_vault_amount: u64,
     outflow_amount: u64,
-) {
+) -> VelocityResult {
+    let effective_balance_after =
+        get_insurance_fund_nav(insurance_vault_amount, spot_market)?.saturating_sub(outflow_amount);
     spot_market.if_last_settle_vault_amount = spot_market
         .if_last_settle_vault_amount
-        .min(insurance_vault_amount.saturating_sub(outflow_amount));
+        .min(effective_balance_after);
+
+    Ok(())
 }
 
 pub fn update_user_stats_if_stake_amount(
@@ -80,17 +91,18 @@ pub fn update_user_stats_if_stake_amount(
         return Ok(());
     }
 
+    let insurance_fund_nav = get_insurance_fund_nav(insurance_vault_amount, spot_market)?;
     let if_stake_amount = if if_stake_amount_delta >= 0 {
         if_shares_to_vault_amount(
             insurance_fund_stake.checked_if_shares(spot_market)?,
             spot_market.insurance_fund.total_shares,
-            insurance_vault_amount.safe_add(if_stake_amount_delta.unsigned_abs())?,
+            insurance_fund_nav.safe_add(if_stake_amount_delta.unsigned_abs())?,
         )?
     } else {
         if_shares_to_vault_amount(
             insurance_fund_stake.checked_if_shares(spot_market)?,
             spot_market.insurance_fund.total_shares,
-            insurance_vault_amount.safe_sub(if_stake_amount_delta.unsigned_abs())?,
+            insurance_fund_nav.safe_sub(if_stake_amount_delta.unsigned_abs())?,
         )?
     };
 
@@ -112,8 +124,9 @@ pub fn add_insurance_fund_stake(
     now: i64,
     admin_deposit: bool,
 ) -> VelocityResult<u64> {
+    let insurance_fund_nav = get_insurance_fund_nav(insurance_vault_amount, spot_market)?;
     validate!(
-        !(insurance_vault_amount == 0 && spot_market.insurance_fund.total_shares != 0),
+        !(insurance_fund_nav == 0 && spot_market.insurance_fund.total_shares != 0),
         ErrorCode::InvalidIFForNewStakes,
         "Insurance Fund balance should be non-zero for new stakers to enter"
     )?;
@@ -123,11 +136,11 @@ pub fn add_insurance_fund_stake(
     // with the vault so the first staker mints `amount` shares at price ~1
     // instead of `amount * 0 / vault == 0` (which would forfeit their deposit).
     // The seeded shares are protocol-owned, permanent, non-withdrawable ballast.
-    if spot_market.insurance_fund.total_shares == 0 && insurance_vault_amount > 0 {
-        spot_market.insurance_fund.total_shares = insurance_vault_amount.cast()?;
+    if spot_market.insurance_fund.total_shares == 0 && insurance_fund_nav > 0 {
+        spot_market.insurance_fund.total_shares = insurance_fund_nav.cast()?;
     }
 
-    apply_rebase_to_insurance_fund(insurance_vault_amount, spot_market)?;
+    apply_rebase_to_insurance_fund(insurance_fund_nav, spot_market)?;
     apply_rebase_to_insurance_fund_stake(insurance_fund_stake, spot_market)?;
 
     let if_shares_before = insurance_fund_stake.checked_if_shares(spot_market)?;
@@ -142,7 +155,7 @@ pub fn add_insurance_fund_stake(
     let (amount, n_shares) = deposit_amount_and_shares_for_if_stake(
         requested_amount,
         spot_market.insurance_fund.total_shares,
-        insurance_vault_amount,
+        insurance_fund_nav,
     )?;
 
     // A request below the price of a single share buys nothing at all; reject it rather
@@ -153,7 +166,7 @@ pub fn add_insurance_fund_stake(
         ErrorCode::IFDepositMintsZeroShares,
         "deposit of {} is below the price of one IF share (vault {}, total_shares {})",
         requested_amount,
-        insurance_vault_amount,
+        insurance_fund_nav,
         spot_market.insurance_fund.total_shares
     )?;
 
@@ -292,7 +305,8 @@ pub fn request_remove_insurance_fund_stake(
     msg!("n_shares {}", n_shares);
     insurance_fund_stake.last_withdraw_request_shares = n_shares;
 
-    apply_rebase_to_insurance_fund(insurance_vault_amount, spot_market)?;
+    let insurance_fund_nav = get_insurance_fund_nav(insurance_vault_amount, spot_market)?;
+    apply_rebase_to_insurance_fund(insurance_fund_nav, spot_market)?;
     apply_rebase_to_insurance_fund_stake(insurance_fund_stake, spot_market)?;
 
     let if_shares_before = insurance_fund_stake.checked_if_shares(spot_market)?;
@@ -317,13 +331,13 @@ pub fn request_remove_insurance_fund_stake(
     insurance_fund_stake.last_withdraw_request_value = if_shares_to_vault_amount(
         insurance_fund_stake.last_withdraw_request_shares,
         spot_market.insurance_fund.total_shares,
-        insurance_vault_amount,
+        insurance_fund_nav,
     )?
-    .min(insurance_vault_amount.saturating_sub(1));
+    .min(insurance_fund_nav.saturating_sub(1));
 
     validate!(
         insurance_fund_stake.last_withdraw_request_value == 0
-            || insurance_fund_stake.last_withdraw_request_value < insurance_vault_amount,
+            || insurance_fund_stake.last_withdraw_request_value < insurance_fund_nav,
         ErrorCode::InvalidIFUnstakeSize,
         "Requested withdraw value is not below Insurance Fund balance"
     )?;
@@ -373,7 +387,8 @@ pub fn cancel_request_remove_insurance_fund_stake(
     spot_market: &mut SpotMarket,
     now: i64,
 ) -> VelocityResult {
-    apply_rebase_to_insurance_fund(insurance_vault_amount, spot_market)?;
+    let insurance_fund_nav = get_insurance_fund_nav(insurance_vault_amount, spot_market)?;
+    apply_rebase_to_insurance_fund(insurance_fund_nav, spot_market)?;
     apply_rebase_to_insurance_fund_stake(insurance_fund_stake, spot_market)?;
 
     let if_shares_before = insurance_fund_stake.checked_if_shares(spot_market)?;
@@ -403,7 +418,7 @@ pub fn cancel_request_remove_insurance_fund_stake(
     // balance is safe here: the restake value is bounded by the request-time snapshot, so a
     // raw donation cannot manufacture extractable forfeiture (see `calculate_if_shares_lost`).
     let if_shares_lost =
-        calculate_if_shares_lost(insurance_fund_stake, spot_market, insurance_vault_amount)?;
+        calculate_if_shares_lost(insurance_fund_stake, spot_market, insurance_fund_nav)?;
 
     insurance_fund_stake.decrease_if_shares(if_shares_lost, spot_market)?;
 
@@ -464,7 +479,8 @@ pub fn remove_insurance_fund_stake(
         ErrorCode::TryingToRemoveLiquidityTooFast
     )?;
 
-    apply_rebase_to_insurance_fund(insurance_vault_amount, spot_market)?;
+    let insurance_fund_nav = get_insurance_fund_nav(insurance_vault_amount, spot_market)?;
+    apply_rebase_to_insurance_fund(insurance_fund_nav, spot_market)?;
     apply_rebase_to_insurance_fund_stake(insurance_fund_stake, spot_market)?;
 
     let if_shares_before = insurance_fund_stake.checked_if_shares(spot_market)?;
@@ -487,13 +503,19 @@ pub fn remove_insurance_fund_stake(
     let amount = if_shares_to_vault_amount(
         n_shares,
         spot_market.insurance_fund.total_shares,
-        insurance_vault_amount,
+        insurance_fund_nav,
     )?;
 
     let _if_shares_lost =
-        calculate_if_shares_lost(insurance_fund_stake, spot_market, insurance_vault_amount)?;
+        calculate_if_shares_lost(insurance_fund_stake, spot_market, insurance_fund_nav)?;
 
     let withdraw_amount = amount.min(insurance_fund_stake.last_withdraw_request_value);
+
+    validate!(
+        withdraw_amount == 0 || withdraw_amount < insurance_vault_amount,
+        ErrorCode::InvalidIFUnstakeSize,
+        "insurance fund vault has insufficient cash for withdrawal"
+    )?;
 
     insurance_fund_stake.decrease_if_shares(n_shares, spot_market)?;
 
@@ -507,7 +529,7 @@ pub fn remove_insurance_fund_stake(
     spot_market.insurance_fund.user_shares =
         spot_market.insurance_fund.user_shares.safe_sub(n_shares)?;
 
-    record_insurance_fund_outflow(spot_market, insurance_vault_amount, withdraw_amount);
+    record_insurance_fund_outflow(spot_market, insurance_vault_amount, withdraw_amount)?;
 
     // reset insurance_fund_stake withdraw request info
     insurance_fund_stake.last_withdraw_request_shares = 0;
@@ -553,17 +575,6 @@ pub fn attempt_settle_revenue_to_insurance_fund<'info>(
     mint: &Option<InterfaceAccount<'info, Mint>>,
     remaining_accounts: Option<&mut Peekable<Iter<'info, AccountInfo<'info>>>>,
 ) -> Result<()> {
-    // This is an opportunistic settle folded into other instructions (IF-add,
-    // liquidations, pnl-deficit resolution). Moving revenue into the IF vault
-    // is a spot-vault egress, so it must respect the same withdraw pauses the
-    // direct `settle_revenue_to_insurance_fund` instruction enforces — the
-    // global `WithdrawPaused` status and the market-scoped `SpotOperation::Withdraw`
-    // bit. Unlike the direct instruction we *skip* (rather than error) so a
-    // withdraw pause never bricks the host instruction (e.g. a liquidation).
-    if state.withdraw_paused()? || spot_market.is_operation_paused(SpotOperation::Withdraw) {
-        return Ok(());
-    }
-
     let valid_revenue_settle_time = if spot_market.insurance_fund.revenue_settle_period > 0 {
         let time_until_next_update = on_the_hour_update(
             now,
@@ -576,50 +587,55 @@ pub fn attempt_settle_revenue_to_insurance_fund<'info>(
         false
     };
 
-    let _token_amount = if valid_revenue_settle_time {
-        // uses proportion of revenue pool allocated to insurance fund
-        let spot_market_vault_amount = spot_market_vault.amount;
-        let insurance_fund_vault_amount = insurance_fund_vault.amount;
+    let transfer_paused =
+        state.withdraw_paused()? || spot_market.is_operation_paused(SpotOperation::Withdraw);
+    let has_receivable = spot_market.insurance_fund_revenue_receivable > 0;
 
-        let token_amount = settle_revenue_to_insurance_fund(
-            spot_market_vault_amount,
-            insurance_fund_vault_amount,
+    if !valid_revenue_settle_time && !has_receivable {
+        return Ok(());
+    }
+
+    if valid_revenue_settle_time {
+        book_revenue_to_insurance_fund(
+            spot_market_vault.amount,
+            insurance_fund_vault.amount,
             spot_market,
             now,
             false,
             state.funding_paused()?,
         )?;
-
-        if token_amount > 0 {
-            msg!(
-                "Spot market_index={} sending {} to insurance_fund_vault",
-                spot_market.market_index,
-                token_amount
-            );
-
-            send_from_program_vault(
-                token_program,
-                spot_market_vault,
-                insurance_fund_vault,
-                velocity_signer,
-                state.signer_nonce,
-                token_amount.cast()?,
-                mint,
-                remaining_accounts,
-            )?;
-        }
-
-        spot_market.insurance_fund.last_revenue_settle_ts = now;
-
-        token_amount
     } else {
-        0
-    };
+        update_spot_market_cumulative_interest(spot_market, None, now, state.funding_paused()?)?;
+    }
+
+    if transfer_paused {
+        return Ok(());
+    }
+
+    let token_amount = settle_insurance_fund_revenue_receivable(spot_market)?;
+    if token_amount > 0 {
+        msg!(
+            "Spot market_index={} sending {} to insurance_fund_vault",
+            spot_market.market_index,
+            token_amount
+        );
+
+        send_from_program_vault(
+            token_program,
+            spot_market_vault,
+            insurance_fund_vault,
+            velocity_signer,
+            state.signer_nonce,
+            token_amount,
+            mint,
+            remaining_accounts,
+        )?;
+    }
 
     Ok(())
 }
 
-pub fn settle_revenue_to_insurance_fund(
+fn book_revenue_to_insurance_fund(
     spot_market_vault_amount: u64,
     insurance_vault_amount: u64,
     spot_market: &mut SpotMarket,
@@ -643,9 +659,15 @@ pub fn settle_revenue_to_insurance_fund(
         &SpotBalanceType::Deposit,
     )?;
 
-    if depositors_claim < token_amount.cast()? {
+    let existing_receivable = get_insurance_fund_revenue_receivable_token_amount(spot_market)?;
+    let unreserved_depositors_claim = depositors_claim
+        .max(0)
+        .cast::<u128>()?
+        .saturating_sub(existing_receivable);
+
+    if unreserved_depositors_claim < token_amount {
         // only allow half of withdraw available when utilization is high
-        token_amount = depositors_claim.max(0).cast::<u128>()?.safe_div(2)?;
+        token_amount = unreserved_depositors_claim.safe_div(2)?;
     }
 
     if spot_market.insurance_fund.user_shares > 0 {
@@ -660,7 +682,8 @@ pub fn settle_revenue_to_insurance_fund(
         // period already belongs to the stakers pro rata, so counting it is correct. A
         // `0` snapshot (never settled, or settled on an empty vault) gives a `0` cap for
         // one period; the snapshot written below then heals it.
-        let cap_vault_amount = insurance_vault_amount.min(spot_market.if_last_settle_vault_amount);
+        let insurance_fund_nav = get_insurance_fund_nav(insurance_vault_amount, spot_market)?;
+        let cap_vault_amount = insurance_fund_nav.min(spot_market.if_last_settle_vault_amount);
 
         // only allow MAX_APR_PER_REVENUE_SETTLE_TO_INSURANCE_FUND_VAULT or 1/10th of revenue pool to be settled
         let capped_apr_amount = cap_vault_amount
@@ -688,12 +711,7 @@ pub fn settle_revenue_to_insurance_fund(
     let cap_base_was_unset =
         spot_market.insurance_fund.user_shares > 0 && spot_market.if_last_settle_vault_amount == 0;
 
-    // Start a new period. The caller transfers `insurance_fund_token_amount` into the
-    // vault right after this returns, so the balance this settle leaves behind is the
-    // live balance plus that amount. `record_insurance_fund_outflow` lowers it again on
-    // each outflow, which keeps it the lowest balance of the period.
-    spot_market.if_last_settle_vault_amount =
-        insurance_vault_amount.safe_add(insurance_fund_token_amount)?;
+    let insurance_fund_nav_before = get_insurance_fund_nav(insurance_vault_amount, spot_market)?;
 
     // `NoRevenueToSettleToIF` tells the keeper that the settle was pointless. The settle
     // that seeds the snapshot is expected to move nothing, so let it through — an error
@@ -701,7 +719,7 @@ pub fn settle_revenue_to_insurance_fund(
     // stay capped at zero forever.
     if check_invariants && !cap_base_was_unset {
         validate!(
-            insurance_fund_token_amount != 0,
+            insurance_fund_token_amount != 0 || spot_market.insurance_fund_revenue_receivable > 0,
             ErrorCode::NoRevenueToSettleToIF,
             "no amount to settle to insurance fund"
         )?;
@@ -723,21 +741,29 @@ pub fn settle_revenue_to_insurance_fund(
     // backstop ballast at share price ~1. Fires only during the no-staker phase.
     let total_if_shares_before = spot_market.insurance_fund.total_shares;
     if total_if_shares_before == 0 {
-        spot_market.insurance_fund.total_shares = insurance_vault_amount
-            .cast::<u128>()?
-            .safe_add(insurance_fund_token_amount.cast()?)?;
+        spot_market.insurance_fund.total_shares = insurance_fund_nav_before
+            .safe_add(insurance_fund_token_amount)?
+            .cast()?;
     }
 
-    // These tokens physically leave the spot vault (transferred to the IF
-    // vault by the caller), so round the ledger debit up to keep
-    // the remaining depositor claim <= the vault balance and preserve the
-    // `validate_spot_market_vault_amount` invariant.
-    update_revenue_pool_balances(
-        insurance_fund_token_amount.cast::<u128>()?,
-        &SpotBalanceType::Borrow,
-        spot_market,
-        true,
-    )?;
+    if insurance_fund_token_amount > 0 {
+        let balance_delta = get_spot_balance(
+            insurance_fund_token_amount.cast()?,
+            spot_market,
+            &SpotBalanceType::Deposit,
+            true,
+        )?;
+        spot_market.revenue_pool.scaled_balance = spot_market
+            .revenue_pool
+            .scaled_balance
+            .safe_sub(balance_delta)?;
+        spot_market.insurance_fund_revenue_receivable = spot_market
+            .insurance_fund_revenue_receivable
+            .safe_add(insurance_fund_token_amount)?;
+    }
+
+    spot_market.if_last_settle_vault_amount =
+        insurance_fund_nav_before.safe_add(insurance_fund_token_amount)?;
 
     emit!(InsuranceFundRecord {
         ts: now,
@@ -754,6 +780,99 @@ pub fn settle_revenue_to_insurance_fund(
     });
 
     insurance_fund_token_amount.cast()
+}
+
+pub fn settle_insurance_fund_revenue_receivable(
+    spot_market: &mut SpotMarket,
+) -> VelocityResult<u64> {
+    consume_insurance_fund_revenue_receivable(
+        spot_market,
+        spot_market.insurance_fund_revenue_receivable as u128,
+    )?
+    .cast()
+}
+
+/// Cancels an allocated IF claim against tokens leaving the spot vault or bad
+/// spot debt. Both cases remove the claim from the market's total deposits.
+pub fn consume_insurance_fund_revenue_receivable(
+    spot_market: &mut SpotMarket,
+    max_amount: u128,
+) -> VelocityResult<u128> {
+    let amount = max_amount.min(spot_market.insurance_fund_revenue_receivable.cast()?);
+    if amount == 0 {
+        return Ok(0);
+    }
+
+    let balance_delta = get_spot_balance(amount, spot_market, &SpotBalanceType::Deposit, true)?;
+    spot_market.deposit_balance = spot_market.deposit_balance.safe_sub(balance_delta)?;
+    spot_market.insurance_fund_revenue_receivable = spot_market
+        .insurance_fund_revenue_receivable
+        .safe_sub(amount.cast()?)?;
+
+    Ok(amount)
+}
+
+/// Reclassifies allocated IF revenue into a perp PnL pool without moving tokens
+/// or changing total spot deposits.
+pub fn transfer_insurance_fund_revenue_receivable_to_pool(
+    spot_market: &mut SpotMarket,
+    destination: &mut crate::state::perp_market::PoolBalance,
+    total_payment: u128,
+) -> VelocityResult<u128> {
+    if total_payment == 0 {
+        return Ok(0);
+    }
+
+    let receivable_payment =
+        total_payment.min(spot_market.insurance_fund_revenue_receivable.cast()?);
+
+    // Credit the destination once for the combined receivable and vault payment.
+    // Splitting the credit would apply scaled balance rounding twice.
+    update_spot_balances(
+        total_payment,
+        &SpotBalanceType::Deposit,
+        spot_market,
+        destination,
+        false,
+    )?;
+
+    // The receivable is already included in aggregate deposits. Only the vault
+    // portion is new backing, so remove the receivable portion added above.
+    if receivable_payment > 0 {
+        let balance_delta = get_spot_balance(
+            receivable_payment,
+            spot_market,
+            &SpotBalanceType::Deposit,
+            true,
+        )?;
+        spot_market.deposit_balance = spot_market.deposit_balance.safe_sub(balance_delta)?;
+    }
+
+    spot_market.insurance_fund_revenue_receivable = spot_market
+        .insurance_fund_revenue_receivable
+        .safe_sub(receivable_payment.cast()?)?;
+
+    Ok(receivable_payment)
+}
+
+pub fn settle_revenue_to_insurance_fund(
+    spot_market_vault_amount: u64,
+    insurance_vault_amount: u64,
+    spot_market: &mut SpotMarket,
+    now: i64,
+    check_invariants: bool,
+    funding_paused: bool,
+) -> VelocityResult<u64> {
+    book_revenue_to_insurance_fund(
+        spot_market_vault_amount,
+        insurance_vault_amount,
+        spot_market,
+        now,
+        check_invariants,
+        funding_paused,
+    )?;
+
+    settle_insurance_fund_revenue_receivable(spot_market)
 }
 
 pub fn resolve_perp_pnl_deficit(
@@ -868,10 +987,14 @@ pub fn resolve_perp_pnl_deficit(
         market.insurance_claim.quote_max_insurance,
     )?;
 
+    let available_if_capital = spot_market
+        .insurance_fund_revenue_receivable
+        .cast::<i128>()?
+        .safe_add(insurance_vault_amount.saturating_sub(1).cast()?)?;
     let insurance_withdraw = excess_user_pnl_imbalance
         .min(max_revenue_withdraw_per_period)
         .min(max_insurance_withdraw)
-        .min(insurance_vault_amount.saturating_sub(1).cast()?);
+        .min(available_if_capital);
 
     validate!(
         insurance_withdraw > 0,
@@ -907,13 +1030,14 @@ pub fn resolve_perp_pnl_deficit(
 
     market.insurance_claim.last_revenue_withdraw_ts = now;
 
-    update_spot_balances(
-        insurance_withdraw.cast()?,
-        &SpotBalanceType::Deposit,
+    let receivable_payment = transfer_insurance_fund_revenue_receivable_to_pool(
         spot_market,
         &mut market.pnl_pool,
-        false,
+        insurance_withdraw.cast()?,
     )?;
+    let insurance_vault_payment = insurance_withdraw
+        .cast::<u128>()?
+        .safe_sub(receivable_payment)?;
 
     emit!(InsuranceFundRecord {
         ts: now,
@@ -928,5 +1052,5 @@ pub fn resolve_perp_pnl_deficit(
         total_if_shares_after: spot_market.insurance_fund.total_shares,
     });
 
-    insurance_withdraw.cast()
+    insurance_vault_payment.cast()
 }

@@ -809,7 +809,12 @@ pub fn regenerate_spot_market_snapshot(old_b64: &str) -> String {
     sm.historical_oracle_data = l.historical_oracle_data;
     sm.historical_index_data = l.historical_index_data;
     sm.revenue_pool = l.revenue_pool.to_current();
-    sm.spot_fee_pool = l.spot_fee_pool.to_current();
+    let mut reserved = [0_u8; 24];
+    reserved[..16].copy_from_slice(&l.spot_fee_pool.scaled_balance.to_le_bytes());
+    reserved[16..18].copy_from_slice(&l.spot_fee_pool.market_index.to_le_bytes());
+    reserved[18..].copy_from_slice(&l.spot_fee_pool.padding);
+    sm.padding_former_spot_fee_pool = reserved;
+    sm.insurance_fund_revenue_receivable = 0;
     sm.insurance_fund = l.insurance_fund;
     sm.total_spot_fee = l.total_spot_fee;
     sm.deposit_balance = l.deposit_balance;

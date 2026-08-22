@@ -23741,16 +23741,24 @@ export type Velocity = {
             }
           },
           {
-            "name": "spotFeePool",
+            "name": "paddingFormerSpotFeePool",
             "docs": [
-              "The fees collected from swaps between this market and the quote market",
-              "Is settled to the quote markets revenue pool"
+              "Reserved bytes from the retired spot fee pool."
             ],
             "type": {
-              "defined": {
-                "name": "poolBalance"
-              }
+              "array": [
+                "u8",
+                24
+              ]
             }
+          },
+          {
+            "name": "insuranceFundRevenueReceivable",
+            "docs": [
+              "Revenue allocated to the insurance fund while it remains in the spot vault.",
+              "precision: token mint precision"
+            ],
+            "type": "u64"
           },
           {
             "name": "historicalOracleData",
@@ -24160,18 +24168,19 @@ export type Velocity = {
           {
             "name": "ifLastSettleVaultAmount",
             "docs": [
-              "Lowest insurance-fund vault balance since the end of the last revenue",
-              "settle. `settle_revenue_to_insurance_fund` starts each period by writing",
-              "the live vault balance plus the amount that settle transfers in, and",
-              "`record_insurance_fund_outflow` lowers it on every path that moves tokens",
-              "out of the vault: `remove_insurance_fund_stake`,",
+              "Lowest insurance fund NAV since the end of the last revenue settle.",
+              "NAV includes the live vault balance and allocated revenue that remains",
+              "in the spot vault as a receivable. Revenue allocation starts each period",
+              "by writing the resulting NAV, and `record_insurance_fund_outflow` lowers",
+              "it on every path that moves value out of the fund:",
+              "`remove_insurance_fund_stake`,",
               "`resolve_perp_pnl_deficit`, `resolve_perp_bankruptcy`, and",
               "`resolve_spot_bankruptcy`. A transfer into the vault never raises it, so",
               "it lags the live vault by up to one `revenue_settle_period`.",
               "",
               "The per-period revenue-settle APR cap is sized off",
-              "`min(live_if_vault, this)`, so it counts only capital the fund held for",
-              "the whole period. A donation spiked into the live vault right before a",
+              "`min(current_if_nav, this)`, so it counts only capital the fund held for",
+              "the whole period. A donation sent into the live vault right before a",
               "settle is absent from this field and cannot lift the cap. Tracking the",
               "running minimum is what closes the same trick after a dip: a loss draw",
               "takes the vault to 100, a donation puts it back to 1000, and a plain",
@@ -24183,9 +24192,9 @@ export type Velocity = {
               "was empty. Both give a cap base of `0` for one period and then self-heal,",
               "because the settle that reads `0` still writes the new period's balance.",
               "",
-              "(The unstake-cancel share forfeiture is donation-proofed differently — by",
-              "withdraw-and-restake at the active share price — and does *not* read this",
-              "field.) Repurposed from trailing padding — layout and size are unchanged."
+              "The unstake cancel share forfeiture is protected from donations by",
+              "withdrawing and restaking at the active share price. It does not read",
+              "this field."
             ],
             "type": "u64"
           }

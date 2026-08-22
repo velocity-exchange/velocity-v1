@@ -2,8 +2,10 @@ import {
 	BN,
 	ZERO,
 	depositAmountAndSharesForIfStake,
+	getInsuranceFundNav,
 	timeRemainingUntilUpdate,
 	ONE,
+	SpotMarketAccount,
 } from '../../src';
 // import { mockPerpMarkets } from '../dlob/helpers';
 
@@ -113,5 +115,13 @@ describe('Insurance Tests', () => {
 			threw = true;
 		}
 		assert(threw);
+	});
+
+	it('includes booked revenue in insurance fund nav', () => {
+		const spotMarket = {
+			insuranceFundRevenueReceivable: new BN(50),
+		} as SpotMarketAccount;
+
+		assert(getInsuranceFundNav(spotMarket, new BN(1_000)).eq(new BN(1_050)));
 	});
 });

@@ -1340,13 +1340,17 @@ export type SpotMarketAccount = {
 	protocolLiquidationFee: number;
 	/** IF_FACTOR_PRECISION (1e6); protocol's carveout of lending deposit-interest gains */
 	protocolFeeFactor: number;
-	/** token mint precision; lowest IF vault balance since the end of the last revenue settle.
-	 * The settle writes the balance it leaves behind, and every IF outflow lowers it again. The
-	 * per-period revenue-settle APR cap is sized off `min(live IF vault, this)`, so it counts only
+	/** token mint precision; lowest IF NAV since the end of the last revenue settle.
+	 * NAV includes the live vault and allocated revenue still held as a receivable. Revenue
+	 * allocation writes the NAV it leaves behind, and every IF outflow lowers it again. The
+	 * per-period revenue-settle APR cap is sized off `min(current IF NAV, this)`, so it counts only
 	 * capital the fund held for the whole period and neither a pre-settle donation nor one that
 	 * refills a mid-period dip can lift it (see `settle_revenue_to_insurance_fund`);
 	 * `0` = the market never settled revenue */
 	ifLastSettleVaultAmount: BN;
+	paddingFormerSpotFeePool: number[];
+	/** revenue allocated to the insurance fund but still held inside the spot vault; token mint precision */
+	insuranceFundRevenueReceivable: BN;
 
 	/** token mint decimals; token-mint precision throughout this account is 10^decimals */
 	decimals: number;
@@ -1409,8 +1413,6 @@ export type SpotMarketAccount = {
 	/** token mint precision; 0 = no limit */
 	maxPositionSize: BN;
 	nextFillRecordId: BN;
-	/** fees collected from swaps between this market and the quote market, settled to the quote market's revenue pool; SPOT_BALANCE_PRECISION (1e9) scaled balance */
-	spotFeePool: PoolBalance;
 	/** QUOTE_PRECISION (1e6) */
 	totalSpotFee: BN;
 	/** token mint precision; total fees received from swaps */
@@ -1453,7 +1455,6 @@ export type SpotMarketAccount = {
 	maxDepositBpsPerDay: number;
 };
 
-/** A scaled token balance inside a market's internal pools (pnl pool, protocol fee pool, revenue pool, spot fee pool, AMM fee pool). Multiply `scaledBalance` (SPOT_BALANCE_PRECISION, 1e9) by the referenced spot market's `cumulativeDepositInterest`/`cumulativeBorrowInterest` to get the token amount. */
 export type PoolBalance = {
 	scaledBalance: BN;
 	/** the spot market this balance's token amount is denominated in */

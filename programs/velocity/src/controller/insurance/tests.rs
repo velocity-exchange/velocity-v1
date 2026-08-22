@@ -5,6 +5,7 @@ use {
             ONE_YEAR, PRICE_PRECISION_I64, QUOTE_PRECISION, QUOTE_PRECISION_I128,
             SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
         },
+        math::spot_withdraw::validate_spot_balances,
         state::{
             oracle::OracleSource,
             perp_market::{InsuranceClaim, PerpMarket, PoolBalance, AMM},
@@ -1447,8 +1448,10 @@ fn resolve_perp_pnl_deficit_refreshes_period_after_new_settle() {
     let mut spot_market = SpotMarket {
         market_index: 0,
         oracle_source: OracleSource::QuoteAsset,
+        deposit_balance: 30 * SPOT_BALANCE_PRECISION,
         cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
         decimals: 6,
+        insurance_fund_revenue_receivable: 30 * QUOTE_PRECISION as u64,
         insurance_fund: InsuranceFund {
             last_revenue_settle_ts: now, // new period opened at `now`
             ..InsuranceFund::default()
@@ -1493,7 +1496,11 @@ fn resolve_perp_pnl_deficit_refreshes_period_after_new_settle() {
     .unwrap();
 
     // counter reset to 0 then charged this withdraw; a full period's cap is free
-    assert_eq!(withdraw, cap);
+    // The controller allocates the full $100 but returns only the $70 that the
+    // handler must physically transfer from the IF vault.
+    assert_eq!(withdraw, 70 * QUOTE_PRECISION as u64);
+    assert_eq!(spot_market.insurance_fund_revenue_receivable, 0);
+    assert_eq!(market.pnl_pool.scaled_balance, 100 * SPOT_BALANCE_PRECISION);
     assert_eq!(
         market.insurance_claim.revenue_withdraw_since_last_settle,
         cap as i64
@@ -1762,6 +1769,206 @@ pub fn revenue_settle_cap_ignores_pre_settle_donation() {
     );
 }
 
+#[test]
+pub fn booked_revenue_prices_cancel_during_transfer_pause() {
+    let insurance_vault_amount = 1_000 * QUOTE_PRECISION as u64;
+    let mut spot_market = SpotMarket {
+        decimals: 6,
+        deposit_balance: 10_000 * SPOT_BALANCE_PRECISION,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        revenue_pool: PoolBalance {
+            market_index: 0,
+            scaled_balance: 1_000 * SPOT_BALANCE_PRECISION,
+            ..PoolBalance::default()
+        },
+        insurance_fund: InsuranceFund {
+            revenue_settle_period: (ONE_YEAR / 1_000) as i64,
+            total_shares: insurance_vault_amount as u128,
+            user_shares: insurance_vault_amount as u128,
+            ..InsuranceFund::default()
+        },
+        if_last_settle_vault_amount: insurance_vault_amount,
+        ..SpotMarket::default()
+    };
+    let mut stake = InsuranceFundStake::new(Pubkey::default(), 0, 0);
+    stake
+        .increase_if_shares(insurance_vault_amount as u128 / 2, &mut spot_market)
+        .unwrap();
+    let mut user_stats = UserStats::default();
+
+    request_remove_insurance_fund_stake(
+        stake.unchecked_if_shares(),
+        insurance_vault_amount,
+        &mut stake,
+        &mut user_stats,
+        &mut spot_market,
+        0,
+    )
+    .unwrap();
+    let shares_before = stake.unchecked_if_shares();
+    let deposit_balance_before = spot_market.deposit_balance;
+
+    let booked = book_revenue_to_insurance_fund(
+        10_000 * QUOTE_PRECISION as u64,
+        insurance_vault_amount,
+        &mut spot_market,
+        1,
+        false,
+        false,
+    )
+    .unwrap();
+
+    assert!(booked > 0);
+    assert_eq!(spot_market.deposit_balance, deposit_balance_before);
+    assert_eq!(
+        get_insurance_fund_nav(insurance_vault_amount, &spot_market).unwrap(),
+        insurance_vault_amount + booked
+    );
+
+    cancel_request_remove_insurance_fund_stake(
+        insurance_vault_amount,
+        &mut stake,
+        &mut user_stats,
+        &mut spot_market,
+        1,
+    )
+    .unwrap();
+
+    assert!(stake.unchecked_if_shares() < shares_before);
+}
+
+#[test]
+pub fn settling_receivable_moves_cash_without_changing_if_nav() {
+    let insurance_vault_amount = 1_000 * QUOTE_PRECISION as u64;
+    let spot_vault_amount = 10_000 * QUOTE_PRECISION as u64;
+    let mut spot_market = SpotMarket {
+        decimals: 6,
+        deposit_balance: 10_000 * SPOT_BALANCE_PRECISION,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        revenue_pool: PoolBalance {
+            market_index: 0,
+            scaled_balance: 1_000 * SPOT_BALANCE_PRECISION,
+            ..PoolBalance::default()
+        },
+        insurance_fund: InsuranceFund {
+            revenue_settle_period: (ONE_YEAR / 1_000) as i64,
+            total_shares: insurance_vault_amount as u128,
+            user_shares: insurance_vault_amount as u128,
+            ..InsuranceFund::default()
+        },
+        if_last_settle_vault_amount: insurance_vault_amount,
+        ..SpotMarket::default()
+    };
+
+    let booked = book_revenue_to_insurance_fund(
+        spot_vault_amount,
+        insurance_vault_amount,
+        &mut spot_market,
+        1,
+        false,
+        false,
+    )
+    .unwrap();
+    let nav_before = get_insurance_fund_nav(insurance_vault_amount, &spot_market).unwrap();
+    let deposit_balance_before = spot_market.deposit_balance;
+
+    let transferred = settle_insurance_fund_revenue_receivable(&mut spot_market).unwrap();
+
+    assert_eq!(transferred, booked);
+    assert_eq!(
+        get_insurance_fund_nav(insurance_vault_amount + transferred, &spot_market).unwrap(),
+        nav_before
+    );
+    assert_eq!(spot_market.insurance_fund_revenue_receivable, 0);
+    assert!(spot_market.deposit_balance < deposit_balance_before);
+    validate_spot_market_vault_amount(&spot_market, spot_vault_amount - transferred).unwrap();
+}
+
+#[test]
+pub fn unstake_does_not_burn_receivable_backed_shares_without_cash() {
+    let insurance_vault_amount = 1_000 * QUOTE_PRECISION as u64;
+    let insurance_fund_nav = 2 * insurance_vault_amount;
+    let mut spot_market = SpotMarket {
+        decimals: 6,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        insurance_fund: InsuranceFund {
+            unstaking_period: 0,
+            total_shares: insurance_fund_nav as u128,
+            user_shares: insurance_fund_nav as u128,
+            ..InsuranceFund::default()
+        },
+        insurance_fund_revenue_receivable: 1_000 * QUOTE_PRECISION as u64,
+        ..SpotMarket::default()
+    };
+    let mut stake = InsuranceFundStake::new(Pubkey::default(), 0, 0);
+    stake
+        .update_if_shares(insurance_fund_nav as u128, &spot_market)
+        .unwrap();
+    let mut user_stats = UserStats::default();
+
+    request_remove_insurance_fund_stake(
+        stake.unchecked_if_shares(),
+        insurance_vault_amount,
+        &mut stake,
+        &mut user_stats,
+        &mut spot_market,
+        0,
+    )
+    .unwrap();
+
+    assert!(remove_insurance_fund_stake(
+        insurance_vault_amount,
+        &mut stake,
+        &mut user_stats,
+        &mut spot_market,
+        0,
+    )
+    .is_err());
+}
+
+#[test]
+pub fn repeated_revenue_booking_cannot_reuse_receivable_backing() {
+    let mut spot_market = SpotMarket {
+        market_index: 0,
+        decimals: 6,
+        deposit_balance: 1_000 * SPOT_BALANCE_PRECISION,
+        borrow_balance: 900 * SPOT_BALANCE_PRECISION,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        revenue_pool: PoolBalance {
+            market_index: 0,
+            scaled_balance: 100 * SPOT_BALANCE_PRECISION,
+            ..PoolBalance::default()
+        },
+        insurance_fund_revenue_receivable: 60 * QUOTE_PRECISION as u64,
+        insurance_fund: InsuranceFund {
+            revenue_settle_period: 1,
+            ..InsuranceFund::default()
+        },
+        ..SpotMarket::default()
+    };
+
+    let booked = book_revenue_to_insurance_fund(
+        100 * QUOTE_PRECISION as u64,
+        0,
+        &mut spot_market,
+        1,
+        false,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(booked, 20 * QUOTE_PRECISION as u64);
+    assert_eq!(
+        get_insurance_fund_revenue_receivable_token_amount(&spot_market).unwrap(),
+        80 * QUOTE_PRECISION
+    );
+    assert_eq!(
+        validate_spot_balances(&spot_market).unwrap(),
+        100 * QUOTE_PRECISION as i64
+    );
+}
+
 /// A dip inside a settle period must outlive a later transfer into the vault. A loss
 /// draw or an unstake takes the fund below the balance the last settle left behind,
 /// and a donation that restores the live balance must not restore the cap with it.
@@ -1790,12 +1997,12 @@ pub fn revenue_settle_cap_holds_the_period_minimum_after_a_dip() {
     };
 
     // A loss draw mid-period takes the vault from 1000 down to 100.
-    record_insurance_fund_outflow(&mut spot_market, snapshot, draw);
+    record_insurance_fund_outflow(&mut spot_market, snapshot, draw).unwrap();
     assert_eq!(spot_market.if_last_settle_vault_amount, snapshot - draw);
 
     // A second call with no outflow is a no-op: the field is a minimum, so nothing
     // that arrives later in the period raises it.
-    record_insurance_fund_outflow(&mut spot_market, snapshot, 0);
+    record_insurance_fund_outflow(&mut spot_market, snapshot, 0).unwrap();
     assert_eq!(spot_market.if_last_settle_vault_amount, snapshot - draw);
 
     // Somebody now donates the drawn amount back, so the live balance reads 1000

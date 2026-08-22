@@ -2331,12 +2331,16 @@ pub fn handle_resolve_perp_pnl_deficit<'c: 'info, 'info>(
             "insurance_fund_vault.amount must remain > 0"
         )?;
 
-        controller::insurance::record_insurance_fund_outflow(
-            spot_market,
-            insurance_vault_amount,
-            pay_from_insurance,
-        );
     }
+
+    // The controller may satisfy the deficit from the receivable without a
+    // token transfer. Record the resulting NAV in both cases.
+    let spot_market = &mut spot_market_map.get_ref_mut(&spot_market_index)?;
+    controller::insurance::record_insurance_fund_outflow(
+        spot_market,
+        insurance_vault_amount,
+        pay_from_insurance,
+    )?;
 
     // todo: validate amounts transfered and spot_market before and after are zero-sum
 
@@ -2480,7 +2484,7 @@ pub fn handle_resolve_perp_bankruptcy<'c: 'info, 'info>(
             spot_market,
             insurance_vault_amount,
             pay_from_insurance,
-        );
+        )?;
         // reload the spot market vault balance so it's up-to-date
         ctx.accounts.spot_market_vault.reload()?;
         math::spot_withdraw::validate_spot_market_vault_amount(
@@ -2613,7 +2617,7 @@ pub fn handle_resolve_spot_bankruptcy<'c: 'info, 'info>(
             spot_market,
             insurance_vault_amount,
             pay_from_insurance,
-        );
+        )?;
         // reload the spot market vault balance so it's up-to-date
         ctx.accounts.spot_market_vault.reload()?;
         math::spot_withdraw::validate_spot_market_vault_amount(
@@ -2966,24 +2970,39 @@ pub fn handle_settle_revenue_to_insurance_fund<'c: 'info, 'info>(
         spot_market.insurance_fund.revenue_settle_period,
     )?;
 
+    let has_receivable = spot_market.insurance_fund_revenue_receivable > 0;
     validate!(
-        time_until_next_update == 0,
+        time_until_next_update == 0 || has_receivable,
         ErrorCode::RevenueSettingsCannotSettleToIF,
         "Must wait {} seconds until next available settlement time",
         time_until_next_update
     )?;
 
-    // uses proportion of revenue pool allocated to insurance fund
-    let token_amount = controller::insurance::settle_revenue_to_insurance_fund(
-        spot_vault_amount,
-        insurance_vault_amount,
-        spot_market,
-        now,
-        true,
-        state.funding_paused()?,
-    )?;
-
-    spot_market.insurance_fund.last_revenue_settle_ts = now;
+    let token_amount = if time_until_next_update == 0 {
+        controller::insurance::settle_revenue_to_insurance_fund(
+            spot_vault_amount,
+            insurance_vault_amount,
+            spot_market,
+            now,
+            true,
+            state.funding_paused()?,
+        )?
+    } else {
+        controller::spot_balance::update_spot_market_cumulative_interest(
+            spot_market,
+            None,
+            now,
+            state.funding_paused()?,
+        )?;
+        let token_amount =
+            controller::insurance::settle_insurance_fund_revenue_receivable(spot_market)?;
+        validate!(
+            token_amount > 0,
+            ErrorCode::NoRevenueToSettleToIF,
+            "no insurance fund revenue receivable to transfer"
+        )?;
+        token_amount
+    };
 
     controller::token::send_from_program_vault(
         &ctx.accounts.token_program,

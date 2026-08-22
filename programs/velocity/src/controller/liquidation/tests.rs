@@ -11156,8 +11156,9 @@ pub mod resolve_perp_bankruptcy {
         )
         .unwrap();
 
-        // loss = -100. Tranches: pending IF 30 (counter-only), IF vault 25
-        // (capped by quote_max_insurance), provision clawback 15 = 8
+        // loss = -100. Tranches: pending IF 30 (counter-only), allocated IF
+        // revenue 10, IF vault 15 (the combined IF draw is capped at 25),
+        // provision clawback 15 = 8
         // untokenized (counter-only) + 7 tokenized (fee_pool -> pnl_pool).
         // Socialized remainder: 100 - 30 - 25 - 15 = 30.
         let mut market = PerpMarket {
@@ -11211,6 +11212,7 @@ pub mod resolve_perp_bankruptcy {
             cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
             decimals: 6,
             initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            insurance_fund_revenue_receivable: 10 * QUOTE_PRECISION_U64,
             ..SpotMarket::default()
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
@@ -11292,7 +11294,7 @@ pub mod resolve_perp_bankruptcy {
         expected_market.amm.total_fee_minus_distributions = -15 * QUOTE_PRECISION_I128;
         expected_market.amm.net_revenue_since_last_funding = -15 * QUOTE_PRECISION_I64;
 
-        resolve_perp_bankruptcy(
+        let vault_payment = resolve_perp_bankruptcy(
             0,
             &mut user,
             &user_key,
@@ -11307,6 +11309,14 @@ pub mod resolve_perp_bankruptcy {
         )
         .unwrap();
 
+        assert_eq!(vault_payment, 15 * QUOTE_PRECISION_U64);
+        assert_eq!(
+            spot_market_map
+                .get_ref(&0)
+                .unwrap()
+                .insurance_fund_revenue_receivable,
+            0
+        );
         assert_eq!(expected_user, user);
         assert_eq!(expected_market, market_map.get_ref(&0).unwrap().clone());
     }
@@ -12930,7 +12940,7 @@ pub mod resolve_spot_bankruptcy {
                     AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_U64,
                     FUNDING_RATE_PRECISION_I128, LIQUIDATION_FEE_PRECISION, PEG_PRECISION,
                     QUOTE_PRECISION, QUOTE_PRECISION_I128, QUOTE_PRECISION_I64,
-                    SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
+                    QUOTE_PRECISION_U64, SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
                     SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
                 },
                 spot_balance::get_token_amount,
@@ -13665,8 +13675,8 @@ pub mod resolve_spot_bankruptcy {
 
     #[test]
     pub fn resolve_spot_bankruptcy_revenue_pool_then_if_then_social_loss() {
-        // $100 bad debt covered in tranche order: $30 revenue pool, $40 IF
-        // vault, remaining $30 socialized to depositors.
+        // $100 bad debt covered in tranche order: $30 revenue pool, $20
+        // allocated IF revenue, $40 IF vault, remaining $10 socialized.
         let now = 0_i64;
         let slot = 0_u64;
 
@@ -13715,7 +13725,7 @@ pub mod resolve_spot_bankruptcy {
         create_anchor_account_info!(market, PerpMarket, market_account_info);
         let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
 
-        // $1000 of depositor claims + $30 revenue pool
+        // $1000 of depositor claims + $30 revenue pool + $20 allocated IF revenue
         let mut spot_market = SpotMarket {
             market_index: 0,
             oracle_source: OracleSource::QuoteAsset,
@@ -13723,13 +13733,14 @@ pub mod resolve_spot_bankruptcy {
             cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
             decimals: 6,
             initial_asset_weight: SPOT_WEIGHT_PRECISION,
-            deposit_balance: 1030 * SPOT_BALANCE_PRECISION,
+            deposit_balance: 1050 * SPOT_BALANCE_PRECISION,
             borrow_balance: 100 * SPOT_BALANCE_PRECISION,
             revenue_pool: PoolBalance {
                 market_index: 0,
                 scaled_balance: 30 * SPOT_BALANCE_PRECISION,
                 ..PoolBalance::default()
             },
+            insurance_fund_revenue_receivable: 20 * QUOTE_PRECISION_U64,
             historical_oracle_data: HistoricalOracleData::default_price(QUOTE_PRECISION_I64),
             ..SpotMarket::default()
         };
@@ -13782,13 +13793,16 @@ pub mod resolve_spot_bankruptcy {
         expected_spot_market.borrow_balance = 0;
         // revenue pool fully consumed as tranche 1
         expected_spot_market.revenue_pool.scaled_balance = 0;
-        expected_spot_market.deposit_balance = 1000 * SPOT_BALANCE_PRECISION;
-        // 3% haircut: $30 socialized over the $1000 of remaining deposits
+        expected_spot_market.insurance_fund_revenue_receivable = 0;
+        // Scaled balance conversion rounds the consumed receivable up by one
+        // unit so the reserved claim is removed in full.
+        expected_spot_market.deposit_balance = 1000 * SPOT_BALANCE_PRECISION - 1;
+        // The social loss calculation also rounds the haircut up.
         expected_spot_market.cumulative_deposit_interest =
-            97 * SPOT_CUMULATIVE_INTEREST_PRECISION / 100;
-        // socialized loss only ($30), not the gross $100
-        expected_spot_market.total_social_loss = 30 * QUOTE_PRECISION;
-        expected_spot_market.total_quote_social_loss = 30 * QUOTE_PRECISION;
+            99 * SPOT_CUMULATIVE_INTEREST_PRECISION / 100 - 1;
+        // socialized loss only ($10), not the gross $100
+        expected_spot_market.total_social_loss = 10 * QUOTE_PRECISION;
+        expected_spot_market.total_quote_social_loss = 10 * QUOTE_PRECISION;
 
         // +1 so `insurance_fund_vault_balance - 1` leaves exactly $40 payable
         let if_payment = resolve_spot_bankruptcy(
@@ -13817,8 +13831,8 @@ pub mod resolve_spot_bankruptcy {
         let deposit_token_amount =
             get_token_amount(deposit_balance, &spot_market, &SpotBalanceType::Deposit).unwrap();
 
-        // depositors lose exactly the socialized $30
-        assert_eq!(deposit_token_amount, 970 * QUOTE_PRECISION);
+        // Depositors lose the socialized $10 plus conservative conversion dust.
+        assert_eq!(deposit_token_amount, 990 * QUOTE_PRECISION - 1);
     }
 }
 

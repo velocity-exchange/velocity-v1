@@ -72,6 +72,7 @@ import {
 	PEG_PRECISION,
 	PositionDirection,
 	PostOnlyParams,
+	parseLogs,
 	PRICE_PRECISION,
 	QuoterCpiLeg,
 	QuoterType,
@@ -505,6 +506,25 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		});
 		await confirmSignature(signature);
 		return signature;
+	};
+
+	/** The `User` accounts one transaction settled a maker fill for.
+	 *
+	 * Read out of the transaction's own records, which is the only way to ask
+	 * what a *fill* did: an account balance answers what is true now, and
+	 * cranks keep working while a test looks.
+	 */
+	const makersFilledBy = async (signature: string): Promise<string[]> => {
+		const tx = await connection.getTransaction(signature, {
+			commitment: 'confirmed',
+			maxSupportedTransactionVersion: 0,
+		});
+		const logs = tx?.meta?.logMessages ?? [];
+		return parseLogs(admin.program, logs)
+			.filter((event) => event.name === 'orderActionRecord')
+			.map((event) => (event.data as { maker?: PublicKey }).maker)
+			.filter((maker): maker is PublicKey => maker != null)
+			.map((maker) => maker.toBase58());
 	};
 
 	/** Fills route through every quoter, well past the default CU budget. */
@@ -2259,15 +2279,6 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			{ offsetPpm: 8000, size: UNIT.muln(2) },
 		]);
 
-		const before = {
-			maker1: (await clobMaker.forceGetUserAccount())?.perpPositions.find(
-				(p) => p.marketIndex === 0
-			)?.baseAssetAmount,
-			maker2: (await clobMaker2.forceGetUserAccount())?.perpPositions.find(
-				(p) => p.marketIndex === 0
-			)?.baseAssetAmount,
-		};
-
 		const size = UNIT.muln(15).divn(10);
 		// The id up front, for the same reason the route test takes it that
 		// way: matching an order by its size finds whichever one matches.
@@ -2282,21 +2293,24 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		);
 
 		// The whole point: `clobMaker2Kp` is deliberately absent.
-		await sendFill(
+		const signature = await sendFill(
 			await fillPerpOrderIx(orderId, takerKp.publicKey, [
 				clobMakerKp,
 				midMakerKp,
 			])
 		);
 
-		// The maker it could not carry is untouched, and still on the book.
-		await clobMaker2.fetchAccounts();
-		const maker2After = clobMaker2
-			.getUser()
-			.getPerpPosition(0)!.baseAssetAmount;
-		assert.equal(
-			maker2After.toString(),
-			(before.maker2 ?? new BN(0)).toString(),
+		// Read off the fill itself rather than off positions afterwards. The
+		// claim is about this transaction — it settled for the maker it
+		// carried and not for the one it did not — and a position is free to
+		// move again the moment the fill lands: this taker's remainder rests
+		// as a taker-origin bid that crosses the absent maker's ask, and a
+		// crank is entitled to match them a slot later. Asserting on account
+		// state raced that crank.
+		const filled = await makersFilledBy(signature);
+		assert.notInclude(
+			filled,
+			userOf(clobMaker2Kp.publicKey).toBase58(),
 			'the maker the fill could not carry is not filled'
 		);
 		const book = await readClob();
@@ -2305,10 +2319,9 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// The maker it *could* carry did fill, which is what says the walk
 		// reached the book and got past the first order — so stopping at the
 		// second is the withheld path and not simply never arriving.
-		await clobMaker.fetchAccounts();
-		const maker1After = clobMaker.getUser().getPerpPosition(0)!.baseAssetAmount;
-		assert.isTrue(
-			maker1After.lt(before.maker1 ?? new BN(0)),
+		assert.include(
+			filled,
+			userOf(clobMakerKp.publicKey).toBase58(),
 			'the carried maker filled, so the walk did reach the book'
 		);
 	});

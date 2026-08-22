@@ -1,0 +1,124 @@
+# Continuous deploy of the velocity fuzz bundle to the AR fuzzing server.
+#
+# Runs NIGHTLY (cron) to ship a fresh bundle built from the latest default branch,
+# so AR fuzzing always fuzzes current code — plus a manual workflow_dispatch for
+# on-demand deploys and dry runs. Defaults target seceng / lumen / velocity-v1.
+#
+# The build is fully containerized — fuzz/build-bundle.sh compiles the crucible
+# harness binaries AND the SVM-tier velocity.so inside a linux/amd64 container —
+# so this job needs nothing but Docker (already on ubuntu-latest). No
+# Rust/Solana/Anchor toolchain setup here; the container pins the right ones.
+#
+# NON-GATING: this workflow never runs on pull_request, so it cannot block a merge.
+#
+# Upload uses asymmetric-research/fuzz-upload-action, which fetches the small
+# `fuzz-up` uploader from the PUBLIC asymmetric-research/fuzz-up releases with the
+# default GITHUB_TOKEN (cosign-verified) — no full `fuzz` CLI and no extra token.
+#
+# ── Client setup (one time) ───────────────────────────────────────────────────
+#   1. In the AR fuzzing dashboard for the `lumen` org, create an ORG-scoped API key.
+#   2. Add it to this repo as an Actions secret named `FUZZ_API_KEY`
+#      (Settings → Secrets and variables → Actions → New repository secret).
+#   3. Merge this PR to the default branch. The nightly schedule then runs on its
+#      own; the workflow can also be run on demand from the Actions tab.
+# A workflow_dispatch/schedule workflow must be on the DEFAULT branch before it can
+# trigger — so the first nightly run happens the night after this merges.
+# ──────────────────────────────────────────────────────────────────────────────
+name: fuzz-deploy
+
+on:
+  schedule:
+    # 03:17 UTC nightly. Off-the-hour minute to avoid GitHub's top-of-hour cron
+    # congestion (scheduled runs can be delayed when many fire at :00).
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      # The API origin is deliberately NOT an input. It is the one value deciding
+      # where the bundle goes -- and the bundle carries this repo's Rust sources
+      # plus an unstripped DWARF build, alongside FUZZ_API_KEY. As a free-text
+      # dispatch input, anyone able to run this workflow could redirect both to an
+      # arbitrary host. It is pinned in `env:` below; change it in a reviewed
+      # commit, not from the Actions tab.
+      organization:
+        description: AR fuzzing organization
+        default: lumen
+        required: true
+      project:
+        description: AR fuzzing project
+        default: velocity-v1
+        required: true
+      validate_only:
+        description: Validate the bundle against the server WITHOUT ingesting it (dry run)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # Serialize deploys; do not cancel an in-flight upload.
+  group: fuzz-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    name: build + upload
+    runs-on: ubuntu-latest # linux/amd64 — containers build natively (no emulation)
+    timeout-minutes: 180
+    # Scheduled runs fall back to the production defaults; workflow_dispatch runs use
+    # the operator's inputs. Resolved once here so both triggers share the values and
+    # nothing is interpolated inside a run: shell (avoids template injection).
+    env:
+      # Pinned, not operator-supplied -- see the note on workflow_dispatch inputs.
+      API_ORIGIN: https://seceng.staging.fuzzcorp.asymmetric.re
+      ORGANIZATION: ${{ inputs.organization || 'lumen' }}
+      PROJECT: ${{ inputs.project || 'velocity-v1' }}
+      VALIDATE_ONLY: ${{ inputs.validate_only || false }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.2.2
+        with:
+          persist-credentials: false # zizmor artipacked: don't leave the token on disk
+
+      - name: Verify manifest in sync with targets.txt
+        run: bash fuzz/build-bundle.sh --check
+
+      # llvm-dwarfdump lets build-bundle.sh's coverage-sanity gate enforce that the
+      # staged symbols .so's DWARF comp_dir matches the manifest SourcesOriginalPath —
+      # a mismatch ships EMPTY source-level coverage silently. Without the tool the
+      # gate only warns; installed, it fails the build before a broken bundle uploads.
+      - name: Install llvm-dwarfdump (coverage sanity gate)
+        run: sudo apt-get update && sudo apt-get install -y llvm
+
+      # build-bundle.sh runs every compile inside a linux/amd64 container: the rust
+      # image for the crucible harnesses and the SBF-builder image for velocity.so.
+      # Docker is preinstalled on ubuntu-latest. The final coverage-sanity gate fails
+      # the build if source-level coverage would render empty (see build-bundle.sh).
+      - name: Build bundle
+        run: |
+          set -euo pipefail
+          bash fuzz/build-bundle.sh --svm-only --zip
+
+      # Fail-closed pre-upload checks. Everything this catches is otherwise SILENT:
+      # the bundle validates, uploads, runs and quietly produces nothing. It also
+      # stages any first-party source root the DWARF references but the bundle is
+      # missing -- a program spanning programs/ + program-utils/ loses the second
+      # one entirely, and those lines are measured and then dropped.
+      - name: Bundle guard (pre-upload)
+        run: ./fuzz/bundle-guard.sh fuzz/dist/bundle .
+
+      - name: Upload bundle to AR fuzzing
+      # v2.1.0, not v2.0.0. The older pin fetches a `fuzz-up` release that no longer
+      # resolves: the step dies with `gh: Not Found (HTTP 404)` followed by "Failed to
+      # download cosign public key", after a clean build and a passing bundle guard.
+      # SHA-pinned rather than tracking the mutable `v2` tag.
+        uses: asymmetric-research/fuzz-upload-action@bee03d6c44529f8fc1bae349c7090ad33cd50ca6 # v2.1.0
+        env:
+          FUZZ_API_ORIGIN: ${{ env.API_ORIGIN }}
+          FUZZ_ORGANIZATION: ${{ env.ORGANIZATION }}
+          FUZZ_PROJECT: ${{ env.PROJECT }}
+          FUZZ_API_KEY: ${{ secrets.FUZZ_API_KEY }}
+        with:
+          upload_type: bundle
+          upload_path: fuzz/dist/bundle
+          # Dry run (validate against the server, don't ingest) when requested.
+          upload_args: ${{ env.VALIDATE_ONLY == 'true' && '--validate-only' || '' }}

@@ -20,7 +20,7 @@ velocity = { path = "../../programs/velocity", default-features = false, feature
   "fuzz-fixtures",
 ] }
 # Crucible runtime — pinned to the exact commit so every harness builds one API.
-crucible-test-context = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+crucible-test-context = { git = "https://github.com/asymmetric-research/crucible", rev = "086b423506bf4928a878f292e34c7beed9c7056d" }
 anchor-lang = "1.0"
 bytemuck = "1.14"
 solana-pubkey = "3.0"

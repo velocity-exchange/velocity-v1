@@ -9,9 +9,9 @@ edition = "2021"
 
 [dependencies]
 # Crucible framework, pinned to the exact commit.
-crucible-fuzzer = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
-crucible-test-context = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
-crucible-idl-gen = { git = "https://github.com/asymmetric-research/crucible", rev = "daeaa4d4a4e334175c4f171daacc7e177ad2fae0" }
+crucible-fuzzer = { git = "https://github.com/asymmetric-research/crucible", rev = "086b423506bf4928a878f292e34c7beed9c7056d" }
+crucible-test-context = { git = "https://github.com/asymmetric-research/crucible", rev = "086b423506bf4928a878f292e34c7beed9c7056d" }
+crucible-idl-gen = { git = "https://github.com/asymmetric-research/crucible", rev = "086b423506bf4928a878f292e34c7beed9c7056d" }
 
 # velocity as a HOST library — same feature set as build-devnet.sh so the host
 # structs match the loaded .so layout. Used for zero-copy account reads.

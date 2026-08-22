@@ -1910,6 +1910,17 @@ struct PerpOracleRoutePolicy {
     uses_pyth_update: bool,
 }
 
+fn consume_perp_fill_fallback(
+    fallbacks: &DashMap<(Pubkey, u16), ()>,
+    key: (Pubkey, u16),
+    liquidation_allowed: bool,
+    collateral_available: u128,
+    collateral_required: u128,
+) -> bool {
+    let fallback_pending = fallbacks.remove(&key).is_some();
+    fallback_pending && liquidation_allowed && collateral_available >= collateral_required
+}
+
 /// Primary liquidation strategy
 pub struct PrimaryLiquidationStrategy {
     pub velocity: VelocityClient,
@@ -2839,7 +2850,13 @@ impl PrimaryLiquidationStrategy {
             policy,
         );
         let fallback_key = (liquidatee, position.market_index);
-        let force_takeover = self.perp_fill_fallbacks.contains_key(&fallback_key);
+        let force_takeover = consume_perp_fill_fallback(
+            &self.perp_fill_fallbacks,
+            fallback_key,
+            policy.liquidation_allowed,
+            free_collateral,
+            collateral_required,
+        );
         let method = Self::decide_perp_method(
             free_collateral,
             collateral_required,
@@ -2890,25 +2907,20 @@ impl PrimaryLiquidationStrategy {
                 ) else {
                     return LiquidationOutcome::Skipped("no_subaccount_for_takeover");
                 };
-                let outcome = self
-                    .try_liquidate_with_collateral(
-                        velocity,
-                        position.market_index,
-                        subaccount,
-                        liquidatee,
-                        position.base_asset_amount.unsigned_abs(),
-                        collateral_required,
-                        tx_sender,
-                        priority_fee,
-                        cu_limit,
-                        slot,
-                        pyth_update,
-                    )
-                    .await;
-                if force_takeover && outcome.is_sent() {
-                    self.perp_fill_fallbacks.remove(&fallback_key);
-                }
-                outcome
+                self.try_liquidate_with_collateral(
+                    velocity,
+                    position.market_index,
+                    subaccount,
+                    liquidatee,
+                    position.base_asset_amount.unsigned_abs(),
+                    collateral_required,
+                    tx_sender,
+                    priority_fee,
+                    cu_limit,
+                    slot,
+                    pyth_update,
+                )
+                .await
             }
             _ if !policy.liquidation_allowed && makers.is_none() => {
                 LiquidationOutcome::Skipped("oracle_not_eligible")
@@ -3998,6 +4010,38 @@ mod tests {
             PrimaryLiquidationStrategy::decide_perp_method(100, 100, true, true, true, true),
             LiquidationType::PerpTakeover
         );
+    }
+
+    #[test]
+    fn perp_fill_fallback_is_consumed_once() {
+        let fallbacks = DashMap::new();
+        let key = (Pubkey::new_unique(), 7);
+
+        fallbacks.insert(key, ());
+        let force_takeover = consume_perp_fill_fallback(&fallbacks, key, true, 99, 100);
+        assert!(!force_takeover);
+        assert!(!fallbacks.contains_key(&key));
+        assert_eq!(
+            PrimaryLiquidationStrategy::decide_perp_method(
+                99,
+                100,
+                true,
+                true,
+                true,
+                force_takeover,
+            ),
+            LiquidationType::PerpWithFill
+        );
+
+        fallbacks.insert(key, ());
+        assert!(!consume_perp_fill_fallback(
+            &fallbacks, key, false, 100, 100
+        ));
+        assert!(!fallbacks.contains_key(&key));
+
+        fallbacks.insert(key, ());
+        assert!(consume_perp_fill_fallback(&fallbacks, key, true, 100, 100));
+        assert!(!fallbacks.contains_key(&key));
     }
 
     #[test]

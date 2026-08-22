@@ -1,6 +1,0 @@
----
-'@velocity-exchange/sdk': minor
-'@velocity-exchange/admin-cli': minor
----
-
-Velocity signs external-quoter CPIs as a new dedicated PDA (seeds `["quoter_signer"]`) instead of `State.signer`, which is the SPL token authority on every spot-market and insurance-fund vault. Signer privilege is inherited by a callee, so the key handed to a quoter program is now the authority on nothing. The `velocity_signer` account is renamed `quoter_signer` on `place_clob_order`, `cancel_clob_order`, `modify_clob_order`, `trigger_clob_order`, `force_cancel_clob_orders`, `crank_clob_evict`, `crank_clob_remove_expired` and `place_and_take_perp_order_v1`, and its PDA seeds ride the IDL so an Anchor client resolves it automatically. `update_quoter_accounts` / `update_quoter_approved` now reject a CPI account list that names the vault authority (`InvalidQuoterConfig`). SDK adds `getQuoterSignerPublicKey` and `VelocityClient.getQuoterSignerPublicKey()`, and `getPlaceAndTakePerpOrderIx`'s `clobAccounts.velocitySigner` becomes `clobAccounts.quoterSigner`; admin CLI's `clob-market init` sets a book's `place_authority` and its execute-leg signer slot to the new PDA. Existing books and midpoint instances must have their `place_authority` / `execute_authority` re-pointed at the new key.

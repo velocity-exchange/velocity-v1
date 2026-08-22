@@ -1,5 +1,0 @@
----
-'@velocity-exchange/sdk': minor
----
-
-Taker-origin crosses resolve: new permissionless `crank_taker_origin_cross` instruction in the IDL. A migrated taker remainder resting on a CLOB book flagged taker-origin cannot be taken while a live counterparty crosses it; this crank consumes that counterparty at its own price, lifts the remainder off the book, and settles the pair as an ordinary two-user match **at the counterparty's price**, so the taker — not whoever lands a transaction at the activation slot — captures the improvement. The cranker is paid an ordinary filler reward in quote out of that improvement (the protocol fee schedule is untouched), capped so the taker's net still beats its resting price. New event `TakerOriginCrossRecordV0` (rest price, fill price, improvement, crank reward, and the re-placed remainder's new CLOB order id) with its type mirror and `EventMap` / `eventTypes` / `VelocityEvent` wiring; new errors `NoTakerOriginCross` (6390) and `TakerOriginCrossWorseForTaker` (6391). `crank_cross_match` is unchanged.

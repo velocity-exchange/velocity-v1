@@ -2330,7 +2330,6 @@ pub fn handle_resolve_perp_pnl_deficit<'c: 'info, 'info>(
             ErrorCode::InvalidIFDetected,
             "insurance_fund_vault.amount must remain > 0"
         )?;
-
     }
 
     // The controller may satisfy the deficit from the receivable without a

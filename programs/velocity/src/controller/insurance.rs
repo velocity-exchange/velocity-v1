@@ -747,16 +747,33 @@ fn book_revenue_to_insurance_fund(
     }
 
     if insurance_fund_token_amount > 0 {
-        let balance_delta = get_spot_balance(
+        // Replace the revenue pool claim with the scaled representation of the
+        // integer receivable. This removes fractional pool dust that the u64
+        // receivable cannot represent while keeping the remaining claim funded.
+        let revenue_pool_token_amount = get_token_amount(
+            spot_market.revenue_pool.scaled_balance,
+            spot_market,
+            &SpotBalanceType::Deposit,
+        )?;
+        let receivable_balance_delta = get_spot_balance(
             insurance_fund_token_amount.cast()?,
             spot_market,
             &SpotBalanceType::Deposit,
             true,
         )?;
+        let balance_delta = if revenue_pool_token_amount <= insurance_fund_token_amount.cast()? {
+            spot_market.revenue_pool.scaled_balance
+        } else {
+            receivable_balance_delta
+        };
         spot_market.revenue_pool.scaled_balance = spot_market
             .revenue_pool
             .scaled_balance
             .safe_sub(balance_delta)?;
+        spot_market.deposit_balance = spot_market
+            .deposit_balance
+            .safe_sub(balance_delta)?
+            .safe_add(receivable_balance_delta)?;
         spot_market.insurance_fund_revenue_receivable = spot_market
             .insurance_fund_revenue_receivable
             .safe_add(insurance_fund_token_amount)?;

@@ -1,11 +1,13 @@
 use {
     crate::{
         controller::insurance::*,
-        math::constants::{
-            ONE_YEAR, PRICE_PRECISION_I64, QUOTE_PRECISION, QUOTE_PRECISION_I128,
-            SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
+        math::{
+            constants::{
+                ONE_YEAR, PRICE_PRECISION_I64, QUOTE_PRECISION, QUOTE_PRECISION_I128,
+                SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
+            },
+            spot_withdraw::validate_spot_balances,
         },
-        math::spot_withdraw::validate_spot_balances,
         state::{
             oracle::OracleSource,
             perp_market::{InsuranceClaim, PerpMarket, PoolBalance, AMM},

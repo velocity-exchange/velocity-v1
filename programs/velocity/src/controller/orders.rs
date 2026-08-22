@@ -1183,6 +1183,7 @@ pub fn fill_perp_order(
 
     let reserve_price_before: u64;
     let safe_oracle_validity: OracleValidity;
+    let exchange_oracle_validity: OracleValidity;
     let oracle_price: i64;
     let oracle_twap_5min: i64;
     let user_can_skip_duration: bool;
@@ -1202,6 +1203,23 @@ pub fn fill_perp_order(
         )?;
 
         let oracle_price_data = oracle_map.get_price_data(&market.oracle_id())?;
+        exchange_oracle_validity = oracle_validity(
+            MarketType::Perp,
+            market.market_index,
+            market
+                .market_stats
+                .historical_oracle_data
+                .last_oracle_price_twap,
+            oracle_price_data,
+            &state.oracle_guard_rails.validity,
+            market.get_max_confidence_interval_multiplier()?,
+            &market.oracle_source,
+            oracle::LogMode::ExchangeOracle,
+            market.oracle_slot_delay_override,
+            false,
+            market.oracle_low_risk_slot_delay_override,
+            state.slot_duration(),
+        )?;
         let mm_oracle_price_data = market.get_mm_oracle_price_data(
             *oracle_price_data,
             slot,
@@ -1307,8 +1325,12 @@ pub fn fill_perp_order(
     // only decides whether oracle-relative limit prices resolve), so without
     // this a match could execute while every other consumer of the oracle
     // refuses it.
-    let match_fills_allowed =
+    let safe_match_fills_allowed =
         is_oracle_valid_for_action(safe_oracle_validity, Some(VelocityAction::FillOrderMatch))?;
+    let exchange_match_fills_allowed = is_oracle_valid_for_action(
+        exchange_oracle_validity,
+        Some(VelocityAction::FillOrderMatch),
+    )?;
 
     let is_filler_taker = user_key == filler_key;
     let is_filler_maker = makers_and_referrer.0.contains_key(&filler_key);
@@ -1342,6 +1364,7 @@ pub fn fill_perp_order(
         &filler_key,
         state.perp_fee_structure.flat_filler_fee,
         oracle_price,
+        exchange_match_fills_allowed,
         jit_maker_order_id,
         now,
         slot,
@@ -1350,10 +1373,14 @@ pub fn fill_perp_order(
     // Runs after `get_maker_orders_info` so its expired-maker-order cleanup
     // still happens; only the matching itself is withheld. AMM fills keep
     // their own gates.
-    if !match_fills_allowed && !maker_orders_info.is_empty() {
+    let taker_can_match =
+        can_floored_user_match_with_exchange_oracle(user, exchange_match_fills_allowed);
+    if (!safe_match_fills_allowed || !taker_can_match) && !maker_orders_info.is_empty() {
         msg!(
-            "Perp market = {} oracle not valid for match fills",
-            market_index
+            "Perp market = {} oracle not valid for match fills (safe={}, taker_exchange={})",
+            market_index,
+            safe_match_fills_allowed,
+            taker_can_match,
         );
         maker_orders_info.clear();
     }
@@ -1645,6 +1672,7 @@ fn get_maker_orders_info(
     filler_key: &Pubkey,
     filler_reward: u64,
     oracle_price: i64,
+    exchange_match_fills_allowed: bool,
     jit_maker_order_id: Option<u32>,
     now: i64,
     slot: u64,
@@ -1703,14 +1731,20 @@ fn get_maker_orders_info(
         // its oracles recover), its provably reducing orders stay matchable
         // (the gate exempts them). Computed once per maker; free when no
         // floor is set.
-        let maker_floor_unverifiable = match calculate_net_equity_for_floor(
-            &maker,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
-        )? {
-            Some(net_equity) => !net_equity.all_oracles_valid,
-            None => false,
+        let maker_can_match =
+            can_floored_user_match_with_exchange_oracle(&maker, exchange_match_fills_allowed);
+        let maker_floor_unverifiable = if maker_can_match {
+            match calculate_net_equity_for_floor(
+                &maker,
+                perp_market_map,
+                spot_market_map,
+                oracle_map,
+            )? {
+                Some(net_equity) => !net_equity.all_oracles_valid,
+                None => false,
+            }
+        } else {
+            false
         };
 
         // Candidates of an unverifiable floored maker that survive the
@@ -1811,6 +1845,14 @@ fn get_maker_orders_info(
             // the candidates are judged together after the loop, so the
             // reducing budget goes to the best-priced orders instead of the
             // lowest order slots.
+            // A selected MM oracle may be fresh enough to quote while the raw
+            // exchange oracle used by the equity floor is not valid for margin.
+            // Keep cleanup above live, but do not let a floored maker execute a
+            // DLOB leg when its floor check cannot use the exchange oracle.
+            if !maker_can_match {
+                continue;
+            }
+
             if maker_floor_unverifiable {
                 let unfilled = maker.orders[maker_order_index]
                     .get_base_asset_amount_unfilled(Some(existing_base_asset_amount))?;
@@ -1825,7 +1867,7 @@ fn get_maker_orders_info(
             );
         }
 
-        if maker_floor_unverifiable {
+        if maker_can_match && maker_floor_unverifiable {
             let resting_base_asset_amount = maker
                 .get_perp_position(taker_order.market_index)
                 .map(|position| position.base_asset_amount)
@@ -1846,6 +1888,19 @@ fn get_maker_orders_info(
     }
 
     Ok(maker_orders_info)
+}
+
+/// The exchange oracle is the canonical valuation source for the equity floor.
+/// An MM oracle may still quote the AMM, but it cannot authorize a floored user
+/// to participate in a DLOB match while the exchange oracle is invalid for the
+/// match/margin policy.
+/// This rule only applies to DLOB matches. Existing AMM gates remain unchanged.
+#[inline(always)]
+fn can_floored_user_match_with_exchange_oracle(
+    user: &User,
+    exchange_match_fills_allowed: bool,
+) -> bool {
+    user.equity_floor == 0 || exchange_match_fills_allowed
 }
 
 /// The subset of an unverifiable floored maker's candidate orders

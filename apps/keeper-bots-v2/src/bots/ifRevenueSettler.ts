@@ -1,7 +1,6 @@
 import {
 	VelocityClient,
 	SpotMarketAccount,
-	PerpMarketAccount,
 	OraclePriceData,
 	ZERO,
 	PriorityFeeSubscriberMap,
@@ -119,7 +118,7 @@ export class IFRevenueSettlerBot implements Bot {
 
 	private async settleIFRevenue(
 		spotMarketIndex: number,
-		perpMarket?: PerpMarketAccount
+		perpMarketIndex?: number
 	) {
 		try {
 			const pfs = this.priorityFeeSubscriberMap!.getPriorityFees(
@@ -141,13 +140,14 @@ export class IFRevenueSettlerBot implements Bot {
 					microLamports,
 				}),
 			];
-			const settleIx = perpMarket
-				? await this.velocityClient.getSettlePerpMarketIfRevenueToInsuranceFundIx(
-						perpMarket.marketIndex
-				  )
-				: await this.velocityClient.getSettleRevenueToInsuranceFundIx(
-						spotMarketIndex
-				  );
+			const settleIx =
+				perpMarketIndex !== undefined
+					? await this.velocityClient.getSettlePerpMarketIfRevenueToInsuranceFundIx(
+							perpMarketIndex
+					  )
+					: await this.velocityClient.getSettleRevenueToInsuranceFundIx(
+							spotMarketIndex
+					  );
 			ixs.push(settleIx);
 
 			const recentBlockhash =
@@ -161,9 +161,10 @@ export class IFRevenueSettlerBot implements Bot {
 				doSimulation: true,
 				recentBlockhash: recentBlockhash.blockhash,
 			});
-			const settlement = perpMarket
-				? `perp market ${perpMarket.marketIndex} IF revenue`
-				: `spot market ${spotMarketIndex} revenue`;
+			const settlement =
+				perpMarketIndex !== undefined
+					? `perp market ${perpMarketIndex} IF revenue`
+					: `spot market ${spotMarketIndex} revenue`;
 			logger.info(
 				`Settling ${settlement} estimated to take ${simResult.cuEstimate} CUs.`
 			);
@@ -191,7 +192,7 @@ export class IFRevenueSettlerBot implements Bot {
 			const err = e as Error;
 			const errorCode = getErrorCode(err);
 			logger.error(
-				`Error code: ${errorCode} while settling revenue to IF for spotMarketIndex=${spotMarketIndex}, perpMarketIndex=${perpMarket?.marketIndex}: ${err.message}`
+				`Error code: ${errorCode} while settling revenue to IF for spotMarketIndex=${spotMarketIndex}, perpMarketIndex=${perpMarketIndex}: ${err.message}`
 			);
 			console.error(err);
 
@@ -199,7 +200,7 @@ export class IFRevenueSettlerBot implements Bot {
 				await webhookMessage(
 					`[${
 						this.name
-					}]: :x: Error code: ${errorCode} while settling revenue to IF for spotMarketIndex=${spotMarketIndex}, perpMarketIndex=${perpMarket?.marketIndex}:\n${
+					}]: :x: Error code: ${errorCode} while settling revenue to IF for spotMarketIndex=${spotMarketIndex}, perpMarketIndex=${perpMarketIndex}:\n${
 						e.logs ? (e.logs as Array<string>).join('\n') : ''
 					}\n${err.stack ? err.stack : err.message}`
 				);
@@ -235,7 +236,7 @@ export class IFRevenueSettlerBot implements Bot {
 				const spotMarketAccount = spotMarketAndOracleData[i].marketAccount;
 				const spotIf = spotMarketAccount.insuranceFund;
 				const hasGlobalReceivable =
-					spotMarketAccount.insuranceFundRevenueReceivable.gt(ZERO);
+					spotMarketAccount.insuranceFundRevenueReceivableScaled.gt(ZERO);
 				const hasSettleAllowance =
 					spotMarketAccount.revenueSettleAllowance.gt(ZERO);
 				if (
@@ -268,9 +269,9 @@ export class IFRevenueSettlerBot implements Bot {
 					1;
 				const timeUntilSettle =
 					hasGlobalReceivable || hasSettleAllowance ? 0 : timeUntilPeriod;
-				const selectedSourceMarket = hasGlobalReceivable
+				const selectedSourceMarketIndex = hasGlobalReceivable
 					? undefined
-					: sourceMarket;
+					: sourceMarket?.marketIndex;
 
 				if (timeUntilSettle <= MAX_SETTLE_WAIT_TIME_S) {
 					ifSettlePromises.push(
@@ -281,7 +282,7 @@ export class IFRevenueSettlerBot implements Bot {
 							await sleepS(timeUntilSettle);
 							await this.settleIFRevenue(
 								spotMarketAccount.marketIndex,
-								selectedSourceMarket
+								selectedSourceMarketIndex
 							);
 						})()
 					);

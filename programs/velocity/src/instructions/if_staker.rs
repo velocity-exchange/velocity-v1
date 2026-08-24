@@ -392,6 +392,44 @@ pub fn handle_remove_insurance_fund_stake<'c: 'info, 'info>(
         "spot market utilization above health threshold"
     )?;
 
+    // Move any revenue already allocated to the fund into the vault before the
+    // unstake prices its payout. An unstake can only be paid in vault cash, so a
+    // claim left in the spot vault holds back part of the exit until someone
+    // else settles it. Settling here lets the staker complete the exit alone.
+    // While transfers are paused the settle skips, and the unstake pays the cash
+    // share it can.
+    {
+        if spot_market.has_transfer_hook() {
+            controller::insurance::attempt_settle_revenue_to_insurance_fund(
+                &ctx.accounts.spot_market_vault,
+                &ctx.accounts.insurance_fund_vault,
+                spot_market,
+                now,
+                &ctx.accounts.token_program,
+                &ctx.accounts.velocity_signer,
+                &state,
+                &mint,
+                Some(&mut remaining_accounts_iter.clone()),
+            )?;
+        } else {
+            controller::insurance::attempt_settle_revenue_to_insurance_fund(
+                &ctx.accounts.spot_market_vault,
+                &ctx.accounts.insurance_fund_vault,
+                spot_market,
+                now,
+                &ctx.accounts.token_program,
+                &ctx.accounts.velocity_signer,
+                &state,
+                &mint,
+                None,
+            )?;
+        };
+
+        // reload the vault balances so they're up-to-date
+        ctx.accounts.spot_market_vault.reload()?;
+        ctx.accounts.insurance_fund_vault.reload()?;
+    }
+
     let amount = controller::insurance::remove_insurance_fund_stake(
         ctx.accounts.insurance_fund_vault.amount,
         insurance_fund_stake,
@@ -612,6 +650,12 @@ pub struct RemoveInsuranceFundStake<'info> {
     )]
     pub user_stats: AccountLoader<'info, UserStats>,
     pub authority: Signer<'info>,
+    #[account(
+        mut,
+        seeds = [b"spot_market_vault".as_ref(), market_index.to_le_bytes().as_ref()],
+        bump,
+    )]
+    pub spot_market_vault: Box<InterfaceAccount<'info, TokenAccount>>,
     #[account(
         mut,
         seeds = [b"insurance_fund_vault".as_ref(), market_index.to_le_bytes().as_ref()],

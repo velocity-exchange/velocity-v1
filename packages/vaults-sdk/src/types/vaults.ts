@@ -2348,6 +2348,44 @@ export type Vaults = {
 					};
 				},
 				{
+					name: 'velocitySpotMarketVault';
+					writable: true;
+					pda: {
+						seeds: [
+							{
+								kind: 'const';
+								value: [
+									115,
+									112,
+									111,
+									116,
+									95,
+									109,
+									97,
+									114,
+									107,
+									101,
+									116,
+									95,
+									118,
+									97,
+									117,
+									108,
+									116,
+								];
+							},
+							{
+								kind: 'arg';
+								path: 'marketIndex';
+							},
+						];
+						program: {
+							kind: 'account';
+							path: 'velocityProgram';
+						};
+					};
+				},
+				{
 					name: 'insuranceFundVault';
 					writable: true;
 					pda: {
@@ -4700,16 +4738,23 @@ export type Vaults = {
 						name: 'paddingFormerSpotFeePool';
 						docs: ['Reserved bytes from the retired spot fee pool.'];
 						type: {
-							array: ['u8', 24];
+							array: ['u8', 16];
 						};
 					},
 					{
-						name: 'insuranceFundRevenueReceivable';
+						name: 'insuranceFundRevenueReceivableScaled';
 						docs: [
-							'Revenue allocated to the insurance fund while it remains in the spot vault.',
-							'precision: token mint precision',
+							'Revenue allocated to the insurance fund that still sits in the spot',
+							'vault. The claim is held as a scaled balance inside `deposit_balance`,',
+							'so it earns deposit interest for as long as the tokens remain here and',
+							'the fund collects that interest when the transfer completes. A token',
+							'amount cannot do this: the claim grows with',
+							'`cumulative_deposit_interest` and a fixed integer would leave the',
+							'difference inside `deposit_balance` owned by nobody. Read the token',
+							'value with `get_insurance_fund_revenue_receivable_token_amount`.',
+							'precision: SPOT_BALANCE_PRECISION',
 						];
-						type: 'u64';
+						type: 'u128';
 					},
 					{
 						name: 'historicalOracleData';

@@ -32,6 +32,7 @@ import {
 	ExchangeStatus,
 	SpotOperation,
 	getInsuranceFundNav,
+	getInsuranceFundRevenueReceivableTokenAmount,
 } from '../../packages/sdk/src';
 
 import {
@@ -915,7 +916,9 @@ describe('insurance fund stake', () => {
 				SpotBalanceType.DEPOSIT
 			);
 			assert(revenueBeforeCancel.gt(ZERO));
-			assert(spotMarketBeforeCancel.insuranceFundRevenueReceivable.eq(ZERO));
+			assert(
+				spotMarketBeforeCancel.insuranceFundRevenueReceivableScaled.eq(ZERO)
+			);
 
 			if (pause === 'global') {
 				await velocityClient.updateExchangeStatus(
@@ -957,8 +960,9 @@ describe('insurance fund stake', () => {
 				spotMarketAfterCancel,
 				SpotBalanceType.DEPOSIT
 			);
+			// The claim is a scaled balance, so read its token value.
 			const receivableAfterCancel =
-				spotMarketAfterCancel.insuranceFundRevenueReceivable;
+				getInsuranceFundRevenueReceivableTokenAmount(spotMarketAfterCancel);
 			const ifStakeAfterCancel =
 				(await velocityClient.program.account.insuranceFundStake.fetch(
 					ifStakePublicKey
@@ -1025,18 +1029,17 @@ describe('insurance fund stake', () => {
 				insuranceVaultAfterTransfer
 			);
 
-			assert(spotMarketAfterTransfer.insuranceFundRevenueReceivable.eq(ZERO));
 			assert(
-				insuranceVaultAfterTransfer
-					.sub(insuranceVaultAfterCancel)
-					.eq(receivableAfterCancel)
+				spotMarketAfterTransfer.insuranceFundRevenueReceivableScaled.eq(ZERO)
 			);
-			assert(
-				spotVaultAfterCancel
-					.sub(spotVaultAfterTransfer)
-					.eq(receivableAfterCancel)
+			// The claim keeps earning deposit interest until the transfer runs, so
+			// the amount that moves is at least its value at cancel time.
+			const transferred = insuranceVaultAfterTransfer.sub(
+				insuranceVaultAfterCancel
 			);
-			assert(navAfterTransfer.eq(navBeforeTransfer));
+			assert(transferred.gte(receivableAfterCancel));
+			assert(spotVaultAfterCancel.sub(spotVaultAfterTransfer).eq(transferred));
+			assert(navAfterTransfer.gte(navBeforeTransfer));
 		};
 
 		await runPausedCancel('global');

@@ -5007,8 +5007,8 @@ pub mod types {
         pub total_quote_social_loss: u128,
         pub revenue_pool: PoolBalance,
         #[serde(skip)]
-        pub padding_former_spot_fee_pool: Padding<24>,
-        pub insurance_fund_revenue_receivable: u64,
+        pub padding_former_spot_fee_pool: Padding<16>,
+        pub insurance_fund_revenue_receivable_scaled: u128,
         pub historical_oracle_data: HistoricalOracleData,
         pub historical_index_data: HistoricalIndexData,
         pub withdraw_guard_threshold: u64,
@@ -6384,8 +6384,8 @@ pub mod accounts {
         pub total_quote_social_loss: u128,
         pub revenue_pool: PoolBalance,
         #[serde(skip)]
-        pub padding_former_spot_fee_pool: Padding<24>,
-        pub insurance_fund_revenue_receivable: u64,
+        pub padding_former_spot_fee_pool: Padding<16>,
+        pub insurance_fund_revenue_receivable_scaled: u128,
         pub historical_oracle_data: HistoricalOracleData,
         pub historical_index_data: HistoricalIndexData,
         pub withdraw_guard_threshold: u64,
@@ -13822,6 +13822,7 @@ pub mod accounts {
         pub insurance_fund_stake: Pubkey,
         pub user_stats: Pubkey,
         pub authority: Pubkey,
+        pub spot_market_vault: Pubkey,
         pub insurance_fund_vault: Pubkey,
         pub velocity_signer: Pubkey,
         pub user_token_account: Pubkey,
@@ -13867,6 +13868,11 @@ pub mod accounts {
                     pubkey: self.authority,
                     is_signer: true,
                     is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.spot_market_vault,
+                    is_signer: false,
+                    is_writable: true,
                 },
                 AccountMeta {
                     pubkey: self.insurance_fund_vault,

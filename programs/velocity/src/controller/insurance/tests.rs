@@ -1918,14 +1918,29 @@ pub fn unstake_does_not_burn_receivable_backed_shares_without_cash() {
     )
     .unwrap();
 
-    assert!(remove_insurance_fund_stake(
+    // Half the fund is allocated revenue that cannot leave, so the unstake pays
+    // the cash share and burns only the shares that share bought. The rest of
+    // the request stays open.
+    let requested = stake.last_withdraw_request_value;
+    let cash_available = insurance_vault_amount - 1;
+    let payout = remove_insurance_fund_stake(
         insurance_vault_amount,
         &mut stake,
         &mut user_stats,
         &mut spot_market,
         0,
     )
-    .is_err());
+    .unwrap();
+
+    assert_eq!(
+        payout as u128,
+        requested as u128 * cash_available as u128 / insurance_fund_nav as u128
+    );
+    assert!(stake.unchecked_if_shares() > 0);
+    assert_eq!(
+        stake.last_withdraw_request_shares,
+        insurance_fund_nav as u128 - payout as u128
+    );
 }
 
 #[test]
@@ -2246,11 +2261,11 @@ pub fn settling_a_receivable_after_interest_accrues_clears_its_whole_claim() {
 }
 
 #[test]
-pub fn cash_only_payout_lets_the_first_staker_out_leave_the_receivable_behind() {
-    // Exits are priced at the fund's whole value but paid entirely in vault
-    // cash, and every loss draw spends the receivable first. A staker who
-    // leaves while cash is available therefore takes cash worth their full
-    // share and leaves the illiquid half to whoever stays.
+pub fn an_early_exit_cannot_take_more_than_its_share_of_the_cash() {
+    // Exits are priced at the fund's whole value but can only be paid in vault
+    // cash, and every loss draw spends the allocated revenue first. Paying the
+    // cash share of a claim keeps a staker who leaves early on the same mix of
+    // cash and allocated revenue as a staker who stays.
     let insurance_vault_amount = 500 * QUOTE_PRECISION as u64;
     let receivable = 1_000 * QUOTE_PRECISION as u64;
     let nav = insurance_vault_amount + receivable;
@@ -2272,6 +2287,7 @@ pub fn cash_only_payout_lets_the_first_staker_out_leave_the_receivable_behind() 
 
     // A holds 30% of the fund, B holds 70%.
     let a_shares = nav as u128 * 30 / 100;
+    let b_shares = nav as u128 - a_shares;
     let mut a = InsuranceFundStake::new(Pubkey::default(), 0, 0);
     a.update_if_shares(a_shares, &spot_market).unwrap();
     let mut a_stats = UserStats::default();
@@ -2295,32 +2311,53 @@ pub fn cash_only_payout_lets_the_first_staker_out_leave_the_receivable_behind() 
     )
     .unwrap();
 
-    // A is paid 30% of the whole fund, entirely out of cash.
-    assert_eq!(a_payout, nav / 100 * 30);
+    // A takes 30% of the cash on hand, not 30% of the whole fund.
+    let cash_available = insurance_vault_amount - 1;
+    assert_eq!(a_payout, cash_available * 30 / 100);
+
     let vault_after_a = insurance_vault_amount - a_payout;
-
-    // B is left holding the rest, which is now almost all receivable.
-    let b_shares = spot_market.insurance_fund.user_shares;
     let nav_after_a = get_insurance_fund_nav(vault_after_a, &spot_market).unwrap();
-    assert_eq!(b_shares, nav as u128 - a_shares);
-    assert_eq!(nav_after_a, vault_after_a + receivable);
+    let a_value_before = if_shares_to_vault_amount(
+        a.unchecked_if_shares(),
+        spot_market.insurance_fund.total_shares,
+        nav_after_a,
+    )
+    .unwrap();
+    let b_value_before = if_shares_to_vault_amount(
+        b_shares,
+        spot_market.insurance_fund.total_shares,
+        nav_after_a,
+    )
+    .unwrap();
 
-    // A loss draw spends the receivable before it touches cash, so the value it
-    // removes falls entirely on B.
+    // A loss draw spends the allocated revenue before it touches cash.
     consume_insurance_fund_revenue_receivable(&mut spot_market, receivable as u128).unwrap();
     let nav_after_loss = get_insurance_fund_nav(vault_after_a, &spot_market).unwrap();
 
-    assert_eq!(nav_after_loss, vault_after_a);
-    // A was paid its full pro rata share of the fund. B keeps 4.76% of theirs.
-    let b_kept_bps = nav_after_loss as u128 * 10_000 / nav_after_a as u128;
-    assert_eq!(b_kept_bps, 476);
+    let a_value_after = if_shares_to_vault_amount(
+        a.unchecked_if_shares(),
+        spot_market.insurance_fund.total_shares,
+        nav_after_loss,
+    )
+    .unwrap();
+    let b_value_after = if_shares_to_vault_amount(
+        b_shares,
+        spot_market.insurance_fund.total_shares,
+        nav_after_loss,
+    )
+    .unwrap();
+
+    // Both stakers keep the same fraction of what they held.
+    let a_kept_bps = a_value_after as u128 * 10_000 / a_value_before as u128;
+    let b_kept_bps = b_value_after as u128 * 10_000 / b_value_before as u128;
+    assert_eq!(a_kept_bps, b_kept_bps);
 }
 
 #[test]
-pub fn a_stranded_unstake_needs_an_outside_settle_to_complete() {
-    // A frozen exit value above the vault's cash reverts the whole unstake.
-    // Nothing on the unstake path can move the receivable into the vault, so
-    // the position stays stuck until an unrelated caller settles it.
+pub fn an_unpaid_unstake_remainder_completes_without_a_second_escrow_period() {
+    // Only the cash share of a claim can be paid while allocated revenue waits
+    // in the spot vault. The rest of the request stays open at its remaining
+    // size, so the staker finishes the exit as soon as the revenue lands.
     let insurance_vault_amount = 1_000 * QUOTE_PRECISION as u64;
     let receivable = 1_000 * QUOTE_PRECISION as u64;
     let nav = insurance_vault_amount + receivable;
@@ -2330,7 +2367,7 @@ pub fn a_stranded_unstake_needs_an_outside_settle_to_complete() {
         deposit_balance: 10_000 * SPOT_BALANCE_PRECISION,
         cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
         insurance_fund: InsuranceFund {
-            unstaking_period: 0,
+            unstaking_period: 100,
             total_shares: nav as u128,
             user_shares: nav as u128,
             ..InsuranceFund::default()
@@ -2354,28 +2391,39 @@ pub fn a_stranded_unstake_needs_an_outside_settle_to_complete() {
     )
     .unwrap();
 
-    // The request froze a value above the cash on hand, so the unstake reverts.
-    assert!(remove_insurance_fund_stake(
+    let requested = stake.last_withdraw_request_value;
+    let cash_available = insurance_vault_amount - 1;
+    let first = remove_insurance_fund_stake(
         insurance_vault_amount,
         &mut stake,
         &mut user_stats,
         &mut spot_market,
-        0,
+        100,
     )
-    .is_err());
+    .unwrap();
 
-    // The same unstake completes once an outside caller moves the receivable
-    // into the vault. The staker cannot reach this state alone.
+    // Half the fund was cash, so the cash share of the claim is paid now.
+    assert_eq!(
+        first as u128,
+        requested as u128 * cash_available as u128 / nav as u128
+    );
+    assert!(stake.last_withdraw_request_shares > 0);
+
+    // The revenue reaches the vault, and the same request finishes at once. The
+    // request timestamp never moved, so no new escrow period applies.
     let settled = settle_insurance_fund_revenue_receivable(&mut spot_market).unwrap();
     assert_eq!(settled, receivable);
+    assert_eq!(stake.last_withdraw_request_ts, 0);
 
-    let payout = remove_insurance_fund_stake(
-        insurance_vault_amount + settled,
+    let second = remove_insurance_fund_stake(
+        insurance_vault_amount - first + settled,
         &mut stake,
         &mut user_stats,
         &mut spot_market,
-        0,
+        100,
     )
     .unwrap();
-    assert!(payout > 0);
+
+    assert!(second > 0);
+    assert_eq!(stake.last_withdraw_request_shares, 0);
 }

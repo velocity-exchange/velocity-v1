@@ -262,7 +262,7 @@ export class VelocityCore {
 	 * @param args.user - the order owner's `User` account (the taker being filled).
 	 * @param args.userStats - the taker's `UserStats` PDA.
 	 * @param args.authority - signer that must own or be a registered delegate of `filler`.
-	 * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for the order's market, followed by any maker/referrer `(User, UserStats)` account pairs, followed by the taker's `RevenueShareEscrow` account if builder codes are enabled protocol-wide.
+	 * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for the order's market, followed by any maker/referrer `(User, UserStats)` account pairs, followed by the taker's `RevenueShareEscrow` account if builder codes are enabled protocol-wide, and, when that taker is referred, the referrer's readonly `UserStats` after the escrow.
 	 * @returns the unsigned `fillPerpOrder` `TransactionInstruction`.
 	 */
 	static async buildFillPerpOrderInstruction(args: {
@@ -404,7 +404,7 @@ export class VelocityCore {
 	 * @param args.user - the taker's `User` account.
 	 * @param args.userStats - the taker's `UserStats` PDA.
 	 * @param args.authority - signer that must own or be a registered delegate of `user`.
-	 * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`, followed by maker/referrer `(User, UserStats)` pairs, followed by the taker's `RevenueShareEscrow` account if builder codes are enabled.
+	 * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`, followed by maker/referrer `(User, UserStats)` pairs, followed by the taker's `RevenueShareEscrow` account if builder codes are enabled, and, when that taker is referred, the referrer's readonly `UserStats` after the escrow.
 	 * @returns the unsigned `placeAndTakePerpOrder` `TransactionInstruction`.
 	 */
 	static async buildPlaceAndTakePerpOrderInstruction(args: {
@@ -435,7 +435,7 @@ export class VelocityCore {
 	 * @param args.taker - the taker's `User` account (order owner being filled).
 	 * @param args.takerStats - the taker's `UserStats` PDA.
 	 * @param args.authority - signer that must own or be a registered delegate of `user` (the maker).
-	 * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`, followed by any additional maker/referrer `(User, UserStats)` pairs needed to fill `taker`'s order, followed by `taker`'s `RevenueShareEscrow` account if builder codes are enabled.
+	 * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`, followed by any additional maker/referrer `(User, UserStats)` pairs needed to fill `taker`'s order, followed by `taker`'s `RevenueShareEscrow` account if builder codes are enabled, and, when that taker is referred, the referrer's readonly `UserStats` after the escrow.
 	 * @returns the unsigned `placeAndMakePerpOrder` `TransactionInstruction`.
 	 */
 	static async buildPlaceAndMakePerpOrderInstruction(args: {

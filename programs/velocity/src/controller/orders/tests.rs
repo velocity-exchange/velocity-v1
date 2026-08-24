@@ -215,6 +215,7 @@ pub mod fulfill_order_with_maker_order {
             true,
             rev_share_escrow,
             false,
+            false,
             0,
             // The step-level harness has no margin context. Allow the builder
             // fee so these tests measure fee math, not the margin gate.
@@ -3207,11 +3208,13 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            false,
             0,
         )
         .unwrap();
 
         assert_eq!(base_asset_amount, BASE_PRECISION_U64);
+        assert!(taker_stats.is_accelerated_referrer());
 
         let taker_position = &taker.perp_positions[0];
         assert_eq!(taker_position.base_asset_amount, BASE_PRECISION_I64);
@@ -3239,6 +3242,7 @@ pub mod fulfill_order {
         assert_eq!(maker_position.open_asks, 0);
         assert_eq!(maker_stats.fees.total_fee_rebate, 15001);
         assert_eq!(maker_stats.maker_volume_30d, 50_005_000);
+        assert!(maker_stats.is_accelerated_referrer());
         assert!(maker.orders[0].is_available());
 
         assert_eq!(filler_stats.filler_volume_30d, 100_256_237);
@@ -3418,6 +3422,7 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            false,
             0,
         )
         .unwrap();
@@ -3589,6 +3594,7 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            false,
             0,
         )
         .unwrap();
@@ -3754,6 +3760,7 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
             false,
             0,
         )
@@ -3976,6 +3983,7 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            false,
             0,
         )
         .unwrap();
@@ -4187,6 +4195,7 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
             false,
             0,
         )
@@ -4409,6 +4418,7 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            false,
             0,
         )
         .unwrap();
@@ -4599,6 +4609,7 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
             false,
             0,
         )
@@ -4823,6 +4834,7 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            false,
             0,
         );
 
@@ -5032,6 +5044,7 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            false,
             0,
         );
 
@@ -5193,6 +5206,7 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
             false,
             0,
         )
@@ -5386,6 +5400,7 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            false,
             0,
         )
         .unwrap();
@@ -5572,6 +5587,7 @@ pub mod fulfill_order {
             &clock,
             FillMode::Fill,
             &mut None,
+            false,
         )
         .unwrap();
 
@@ -5598,6 +5614,7 @@ pub mod fulfill_order {
             &clock,
             FillMode::Fill,
             &mut None,
+            false,
         )
         .unwrap();
 
@@ -5997,6 +6014,7 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            false,
             0,
         )
         .unwrap();
@@ -6266,6 +6284,7 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            false,
             0,
         )
         .unwrap();
@@ -6482,6 +6501,7 @@ pub mod fulfill_order {
             false,
             &mut None,
             false,
+            false,
             0,
         )
         .unwrap();
@@ -6665,6 +6685,7 @@ pub mod fulfill_order {
             FillMode::Fill,
             false,
             &mut None,
+            false,
             false,
             0,
         )
@@ -6908,6 +6929,7 @@ pub mod fill_order {
             &clock,
             FillMode::Fill,
             &mut None,
+            false,
         )
         .unwrap();
 
@@ -7120,6 +7142,7 @@ pub mod fill_order {
             &clock,
             FillMode::Fill,
             &mut None,
+            false,
         )
         .unwrap();
 
@@ -7249,6 +7272,7 @@ pub mod fill_order {
             &clock,
             FillMode::Fill,
             &mut None,
+            false,
         )
         .unwrap();
 
@@ -7421,6 +7445,7 @@ pub mod fill_order {
             &clock,
             FillMode::Fill,
             &mut None,
+            false,
         );
 
         assert_eq!(err, Err(ErrorCode::MaxOpenInterest));
@@ -10383,6 +10408,7 @@ pub mod builder_fee_margin_gate {
             false,
             &mut Some(&mut escrow),
             false,
+            false,
             0,
         )
         .unwrap();
@@ -10735,6 +10761,7 @@ mod fill_gates_apply_to_a_reducing_fill {
             FillMode::Fill,
             false,
             &mut None,
+            false,
             false,
             0,
         )

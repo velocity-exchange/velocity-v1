@@ -35,6 +35,7 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             false,
+            false,
             &MarketType::Perp,
             0,
             None,
@@ -86,6 +87,7 @@ mod calculate_fee_for_taker_and_maker {
             0,
             1,
             false,
+            false,
             &MarketType::Perp,
             0,
             None,
@@ -135,6 +137,7 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             1,
+            false,
             false,
             &MarketType::Perp,
             0,
@@ -186,6 +189,7 @@ mod calculate_fee_for_taker_and_maker {
             60,
             1,
             false,
+            false,
             &MarketType::Perp,
             0,
             None,
@@ -234,6 +238,7 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             true,
+            false,
             &MarketType::Perp,
             0,
             None,
@@ -252,6 +257,35 @@ mod calculate_fee_for_taker_and_maker {
         assert_eq!(filler_reward, 0);
         assert_eq!(referrer_reward, 10000);
         assert_eq!(referee_discount, 10000);
+    }
+
+    #[test]
+    fn accelerated_referrer_gets_fixed_reward_without_changing_referee_discount() {
+        let mut maker_stats = UserStats::default();
+        let mut fee_structure = FeeStructure::test_default();
+        fee_structure.fee_tiers[0].referrer_reward_numerator = 7;
+        let fees = calculate_fee_for_fulfillment_with_match(
+            &UserStats::default(),
+            &Some(&mut maker_stats),
+            100 * QUOTE_PRECISION_U64,
+            &fee_structure,
+            0,
+            0,
+            0,
+            true,
+            true,
+            &MarketType::Perp,
+            0,
+            None,
+            0,
+            0,
+            0,
+            crate::math::time::SlotDuration::BASELINE,
+        )
+        .unwrap();
+
+        assert_eq!(fees.referrer_reward, 20000);
+        assert_eq!(fees.referee_discount, 10000);
     }
 
     #[test]
@@ -278,6 +312,7 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             0,
+            false,
             false,
             &MarketType::Perp,
             -50,
@@ -316,6 +351,7 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             0,
+            false,
             false,
             &MarketType::Perp,
             50,
@@ -356,6 +392,7 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             true,
+            false,
             &MarketType::Perp,
             -50,
             None,
@@ -395,6 +432,7 @@ mod calculate_fee_for_taker_and_maker {
             0,
             1,
             true,
+            false,
             &MarketType::Perp,
             -50,
             None,
@@ -440,43 +478,6 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             false,
-            &MarketType::Perp,
-            -100,
-            None,
-            0,
-            0,
-            0,
-            crate::math::time::SlotDuration::BASELINE,
-        )
-        .unwrap();
-
-        assert_eq!(taker_fee, 0);
-        assert_eq!(maker_rebate, 0);
-        assert_eq!(fee_to_market, 0);
-        assert_eq!(protocol_fee, 0);
-        assert_eq!(if_fee, 0);
-        assert_eq!(filler_reward, 0);
-        assert_eq!(referrer_reward, 0);
-        assert_eq!(referee_discount, 0);
-
-        let FillFees {
-            user_fee: taker_fee,
-            maker_rebate,
-            fee_to_market,
-            protocol_fee,
-            if_fee,
-            filler_reward,
-            referee_discount,
-            referrer_reward,
-            ..
-        } = calculate_fee_for_fulfillment_with_match(
-            &taker_stats,
-            &Some(&mut maker_stats),
-            quote_asset_amount,
-            &FeeStructure::test_default(),
-            0,
-            0,
-            0,
             false,
             &MarketType::Perp,
             -100,
@@ -515,6 +516,46 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             0,
+            false,
+            false,
+            &MarketType::Perp,
+            -100,
+            None,
+            0,
+            0,
+            0,
+            crate::math::time::SlotDuration::BASELINE,
+        )
+        .unwrap();
+
+        assert_eq!(taker_fee, 0);
+        assert_eq!(maker_rebate, 0);
+        assert_eq!(fee_to_market, 0);
+        assert_eq!(protocol_fee, 0);
+        assert_eq!(if_fee, 0);
+        assert_eq!(filler_reward, 0);
+        assert_eq!(referrer_reward, 0);
+        assert_eq!(referee_discount, 0);
+
+        let FillFees {
+            user_fee: taker_fee,
+            maker_rebate,
+            fee_to_market,
+            protocol_fee,
+            if_fee,
+            filler_reward,
+            referee_discount,
+            referrer_reward,
+            ..
+        } = calculate_fee_for_fulfillment_with_match(
+            &taker_stats,
+            &Some(&mut maker_stats),
+            quote_asset_amount,
+            &FeeStructure::test_default(),
+            0,
+            0,
+            0,
+            false,
             false,
             &MarketType::Perp,
             -100,
@@ -555,6 +596,7 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             true,
+            false,
             &MarketType::Perp,
             -100,
             None,
@@ -594,6 +636,7 @@ mod calculate_fee_for_taker_and_maker {
             0,
             1,
             true,
+            false,
             &MarketType::Perp,
             -100,
             None,
@@ -655,6 +698,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             60,
             false,
             true,
+            false,
             0,
             false,
             0,
@@ -680,6 +724,35 @@ mod calculate_fee_for_order_fulfill_against_amm {
     }
 
     #[test]
+    fn accelerated_referrer_gets_fixed_reward_without_changing_referee_discount() {
+        let mut fee_structure = FeeStructure::test_default();
+        fee_structure.fee_tiers[0].referrer_reward_numerator = 7;
+        let fees = calculate_fee_for_fulfillment_with_amm(
+            &UserStats::default(),
+            100 * QUOTE_PRECISION_U64,
+            &fee_structure,
+            0,
+            60,
+            false,
+            true,
+            true,
+            0,
+            false,
+            0,
+            None,
+            false,
+            0,
+            0,
+            0,
+            crate::math::time::SlotDuration::BASELINE,
+        )
+        .unwrap();
+
+        assert_eq!(fees.referrer_reward, 20000);
+        assert_eq!(fees.referee_discount, 10000);
+    }
+
+    #[test]
     fn fee_adjustment() {
         let quote_asset_amount = 100 * QUOTE_PRECISION_U64;
 
@@ -700,6 +773,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             &fee_structure,
             0,
             60,
+            false,
             false,
             false,
             0,
@@ -735,6 +809,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             &fee_structure,
             0,
             60,
+            false,
             false,
             false,
             0,
@@ -773,6 +848,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             60,
             false,
             true,
+            false,
             0,
             false,
             -50,
@@ -809,6 +885,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             60,
             true,
             true,
+            false,
             0,
             false,
             -50,
@@ -849,6 +926,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             60,
             false,
             false,
+            false,
             0,
             false,
             0,
@@ -871,6 +949,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             &fee_structure,
             0,
             60,
+            false,
             false,
             false,
             0,
@@ -903,6 +982,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             0,
             60,
             0,
+            false,
             false,
             &MarketType::Perp,
             0,
@@ -942,6 +1022,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             &fee_structure,
             0,
             60,
+            false,
             false,
             false,
             0,
@@ -984,6 +1065,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             60,
             false,
             false,
+            false,
             0,
             false,
             0,
@@ -1019,6 +1101,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             &inverted_structure,
             0,
             60,
+            false,
             false,
             false,
             0,
@@ -1061,6 +1144,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             &tiered_structure,
             0,
             60,
+            false,
             false,
             false,
             0,

@@ -2076,6 +2076,7 @@ export class FillerMultithreaded {
 				takerUserSlot,
 				referrerInfo,
 				takerIsReferred,
+				takerReferrer,
 				marketType,
 				takerStatsPubKey,
 				isSignedMsg,
@@ -2191,7 +2192,8 @@ export class FillerMultithreaded {
 					undefined, // fillerAuthority
 					undefined, // hasBuilderFee (derived from order bitflags)
 					undefined, // takerEscrow (referred case signalled below)
-					takerIsReferred
+					takerIsReferred,
+					takerReferrer
 				);
 				fillIxs.push(fillIx);
 
@@ -2447,6 +2449,7 @@ export class FillerMultithreaded {
 			isSignedMsg,
 			authority,
 			takerIsReferred,
+			takerReferrer,
 		} = await this.getNodeFillInfo(nodeToFill);
 
 		let removeLastIxPostSim = this.revertOnFailure && !isSignedMsg;
@@ -2529,7 +2532,8 @@ export class FillerMultithreaded {
 			undefined, // fillerAuthority
 			undefined, // hasBuilderFee (derived from order bitflags)
 			undefined, // takerEscrow (referred case signalled below)
-			takerIsReferred
+			takerIsReferred,
+			takerReferrer
 		);
 		fillIxs.push(fillIx);
 
@@ -3035,6 +3039,7 @@ export class FillerMultithreaded {
 		takerUserSlot: number;
 		referrerInfo: ReferrerInfo | undefined;
 		takerIsReferred: boolean;
+		takerReferrer: PublicKey | undefined;
 		marketType: MarketType;
 		isSignedMsg: boolean | undefined;
 		authority: PublicKey;
@@ -3131,6 +3136,10 @@ export class FillerMultithreaded {
 			);
 		}
 
+		// The same UserStats read backs the referrer authority, which the fill ix needs to
+		// derive the referrer's readonly UserStats. Passing it keeps the SDK from refetching.
+		const takerReferrer = this.referrerMap.getReferrerAuthority(takerAuthority);
+
 		return Promise.resolve({
 			makerInfos,
 			takerUserPubKey,
@@ -3142,6 +3151,7 @@ export class FillerMultithreaded {
 			takerUserSlot: this.slotSubscriber.getSlot(),
 			referrerInfo,
 			takerIsReferred,
+			takerReferrer,
 			marketType: nodeToFill.node.order!.marketType,
 			isSignedMsg: nodeToFill.node.isSignedMsg,
 			authority: new PublicKey(signingAuthority),

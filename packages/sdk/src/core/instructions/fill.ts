@@ -19,7 +19,7 @@ import type { VelocityProgram } from '../../config';
  * @param args.user - the order owner's `User` account (the taker being filled).
  * @param args.userStats - the taker's `UserStats` PDA.
  * @param args.authority - signer that must own or be a registered delegate of `filler`.
- * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for the order's market, followed by any maker/referrer `(User, UserStats)` account pairs, followed by the taker's `RevenueShareEscrow` account if builder codes are enabled protocol-wide.
+ * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for the order's market, followed by any maker/referrer `(User, UserStats)` account pairs, followed by the taker's `RevenueShareEscrow` account if builder codes are enabled protocol-wide, and, when that taker is referred, the referrer's readonly `UserStats` after the escrow.
  * @returns the unsigned `fillPerpOrder` `TransactionInstruction`.
  */
 export async function buildFillPerpOrderInstruction(args: {

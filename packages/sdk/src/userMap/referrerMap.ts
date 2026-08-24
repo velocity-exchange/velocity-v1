@@ -161,6 +161,19 @@ export class ReferrerMap {
 	}
 
 	/**
+	 * The referrer *authority* of `authorityPublicKey`, as opposed to the derived
+	 * addresses `getReferrer` returns. Fill instruction builders need the authority to
+	 * derive the referrer's readonly `UserStats`.
+	 * @returns `undefined` if the authority isn't in the map yet, or has no referrer.
+	 */
+	public getReferrerAuthority(
+		authorityPublicKey: string
+	): PublicKey | undefined {
+		const referrer = this.authorityReferrerMap.get(authorityPublicKey);
+		return referrer ? new PublicKey(referrer) : undefined;
+	}
+
+	/**
 	 * Resolves `authorityPublicKey`'s referrer to a `ReferrerInfo` (the
 	 * referrer's `User` sub-account-0 and `UserStats` addresses), caching the
 	 * derived addresses per referrer pubkey.

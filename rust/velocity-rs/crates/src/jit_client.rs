@@ -168,16 +168,17 @@ impl JitProxyClient {
             writable_markets.iter(),
         );
 
-        if order.has_builder() {
+        if order.has_builder() || taker_params.taker_referrer_info.is_some() {
             accounts.push(AccountMeta::new(
                 derive_revenue_share_escrow(&taker_params.taker.authority),
                 false,
-            ))
-        }
-
-        if let Some(referrer_info) = taker_params.taker_referrer_info {
-            accounts.push(AccountMeta::new(referrer_info.referrer(), false));
-            accounts.push(AccountMeta::new(referrer_info.referrer_stats(), false));
+            ));
+            if let Some(referrer_info) = taker_params.taker_referrer_info {
+                accounts.push(AccountMeta::new_readonly(
+                    referrer_info.referrer_stats(),
+                    false,
+                ));
+            }
         }
 
         if order.market_type == MarketType::Spot {
@@ -282,9 +283,17 @@ impl JitProxyClient {
             writable_markets.iter(),
         );
 
-        if let Some(referrer_info) = taker_params.taker_referrer_info {
-            accounts.push(AccountMeta::new(referrer_info.referrer(), false));
-            accounts.push(AccountMeta::new(referrer_info.referrer_stats(), false));
+        if signed_order_info.has_builder() || taker_params.taker_referrer_info.is_some() {
+            accounts.push(AccountMeta::new(
+                derive_revenue_share_escrow(&taker_params.taker.authority),
+                false,
+            ));
+            if let Some(referrer_info) = taker_params.taker_referrer_info {
+                accounts.push(AccountMeta::new_readonly(
+                    referrer_info.referrer_stats(),
+                    false,
+                ));
+            }
         }
 
         if market_type == MarketType::Spot {

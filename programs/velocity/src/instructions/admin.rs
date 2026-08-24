@@ -42,6 +42,7 @@ use {
         safe_decrement, safe_increment,
         state::{
             events::{
+                emit_accelerated_referral_status_changed, AcceleratedReferralStatusChange,
                 DepositDirection, DepositExplanation, DepositRecord, SpotMarketVaultDepositRecord,
             },
             market_status::MarketStatus,
@@ -2557,6 +2558,30 @@ pub fn handle_update_promo_fee_tier(
     Ok(())
 }
 
+pub fn handle_update_user_accelerated_referral_status(
+    ctx: Context<AdminUpdateUserStats>,
+    accelerated: bool,
+) -> Result<()> {
+    let mut user_stats = ctx.accounts.user_stats.load_mut()?;
+    let previous_status = user_stats.accelerated_referral_status;
+
+    if user_stats.set_accelerated_referral_by_admin(accelerated) {
+        emit_accelerated_referral_status_changed(
+            Clock::get()?.unix_timestamp,
+            user_stats.authority,
+            previous_status,
+            user_stats.accelerated_referral_status,
+            if accelerated {
+                AcceleratedReferralStatusChange::AdminGrant
+            } else {
+                AcceleratedReferralStatusChange::AdminRevoke
+            },
+        );
+    }
+
+    Ok(())
+}
+
 pub fn handle_update_perp_fee_structure(
     ctx: Context<AdminUpdateState>,
     fee_structure: FeeStructure,
@@ -5026,6 +5051,15 @@ pub struct AdminUpdateState<'info> {
     pub admin: Signer<'info>,
     #[account(mut)]
     pub state: AccountLoader<'info, State>,
+}
+
+#[derive(Accounts)]
+pub struct AdminUpdateUserStats<'info> {
+    #[account(constraint = check_warm(&admin.key(), &state)?)]
+    pub admin: Signer<'info>,
+    pub state: AccountLoader<'info, State>,
+    #[account(mut)]
+    pub user_stats: AccountLoader<'info, UserStats>,
 }
 
 #[derive(Accounts)]

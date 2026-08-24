@@ -32,6 +32,42 @@ pub struct NewUserRecord {
     pub referrer: Pubkey,
 }
 
+/// Consumers decode `action` by discriminant, so the order is ABI. `AutoEnrollment` is last
+/// because it is deleted with `ACCELERATED_REFERRAL_ENROLLMENT_ENABLED`; removing a trailing
+/// variant leaves the admin discriminants where they are.
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq)]
+pub enum AcceleratedReferralStatusChange {
+    AdminGrant,
+    AdminRevoke,
+    AutoEnrollment,
+}
+
+#[event]
+pub struct AcceleratedReferralStatusChangedRecord {
+    /// unix_timestamp of action
+    pub ts: i64,
+    pub authority: Pubkey,
+    pub previous_status: u8,
+    pub new_status: u8,
+    pub action: AcceleratedReferralStatusChange,
+}
+
+pub fn emit_accelerated_referral_status_changed(
+    ts: i64,
+    authority: Pubkey,
+    previous_status: u8,
+    new_status: u8,
+    action: AcceleratedReferralStatusChange,
+) {
+    emit!(AcceleratedReferralStatusChangedRecord {
+        ts,
+        authority,
+        previous_status,
+        new_status,
+        action,
+    });
+}
+
 #[event]
 pub struct DepositRecord {
     /// unix_timestamp of action

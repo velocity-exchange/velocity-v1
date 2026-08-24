@@ -382,6 +382,7 @@ pub mod amm_jit {
             false,
             &mut None,
             false,
+            false,
             0,
         )
         .unwrap();
@@ -592,6 +593,7 @@ pub mod amm_jit {
             FillMode::Fill,
             false,
             &mut None,
+            false,
             false,
             0,
         )
@@ -812,6 +814,7 @@ pub mod amm_jit {
             false,
             &mut None,
             false,
+            false,
             0,
         )
         .unwrap();
@@ -1027,6 +1030,7 @@ pub mod amm_jit {
             false,
             &mut None,
             false,
+            false,
             0,
         )
         .unwrap();
@@ -1233,6 +1237,7 @@ pub mod amm_jit {
             FillMode::Fill,
             false,
             &mut None,
+            false,
             false,
             0,
         )
@@ -1467,6 +1472,7 @@ pub mod amm_jit {
             false,
             &mut None,
             false,
+            false,
             0,
         )
         .unwrap();
@@ -1682,6 +1688,7 @@ pub mod amm_jit {
             FillMode::Fill,
             false,
             &mut None,
+            false,
             false,
             0,
         )
@@ -1906,6 +1913,7 @@ pub mod amm_jit {
             false,
             &mut None,
             false,
+            false,
             0,
         )
         .unwrap();
@@ -2114,6 +2122,7 @@ pub mod amm_jit {
             FillMode::Fill,
             false,
             &mut None,
+            false,
             false,
             0,
         )
@@ -2335,6 +2344,7 @@ pub mod amm_jit {
             FillMode::Fill,
             false,
             &mut None,
+            false,
             false,
             0,
         )
@@ -2594,6 +2604,7 @@ pub mod amm_jit {
                 FillMode::Fill,
                 false,
                 &mut None,
+                false,
                 false,
                 0,
             )
@@ -2900,6 +2911,7 @@ pub mod amm_jit {
                 false,
                 &mut None,
                 false,
+                false,
                 0,
             )
             .unwrap();
@@ -3163,6 +3175,7 @@ pub mod amm_jit {
             FillMode::Fill,
             false,
             &mut None,
+            false,
             false,
             0,
         )

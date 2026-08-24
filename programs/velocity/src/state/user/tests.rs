@@ -2622,3 +2622,36 @@ mod bankruptcy_entry_liquidation_id {
         assert_eq!(user.next_liquidation_id, 1);
     }
 }
+
+mod accelerated_referral_status {
+    use crate::state::user::{AcceleratedReferralStatus, UserStats};
+
+    #[test]
+    fn auto_enrollment_is_permanent_and_idempotent() {
+        let mut stats = UserStats::default();
+
+        assert!(!stats.try_auto_enroll_accelerated_referral(false));
+        assert!(stats.try_auto_enroll_accelerated_referral(true));
+        assert!(stats.is_accelerated_referrer());
+        assert!(!stats.try_auto_enroll_accelerated_referral(true));
+    }
+
+    #[test]
+    fn admin_revoke_blocks_future_auto_enrollment() {
+        let mut stats = UserStats::default();
+        assert!(stats.try_auto_enroll_accelerated_referral(true));
+
+        assert!(stats.set_accelerated_referral_by_admin(false));
+        assert!(!stats.is_accelerated_referrer());
+        assert!(stats.is_accelerated_auto_enrollment_blocked());
+        assert!(!stats.try_auto_enroll_accelerated_referral(true));
+
+        assert!(stats.set_accelerated_referral_by_admin(true));
+        assert!(stats.is_accelerated_referrer());
+        assert_eq!(
+            stats.accelerated_referral_status
+                & AcceleratedReferralStatus::AutoEnrollmentBlocked as u8,
+            0
+        );
+    }
+}

@@ -2047,6 +2047,57 @@ mod test {
         }
 
         #[test]
+        fn extreme_divergence_is_clipped_for_quote_math() {
+            let amm = base_amm();
+            let inputs = SpreadInputs::from_stats(&base_stats());
+            let reserve_price = amm.reserve_price().unwrap();
+
+            for (raw, clipped) in [
+                (
+                    -2 * BID_ASK_SPREAD_PRECISION_I64,
+                    -BID_ASK_SPREAD_PRECISION_I64,
+                ),
+                (
+                    2 * BID_ASK_SPREAD_PRECISION_I64,
+                    BID_ASK_SPREAD_PRECISION_I64,
+                ),
+            ] {
+                assert_eq!(
+                    crate::vlp::amm::math::spread::calculate_spread(
+                        &amm,
+                        &inputs,
+                        reserve_price,
+                        raw,
+                    )
+                    .unwrap(),
+                    crate::vlp::amm::math::spread::calculate_spread(
+                        &amm,
+                        &inputs,
+                        reserve_price,
+                        clipped,
+                    )
+                    .unwrap(),
+                );
+            }
+        }
+
+        #[test]
+        fn extreme_divergence_refresh_preserves_raw_value() {
+            let mut amm = base_amm();
+            let reserve_price = amm.reserve_price().unwrap();
+
+            let out = refresh(
+                &mut amm,
+                &base_stats(),
+                reserve_price.safe_mul(2).unwrap().cast().unwrap(),
+                100,
+            );
+
+            assert_eq!(out.3, -2 * BID_ASK_SPREAD_PRECISION_I64);
+            assert_eq!(out.0 as u64 + out.1 as u64, BID_ASK_SPREAD_PRECISION);
+        }
+
+        #[test]
         fn golden_tfmd_zero_and_negative() {
             let mut amm = AMM {
                 total_fee_minus_distributions: 0,

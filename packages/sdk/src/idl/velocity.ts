@@ -23748,17 +23748,24 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                24
+                16
               ]
             }
           },
           {
-            "name": "insuranceFundRevenueReceivable",
+            "name": "insuranceFundRevenueReceivableScaled",
             "docs": [
-              "Revenue allocated to the insurance fund while it remains in the spot vault.",
-              "precision: token mint precision"
+              "Revenue allocated to the insurance fund that still sits in the spot",
+              "vault. The claim is held as a scaled balance inside `deposit_balance`,",
+              "so it earns deposit interest for as long as the tokens remain here and",
+              "the fund collects that interest when the transfer completes. A token",
+              "amount cannot do this: the claim grows with",
+              "`cumulative_deposit_interest` and a fixed integer would leave the",
+              "difference inside `deposit_balance` owned by nobody. Read the token",
+              "value with `get_insurance_fund_revenue_receivable_token_amount`.",
+              "precision: SPOT_BALANCE_PRECISION"
             ],
-            "type": "u64"
+            "type": "u128"
           },
           {
             "name": "historicalOracleData",

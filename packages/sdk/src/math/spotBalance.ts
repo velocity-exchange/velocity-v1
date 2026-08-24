@@ -933,7 +933,7 @@ export function calculateWithdrawLimit(
 		maxBorrowTokensTwap
 	);
 
-	const withdrawLimit = BN.max(
+	let withdrawLimit = BN.max(
 		marketDepositTokenAmount.sub(minDepositTokens),
 		ZERO
 	);
@@ -955,7 +955,7 @@ export function calculateWithdrawLimit(
 		minDepositTokens.sub(spotMarket.withdrawGuardThreshold),
 		ZERO
 	);
-	const exceptionWithdrawLimit = BN.max(
+	let exceptionWithdrawLimit = BN.max(
 		marketDepositTokenAmount.sub(exceptionFloor),
 		ZERO
 	);
@@ -983,6 +983,29 @@ export function calculateWithdrawLimit(
 
 	if (withdrawLimit.eq(ZERO) || isVariant(spotMarket.assetTier, 'protected')) {
 		borrowLimit = ZERO;
+	}
+
+	// Revenue already allocated to the insurance fund still sits in this vault.
+	// Tokens that leave the protocol must leave that claim behind, so every
+	// egress limit is capped by the free liquidity that remains after it. Mirror
+	// of the reservation in `get_max_withdraw_for_market_with_token_amount`. A
+	// market with no receivable keeps the limits it had before the reservation.
+	const receivable = getTokenAmount(
+		spotMarket.insuranceFundRevenueReceivableScaled,
+		spotMarket,
+		SpotBalanceType.DEPOSIT
+	);
+	if (receivable.gt(ZERO)) {
+		const unreservedLiquidity = BN.max(
+			marketDepositTokenAmount.sub(marketBorrowTokenAmount).sub(receivable),
+			ZERO
+		);
+		withdrawLimit = BN.min(withdrawLimit, unreservedLiquidity);
+		exceptionWithdrawLimit = BN.min(
+			exceptionWithdrawLimit,
+			unreservedLiquidity
+		);
+		borrowLimit = BN.min(borrowLimit, unreservedLiquidity);
 	}
 
 	return {

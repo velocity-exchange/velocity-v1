@@ -1349,8 +1349,11 @@ export type SpotMarketAccount = {
 	 * `0` = the market never settled revenue */
 	ifLastSettleVaultAmount: BN;
 	paddingFormerSpotFeePool: number[];
-	/** revenue allocated to the insurance fund but still held inside the spot vault; token mint precision */
-	insuranceFundRevenueReceivable: BN;
+	/** SPOT_BALANCE_PRECISION; revenue allocated to the insurance fund but still held inside the
+	 * spot vault. The claim sits inside `depositBalance` as a scaled balance, so it earns deposit
+	 * interest until the transfer completes and the fund collects that interest. Read the token
+	 * value with `getInsuranceFundRevenueReceivableTokenAmount` */
+	insuranceFundRevenueReceivableScaled: BN;
 
 	/** token mint decimals; token-mint precision throughout this account is 10^decimals */
 	decimals: number;

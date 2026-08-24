@@ -4,16 +4,38 @@ import { BN } from '../isomorphic/anchor';
 import { SpotBalanceType, SpotMarketAccount } from '../types';
 
 /**
+ * Token value of the revenue that is allocated to the insurance fund but still
+ * sits in the spot vault. The claim is a scaled balance, so its token value
+ * grows with deposit interest for as long as the transfer cannot complete.
+ *
+ * Mirror of the program's `get_insurance_fund_revenue_receivable_token_amount`.
+ *
+ * @param {SpotMarketAccount} spotMarket - The market that holds the receivable
+ * @return {BN} Token value of the receivable, market's token decimals
+ */
+export function getInsuranceFundRevenueReceivableTokenAmount(
+	spotMarket: SpotMarketAccount
+): BN {
+	return getTokenAmount(
+		spotMarket.insuranceFundRevenueReceivableScaled,
+		spotMarket,
+		SpotBalanceType.DEPOSIT
+	);
+}
+
+/**
  * Returns insurance fund economic value used for share pricing. Revenue already
  * allocated during a withdrawal pause remains in the spot vault as a receivable
  * until its token transfer can complete.
+ *
+ * Mirror of the program's `get_insurance_fund_nav`.
  */
 export function getInsuranceFundNav(
 	spotMarket: SpotMarketAccount,
 	insuranceFundVaultBalance: BN
 ): BN {
 	return insuranceFundVaultBalance.add(
-		spotMarket.insuranceFundRevenueReceivable
+		getInsuranceFundRevenueReceivableTokenAmount(spotMarket)
 	);
 }
 

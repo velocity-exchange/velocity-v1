@@ -5,15 +5,14 @@
 
 Preserve insurance fund revenue as a spot vault receivable.
 
-`SpotMarketAccount.spotFeePool` is removed. The retired slot now holds
-`paddingFormerSpotFeePool: number[]` and
-`insuranceFundRevenueReceivableScaled: BN`. Code that constructs a
-`SpotMarketAccount` literal must replace the field; account size and every
-other field offset are unchanged, so decoders keep working.
+`SpotMarketAccount.spotFeePool` is renamed `insuranceFundRevenueReceivable`. It
+keeps its `PoolBalance` type, width and offset, so account size and every other
+field offset are unchanged and code only has to rename the field.
 
-The receivable holds revenue that is allocated to the insurance fund but still
-sits in the spot vault, which happens while a withdraw pause blocks the
-transfer. It is a scaled balance, so read its token value with the new
+The pool holds revenue that is allocated to the insurance fund but still sits in
+the spot vault, which happens while a withdraw pause blocks the transfer. Only
+`scaledBalance` is used, and it is a scaled balance rather than a token amount,
+so read its token value with the new
 `getInsuranceFundRevenueReceivableTokenAmount`. Price insurance fund shares
 with the new `getInsuranceFundNav`, which adds that value to the live vault
 balance. Pricing off the vault balance alone understates the fund.

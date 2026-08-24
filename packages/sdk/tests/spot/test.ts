@@ -327,7 +327,7 @@ describe('Spot Tests', () => {
 		// of 85000 leaves 5000 that may leave the vault, which is below every
 		// other limit the market carries.
 		const mockSpot = buildWithdrawLimitMarket(0);
-		mockSpot.insuranceFundRevenueReceivableScaled = new BN(85000);
+		mockSpot.insuranceFundRevenueReceivable.scaledBalance = new BN(85000);
 		const now = new BN(43200);
 
 		const result = calculateWithdrawLimit(mockSpot, now);
@@ -338,7 +338,7 @@ describe('Spot Tests', () => {
 
 	it('leaves the limits alone when the market holds no receivable', () => {
 		const mockSpot = buildWithdrawLimitMarket(0);
-		mockSpot.insuranceFundRevenueReceivableScaled = new BN(0);
+		mockSpot.insuranceFundRevenueReceivable.scaledBalance = new BN(0);
 		const now = new BN(43200);
 
 		const result = calculateWithdrawLimit(mockSpot, now);

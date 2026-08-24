@@ -2969,7 +2969,7 @@ pub fn handle_settle_revenue_to_insurance_fund<'c: 'info, 'info>(
         spot_market.insurance_fund.revenue_settle_period,
     )?;
 
-    let has_receivable = spot_market.insurance_fund_revenue_receivable_scaled > 0;
+    let has_receivable = spot_market.insurance_fund_revenue_receivable.scaled_balance > 0;
     validate!(
         time_until_next_update == 0 || has_receivable,
         ErrorCode::RevenueSettingsCannotSettleToIF,

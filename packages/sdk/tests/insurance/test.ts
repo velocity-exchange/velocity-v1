@@ -124,9 +124,11 @@ describe('Insurance Tests', () => {
 	it('includes booked revenue in insurance fund nav', () => {
 		const spotMarket = {
 			decimals: 6,
-			insuranceFundRevenueReceivableScaled: new BN(50)
-				.mul(SPOT_MARKET_BALANCE_PRECISION)
-				.div(QUOTE_PRECISION),
+			insuranceFundRevenueReceivable: {
+				scaledBalance: new BN(50)
+					.mul(SPOT_MARKET_BALANCE_PRECISION)
+					.div(QUOTE_PRECISION),
+			},
 			cumulativeDepositInterest: SPOT_MARKET_CUMULATIVE_INTEREST_PRECISION,
 		} as SpotMarketAccount;
 
@@ -138,9 +140,11 @@ describe('Insurance Tests', () => {
 		// deposit index while the transfer cannot complete.
 		const spotMarket = {
 			decimals: 6,
-			insuranceFundRevenueReceivableScaled: new BN(50)
-				.mul(SPOT_MARKET_BALANCE_PRECISION)
-				.div(QUOTE_PRECISION),
+			insuranceFundRevenueReceivable: {
+				scaledBalance: new BN(50)
+					.mul(SPOT_MARKET_BALANCE_PRECISION)
+					.div(QUOTE_PRECISION),
+			},
 			cumulativeDepositInterest:
 				SPOT_MARKET_CUMULATIVE_INTEREST_PRECISION.muln(11).divn(10),
 		} as SpotMarketAccount;

@@ -4735,26 +4735,29 @@ export type Vaults = {
 						};
 					},
 					{
-						name: 'paddingFormerSpotFeePool';
-						docs: ['Reserved bytes from the retired spot fee pool.'];
-						type: {
-							array: ['u8', 16];
-						};
-					},
-					{
-						name: 'insuranceFundRevenueReceivableScaled';
+						name: 'insuranceFundRevenueReceivable';
 						docs: [
 							'Revenue allocated to the insurance fund that still sits in the spot',
-							'vault. The claim is held as a scaled balance inside `deposit_balance`,',
-							'so it earns deposit interest for as long as the tokens remain here and',
+							'vault, which happens while a withdraw pause holds back the transfer.',
+							'',
+							'This is a third claim inside `deposit_balance`, beside `revenue_pool` and',
+							'`protocol_fee_pool`, so it is held the same way they are. A scaled',
+							'balance earns deposit interest for as long as the tokens stay here and',
 							'the fund collects that interest when the transfer completes. A token',
-							'amount cannot do this: the claim grows with',
-							'`cumulative_deposit_interest` and a fixed integer would leave the',
-							'difference inside `deposit_balance` owned by nobody. Read the token',
-							'value with `get_insurance_fund_revenue_receivable_token_amount`.',
-							'precision: SPOT_BALANCE_PRECISION',
+							'amount could not do this: the claim grows with',
+							'`cumulative_deposit_interest`, and a fixed integer would leave the',
+							'difference inside `deposit_balance` owned by nobody.',
+							'',
+							'Only `scaled_balance` is used. The pool occupies the retired spot fee',
+							'pool slot, whose bytes were always zero, so `market_index` reads 0 on',
+							'markets that predate the field and nothing may depend on it. Read the',
+							'token value with `get_insurance_fund_revenue_receivable_token_amount`.',
 						];
-						type: 'u128';
+						type: {
+							defined: {
+								name: 'poolBalance';
+							};
+						};
 					},
 					{
 						name: 'historicalOracleData';

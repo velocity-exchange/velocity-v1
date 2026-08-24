@@ -501,7 +501,7 @@ pub fn get_insurance_fund_revenue_receivable_token_amount(
     spot_market: &SpotMarket,
 ) -> VelocityResult<u128> {
     get_token_amount(
-        spot_market.insurance_fund_revenue_receivable_scaled,
+        spot_market.insurance_fund_revenue_receivable.scaled_balance,
         spot_market,
         &SpotBalanceType::Deposit,
     )
@@ -613,7 +613,7 @@ mod tests {
                 MAX_WITHDRAW_GUARD_THRESHOLD_NOTIONAL, QUOTE_PRECISION, QUOTE_PRECISION_U64,
                 SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
             },
-            state::user::SpotPosition,
+            state::{perp_market::PoolBalance, user::SpotPosition},
         },
     };
 
@@ -678,7 +678,10 @@ mod tests {
             cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
             deposit_balance: scaled(1_000 * QUOTE_PRECISION),
             borrow_balance: scaled(100 * QUOTE_PRECISION),
-            insurance_fund_revenue_receivable_scaled: scaled(200 * QUOTE_PRECISION),
+            insurance_fund_revenue_receivable: PoolBalance {
+                scaled_balance: scaled(200 * QUOTE_PRECISION),
+                ..PoolBalance::default()
+            },
             ..SpotMarket::default()
         };
 
@@ -723,7 +726,10 @@ mod tests {
             deposit_balance: scaled(1_000 * QUOTE_PRECISION),
             borrow_balance: scaled(900 * QUOTE_PRECISION),
             withdraw_guard_threshold: (500 * QUOTE_PRECISION) as u64,
-            insurance_fund_revenue_receivable_scaled: 0,
+            insurance_fund_revenue_receivable: PoolBalance {
+                scaled_balance: 0,
+                ..PoolBalance::default()
+            },
             ..SpotMarket::default()
         };
 
@@ -751,7 +757,10 @@ mod tests {
             deposit_balance: scaled(1_000 * QUOTE_PRECISION),
             borrow_balance: scaled(700 * QUOTE_PRECISION),
             withdraw_guard_threshold: (500 * QUOTE_PRECISION) as u64,
-            insurance_fund_revenue_receivable_scaled: scaled(250 * QUOTE_PRECISION),
+            insurance_fund_revenue_receivable: PoolBalance {
+                scaled_balance: scaled(250 * QUOTE_PRECISION),
+                ..PoolBalance::default()
+            },
             ..SpotMarket::default()
         };
 

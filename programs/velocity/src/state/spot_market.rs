@@ -84,18 +84,22 @@ pub struct SpotMarket {
     /// Revenue the protocol has collected in this markets token
     /// e.g. for SOL-PERP, funds can be settled in usdc and will flow into the USDC revenue pool
     pub revenue_pool: PoolBalance, // in base asset
-    /// Reserved bytes from the retired spot fee pool.
-    pub padding_former_spot_fee_pool: [u8; 16],
     /// Revenue allocated to the insurance fund that still sits in the spot
-    /// vault. The claim is held as a scaled balance inside `deposit_balance`,
-    /// so it earns deposit interest for as long as the tokens remain here and
+    /// vault, which happens while a withdraw pause holds back the transfer.
+    ///
+    /// This is a third claim inside `deposit_balance`, beside `revenue_pool` and
+    /// `protocol_fee_pool`, so it is held the same way they are. A scaled
+    /// balance earns deposit interest for as long as the tokens stay here and
     /// the fund collects that interest when the transfer completes. A token
-    /// amount cannot do this: the claim grows with
-    /// `cumulative_deposit_interest` and a fixed integer would leave the
-    /// difference inside `deposit_balance` owned by nobody. Read the token
-    /// value with `get_insurance_fund_revenue_receivable_token_amount`.
-    /// precision: SPOT_BALANCE_PRECISION
-    pub insurance_fund_revenue_receivable_scaled: u128,
+    /// amount could not do this: the claim grows with
+    /// `cumulative_deposit_interest`, and a fixed integer would leave the
+    /// difference inside `deposit_balance` owned by nobody.
+    ///
+    /// Only `scaled_balance` is used. The pool occupies the retired spot fee
+    /// pool slot, whose bytes were always zero, so `market_index` reads 0 on
+    /// markets that predate the field and nothing may depend on it. Read the
+    /// token value with `get_insurance_fund_revenue_receivable_token_amount`.
+    pub insurance_fund_revenue_receivable: PoolBalance,
     pub historical_oracle_data: HistoricalOracleData,
     pub historical_index_data: HistoricalIndexData,
     /// no withdraw limits/guards when deposits below this threshold
@@ -283,9 +287,7 @@ pub struct SpotMarket {
 // fires after a struct change, re-size the explicit padding fields — never
 // let the compiler insert implicit padding.
 const _: () = assert!(std::mem::size_of::<SpotMarket>() == 800);
-const _: () = assert!(std::mem::offset_of!(SpotMarket, padding_former_spot_fee_pool) == 416);
-const _: () =
-    assert!(std::mem::offset_of!(SpotMarket, insurance_fund_revenue_receivable_scaled) == 432);
+const _: () = assert!(std::mem::offset_of!(SpotMarket, insurance_fund_revenue_receivable) == 416);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, withdraw_circuit_breaker_bps) == 740);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, max_deposit_bps_per_day) == 742);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, deposit_guard_threshold) == 744);
@@ -311,8 +313,7 @@ impl Default for SpotMarket {
             total_social_loss: 0,
             total_quote_social_loss: 0,
             revenue_pool: PoolBalance::default(),
-            padding_former_spot_fee_pool: [0; 16],
-            insurance_fund_revenue_receivable_scaled: 0,
+            insurance_fund_revenue_receivable: PoolBalance::default(),
             historical_oracle_data: HistoricalOracleData::default(),
             historical_index_data: HistoricalIndexData::default(),
             withdraw_guard_threshold: 0,
@@ -374,7 +375,8 @@ impl Size for SpotMarket {
 
 impl MarketIndexOffset for SpotMarket {
     // Fields were reordered so that all u128-containing types (insurance_fund and
-    // the seven direct u128 fields) appear before revenue_pool and the former spot_fee_pool.
+    // the seven direct u128 fields) appear before revenue_pool and
+    // insurance_fund_revenue_receivable.
     // This ensures revenue_pool is at a 16-byte-aligned offset (384), eliminating
     // the implicit 8-byte gap that #[repr(C)] inserted on x86_64.  Combined with
     // PoolBalance padding widened to [u8;14] (sizeof == 32 on both platforms),

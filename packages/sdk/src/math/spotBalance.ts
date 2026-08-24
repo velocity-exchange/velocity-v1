@@ -991,7 +991,7 @@ export function calculateWithdrawLimit(
 	// of the reservation in `get_max_withdraw_for_market_with_token_amount`. A
 	// market with no receivable keeps the limits it had before the reservation.
 	const receivable = getTokenAmount(
-		spotMarket.insuranceFundRevenueReceivableScaled,
+		spotMarket.insuranceFundRevenueReceivable.scaledBalance,
 		spotMarket,
 		SpotBalanceType.DEPOSIT
 	);

@@ -66,8 +66,11 @@ export class PythClient implements OracleClient {
 	 * @param buffer - Raw Pyth price account data.
 	 * @returns `price`, `confidence`, `twap`, `twapConfidence` (all PRICE_PRECISION 1e6), `slot`
 	 * (the price account's last update slot), and `hasSufficientNumberOfDataPoints`.
+	 * @throws Error if the buffer does not carry a Pyth v2 price account header. The program
+	 * rejects such an account, so a decoded price here would not be a price anyone can trade at.
 	 */
 	public getOraclePriceDataFromBuffer(buffer: Buffer): OraclePriceData {
+		validatePythPushHeader(buffer);
 		const priceData = parsePriceData(buffer);
 		// `confidence` is absent on uninitialized/invalid price accounts. Base passed it
 		// straight into convertPythPrice, where `undefined * 10**exponent` is `NaN` and
@@ -104,6 +107,57 @@ export class PythClient implements OracleClient {
 			),
 			hasSufficientNumberOfDataPoints: priceData.numQuoters >= minPublishers,
 		};
+	}
+}
+
+/**
+ * Pyth writes the same four `u32` words at the start of every account it owns:
+ * `magic`, `ver`, `atype`, `size`. `PYTH_PUSH_ACCOUNT_TYPE_PRICE` is the
+ * `AccountType::Price` discriminant.
+ */
+const PYTH_PUSH_MAGIC = 0xa1b2c3d4;
+const PYTH_PUSH_VERSION = 2;
+const PYTH_PUSH_ACCOUNT_TYPE_PRICE = 3;
+/**
+ * `size_of::<pyth_client::Price>()`, the length the program requires. Pinned
+ * on the program side by `a_pyth_price_account_is_3312_bytes`.
+ */
+const PYTH_PUSH_ACCOUNT_LEN = 3312;
+
+/**
+ * Throws unless `buffer` holds a Pyth v2 price account, mirroring the program's
+ * `load_pyth_push_price`.
+ *
+ * Ownership by the Pyth program does not make an account a price feed. That
+ * program also owns mapping accounts and product accounts. Decoding one of
+ * those as a price account produces a number that the program refuses to use,
+ * which is worse than an error: the caller cannot tell it apart from a price.
+ */
+function validatePythPushHeader(buffer: Buffer): void {
+	if (buffer.length < PYTH_PUSH_ACCOUNT_LEN) {
+		throw new Error(
+			`Pyth oracle account is ${buffer.length} bytes, shorter than the ${PYTH_PUSH_ACCOUNT_LEN} bytes of a price account`
+		);
+	}
+	const magic = buffer.readUInt32LE(0);
+	if (magic !== PYTH_PUSH_MAGIC) {
+		throw new Error(
+			`Pyth oracle account magic 0x${magic.toString(
+				16
+			)} is not 0x${PYTH_PUSH_MAGIC.toString(16)}`
+		);
+	}
+	const version = buffer.readUInt32LE(4);
+	if (version !== PYTH_PUSH_VERSION) {
+		throw new Error(
+			`Pyth oracle account version ${version} is not ${PYTH_PUSH_VERSION}`
+		);
+	}
+	const accountType = buffer.readUInt32LE(8);
+	if (accountType !== PYTH_PUSH_ACCOUNT_TYPE_PRICE) {
+		throw new Error(
+			`Pyth oracle account type ${accountType} is not a price account`
+		);
 	}
 }
 

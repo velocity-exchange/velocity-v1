@@ -6384,7 +6384,10 @@
           }
         },
         {
-          "name": "oracle"
+          "name": "oracle",
+          "relations": [
+            "perp_market"
+          ]
         }
       ],
       "args": [
@@ -10233,7 +10236,10 @@
           }
         },
         {
-          "name": "oracle"
+          "name": "oracle",
+          "relations": [
+            "perp_market"
+          ]
         }
       ],
       "args": [

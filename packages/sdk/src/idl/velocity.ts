@@ -6390,7 +6390,10 @@ export type Velocity = {
           }
         },
         {
-          "name": "oracle"
+          "name": "oracle",
+          "relations": [
+            "perpMarket"
+          ]
         }
       ],
       "args": [
@@ -10239,7 +10242,10 @@ export type Velocity = {
           }
         },
         {
-          "name": "oracle"
+          "name": "oracle",
+          "relations": [
+            "perpMarket"
+          ]
         }
       ],
       "args": [

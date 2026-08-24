@@ -184,8 +184,14 @@ pub fn get_pyth_price_mantissa(price: i64, expo: i32) -> PythLazerOracle {
     pyth_price
 }
 
+/// A pyth push price account, with the header the pyth program writes. The
+/// program refuses an account whose header does not say "pyth price account",
+/// so a test feed has to carry one.
 pub fn get_hardcoded_pyth_price(price: i64, expo: i32) -> Price {
     let mut pyth_price = Price::default();
+    pyth_price.magic = 0xa1b2_c3d4;
+    pyth_price.ver = 2;
+    pyth_price.atype = 3;
     pyth_price.agg.price = price;
     pyth_price.twap = price;
     pyth_price.expo = expo;

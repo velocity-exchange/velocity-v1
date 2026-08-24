@@ -489,6 +489,85 @@ pub fn get_oracle_price(
     }
 }
 
+/// Pyth writes the same four `u32` words at the start of every account it
+/// owns: `magic`, `ver`, `atype`, `size`. The first three identify the
+/// account; `PYTH_PUSH_ACCOUNT_TYPE_PRICE` is the `AccountType::Price`
+/// discriminant.
+const PYTH_PUSH_MAGIC: u32 = 0xa1b2_c3d4;
+const PYTH_PUSH_VERSION: u32 = 2;
+const PYTH_PUSH_ACCOUNT_TYPE_PRICE: u32 = 3;
+
+/// Reads the pyth push price account in `data`, or fails if `data` is not one.
+///
+/// Ownership by the pyth program does not make an account a price feed. That
+/// program also owns mapping accounts and product accounts, and it creates an
+/// account for anybody who asks. `pyth_client::cast` reinterprets whatever
+/// bytes it receives as a `Price`, so without this check the caller chooses
+/// the price and the exponent that come back. The header makes the account
+/// prove its own type first.
+///
+/// The header words are read from the raw bytes rather than through the cast,
+/// so no field is interpreted before the account is known to be a price
+/// account.
+///
+/// The length and alignment checks come first, because `pyth_client::cast`
+/// discards the unaligned head of the slice and then indexes the first whole
+/// `Price` in the rest. Two consequences: the cast panics when what remains
+/// is shorter than the struct, and on an unaligned slice it would read from a
+/// different offset than the header below. The alignment check keeps the
+/// header and the price the same bytes. Solana aligns account data to eight
+/// bytes, so a real account passes both.
+pub fn load_pyth_push_price(data: &[u8]) -> VelocityResult<&pyth_client::Price> {
+    if data.len() < std::mem::size_of::<pyth_client::Price>() {
+        msg!("Account is smaller than a pyth price account");
+        return Err(UnableToLoadOracle);
+    }
+
+    if data
+        .as_ptr()
+        .align_offset(std::mem::align_of::<pyth_client::Price>())
+        != 0
+    {
+        msg!("Pyth price account data is not aligned");
+        return Err(UnableToLoadOracle);
+    }
+
+    let header_word = |offset: usize| -> VelocityResult<u32> {
+        let word: [u8; 4] = data
+            .get(offset..offset + 4)
+            .and_then(|word| <[u8; 4]>::try_from(word).ok())
+            .ok_or(UnableToLoadOracle)?;
+        Ok(u32::from_le_bytes(word))
+    };
+
+    let magic = header_word(0)?;
+    let version = header_word(4)?;
+    let account_type = header_word(8)?;
+
+    validate!(
+        magic == PYTH_PUSH_MAGIC,
+        InvalidOracle,
+        "pyth magic {:#x} is not {:#x}",
+        magic,
+        PYTH_PUSH_MAGIC
+    )?;
+    validate!(
+        version == PYTH_PUSH_VERSION,
+        InvalidOracle,
+        "pyth version {} is not {}",
+        version,
+        PYTH_PUSH_VERSION
+    )?;
+    validate!(
+        account_type == PYTH_PUSH_ACCOUNT_TYPE_PRICE,
+        InvalidOracle,
+        "pyth account type {} is not a price account",
+        account_type
+    )?;
+
+    Ok(pyth_client::cast::<pyth_client::Price>(data))
+}
+
 pub fn get_pyth_price(
     price_oracle: &AccountInfo,
     clock_slot: u64,
@@ -514,7 +593,7 @@ pub fn get_pyth_price(
     let sequence_id: Option<u64>;
 
     if oracle_source.is_pyth_push_oracle() {
-        let price_data = pyth_client::cast::<pyth_client::Price>(pyth_price_data);
+        let price_data = load_pyth_push_price(pyth_price_data)?;
         oracle_price = price_data.agg.price;
         oracle_conf = price_data.agg.conf;
         let min_publishers = price_data.num.min(3);

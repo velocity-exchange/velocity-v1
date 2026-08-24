@@ -293,3 +293,140 @@ fn mm_oracle_confidence() {
     let confidence = mm_oracle_price_data.get_confidence();
     assert_eq!(confidence, expected_confidence);
 }
+
+/// A pyth-owned account is not a price feed until its header says so. The
+/// pyth program owns mapping accounts and product accounts as well as price
+/// accounts, and it creates an account for anybody who asks. Read as a price
+/// account, such an account gives the caller the price and the exponent.
+#[test]
+fn pyth_account_without_a_price_header_is_rejected() {
+    let mut oracle_price = get_hardcoded_pyth_price(8394, 10);
+    oracle_price.magic = 0;
+    let oracle_price_key =
+        Pubkey::from_str("8ihFLu5FimgTQ1Unh4dVyEHUGodJ5gJQCrQf4KUVB9bN").unwrap();
+    let pyth_program = crate::ids::pyth_program::id();
+    create_account_info!(
+        oracle_price,
+        &oracle_price_key,
+        &pyth_program,
+        oracle_account_info
+    );
+
+    assert_eq!(
+        get_oracle_price(&OracleSource::Pyth, &oracle_account_info, 0).unwrap_err(),
+        ErrorCode::InvalidOracle
+    );
+
+    let amm = AMM { ..AMM::default() };
+    assert_eq!(
+        amm.get_oracle_twap(&oracle_account_info, 0, OracleSource::Pyth),
+        Err(ErrorCode::InvalidOracle)
+    );
+}
+
+/// The pyth program writes version 2 price accounts. A later layout under the
+/// same magic would move every field this code reads.
+#[test]
+fn pyth_account_with_the_wrong_version_is_rejected() {
+    let mut oracle_price = get_hardcoded_pyth_price(8394, 10);
+    oracle_price.ver = 3;
+    let oracle_price_key =
+        Pubkey::from_str("8ihFLu5FimgTQ1Unh4dVyEHUGodJ5gJQCrQf4KUVB9bN").unwrap();
+    let pyth_program = crate::ids::pyth_program::id();
+    create_account_info!(
+        oracle_price,
+        &oracle_price_key,
+        &pyth_program,
+        oracle_account_info
+    );
+
+    assert_eq!(
+        get_oracle_price(&OracleSource::Pyth, &oracle_account_info, 0).unwrap_err(),
+        ErrorCode::InvalidOracle
+    );
+}
+
+/// A mapping account and a product account carry the pyth magic and version,
+/// so only the account type separates them from a price account.
+#[test]
+fn pyth_account_of_another_type_is_rejected() {
+    let mut oracle_price = get_hardcoded_pyth_price(8394, 10);
+    oracle_price.atype = 2; // AccountType::Product
+    let oracle_price_key =
+        Pubkey::from_str("8ihFLu5FimgTQ1Unh4dVyEHUGodJ5gJQCrQf4KUVB9bN").unwrap();
+    let pyth_program = crate::ids::pyth_program::id();
+    create_account_info!(
+        oracle_price,
+        &oracle_price_key,
+        &pyth_program,
+        oracle_account_info
+    );
+
+    assert_eq!(
+        get_oracle_price(&OracleSource::Pyth, &oracle_account_info, 0).unwrap_err(),
+        ErrorCode::InvalidOracle
+    );
+}
+
+/// An account shorter than a pyth price account must produce an error. The
+/// cast that reads the price panics on a short slice.
+#[test]
+fn pyth_account_shorter_than_a_price_account_is_rejected() {
+    let oracle_price_key =
+        Pubkey::from_str("8ihFLu5FimgTQ1Unh4dVyEHUGodJ5gJQCrQf4KUVB9bN").unwrap();
+    let pyth_program = crate::ids::pyth_program::id();
+    let mut lamports = 0;
+    let mut data = [0u8; 32];
+    let oracle_account_info = crate::test_utils::create_account_info(
+        &oracle_price_key,
+        true,
+        &mut lamports,
+        &mut data,
+        &pyth_program,
+    );
+
+    assert_eq!(
+        get_oracle_price(&OracleSource::Pyth, &oracle_account_info, 0).unwrap_err(),
+        ErrorCode::UnableToLoadOracle
+    );
+}
+
+/// A slice that is long enough but not aligned must produce an error. The
+/// cast reads the first aligned `Price` in the slice, so an unaligned slice
+/// would put the price at a different offset than the header.
+#[test]
+fn unaligned_pyth_account_data_is_rejected() {
+    let mut oracle_price = get_hardcoded_pyth_price(8394, 10);
+    let aligned = get_account_bytes(&mut oracle_price);
+
+    // One byte of padding moves the price account off an eight-byte boundary.
+    let mut unaligned = vec![0u8];
+    unaligned.extend_from_slice(&aligned);
+    assert_eq!(unaligned[1..].as_ptr().align_offset(8), 7);
+
+    let oracle_price_key =
+        Pubkey::from_str("8ihFLu5FimgTQ1Unh4dVyEHUGodJ5gJQCrQf4KUVB9bN").unwrap();
+    let pyth_program = crate::ids::pyth_program::id();
+    let mut lamports = 0;
+    let oracle_account_info = crate::test_utils::create_account_info(
+        &oracle_price_key,
+        true,
+        &mut lamports,
+        &mut unaligned[1..],
+        &pyth_program,
+    );
+
+    assert_eq!(
+        get_oracle_price(&OracleSource::Pyth, &oracle_account_info, 0).unwrap_err(),
+        ErrorCode::UnableToLoadOracle
+    );
+}
+
+/// The SDK's `PythClient` repeats this length as a literal, because it cannot
+/// read `size_of` across languages. A change in the pyth-client dependency
+/// must fail here rather than let the two checks disagree.
+#[test]
+fn a_pyth_price_account_is_3312_bytes() {
+    assert_eq!(std::mem::size_of::<pyth_client::Price>(), 3312);
+    assert_eq!(std::mem::align_of::<pyth_client::Price>(), 8);
+}

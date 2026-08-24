@@ -917,7 +917,9 @@ describe('insurance fund stake', () => {
 			);
 			assert(revenueBeforeCancel.gt(ZERO));
 			assert(
-				spotMarketBeforeCancel.insuranceFundRevenueReceivable.scaledBalance.eq(ZERO)
+				spotMarketBeforeCancel.insuranceFundRevenueReceivable.scaledBalance.eq(
+					ZERO
+				)
 			);
 
 			if (pause === 'global') {
@@ -1030,7 +1032,9 @@ describe('insurance fund stake', () => {
 			);
 
 			assert(
-				spotMarketAfterTransfer.insuranceFundRevenueReceivable.scaledBalance.eq(ZERO)
+				spotMarketAfterTransfer.insuranceFundRevenueReceivable.scaledBalance.eq(
+					ZERO
+				)
 			);
 			// The claim keeps earning deposit interest until the transfer runs, so
 			// the amount that moves is at least its value at cancel time.

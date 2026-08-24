@@ -23893,7 +23893,7 @@ export type Velocity = {
               "Only `scaled_balance` is used. The pool occupies the retired spot fee",
               "pool slot, whose bytes were always zero, so `market_index` reads 0 on",
               "markets that predate the field and nothing may depend on it. Read the",
-              "token value with `get_insurance_fund_revenue_receivable_token_amount`."
+              "token value with `SpotMarket::get_insurance_fund_revenue_receivable`."
             ],
             "type": {
               "defined": {

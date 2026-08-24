@@ -628,7 +628,7 @@ mod test {
         .unwrap();
 
         assert_eq!(long_spread_btc, 250);
-        assert_eq!(short_spread_btc, 74117);
+        assert_eq!(short_spread_btc, 74194);
 
         let (long_spread_btc1, short_spread_btc1) = calculate_spread(
             500,
@@ -1196,6 +1196,34 @@ mod test {
         )
         .unwrap();
         assert_eq!(rra, 30000 / 10); //every additional dollar adds
+    }
+
+    #[test]
+    fn confidence_component_ramps_continuously() {
+        let threshold = SPREAD_CONF_FULL_WEIGHT_THRESHOLD;
+        assert_eq!(threshold, 2500);
+        assert_eq!(calculate_spread_conf_component(0).unwrap(), 0);
+        assert_eq!(calculate_spread_conf_component(threshold / 2).unwrap(), 656);
+        assert_eq!(
+            calculate_spread_conf_component(threshold - 1).unwrap(),
+            2498
+        );
+        assert_eq!(
+            calculate_spread_conf_component(threshold).unwrap(),
+            threshold
+        );
+        assert_eq!(
+            calculate_spread_conf_component(threshold + 1).unwrap(),
+            threshold + 1
+        );
+
+        let mut previous = 0;
+        for confidence in 0..=threshold + 1 {
+            let component = calculate_spread_conf_component(confidence).unwrap();
+            assert!(component >= previous);
+            assert!(component <= confidence);
+            previous = component;
+        }
     }
 
     #[test]
@@ -2153,14 +2181,14 @@ mod test {
             assert_eq!(
                 out_at,
                 (
-                    350,
-                    250,
+                    2777,
+                    2500,
                     0,
                     0,
-                    99982502187,
-                    100017500875,
-                    100012501562,
-                    99987500000
+                    99861303745,
+                    100138888888,
+                    100125156445,
+                    99875000000
                 )
             );
 
@@ -2170,8 +2198,8 @@ mod test {
                 ..base_stats()
             };
             let out_above = refresh(&mut amm_above, &stats_above, 0, 100);
-            // One unit of confidence input above the 25 bp threshold moves the
-            // quoted spread ~8x. This pins the cliff itself (design issue 5).
+            // Crossing the threshold changes the quote by only the one-unit
+            // confidence increase; there is no full-weight cliff.
             assert_eq!(
                 out_above,
                 (

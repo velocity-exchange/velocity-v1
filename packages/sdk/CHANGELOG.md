@@ -1,5 +1,411 @@
 # @velocity-exchange/sdk
 
+## 0.14.0
+
+### Minor Changes
+
+- [#429](https://github.com/velocity-exchange/velocity-v1/pull/429) [`4124e93`](https://github.com/velocity-exchange/velocity-v1/commit/4124e9313dd70610a705817570bd9e428c8dea85) Thanks [@0xahzam](https://github.com/0xahzam)! - Referrer rewards split into a Standard and an Accelerated rate. Standard stays per-fee-tier
+  (`FeeTier.referrerRewardNumerator`, whose fresh default drops from 15% to 10%); Accelerated is
+  the fixed `ACCELERATED_REFERRER_REWARD_PERCENT` constant, independent of the tier. The referee
+  discount keeps reading the fee tier. `UserStatsAccount.acceleratedReferralStatus` mirrors the
+  new onchain field, with the `AcceleratedReferralStatus` flags, the
+  `AcceleratedReferralStatusChange` action enum, and the
+  `AcceleratedReferralStatusChangedRecord` event (subscribed by default). `AdminClient` gains
+  `updateUserAcceleratedReferralStatus`, wrapped by the admin CLI as
+  `user set-accelerated-referral` alongside `fees set-referral-rate`. Automatic enrollment is
+  gated by a beta-scoped program constant rather than a state field, so there is no client
+  surface to toggle it.
+
+  Fill instruction builders now append the referred taker's referrer `UserStats` (readonly) after
+  the taker's `RevenueShareEscrow`, which is what selects the Accelerated rate. The account is
+  optional onchain, so a client that omits it still fills at the Standard rate.
+  `getFillPerpOrderIx` takes a new trailing `takerReferrer` argument and `ReferrerMap` exposes
+  `getReferrerAuthority`; passing the referrer keeps the fill path free of an extra `UserStats`
+  fetch.
+
+- [#393](https://github.com/velocity-exchange/velocity-v1/pull/393) [`01a7131`](https://github.com/velocity-exchange/velocity-v1/commit/01a71316b0327acd32be6e90686edd296e592af6) Thanks [@0xahzam](https://github.com/0xahzam)! - Gate swap-backed spot liquidation on the authority-wide equity breaker. `liquidateSpotWithSwapBegin`/`...End` now require the liquidator's `UserStats` account and `begin` reverts with `EquityBelowFloor` while the liquidator authority's equity breaker is tripped, matching the other liquidator routes. `getLiquidateSpotWithSwapIx` and `getJupiterLiquidateSpotWithSwapIxV6` resolve the new account automatically; keepers building the instructions by hand must pass `liquidatorStats`.
+
+- [#420](https://github.com/velocity-exchange/velocity-v1/pull/420) [`7ee2feb`](https://github.com/velocity-exchange/velocity-v1/commit/7ee2febf9c4bfe9cb0e7361828a1aad087216df7) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - Perp fills charge a builder fee only while the taker meets initial margin. `User` gains
+  `isBuilderFeeCharged()`, and `User.calculatePerpTakerFee` and `VelocityClient.getMarketFees` consult
+  it, so a predicted fee for a taker below initial margin no longer includes the builder fee
+  (OtterSec #83).
+
+  A builder fee is an additive debit on the taker that the builder later claims into its own account,
+  and the taker is the party that approves the builder. The fee is therefore a transfer out of the
+  account, and it must clear the gate a withdrawal clears. A position-decreasing fill is otherwise
+  checked against maintenance margin alone, which lets an under-margined taker reduce the position in
+  slices and route out value the initial-margin gate holds in the account. The 1% cap on the fee rate
+  bounds one fill, not the sequence.
+
+  The program's gate reads the same oracle rules a withdrawal reads: strict (TWAP-bounded) prices,
+  no collateral for a deposit with an invalid oracle, and every liability oracle valid.
+  `isBuilderFeeCharged()` applies the strict prices but does not model oracle validity, so it is an
+  estimate — it can report `true` where the program waives the fee.
+
+  The program waives the fee, not the fill: the taker still closes the position and the builder is
+  paid nothing for that fill. A client that shows a builder fee before a close must read
+  `isBuilderFeeCharged()` to predict the charge for an under-margined account.
+
+- [#355](https://github.com/velocity-exchange/velocity-v1/pull/355) [`b7b5ae8`](https://github.com/velocity-exchange/velocity-v1/commit/b7b5ae80040b66651e6553d16354cbd075113cbb) Thanks [@0xahzam](https://github.com/0xahzam)! - Harden the equity breaker recovery path. Cure transfers: `transferDepositByDelegate` with a zero floor delta into a subaccount below its buffered floor now passes onchain while the breaker is tripped, so a breach can be topped up from internal surplus instead of requiring fresh deposits; `EquityFloorManager` gains `planCureTransfers()` and `cureBreaches()` (plus the pure `planCureMoves`) to plan and submit those transfers, deepest breach first, without drawing any donor below its own buffered floor. Self-verifying reset: `resetEquityFloorBreaker` now carries every live subaccount of the authority (count pinned by `UserStats.numberOfSubAccounts`) plus their markets and oracles, and reverts with the new `InvalidEquityBreakerReset` (6368) unless every floored subaccount clears its floor + buffer at execution time, so a stale approval fails instead of unfreezing a breached authority; `AdminClient.resetEquityFloorBreaker`/`getResetEquityFloorBreakerIx` build the account set automatically, with an optional `userAccounts` override for connections without `getProgramAccounts`. Neither path clears the flag automatically; the admin reset remains the only unfreeze.
+
+- [#386](https://github.com/velocity-exchange/velocity-v1/pull/386) [`4e29bc0`](https://github.com/velocity-exchange/velocity-v1/commit/4e29bc0f131ad278450042e2554fd64bac4315ee) Thanks [@0xahzam](https://github.com/0xahzam)! - Mirror the fail-closed equity-floor oracle handling: `User.getNetUsdValueBounds` is replaced by `User.getFloorNetEquity(slot)` returning `{ value, allOraclesValid }` (exact net equity plus the validity verdict, matching the program's floor metric); `boundPrices`, `NetUsdValueBounds`, `I128_MIN` and `I128_MAX` are removed. `isBelowBufferedEquityFloor(slot)` now predicts the fail-closed gates (any invalid oracle reads as gated), and `getEquityAboveFloor(slot)` / `getEquityAboveBufferedFloor(slot)` report zero headroom while any oracle is invalid.
+
+- [#380](https://github.com/velocity-exchange/velocity-v1/pull/380) [`02078e6`](https://github.com/velocity-exchange/velocity-v1/commit/02078e625eb89c3fd5798af8d07693a21268a30e) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - Mirror the equity floor's oracle-validity gating: `User.getNetUsdValueBounds(slot)` computes the two-sided net equity bounds the onchain floor gates now use (invalid-oracle positions priced at both live and 5-minute TWAP, non-positive candidates dropped, unpriceable positions saturating to `I128_MIN`/`I128_MAX`), with pure helpers `boundPrices`, `getSpotOracleValidity`, `getSpotMaxConfidenceIntervalMultiplier` and `isOracleValidForMarginCalc`. `isBelowBufferedEquityFloor(slot?)` predicts the gates on the lower bound when given a slot and is unchanged otherwise. The equity floor guard bot now alerts distinctly, once per outage, when a breaker trip is blocked by `InvalidOracle` instead of logging it as a generic simulation failure.
+
+- [#388](https://github.com/velocity-exchange/velocity-v1/pull/388) [`77499bb`](https://github.com/velocity-exchange/velocity-v1/commit/77499bb3c0644730d5d48e6e3b331988cc5c2b02) Thanks [@0xahzam](https://github.com/0xahzam)! - Rework the perp fee schedule. Fee tiers cut from 6 to 3 (Regular / VIP 1 / VIP 2) with new 30d-volume thresholds ($5M / $80M) and new defaults (4/3/2bps taker, flat -0.25bp maker rebate); `getUserFeeTier` mirrors the new thresholds, projects the rolling-volume decay to now (demotion tracks the live trailing window), and applies the new promotional tier floor. New onchain knobs with SDK/CLI surface: per-market additive taker-fee surcharge (`PerpMarketAccount.takerFeeAddonTenthBps`, unsigned, applied by `getMarketFees` before `feeAdjustment`; `AdminClient.updatePerpMarketTakerFeeAddon`, `velocity-admin fees set-taker-addon`) and the promo fee-tier floor (`StateAccount.promoFeeTier`, effective tier = max(volume tier, promo tier), 0 = off; `AdminClient.updatePromoFeeTier`, `velocity-admin fees set-promo-tier`).
+
+- [#404](https://github.com/velocity-exchange/velocity-v1/pull/404) [`15db231`](https://github.com/velocity-exchange/velocity-v1/commit/15db231101dd2ac6ed3a94d63d0b41e5acecceb3) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - Mirror the program's mark-TWAP re-seed, so `calculateAllEstimatedFundingRate` does not predict a
+  premium the next on-chain funding update will not charge.
+
+  `calculate_new_twap` weights an incoming mark-TWAP sample by the time since the last write and floors
+  the opposing weight at 1, so past one funding period a single fill-path sample replaces the TWAP
+  outright (bid/ask-crank samples are weight-capped since the crank sample-weight fix). The program now
+  discards the stored mark TWAPs and re-seeds them from the oracle TWAP when they went unwritten for
+  more than `max(fundingPeriod * 3, 3600)` seconds. The first funding update after such a gap therefore
+  sees a zero price spread and charges the baseline offset alone, and the real premium returns the
+  following period.
+
+  The gap is longest after a funding pause, because both funding cranks reject while the pause is set.
+  It also opens on any multi-period keeper outage.
+
+  `calculateLiveMarkTwap` applies the same threshold and re-seed, so the estimate tracks the program.
+  New export `MARK_TWAP_RESEED_FUNDING_PERIODS`.
+
+  New export `getMaxMarkTwapSampleElapsed`, the mirror of the program's
+  `MarketStats::max_mark_twap_sample_elapsed` crank sample-weight cap, for predicting the TWAP a
+  bid/ask crank write produces. `calculateLiveMarkTwap` deliberately does not apply it, because it
+  predicts the funding update's own write, which is uncapped on-chain. `ONE_MINUTE` is also exported.
+
+- [#383](https://github.com/velocity-exchange/velocity-v1/pull/383) [`ede187b`](https://github.com/velocity-exchange/velocity-v1/commit/ede187be1060f4790f03f459733e0485096aaf69) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `getUpdateMmOracleBatchNativeIx` / `updateMmOracleBatchNative`, builders for the program's new
+  batched MM-oracle native instruction (dispatch opcode 2), plus the `MmOracleBatchUpdate` entry type
+  and the `MM_ORACLE_BATCH_MAX_MARKETS` constant.
+
+  One instruction writes the MM oracle for many perp markets, so a caller pays one transaction
+  signature for the whole set instead of one per market, and the instruction's authentication prologue
+  (which is most of its compute cost) is paid once rather than per market.
+
+  Per-market rate-limit and sanity rejections skip only that market; the rest of the batch still
+  lands. Each entry carries its own market index, which the program re-checks against the account it
+  was paired with, so a misordered list fails loudly instead of writing one market's price onto
+  another. Each entry also carries `oracleSourceSlot`, the slot the price was observed at; the program
+  skips an entry landing more than `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` from it in either direction, so
+  a late-landing transaction cannot make an old observation read as fresh and a wrong-unit value
+  cannot silently disable the check. The builder additionally rejects an empty
+  list, more than `MM_ORACLE_BATCH_MAX_MARKETS` markets, duplicate market indexes, non-positive
+  prices (`BN` little-endian serialization drops the sign, so a negative price would otherwise reach
+  the program as its magnitude), and values that do not fit their on-chain width (`i64` price, `u64`
+  sequence id and source slot).
+
+- [#384](https://github.com/velocity-exchange/velocity-v1/pull/384) [`1b81121`](https://github.com/velocity-exchange/velocity-v1/commit/1b8112143db861aab3507df64028911285425827) Thanks [@0xahzam](https://github.com/0xahzam)! - MM oracle freshness fixes, mirroring the program:
+
+  - `getOracleValidity` resolves an unset (`oracleSlotDelayOverride < 0`) immediate-fill staleness
+    threshold by price source, via a new optional `isMmSourcedPrice` parameter: an MM-oracle-sourced
+    price gets `MM_ORACLE_MIN_SLOT_GAP` (the program will not accept MM-oracle writes closer together
+    than that, so a tighter threshold is unsatisfiable), while an exchange-sourced price keeps the
+    strict zero threshold. `0` still means "no immediate AMM fills on this market", and explicit
+    positive thresholds are unchanged. `MMOraclePriceData` gains an `isMMSourcedPrice` flag populated
+    by `getMMOracleDataForPerpMarket`.
+  - `updateMmOracleNative` / `getUpdateMmOracleNativeIx` take a new required `oracleSourceSlot`
+    parameter (breaking): the slot the price was observed at, which the program now requires in the
+    payload and checks against the landing slot symmetrically in both directions
+    (`MM_ORACLE_MAX_SOURCE_AGE_SLOTS`, exported), so a late-landing update cannot make an old
+    observation read as fresh and a wrong-unit value cannot silently disable the check. The builder
+    also validates its inputs (positive price fitting `i64`, `u64` sequence id and source slot); the
+    program now hard-errors on any non-positive price, not just exact zero.
+  - The native MM-oracle instructions no longer take a clock sysvar account (the program reads the
+    slot via syscall), so the builders emit one account fewer per transaction: `updateMmOracleNative`
+    passes `[market, signer, state]` and the batch passes `[signer, state, ...markets]`.
+  - Exports the `MM_ORACLE_MIN_SLOT_GAP` and `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` constants.
+
+- [#392](https://github.com/velocity-exchange/velocity-v1/pull/392) [`4d0946b`](https://github.com/velocity-exchange/velocity-v1/commit/4d0946b70b336cf71cfcdca202a47dc9d8c81e05) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - Accrued builder/referrer revenue share can now be collected without the escrow owner's participation, and is paid out rather than written off when a market is delisted.
+
+  `settleRevenueShare` / `getSettleRevenueShareIx` wrap the new permissionless `settle_revenue_share` instruction, which settles one escrow's rows for one perp market out of that market's pnl pool. Previously the only payer ran inside `settlePNL` and only when that settle actually moved PnL, so once an escrow owner flattened and stopped trading a market their beneficiaries' fees were stranded and the market's `pendingRevenueShare` kept reserving pnl-pool value against a claim nobody could settle.
+
+  `forfeitRevenueShareOrder` / `getForfeitRevenueShareOrderIx` wrap `forfeit_revenue_share_order`, which writes off a row of a market in settlement or delisted that provably cannot be paid — the beneficiary has no payout account, the wound-down pool cannot cover it, or it names no reachable beneficiary. Anything still payable is rejected with `RevenueShareOrderNotForfeitable` (6373).
+
+  Delisting a market now requires that revenue share to have been resolved: `settle_expired_market_pools_to_revenue_pool` rejects with `UnsettledRevenueShareOnDelist` (6372) while `pendingRevenueShare` is non-zero. There is no time-based escape, because between the two instructions above every row is terminally resolvable. A delisted market therefore always reports `pendingRevenueShare` as zero, and consumers must not treat a delisted market's counter as an outstanding liability.
+
+  `RevenueShareEscrowMap.getEscrowsOwingRevenueShare(marketIndex)` returns the escrows still owed on a market — the work list to clear before delisting. `calculateRevenueShareSweepAvailable`, `calculateBankruptcyIfTrancheReservation` and `calculateBankruptcyIfFloor` (`math/market`) mirror the reservation the on-chain sweep applies, so a keeper can predict whether a call will pay before sending it.
+
+  CLI: new `velocity-admin fees settle-revenue-share <market> [escrowAuthority]`, with `--all` to scan a market, settle every escrow still owed, and forfeit any stragglers that cannot be paid.
+
+- [#425](https://github.com/velocity-exchange/velocity-v1/pull/425) [`193c357`](https://github.com/velocity-exchange/velocity-v1/commit/193c35720365eefac9bfe9fbf1b241cf809029ff) Thanks [@0xahzam](https://github.com/0xahzam)! - Slot-duration scaling for the Solana slot-time reduction (400 -> 350 -> 300 -> 250 -> 200ms feature gates). New `State` fields `slotDurationMs` (0 = unset = 400ms baseline), `pendingSlotDurationMs`, and `slotDurationEffectiveSlot`, plus the `updateStateSlotDurationMs` admin instruction. The instruction _stages_ the next value during the target IBRL gate's warmup: it accepts only the exact next value on the 400 -> 350 -> 300 -> 250 -> 200 schedule, reads the switch slot from the gate's feature account (passed as a remaining account; the account activation slot is exposed one epoch ahead), and records it as `pendingSlotDurationMs` + `slotDurationEffectiveSlot`. `State` then switches itself at that slot in lockstep with the chain, no second transaction. `updateStateSlotDurationMs`/`getUpdateStateSlotDurationMsIx` fill in the feature account automatically and take an optional explicit `admin` pubkey (default `warmAdmin` when set else `coldAdmin`). Resolve the live value with the new `activeSlotDurationFromState(state, currentSlot)` (the base-only `slotDurationFromState` still exists). Onchain duration arithmetic uses `Millis`; compact account fields use the new transparent `StoredSlotDuration<T, SLOT_MS>`, which preserves `T`'s wire width while recording the slot length assumed by that encoding (the IDL remains primitive-compatible). TypeScript exports branded `Millis`/`SlotDurationMs` with `slotDurationFromState`/`activeSlotDurationFromState`/`millisToSlots`/`millisToSlotsCeil`/`millisFromSlots`/`millisFromStoredUnits`/`divPeriods` (plus number-domain `msToSlotsNum`/`msToSlotsCeilNum`/`slotsToMsNum`), mirroring the onchain `math::time`. `getOracleValidity`, `isOracleValid`, `getSpotOracleValidity`, and `User.canMakeIdle` take an optional trailing `SlotDurationMs` (default the 400ms baseline); `getVammL2Generator` takes a required `slotDuration`; `calculateBidPrice`/`calculateAskPrice`/`calculateUpdatedAMMSpreadReserves`/`calculateTradeSlippage`/`calculateTradeAcquiredAmounts`/`calculateTargetPriceTrade`/`calculateBaseAssetValue` take an optional trailing `slotDuration` (default the 400ms baseline); `VelocityClient.getMMOracleDataForPerpMarket` takes an optional trailing `currentSlot` (pass a live slot for correct post-transition validity); `calculateMaxPctToLiquidate` takes its ramp length as `Millis` (decode the stored field with `millisFromStoredUnits`). New `getLiquidationFee` and `blockOperation` helpers mirror the program's duration-aware liquidation-fee and funding-block decisions. Force-close perp auctions now convert their legacy 32-second duration through the live slot length instead of hardcoding 80 slots. Renames: `IDLE_TIME_SLOTS` -> `IDLE_TIME` (Millis), `MM_ORACLE_MIN_SLOT_GAP` -> `MM_ORACLE_MIN_WRITE_GAP` (Millis), `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` -> `MM_ORACLE_MAX_SOURCE_AGE` (Millis). `SLOT_TIME_ESTIMATE_MS` is deprecated. Admin CLI gains `exchange set-slot-duration-ms` (validates an exact integer, prints current -> new, previews the target IBRL gate's activation/effective slots from the on-chain feature account, and dispatches under the correct authority for direct or `--multisig` use). New SDK exports `getIbrlFeatureGate(slotDurationMs)` and `IBRL_FEATURE_WARMUP_SLOTS` support that preview.
+
+  VLP constituent initialization and updates now reject oracle-staleness thresholds above 1,000,000 historical 400ms units, matching the defensive margin-oracle ceiling.
+
+- [#415](https://github.com/velocity-exchange/velocity-v1/pull/415) [`dbea9aa`](https://github.com/velocity-exchange/velocity-v1/commit/dbea9aae45f27f8800cc80480443974ce68c031d) Thanks [@0xahzam](https://github.com/0xahzam)! - Mirror the equity-breaker trip's dust-tolerant proof. New `User.getTripNetEquity(slot?)` returns the trip's net-equity upper bound and provability: positions with valid oracles are valued live, an invalid-oracle position is conceded its most favorable value instead of vetoing the proof (a liability or short base leg counts as zero at any size, an asset or long base leg within `EQUITY_FLOOR_TRIP_DUST_ALLOWANCE` at its own last twap counts as the allowance), and a larger invalid asset or long, or one whose twap is not positive, keeps the breach unprovable. New `User.provesEquityFloorBreach(slot?)` mirrors the onchain trip predicate exactly. `isBelowEquityFloor` is unchanged and documents that it compares the point value only.
+
+- [#370](https://github.com/velocity-exchange/velocity-v1/pull/370) [`64301e1`](https://github.com/velocity-exchange/velocity-v1/commit/64301e1f19257152bf3c51174f4549dfbbdc9009) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - Mirror the program's clamp on a perp auction's baseline start offset, and document that
+  `updatePerpBidAskTwap` / `getUpdatePerpBidAskTwapIx` only sample DLOB orders that have rested
+  on-chain for at least 24 slots (~10s).
+
+  `getTriggerAuctionStartPrice` (and so `getTriggerAuctionStartAndExecutionPrice`) now clamps the
+  baseline start offset to ±(oracle TWAP / tier divisor) before applying the start buffer, matching
+  `OrderParams::get_perp_baseline_start_price_offset`. The bound is 2% of the oracle TWAP on tier A, 5%
+  on B and C, 10% on Speculative, 20% on HighlySpeculative and Isolated. Predicted start prices change
+  only for markets whose mark TWAP sits outside that band. Two new exports expose the bound:
+  `getAuctionEndMinMaxDivisors` and `getPerpBaselineMaxPriceOffset`.
+
+  The program also now ignores quotes younger than 24 slots when estimating the market's bid/ask for
+  the mark TWAP (OtterSec #146: previously a caller could place a self-crossed pair of post-only
+  quotes, crank, and cancel in a single transaction, moving the TWAP that prices a third party's
+  forced-close auction band without ever being exposed to a fill). Keeper operators should know that
+  makers who cancel/replace faster than ~10s no longer contribute to the estimate, and that passing
+  only freshly-placed makers yields no DLOB estimate at all — the crank falls back to the AMM's quote.
+
+- [#387](https://github.com/velocity-exchange/velocity-v1/pull/387) [`6e34ce3`](https://github.com/velocity-exchange/velocity-v1/commit/6e34ce3a14292eb4f6ceecfc67cde2e15590bd35) Thanks [@0xahzam](https://github.com/0xahzam)! - Add the vAMM maker rebate feature flag. New onchain `FeatureBitFlags::VammMakerRebate` (bit 8, off by default): when enabled, the vAMM earns the maker rebate on fills it makes against a taker, carved off the taker-fee remainder before the protocol/IF/AMM split and folded into the AMM's fee provision. The taker's fee is unchanged; only the distribution shifts. SDK: `FeatureBitFlags.VAMM_MAKER_REBATE`, `AdminClient.updateFeatureBitFlagsVammMakerRebate` / `getUpdateFeatureBitFlagsVammMakerRebateIx`. Admin CLI: `velocity-admin feature-flags vamm-maker-rebate <true|false>`.
+
+- [#379](https://github.com/velocity-exchange/velocity-v1/pull/379) [`98e787d`](https://github.com/velocity-exchange/velocity-v1/commit/98e787decb6153bacf6ec7f25e867cdcf217b413) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - Bound the small-depositor exception to the spot withdraw circuit breaker at market level (OtterSec #150). Onchain, `check_withdraw_limits` now treats the per-account bypass predicate as an eligibility filter only: the whole eligible cohort shares one `withdrawGuardThreshold` of room below the breaker floor, so splitting a deposit across subaccounts no longer multiplies the bypass. `calculateWithdrawLimit` returns a new `exceptionWithdrawLimit` (that shared budget, always at least `withdrawLimit`), and `User.getWithdrawalLimit` caps the bypass by it. Previously `getWithdrawalLimit` raised the limit to the user's full deposit whenever `canBypassWithdrawLimits` returned true, which over-predicted a withdrawal that reverts onchain with `DailyWithdrawLimit`. `canBypassWithdrawLimits` is unchanged but is now documented as eligibility only, not a promise of a successful withdrawal. `AdminClient.initializeSpotMarket` and `updateWithdrawGuardThreshold` doc comments for `withdrawGuardThreshold` are corrected: it is the level _below_ which the withdraw guards stop binding, not a cap above which withdraws are blocked.
+
+### Patch Changes
+
+- [#364](https://github.com/velocity-exchange/velocity-v1/pull/364) [`74786b4`](https://github.com/velocity-exchange/velocity-v1/commit/74786b44c1009369c98d920b10d8f322a2214e26) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - `isUserBankrupt` now mirrors the program's two value-aware bankruptcy vetoes (OtterSec #151/#145), so a keeper stops reporting an account as solvent that the program will resolve. A spot deposit row vetoes only when it is worth at least one token — a fully socialized market floors `cumulativeDepositInterest` at 1 and leaves every wiped depositor a positive `scaledBalance` worth nothing, which cannot be seized and previously blocked admission forever. A positive perp `quoteAssetAmount` vetoes only while its market's PnL pool can pay part of it, plus a new net-quote gate that keeps a net solvent estate out of bankruptcy however unfundable its claims. The exported signature is unchanged, but the function now reads market state as well as the user account and throws if a market referenced by a nonzero position is not loaded on the client.
+
+- [#397](https://github.com/velocity-exchange/velocity-v1/pull/397) [`1004b31`](https://github.com/velocity-exchange/velocity-v1/commit/1004b31a45f0da9cf8faed18c5c82f2351730c75) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - `PerpMarketAccount.pendingBankruptcyClaims` mirrors the new per-market counter of unresolved
+  bankrupt quote debts. While it is above zero the program's fee sweep withholds the whole
+  `feeLedger.pendingIfFee`, so a permissionless sweep cannot drain the bankruptcy first-loss tranche
+  between the latch and the resolution. `PositionFlag.BankruptcyClaim` marks the position whose debt
+  is counted. `AdminClient.settleExpiredMarketPoolsToRevenuePool` now fails while that counter is above
+  zero, because the delist sweep bypasses the floor; resolve every bankruptcy in the market
+  first.
+
+  `bankruptcyIfFloorPct` changes meaning: `0` now selects `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT` (10 bps),
+  which is what a market written before the field existed reads, and the new
+  `BANKRUPTCY_IF_FLOOR_DISABLED` sentinel turns the standing floor off. Callers that passed `0` to
+  `AdminClient.updatePerpMarketBankruptcyIfFloorPct` to disable the floor must pass the sentinel
+  instead. The admin CLI accepts `perp-market set-bankruptcy-if-floor <market> disabled`.
+
+- [#422](https://github.com/velocity-exchange/velocity-v1/pull/422) [`48e9301`](https://github.com/velocity-exchange/velocity-v1/commit/48e930147f8110454ef83f13f27a8ce8b921791a) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - Stop `isUserBankrupt` vetoing on a positive perp claim or its market's PnL pool, mirroring the
+  program: the resolvers now recover what the pool can pay and forfeit the rest, so no pool state
+  blocks admission. `getResolveSpotBankruptcyIx` also passes the quote spot market writable, which that
+  instruction now requires.
+
+- [#363](https://github.com/velocity-exchange/velocity-v1/pull/363) [`94bb6ce`](https://github.com/velocity-exchange/velocity-v1/commit/94bb6ce94aad1981e4ee7910a85ab9ffbfe1d7c3) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - `delete_user` and `force_delete_user` now take the authority's `RevenueShareEscrow` PDA as a required
+  account, so each can settle that sub-account's builder revenue-share rows before the sub-account id is
+  retired forever (OtterSec #128). Previously those rows became unreachable — the builder's accrued fee was
+  stranded and the market's `pending_revenue_share` stayed inflated for the life of the market.
+
+  **SDK callers need no change**: `getUserDeletionIx` / `deleteUser` and `getForceDeleteUserIx` /
+  `forceDeleteUser` derive and pass the account for you. **Anyone building either instruction manually must
+  add it**, including when the authority has never created an escrow — the address is pinned by seeds on
+  chain, so an uninitialized account proves absence rather than signalling an omitted check.
+
+  `getForceDeleteUserIx` no longer appends the escrow to `remaining_accounts` when the account holds
+  builder orders. The named account replaces it, and the program never read the trailing copy.
+
+- [#354](https://github.com/velocity-exchange/velocity-v1/pull/354) [`06fac9e`](https://github.com/velocity-exchange/velocity-v1/commit/06fac9ed1584d51a6599dfb673977c0a4626c943) Thanks [@0xahzam](https://github.com/0xahzam)! - triggerOrder's userStats account is writable in the regenerated IDL; onchain, the equity breaker now arms lazily when reducing fills, strictly reducing swaps, or trigger cancels observe a floored subaccount below its raw floor
+
+- [#361](https://github.com/velocity-exchange/velocity-v1/pull/361) [`fccd4f6`](https://github.com/velocity-exchange/velocity-v1/commit/fccd4f63d7522eca86d79aa8ec93092af2b63b7f) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - New error code `SpotMarketInterestStaleForMargin` (6371). A value-releasing path now reverts when
+  a spot market carrying one of the account's **borrows** has not accrued interest recently enough,
+  because margin would otherwise value that debt through a stale `cumulative_borrow_interest` and
+  understate it (OtterSec #135 / #148). The gated paths are withdraw, transfer deposit, transfer
+  pools, swap, isolated-position withdraw, and a perp fill — for the taker and for every maker
+  alike, whichever direction the fill moves each position. A borrow whose un-booked interest is
+  still under one token unit is exempt, so a dust-sized market that cannot book its interval does
+  not lock the account out. Liquidations are never gated.
+
+  Each market gets its own staleness window from its rate ceiling. The bound holds the omission
+  under one basis point of the debt, so a market that may charge more interest must be cranked more
+  often. `MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN` (one hour) caps the window.
+
+  A perp fill also no longer credits a spot deposit whose oracle is invalid for margin
+  (OtterSec #143 / #144). The deposit contributes zero collateral, which is what the withdraw path
+  already does, so a fill that needed it now reverts with `InsufficientCollateral`. A fill by an
+  account holding a spot **borrow** whose oracle is invalid for margin reverts with `InvalidOracle`.
+
+  **Required change for anyone building fill or withdraw transactions.** No gated path cranks the
+  markets it does not itself touch, so a taker or maker holding a borrow in a quietly-traded spot
+  market becomes unfillable until that market is accrued. Recovery needs no privileges:
+  `update_spot_market_cumulative_interest` is permissionless and can ride in the same transaction.
+
+  New SDK helpers build exactly that:
+
+  - `MAX_SPOT_INTEREST_UNDERSTATEMENT_FOR_MARGIN` and `MAX_SPOT_INTEREST_STALENESS_FOR_MARGIN` —
+    the program's bounds.
+  - `maxSpotInterestStalenessForMargin(spotMarket)` — one market's window.
+  - `VelocityClient.getStaleSpotInterestMarketIndexes(userAccounts, now?)` — the markets that need
+    a crank for those accounts.
+  - `VelocityClient.getStaleSpotInterestCrankIxs(userAccounts, now?)` — one
+    `updateSpotMarketCumulativeInterest` instruction per such market. Prepend them to the fill,
+    withdraw, transfer, or swap.
+
+  Pass a fill's taker and every maker. The helpers do not model the sub-token exemption, so they
+  name a superset of what the program requires; cranking all of them always clears the check.
+
+- [#390](https://github.com/velocity-exchange/velocity-v1/pull/390) [`a6bffcb`](https://github.com/velocity-exchange/velocity-v1/commit/a6bffcb20a909f98552ef8f3adee8b5665e4257a) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - `addInsuranceFundStake`'s `amount` is now an upper bound rather than the staked amount. IF shares are
+  indivisible, so the program transfers only the portion of the request that prices to whole shares and
+  leaves the remainder — always less than one share price — in the token account.
+
+  This completes the fix for the zero-shares High finding. Rejecting only the zero-share case bounded
+  the loss instead of removing it: a request worth 1.5 shares minted 1 and donated the other half to
+  existing shareholders, and because the share price is set off a donation-inflatable vault balance, an
+  attacker could pick that fraction. Pricing the deposit exactly (shares floored, their cost ceiled, so
+  the fund never sells a share below price) caps the residual at one token unit and makes the donation
+  unprofitable.
+
+  `IFDepositMintsZeroShares` (6360) now means the request was below the price of a single share. Read
+  the staked amount from `InsuranceFundStakeRecord.amount` instead of assuming it equals the requested
+  amount; with `fromSubaccount`, any remainder lands in the wallet's token account rather than returning
+  to the sub-account.
+
+  `VaultClient.addToInsuranceFundStake` inherits the same rule with one difference: the vaults program
+  stakes the whole balance of the vault's IF token account, so a remainder from an earlier add is folded
+  in and the staked amount can exceed `amount`.
+
+- [#366](https://github.com/velocity-exchange/velocity-v1/pull/366) [`4227e3e`](https://github.com/velocity-exchange/velocity-v1/commit/4227e3e6fe3805cd0986f81ca6cc4a7513c0c460) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - `cancel_request_remove_insurance_fund_stake` now settles any already-due revenue into the insurance
+  fund vault before pricing the cancel's forfeiture (OtterSec #141). Previously a staker could order
+  their signed cancel ahead of an already-due signerless settle, make the restake price against a stale
+  vault, burn no shares, and keep revenue the anti-free-option rule assigns to the remaining stakers.
+
+  **ABI change — the account list is reordered, not just appended.** The instruction now takes `state`
+  (prepended), plus `spot_market_vault`, `velocity_signer` and `token_program`, matching
+  `request_remove_insurance_fund_stake`. Both SDKs pass them for you
+  (`VelocityClient.cancelRequestRemoveInsuranceFundStake`, `VaultClient.getCancelRequestRemoveInsuranceFundStakeIx`),
+  so SDK callers need no change; anyone building the instruction manually must rebuild the account list.
+  The `vaults` program's CPI wrapper gained the matching accounts.
+
+- [#342](https://github.com/velocity-exchange/velocity-v1/pull/342) [`4872b4f`](https://github.com/velocity-exchange/velocity-v1/commit/4872b4f49942c0f2ef830d10214ac26f46464c38) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - `calculateInterestAccumulated` now applies the program's conservation clamp: the returned
+  `depositInterest` is scaled down when the tokens it would credit to `depositBalance` exceed the
+  tokens `borrowInterest` charges `borrowBalance`. The two are equal by construction (the deposit rate
+  is the borrow rate scaled by utilization), but utilization is derived from rounded token amounts and
+  sampled once for the whole interval, so a long projection at a high rate previously overstated the
+  deposit side by whole tokens.
+
+  The doc comment also records that the program now **defers** an accrual interval whose configured
+  `insuranceFund.ifFeeFactor` / `protocolFeeFactor` carveout would convert to less than one token
+  (OtterSec #127), so a projection from `lastInterestTs` can legitimately span a long window on such a
+  market even though the accrual has been cranked repeatedly.
+
+- [#407](https://github.com/velocity-exchange/velocity-v1/pull/407) [`aaec40f`](https://github.com/velocity-exchange/velocity-v1/commit/aaec40fe81268dcc5922f8bbdb1301ea635a6dfd) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - `SpotMarketAccount.ifLastSettleVaultAmount` now holds the lowest insurance-fund vault balance
+  since the end of the last revenue settle, not an accounted shadow balance. The revenue-settle APR
+  cap is sized off `min(live IF vault, this)`, so a donation must stay in the fund for a whole
+  settle period to count. A `0` value means the market never settled revenue. The field name, type,
+  and account offset are unchanged.
+
+- [#395](https://github.com/velocity-exchange/velocity-v1/pull/395) [`b808fbb`](https://github.com/velocity-exchange/velocity-v1/commit/b808fbb90c4fea6bc597929203b25b6b9cf415d5) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - Carry sub-unit lending-interest carveouts instead of delaying the accrual interval.
+
+  `PoolBalance` gains `pendingInterestSplitDust` and `pendingInterestDust`. Both come from the
+  former padding, so the size of the struct and every other field offset are unchanged. A carveout
+  too small to pay in whole units now accumulates on the carveout pools and does not hold up the
+  interval. `cumulativeDepositInterest` and `lastInterestTs` therefore advance on every interval
+  that reaches a whole index unit on both sides. An interval under that floor stays on the clock
+  and is retried on the next crank. `calculateInterestAccumulated` documents the change. A
+  projection from `lastInterestTs` spans a window in which balances could have changed only by
+  that sub-unit remainder.
+
+- [#379](https://github.com/velocity-exchange/velocity-v1/pull/379) [`a6bd667`](https://github.com/velocity-exchange/velocity-v1/commit/a6bd667c28c3216ac213556d160aaea8e459191f) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - The isolated-position instructions now respect the per-market gates that the cross-margin paths already applied. `withdrawFromIsolatedPerpPosition` reverts with `MarketWithdrawPaused` (6149) unless the spot market status is `active`, `reduceOnly` or `settlement` and the `Withdraw` operation is unpaused, so a market closed for withdrawals is closed on every route. A market in `settlement` stays exitable, matching the cross-margin path, so no isolated collateral is trapped. `depositIntoIsolatedPerpPosition` reverts with `DailyDepositLimit` (6364) when the deposit takes the market above its daily deposit cap, so the cap can no longer be stepped around. JSDoc on both client methods records the new revert codes; use `calculateWithdrawLimit` and `checkDepositLimits` to test a market before building either instruction. The isolated-position instructions are behind the `isolated-position` program feature, which is not in the mainnet default feature set.
+
+- [#379](https://github.com/velocity-exchange/velocity-v1/pull/379) [`d3ef5e5`](https://github.com/velocity-exchange/velocity-v1/commit/d3ef5e5ed17e0ac51e8b8eb2fd039c381e2cff30) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - `withdrawFromIsolatedPerpPosition` now respects the spot market's withdraw circuit breaker onchain, at market level and without the small-depositor exception, so it can revert with `DailyWithdrawLimit` (6128) even when the isolated position holds the requested amount. `getWithdrawFromIsolatedPerpPositionIxsBundle` documents this; its clamp still bounds the request by the position's own balance only, so read `withdrawLimit` from `calculateWithdrawLimit` for the market's remaining room. The isolated-position instructions are behind the `isolated-position` program feature, which is not in the mainnet default feature set.
+
+- [#410](https://github.com/velocity-exchange/velocity-v1/pull/410) [`1a6af18`](https://github.com/velocity-exchange/velocity-v1/commit/1a6af1819be7822e56009e444d82c7a2fa84aed9) Thanks [@ChesterSim](https://github.com/ChesterSim)! - Pin the `bn.js` runtime dependency to an exact version (`5.2.3`) instead of the `^5.2.0` range. `5.2.3` is the version the lockfile already resolved, so the SDK's own behaviour is unchanged; the effect is on consumers, who now resolve exactly `5.2.3` rather than any `5.2.x`. This makes `bn.js` consistent with every other runtime dependency in the package, all of which were already exact. Consumers that pull `bn.js` transitively at a higher patch may end up with a second nested copy, in which case `BN` instances will not share a constructor across the SDK boundary — add an `overrides`/`resolutions` entry to force a single copy if that matters for your tree.
+
+- [#343](https://github.com/velocity-exchange/velocity-v1/pull/343) [`ae71278`](https://github.com/velocity-exchange/velocity-v1/commit/ae7127876ef98465ab53d611ee3447db73b224a2) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - `initializeRevenueShareEscrow` / `getInitializeRevenueShareEscrowIx`: the program now rejects
+  `numOrders == 0`, so a zero-capacity escrow reverts with `DefaultError` instead of being created in a
+  silently inert state where no builder or referral row can be held and all revenue share is suppressed
+  (OtterSec #114). `numOrders` must be at least 1; the SDK signature is unchanged.
+
+  Both doc comments also now record that `escrow.referrer` is snapshotted from `UserStats.referrer` once
+  at creation and never re-read, so the escrow should be created _after_ the authority's first
+  `initializeUser` — otherwise it permanently holds no referrer.
+
+- `initializeRevenueShareEscrow` / `getInitializeRevenueShareEscrowIx` now revert with `UserNotFound`
+  (6234 / `0x185A`) when the authority has not created a subaccount yet, so the escrow must be created
+  after `initializeUserAccount` rather than after `initializeUserStats` alone (OtterSec #129).
+
+  The escrow snapshots `escrow.referrer` from `UserStats.referrer` once at creation and never rewrites
+  it, while `UserStats.referrer` is only ever set by the authority's first `initialize_user`. Because
+  the escrow's `authority` does not sign (only the payer does), a third party could previously create
+  an escrow in the window between those two calls and freeze a defaulted referrer into it, permanently
+  suppressing that authority's referral rewards and referee discount with no way to repair the field.
+
+  No SDK API change: signatures are unchanged and the standard onboarding order (subaccount 0 first,
+  which every existing client already uses) is unaffected. Only a flow that creates the escrow before
+  the first subaccount needs reordering.
+
+- [#425](https://github.com/velocity-exchange/velocity-v1/pull/425) [`e8a894c`](https://github.com/velocity-exchange/velocity-v1/commit/e8a894c90edd03814330206b8f666591be72a774) Thanks [@0xahzam](https://github.com/0xahzam)! - Correct the slot-duration scaling in the off-chain mirrors and the staged-switch setter.
+
+  - `activeSlotDurationFromState` is now applied wherever the Rust SDK, the swift server, and
+    the account-list builder previously read the raw `State.slotDurationMs` base field. That
+    field lags a staged switch until the following gate is staged, so the mirrors sized oracle
+    staleness windows, the signed-order age limit, and the auction band check off the
+    pre-switch duration.
+  - `update_state_slot_duration_ms` commits an already-effective promotion when the gate
+    schedule is exhausted instead of reverting it, so the base field never stays a step behind
+    the live value. After the final 200ms switch, operators finalize the raw base field with one
+    additional `set-slot-duration-ms 200` transaction.
+  - Reference-price-offset smoothing accrues its budget per elapsed millisecond instead of per
+    whole 400ms period. Flooring to whole periods zeroed the budget for any crank gap under
+    400ms, which pinned the step to the minimum and made convergence slower the more often a
+    market was cranked.
+  - `math/time.ts` imports `BN` from the isomorphic entry point, keeping Anchor out of the
+    browser bundle.
+  - The SDK's oracle staleness allowance is a wall-clock duration rather than a fixed five
+    slots.
+  - Three velocity/jit-proxy instructions and three vaults instructions now take velocity's
+    `State` so their oracle windows match the rest of the protocol. Hand-built transactions
+    must add the account; the SDKs and CLI fill it in.
+  - `velocity-admin exchange set-slot-duration-ms` previews the live duration instead of the
+    base field.
+  - `pythLazerCranker`'s post ceiling is a fixed wall-clock interval again, so the post rate
+    does not double at each gate.
+
+- [#405](https://github.com/velocity-exchange/velocity-v1/pull/405) [`fabc75c`](https://github.com/velocity-exchange/velocity-v1/commit/fabc75ce6daeb7faf75909ceacaac8ffac257bad) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - **`force_delete_user` could never succeed.** The handler bound `State` with a shared `load()` at the
+  top and called `load_mut()` at the bottom. `Ref` implements `Drop`, so the first borrow lived to the
+  end of the scope and the shadowing `let` did not end it. Every call reverted with
+  `AccountBorrowFailed` — after the account's deposits had already moved to the keeper. Nothing
+  covered the success path, so the revert went unnoticed. The borrow is now released explicitly, and
+  `tests/velocity/equityFloorOracle.ts` covers the success path.
+
+  Every vault instruction that snapshots NAV now books the lending interest of **every** spot market
+  that prices the vault's equity, not just the denomination market.
+
+  `Vault::calculate_equity` delegates to velocity's `calculate_user_equity`, which converts every held
+  spot position through that position's own market's cumulative index. Refreshing one market left the
+  rest priced off whatever index the last unrelated crank had written. For a borrow the sign flips: a
+  stale `cumulative_borrow_interest` understates the liability, so NAV reads high and a withdrawer is
+  overpaid out of the vault rather than out of another depositor.
+
+  **New velocity instruction `refresh_spot_market_interest`.** It books up to sixteen spot markets in
+  one call. Accounts: `state`, plus the markets as writable accounts in remaining accounts. Argument:
+  `market_indexes: Vec<u16>`. Permissionless, like the single-market
+  `update_spot_market_cumulative_interest` crank beside it, which is unchanged and stays the crank
+  that keeps a spot market's oracle EMA fresh. SDK: `VelocityClient.refreshSpotMarketInterest` and
+  `refreshSpotMarketInterestIx`.
+
+  **The refresh passes no oracle.** `calculate_equity` gates the denomination oracle on
+  `is_oracle_valid_for_action(MarginCalc)`, whose `TooVolatile` arm measures the live price against
+  `last_oracle_price_twap`. The previous refresh advanced that TWAP toward the live price immediately
+  before the check read it.
+
+  **A delisted denomination market no longer blocks every vault instruction.** The refresh carries no
+  `spot_market_valid` guard, so the paths that move no tokens keep working: `request_withdraw`,
+  `cancel_withdraw_request`, `apply_rebase`, `apply_profit_share` and `liquidate`. Delisting is a
+  terminal state, so the previous behavior had no recovery at all. The token-moving paths
+  (`withdraw`, `force_withdraw`, `manager_withdraw`) still fail, because velocity's own withdraw
+  admits only `Active`, `ReduceOnly` and `Settlement` — that gate is unchanged and out of scope here.
+  Nothing about delisted markets changes: `deposit`, `force_delete_user` and `resolve_spot_bankruptcy`
+  already book interest on one.
+
+  **Isolated perp positions are covered too.** Such a position holds collateral that prices through
+  its perp market's quote spot market, which the position itself does not name. The market list picks
+  those up from the perp market accounts already present for the equity walk, and does that walk only
+  when the user holds an isolated position, so an ordinary vault pays nothing for it.
+
+  **ABI change — 20 instructions, accounts removed.** `velocity_spot_market` and `velocity_oracle` are
+  removed from all of them, and `velocity_spot_market_vault` from the thirteen that do not need it for
+  a deposit or withdraw CPI of their own. Each keeps `velocity_state` and `velocity_program`.
+  `manager_update_fees` joins the list, because installing a matured fee update snapshots NAV.
+  Affected: `deposit`, `manager_deposit`, `withdraw`, `manager_withdraw`, `protocol_withdraw`,
+  `force_withdraw`, `request_withdraw`, `manager_request_withdraw`, `protocol_request_withdraw`,
+  `cancel_withdraw_request`, `manager_cancel_withdraw_request`, `protocol_cancel_withdraw_request`,
+  `apply_rebase`, `apply_rebase_tokenized_depositor`, `apply_profit_share`, `tokenize_shares`,
+  `redeem_tokens`, `transfer_vault_depositor_shares`, `liquidate`, `manager_update_fees`.
+
+  `VaultClient` builds every affected instruction, so SDK callers need no change. Anyone hand-rolling
+  account lists must drop the removed accounts and must mark every spot market in the remaining
+  accounts writable — velocity fails the load with `SpotMarketWrongMutability` when it is asked to
+  refresh a market it was handed read-only.
+
 ## 0.13.0
 
 ### Minor Changes

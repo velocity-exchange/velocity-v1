@@ -773,7 +773,7 @@ fn invariant_solvency(fixture: &mut Fixture) {
         };
         let mut backed: i128 = net_user_tokens;
         backed += pool_tokens(spot_market.revenue_pool.scaled_balance);
-        backed += spot_market.insurance_fund_revenue_receivable as i128;
+        backed += pool_tokens(spot_market.insurance_fund_revenue_receivable.scaled_balance);
         if let Some(perp_market) = fixture.read_perp_market() {
             backed += pool_tokens(perp_market.pnl_pool.scaled_balance);
             backed += pool_tokens(perp_market.amm.fee_pool.scaled_balance);

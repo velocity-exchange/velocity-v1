@@ -966,7 +966,7 @@ impl Fixture {
         };
         let mut backed: i128 = net_user_tokens;
         backed += pool_tokens(spot_market.revenue_pool.scaled_balance);
-        backed += spot_market.insurance_fund_revenue_receivable as i128;
+        backed += pool_tokens(spot_market.insurance_fund_revenue_receivable.scaled_balance);
         if let Some(pm) = self.read_perp_market() {
             backed += pool_tokens(pm.pnl_pool.scaled_balance);
             backed += pool_tokens(pm.amm.fee_pool.scaled_balance);

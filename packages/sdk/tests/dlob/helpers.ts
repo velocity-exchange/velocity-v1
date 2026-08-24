@@ -334,8 +334,7 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		insuranceFundRevenueReceivable: {
 			scaledBalance: new BN(0),
 			marketIndex: 0,
-			padding: [0, 0],
-			pendingInterestSplitDust: new BN(0),
+			pendingInterestSplitDust: 0,
 			pendingInterestDust: new BN(0),
 		},
 		totalSpotFee: new BN(0),
@@ -439,8 +438,7 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		insuranceFundRevenueReceivable: {
 			scaledBalance: new BN(0),
 			marketIndex: 0,
-			padding: [0, 0],
-			pendingInterestSplitDust: new BN(0),
+			pendingInterestSplitDust: 0,
 			pendingInterestDust: new BN(0),
 		},
 		totalSpotFee: new BN(0),
@@ -546,8 +544,7 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		insuranceFundRevenueReceivable: {
 			scaledBalance: new BN(0),
 			marketIndex: 0,
-			padding: [0, 0],
-			pendingInterestSplitDust: new BN(0),
+			pendingInterestSplitDust: 0,
 			pendingInterestDust: new BN(0),
 		},
 		totalSpotFee: new BN(0),

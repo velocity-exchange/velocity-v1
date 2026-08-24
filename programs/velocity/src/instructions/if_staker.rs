@@ -428,6 +428,11 @@ pub fn handle_remove_insurance_fund_stake<'c: 'info, 'info>(
         // reload the vault balances so they're up-to-date
         ctx.accounts.spot_market_vault.reload()?;
         ctx.accounts.insurance_fund_vault.reload()?;
+
+        math::spot_withdraw::validate_spot_market_vault_amount(
+            spot_market,
+            ctx.accounts.spot_market_vault.amount,
+        )?;
     }
 
     let amount = controller::insurance::remove_insurance_fund_stake(

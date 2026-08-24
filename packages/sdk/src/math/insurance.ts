@@ -8,7 +8,7 @@ import { SpotBalanceType, SpotMarketAccount } from '../types';
  * sits in the spot vault. The claim is a scaled balance, so its token value
  * grows with deposit interest for as long as the transfer cannot complete.
  *
- * Mirror of the program's `get_insurance_fund_revenue_receivable_token_amount`.
+ * Mirror of the program's `SpotMarket::get_insurance_fund_revenue_receivable`.
  *
  * @param {SpotMarketAccount} spotMarket - The market that holds the receivable
  * @return {BN} Token value of the receivable, market's token decimals

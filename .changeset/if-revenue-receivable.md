@@ -22,6 +22,7 @@ balance. Pricing off the vault balance alone understates the fund.
 and borrow limits, so it no longer reports room the program refuses.
 
 `removeInsuranceFundStake` takes the spot market vault account and settles
-allocated revenue before it prices the payout. An unstake pays the cash share
-of its claim while part of the fund is unsettled, and leaves the rest of the
-request open, so one call no longer always closes a request.
+allocated revenue before it prices the payout, so the receivable is normally
+empty by then. While a pause holds that revenue in the spot vault, an unstake
+whose frozen value exceeds the cash on hand reverts with `InvalidIFUnstakeSize`
+rather than paying part of it.

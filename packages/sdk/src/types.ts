@@ -1485,6 +1485,7 @@ export type SpotMarketAccount = {
 	maxDepositBpsPerDay: number;
 };
 
+/** A scaled token balance inside a market's internal pools (pnl pool, protocol fee pool, revenue pool, AMM fee pool). Multiply `scaledBalance` (SPOT_BALANCE_PRECISION, 1e9) by the referenced spot market's `cumulativeDepositInterest`/`cumulativeBorrowInterest` to get the token amount. */
 export type PoolBalance = {
 	scaledBalance: BN;
 	/** the spot market this balance's token amount is denominated in */

@@ -4376,22 +4376,6 @@ pub fn resolve_perp_bankruptcy(
             .safe_sub(perp_market.insurance_claim.quote_settled_insurance)?
             .cast::<u128>()?;
 
-        let available_if_capital = {
-            let quote_spot_market = spot_market_map.get_ref(&QUOTE_SPOT_MARKET_INDEX)?;
-            quote_spot_market
-                .get_insurance_fund_revenue_receivable()?
-                .safe_add(insurance_fund_vault_balance.saturating_sub(1).cast()?)?
-        };
-        let if_payment = loss_after_pending
-            .unsigned_abs()
-            .min(available_if_capital)
-            .min(max_insurance_withdraw);
-
-        perp_market.insurance_claim.quote_settled_insurance = perp_market
-            .insurance_claim
-            .quote_settled_insurance
-            .safe_add(if_payment.cast()?)?;
-
         // move if payment to pnl pool
         let spot_market = &mut spot_market_map.get_ref_mut(&QUOTE_SPOT_MARKET_INDEX)?;
         let oracle_price_data = oracle_map.get_price_data(&spot_market.oracle_id())?;
@@ -4401,6 +4385,22 @@ pub fn resolve_perp_bankruptcy(
             now,
             funding_paused,
         )?;
+
+        // The receivable is a scaled claim, so read its token value after the
+        // interest accrual above. `resolve_perp_pnl_deficit` reads it in the
+        // same order, and two paths that value one claim must agree.
+        let available_if_capital = spot_market
+            .get_insurance_fund_revenue_receivable()?
+            .safe_add(insurance_fund_vault_balance.saturating_sub(1).cast()?)?;
+        let if_payment = loss_after_pending
+            .unsigned_abs()
+            .min(available_if_capital)
+            .min(max_insurance_withdraw);
+
+        perp_market.insurance_claim.quote_settled_insurance = perp_market
+            .insurance_claim
+            .quote_settled_insurance
+            .safe_add(if_payment.cast()?)?;
 
         let receivable_payment = transfer_insurance_fund_revenue_receivable_to_pool(
             spot_market,

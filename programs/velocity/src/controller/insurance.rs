@@ -18,7 +18,6 @@ use {
             insurance::{
                 calculate_if_shares_lost, calculate_rebase_info,
                 deposit_amount_and_shares_for_if_stake, if_shares_to_vault_amount,
-                vault_amount_to_if_shares,
             },
             safe_math::SafeMath,
             spot_balance::{get_spot_balance, get_token_amount},
@@ -517,74 +516,45 @@ pub fn remove_insurance_fund_stake(
     let _if_shares_lost =
         calculate_if_shares_lost(insurance_fund_stake, spot_market, insurance_fund_nav)?;
 
-    let requested_amount = amount.min(insurance_fund_stake.last_withdraw_request_value);
+    let withdraw_amount = amount.min(insurance_fund_stake.last_withdraw_request_value);
 
-    // Part of the fund may be revenue that is allocated but still sits in the
-    // spot vault, and only cash can leave. Pay the cash share of the claim and
-    // leave the rest of the request open.
+    // Only cash can leave the fund. Part of it may be revenue that is allocated
+    // to the fund but still held in the spot vault, and that part cannot pay an
+    // unstake.
     //
-    // A full cash payout would let whoever leaves first turn an illiquid claim
-    // into cash and leave the illiquid part to the stakers who stay. That is not
-    // a rounding matter: every loss draw spends the allocated revenue before it
-    // touches cash, so the value the stayers lose is the part the leaver walked
-    // away from. Paying the cash share keeps each staker on the same mix of cash
-    // and allocated revenue that the fund itself holds.
-    let (withdraw_amount, shares_withdrawn) = if insurance_fund_nav > insurance_vault_amount {
-        // Keep one token in the vault so the account stays initialized.
-        let cash_available = insurance_vault_amount.saturating_sub(1);
-        let cash_amount = requested_amount
-            .cast::<u128>()?
-            .safe_mul(cash_available.cast()?)?
-            .safe_div(insurance_fund_nav.cast()?)?
-            .cast::<u64>()?;
-
-        let shares_withdrawn = vault_amount_to_if_shares(
-            cash_amount,
-            spot_market.insurance_fund.total_shares,
-            insurance_fund_nav,
-        )?
-        .min(n_shares);
-
-        (cash_amount, shares_withdrawn)
-    } else {
-        (requested_amount, n_shares)
-    };
-
+    // Refuse rather than pay what cash there is. A partial payout would let a
+    // staker take cash and leave the allocated revenue to the stakers who stay,
+    // and every loss draw spends that revenue before it touches cash. Paying
+    // the cash share of the claim does not fix this: the caller repeats the
+    // call, each time taking a share of a smaller pot, until the cash is gone.
+    //
+    // The instruction settles allocated revenue into the vault before it prices
+    // the payout, so this can only fire while a pause blocks that transfer. The
+    // staker unstakes once the pause lifts.
     validate!(
         withdraw_amount == 0 || withdraw_amount < insurance_vault_amount,
         ErrorCode::InvalidIFUnstakeSize,
         "insurance fund vault has insufficient cash for withdrawal"
     )?;
 
-    insurance_fund_stake.decrease_if_shares(shares_withdrawn, spot_market)?;
+    insurance_fund_stake.decrease_if_shares(n_shares, spot_market)?;
 
     insurance_fund_stake.cost_basis = insurance_fund_stake
         .cost_basis
         .safe_sub(withdraw_amount.cast()?)?;
 
-    spot_market.insurance_fund.total_shares = spot_market
-        .insurance_fund
-        .total_shares
-        .safe_sub(shares_withdrawn)?;
+    spot_market.insurance_fund.total_shares =
+        spot_market.insurance_fund.total_shares.safe_sub(n_shares)?;
 
-    spot_market.insurance_fund.user_shares = spot_market
-        .insurance_fund
-        .user_shares
-        .safe_sub(shares_withdrawn)?;
+    spot_market.insurance_fund.user_shares =
+        spot_market.insurance_fund.user_shares.safe_sub(n_shares)?;
 
     record_insurance_fund_outflow(spot_market, insurance_vault_amount, withdraw_amount)?;
 
-    // A request that could not be paid in full stays open at its remaining size,
-    // so the staker completes it once the allocated revenue reaches the vault
-    // and does not serve the escrow period a second time.
-    insurance_fund_stake.last_withdraw_request_shares = n_shares.safe_sub(shares_withdrawn)?;
-    insurance_fund_stake.last_withdraw_request_value = insurance_fund_stake
-        .last_withdraw_request_value
-        .safe_sub(withdraw_amount)?;
-    if insurance_fund_stake.last_withdraw_request_shares == 0 {
-        insurance_fund_stake.last_withdraw_request_value = 0;
-        insurance_fund_stake.last_withdraw_request_ts = now;
-    }
+    // reset insurance_fund_stake withdraw request info
+    insurance_fund_stake.last_withdraw_request_shares = 0;
+    insurance_fund_stake.last_withdraw_request_value = 0;
+    insurance_fund_stake.last_withdraw_request_ts = now;
 
     let if_shares_after = insurance_fund_stake.checked_if_shares(spot_market)?;
 

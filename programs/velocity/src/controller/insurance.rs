@@ -48,18 +48,11 @@ use {
 #[cfg(test)]
 mod tests;
 
-/// Lower the revenue-settle cap base to the insurance-fund vault balance that an
-/// outflow leaves behind.
+/// Value of the insurance fund: the cash in its vault plus the revenue that is
+/// allocated to it but still held in the spot vault.
 ///
-/// `if_last_settle_vault_amount` is the lowest balance the vault held since the last
-/// revenue settle. Every path that moves tokens out of the vault must call this.
-/// Without it, a dip inside a period is invisible at the next settle: a draw takes the
-/// vault to 100, a donation puts it back to 1000, and `min(live, snapshot)` reads 1000
-/// again. The donation then lifts the cap without staying in the fund for a period.
-///
-/// `insurance_vault_amount` is the balance before the outflow. The subtraction
-/// saturates rather than errors. A cap base of `0` only settles less revenue for the
-/// rest of the period. An error would revert a bankruptcy or deficit resolution.
+/// Shares are priced off this rather than the vault balance alone, so a transfer
+/// that a withdraw pause holds back does not move the share price.
 pub fn get_insurance_fund_nav(
     insurance_vault_amount: u64,
     spot_market: &SpotMarket,
@@ -68,6 +61,19 @@ pub fn get_insurance_fund_nav(
         .safe_add(get_insurance_fund_revenue_receivable_token_amount(spot_market)?.cast()?)
 }
 
+/// Lower the revenue-settle cap base to the fund value that an outflow leaves
+/// behind.
+///
+/// `if_last_settle_vault_amount` is the lowest value the fund held since the last
+/// revenue settle. Every path that moves value out of the fund must call this.
+/// Without it, a dip inside a period is invisible at the next settle: a draw takes
+/// the fund to 100, a donation puts it back to 1000, and `min(live, snapshot)` reads
+/// 1000 again. The donation then lifts the cap without staying in the fund for a
+/// period.
+///
+/// `insurance_vault_amount` is the vault balance before the outflow. The subtraction
+/// saturates rather than errors. A cap base of `0` only settles less revenue for the
+/// rest of the period. An error would revert a bankruptcy or deficit resolution.
 pub fn record_insurance_fund_outflow(
     spot_market: &mut SpotMarket,
     insurance_vault_amount: u64,

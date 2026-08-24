@@ -102,8 +102,14 @@ content and that minimum is intentional **reserve space** for future fields.
 |--------|--------------------|-----------------------|--------------------|-|
 | `PoolBalance` | 18 B | 32 B | 32 B | **0 B** — exact minimum, no room |
 | `PerpMarket`  | 1202 B | 1232 B | 1216 B | **16 B** — 1 u128 or 2 u64 |
-| `SpotMarket`  | 744 B  | 800 B  | 752 B  | **48 B** — 3 u128 or 6 u64 |
+| `SpotMarket`  | 775 B  | 800 B  | 784 B  | **16 B** — 1 u128 or 2 u64 |
 | `LPPool`      | 314 B  | 496 B  | 320 B  | **176 B** |
+
+`SpotMarket`'s reserve is the 16 bytes of `padding_former_spot_fee_pool` at offset 416. That
+offset is a multiple of 16, so the block takes a u128 without moving anything. The struct held
+no reserve at all until the retired `spot_fee_pool` was reclaimed: a dead field still counts as
+content, so retiring one into named padding is what turns it back into reserve. Recount this
+row when a field is added or retired — a stale figure reads as room that is not there.
 
 ### "Pad up" vs "pad down" explained
 
@@ -140,6 +146,16 @@ old offsets.
 1. **`(SIZE - 8) % 16 == 0`** — total struct content is a multiple of 16.
 2. **No u128/i128 field appears after a `PoolBalance` field** — re-introducing that ordering
    re-introduces an implicit 8-byte alignment gap on x86_64 (see above).
+
+   One field breaks this rule on purpose:
+   `SpotMarket.insurance_fund_revenue_receivable_scaled` follows `revenue_pool`. It sits in the
+   slot the retired `spot_fee_pool` left behind, and that slot cannot move without changing the
+   offset of every field after it. The gap the rule prevents cannot open there, because
+   `PoolBalance` is 32 bytes on both targets (`const_assert_eq!(size_of::<PoolBalance>(), 32)`)
+   so `revenue_pool` ends at 416 on both, and the field starts at 432, a multiple of 16. Both
+   facts are pinned by `const _: () = assert!(offset_of!(...))`. Do not read this as permission
+   to add another such field: it is safe only because those two asserts hold, and a new field
+   without them has neither guarantee.
 3. **All u128/i128 fields start at an offset that is a multiple of 16** — otherwise x86_64
    inserts an internal alignment gap that SBF does not, causing `sizeof` to diverge again.
 

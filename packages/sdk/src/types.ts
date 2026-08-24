@@ -1372,14 +1372,15 @@ export type SpotMarketAccount = {
 	 * refills a mid-period dip can lift it (see `settle_revenue_to_insurance_fund`);
 	 * `0` = the market never settled revenue */
 	ifLastSettleVaultAmount: BN;
-	/** Revenue allocated to the insurance fund but still held inside the spot vault, which
-	 * happens while a withdraw pause holds back the transfer. A third claim inside
-	 * `depositBalance` beside `revenuePool` and `protocolFeePool`, so it is held the same way:
+	/** Free bytes from the retired spot fee pool, reserve for a future field */
+	paddingFormerSpotFeePool: number[];
+	/** SPOT_BALANCE_PRECISION; revenue allocated to the insurance fund but still held inside the
+	 * spot vault, which happens while a withdraw pause holds back the transfer. A third claim
+	 * inside `depositBalance` beside `revenuePool` and `protocolFeePool`, and held the same way:
 	 * a scaled balance that earns deposit interest until the transfer completes, which the fund
-	 * then collects. Only `scaledBalance` is used; the pool occupies the retired spot fee pool
-	 * slot, so `marketIndex` reads 0 on markets that predate the field. Read the token value with
+	 * then collects. Read the token value with
 	 * `getInsuranceFundRevenueReceivableTokenAmount` */
-	insuranceFundRevenueReceivable: PoolBalance;
+	insuranceFundRevenueReceivableScaled: BN;
 
 	/** token mint decimals; token-mint precision throughout this account is 10^decimals */
 	decimals: number;

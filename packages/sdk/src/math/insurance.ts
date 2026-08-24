@@ -17,7 +17,7 @@ export function getInsuranceFundRevenueReceivableTokenAmount(
 	spotMarket: SpotMarketAccount
 ): BN {
 	return getTokenAmount(
-		spotMarket.insuranceFundRevenueReceivable.scaledBalance,
+		spotMarket.insuranceFundRevenueReceivableScaled,
 		spotMarket,
 		SpotBalanceType.DEPOSIT
 	);

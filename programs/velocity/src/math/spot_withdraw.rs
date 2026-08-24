@@ -666,10 +666,7 @@ mod tests {
             cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
             deposit_balance: scaled(1_000 * QUOTE_PRECISION),
             borrow_balance: scaled(100 * QUOTE_PRECISION),
-            insurance_fund_revenue_receivable: PoolBalance {
-                scaled_balance: scaled(200 * QUOTE_PRECISION),
-                ..PoolBalance::default()
-            },
+            insurance_fund_revenue_receivable_scaled: scaled(200 * QUOTE_PRECISION),
             ..SpotMarket::default()
         };
 
@@ -714,10 +711,7 @@ mod tests {
             deposit_balance: scaled(1_000 * QUOTE_PRECISION),
             borrow_balance: scaled(900 * QUOTE_PRECISION),
             withdraw_guard_threshold: (500 * QUOTE_PRECISION) as u64,
-            insurance_fund_revenue_receivable: PoolBalance {
-                scaled_balance: 0,
-                ..PoolBalance::default()
-            },
+            insurance_fund_revenue_receivable_scaled: 0,
             ..SpotMarket::default()
         };
 
@@ -745,10 +739,7 @@ mod tests {
             deposit_balance: scaled(1_000 * QUOTE_PRECISION),
             borrow_balance: scaled(700 * QUOTE_PRECISION),
             withdraw_guard_threshold: (500 * QUOTE_PRECISION) as u64,
-            insurance_fund_revenue_receivable: PoolBalance {
-                scaled_balance: scaled(250 * QUOTE_PRECISION),
-                ..PoolBalance::default()
-            },
+            insurance_fund_revenue_receivable_scaled: scaled(250 * QUOTE_PRECISION),
             ..SpotMarket::default()
         };
 

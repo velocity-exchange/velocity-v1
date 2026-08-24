@@ -11223,10 +11223,7 @@ pub mod resolve_perp_bankruptcy {
             cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
             decimals: 6,
             initial_asset_weight: SPOT_WEIGHT_PRECISION,
-            insurance_fund_revenue_receivable: PoolBalance {
-                scaled_balance: 10 * SPOT_BALANCE_PRECISION,
-                ..PoolBalance::default()
-            },
+            insurance_fund_revenue_receivable_scaled: 10 * SPOT_BALANCE_PRECISION,
             ..SpotMarket::default()
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
@@ -11328,8 +11325,7 @@ pub mod resolve_perp_bankruptcy {
             spot_market_map
                 .get_ref(&0)
                 .unwrap()
-                .insurance_fund_revenue_receivable
-                .scaled_balance,
+                .insurance_fund_revenue_receivable_scaled,
             0
         );
         assert_eq!(expected_user, user);
@@ -13755,10 +13751,7 @@ pub mod resolve_spot_bankruptcy {
                 scaled_balance: 30 * SPOT_BALANCE_PRECISION,
                 ..PoolBalance::default()
             },
-            insurance_fund_revenue_receivable: PoolBalance {
-                scaled_balance: 20 * SPOT_BALANCE_PRECISION,
-                ..PoolBalance::default()
-            },
+            insurance_fund_revenue_receivable_scaled: 20 * SPOT_BALANCE_PRECISION,
             historical_oracle_data: HistoricalOracleData::default_price(QUOTE_PRECISION_I64),
             ..SpotMarket::default()
         };
@@ -13813,9 +13806,7 @@ pub mod resolve_spot_bankruptcy {
         expected_spot_market.revenue_pool.scaled_balance = 0;
         // The receivable holds a scaled claim, so the tranche removes exactly the
         // claim it spends and leaves no conversion dust behind.
-        expected_spot_market
-            .insurance_fund_revenue_receivable
-            .scaled_balance = 0;
+        expected_spot_market.insurance_fund_revenue_receivable_scaled = 0;
         expected_spot_market.deposit_balance = 1000 * SPOT_BALANCE_PRECISION;
         expected_spot_market.cumulative_deposit_interest =
             99 * SPOT_CUMULATIVE_INTEREST_PRECISION / 100;

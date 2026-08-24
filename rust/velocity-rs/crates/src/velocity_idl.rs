@@ -5054,7 +5054,9 @@ pub mod types {
         pub total_social_loss: u128,
         pub total_quote_social_loss: u128,
         pub revenue_pool: PoolBalance,
-        pub insurance_fund_revenue_receivable: PoolBalance,
+        #[serde(skip)]
+        pub padding_former_spot_fee_pool: Padding<16>,
+        pub insurance_fund_revenue_receivable_scaled: u128,
         pub historical_oracle_data: HistoricalOracleData,
         pub historical_index_data: HistoricalIndexData,
         pub withdraw_guard_threshold: u64,
@@ -6430,7 +6432,9 @@ pub mod accounts {
         pub total_social_loss: u128,
         pub total_quote_social_loss: u128,
         pub revenue_pool: PoolBalance,
-        pub insurance_fund_revenue_receivable: PoolBalance,
+        #[serde(skip)]
+        pub padding_former_spot_fee_pool: Padding<16>,
+        pub insurance_fund_revenue_receivable_scaled: u128,
         pub historical_oracle_data: HistoricalOracleData,
         pub historical_index_data: HistoricalIndexData,
         pub withdraw_guard_threshold: u64,

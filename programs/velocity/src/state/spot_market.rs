@@ -84,22 +84,31 @@ pub struct SpotMarket {
     /// Revenue the protocol has collected in this markets token
     /// e.g. for SOL-PERP, funds can be settled in usdc and will flow into the USDC revenue pool
     pub revenue_pool: PoolBalance, // in base asset
+    /// Free bytes from the retired spot fee pool. The pool was 32 bytes and the
+    /// receivable below takes 16 of them, so these 16 are reserve for the next
+    /// field. They start at a multiple of 16, so they hold one u128 or two u64.
+    /// The whole slot was always zero on chain, so nothing has to be migrated.
+    pub padding_former_spot_fee_pool: [u8; 16],
     /// Revenue allocated to the insurance fund that still sits in the spot
     /// vault, which happens while a withdraw pause holds back the transfer.
     ///
     /// This is a third claim inside `deposit_balance`, beside `revenue_pool` and
-    /// `protocol_fee_pool`, so it is held the same way they are. A scaled
-    /// balance earns deposit interest for as long as the tokens stay here and
+    /// `protocol_fee_pool`, and it is held the same way they are. A scaled
+    /// balance earns deposit interest for as long as the tokens stay here, and
     /// the fund collects that interest when the transfer completes. A token
     /// amount could not do this: the claim grows with
     /// `cumulative_deposit_interest`, and a fixed integer would leave the
     /// difference inside `deposit_balance` owned by nobody.
     ///
-    /// Only `scaled_balance` is used. The pool occupies the retired spot fee
-    /// pool slot, whose bytes were always zero, so `market_index` reads 0 on
-    /// markets that predate the field and nothing may depend on it. Read the
-    /// token value with `SpotMarket::get_insurance_fund_revenue_receivable`.
-    pub insurance_fund_revenue_receivable: PoolBalance,
+    /// This is a u128 that follows a `PoolBalance`, which the field ordering
+    /// rule in `docs/alignment-and-native-offsets.md` otherwise forbids. It is
+    /// safe here for the two reasons that rule exists to guarantee, and both are
+    /// pinned by asserts: `PoolBalance` is 32 bytes on the host and on SBF, so
+    /// `revenue_pool` ends at 416 on both, and this field starts at 432, which
+    /// is a multiple of 16. No architecture specific gap can open. Do not copy
+    /// the pattern to a field whose offset is not asserted.
+    /// precision: SPOT_BALANCE_PRECISION
+    pub insurance_fund_revenue_receivable_scaled: u128,
     pub historical_oracle_data: HistoricalOracleData,
     pub historical_index_data: HistoricalIndexData,
     /// no withdraw limits/guards when deposits below this threshold
@@ -287,7 +296,9 @@ pub struct SpotMarket {
 // fires after a struct change, re-size the explicit padding fields — never
 // let the compiler insert implicit padding.
 const _: () = assert!(std::mem::size_of::<SpotMarket>() == 800);
-const _: () = assert!(std::mem::offset_of!(SpotMarket, insurance_fund_revenue_receivable) == 416);
+const _: () = assert!(std::mem::offset_of!(SpotMarket, padding_former_spot_fee_pool) == 416);
+const _: () =
+    assert!(std::mem::offset_of!(SpotMarket, insurance_fund_revenue_receivable_scaled) == 432);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, withdraw_circuit_breaker_bps) == 740);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, max_deposit_bps_per_day) == 742);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, deposit_guard_threshold) == 744);
@@ -313,7 +324,8 @@ impl Default for SpotMarket {
             total_social_loss: 0,
             total_quote_social_loss: 0,
             revenue_pool: PoolBalance::default(),
-            insurance_fund_revenue_receivable: PoolBalance::default(),
+            padding_former_spot_fee_pool: [0; 16],
+            insurance_fund_revenue_receivable_scaled: 0,
             historical_oracle_data: HistoricalOracleData::default(),
             historical_index_data: HistoricalIndexData::default(),
             withdraw_guard_threshold: 0,
@@ -562,7 +574,7 @@ impl SpotMarket {
     /// complete.
     pub fn get_insurance_fund_revenue_receivable(&self) -> VelocityResult<u128> {
         get_token_amount(
-            self.insurance_fund_revenue_receivable.scaled_balance,
+            self.insurance_fund_revenue_receivable_scaled,
             self,
             &SpotBalanceType::Deposit,
         )

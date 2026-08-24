@@ -639,7 +639,7 @@ pub fn attempt_settle_revenue_to_insurance_fund<'info>(
 
     let transfer_paused =
         state.withdraw_paused()? || spot_market.is_operation_paused(SpotOperation::Withdraw);
-    let has_receivable = spot_market.insurance_fund_revenue_receivable.scaled_balance > 0;
+    let has_receivable = spot_market.insurance_fund_revenue_receivable_scaled > 0;
 
     if !valid_revenue_settle_time && !has_receivable {
         return Ok(());
@@ -797,9 +797,8 @@ fn book_revenue_to_insurance_fund(
             .revenue_pool
             .scaled_balance
             .safe_sub(balance_delta)?;
-        spot_market.insurance_fund_revenue_receivable.scaled_balance = spot_market
-            .insurance_fund_revenue_receivable
-            .scaled_balance
+        spot_market.insurance_fund_revenue_receivable_scaled = spot_market
+            .insurance_fund_revenue_receivable_scaled
             .safe_add(balance_delta)?;
 
         insurance_fund_token_amount =
@@ -813,7 +812,7 @@ fn book_revenue_to_insurance_fund(
     if check_invariants && !cap_base_was_unset {
         validate!(
             insurance_fund_token_amount != 0
-                || spot_market.insurance_fund_revenue_receivable.scaled_balance > 0,
+                || spot_market.insurance_fund_revenue_receivable_scaled > 0,
             ErrorCode::NoRevenueToSettleToIF,
             "no amount to settle to insurance fund"
         )?;
@@ -865,7 +864,7 @@ pub fn settle_insurance_fund_revenue_receivable(
 ) -> VelocityResult<u64> {
     release_insurance_fund_revenue_receivable(
         spot_market,
-        spot_market.insurance_fund_revenue_receivable.scaled_balance,
+        spot_market.insurance_fund_revenue_receivable_scaled,
     )?
     .cast()
 }
@@ -883,9 +882,8 @@ fn release_insurance_fund_revenue_receivable(
     let amount = get_token_amount(balance_delta, spot_market, &SpotBalanceType::Deposit)?;
 
     spot_market.deposit_balance = spot_market.deposit_balance.safe_sub(balance_delta)?;
-    spot_market.insurance_fund_revenue_receivable.scaled_balance = spot_market
-        .insurance_fund_revenue_receivable
-        .scaled_balance
+    spot_market.insurance_fund_revenue_receivable_scaled = spot_market
+        .insurance_fund_revenue_receivable_scaled
         .safe_sub(balance_delta)?;
 
     Ok(amount)
@@ -906,7 +904,7 @@ pub fn consume_insurance_fund_revenue_receivable(
     // part the cap pays for, rounded down so the tokens released stay at or
     // below `max_amount`.
     let balance_delta = if spot_market.get_insurance_fund_revenue_receivable()? <= max_amount {
-        spot_market.insurance_fund_revenue_receivable.scaled_balance
+        spot_market.insurance_fund_revenue_receivable_scaled
     } else {
         get_spot_balance(max_amount, spot_market, &SpotBalanceType::Deposit, false)?
     };
@@ -949,12 +947,11 @@ pub fn transfer_insurance_fund_revenue_receivable_to_pool(
             &SpotBalanceType::Deposit,
             true,
         )?
-        .min(spot_market.insurance_fund_revenue_receivable.scaled_balance);
+        .min(spot_market.insurance_fund_revenue_receivable_scaled);
 
         spot_market.deposit_balance = spot_market.deposit_balance.safe_sub(balance_delta)?;
-        spot_market.insurance_fund_revenue_receivable.scaled_balance = spot_market
-            .insurance_fund_revenue_receivable
-            .scaled_balance
+        spot_market.insurance_fund_revenue_receivable_scaled = spot_market
+            .insurance_fund_revenue_receivable_scaled
             .safe_sub(balance_delta)?;
     }
 

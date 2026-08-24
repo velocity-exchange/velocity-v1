@@ -1453,10 +1453,7 @@ fn resolve_perp_pnl_deficit_refreshes_period_after_new_settle() {
         deposit_balance: 30 * SPOT_BALANCE_PRECISION,
         cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
         decimals: 6,
-        insurance_fund_revenue_receivable: PoolBalance {
-            scaled_balance: 30 * SPOT_BALANCE_PRECISION,
-            ..PoolBalance::default()
-        },
+        insurance_fund_revenue_receivable_scaled: 30 * SPOT_BALANCE_PRECISION,
         insurance_fund: InsuranceFund {
             last_revenue_settle_ts: now, // new period opened at `now`
             ..InsuranceFund::default()
@@ -1504,10 +1501,7 @@ fn resolve_perp_pnl_deficit_refreshes_period_after_new_settle() {
     // The controller allocates the full $100 but returns only the $70 that the
     // handler must physically transfer from the IF vault.
     assert_eq!(withdraw, 70 * QUOTE_PRECISION as u64);
-    assert_eq!(
-        spot_market.insurance_fund_revenue_receivable.scaled_balance,
-        0
-    );
+    assert_eq!(spot_market.insurance_fund_revenue_receivable_scaled, 0);
     assert_eq!(market.pnl_pool.scaled_balance, 100 * SPOT_BALANCE_PRECISION);
     assert_eq!(
         market.insurance_claim.revenue_withdraw_since_last_settle,
@@ -1887,10 +1881,7 @@ pub fn settling_receivable_moves_cash_without_changing_if_nav() {
         get_insurance_fund_nav(insurance_vault_amount + transferred, &spot_market).unwrap(),
         nav_before
     );
-    assert_eq!(
-        spot_market.insurance_fund_revenue_receivable.scaled_balance,
-        0
-    );
+    assert_eq!(spot_market.insurance_fund_revenue_receivable_scaled, 0);
     assert!(spot_market.deposit_balance < deposit_balance_before);
     validate_spot_market_vault_amount(&spot_market, spot_vault_amount - transferred).unwrap();
 }
@@ -1908,10 +1899,7 @@ pub fn unstake_does_not_burn_receivable_backed_shares_without_cash() {
             user_shares: insurance_fund_nav as u128,
             ..InsuranceFund::default()
         },
-        insurance_fund_revenue_receivable: PoolBalance {
-            scaled_balance: 1_000 * SPOT_BALANCE_PRECISION,
-            ..PoolBalance::default()
-        },
+        insurance_fund_revenue_receivable_scaled: 1_000 * SPOT_BALANCE_PRECISION,
         ..SpotMarket::default()
     };
     let mut stake = InsuranceFundStake::new(Pubkey::default(), 0, 0);
@@ -1969,10 +1957,7 @@ pub fn repeated_revenue_booking_cannot_reuse_receivable_backing() {
             scaled_balance: 100 * SPOT_BALANCE_PRECISION,
             ..PoolBalance::default()
         },
-        insurance_fund_revenue_receivable: PoolBalance {
-            scaled_balance: 60 * SPOT_BALANCE_PRECISION,
-            ..PoolBalance::default()
-        },
+        insurance_fund_revenue_receivable_scaled: 60 * SPOT_BALANCE_PRECISION,
         insurance_fund: InsuranceFund {
             revenue_settle_period: 1,
             ..InsuranceFund::default()
@@ -2185,10 +2170,7 @@ pub fn paying_a_pool_from_the_receivable_keeps_deposits_equal_to_its_pools() {
         deposit_balance: 1_000 * SPOT_BALANCE_PRECISION,
         cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
         cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
-        insurance_fund_revenue_receivable: PoolBalance {
-            scaled_balance: 100 * SPOT_BALANCE_PRECISION,
-            ..PoolBalance::default()
-        },
+        insurance_fund_revenue_receivable_scaled: 100 * SPOT_BALANCE_PRECISION,
         ..SpotMarket::default()
     };
     let mut pnl_pool = PoolBalance {
@@ -2212,10 +2194,7 @@ pub fn paying_a_pool_from_the_receivable_keeps_deposits_equal_to_its_pools() {
     // pool credit rounds down, so the total lands at most one scaled unit low.
     // Low is the safe side: recorded claims stay at or below the backing.
     assert_eq!(receivable_payment, payment);
-    assert_eq!(
-        spot_market.insurance_fund_revenue_receivable.scaled_balance,
-        0
-    );
+    assert_eq!(spot_market.insurance_fund_revenue_receivable_scaled, 0);
     assert!(spot_market.deposit_balance <= deposit_balance_before);
     assert!(deposit_balance_before - spot_market.deposit_balance <= 1);
 }
@@ -2272,10 +2251,7 @@ pub fn settling_a_receivable_after_interest_accrues_clears_its_whole_claim() {
     let revenue_pool_claim_released = revenue_pool_before - spot_market.revenue_pool.scaled_balance;
     let depositor_claim = deposit_balance_before - revenue_pool_claim_released;
     assert_eq!(spot_market.revenue_pool.scaled_balance, 0);
-    assert_eq!(
-        spot_market.insurance_fund_revenue_receivable.scaled_balance,
-        0
-    );
+    assert_eq!(spot_market.insurance_fund_revenue_receivable_scaled, 0);
     assert_eq!(
         spot_market.deposit_balance,
         depositor_claim,
@@ -2304,10 +2280,8 @@ pub fn an_early_exit_cannot_take_more_than_its_share_of_the_cash() {
             user_shares: nav as u128,
             ..InsuranceFund::default()
         },
-        insurance_fund_revenue_receivable: PoolBalance {
-            scaled_balance: receivable as u128 * (SPOT_BALANCE_PRECISION / QUOTE_PRECISION),
-            ..PoolBalance::default()
-        },
+        insurance_fund_revenue_receivable_scaled: receivable as u128
+            * (SPOT_BALANCE_PRECISION / QUOTE_PRECISION),
         ..SpotMarket::default()
     };
 
@@ -2398,10 +2372,8 @@ pub fn an_unpaid_unstake_remainder_completes_without_a_second_escrow_period() {
             user_shares: nav as u128,
             ..InsuranceFund::default()
         },
-        insurance_fund_revenue_receivable: PoolBalance {
-            scaled_balance: receivable as u128 * (SPOT_BALANCE_PRECISION / QUOTE_PRECISION),
-            ..PoolBalance::default()
-        },
+        insurance_fund_revenue_receivable_scaled: receivable as u128
+            * (SPOT_BALANCE_PRECISION / QUOTE_PRECISION),
         ..SpotMarket::default()
     };
 

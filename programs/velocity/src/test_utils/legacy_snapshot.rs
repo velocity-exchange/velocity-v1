@@ -809,9 +809,10 @@ pub fn regenerate_spot_market_snapshot(old_b64: &str) -> String {
     sm.historical_oracle_data = l.historical_oracle_data;
     sm.historical_index_data = l.historical_index_data;
     sm.revenue_pool = l.revenue_pool.to_current();
-    // The retired spot fee pool shared the slot the receivable now occupies. It
-    // was always empty, so the receivable starts empty too.
-    sm.insurance_fund_revenue_receivable = PoolBalance::default();
+    // The retired spot fee pool shared the slot the reserve and the receivable
+    // now occupy. It was always empty, so both start empty.
+    sm.padding_former_spot_fee_pool = [0; 16];
+    sm.insurance_fund_revenue_receivable_scaled = 0;
     sm.insurance_fund = l.insurance_fund;
     sm.total_spot_fee = l.total_spot_fee;
     sm.deposit_balance = l.deposit_balance;

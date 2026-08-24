@@ -23877,29 +23877,44 @@ export type Velocity = {
             }
           },
           {
-            "name": "insuranceFundRevenueReceivable",
+            "name": "paddingFormerSpotFeePool",
+            "docs": [
+              "Free bytes from the retired spot fee pool. The pool was 32 bytes and the",
+              "receivable below takes 16 of them, so these 16 are reserve for the next",
+              "field. They start at a multiple of 16, so they hold one u128 or two u64.",
+              "The whole slot was always zero on chain, so nothing has to be migrated."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          },
+          {
+            "name": "insuranceFundRevenueReceivableScaled",
             "docs": [
               "Revenue allocated to the insurance fund that still sits in the spot",
               "vault, which happens while a withdraw pause holds back the transfer.",
               "",
               "This is a third claim inside `deposit_balance`, beside `revenue_pool` and",
-              "`protocol_fee_pool`, so it is held the same way they are. A scaled",
-              "balance earns deposit interest for as long as the tokens stay here and",
+              "`protocol_fee_pool`, and it is held the same way they are. A scaled",
+              "balance earns deposit interest for as long as the tokens stay here, and",
               "the fund collects that interest when the transfer completes. A token",
               "amount could not do this: the claim grows with",
               "`cumulative_deposit_interest`, and a fixed integer would leave the",
               "difference inside `deposit_balance` owned by nobody.",
               "",
-              "Only `scaled_balance` is used. The pool occupies the retired spot fee",
-              "pool slot, whose bytes were always zero, so `market_index` reads 0 on",
-              "markets that predate the field and nothing may depend on it. Read the",
-              "token value with `SpotMarket::get_insurance_fund_revenue_receivable`."
+              "This is a u128 that follows a `PoolBalance`, which the field ordering",
+              "rule in `docs/alignment-and-native-offsets.md` otherwise forbids. It is",
+              "safe here for the two reasons that rule exists to guarantee, and both are",
+              "pinned by asserts: `PoolBalance` is 32 bytes on the host and on SBF, so",
+              "`revenue_pool` ends at 416 on both, and this field starts at 432, which",
+              "is a multiple of 16. No architecture specific gap can open. Do not copy",
+              "the pattern to a field whose offset is not asserted.",
+              "precision: SPOT_BALANCE_PRECISION"
             ],
-            "type": {
-              "defined": {
-                "name": "poolBalance"
-              }
-            }
+            "type": "u128"
           },
           {
             "name": "historicalOracleData",

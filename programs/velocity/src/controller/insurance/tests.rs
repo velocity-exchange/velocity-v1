@@ -1992,7 +1992,7 @@ pub fn repeated_revenue_booking_cannot_reuse_receivable_backing() {
 
     assert_eq!(booked, 20 * QUOTE_PRECISION as u64);
     assert_eq!(
-        get_insurance_fund_revenue_receivable_token_amount(&spot_market).unwrap(),
+        spot_market.get_insurance_fund_revenue_receivable().unwrap(),
         80 * QUOTE_PRECISION
     );
     assert_eq!(

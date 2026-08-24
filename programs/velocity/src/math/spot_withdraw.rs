@@ -404,8 +404,7 @@ pub fn get_max_withdraw_for_market_with_token_amount(
         spot_market,
         &SpotBalanceType::Borrow,
     )?;
-    let insurance_fund_revenue_receivable =
-        get_insurance_fund_revenue_receivable_token_amount(spot_market)?;
+    let insurance_fund_revenue_receivable = spot_market.get_insurance_fund_revenue_receivable()?;
 
     // Revenue already allocated to the insurance fund still sits in this vault.
     // Tokens that leave the protocol must leave that claim behind, so every
@@ -494,19 +493,6 @@ pub fn get_max_withdraw_for_market_with_token_amount(
     Ok(reserve_receivable(max_withdraw_and_borrow))
 }
 
-/// Token value of the insurance fund revenue that still sits in the spot vault.
-/// The claim is a scaled balance, so its token value grows with deposit
-/// interest for as long as the transfer cannot complete.
-pub fn get_insurance_fund_revenue_receivable_token_amount(
-    spot_market: &SpotMarket,
-) -> VelocityResult<u128> {
-    get_token_amount(
-        spot_market.insurance_fund_revenue_receivable.scaled_balance,
-        spot_market,
-        &SpotBalanceType::Deposit,
-    )
-}
-
 pub fn validate_spot_balances(spot_market: &SpotMarket) -> VelocityResult<i64> {
     let depositors_amount: u64 = get_token_amount(
         spot_market.deposit_balance,
@@ -535,8 +521,9 @@ pub fn validate_spot_balances(spot_market: &SpotMarket) -> VelocityResult<i64> {
     )?
     .cast()?;
 
-    let insurance_fund_revenue_receivable: u64 =
-        get_insurance_fund_revenue_receivable_token_amount(spot_market)?.cast()?;
+    let insurance_fund_revenue_receivable: u64 = spot_market
+        .get_insurance_fund_revenue_receivable()?
+        .cast()?;
 
     let depositors_claim = depositors_amount
         .cast::<i64>()?
@@ -591,8 +578,9 @@ pub fn validate_spot_market_vault_amount(
         depositors_claim
     )?;
 
-    let insurance_fund_revenue_receivable =
-        get_insurance_fund_revenue_receivable_token_amount(spot_market)?.cast::<u64>()?;
+    let insurance_fund_revenue_receivable = spot_market
+        .get_insurance_fund_revenue_receivable()?
+        .cast::<u64>()?;
     validate!(
         vault_amount >= insurance_fund_revenue_receivable,
         ErrorCode::SpotMarketVaultInvariantViolated,
@@ -695,7 +683,7 @@ mod tests {
             get_token_amount(market.deposit_balance, &market, &SpotBalanceType::Deposit).unwrap();
         let borrows =
             get_token_amount(market.borrow_balance, &market, &SpotBalanceType::Borrow).unwrap();
-        let receivable = get_insurance_fund_revenue_receivable_token_amount(&market).unwrap();
+        let receivable = market.get_insurance_fund_revenue_receivable().unwrap();
         assert_eq!(
             max_withdraw,
             deposits.saturating_sub(borrows).saturating_sub(receivable)

@@ -22,10 +22,7 @@ use {
             },
             safe_math::SafeMath,
             spot_balance::{get_spot_balance, get_token_amount},
-            spot_withdraw::{
-                get_insurance_fund_revenue_receivable_token_amount,
-                validate_spot_market_vault_amount,
-            },
+            spot_withdraw::validate_spot_market_vault_amount,
         },
         msg,
         state::{
@@ -57,8 +54,11 @@ pub fn get_insurance_fund_nav(
     insurance_vault_amount: u64,
     spot_market: &SpotMarket,
 ) -> VelocityResult<u64> {
-    insurance_vault_amount
-        .safe_add(get_insurance_fund_revenue_receivable_token_amount(spot_market)?.cast()?)
+    insurance_vault_amount.safe_add(
+        spot_market
+            .get_insurance_fund_revenue_receivable()?
+            .cast()?,
+    )
 }
 
 /// Lower the revenue-settle cap base to the fund value that an outflow leaves
@@ -709,7 +709,7 @@ fn book_revenue_to_insurance_fund(
         &SpotBalanceType::Deposit,
     )?;
 
-    let existing_receivable = get_insurance_fund_revenue_receivable_token_amount(spot_market)?;
+    let existing_receivable = spot_market.get_insurance_fund_revenue_receivable()?;
     let unreserved_depositors_claim = depositors_claim
         .max(0)
         .cast::<u128>()?
@@ -905,12 +905,11 @@ pub fn consume_insurance_fund_revenue_receivable(
     // stays behind to accrue interest for nobody. Otherwise release the scaled
     // part the cap pays for, rounded down so the tokens released stay at or
     // below `max_amount`.
-    let balance_delta =
-        if get_insurance_fund_revenue_receivable_token_amount(spot_market)? <= max_amount {
-            spot_market.insurance_fund_revenue_receivable.scaled_balance
-        } else {
-            get_spot_balance(max_amount, spot_market, &SpotBalanceType::Deposit, false)?
-        };
+    let balance_delta = if spot_market.get_insurance_fund_revenue_receivable()? <= max_amount {
+        spot_market.insurance_fund_revenue_receivable.scaled_balance
+    } else {
+        get_spot_balance(max_amount, spot_market, &SpotBalanceType::Deposit, false)?
+    };
 
     release_insurance_fund_revenue_receivable(spot_market, balance_delta)
 }
@@ -926,9 +925,8 @@ pub fn transfer_insurance_fund_revenue_receivable_to_pool(
         return Ok(0);
     }
 
-    let receivable_payment = total_payment.min(get_insurance_fund_revenue_receivable_token_amount(
-        spot_market,
-    )?);
+    let receivable_payment =
+        total_payment.min(spot_market.get_insurance_fund_revenue_receivable()?);
 
     // Credit the destination once for the combined receivable and vault payment.
     // Splitting the credit would apply scaled balance rounding twice.
@@ -1095,7 +1093,8 @@ pub fn resolve_perp_pnl_deficit(
         market.insurance_claim.quote_max_insurance,
     )?;
 
-    let available_if_capital = get_insurance_fund_revenue_receivable_token_amount(spot_market)?
+    let available_if_capital = spot_market
+        .get_insurance_fund_revenue_receivable()?
         .cast::<i128>()?
         .safe_add(insurance_vault_amount.saturating_sub(1).cast()?)?;
     let insurance_withdraw = excess_user_pnl_imbalance

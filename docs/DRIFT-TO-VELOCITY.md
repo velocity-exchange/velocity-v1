@@ -712,7 +712,7 @@ accounts/events with the previous TS shapes should note:
   a third claim inside `deposit_balance` beside `revenue_pool` and `protocol_fee_pool`, and it
   is held the same way they are: a **scaled balance**, not a token amount, so the claim earns
   deposit interest until the transfer completes and the fund collects that interest. Read its
-  token value through `get_insurance_fund_revenue_receivable_token_amount`
+  token value through `SpotMarket::get_insurance_fund_revenue_receivable`
   (SDK `getInsuranceFundRevenueReceivableTokenAmount`), never as a raw integer. Insurance fund
   shares are priced off `get_insurance_fund_nav` (SDK `getInsuranceFundNav`), which adds that
   token value to the live vault balance, so any integrator pricing shares off the vault

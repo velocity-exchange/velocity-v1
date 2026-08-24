@@ -65,7 +65,6 @@ use {
             position::calculate_base_asset_value_with_oracle_price,
             safe_math::SafeMath,
             spot_balance::{get_token_amount, get_token_value},
-            spot_withdraw::get_insurance_fund_revenue_receivable_token_amount,
             time::Millis,
         },
         msg,
@@ -4378,7 +4377,8 @@ pub fn resolve_perp_bankruptcy(
 
         let available_if_capital = {
             let quote_spot_market = spot_market_map.get_ref(&QUOTE_SPOT_MARKET_INDEX)?;
-            get_insurance_fund_revenue_receivable_token_amount(&quote_spot_market)?
+            quote_spot_market
+                .get_insurance_fund_revenue_receivable()?
                 .safe_add(insurance_fund_vault_balance.saturating_sub(1).cast()?)?
         };
         let if_payment = loss_after_pending

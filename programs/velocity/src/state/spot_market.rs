@@ -98,7 +98,7 @@ pub struct SpotMarket {
     /// Only `scaled_balance` is used. The pool occupies the retired spot fee
     /// pool slot, whose bytes were always zero, so `market_index` reads 0 on
     /// markets that predate the field and nothing may depend on it. Read the
-    /// token value with `get_insurance_fund_revenue_receivable_token_amount`.
+    /// token value with `SpotMarket::get_insurance_fund_revenue_receivable`.
     pub insurance_fund_revenue_receivable: PoolBalance,
     pub historical_oracle_data: HistoricalOracleData,
     pub historical_index_data: HistoricalIndexData,
@@ -554,6 +554,18 @@ impl SpotMarket {
 
     pub fn get_borrows(&self) -> VelocityResult<u128> {
         get_token_amount(self.borrow_balance, self, &SpotBalanceType::Borrow)
+    }
+
+    /// Token value of the revenue that is allocated to the insurance fund but
+    /// still sits in this vault. The claim is a scaled balance, so its token
+    /// value grows with deposit interest for as long as the transfer cannot
+    /// complete.
+    pub fn get_insurance_fund_revenue_receivable(&self) -> VelocityResult<u128> {
+        get_token_amount(
+            self.insurance_fund_revenue_receivable.scaled_balance,
+            self,
+            &SpotBalanceType::Deposit,
+        )
     }
 
     pub fn get_tvl(&self) -> VelocityResult<u128> {

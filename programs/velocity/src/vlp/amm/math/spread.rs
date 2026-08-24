@@ -1242,10 +1242,9 @@ pub(crate) fn calculate_reference_price_offset(
 /// spread + reference offset directly instead of reading cached AMM fields
 /// (which were removed in the AMM-decoupling refactor).
 ///
-/// The signed half-spread `s = ±spread + offset` moves the quote reserve by
-/// `quote / floor(BID_ASK_SPREAD_PRECISION / (s / 2))` (the divisor
-/// quantization is the legacy behavior, see design issue 6) and the base
-/// reserve follows from the invariant `k = sqrt_k^2`.
+/// The signed composite spread `s = ±spread + offset` moves the quote reserve
+/// by exactly `quote * s / (2 * BID_ASK_SPREAD_PRECISION)` in reserve units;
+/// the base reserve follows from the invariant `k = sqrt_k^2`.
 pub(crate) fn compute_spread_reserves_for_direction(
     amm: &AMM,
     spread: u32,
@@ -1258,15 +1257,11 @@ pub(crate) fn compute_spread_reserves_for_direction(
         spread.cast::<i32>()?.safe_add(reference_price_offset)?
     };
 
-    let quote_asset_reserve_delta = if spread_with_offset.abs() > 1 {
-        let quote_reserve_divisor =
-            BID_ASK_SPREAD_PRECISION_I128 / (spread_with_offset / 2).cast::<i128>()?;
-        amm.quote_asset_reserve
-            .cast::<i128>()?
-            .safe_div(quote_reserve_divisor)?
-    } else {
-        0_i128
-    };
+    let quote_asset_reserve_delta = amm
+        .quote_asset_reserve
+        .cast::<i128>()?
+        .safe_mul(spread_with_offset.cast::<i128>()?)?
+        .safe_div(BID_ASK_SPREAD_PRECISION_I128.safe_mul(2)?)?;
 
     let quote_asset_reserve = if quote_asset_reserve_delta > 0 {
         amm.quote_asset_reserve

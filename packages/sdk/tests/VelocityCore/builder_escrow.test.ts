@@ -2,93 +2,135 @@ import { describe, expect, test } from 'bun:test';
 import { Keypair, PublicKey } from '@solana/web3.js';
 import { VelocityClient } from '../../src/velocityClient';
 import { ReferrerMap } from '../../src/userMap/referrerMap';
-import { getRevenueShareEscrowAccountPublicKey } from '../../src/addresses/pda';
+import {
+	getRevenueShareEscrowAccountPublicKey,
+	getUserStatsAccountPublicKey,
+} from '../../src/addresses/pda';
 import { RevenueShareEscrowAccount } from '../../src/types';
 
-// `getTakerEscrowAccountMeta` decides whether a perp fill must carry the taker's
-// RevenueShareEscrow account. It only reads `this.program.programId`, so we can
-// exercise the decision with a minimal `this` instead of a full client.
-// Regression guard for: a referred taker (escrow initialized with a referrer)
-// whose order carries no builder code must still get the escrow attached, else
-// the program rejects the fill with UnableToLoadRevenueShareAccount.
-const getTakerEscrowAccountMeta = (VelocityClient.prototype as any)
-	.getTakerEscrowAccountMeta as (
+// `getTakerRevenueShareAccountMetas` decides whether a perp fill must carry the
+// taker's RevenueShareEscrow, and behind it the referrer's readonly UserStats that
+// selects the Accelerated reward rate. It reads only `this.program.programId`,
+// `this.authority` and `this.userStats`, so a minimal `this` exercises the decision.
+// Regression guards for: a referred taker (escrow initialized with a referrer) whose
+// order carries no builder code must still get the escrow attached, else the program
+// rejects the fill with UnableToLoadRevenueShareAccount; and an explicit
+// `takerReferrer` must never trigger a UserStats fetch (there is no connection here,
+// so a fetch throws).
+const getTakerRevenueShareAccountMetas = (VelocityClient.prototype as any)
+	.getTakerRevenueShareAccountMetas as (
 	takerAuthority: PublicKey,
 	orderHasBuilder: boolean,
 	takerEscrow?: RevenueShareEscrowAccount,
-	takerIsReferred?: boolean
-) => { pubkey: PublicKey; isWritable: boolean; isSigner: boolean } | undefined;
+	takerIsReferred?: boolean,
+	takerReferrer?: PublicKey
+) => Promise<
+	Array<{ pubkey: PublicKey; isWritable: boolean; isSigner: boolean }>
+>;
 
 const programId = Keypair.generate().publicKey;
-const ctx = { program: { programId } };
+// A distinct authority, so the taker is never this client's own user.
+const ctx = { program: { programId }, authority: Keypair.generate().publicKey };
 const escrow = (
 	authority: PublicKey,
 	referrer: PublicKey
 ): RevenueShareEscrowAccount =>
 	({ authority, referrer }) as unknown as RevenueShareEscrowAccount;
 
-describe('getTakerEscrowAccountMeta (fill escrow attachment)', () => {
-	test('takerIsReferred, order without builder -> escrow attached', () => {
+describe('getTakerRevenueShareAccountMetas (fill escrow attachment)', () => {
+	test('takerIsReferred, order without builder -> escrow attached', async () => {
 		const authority = Keypair.generate().publicKey;
-		const meta = getTakerEscrowAccountMeta.call(
+		const metas = await getTakerRevenueShareAccountMetas.call(
 			ctx,
 			authority,
 			false,
 			undefined,
-			true
+			true,
+			PublicKey.default
 		);
-		expect(meta).toBeDefined();
+		expect(metas.length).toBe(1);
 		expect(
-			meta!.pubkey.equals(
+			metas[0].pubkey.equals(
 				getRevenueShareEscrowAccountPublicKey(programId, authority)
 			)
 		).toBe(true);
-		expect(meta!.isWritable).toBe(true);
+		expect(metas[0].isWritable).toBe(true);
 	});
 
-	test('not referred, order without builder -> no escrow', () => {
+	test('not referred, order without builder -> no accounts', async () => {
 		const authority = Keypair.generate().publicKey;
 		expect(
-			getTakerEscrowAccountMeta.call(ctx, authority, false, undefined, false)
-		).toBeUndefined();
+			await getTakerRevenueShareAccountMetas.call(
+				ctx,
+				authority,
+				false,
+				undefined,
+				false
+			)
+		).toEqual([]);
 	});
 
-	test('builder-code order attaches escrow (no referral signal needed)', () => {
+	test('builder-code order attaches escrow (no referral signal needed)', async () => {
 		const authority = Keypair.generate().publicKey;
-		const meta = getTakerEscrowAccountMeta.call(
+		const metas = await getTakerRevenueShareAccountMetas.call(
 			ctx,
 			authority,
 			true,
-			undefined
+			undefined,
+			false
 		);
-		expect(meta).toBeDefined();
+		expect(metas.length).toBe(1);
 		expect(
-			meta!.pubkey.equals(
+			metas[0].pubkey.equals(
 				getRevenueShareEscrowAccountPublicKey(programId, authority)
 			)
 		).toBe(true);
 	});
 
-	test('decoded escrow with a referrer still attaches (back-compat)', () => {
+	test('decoded escrow with a referrer attaches escrow + readonly referrer stats', async () => {
 		const authority = Keypair.generate().publicKey;
-		const meta = getTakerEscrowAccountMeta.call(
+		const referrer = Keypair.generate().publicKey;
+		const metas = await getTakerRevenueShareAccountMetas.call(
 			ctx,
 			authority,
 			false,
-			escrow(authority, Keypair.generate().publicKey)
+			escrow(authority, referrer)
 		);
-		expect(meta).toBeDefined();
+		expect(metas.length).toBe(2);
+		expect(
+			metas[0].pubkey.equals(
+				getRevenueShareEscrowAccountPublicKey(programId, authority)
+			)
+		).toBe(true);
+		expect(
+			metas[1].pubkey.equals(getUserStatsAccountPublicKey(programId, referrer))
+		).toBe(true);
+		// A popular referrer must not become a write-lock hotspot for every referee fill.
+		expect(metas[1].isWritable).toBe(false);
 	});
 
-	test('escrow belonging to a different authority is rejected', () => {
+	test('referred taker with no known referrer still attaches the escrow alone', async () => {
+		const authority = Keypair.generate().publicKey;
+		const metas = await getTakerRevenueShareAccountMetas.call(
+			ctx,
+			authority,
+			false,
+			undefined,
+			true,
+			PublicKey.default
+		);
+		expect(metas.length).toBe(1);
+	});
+
+	test('escrow belonging to a different authority is rejected', async () => {
 		const authority = Keypair.generate().publicKey;
 		const wrong = escrow(
 			Keypair.generate().publicKey,
 			Keypair.generate().publicKey
 		);
-		expect(() =>
-			getTakerEscrowAccountMeta.call(ctx, authority, false, wrong)
-		).toThrow();
+		expect(
+			getTakerRevenueShareAccountMetas.call(ctx, authority, false, wrong)
+		).rejects.toThrow();
 	});
 });
 

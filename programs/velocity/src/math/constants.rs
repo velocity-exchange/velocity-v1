@@ -208,6 +208,18 @@ pub const LP_FEE_SLICE_NUMERATOR: u128 = 8;
 pub const LP_FEE_SLICE_DENOMINATOR: u128 = 10;
 pub const FEE_DENOMINATOR: u32 = 10 * ONE_BPS_DENOMINATOR;
 pub const FEE_PERCENTAGE_DENOMINATOR: u32 = 100;
+pub const ACCELERATED_REFERRER_REWARD_NUMERATOR: u32 = 20;
+/// While true, user initialization and eligible interactions (perp fills for taker and
+/// maker, completed swaps) permanently grant Accelerated referral status. Set to false to
+/// stop new enrollment. There is no runtime switch, so this takes a program upgrade.
+///
+/// Temporary. When enrollment ends, delete this constant and the branches that read it
+/// (`rg ACCELERATED_REFERRAL_ENROLLMENT_ENABLED`), plus
+/// `AcceleratedReferralStatus::AutoEnrollmentBlocked` and
+/// `AcceleratedReferralStatusChange::AutoEnrollment`, which exist only to serve automatic
+/// enrollment. `UserStats::accelerated_referral_status` and
+/// `update_user_accelerated_referral_status` stay.
+pub const ACCELERATED_REFERRAL_ENROLLMENT_ENABLED: bool = true;
 /// Global ceiling on a builder-code fee, in tenths of a bps (fee =
 /// quote * fee_tenth_bps / `FEE_DENOMINATOR`, so `FEE_DENOMINATOR` = 100%).
 /// A builder's own `max_fee_tenth_bps` is set at approval with no ceiling (up

@@ -20,8 +20,9 @@ use {
         instructions::{
             constraints::*,
             optional_accounts::{
-                add_builder_order, get_revenue_share_escrow_account,
-                load_escrow_owner_sub_accounts, load_maps, validate_and_load_builder, AccountMaps,
+                add_builder_order, get_referrer_accelerated_status,
+                get_revenue_share_escrow_account, load_escrow_owner_sub_accounts, load_maps,
+                validate_and_load_builder, AccountMaps,
             },
         },
         load, load_mut,
@@ -170,6 +171,8 @@ fn fill_order<'c: 'info, 'info>(
     } else {
         None
     };
+    let referrer_is_accelerated =
+        get_referrer_accelerated_status(remaining_accounts_iter, escrow.as_ref())?;
 
     // No `update_amm` here: `fill_perp_order` snaps the AMM and refreshes
     // PerpMarket-level oracle stats internally before quoting.
@@ -190,6 +193,7 @@ fn fill_order<'c: 'info, 'info>(
         clock,
         FillMode::Fill,
         &mut escrow.as_mut(),
+        referrer_is_accelerated,
     )?;
 
     Ok(())

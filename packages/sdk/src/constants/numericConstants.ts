@@ -19,6 +19,9 @@ export const TEN_THOUSAND = new BN(10000);
 export const BN_MAX = new BN(Number.MAX_SAFE_INTEGER);
 export const TEN_MILLION = TEN_THOUSAND.mul(TEN_THOUSAND);
 
+/** Accelerated referrers receive this percentage of the referee's taker fee, independently of the configured Standard rate. */
+export const ACCELERATED_REFERRER_REWARD_PERCENT = 20;
+
 /** Default max leverage (5x) used by SDK helpers when a market's actual `marginRatioInitial` isn't available. */
 export const MAX_LEVERAGE = new BN(5);
 /** `u64::MAX`; sentinel order size meaning "close the whole position" in reduce-only market-order helpers. */

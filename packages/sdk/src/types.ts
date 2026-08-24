@@ -466,6 +466,30 @@ export type NewUserRecord = {
 	referrer: PublicKey;
 };
 
+/** Which code path changed an authority's Accelerated referral status. */
+export class AcceleratedReferralStatusChange {
+	static readonly ADMIN_GRANT = { adminGrant: {} };
+	static readonly ADMIN_REVOKE = { adminRevoke: {} };
+	static readonly AUTO_ENROLLMENT = { autoEnrollment: {} };
+}
+
+/**
+ * Emitted whenever an authority's `acceleratedReferralStatus` bitmask changes: automatic
+ * enrollment on an eligible interaction, or an admin grant/revoke. `previousStatus` and
+ * `newStatus` are `AcceleratedReferralStatus` bitmasks.
+ */
+export type AcceleratedReferralStatusChangedRecord = {
+	ts: BN;
+	authority: PublicKey;
+	previousStatus: number;
+	newStatus: number;
+	action: {
+		adminGrant?: any;
+		adminRevoke?: any;
+		autoEnrollment?: any;
+	};
+};
+
 /** Emitted on every deposit, withdraw, or internal transfer that moves tokens into/out of a spot market. */
 export type DepositRecord = {
 	ts: BN;
@@ -1681,6 +1705,8 @@ export type UserStatsAccount = {
 	delegatePermissions: number;
 	/** non-zero when the permissionless `tripEquityFloorBreaker` fired: every subaccount of the authority rejects risk-increasing fills, withdrawals and transfers out until the warm admin resets */
 	equityBreakerTripped: number;
+	/** bitmask, see `AcceleratedReferralStatus` */
+	acceleratedReferralStatus: number;
 };
 
 /** Decoded mirror of the on-chain `User` (sub-account) zero-copy account. */
@@ -1995,6 +2021,13 @@ export enum ReferrerStatus {
 	IsReferred = 2,
 	/** set when the user's RevenueShareEscrow was initialized with a referrer */
 	BuilderReferral = 4,
+}
+
+/** Persistent referral reward flags stored on `UserStatsAccount.acceleratedReferralStatus`. */
+export enum AcceleratedReferralStatus {
+	Accelerated = 1,
+	/** prevents an admin revoked user from being immediately reenrolled by another trade */
+	AutoEnrollmentBlocked = 2,
 }
 
 /** Which fill outcome counts as "success" for a `placeAndTake*` instruction's on-chain success check. */

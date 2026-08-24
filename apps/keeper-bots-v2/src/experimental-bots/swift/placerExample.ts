@@ -1,4 +1,6 @@
 import {
+	isBuilderReferral,
+	fetchUserStatsAccount,
 	BASE_PRECISION,
 	BlockhashSubscriber,
 	BN,
@@ -328,6 +330,19 @@ export class SwiftPlacer {
 						});
 					}
 
+					// Resolve the taker's referral state once. The maker-pruning loop below
+					// rebuilds the fill ix repeatedly, and without these the SDK re-fetches
+					// the taker's UserStats on every rebuild.
+					const takerStatsAccount = await fetchUserStatsAccount(
+						this.velocityClient.connection,
+						this.velocityClient.program,
+						takerUserAccount.authority
+					);
+					const takerIsReferred = takerStatsAccount
+						? isBuilderReferral(takerStatsAccount)
+						: false;
+					const takerReferrer = takerStatsAccount?.referrer;
+
 					let fillIx = await this.velocityClient.getFillPerpOrderIx(
 						takerUserPubkey,
 						takerUserAccount,
@@ -335,7 +350,12 @@ export class SwiftPlacer {
 						makerInfos,
 						// referrer param removed; 5th arg is fillerSubAccountId, 6th is isSignedMsg.
 						undefined,
-						true
+						true,
+						undefined, // fillerAuthority
+						undefined, // hasBuilderFee (derived from the signed message)
+						undefined, // takerEscrow
+						takerIsReferred,
+						takerReferrer
 					);
 
 					const lookupTableAccounts =
@@ -362,7 +382,12 @@ export class SwiftPlacer {
 							makerInfos,
 							// referrer param removed; 5th arg is fillerSubAccountId, 6th is isSignedMsg.
 							undefined,
-							true
+							true,
+							undefined, // fillerAuthority
+							undefined, // hasBuilderFee (derived from the signed message)
+							undefined, // takerEscrow
+							takerIsReferred,
+							takerReferrer
 						);
 						txSize = getSizeOfTransaction(
 							[...computeBudgetIxs, ...ixs, fillIx],

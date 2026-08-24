@@ -23,9 +23,10 @@ use {
         instructions::{
             constraints::*,
             optional_accounts::{
-                add_builder_order, get_referrer_and_referrer_stats,
-                get_revenue_share_escrow_account, get_whitelist_token, load_maps,
-                validate_and_load_builder, validate_builder_fee, AccountMaps,
+                add_builder_order, get_referrer_accelerated_status,
+                get_referrer_and_referrer_stats, get_revenue_share_escrow_account,
+                get_whitelist_token, load_maps, validate_and_load_builder, validate_builder_fee,
+                AccountMaps,
             },
         },
         load, load_mut,
@@ -187,6 +188,8 @@ pub fn handle_initialize_user<'c: 'info, 'info>(
         user_stats.number_of_sub_accounts_created.safe_add(1)?;
 
     let mut state = ctx.accounts.state.load_mut()?;
+    let now_ts = Clock::get()?.unix_timestamp;
+    user_stats.try_auto_enroll_accelerated_referral_and_emit(now_ts);
     safe_increment!(state.number_of_sub_accounts, 1);
 
     let max_number_of_sub_accounts = state.max_number_of_sub_accounts();
@@ -196,8 +199,6 @@ pub fn handle_initialize_user<'c: 'info, 'info>(
             || state.number_of_sub_accounts <= max_number_of_sub_accounts,
         ErrorCode::MaxNumberOfUsers
     )?;
-
-    let now_ts = Clock::get()?.unix_timestamp;
 
     emit!(NewUserRecord {
         ts: now_ts,
@@ -267,6 +268,7 @@ pub fn handle_initialize_user_stats<'c: 'info, 'info>(
     };
 
     let mut state = ctx.accounts.state.load_mut()?;
+    user_stats.try_auto_enroll_accelerated_referral_and_emit(clock.unix_timestamp);
     safe_increment!(state.number_of_authorities, 1);
 
     let max_number_of_sub_accounts = state.max_number_of_sub_accounts();
@@ -3261,6 +3263,8 @@ pub fn handle_place_and_take_perp_order<'c: 'info, 'info>(
         params.builder_fee_tenth_bps,
         &state,
     )?;
+    let referrer_is_accelerated =
+        get_referrer_accelerated_status(remaining_accounts_iter, escrow.as_ref())?;
     let mut builder_order = add_builder_order(
         &mut escrow,
         &user,
@@ -3309,6 +3313,7 @@ pub fn handle_place_and_take_perp_order<'c: 'info, 'info>(
             auction_duration_percentage,
         ),
         &mut escrow.as_mut(),
+        referrer_is_accelerated,
     )?;
 
     let order_unfilled = load!(ctx.accounts.user)?
@@ -3415,6 +3420,8 @@ pub fn handle_place_and_make_perp_order<'c: 'info, 'info>(
     } else {
         None
     };
+    let referrer_is_accelerated =
+        get_referrer_accelerated_status(remaining_accounts_iter, escrow.as_ref())?;
 
     controller::orders::fill_perp_order(
         taker_order_id,
@@ -3432,6 +3439,7 @@ pub fn handle_place_and_make_perp_order<'c: 'info, 'info>(
         clock,
         FillMode::PlaceAndMake,
         &mut escrow.as_mut(),
+        referrer_is_accelerated,
     )?;
 
     let order_exists = load!(ctx.accounts.user)?
@@ -3524,6 +3532,8 @@ pub fn handle_place_and_make_signed_msg_perp_order<'c: 'info, 'info>(
     } else {
         None
     };
+    let referrer_is_accelerated =
+        get_referrer_accelerated_status(remaining_accounts_iter, escrow.as_ref())?;
 
     let taker_signed_msg_account = ctx.accounts.taker_signed_msg_user_orders.load()?;
     let taker_order_id = taker_signed_msg_account
@@ -3548,6 +3558,7 @@ pub fn handle_place_and_make_signed_msg_perp_order<'c: 'info, 'info>(
         clock,
         FillMode::PlaceAndMake,
         &mut escrow.as_mut(),
+        referrer_is_accelerated,
     )?;
 
     let order_exists = load!(ctx.accounts.user)?
@@ -4790,6 +4801,8 @@ pub fn handle_end_swap<'c: 'info, 'info>(
         Some(&out_oracle_data),
         now,
     )?;
+
+    user_stats.try_auto_enroll_accelerated_referral_and_emit(now);
 
     Ok(())
 }

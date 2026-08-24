@@ -4,8 +4,9 @@ use {
         math::{
             casting::Cast,
             constants::{
-                FEE_ADJUSTMENT_MAX, FEE_DENOMINATOR, FEE_PERCENTAGE_DENOMINATOR,
-                FIVE_MILLION_QUOTE, PERP_FEE_TIER_MAX_INDEX, TEN_BPS, TEN_MILLION_QUOTE,
+                ACCELERATED_REFERRER_REWARD_NUMERATOR, FEE_ADJUSTMENT_MAX, FEE_DENOMINATOR,
+                FEE_PERCENTAGE_DENOMINATOR, FIVE_MILLION_QUOTE, PERP_FEE_TIER_MAX_INDEX, TEN_BPS,
+                TEN_MILLION_QUOTE,
             },
             helpers::get_proportion_u128,
             safe_math::SafeMath,
@@ -84,6 +85,7 @@ pub fn calculate_fee_for_fulfillment_with_amm(
     clock_slot: u64,
     reward_filler: bool,
     reward_referrer: bool,
+    accelerated_referrer: bool,
     quote_asset_amount_surplus: i64,
     is_post_only: bool,
     fee_adjustment: i16,
@@ -160,7 +162,7 @@ pub fn calculate_fee_for_fulfillment_with_amm(
         )?;
 
         let (fee, referee_discount, referrer_reward) = if reward_referrer {
-            calculate_referee_fee_and_referrer_reward(fee, &fee_tier)?
+            calculate_referee_fee_and_referrer_reward(fee, &fee_tier, accelerated_referrer)?
         } else {
             (fee, 0, 0)
         };
@@ -324,6 +326,7 @@ fn calculate_vamm_maker_rebate(
 fn calculate_referee_fee_and_referrer_reward(
     fee: u64,
     fee_tier: &FeeTier,
+    accelerated_referrer: bool,
 ) -> VelocityResult<(u64, u64, u64)> {
     let referee_discount = get_proportion_u128(
         fee as u128,
@@ -332,9 +335,14 @@ fn calculate_referee_fee_and_referrer_reward(
     )?
     .cast::<u64>()?;
 
+    let referrer_reward_numerator = if accelerated_referrer {
+        ACCELERATED_REFERRER_REWARD_NUMERATOR
+    } else {
+        fee_tier.referrer_reward_numerator
+    };
     let referrer_reward = get_proportion_u128(
         fee as u128,
-        fee_tier.referrer_reward_numerator as u128,
+        referrer_reward_numerator as u128,
         fee_tier.referrer_reward_denominator as u128,
     )?
     .cast::<u64>()?;
@@ -403,6 +411,7 @@ pub fn calculate_fee_for_fulfillment_with_match(
     clock_slot: u64,
     filler_multiplier: u64,
     reward_referrer: bool,
+    accelerated_referrer: bool,
     market_type: &MarketType,
     fee_adjustment: i16,
     builder_fee_bps: Option<u16>,
@@ -427,7 +436,7 @@ pub fn calculate_fee_for_fulfillment_with_match(
     )?;
 
     let (taker_fee, referee_discount, referrer_reward) = if reward_referrer {
-        calculate_referee_fee_and_referrer_reward(taker_fee, &taker_fee_tier)?
+        calculate_referee_fee_and_referrer_reward(taker_fee, &taker_fee_tier, accelerated_referrer)?
     } else {
         (taker_fee, 0, 0)
     };

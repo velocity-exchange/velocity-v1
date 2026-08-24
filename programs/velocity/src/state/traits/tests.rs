@@ -55,6 +55,10 @@ mod size {
         // around it must not move for existing on-chain accounts to stay valid.
         assert_eq!(std::mem::offset_of!(UserStats, padding1), 159);
         assert_eq!(std::mem::offset_of!(UserStats, delegate_permissions), 168);
+        assert_eq!(
+            std::mem::offset_of!(UserStats, accelerated_referral_status),
+            170
+        );
     }
 
     #[test]

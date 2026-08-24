@@ -1400,6 +1400,13 @@ pub mod velocity {
         handle_update_promo_fee_tier(ctx, promo_fee_tier)
     }
 
+    pub fn update_user_accelerated_referral_status(
+        ctx: Context<AdminUpdateUserStats>,
+        accelerated: bool,
+    ) -> Result<()> {
+        handle_update_user_accelerated_referral_status(ctx, accelerated)
+    }
+
     pub fn update_initial_pct_to_liquidate(
         ctx: Context<AdminUpdateState>,
         initial_pct_to_liquidate: u16,

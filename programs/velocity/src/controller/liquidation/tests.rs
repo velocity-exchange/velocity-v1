@@ -3312,6 +3312,17 @@ pub mod liquidate_perp_with_fill {
 
         let market_after = perp_market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.fee_ledger.total_liquidation_fee, 360000);
+
+        // A liquidation does not enroll the liquidatee, who holds the taker seat without
+        // having placed the fill. The maker seat enrolls as it would on any other fill.
+        assert!(!user_stats_account_loader
+            .load()
+            .unwrap()
+            .is_accelerated_referrer());
+        assert!(maker_and_referrer_stats
+            .get_ref(&maker_authority)
+            .unwrap()
+            .is_accelerated_referrer());
     }
 
     #[test]

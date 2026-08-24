@@ -290,9 +290,13 @@ export const MIN_I64 = new BN('-9223372036854775808');
 /**
  * Fee tier VIP 1 volume threshold
  */
-export const VIP_FEE_TIER_ONE_VOLUME_QUOTE = new BN(5_000_000).mul(QUOTE_PRECISION);
+export const VIP_FEE_TIER_ONE_VOLUME_QUOTE = new BN(5_000_000).mul(
+	QUOTE_PRECISION
+);
 
 /**
  * Fee tier VIP 2 volume threshold
  */
-export const VIP_FEE_TIER_TWO_VOLUME_QUOTE = new BN(80_000_000).mul(QUOTE_PRECISION);
+export const VIP_FEE_TIER_TWO_VOLUME_QUOTE = new BN(80_000_000).mul(
+	QUOTE_PRECISION
+);

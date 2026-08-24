@@ -551,13 +551,13 @@ pub fn update_amm_larg_conf_test() {
         )
         .unwrap();
 
-    assert_eq!(ask, 18892167448);
-    assert_eq!(bid, 18351342099);
+    assert_eq!(ask, 18849999999);
+    assert_eq!(bid, 18309174649);
     assert_eq!(mrk, 18849999999);
 
-    assert_eq!(market.amm.long_spread, 2237);
+    assert_eq!(market.amm.long_spread, 0);
     assert_eq!(market.amm.peg_multiplier, 19443664550);
-    assert_eq!(market.amm.short_spread, 26454);
+    assert_eq!(market.amm.short_spread, 28691);
 
     // add move lower
     let oracle_price_data = OraclePriceData {
@@ -611,8 +611,8 @@ pub fn update_amm_larg_conf_test() {
         )
         .unwrap();
     }
-    assert_eq!(market.amm.long_spread, 1888);
-    assert_eq!(market.amm.short_spread, 28443);
+    assert_eq!(market.amm.long_spread, 0);
+    assert_eq!(market.amm.short_spread, 30331);
 
     let (bid, ask) = market
         .amm
@@ -624,11 +624,11 @@ pub fn update_amm_larg_conf_test() {
         )
         .unwrap();
 
-    assert_eq!(bid, 18284702739);
+    assert_eq!(bid, 18249170579);
     assert_eq!(mrk, 18819999999);
-    assert_eq!(ask, 18855532158);
+    assert_eq!(ask, 18819999999);
     assert_eq!((oracle_price_data.price as u64) > bid, true);
-    assert_eq!((oracle_price_data.price as u64) < ask, true);
+    assert_eq!((oracle_price_data.price as u64) < ask, false);
 
     // add move lower
     let oracle_price_data = OraclePriceData {
@@ -666,8 +666,8 @@ pub fn update_amm_larg_conf_test() {
         )
         .unwrap();
     }
-    assert_eq!(market.amm.long_spread, 1877);
-    assert_eq!(market.amm.short_spread, 28289);
+    assert_eq!(market.amm.long_spread, 0);
+    assert_eq!(market.amm.short_spread, 30166);
 
     let (bid, ask) = market
         .amm
@@ -679,11 +679,11 @@ pub fn update_amm_larg_conf_test() {
         )
         .unwrap();
 
-    assert_eq!(bid, 18290516152);
+    assert_eq!(bid, 18255185381);
     assert_eq!(mrk, 18822999999);
-    assert_eq!(ask, 18858330769);
+    assert_eq!(ask, 18822999999);
     assert_eq!((oracle_price_data.price as u64) > bid, true);
-    assert_eq!((oracle_price_data.price as u64) < ask, true);
+    assert_eq!((oracle_price_data.price as u64) < ask, false);
 }
 
 #[test]

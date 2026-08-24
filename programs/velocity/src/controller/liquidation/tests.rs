@@ -11212,7 +11212,7 @@ pub mod resolve_perp_bankruptcy {
             cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
             decimals: 6,
             initial_asset_weight: SPOT_WEIGHT_PRECISION,
-            insurance_fund_revenue_receivable: 10 * QUOTE_PRECISION_U64,
+            insurance_fund_revenue_receivable_scaled: 10 * SPOT_BALANCE_PRECISION,
             ..SpotMarket::default()
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
@@ -11314,7 +11314,7 @@ pub mod resolve_perp_bankruptcy {
             spot_market_map
                 .get_ref(&0)
                 .unwrap()
-                .insurance_fund_revenue_receivable,
+                .insurance_fund_revenue_receivable_scaled,
             0
         );
         assert_eq!(expected_user, user);
@@ -13740,7 +13740,7 @@ pub mod resolve_spot_bankruptcy {
                 scaled_balance: 30 * SPOT_BALANCE_PRECISION,
                 ..PoolBalance::default()
             },
-            insurance_fund_revenue_receivable: 20 * QUOTE_PRECISION_U64,
+            insurance_fund_revenue_receivable_scaled: 20 * SPOT_BALANCE_PRECISION,
             historical_oracle_data: HistoricalOracleData::default_price(QUOTE_PRECISION_I64),
             ..SpotMarket::default()
         };
@@ -13793,13 +13793,12 @@ pub mod resolve_spot_bankruptcy {
         expected_spot_market.borrow_balance = 0;
         // revenue pool fully consumed as tranche 1
         expected_spot_market.revenue_pool.scaled_balance = 0;
-        expected_spot_market.insurance_fund_revenue_receivable = 0;
-        // Scaled balance conversion rounds the consumed receivable up by one
-        // unit so the reserved claim is removed in full.
-        expected_spot_market.deposit_balance = 1000 * SPOT_BALANCE_PRECISION - 1;
-        // The social loss calculation also rounds the haircut up.
+        // The receivable holds a scaled claim, so the tranche removes exactly the
+        // claim it spends and leaves no conversion dust behind.
+        expected_spot_market.insurance_fund_revenue_receivable_scaled = 0;
+        expected_spot_market.deposit_balance = 1000 * SPOT_BALANCE_PRECISION;
         expected_spot_market.cumulative_deposit_interest =
-            99 * SPOT_CUMULATIVE_INTEREST_PRECISION / 100 - 1;
+            99 * SPOT_CUMULATIVE_INTEREST_PRECISION / 100;
         // socialized loss only ($10), not the gross $100
         expected_spot_market.total_social_loss = 10 * QUOTE_PRECISION;
         expected_spot_market.total_quote_social_loss = 10 * QUOTE_PRECISION;
@@ -13831,8 +13830,8 @@ pub mod resolve_spot_bankruptcy {
         let deposit_token_amount =
             get_token_amount(deposit_balance, &spot_market, &SpotBalanceType::Deposit).unwrap();
 
-        // Depositors lose the socialized $10 plus conservative conversion dust.
-        assert_eq!(deposit_token_amount, 990 * QUOTE_PRECISION - 1);
+        // Depositors lose the socialized $10 and nothing else.
+        assert_eq!(deposit_token_amount, 990 * QUOTE_PRECISION);
     }
 }
 

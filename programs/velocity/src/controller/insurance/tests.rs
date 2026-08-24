@@ -1453,7 +1453,7 @@ fn resolve_perp_pnl_deficit_refreshes_period_after_new_settle() {
         deposit_balance: 30 * SPOT_BALANCE_PRECISION,
         cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
         decimals: 6,
-        insurance_fund_revenue_receivable: 30 * QUOTE_PRECISION as u64,
+        insurance_fund_revenue_receivable_scaled: 30 * SPOT_BALANCE_PRECISION,
         insurance_fund: InsuranceFund {
             last_revenue_settle_ts: now, // new period opened at `now`
             ..InsuranceFund::default()
@@ -1501,7 +1501,7 @@ fn resolve_perp_pnl_deficit_refreshes_period_after_new_settle() {
     // The controller allocates the full $100 but returns only the $70 that the
     // handler must physically transfer from the IF vault.
     assert_eq!(withdraw, 70 * QUOTE_PRECISION as u64);
-    assert_eq!(spot_market.insurance_fund_revenue_receivable, 0);
+    assert_eq!(spot_market.insurance_fund_revenue_receivable_scaled, 0);
     assert_eq!(market.pnl_pool.scaled_balance, 100 * SPOT_BALANCE_PRECISION);
     assert_eq!(
         market.insurance_claim.revenue_withdraw_since_last_settle,
@@ -1881,7 +1881,7 @@ pub fn settling_receivable_moves_cash_without_changing_if_nav() {
         get_insurance_fund_nav(insurance_vault_amount + transferred, &spot_market).unwrap(),
         nav_before
     );
-    assert_eq!(spot_market.insurance_fund_revenue_receivable, 0);
+    assert_eq!(spot_market.insurance_fund_revenue_receivable_scaled, 0);
     assert!(spot_market.deposit_balance < deposit_balance_before);
     validate_spot_market_vault_amount(&spot_market, spot_vault_amount - transferred).unwrap();
 }
@@ -1899,7 +1899,7 @@ pub fn unstake_does_not_burn_receivable_backed_shares_without_cash() {
             user_shares: insurance_fund_nav as u128,
             ..InsuranceFund::default()
         },
-        insurance_fund_revenue_receivable: 1_000 * QUOTE_PRECISION as u64,
+        insurance_fund_revenue_receivable_scaled: 1_000 * SPOT_BALANCE_PRECISION,
         ..SpotMarket::default()
     };
     let mut stake = InsuranceFundStake::new(Pubkey::default(), 0, 0);
@@ -1942,7 +1942,7 @@ pub fn repeated_revenue_booking_cannot_reuse_receivable_backing() {
             scaled_balance: 100 * SPOT_BALANCE_PRECISION,
             ..PoolBalance::default()
         },
-        insurance_fund_revenue_receivable: 60 * QUOTE_PRECISION as u64,
+        insurance_fund_revenue_receivable_scaled: 60 * SPOT_BALANCE_PRECISION,
         insurance_fund: InsuranceFund {
             revenue_settle_period: 1,
             ..InsuranceFund::default()
@@ -2142,4 +2142,240 @@ pub fn add_if_stake_charges_only_what_prices_to_whole_shares() {
         ),
         Err(ErrorCode::IFDepositMintsZeroShares)
     );
+}
+
+#[test]
+pub fn paying_a_pool_from_the_receivable_keeps_deposits_equal_to_its_pools() {
+    // `deposit_balance` is the sum of every claim on the vault, pnl pools
+    // included. A payment out of the receivable moves a claim from one place
+    // inside that total to another, so the total must not move.
+    let mut spot_market = SpotMarket {
+        market_index: 0,
+        decimals: 6,
+        deposit_balance: 1_000 * SPOT_BALANCE_PRECISION,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        insurance_fund_revenue_receivable_scaled: 100 * SPOT_BALANCE_PRECISION,
+        ..SpotMarket::default()
+    };
+    let mut pnl_pool = PoolBalance {
+        market_index: 0,
+        scaled_balance: 0,
+        ..PoolBalance::default()
+    };
+
+    let deposit_balance_before = spot_market.deposit_balance;
+    let payment = 100 * QUOTE_PRECISION;
+
+    let receivable_payment = transfer_insurance_fund_revenue_receivable_to_pool(
+        &mut spot_market,
+        &mut pnl_pool,
+        payment,
+    )
+    .unwrap();
+
+    // The whole payment came out of the receivable, so no token enters the
+    // vault and the market total must not grow. The debit rounds up while the
+    // pool credit rounds down, so the total lands at most one scaled unit low.
+    // Low is the safe side: recorded claims stay at or below the backing.
+    assert_eq!(receivable_payment, payment);
+    assert_eq!(spot_market.insurance_fund_revenue_receivable_scaled, 0);
+    assert!(spot_market.deposit_balance <= deposit_balance_before);
+    assert!(deposit_balance_before - spot_market.deposit_balance <= 1);
+}
+
+#[test]
+pub fn settling_a_receivable_after_interest_accrues_clears_its_whole_claim() {
+    // The receivable is an integer token amount, but the claim it holds inside
+    // `deposit_balance` is a scaled balance that grows with deposit interest.
+    // Settling must remove the claim the booking created, or the difference
+    // becomes a scaled balance that no user and no pool owns.
+    let mut spot_market = SpotMarket {
+        market_index: 0,
+        decimals: 6,
+        deposit_balance: 10_000 * SPOT_BALANCE_PRECISION,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        revenue_pool: PoolBalance {
+            market_index: 0,
+            scaled_balance: 1_000 * SPOT_BALANCE_PRECISION,
+            ..PoolBalance::default()
+        },
+        insurance_fund: InsuranceFund {
+            revenue_settle_period: 1,
+            ..InsuranceFund::default()
+        },
+        ..SpotMarket::default()
+    };
+
+    let deposit_balance_before = spot_market.deposit_balance;
+    let revenue_pool_before = spot_market.revenue_pool.scaled_balance;
+
+    let booked = book_revenue_to_insurance_fund(
+        10_000 * QUOTE_PRECISION as u64,
+        0,
+        &mut spot_market,
+        1,
+        false,
+        false,
+    )
+    .unwrap();
+    assert!(booked > 0);
+
+    // A settle period of deposit interest accrues before the transfer can run.
+    spot_market.cumulative_deposit_interest = SPOT_CUMULATIVE_INTEREST_PRECISION * 1_100 / 1_000;
+
+    // The claim earned a settle period of deposit interest while it waited, and
+    // the fund collects it. A fixed token amount could not carry that gain.
+    let transferred = settle_insurance_fund_revenue_receivable(&mut spot_market).unwrap();
+    assert_eq!(transferred, booked * 1_100 / 1_000);
+
+    // Every scaled unit inside `deposit_balance` must belong to a depositor or
+    // to a pool. The revenue pool and the receivable are both empty now, so the
+    // total must be back to the depositors' own claim.
+    let revenue_pool_claim_released = revenue_pool_before - spot_market.revenue_pool.scaled_balance;
+    let depositor_claim = deposit_balance_before - revenue_pool_claim_released;
+    assert_eq!(spot_market.revenue_pool.scaled_balance, 0);
+    assert_eq!(spot_market.insurance_fund_revenue_receivable_scaled, 0);
+    assert_eq!(
+        spot_market.deposit_balance,
+        depositor_claim,
+        "unowned scaled residue of {} left inside deposit_balance",
+        spot_market.deposit_balance as i128 - depositor_claim as i128
+    );
+}
+
+#[test]
+pub fn cash_only_payout_lets_the_first_staker_out_leave_the_receivable_behind() {
+    // Exits are priced at the fund's whole value but paid entirely in vault
+    // cash, and every loss draw spends the receivable first. A staker who
+    // leaves while cash is available therefore takes cash worth their full
+    // share and leaves the illiquid half to whoever stays.
+    let insurance_vault_amount = 500 * QUOTE_PRECISION as u64;
+    let receivable = 1_000 * QUOTE_PRECISION as u64;
+    let nav = insurance_vault_amount + receivable;
+
+    let mut spot_market = SpotMarket {
+        decimals: 6,
+        deposit_balance: 10_000 * SPOT_BALANCE_PRECISION,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        insurance_fund: InsuranceFund {
+            unstaking_period: 0,
+            total_shares: nav as u128,
+            user_shares: nav as u128,
+            ..InsuranceFund::default()
+        },
+        insurance_fund_revenue_receivable_scaled: receivable as u128
+            * (SPOT_BALANCE_PRECISION / QUOTE_PRECISION),
+        ..SpotMarket::default()
+    };
+
+    // A holds 30% of the fund, B holds 70%.
+    let a_shares = nav as u128 * 30 / 100;
+    let mut a = InsuranceFundStake::new(Pubkey::default(), 0, 0);
+    a.update_if_shares(a_shares, &spot_market).unwrap();
+    let mut a_stats = UserStats::default();
+
+    request_remove_insurance_fund_stake(
+        a_shares,
+        insurance_vault_amount,
+        &mut a,
+        &mut a_stats,
+        &mut spot_market,
+        0,
+    )
+    .unwrap();
+
+    let a_payout = remove_insurance_fund_stake(
+        insurance_vault_amount,
+        &mut a,
+        &mut a_stats,
+        &mut spot_market,
+        0,
+    )
+    .unwrap();
+
+    // A is paid 30% of the whole fund, entirely out of cash.
+    assert_eq!(a_payout, nav / 100 * 30);
+    let vault_after_a = insurance_vault_amount - a_payout;
+
+    // B is left holding the rest, which is now almost all receivable.
+    let b_shares = spot_market.insurance_fund.user_shares;
+    let nav_after_a = get_insurance_fund_nav(vault_after_a, &spot_market).unwrap();
+    assert_eq!(b_shares, nav as u128 - a_shares);
+    assert_eq!(nav_after_a, vault_after_a + receivable);
+
+    // A loss draw spends the receivable before it touches cash, so the value it
+    // removes falls entirely on B.
+    consume_insurance_fund_revenue_receivable(&mut spot_market, receivable as u128).unwrap();
+    let nav_after_loss = get_insurance_fund_nav(vault_after_a, &spot_market).unwrap();
+
+    assert_eq!(nav_after_loss, vault_after_a);
+    // A was paid its full pro rata share of the fund. B keeps 4.76% of theirs.
+    let b_kept_bps = nav_after_loss as u128 * 10_000 / nav_after_a as u128;
+    assert_eq!(b_kept_bps, 476);
+}
+
+#[test]
+pub fn a_stranded_unstake_needs_an_outside_settle_to_complete() {
+    // A frozen exit value above the vault's cash reverts the whole unstake.
+    // Nothing on the unstake path can move the receivable into the vault, so
+    // the position stays stuck until an unrelated caller settles it.
+    let insurance_vault_amount = 1_000 * QUOTE_PRECISION as u64;
+    let receivable = 1_000 * QUOTE_PRECISION as u64;
+    let nav = insurance_vault_amount + receivable;
+
+    let mut spot_market = SpotMarket {
+        decimals: 6,
+        deposit_balance: 10_000 * SPOT_BALANCE_PRECISION,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        insurance_fund: InsuranceFund {
+            unstaking_period: 0,
+            total_shares: nav as u128,
+            user_shares: nav as u128,
+            ..InsuranceFund::default()
+        },
+        insurance_fund_revenue_receivable_scaled: receivable as u128
+            * (SPOT_BALANCE_PRECISION / QUOTE_PRECISION),
+        ..SpotMarket::default()
+    };
+
+    let mut stake = InsuranceFundStake::new(Pubkey::default(), 0, 0);
+    stake.update_if_shares(nav as u128, &spot_market).unwrap();
+    let mut user_stats = UserStats::default();
+
+    request_remove_insurance_fund_stake(
+        nav as u128,
+        insurance_vault_amount,
+        &mut stake,
+        &mut user_stats,
+        &mut spot_market,
+        0,
+    )
+    .unwrap();
+
+    // The request froze a value above the cash on hand, so the unstake reverts.
+    assert!(remove_insurance_fund_stake(
+        insurance_vault_amount,
+        &mut stake,
+        &mut user_stats,
+        &mut spot_market,
+        0,
+    )
+    .is_err());
+
+    // The same unstake completes once an outside caller moves the receivable
+    // into the vault. The staker cannot reach this state alone.
+    let settled = settle_insurance_fund_revenue_receivable(&mut spot_market).unwrap();
+    assert_eq!(settled, receivable);
+
+    let payout = remove_insurance_fund_stake(
+        insurance_vault_amount + settled,
+        &mut stake,
+        &mut user_stats,
+        &mut spot_market,
+        0,
+    )
+    .unwrap();
+    assert!(payout > 0);
 }

@@ -407,6 +407,22 @@ pub fn get_max_withdraw_for_market_with_token_amount(
     let insurance_fund_revenue_receivable =
         get_insurance_fund_revenue_receivable_token_amount(spot_market)?;
 
+    // Revenue already allocated to the insurance fund still sits in this vault.
+    // Tokens that leave the protocol must leave that claim behind, so every
+    // egress limit is capped by the free liquidity that remains after it. A
+    // market with no receivable keeps the limit it had before the reservation.
+    let reserve_receivable = |limit: u128| {
+        if !is_leaving_velocity || insurance_fund_revenue_receivable == 0 {
+            return limit;
+        }
+
+        let unreserved_liquidity = deposit_token_amount
+            .saturating_sub(borrow_token_amount)
+            .saturating_sub(insurance_fund_revenue_receivable);
+
+        limit.min(unreserved_liquidity)
+    };
+
     // if leaving velocity, need to consider utilization limits
     let (min_deposit_token_for_utilization, max_borrow_token_for_utilization) =
         if is_leaving_velocity {
@@ -431,10 +447,7 @@ pub fn get_max_withdraw_for_market_with_token_amount(
 
         let token_amount = token_amount.unsigned_abs();
         if withdraw_limit <= token_amount && is_leaving_velocity {
-            let unreserved_liquidity = deposit_token_amount
-                .saturating_sub(borrow_token_amount)
-                .saturating_sub(insurance_fund_revenue_receivable);
-            return Ok(withdraw_limit.min(unreserved_liquidity));
+            return Ok(reserve_receivable(withdraw_limit));
         }
 
         max_withdraw_amount = token_amount;
@@ -478,20 +491,20 @@ pub fn get_max_withdraw_for_market_with_token_amount(
 
     let max_withdraw_and_borrow = max_withdraw_amount.safe_add(borrow_limit)?;
 
-    if is_leaving_velocity && insurance_fund_revenue_receivable > 0 {
-        let unreserved_liquidity = deposit_token_amount
-            .saturating_sub(borrow_token_amount)
-            .saturating_sub(insurance_fund_revenue_receivable);
-        Ok(max_withdraw_and_borrow.min(unreserved_liquidity))
-    } else {
-        Ok(max_withdraw_and_borrow)
-    }
+    Ok(reserve_receivable(max_withdraw_and_borrow))
 }
 
+/// Token value of the insurance fund revenue that still sits in the spot vault.
+/// The claim is a scaled balance, so its token value grows with deposit
+/// interest for as long as the transfer cannot complete.
 pub fn get_insurance_fund_revenue_receivable_token_amount(
     spot_market: &SpotMarket,
 ) -> VelocityResult<u128> {
-    Ok(spot_market.insurance_fund_revenue_receivable as u128)
+    get_token_amount(
+        spot_market.insurance_fund_revenue_receivable_scaled,
+        spot_market,
+        &SpotBalanceType::Deposit,
+    )
 }
 
 pub fn validate_spot_balances(spot_market: &SpotMarket) -> VelocityResult<i64> {
@@ -665,7 +678,7 @@ mod tests {
             cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
             deposit_balance: scaled(1_000 * QUOTE_PRECISION),
             borrow_balance: scaled(100 * QUOTE_PRECISION),
-            insurance_fund_revenue_receivable: (200 * QUOTE_PRECISION) as u64,
+            insurance_fund_revenue_receivable_scaled: scaled(200 * QUOTE_PRECISION),
             ..SpotMarket::default()
         };
 
@@ -694,6 +707,62 @@ mod tests {
         assert!(
             validate_spot_market_vault_amount(&market, (200 * QUOTE_PRECISION - 1) as u64).is_err()
         );
+    }
+
+    #[test]
+    fn zero_receivable_market_keeps_its_withdraw_limit() {
+        // A market that holds no receivable must price egress exactly as it did
+        // before the reservation existed. The guard threshold puts the withdraw
+        // limit above the market's free liquidity, which is the shape that tells
+        // the two reservation sites apart.
+        let market = SpotMarket {
+            market_index: 0,
+            decimals: 6,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            deposit_balance: scaled(1_000 * QUOTE_PRECISION),
+            borrow_balance: scaled(900 * QUOTE_PRECISION),
+            withdraw_guard_threshold: (500 * QUOTE_PRECISION) as u64,
+            insurance_fund_revenue_receivable_scaled: 0,
+            ..SpotMarket::default()
+        };
+
+        // deposits - guard = 500 sets the utilization floor, so the limit is 500.
+        // Free liquidity is deposits - borrows = 100. The limit must win.
+        let max_withdraw = get_max_withdraw_for_market_with_token_amount(
+            &market,
+            (600 * QUOTE_PRECISION) as i128,
+            true,
+        )
+        .unwrap();
+        assert_eq!(max_withdraw, 500 * QUOTE_PRECISION);
+    }
+
+    #[test]
+    fn receivable_reserves_the_same_amount_from_both_limit_paths() {
+        // The early return and the withdraw-plus-borrow tail must reserve the
+        // receivable identically. `token_amount` is the only difference between
+        // the two calls: above the limit it returns early, below it falls through.
+        let market = SpotMarket {
+            market_index: 0,
+            decimals: 6,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            deposit_balance: scaled(1_000 * QUOTE_PRECISION),
+            borrow_balance: scaled(700 * QUOTE_PRECISION),
+            withdraw_guard_threshold: (500 * QUOTE_PRECISION) as u64,
+            insurance_fund_revenue_receivable_scaled: scaled(250 * QUOTE_PRECISION),
+            ..SpotMarket::default()
+        };
+
+        // Free liquidity after the reservation is 1000 - 700 - 250 = 50.
+        let early_return = get_max_withdraw_for_market_with_token_amount(
+            &market,
+            (600 * QUOTE_PRECISION) as i128,
+            true,
+        )
+        .unwrap();
+        assert_eq!(early_return, 50 * QUOTE_PRECISION);
     }
 
     // Fixture for the withdraw-limit exception budget.

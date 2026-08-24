@@ -85,10 +85,17 @@ pub struct SpotMarket {
     /// e.g. for SOL-PERP, funds can be settled in usdc and will flow into the USDC revenue pool
     pub revenue_pool: PoolBalance, // in base asset
     /// Reserved bytes from the retired spot fee pool.
-    pub padding_former_spot_fee_pool: [u8; 24],
-    /// Revenue allocated to the insurance fund while it remains in the spot vault.
-    /// precision: token mint precision
-    pub insurance_fund_revenue_receivable: u64,
+    pub padding_former_spot_fee_pool: [u8; 16],
+    /// Revenue allocated to the insurance fund that still sits in the spot
+    /// vault. The claim is held as a scaled balance inside `deposit_balance`,
+    /// so it earns deposit interest for as long as the tokens remain here and
+    /// the fund collects that interest when the transfer completes. A token
+    /// amount cannot do this: the claim grows with
+    /// `cumulative_deposit_interest` and a fixed integer would leave the
+    /// difference inside `deposit_balance` owned by nobody. Read the token
+    /// value with `get_insurance_fund_revenue_receivable_token_amount`.
+    /// precision: SPOT_BALANCE_PRECISION
+    pub insurance_fund_revenue_receivable_scaled: u128,
     pub historical_oracle_data: HistoricalOracleData,
     pub historical_index_data: HistoricalIndexData,
     /// no withdraw limits/guards when deposits below this threshold
@@ -277,7 +284,8 @@ pub struct SpotMarket {
 // let the compiler insert implicit padding.
 const _: () = assert!(std::mem::size_of::<SpotMarket>() == 800);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, padding_former_spot_fee_pool) == 416);
-const _: () = assert!(std::mem::offset_of!(SpotMarket, insurance_fund_revenue_receivable) == 440);
+const _: () =
+    assert!(std::mem::offset_of!(SpotMarket, insurance_fund_revenue_receivable_scaled) == 432);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, withdraw_circuit_breaker_bps) == 740);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, max_deposit_bps_per_day) == 742);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, deposit_guard_threshold) == 744);
@@ -303,8 +311,8 @@ impl Default for SpotMarket {
             total_social_loss: 0,
             total_quote_social_loss: 0,
             revenue_pool: PoolBalance::default(),
-            padding_former_spot_fee_pool: [0; 24],
-            insurance_fund_revenue_receivable: 0,
+            padding_former_spot_fee_pool: [0; 16],
+            insurance_fund_revenue_receivable_scaled: 0,
             historical_oracle_data: HistoricalOracleData::default(),
             historical_index_data: HistoricalIndexData::default(),
             withdraw_guard_threshold: 0,

@@ -677,6 +677,18 @@ export function getRelayScratchPublicKey(programId: PublicKey): PublicKey {
 }
 
 /**
+ * The protocol's single relay crank treasury: `["crank_treasury"]`. Every
+ * market's crank reservoir refills from here, so this is the one account an
+ * operator funds and watches. Funding it is a plain SOL transfer.
+ */
+export function getCrankTreasuryPublicKey(programId: PublicKey): PublicKey {
+	return PublicKey.findProgramAddressSync(
+		[Buffer.from(anchor.utils.bytes.utf8.encode('crank_treasury'))],
+		programId
+	)[0];
+}
+
+/**
  * A quoter registry entry (`QuoterV0`) — one per
  * `(perp market, quoter program, quoted user)`.
  *

@@ -64,6 +64,9 @@ pub fn handle_sync_user_conditions<'c: 'info, 'info>(
         &ctx.accounts.user,
         ctx.remaining_accounts,
         terms,
+        // An opt-in sync, so the next resync the treasury pays for is an
+        // interval away.
+        true,
     )?;
     rewrite_trigger_conditions(
         &ctx.accounts.user_conditions,

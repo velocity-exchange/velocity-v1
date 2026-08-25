@@ -837,6 +837,10 @@ pub enum ErrorCode {
     NoTakerOriginCross,
     #[msg("Crossing would leave the taker worse off than its resting price")]
     TakerOriginCrossWorseForTaker,
+    #[msg("Crank treasury has too few lamports for this payout")]
+    InsufficientCrankTreasury,
+    #[msg("Crank reservoir is above its refill watermark")]
+    CrankReservoirNotLow,
 }
 
 #[macro_export]

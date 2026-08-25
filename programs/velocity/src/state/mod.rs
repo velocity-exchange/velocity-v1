@@ -7,6 +7,7 @@
 //! `margin_calculation.rs` = margin calculation context and result types.
 
 pub mod clob_crank;
+pub mod crank_treasury;
 pub mod events;
 pub mod fill_mode;
 pub mod fulfillment_params;

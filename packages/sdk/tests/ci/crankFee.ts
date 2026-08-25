@@ -34,6 +34,7 @@ const UNITS: CrankCostUnitsV0 = {
 	trigger: 40_000,
 	liquidation: 120_000,
 	forceCancel: 60_000,
+	refill: 30_000,
 };
 
 describe('crank fee mirror', () => {

@@ -68,7 +68,41 @@ either by inflating its limit or by requesting less than it is repaid for — ca
 `StateAccount.liquidationCrankReimbursementBps` of the recovery and converted through
 `StateAccount.solSpotMarketIndex`. A liquidation that fills nothing pays nothing. `AdminClient.updateLiquidationCrankReimbursement`
 and CLI `fees set-liquidation-crank-reimbursement` set both; they default to zero, which
-leaves the flat payment. `AdminClient.updateTransactionFeeRails`
+leaves the flat payment.
+
+Every reservoir is funded from one place. `CrankTreasuryV0`
+(`getCrankTreasuryPublicKey`) is the protocol's single crank pool: markets refill themselves
+from it through the permissionless `refillCrankReservoir` crank, and a user's liquidation-
+conditions resync is paid from it too, so no per-market or per-user balance is watched or
+topped up by hand. A reservoir mirrors its spendable lamports into its own account data
+(`ClobCrankConditionsV0.spendableMirror`) because a relay watch reads data and a lamport
+balance is metadata; a condition on that value wakes the refill. Cranks are still *paid* by
+the market reservoir they crank rather than from the treasury directly — a crank writes
+whatever pays it, and a writable account has a fixed compute budget per block, so one payer
+for every crank would serialize the protocol's cranks into that budget exactly when a
+market-wide move needs them landing in parallel. `AdminClient.initializeCrankTreasury`,
+`updateCrankTreasury`, `withdrawCrankTreasury` and `sweepCrankReservoir` (CLI
+`fees init-crank-treasury`, `set-crank-treasury`, `withdraw-crank-treasury`,
+`sweep-crank-reservoir`) create, configure and drain it; funding it is a plain SOL transfer,
+and the sweep moves lamports back out of a retired or over-provisioned market's reservoir so
+they do not travel one way only. `clob-market init` therefore drops `--fund-reservoir`.
+
+A reservoir is held between two levels, both counted in cranks rather than lamports so one
+setting fits every market: `refillTargetCranks` is how full a refill leaves it, and
+`refillWatermarkCranks` is when a refill wakes. The watermark must cover the refill's own
+round trip — a turner polls, simulates and lands it while the reservoir keeps paying — and a
+market-wide move is when cranks fire fastest and the network is slowest to land one. The
+target is read at refill time and reaches every market at once; the watermark is resolved to
+lamports at attach and stored on the market (`ClobCrankConditionsV0.refillWatermarkLamports`),
+because it is the threshold that market's wake condition carries, so it reaches a market on
+its next attach. What a refill *pays* is priced from the rails like every other crank and
+stored on the market it fills (`CrankPaymentsV0.refill`, `--crank-cu-refill`), because a
+condition has to advertise a floor a turner can filter on.
+
+Opting a user into self-maintaining liquidation conditions states what its resync pays, and
+the treasury is now the payer, so that figure is capped (`LIQ_SYNC_MAX_COST_UNITS`) and drawn
+at most once per `syncFallbackSlots` (`UserConditionsV0.lastPaidSyncSlot`) — opting in is
+permissionless, and neither bound existed while the account paid for itself. `AdminClient.updateTransactionFeeRails`
 and CLI `fees set-transaction-rails` re-price every crank in one write; markets take the new rate on
 their next `quoter set-market-clob`, which now takes `--crank-cu` flags instead of a lamport figure.
 

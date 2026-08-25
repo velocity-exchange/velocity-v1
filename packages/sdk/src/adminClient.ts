@@ -68,6 +68,8 @@ import {
 	getLpPoolTokenVaultPublicKey,
 	getVelocitySignerPublicKey,
 	getConstituentCorrelationsPublicKey,
+	getCrankTreasuryPublicKey,
+	getClobCrankConditionsPublicKey,
 } from './addresses/pda';
 import { squareRootBN } from './math/utils';
 import {
@@ -5483,6 +5485,191 @@ export class AdminClient extends VelocityClient {
 				},
 			}
 		);
+	}
+
+	/**
+	 * Creates the protocol's relay crank treasury — the single account every market's crank
+	 * reservoir refills from. Warm/cold admin; run once per deployment.
+	 *
+	 * Born unpriced and inert. Call `updateCrankTreasury` to set what a refill fills to and
+	 * what it pays, then fund it with a plain SOL transfer to
+	 * `getCrankTreasuryPublicKey(programId)`.
+	 *
+	 * @returns The transaction signature.
+	 */
+	public async initializeCrankTreasury(): Promise<TransactionSignature> {
+		const ix = await this.getInitializeCrankTreasuryIx();
+		const tx = await this.buildTransaction(ix);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `initializeCrankTreasury` instruction without sending it.
+	 * See `initializeCrankTreasury`.
+	 * @returns The unsigned instruction.
+	 */
+	public async getInitializeCrankTreasuryIx(): Promise<TransactionInstruction> {
+		return await this.program.instruction.initializeCrankTreasury({
+			accounts: {
+				treasury: getCrankTreasuryPublicKey(this.program.programId),
+				admin: this.isSubscribed
+					? this.getStateAccount().warmAdmin
+					: this.wallet.publicKey,
+				state: await this.getStatePublicKey(),
+				rent: SYSVAR_RENT_PUBKEY,
+				systemProgram: anchor.web3.SystemProgram.programId,
+			},
+		});
+	}
+
+	/**
+	 * Prices the crank treasury: how full a refill leaves a market's reservoir, and what the
+	 * refill crank pays its keeper. Warm/cold admin.
+	 *
+	 * `refillTargetCranks` is denominated in cranks rather than lamports, so one setting serves
+	 * every market — a market whose cranks cost more carries a proportionally larger float. When
+	 * a reservoir counts as *low* is fixed by the program and baked into each market's wake
+	 * condition at attach, so retuning the target here does not require re-attaching markets.
+	 *
+	 * The target is read at refill time and so reaches every market at once. The watermark is
+	 * resolved to lamports and written onto a market at attach, because it is the threshold that
+	 * market's wake condition carries — so a new watermark reaches a market on its next
+	 * `updatePerpMarketClobQuoter`.
+	 *
+	 * What a refill *pays* is not set here: it is priced from the transaction rails like every
+	 * other crank and stored on the market whose reservoir it fills, because that is where the
+	 * condition advertising it lives.
+	 *
+	 * @param refillTargetCranks - Fill a reservoir to this many of its most expensive crank.
+	 * @param refillWatermarkCranks - Wake the refill when a reservoir can pay fewer than this many.
+	 * @returns The transaction signature.
+	 */
+	public async updateCrankTreasury(
+		refillTargetCranks: number,
+		refillWatermarkCranks: number
+	): Promise<TransactionSignature> {
+		const ix = await this.getUpdateCrankTreasuryIx(
+			refillTargetCranks,
+			refillWatermarkCranks
+		);
+		const tx = await this.buildTransaction(ix);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `updateCrankTreasury` instruction without sending it. See `updateCrankTreasury`.
+	 * @param refillTargetCranks - Fill a reservoir to this many of its most expensive crank.
+	 * @param refillWatermarkCranks - Wake the refill when a reservoir can pay fewer than this many.
+	 * @returns The unsigned instruction.
+	 */
+	public async getUpdateCrankTreasuryIx(
+		refillTargetCranks: number,
+		refillWatermarkCranks: number
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.updateCrankTreasury(
+			refillTargetCranks,
+			refillWatermarkCranks,
+			{
+				accounts: {
+					treasury: getCrankTreasuryPublicKey(this.program.programId),
+					admin: this.isSubscribed
+						? this.getStateAccount().warmAdmin
+						: this.wallet.publicKey,
+					state: await this.getStatePublicKey(),
+				},
+			}
+		);
+	}
+
+	/**
+	 * Moves lamports from a market's crank reservoir back to the treasury. Warm/cold admin.
+	 *
+	 * Lamports reach a reservoir through the refill crank and leave it as crank payments, so
+	 * without this they only travel one way; an over-provisioned or retired market would hold
+	 * them for good. Never takes the reservoir below its rent, and a reservoir swept under its
+	 * watermark simply refills itself.
+	 *
+	 * @param marketIndex - Perp market whose reservoir to sweep.
+	 * @param lamports - How many lamports to move back.
+	 * @returns The transaction signature.
+	 */
+	public async sweepCrankReservoir(
+		marketIndex: number,
+		lamports: BN
+	): Promise<TransactionSignature> {
+		const ix = await this.getSweepCrankReservoirIx(marketIndex, lamports);
+		const tx = await this.buildTransaction(ix);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `sweepCrankReservoir` instruction without sending it. See `sweepCrankReservoir`.
+	 * @param marketIndex - Perp market whose reservoir to sweep.
+	 * @param lamports - How many lamports to move back.
+	 * @returns The unsigned instruction.
+	 */
+	public async getSweepCrankReservoirIx(
+		marketIndex: number,
+		lamports: BN
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.sweepCrankReservoir(
+			marketIndex,
+			lamports,
+			{
+				accounts: {
+					treasury: getCrankTreasuryPublicKey(this.program.programId),
+					crankConditions: getClobCrankConditionsPublicKey(
+						this.program.programId,
+						marketIndex
+					),
+					admin: this.isSubscribed
+						? this.getStateAccount().warmAdmin
+						: this.wallet.publicKey,
+					state: await this.getStatePublicKey(),
+				},
+			}
+		);
+	}
+
+	/**
+	 * Recovers lamports from the crank treasury to the admin. Warm/cold admin.
+	 *
+	 * Never takes the account below its own rent exemption, so a withdraw cannot close the
+	 * treasury out from under the markets that draw on it.
+	 *
+	 * @param lamports - How many lamports to take out.
+	 * @returns The transaction signature.
+	 */
+	public async withdrawCrankTreasury(
+		lamports: BN
+	): Promise<TransactionSignature> {
+		const ix = await this.getWithdrawCrankTreasuryIx(lamports);
+		const tx = await this.buildTransaction(ix);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `withdrawCrankTreasury` instruction without sending it.
+	 * See `withdrawCrankTreasury`.
+	 * @param lamports - How many lamports to take out.
+	 * @returns The unsigned instruction.
+	 */
+	public async getWithdrawCrankTreasuryIx(
+		lamports: BN
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.withdrawCrankTreasury(lamports, {
+			accounts: {
+				treasury: getCrankTreasuryPublicKey(this.program.programId),
+				admin: this.isSubscribed
+					? this.getStateAccount().warmAdmin
+					: this.wallet.publicKey,
+				state: await this.getStatePublicKey(),
+			},
+		});
 	}
 
 	/**

@@ -58,6 +58,7 @@ pub fn svm() -> LiteSVM {
     // Every resolver names the program-wide staging account, so it exists
     // from the start rather than each fixture remembering to create it.
     set_relay_scratch(&mut svm);
+    set_crank_treasury(&mut svm);
     svm
 }
 
@@ -156,6 +157,39 @@ pub fn set_relay_scratch(svm: &mut LiteSVM) {
         &scratch,
         velocity::state::relay_scratch::RelayScratchV0::SIZE,
     );
+}
+
+/// The protocol crank treasury. The CLOB crank resolver reads the levels a
+/// reservoir is held between from it, and the liquidation-conditions resync is
+/// paid out of it, so any fixture that resolves or resyncs needs it to exist.
+///
+/// Funded well past its rent so a refill staged in a fixture has something to
+/// move, and priced the way a live deployment is.
+pub fn set_crank_treasury(svm: &mut LiteSVM) {
+    let mut treasury: velocity::state::crank_treasury::CrankTreasuryV0 = Zeroable::zeroed();
+    treasury.refill_target_cranks = 1_000;
+    treasury.refill_watermark_cranks = 100;
+    set_zero_copy_account(
+        svm,
+        crank_treasury_pda(),
+        velocity::state::crank_treasury::CrankTreasuryV0::DISCRIMINATOR,
+        &treasury,
+        velocity::state::crank_treasury::CrankTreasuryV0::SIZE,
+    );
+    let mut account = svm.get_account(&crank_treasury_pda()).unwrap();
+    account.lamports = account.lamports.saturating_add(5_000_000_000);
+    svm.set_account(crank_treasury_pda(), account).unwrap();
+}
+
+pub fn crank_treasury_pda() -> Pubkey {
+    Pubkey::new_from_array(
+        anchor_lang::prelude::Pubkey::find_program_address(
+            &[velocity::state::crank_treasury::CRANK_TREASURY_PDA_SEED],
+            &velocity::ID,
+        )
+        .0
+        .to_bytes(),
+    )
 }
 
 pub fn relay_scratch_pda() -> Pubkey {

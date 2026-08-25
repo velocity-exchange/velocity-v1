@@ -10,6 +10,7 @@ import {
 } from '@solana/web3.js';
 import { BN } from '@coral-xyz/anchor';
 import {
+	getCrankTreasuryPublicKey,
 	getClobCrankConditionsPublicKey,
 	getPerpMarketPublicKeySync,
 	getQuoterSignerPublicKey,
@@ -279,10 +280,6 @@ export function registerClobMarket(parent: Command): void {
 				'0'
 			)
 			.option(
-				'--fund-reservoir <lamports>',
-				'lamports transferred to the conditions reservoir after the attach'
-			)
-			.option(
 				'--relay-program <pubkey>',
 				`register a relay WatchV0 over the conditions block (default relay id ${DEFAULT_RELAY_PROGRAM}; pass "none" to skip)`,
 				DEFAULT_RELAY_PROGRAM
@@ -296,7 +293,6 @@ export function registerClobMarket(parent: Command): void {
 				quoterUser: string;
 				expireFallbackSlots: string;
 				minCrossSurplus: string;
-				fundReservoir?: string;
 				relayProgram: string;
 			},
 			cmd: Command
@@ -444,27 +440,19 @@ export function registerClobMarket(parent: Command): void {
 							clobProgram,
 							quoterSigner: client.getQuoterSignerPublicKey(),
 							crankConditions: conditions,
+							treasury: getCrankTreasuryPublicKey(client.program.programId),
 							rent: SYSVAR_RENT_PUBKEY,
 							systemProgram: SystemProgram.programId,
 						},
 					}
 				);
-				const attachTx = new Transaction().add(attach);
-				if (flags.fundReservoir) {
-					attachTx.add(
-						SystemProgram.transfer({
-							fromPubkey: wallet,
-							toPubkey: conditions,
-							lamports: BigInt(flags.fundReservoir),
-						})
-					);
-				}
-				await provider.sendAndConfirm(attachTx);
+				await provider.sendAndConfirm(new Transaction().add(attach));
+				// The reservoir is left holding rent alone on purpose. A market
+				// funds itself from the crank treasury through the refill crank,
+				// and a hand transfer here would only leave the reservoir's
+				// mirrored balance behind what it really holds.
 				console.log(
-					`attached as perp-market[${marketIndex}].clob_quoter; conditions ${conditions.toBase58()}` +
-						(flags.fundReservoir
-							? ` funded with ${flags.fundReservoir} lamports`
-							: '')
+					`attached as perp-market[${marketIndex}].clob_quoter; conditions ${conditions.toBase58()}; the crank treasury refills it`
 				);
 
 				// 4. Relay watches, so turners discover both condition blocks:

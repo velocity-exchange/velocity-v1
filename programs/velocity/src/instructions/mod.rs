@@ -31,6 +31,7 @@ mod account_extension;
 mod admin;
 mod clob;
 pub mod constraints;
+pub mod crank_treasury;
 mod if_staker;
 pub mod initialize_relay_scratch;
 mod keeper;
@@ -45,4 +46,4 @@ pub mod sync_user_conditions;
 mod trigger_relay;
 mod user;
 
-pub use {initialize_relay_scratch::*, sync_user_conditions::*};
+pub use {crank_treasury::*, initialize_relay_scratch::*, sync_user_conditions::*};

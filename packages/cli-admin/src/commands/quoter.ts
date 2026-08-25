@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import { PublicKey, SystemProgram, SYSVAR_RENT_PUBKEY } from '@solana/web3.js';
 import { BN } from '@coral-xyz/anchor';
 import {
+	getCrankTreasuryPublicKey,
 	getClobCrankConditionsPublicKey,
 	getPerpMarketPublicKeySync,
 	QuoterCpiLeg,
@@ -572,6 +573,7 @@ export function registerQuoter(parent: Command): void {
 								client.program.programId,
 								marketIndex
 							),
+							treasury: getCrankTreasuryPublicKey(client.program.programId),
 							rent: SYSVAR_RENT_PUBKEY,
 							systemProgram: SystemProgram.programId,
 						},

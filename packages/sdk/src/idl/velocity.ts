@@ -4230,6 +4230,72 @@ export type Velocity = {
       ]
     },
     {
+      "name": "initializeCrankTreasury",
+      "docs": [
+        "Create the program's shared resolver staging account (one for the",
+        "whole program; permissionless, pays its own rent once).",
+        "Create the protocol's relay crank treasury — the one account that funds",
+        "every market's crank reservoir. Born unpriced; `update_crank_treasury`",
+        "decides what it spends."
+      ],
+      "discriminator": [
+        192,
+        223,
+        190,
+        57,
+        205,
+        128,
+        10,
+        235
+      ],
+      "accounts": [
+        {
+          "name": "treasury",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "initializeInsuranceFundStake",
       "discriminator": [
         187,
@@ -5271,10 +5337,6 @@ export type Velocity = {
     },
     {
       "name": "initializeRelayScratch",
-      "docs": [
-        "Create the program's shared resolver staging account (one for the",
-        "whole program; permissionless, pays its own rent once)."
-      ],
       "discriminator": [
         87,
         141,
@@ -8532,6 +8594,112 @@ export type Velocity = {
       "args": []
     },
     {
+      "name": "refillCrankReservoir",
+      "docs": [
+        "Top a market's crank reservoir back up out of the protocol treasury —",
+        "permissionless, and relay-cranked like the work it funds. Reverts",
+        "while the reservoir is above its watermark, so it cannot be repeated",
+        "for the payment."
+      ],
+      "discriminator": [
+        65,
+        90,
+        188,
+        226,
+        191,
+        95,
+        208,
+        169
+      ],
+      "accounts": [
+        {
+          "name": "treasury",
+          "docs": [
+            "The protocol's lamport pool."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "The market reservoir being filled."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "marketIndex"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "docs": [
+            "never signs, so a turner can name a payout account that is not the key",
+            "paying for the transaction."
+          ],
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "marketIndex",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "refreshSpotMarketInterest",
       "discriminator": [
         11,
@@ -9183,6 +9351,36 @@ export type Velocity = {
             "the book which order to remove instead of reading its arena, so it",
             "calls the program rather than parsing the account."
           ]
+        },
+        {
+          "name": "treasury",
+          "docs": [
+            "Read-only: the refill resolver reads the levels a reservoir is held",
+            "between, which are the treasury's setting rather than the market's."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -9958,6 +10156,36 @@ export type Velocity = {
               }
             ]
           }
+        },
+        {
+          "name": "treasury",
+          "docs": [
+            "The protocol pool this resync is paid from."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
         }
       ],
       "args": []
@@ -10655,6 +10883,107 @@ export type Velocity = {
           "type": {
             "option": "i64"
           }
+        }
+      ]
+    },
+    {
+      "name": "sweepCrankReservoir",
+      "docs": [
+        "Move lamports from a market's crank reservoir back to the treasury, so",
+        "an over-provisioned or retired market does not hold them for good."
+      ],
+      "discriminator": [
+        163,
+        83,
+        223,
+        15,
+        134,
+        144,
+        208,
+        53
+      ],
+      "accounts": [
+        {
+          "name": "treasury",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "crankConditions",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "marketIndex"
+              }
+            ]
+          }
+        },
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        }
+      ],
+      "args": [
+        {
+          "name": "marketIndex",
+          "type": "u16"
+        },
+        {
+          "name": "lamports",
+          "type": "u64"
         }
       ]
     },
@@ -12405,6 +12734,70 @@ export type Velocity = {
       ]
     },
     {
+      "name": "updateCrankTreasury",
+      "docs": [
+        "Set the two levels a market's crank reservoir is held between, counted",
+        "in that market's most expensive crank so one setting fits every market.",
+        "Markets take a new watermark on their next attach."
+      ],
+      "discriminator": [
+        18,
+        218,
+        78,
+        149,
+        45,
+        183,
+        2,
+        8
+      ],
+      "accounts": [
+        {
+          "name": "treasury",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        }
+      ],
+      "args": [
+        {
+          "name": "refillTargetCranks",
+          "type": "u16"
+        },
+        {
+          "name": "refillWatermarkCranks",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "updateDiscountMint",
       "discriminator": [
         32,
@@ -13556,6 +13949,36 @@ export type Velocity = {
               {
                 "kind": "account",
                 "path": "perpMarket"
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury",
+          "docs": [
+            "Read-only: the levels a reservoir is held between are the treasury's",
+            "setting, and the low one is resolved onto this market here."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
               }
             ]
           }
@@ -17492,6 +17915,65 @@ export type Velocity = {
       ]
     },
     {
+      "name": "withdrawCrankTreasury",
+      "docs": [
+        "Recover lamports from the crank treasury, never below its own rent."
+      ],
+      "discriminator": [
+        7,
+        7,
+        168,
+        31,
+        50,
+        178,
+        211,
+        130
+      ],
+      "accounts": [
+        {
+          "name": "treasury",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "state"
+        }
+      ],
+      "args": [
+        {
+          "name": "lamports",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "withdrawFromIsolatedPerpPosition",
       "discriminator": [
         37,
@@ -18322,6 +18804,19 @@ export type Velocity = {
         66,
         198,
         99
+      ]
+    },
+    {
+      "name": "crankTreasuryV0",
+      "discriminator": [
+        50,
+        111,
+        200,
+        27,
+        38,
+        23,
+        240,
+        155
       ]
     },
     {
@@ -20885,6 +21380,16 @@ export type Velocity = {
       "code": 6391,
       "name": "takerOriginCrossWorseForTaker",
       "msg": "Crossing would leave the taker worse off than its resting price"
+    },
+    {
+      "code": 6392,
+      "name": "insufficientCrankTreasury",
+      "msg": "Crank treasury has too few lamports for this payout"
+    },
+    {
+      "code": 6393,
+      "name": "crankReservoirNotLow",
+      "msg": "Crank reservoir is above its refill watermark"
     }
   ],
   "types": [
@@ -21711,11 +22216,11 @@ export type Velocity = {
             ],
             "type": {
               "defined": {
-                "name": "relayBlock1x8",
+                "name": "relayBlock2x8",
                 "generics": [
                   {
                     "kind": "const",
-                    "value": "1"
+                    "value": "2"
                   },
                   {
                     "kind": "const",
@@ -21825,6 +22330,46 @@ export type Velocity = {
             "type": "u16"
           },
           {
+            "name": "refillWatermarkLamports",
+            "docs": [
+              "The spendable balance this reservoir wakes its refill at, in lamports.",
+              "",
+              "Resolved at attach from the treasury's watermark setting and this",
+              "market's dearest crank, and stored because it is the threshold the",
+              "wake condition carries: relay compares the mirror against this number,",
+              "so the executor has to read the same one rather than recompute it. A",
+              "figure recomputed from a program constant would drift from the",
+              "conditions written before an upgrade, and a market would wake at one",
+              "level while its executor refused at another."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "spendableMirror",
+            "docs": [
+              "This account's spendable lamports — its balance less its rent",
+              "exemption — as of the last payment or refill.",
+              "",
+              "A relay watch reads account data, and a lamport balance is account",
+              "metadata rather than data. Mirroring it here is what lets the refill",
+              "condition wake on a draining reservoir. The write costs nothing: every",
+              "payment already writes this account.",
+              "",
+              "Advisory, not authoritative. The refill instruction reads the real",
+              "balance, and the resolver refuses to stage one against a reservoir that",
+              "is genuinely full.",
+              "",
+              "Written by the attach and by every payment, which is every way the",
+              "balance falls. A plain lamport transfer into the reservoir is the one",
+              "way it can rise without a write, and that leaves the mirror low: the",
+              "condition then stays due and turners keep resolving it to \"no work\"",
+              "until the next payment restates it. That costs simulations rather than",
+              "lamports, and the treasury refill exists so that hand-funding a",
+              "reservoir is not the normal path."
+            ],
+            "type": "u64"
+          },
+          {
             "name": "padding",
             "docs": [
               "Tail reserve: 4 bytes of alignment slack plus room for a captured",
@@ -21835,7 +22380,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                40
+                16
               ]
             }
           }
@@ -22367,6 +22912,13 @@ export type Velocity = {
               "`force_cancel_clob_orders`."
             ],
             "type": "u32"
+          },
+          {
+            "name": "refill",
+            "docs": [
+              "`refill_crank_reservoir`: one lamport move and a mirror write."
+            ],
+            "type": "u32"
           }
         ]
       }
@@ -22417,6 +22969,101 @@ export type Velocity = {
           {
             "name": "forceCancel",
             "type": "u32"
+          },
+          {
+            "name": "refill",
+            "docs": [
+              "What the *treasury* pays to have this market's reservoir refilled.",
+              "",
+              "Stored with the market's other crank prices even though the treasury is",
+              "the purse, because this is where the refill condition lives and a",
+              "condition has to advertise a floor a turner can filter on. Derived from",
+              "the same rails as every other crank, so re-pricing the network",
+              "re-prices this too on the market's next attach."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "padding",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "crankTreasuryV0",
+      "docs": [
+        "The protocol's lamport pool for relay cranks."
+      ],
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "totalPaid",
+            "docs": [
+              "Lifetime lamports paid to keepers that refilled a reservoir."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "totalRefilled",
+            "docs": [
+              "Lifetime lamports moved out to market reservoirs."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "paddingU64",
+            "docs": [
+              "Reserved."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "refillTargetCranks",
+            "docs": [
+              "Refill a reservoir up to this many of its most expensive crank.",
+              "",
+              "Read at refill time, so re-tuning it takes effect on every market at",
+              "once."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "refillWatermarkCranks",
+            "docs": [
+              "Wake the refill when a reservoir can pay fewer than this many.",
+              "",
+              "A refill needs two levels or it fills by nothing. This is the low one,",
+              "and unlike the target it is *resolved to lamports at attach* and stored",
+              "on the market, because it is the threshold relay compares the mirrored",
+              "balance against and a condition carries its own threshold. Changing it",
+              "therefore reaches a market on its next attach.",
+              "",
+              "Size it for the refill's own round trip. The refill is itself a relay",
+              "crank — polled for, simulated, then landed — and the reservoir goes on",
+              "paying for ordinary work throughout. Both terms are worst together: a",
+              "market-wide move is when cranks fire fastest and when the network is",
+              "slowest to land one, and a reservoir that runs dry stops cranking at",
+              "exactly that point with nothing else to report it."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "padding",
+            "docs": [
+              "Tail reserve, so a later field costs no migration."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                36
+              ]
+            }
           }
         ]
       }
@@ -27935,30 +28582,6 @@ export type Velocity = {
       }
     },
     {
-      "name": "relayBlock1x8",
-      "docs": [
-        "relay condition block (spec v0), 1 conditions, as one opaque wire region"
-      ],
-      "serialization": "bytemuckunsafe",
-      "repr": {
-        "kind": "c"
-      },
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "bytes",
-            "type": {
-              "array": [
-                "u8",
-                488
-              ]
-            }
-          }
-        ]
-      }
-    },
-    {
       "name": "relayBlock22x32",
       "docs": [
         "relay condition block (spec v0), 22 conditions, as one opaque wire region"
@@ -27976,6 +28599,30 @@ export type Velocity = {
               "array": [
                 "u8",
                 5312
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "relayBlock2x8",
+      "docs": [
+        "relay condition block (spec v0), 2 conditions, as one opaque wire region"
+      ],
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bytes",
+            "type": {
+              "array": [
+                "u8",
+                680
               ]
             }
           }
@@ -31029,10 +31676,13 @@ export type Velocity = {
           {
             "name": "syncPaymentLamports",
             "docs": [
-              "Fee the sync executor pays its keeper from this account's own",
-              "lamports (the account doubles as the sync reservoir — whoever wants",
-              "this user's hints self-maintaining funds it; empty degrades to",
-              "manual syncs + the thresholds from the last sync)."
+              "Fee the sync executor pays its keeper out of the protocol crank",
+              "treasury.",
+              "",
+              "Stated by whoever opts in, and capped at",
+              "[`LIQ_SYNC_MAX_COST_UNITS`] when it is priced, because opting in is",
+              "permissionless and the payer is protocol funds rather than the account",
+              "itself. [`Self::last_paid_sync_slot`] bounds how often it can be drawn."
             ],
             "type": "u64"
           },
@@ -31057,6 +31707,20 @@ export type Velocity = {
             "type": "u64"
           },
           {
+            "name": "lastPaidSyncSlot",
+            "docs": [
+              "Slot the treasury last paid a keeper for resyncing this account.",
+              "",
+              "A resync is paid at most once per [`Self::sync_fallback_slots`], which",
+              "is the cadence the fallback poll already runs at. Opting in is",
+              "permissionless and the treasury pays, so without this anyone could",
+              "crank the same account in a loop and draw the fee every time — real",
+              "work is not required for the instruction to succeed, only for it to be",
+              "worth paying for."
+            ],
+            "type": "u64"
+          },
+          {
             "name": "padding",
             "docs": [
               "Tail reserve: 8 bytes of alignment slack plus room for two more",
@@ -31066,7 +31730,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                72
+                64
               ]
             }
           }

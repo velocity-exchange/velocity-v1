@@ -2532,6 +2532,15 @@ pub fn handle_update_perp_market_clob_quoter(
         block.block_offset
     );
 
+    // The wake level is the treasury's setting resolved against this market's
+    // dearest crank. Resolved here rather than at refill time because it is
+    // the threshold the condition carries, and a condition holds its own.
+    let refill_watermark_lamports = ctx
+        .accounts
+        .treasury
+        .load()?
+        .refill_watermark(payments.max_payment())?;
+
     // First attach initializes the conditions account; a re-attach rewrites
     // the block in place. One borrow: a freshly initialized account's
     // discriminator is not visible to a second load in the same instruction.
@@ -2548,6 +2557,7 @@ pub fn handle_update_perp_market_clob_quoter(
             payments,
             min_cross_surplus,
             expire_fallback_slots,
+            refill_watermark_lamports,
         )?;
         // A Custom quoter's cross conditions watch this same region for a
         // cross against the book (`initialize_quoter_cross_conditions`), and
@@ -2555,6 +2565,18 @@ pub fn handle_update_perp_market_clob_quoter(
         conditions.clob_block_offset = block.block_offset;
         conditions.top_of_book_offset = block.top_of_book_offset;
         conditions.top_of_book_len = block.top_of_book_len;
+        // State the reservoir's real balance now. The refill condition reads
+        // this field, and a mirror left at zero on an account that already
+        // holds lamports keeps the condition permanently due while the
+        // resolver keeps answering that there is no work.
+        conditions.spendable_mirror = ctx
+            .accounts
+            .crank_conditions
+            .to_account_info()
+            .lamports()
+            .saturating_sub(
+                Rent::get()?.minimum_balance(crate::state::clob_crank::ClobCrankConditionsV0::SIZE),
+            );
     }
 
     // A market names its book once. Re-pricing the crank config above is
@@ -4941,6 +4963,13 @@ pub struct AdminUpdatePerpMarketClobQuoter<'info> {
         payer = admin
     )]
     pub crank_conditions: AccountLoader<'info, crate::state::clob_crank::ClobCrankConditionsV0>,
+    /// Read-only: the levels a reservoir is held between are the treasury's
+    /// setting, and the low one is resolved onto this market here.
+    #[account(
+        seeds = [crate::state::crank_treasury::CRANK_TREASURY_PDA_SEED],
+        bump
+    )]
+    pub treasury: AccountLoader<'info, crate::state::crank_treasury::CrankTreasuryV0>,
     pub rent: Sysvar<'info, Rent>,
     pub system_program: Program<'info, System>,
 }

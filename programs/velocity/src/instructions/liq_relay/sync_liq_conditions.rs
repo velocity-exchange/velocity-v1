@@ -168,14 +168,20 @@ pub fn handle_sync_liq_conditions<'c: 'info, 'info>(
             .transaction_cost(u64::from(args.sync_cost_units), 1)?,
         sync_fallback_slots: args.sync_fallback_slots,
     };
-    // The opt-in caller pays rent and funds the reservoir; paying them a
-    // sync fee out of the account they just funded would be a wash, so the
-    // fee belongs to the relay path only.
+    // The opt-in caller pays its own way: it submitted the transaction, so
+    // there is no keeper to reward. The fee belongs to the relay path, where
+    // somebody else does the work, and the protocol treasury pays it.
+    // `stamp_sync_slot`: this sync brings the block up to date, so the next
+    // resync the treasury pays for is an interval away. It also stops a fresh
+    // account reading as overdue from slot zero. Stamped inside the rewrite
+    // because a newly initialized account's discriminator is not visible to a
+    // second load in the same instruction.
     rewrite_liq_conditions(
         &ctx.accounts.liq_conditions,
         &ctx.accounts.user,
         ctx.remaining_accounts,
         terms,
+        true,
     )
 }
 
@@ -186,6 +192,7 @@ pub fn rewrite_liq_conditions<'info>(
     user_loader: &AccountLoader<'info, User>,
     remaining_accounts: &'info [AccountInfo<'info>],
     args: SyncLiqConditionsTerms,
+    stamp_sync_slot: bool,
 ) -> Result<()> {
     let user_key = user_loader.key();
     let mut perps: BTreeMap<u16, MarketInputs> = BTreeMap::new();
@@ -317,6 +324,9 @@ pub fn rewrite_liq_conditions<'info>(
     // Stamped before the thresholds so a sync that legitimately writes none
     // still converges — the resolver compares digests, not slot contents.
     conditions.positions_digest = UserConditionsV0::digest_positions(&user);
+    if stamp_sync_slot {
+        conditions.last_paid_sync_slot = Clock::get()?.slot;
+    }
     // The threshold is priced at whichever stage this account is in.
     //
     // Cancelling always comes before liquidating: `force_cancel_clob_orders`
@@ -650,6 +660,27 @@ pub fn validate_sync_args(args: &SyncLiqConditionsArgs) -> Result<()> {
         args.sync_fallback_slots > 0 || args.sync_cost_units == 0,
         ErrorCode::DefaultError,
         "a paid self-sync needs a fallback interval"
+    )?;
+    // The treasury pays this figure to whoever cranks the resync, and opting
+    // in is permissionless. Without a ceiling a caller could name its own
+    // price against protocol funds and collect it by cranking itself.
+    validate!(
+        args.sync_cost_units <= crate::state::user_conditions::LIQ_SYNC_MAX_COST_UNITS,
+        ErrorCode::DefaultError,
+        "self-sync priced at {} cost units, above the {} ceiling",
+        args.sync_cost_units,
+        crate::state::user_conditions::LIQ_SYNC_MAX_COST_UNITS
+    )?;
+    // The interval is also how often the treasury will pay for this account,
+    // so a paid sync may not name one short enough to be paid every slot.
+    validate!(
+        args.sync_cost_units == 0
+            || args.sync_fallback_slots
+                >= crate::state::user_conditions::LIQ_SYNC_MIN_FALLBACK_SLOTS,
+        ErrorCode::DefaultError,
+        "a paid self-sync needs an interval of at least {} slots, not {}",
+        crate::state::user_conditions::LIQ_SYNC_MIN_FALLBACK_SLOTS,
+        args.sync_fallback_slots
     )?;
     Ok(())
 }

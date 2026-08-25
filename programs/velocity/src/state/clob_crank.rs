@@ -70,8 +70,18 @@ pub const CLOB_CRANK_CONDITIONS_PDA_SEED: &[u8] = b"clob_crank_conditions";
 /// and the maker's own reprice watch belongs to the maker's conditions. The
 /// poll is that case's liveness floor.
 pub const CLOB_CRANK_CROSS_FALLBACK: usize = 0;
+/// Index of the reservoir refill: `WakeKind::OnValueCross`.
+///
+/// The reservoir that pays this market's cranks mirrors its own spendable
+/// lamports into [`ClobCrankConditionsV0::spendable_mirror`], and this
+/// condition wakes when that value falls to the treasury's watermark. The
+/// refill then moves lamports from the protocol treasury into the reservoir.
+///
+/// The watched value sits on this same account, so the watch that already
+/// finds this block also covers it. No second watch is registered.
+pub const CLOB_CRANK_REFILL: usize = 1;
 /// Conditions hosted per market.
-pub const CLOB_CRANK_CONDITIONS: usize = 1;
+pub const CLOB_CRANK_CONDITIONS: usize = 2;
 
 /// Every condition on this account resolves with the same five accounts;
 /// the capacity is [`RelayBlockV0`]'s minimum granularity of 8.
@@ -79,6 +89,11 @@ pub const CLOB_CRANK_RESOLVER_CAPACITY: usize = 8;
 
 /// Account-data offset of the relay block (what a `WatchV0` registers at).
 pub const CLOB_CRANK_BLOCK_OFFSET: usize = relay_spec::block_offset!(ClobCrankConditionsV0, relay);
+
+/// Account-data offset of the mirrored spendable balance (what the refill
+/// condition watches).
+pub const CLOB_CRANK_SPENDABLE_MIRROR_OFFSET: usize =
+    relay_spec::block_offset!(ClobCrankConditionsV0, spendable_mirror);
 
 /// Seconds past an order's expiry at which its crank pays the full
 /// escalation. See [`CrankPaymentsV0::expiry_escalation`].
@@ -117,6 +132,8 @@ pub struct CrankCostUnitsV0 {
     pub liquidation: u32,
     /// `force_cancel_clob_orders`.
     pub force_cancel: u32,
+    /// `refill_crank_reservoir`: one lamport move and a mirror write.
+    pub refill: u32,
 }
 
 /// What each of a market's cranks pays its keeper, in lamports.
@@ -141,6 +158,15 @@ pub struct CrankPaymentsV0 {
     pub trigger: u32,
     pub liquidation: u32,
     pub force_cancel: u32,
+    /// What the *treasury* pays to have this market's reservoir refilled.
+    ///
+    /// Stored with the market's other crank prices even though the treasury is
+    /// the purse, because this is where the refill condition lives and a
+    /// condition has to advertise a floor a turner can filter on. Derived from
+    /// the same rails as every other crank, so re-pricing the network
+    /// re-prices this too on the market's next attach.
+    pub refill: u32,
+    pub padding: u32,
 }
 
 impl CrankPaymentsV0 {
@@ -169,6 +195,8 @@ impl CrankPaymentsV0 {
             trigger: price(units.trigger)?,
             liquidation: price(units.liquidation)?,
             force_cancel: price(units.force_cancel)?,
+            refill: price(units.refill)?,
+            padding: 0,
         })
     }
 
@@ -218,6 +246,24 @@ impl CrankPaymentsV0 {
     /// says this liquidation was too small to be worth landing at this
     /// moment's fee, and a keeper that agrees will leave it. It becomes worth
     /// landing when fees fall or the account deteriorates further.
+    /// The largest figure this market's *reservoir* pays for any one crank.
+    ///
+    /// The reservoir is held between multiples of this rather than of each
+    /// crank's own price, so a market can always afford its most expensive
+    /// crank while it is above the watermark. The refill is not among them:
+    /// the treasury pays that one, and a reservoir never spends on being
+    /// filled.
+    pub fn max_payment(&self) -> u64 {
+        u64::from(
+            self.removal
+                .max(self.cross)
+                .max(self.taker_origin_cross)
+                .max(self.trigger)
+                .max(self.liquidation)
+                .max(self.force_cancel),
+        )
+    }
+
     /// The priority fee this transaction paid for the work a liquidation
     /// crank is reimbursed for.
     ///
@@ -289,6 +335,7 @@ impl CrankPaymentsV0 {
             && self.trigger > 0
             && self.liquidation > 0
             && self.force_cancel > 0
+            && self.refill > 0
     }
 }
 
@@ -357,11 +404,41 @@ pub struct ClobCrankConditionsV0 {
     /// The market's quote spot market, captured at attach time (the staged
     /// executor's map section needs its PDA).
     pub quote_spot_market_index: u16,
+    /// The spendable balance this reservoir wakes its refill at, in lamports.
+    ///
+    /// Resolved at attach from the treasury's watermark setting and this
+    /// market's dearest crank, and stored because it is the threshold the
+    /// wake condition carries: relay compares the mirror against this number,
+    /// so the executor has to read the same one rather than recompute it. A
+    /// figure recomputed from a program constant would drift from the
+    /// conditions written before an upgrade, and a market would wake at one
+    /// level while its executor refused at another.
+    pub refill_watermark_lamports: u64,
+    /// This account's spendable lamports — its balance less its rent
+    /// exemption — as of the last payment or refill.
+    ///
+    /// A relay watch reads account data, and a lamport balance is account
+    /// metadata rather than data. Mirroring it here is what lets the refill
+    /// condition wake on a draining reservoir. The write costs nothing: every
+    /// payment already writes this account.
+    ///
+    /// Advisory, not authoritative. The refill instruction reads the real
+    /// balance, and the resolver refuses to stage one against a reservoir that
+    /// is genuinely full.
+    ///
+    /// Written by the attach and by every payment, which is every way the
+    /// balance falls. A plain lamport transfer into the reservoir is the one
+    /// way it can rise without a write, and that leaves the mirror low: the
+    /// condition then stays due and turners keep resolving it to "no work"
+    /// until the next payment restates it. That costs simulations rather than
+    /// lamports, and the treasury refill exists so that hand-funding a
+    /// reservoir is not the normal path.
+    pub spendable_mirror: u64,
     /// Tail reserve: 4 bytes of alignment slack plus room for a captured
     /// pubkey and change, so a resolver that needs another fixed account can
     /// take it from here instead of forcing an `extend_account` migration on
     /// every market's conditions.
-    pub padding: [u8; 40],
+    pub padding: [u8; 16],
 }
 
 // `padding` is longer than 32 bytes, which `#[derive(Default)]` does not
@@ -378,7 +455,9 @@ impl Default for ClobCrankConditionsV0 {
             top_of_book_len: 0,
             market_index: 0,
             quote_spot_market_index: 0,
-            padding: [0; 40],
+            refill_watermark_lamports: 0,
+            spendable_mirror: 0,
+            padding: [0; 16],
         }
     }
 }
@@ -389,14 +468,16 @@ impl ClobCrankConditionsV0 {
     pub const SIZE: usize = 8
         + RelayBlockV0::<CLOB_CRANK_CONDITIONS, CLOB_CRANK_RESOLVER_CAPACITY>::SIZE
         + 32
-        + 24
+        + 32
         + 8
         + 4
         + 4
         + 4
         + 2
         + 2
-        + 40;
+        + 8
+        + 8
+        + 16;
 
     /// Store the resolver account list and describe where it landed.
     pub fn write_resolvers(
@@ -491,7 +572,24 @@ impl ClobCrankConditionsV0 {
             .lamports()
             .checked_add(amount)
             .ok_or(ErrorCode::MathError)?;
+        Self::write_spendable_mirror(conditions, rent_minimum)?;
         Ok(amount)
+    }
+
+    /// Restate the spendable balance in account data, so the refill condition
+    /// sees what the account actually holds.
+    ///
+    /// Written as raw bytes rather than through the loader because every
+    /// caller already holds this account as an `AccountInfo`, and a loader
+    /// borrow here would collide with one the caller may still hold.
+    pub fn write_spendable_mirror(conditions: &AccountInfo, rent_minimum: u64) -> Result<()> {
+        let spendable = conditions.lamports().saturating_sub(rent_minimum);
+        let mut data = conditions.try_borrow_mut_data()?;
+        const END: usize = CLOB_CRANK_SPENDABLE_MIRROR_OFFSET + 8;
+        data.get_mut(CLOB_CRANK_SPENDABLE_MIRROR_OFFSET..END)
+            .ok_or(ErrorCode::DefaultError)?
+            .copy_from_slice(&spendable.to_le_bytes());
+        Ok(())
     }
 }
 
@@ -512,15 +610,20 @@ mod tests {
         relay_spec::{bytemuck::Zeroable, ResolvedCrankV0, ResponsePointerV0},
     };
 
-    /// The account holds one condition: the poll for a cross a PropAMM
-    /// created by repricing. The book's own four moved onto the book, and the
-    /// block shrank with them. If this fails, a condition was added here that
-    /// belongs on the account whose state it describes.
+    /// The account holds two conditions, and both describe this account
+    /// rather than the book: the poll for a cross a PropAMM created by
+    /// repricing, and the reservoir falling to its refill watermark. The
+    /// book's own four moved onto the book. If this fails, a condition was
+    /// added here that belongs on the account whose state it describes.
     #[test]
     fn the_crank_terms_cost_no_account_space() {
-        assert_eq!(CLOB_CRANK_CONDITIONS, 1);
-        assert_eq!(std::mem::size_of::<ClobCrankConditionsV0>(), 608);
-        assert_eq!(ClobCrankConditionsV0::SIZE, 616);
+        assert_eq!(CLOB_CRANK_CONDITIONS, 2);
+        assert_eq!(std::mem::size_of::<ClobCrankConditionsV0>(), 800);
+        assert_eq!(ClobCrankConditionsV0::SIZE, 808);
+        // The refill condition watches this offset. A field reordered above
+        // the mirror moves it, and every market's condition would then wake on
+        // whatever moved into its place.
+        assert_eq!(CLOB_CRANK_SPENDABLE_MIRROR_OFFSET, 784);
         // Default is the bare "strictly profitable" rule: a market that never
         // sets a floor behaves as it did before the field existed.
         assert_eq!(ClobCrankConditionsV0::default().min_cross_surplus, 0);
@@ -625,6 +728,7 @@ mod tests {
             trigger: 40_000,
             liquidation: 120_000,
             force_cancel: 60_000,
+            refill: 30_000,
         };
 
         // A flat charge per signature prices every crank the same, however
@@ -777,6 +881,70 @@ mod tests {
         assert!(acct.get_condition(CLOB_CRANK_CONDITIONS).is_err());
     }
 
+    /// The reservoir is held against the dearest crank it pays, so a market
+    /// above its watermark can always afford any one of them. The refill is
+    /// excluded even when it is the dearest figure on the account: the
+    /// treasury pays that one, and counting it would inflate the float every
+    /// market parks.
+    #[test]
+    fn the_watermark_follows_the_dearest_crank() {
+        let payments = CrankPaymentsV0 {
+            removal: 5_100,
+            cross: 21_000,
+            taker_origin_cross: 18_000,
+            trigger: 6_000,
+            liquidation: 12_000,
+            force_cancel: 7_000,
+            // Higher than every reservoir-paid crank, and deliberately not
+            // counted: the treasury pays the refill, so it must not inflate
+            // the float a reservoir is held at.
+            refill: 90_000,
+            padding: 0,
+        };
+        assert_eq!(payments.max_payment(), 21_000);
+    }
+
+    /// The mirror is what the refill condition reads, so a payment that did
+    /// not restate it would leave a drained reservoir looking full.
+    #[test]
+    fn a_payment_restates_the_mirror() {
+        let key = Pubkey::new_unique();
+        let mut lamports = 10_000_000u64;
+        let mut data = vec![0u8; ClobCrankConditionsV0::SIZE];
+        let owner = crate::ID;
+        let conditions =
+            AccountInfo::new(&key, false, true, &mut lamports, &mut data, &owner, false);
+        let rent_minimum = 5_000_000;
+
+        ClobCrankConditionsV0::write_spendable_mirror(&conditions, rent_minimum).unwrap();
+        assert_eq!(read_mirror(&conditions), 5_000_000);
+
+        let mut keeper_lamports = 0u64;
+        let mut keeper_data = Vec::new();
+        let keeper_key = Pubkey::new_unique();
+        let keeper = AccountInfo::new(
+            &keeper_key,
+            false,
+            true,
+            &mut keeper_lamports,
+            &mut keeper_data,
+            &owner,
+            false,
+        );
+        ClobCrankConditionsV0::pay_keeper_lamports(&conditions, &keeper, 1_500_000, rent_minimum)
+            .unwrap();
+        assert_eq!(read_mirror(&conditions), 3_500_000);
+    }
+
+    fn read_mirror(conditions: &AccountInfo) -> u64 {
+        let data = conditions.try_borrow_data().unwrap();
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(
+            &data[CLOB_CRANK_SPENDABLE_MIRROR_OFFSET..CLOB_CRANK_SPENDABLE_MIRROR_OFFSET + 8],
+        );
+        u64::from_le_bytes(bytes)
+    }
+
     /// A crank that requests less than the measured figure is reimbursed for
     /// what it requested. Reimbursing the measured figure would hand it the
     /// difference as profit on every liquidation.
@@ -815,4 +983,3 @@ mod tests {
         );
     }
 }
-

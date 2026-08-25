@@ -87,6 +87,14 @@ pub fn spot_market(market_index: u16) -> Pubkey {
 
 /// A market's CLOB crank conditions — the wake-hint host and the keeper
 /// reservoir.
+pub fn crank_treasury() -> Pubkey {
+    Pubkey::find_program_address(
+        &[crate::state::crank_treasury::CRANK_TREASURY_PDA_SEED],
+        &crate::ID,
+    )
+    .0
+}
+
 pub fn clob_crank_conditions(market_index: u16) -> Pubkey {
     Pubkey::find_program_address(
         &[

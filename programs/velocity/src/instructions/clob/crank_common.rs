@@ -291,6 +291,13 @@ pub struct ResolveClobCrank<'info> {
     /// the book which order to remove instead of reading its arena, so it
     /// calls the program rather than parsing the account.
     pub clob_program: UncheckedAccount<'info>,
+    /// Read-only: the refill resolver reads the levels a reservoir is held
+    /// between, which are the treasury's setting rather than the market's.
+    #[account(
+        seeds = [crate::state::crank_treasury::CRANK_TREASURY_PDA_SEED],
+        bump
+    )]
+    pub treasury: AccountLoader<'info, crate::state::crank_treasury::CrankTreasuryV0>,
 }
 
 pub fn validate_linkage(ctx: &Context<ResolveClobCrank>) -> Result<()> {

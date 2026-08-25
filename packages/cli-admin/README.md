@@ -53,6 +53,10 @@ velocity-admin fees set-recipient <pubkey> <perp|spot>           # cold admin
 velocity-admin fees set-split <ammFeeNumerator> <ifFeeNumerator> # warm/cold admin
 velocity-admin fees set-transaction-rails <inclusionLamports> <signatureLamports> <resourceFeeNum> <resourceFeeDenom>  # warm/cold admin; what a transaction costs to land. Every relay crank payment is derived from it, so this re-prices them all; markets take the new figures on their next set-market-clob
 velocity-admin fees set-liquidation-crank-reimbursement <shareBps> <solSpotMarketIndex>  # cap on what the protocol repays a liquidation cranker (its priority fee, bounded by a share of the recovery), and the market pricing it in SOL; warm/cold admin
+velocity-admin fees init-crank-treasury                                # warm/cold admin; create the one account every market's crank reservoir refills from. Run once, then fund it by sending SOL to the printed address
+velocity-admin fees set-crank-treasury <refillTargetCranks> <refillWatermarkCranks>  # warm/cold admin; the two levels a market's crank reservoir is held between, counted in that market's dearest crank so one setting fits every market. The watermark is when a refill wakes and must cover the refill's own round trip; the target is how full it leaves the reservoir and must exceed it. A new watermark reaches a market on its next set-market-clob
+velocity-admin fees withdraw-crank-treasury <lamports>                 # warm/cold admin; recover lamports from the crank treasury, never below rent
+velocity-admin fees sweep-crank-reservoir <marketIndex> <lamports>     # warm/cold admin; move lamports from a market's reservoir back to the treasury (retired or over-provisioned markets)
 velocity-admin fees set-taker-addon <market> <tenthBps>          # warm/cold admin; additive taker-fee add-on, -100..100 tenth-bps
 velocity-admin fees set-promo-tier <tier>                        # warm/cold admin; promo fee-tier floor for everyone, 0 = off
 velocity-admin fees withdraw-perp <market> <amount>  # FeeWithdraw hot key; pays the recipient's ATA (created if needed)
@@ -83,7 +87,7 @@ velocity-admin quoter set-market-clob <market> <quoter> <clobMarket> [expireFall
 velocity-admin quoter set-watch <quoter> --watch-account <pk> --offset <n> --len <n> [-a <pk>]  # entry authority; declares the reprice region relay cross-discovery wakes on (len 0 clears); resets approval
 velocity-admin quoter attach-cross <quoter> [--fallback-slots <n>]           # permissionless; stands up (or re-prices) the entry's relay cross-discovery conditions
 
-velocity-admin clob-market init <market> --clob-program <pk> [--capacity <n>] [--crank-cu <n>] [--crank-cu-<crank> <n>] [--fund-reservoir <lamports>] [--relay-program <pk>|none] [book config flags]  # one-shot bring-up: book create+init, quoter register+approve, canonical attach (creates crank conditions), relay watches (both blocks); warm/cold admin, direct-send only
+velocity-admin clob-market init <market> --clob-program <pk> [--capacity <n>] [--crank-cu <n>] [--crank-cu-<crank> <n>] [--relay-program <pk>|none] [book config flags]  # one-shot bring-up: book create+init, quoter register+approve, canonical attach (creates crank conditions), relay watches (both blocks); warm/cold admin, direct-send only
 velocity-admin clob-market register-watch <market> [--relay-program <pk>]  # register a relay WatchV0 over BOTH of an existing market's condition blocks (velocity's conditions account and the book's own); permissionless, direct-send only
 
 > **Turner scoping.** A market's conditions live on two accounts: velocity's

@@ -1962,6 +1962,7 @@ const ANY_CRANK_COST_UNITS: CrankCostUnitsV0 = CrankCostUnitsV0 {
     trigger: 40_000,
     liquidation: 120_000,
     force_cancel: 60_000,
+    refill: 30_000,
 };
 
 /// Attach the CLOB to the market through the admin ix — which also stands up
@@ -2020,6 +2021,7 @@ fn attach_clob(
             clob_program: clob_id(),
             quoter_signer: quoter_signer_pda().0,
             crank_conditions: conditions,
+            treasury: crank_treasury_pda(),
             rent: "SysvarRent111111111111111111111111111111111"
                 .parse()
                 .unwrap(),
@@ -2111,6 +2113,7 @@ fn run_resolver(
             quoter: fixture.quoter,
             state: state_pda(),
             clob_program: clob_id(),
+            treasury: crank_treasury_pda(),
         }
         .to_account_metas(None),
         // Relay names the condition that fired, and one resolver answers for
@@ -2157,6 +2160,7 @@ fn run_cross_resolver(
             quoter: fixture.quoter,
             state: state_pda(),
             clob_program: clob_id(),
+            treasury: crank_treasury_pda(),
         }
         .to_account_metas(None),
         data: velocity::instruction::ResolveClobCrank {
@@ -2259,6 +2263,7 @@ fn each_crank_is_priced_from_what_it_requests_and_the_condition_agrees() {
         trigger: 40_000,
         liquidation: 120_000,
         force_cancel: 60_000,
+        refill: 30_000,
     };
     let conditions_key = attach_clob(&mut fixture, units, 0);
     let conditions: ClobCrankConditionsV0 = read_zero_copy(&fixture.svm, &conditions_key);
@@ -2363,6 +2368,7 @@ fn the_fired_condition_picks_which_crank_the_resolver_stages() {
                 quoter: fixture.quoter,
                 state: state_pda(),
                 clob_program: clob_id(),
+                treasury: crank_treasury_pda(),
             }
             .to_account_metas(None),
             data: velocity::instruction::ResolveClobCrank {
@@ -2529,6 +2535,79 @@ fn the_books_expiry_wake_re_arms_after_a_reclaim() {
 /// submit the staged executor unsigned. The maker's reward accrues to the
 /// protocol User, the payout account is paid reservoir lamports, and the
 /// hint is repaired.
+/// The refill moves treasury lamports into a low reservoir, pays the keeper
+/// that ran it, and refuses to run again while the reservoir is full.
+///
+/// The refusal is the load-bearing half. Without it, anyone could refill a
+/// full reservoir on repeat and draw the keeper payment each time — the
+/// treasury paying to move its own lamports.
+#[test]
+fn refill_fills_a_low_reservoir_once_and_refuses_a_full_one() {
+    let mut fixture = setup();
+    const PAYMENT: u64 = 50_000;
+    let conditions = init_crank_conditions(&mut fixture, PAYMENT);
+    let payout = Pubkey::new_unique();
+    // A turner's payout is a funded wallet. Credit it past rent exemption
+    // first, or the runtime rejects the transaction for leaving a new account
+    // rent-paying rather than for anything the crank did.
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    let payout_before = fixture.svm.get_balance(&payout).unwrap();
+
+    let refill_ix = |conditions: Pubkey| Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::RefillCrankReservoir {
+            treasury: crank_treasury_pda(),
+            crank_conditions: conditions,
+            authority: payout,
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::RefillCrankReservoir { market_index: 0 }.data(),
+    };
+
+    // A freshly attached market holds only its rent, which is below the
+    // watermark, so the refill is due from the moment the market exists.
+    let treasury_before = fixture.svm.get_balance(&crank_treasury_pda()).unwrap();
+    let reservoir_before = fixture.svm.get_balance(&conditions).unwrap();
+    let payer = fixture.keeper.insecure_clone();
+    send(&mut fixture.svm, &payer, refill_ix(conditions), &[]).expect("an empty reservoir refills");
+
+    let reservoir_after = fixture.svm.get_balance(&conditions).unwrap();
+    let treasury_after = fixture.svm.get_balance(&crank_treasury_pda()).unwrap();
+    assert!(
+        reservoir_after > reservoir_before,
+        "the reservoir was topped up"
+    );
+    assert_eq!(
+        fixture.svm.get_balance(&payout).unwrap(),
+        payout_before + refill_payment(&fixture, conditions),
+        "the keeper that ran the refill was paid from the treasury"
+    );
+    // Everything the reservoir gained plus the keeper's fee left the treasury.
+    assert_eq!(
+        treasury_before - treasury_after,
+        (reservoir_after - reservoir_before) + refill_payment(&fixture, conditions)
+    );
+
+    // Now it is full, so a second refill has no work and must revert rather
+    // than pay again.
+    let err = send(&mut fixture.svm, &payer, refill_ix(conditions), &[])
+        .expect_err("a full reservoir is not refilled");
+    assert!(
+        format!("{:?}", err.meta.logs).contains("above the"),
+        "expected the watermark guard to refuse, got: {:?}",
+        err.meta.logs
+    );
+}
+
+/// What the treasury pays to have this market's reservoir refilled. Priced on
+/// the market like every other crank, because that is where the condition
+/// advertising it lives.
+fn refill_payment(fixture: &Fixture, conditions: Pubkey) -> u64 {
+    let acct: velocity::state::clob_crank::ClobCrankConditionsV0 =
+        read_zero_copy(&fixture.svm, &conditions);
+    u64::from(acct.crank_payments.refill)
+}
+
 #[test]
 fn program_keeper_expire_crank_pays_reservoir_lamports_to_an_unsigned_keeper() {
     let mut fixture = setup();
@@ -6075,7 +6154,7 @@ fn plain_liquidation_rejects_the_protocol_user() {
 /// thresholds are stale, and the staged executor lands unsigned, paying
 /// the keeper from the conditions account's own lamports.
 #[test]
-fn liq_self_sync_stages_an_unsigned_executor_and_pays_from_its_own_lamports() {
+fn liq_self_sync_stages_an_unsigned_executor_and_pays_from_the_treasury() {
     use velocity::state::user_conditions::{UserConditionsV0, TRIGGER_SLOT_BASE, USER_CONDITIONS};
 
     let mut fixture = setup();
@@ -6150,6 +6229,27 @@ fn liq_self_sync_stages_an_unsigned_executor_and_pays_from_its_own_lamports() {
     fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
     let payout_before = fixture.svm.get_balance(&payout).unwrap();
     let conditions_before = fixture.svm.get_balance(&conditions).unwrap();
+    let treasury_before = fixture.svm.get_balance(&crank_treasury_pda()).unwrap();
+
+    // The treasury pays for this account at most once per fallback interval.
+    // Opting in stamped the slot, so a resync inside that interval does the
+    // work and pays nothing: opting in is permissionless and the payer is
+    // protocol funds, so an unbounded rate is a drain by repetition.
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::ResyncLiqConditions::DISCRIMINATOR,
+        payout,
+    );
+    assert_eq!(
+        fixture.svm.get_balance(&payout).unwrap(),
+        payout_before,
+        "a resync inside the interval is not paid for"
+    );
+
+    fixture
+        .svm
+        .warp_to_slot(fixture.svm.get_sysvar::<anchor_lang::prelude::Clock>().slot + 3_000);
     run_staged_executor(
         &mut fixture,
         &resolved,
@@ -6157,15 +6257,22 @@ fn liq_self_sync_stages_an_unsigned_executor_and_pays_from_its_own_lamports() {
         payout,
     );
 
-    // Keeper paid from the conditions account, and the stale threshold is
+    // Keeper paid from the protocol treasury, and the stale threshold is
     // gone (no live exposures left to watch).
     assert_eq!(
         fixture.svm.get_balance(&payout).unwrap(),
         payout_before + SYNC_FEE
     );
     assert_eq!(
+        fixture.svm.get_balance(&crank_treasury_pda()).unwrap(),
+        treasury_before - SYNC_FEE
+    );
+    // The user's own account pays nothing: a resync nobody is paid to run
+    // leaves the thresholds stale, which is the protocol's exposure before it
+    // is the user's.
+    assert_eq!(
         fixture.svm.get_balance(&conditions).unwrap(),
-        conditions_before - SYNC_FEE
+        conditions_before
     );
     let acct: UserConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
     assert_eq!(acct.slots[0].active, 0);

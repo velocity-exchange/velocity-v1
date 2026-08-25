@@ -1763,6 +1763,46 @@ pub mod velocity {
 
     /// Create the program's shared resolver staging account (one for the
     /// whole program; permissionless, pays its own rent once).
+    /// Create the protocol's relay crank treasury — the one account that funds
+    /// every market's crank reservoir. Born unpriced; `update_crank_treasury`
+    /// decides what it spends.
+    pub fn initialize_crank_treasury(ctx: Context<InitializeCrankTreasury>) -> Result<()> {
+        instructions::handle_initialize_crank_treasury(ctx)
+    }
+
+    /// Set the two levels a market's crank reservoir is held between, counted
+    /// in that market's most expensive crank so one setting fits every market.
+    /// Markets take a new watermark on their next attach.
+    pub fn update_crank_treasury(
+        ctx: Context<UpdateCrankTreasury>,
+        refill_target_cranks: u16,
+        refill_watermark_cranks: u16,
+    ) -> Result<()> {
+        instructions::handle_update_crank_treasury(
+            ctx,
+            refill_target_cranks,
+            refill_watermark_cranks,
+        )
+    }
+
+    /// Move lamports from a market's crank reservoir back to the treasury, so
+    /// an over-provisioned or retired market does not hold them for good.
+    pub fn sweep_crank_reservoir(
+        ctx: Context<SweepCrankReservoir>,
+        market_index: u16,
+        lamports: u64,
+    ) -> Result<()> {
+        instructions::handle_sweep_crank_reservoir(ctx, market_index, lamports)
+    }
+
+    /// Recover lamports from the crank treasury, never below its own rent.
+    pub fn withdraw_crank_treasury(
+        ctx: Context<WithdrawCrankTreasury>,
+        lamports: u64,
+    ) -> Result<()> {
+        instructions::handle_withdraw_crank_treasury(ctx, lamports)
+    }
+
     pub fn initialize_relay_scratch(ctx: Context<InitializeRelayScratch>) -> Result<()> {
         handle_initialize_relay_scratch(ctx)
     }
@@ -2475,6 +2515,17 @@ pub mod velocity {
         fired: FiredConditionArgV0,
     ) -> Result<()> {
         instructions::handle_resolve_clob_crank(ctx, fired)
+    }
+
+    /// Top a market's crank reservoir back up out of the protocol treasury —
+    /// permissionless, and relay-cranked like the work it funds. Reverts
+    /// while the reservoir is above its watermark, so it cannot be repeated
+    /// for the payment.
+    pub fn refill_crank_reservoir(
+        ctx: Context<RefillCrankReservoir>,
+        market_index: u16,
+    ) -> Result<()> {
+        instructions::handle_refill_crank_reservoir(ctx, market_index)
     }
 
     /// Stand up (or re-price) a Custom quoter's relay cross-discovery

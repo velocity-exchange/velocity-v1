@@ -52,6 +52,23 @@ pub struct TriggerSlotMetaV0 {
     pub padding: [u8; 2],
 }
 
+/// The shortest fallback interval a *paid* self-sync may ask for.
+///
+/// The interval doubles as the rate limit on what the treasury pays for
+/// resyncing one account, so a caller free to name one slot would be paid
+/// every slot. Roughly a minute of slots, which is far below the cadence at
+/// which a user's thresholds actually go stale.
+pub const LIQ_SYNC_MIN_FALLBACK_SLOTS: u64 = 150;
+
+/// The most cost units a self-sync may price its resync at.
+///
+/// The opt-in states what a resync costs and the protocol treasury pays that
+/// figure to whoever cranks it. Opting in is permissionless, so an unbounded
+/// figure would let anyone name their own price against protocol funds. This
+/// is a measured ceiling on what a resync really requests; a caller may state
+/// less, never more.
+pub const LIQ_SYNC_MAX_COST_UNITS: u32 = 200_000;
+
 /// PDA seed: `["user_conditions", user key]`.
 pub const USER_CONDITIONS_PDA_SEED: &[u8] = b"user_conditions";
 
@@ -136,10 +153,13 @@ pub struct UserConditionsV0 {
     pub trigger_resolvers: [u8; TRIGGER_RESOLVERS_LEN],
     /// The `User` these conditions watch.
     pub user: Pubkey,
-    /// Fee the sync executor pays its keeper from this account's own
-    /// lamports (the account doubles as the sync reservoir — whoever wants
-    /// this user's hints self-maintaining funds it; empty degrades to
-    /// manual syncs + the thresholds from the last sync).
+    /// Fee the sync executor pays its keeper out of the protocol crank
+    /// treasury.
+    ///
+    /// Stated by whoever opts in, and capped at
+    /// [`LIQ_SYNC_MAX_COST_UNITS`] when it is priced, because opting in is
+    /// permissionless and the payer is protocol funds rather than the account
+    /// itself. [`Self::last_paid_sync_slot`] bounds how often it can be drawn.
     pub sync_payment_lamports: u64,
     /// The fallback poll interval.
     pub sync_fallback_slots: u64,
@@ -151,10 +171,19 @@ pub struct UserConditionsV0 {
     /// level-triggered sync wake firing forever. The localnet harness
     /// caught exactly that loop, once a second.
     pub positions_digest: u64,
+    /// Slot the treasury last paid a keeper for resyncing this account.
+    ///
+    /// A resync is paid at most once per [`Self::sync_fallback_slots`], which
+    /// is the cadence the fallback poll already runs at. Opting in is
+    /// permissionless and the treasury pays, so without this anyone could
+    /// crank the same account in a loop and draw the fee every time — real
+    /// work is not required for the instruction to succeed, only for it to be
+    /// worth paying for.
+    pub last_paid_sync_slot: u64,
     /// Tail reserve: 8 bytes of alignment slack plus room for two more
     /// pubkeys, so a future sync input can be captured here instead of
     /// forcing an `extend_account` migration on every opted-in user.
-    pub padding: [u8; 72],
+    pub padding: [u8; 64],
 }
 
 impl Default for UserConditionsV0 {
@@ -168,7 +197,8 @@ impl Default for UserConditionsV0 {
             sync_payment_lamports: 0,
             sync_fallback_slots: 0,
             positions_digest: 0,
-            padding: [0; 72],
+            last_paid_sync_slot: 0,
+            padding: [0; 64],
         }
     }
 }
@@ -183,7 +213,8 @@ impl UserConditionsV0 {
         + 8
         + 8
         + 8
-        + 72;
+        + 8
+        + 64;
 
     /// FNV-1a over every exposure that moves a threshold. Cheap enough for
     /// the executor to recompute on each sync, and exact enough that a
@@ -315,32 +346,6 @@ impl UserConditionsV0 {
         let refs = self.relay.resolver_refs();
         refs.get(LIQ_RESOLVER_PREFIX..).unwrap_or(&[]).to_vec()
     }
-
-    /// Pay the sync keeper from this account's own lamports, best-effort:
-    /// never fail for insufficiency (a manual sync must always land — only
-    /// relay's own payment guard holds turners to the full fee) and never
-    /// dip below rent exemption.
-    pub fn pay_sync_keeper<'info>(
-        conditions: &AccountInfo<'info>,
-        keeper: &AccountInfo<'info>,
-        amount: u64,
-        rent_minimum: u64,
-    ) -> Result<u64> {
-        let spendable = conditions.lamports().saturating_sub(rent_minimum);
-        let amount = amount.min(spendable);
-        if amount == 0 {
-            return Ok(0);
-        }
-        **conditions.try_borrow_mut_lamports()? = conditions
-            .lamports()
-            .checked_sub(amount)
-            .ok_or(ErrorCode::MathError)?;
-        **keeper.try_borrow_mut_lamports()? = keeper
-            .lamports()
-            .checked_add(amount)
-            .ok_or(ErrorCode::MathError)?;
-        Ok(amount)
-    }
 }
 
 const _: () = assert!((UserConditionsV0::SIZE - 8) % 16 == 0);
@@ -378,5 +383,41 @@ mod merged_size_tests {
         assert_eq!(relay_spec::CONDITION_LEN, 192);
         println!("UserConditionsV0::SIZE = {}", UserConditionsV0::SIZE);
         assert!(UserConditionsV0::SIZE <= 10_240);
+    }
+
+    /// Opting in is permissionless and the protocol treasury pays the resync
+    /// keeper, so what a caller may price its own resync at is capped. An
+    /// uncapped figure would let anyone name their own price against protocol
+    /// funds and collect it by cranking itself.
+    #[test]
+    fn a_self_sync_cannot_price_itself_above_the_ceiling() {
+        use crate::instructions::{validate_sync_args, SyncLiqConditionsArgs};
+        let args = |units: u32| SyncLiqConditionsArgs {
+            sync_cost_units: units,
+            sync_fallback_slots: 150,
+        };
+        assert!(validate_sync_args(&args(LIQ_SYNC_MAX_COST_UNITS)).is_ok());
+        assert!(validate_sync_args(&args(LIQ_SYNC_MAX_COST_UNITS + 1)).is_err());
+        assert!(validate_sync_args(&args(u32::MAX)).is_err());
+    }
+
+    /// The interval is also the rate limit on what the treasury pays for one
+    /// account, so a paid sync cannot name one short enough to be paid every
+    /// slot. An unpaid sync is free to poll as it likes.
+    #[test]
+    fn a_paid_self_sync_cannot_ask_to_be_paid_every_slot() {
+        use crate::instructions::{validate_sync_args, SyncLiqConditionsArgs};
+        let paid = |slots: u64| SyncLiqConditionsArgs {
+            sync_cost_units: 1_000,
+            sync_fallback_slots: slots,
+        };
+        assert!(validate_sync_args(&paid(LIQ_SYNC_MIN_FALLBACK_SLOTS)).is_ok());
+        assert!(validate_sync_args(&paid(LIQ_SYNC_MIN_FALLBACK_SLOTS - 1)).is_err());
+        assert!(validate_sync_args(&paid(1)).is_err());
+        assert!(validate_sync_args(&SyncLiqConditionsArgs {
+            sync_cost_units: 0,
+            sync_fallback_slots: 1,
+        })
+        .is_ok());
     }
 }

@@ -482,15 +482,20 @@ export type RouterQuoteBufferV0Account = {
  * The account's own lamport balance is the reservoir the cranks pay their
  * keepers from.
  *
- * It holds one condition: the poll that catches a cross a PropAMM created by
- * repricing, which writes to neither account a watch could cover. The four
- * that describe the book's own state — an expired order, a side at its
- * eviction threshold, a crossed book, an order reaching its activation slot —
- * live on the CLOB market account, registered by the same attach. They name
- * velocity's resolvers and pay out of this reservoir.
+ * It holds two conditions, both describing this account rather than the book:
+ * the poll that catches a cross a PropAMM created by repricing, which writes
+ * to neither account a watch could cover, and the reservoir falling to its
+ * refill watermark. The four that describe the book's own state — an expired
+ * order, a side at its eviction threshold, a crossed book, an order reaching
+ * its activation slot — live on the CLOB market account, registered by the
+ * same attach. They name velocity's resolvers and pay out of this reservoir.
+ *
+ * The reservoir is refilled from the single protocol `CrankTreasuryV0` by the
+ * permissionless `refillCrankReservoir` crank, so no per-market balance has to
+ * be watched or topped up by hand.
  */
 export type ClobCrankConditionsV0Account = {
-	/** relay-spec RelayBlockV0<1, 8> wire bytes (header + 1 condition + the resolver account list), parsed by relay tooling, not the SDK */
+	/** relay-spec RelayBlockV0<2, 8> wire bytes (header + 2 conditions + the resolver account list), parsed by relay tooling, not the SDK */
 	relay: number[];
 	/** the market's oracle, captured at attach time */
 	oracle: PublicKey;
@@ -505,6 +510,36 @@ export type ClobCrankConditionsV0Account = {
 	topOfBookLen: number;
 	marketIndex: number;
 	quoteSpotMarketIndex: number;
+	/** the spendable balance this reservoir wakes its refill at, in lamports; resolved at attach from the treasury's watermark setting and this market's dearest crank, and stored because it is the threshold the wake condition carries */
+	refillWatermarkLamports: BN;
+	/** this account's spendable lamports (balance less rent exemption) as of the last payment or refill, mirrored into account data because a relay watch reads data and a lamport balance is metadata. Advisory: the refill instruction reads the real balance. */
+	spendableMirror: BN;
+	padding: number[];
+};
+
+/**
+ * The protocol's single relay crank treasury. Every market's crank reservoir
+ * is refilled from here by the permissionless `refillCrankReservoir` crank,
+ * so this is the one account an operator funds and watches.
+ *
+ * Funding it needs no instruction — a plain SOL transfer to the PDA works.
+ * `withdrawCrankTreasury` takes lamports back out, never below rent.
+ *
+ * Cranks are still paid by the market reservoir they crank rather than from
+ * here directly: a crank writes whatever pays it, and a writable account has a
+ * fixed compute budget per block, so one account paying every crank would
+ * serialize the protocol's cranks into that budget.
+ */
+export type CrankTreasuryV0Account = {
+	/** lifetime lamports paid to keepers that refilled a reservoir or resynced a user's liquidation conditions */
+	totalPaid: BN;
+	/** lifetime lamports moved out to market reservoirs */
+	totalRefilled: BN;
+	paddingU64: BN;
+	/** a refill fills a reservoir to this many of its most expensive crank. Read at refill time, so re-tuning it reaches every market at once. */
+	refillTargetCranks: number;
+	/** wake a refill when a reservoir can pay fewer than this many of its most expensive crank. Resolved to lamports and written onto a market at attach (`ClobCrankConditionsV0.refillWatermarkLamports`), because it is the threshold that market's wake condition carries — so a new watermark reaches a market on its next attach. Must be under `refillTargetCranks`, or a refill would leave the reservoir still due. */
+	refillWatermarkCranks: number;
 	padding: number[];
 };
 
@@ -546,13 +581,16 @@ export type CrankPaymentsV0 = {
 	liquidation: number;
 	/** `forceCancelClobOrders` */
 	forceCancel: number;
+	/** `refillCrankReservoir`. Paid by the protocol `CrankTreasuryV0` rather than by this reservoir, but priced and advertised here because this is where the refill condition lives and a turner filters on the floor a condition advertises. Not counted toward the float the reservoir is held at — a reservoir never spends on being filled. */
+	refill: number;
+	padding: number;
 };
 
 /**
  * Cost units each of a market's cranks requests, measured by simulating it —
  * the argument `updatePerpMarketClobQuoter` prices into `CrankPaymentsV0`.
  */
-export type CrankCostUnitsV0 = CrankPaymentsV0;
+export type CrankCostUnitsV0 = Omit<CrankPaymentsV0, 'padding'>;
 
 /**
  * Per-market relay conditions that watch a Custom quoter for a cross against
@@ -641,12 +679,14 @@ export type UserConditionsV0Account = {
 	triggerResolvers: number[];
 	/** the `User` these conditions watch */
 	user: PublicKey;
-	/** lamports the sync executor pays its keeper, drawn from this account's balance */
+	/** lamports the sync executor pays its keeper, drawn from the protocol `CrankTreasuryV0` rather than from this account. Stated by whoever opts in and capped when it is priced, because opting in is permissionless and the payer is protocol funds. */
 	syncPaymentLamports: BN;
-	/** fallback poll interval, in slots */
+	/** fallback poll interval, in slots. Doubles as the rate limit on what the treasury pays for this account, so a paid sync may not name one short enough to be paid every slot. */
 	syncFallbackSlots: BN;
 	/** digest of the exposures the last sync ran against */
 	positionsDigest: BN;
+	/** slot the treasury last paid a keeper for resyncing this account. A resync is paid at most once per `syncFallbackSlots`: opting in is permissionless and the protocol treasury pays, so without this bound the same account could be cranked in a loop for the fee. */
+	lastPaidSyncSlot: BN;
 	padding: number[];
 };
 

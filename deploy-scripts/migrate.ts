@@ -39,6 +39,7 @@ import {
 import { AnchorProvider, BN, Program } from '@coral-xyz/anchor';
 import {
 	getClobCrankConditionsPublicKey,
+	getCrankTreasuryPublicKey,
 	getRelayScratchPublicKey,
 	getUserConditionsPublicKey,
 	getPerpMarketPublicKeySync,
@@ -198,6 +199,30 @@ async function main() {
 				.accounts({
 					scratch,
 					payer: payer.publicKey,
+					rent: SYSVAR_RENT_PUBKEY,
+					systemProgram: SystemProgram.programId,
+				})
+				.instruction(),
+		]);
+	}
+
+	// The treasury every market's crank reservoir refills from. The CLOB crank
+	// resolver and the liquidation-conditions resync both name it, so it has to
+	// exist before either can run. Created inert; pricing and funding are
+	// operator decisions (velocity-admin fees set-crank-treasury, then a plain
+	// SOL transfer).
+	const treasury = getCrankTreasuryPublicKey(velocity);
+	if (await connection.getAccountInfo(treasury)) {
+		console.log(`\ntreasury ${treasury.toBase58()}: already created`);
+	} else {
+		console.log(`\ntreasury ${treasury.toBase58()}: creating`);
+		await act('create crank treasury', [
+			await program.methods
+				.initializeCrankTreasury()
+				.accounts({
+					treasury,
+					admin: payer.publicKey,
+					state: statePda,
 					rent: SYSVAR_RENT_PUBKEY,
 					systemProgram: SystemProgram.programId,
 				})

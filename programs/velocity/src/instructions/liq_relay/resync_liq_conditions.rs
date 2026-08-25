@@ -8,14 +8,21 @@
 //! executors are permissionless by construction, and a signing account
 //! handed to one is a drain vector. So the instruction relay stages takes
 //! no payer, allocates nothing (the account exists by then — the opt-in
-//! sync created it), and pays its keeper from the conditions account's own
-//! lamports.
+//! sync created it), and pays its keeper from the protocol crank treasury.
+//!
+//! The treasury pays rather than the user's own conditions account, because a
+//! stale threshold is a protocol problem before it is a user's: a resync that
+//! nobody is paid to run leaves the user's liquidation thresholds behind their
+//! real exposure, and the liquidation that should fire does not. Charging that
+//! to the account being watched makes an underfunded user into protocol bad
+//! debt.
 
 use {
     super::sync_liq_conditions::{rewrite_liq_conditions, SyncLiqConditionsTerms},
     crate::{
         error::ErrorCode,
         state::{
+            crank_treasury::{CrankTreasuryV0, CRANK_TREASURY_PDA_SEED},
             user::User,
             user_conditions::{UserConditionsV0, USER_CONDITIONS_PDA_SEED},
         },
@@ -38,6 +45,9 @@ pub struct ResyncLiqConditions<'info> {
         constraint = liq_conditions.load()?.user == user.key()
     )]
     pub liq_conditions: AccountLoader<'info, UserConditionsV0>,
+    /// The protocol pool this resync is paid from.
+    #[account(mut, seeds = [CRANK_TREASURY_PDA_SEED], bump)]
+    pub treasury: AccountLoader<'info, CrankTreasuryV0>,
 }
 
 pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
@@ -57,16 +67,46 @@ pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
         &ctx.accounts.user,
         ctx.remaining_accounts,
         args,
+        false,
     )?;
 
-    let info = ctx.accounts.liq_conditions.to_account_info();
-    let rent_minimum = Rent::get()?.minimum_balance(info.data_len());
-    UserConditionsV0::pay_sync_keeper(
-        &info,
+    // Paid at most once per fallback interval. The instruction succeeds
+    // whether or not anything moved, opting in is permissionless, and the
+    // payer is the protocol treasury rather than the account being watched —
+    // so without this bound anyone could crank the same account in a loop and
+    // draw the fee every time. The interval is the cadence the fallback poll
+    // already runs at, so honest cranking is unaffected.
+    let slot = Clock::get()?.slot;
+    let due_slot = {
+        let conditions = ctx.accounts.liq_conditions.load()?;
+        conditions
+            .last_paid_sync_slot
+            .saturating_add(conditions.sync_fallback_slots)
+    };
+    if slot < due_slot {
+        msg!(
+            "resync of {} was already paid this interval",
+            ctx.accounts.user.key()
+        );
+        return Ok(());
+    }
+    ctx.accounts.liq_conditions.load_mut()?.last_paid_sync_slot = slot;
+
+    let treasury = ctx.accounts.treasury.to_account_info();
+    let rent_minimum = Rent::get()?.minimum_balance(treasury.data_len());
+    // Best-effort, as it was when the user's own account paid: an empty
+    // treasury must not fail a resync that has already rewritten the block.
+    // The keeper is protected by relay's own payment guard, which skips work
+    // that would not pay.
+    let available = treasury.lamports().saturating_sub(rent_minimum);
+    let paid = CrankTreasuryV0::pay_out(
+        &treasury,
         &ctx.accounts.keeper.to_account_info(),
-        args.sync_payment_lamports,
+        args.sync_payment_lamports.min(available),
         rent_minimum,
     )?;
+    let mut treasury_state = ctx.accounts.treasury.load_mut()?;
+    treasury_state.total_paid = treasury_state.total_paid.saturating_add(paid);
     Ok(())
 }
 
@@ -115,6 +155,7 @@ pub fn handle_resolve_resync_liq_conditions(
                 keeper: crate::state::pdas::keeper_placeholder(),
                 user: ctx.accounts.user.key(),
                 liq_conditions: ctx.accounts.liq_conditions.key(),
+                treasury: crate::state::pdas::crank_treasury(),
             })
             // The margin-map + reservoir accounts the last sync stored.
             .refs(ctx.accounts.liq_conditions.load()?.read_sync_accounts()),

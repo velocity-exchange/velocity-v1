@@ -73,6 +73,7 @@ mod modify_clob_order;
 mod place_and_make_v1;
 mod place_and_take_v1;
 mod place_clob_order;
+pub mod refill_crank_reservoir;
 pub mod resolve_clob_crank;
 mod trigger_clob_order;
 
@@ -81,5 +82,6 @@ pub use {
     crank_clob_remove_expired::*, crank_common::*, crank_conditions_setup::*, crank_cross_match::*,
     crank_taker_origin_cross::*, fill_v1::*, force_cancel_clob_orders::*,
     initialize_quoter_cross_conditions::*, modify_clob_order::*, place_and_make_v1::*,
-    place_and_take_v1::*, place_clob_order::*, resolve_clob_crank::*, trigger_clob_order::*,
+    place_and_take_v1::*, place_clob_order::*, refill_crank_reservoir::*, resolve_clob_crank::*,
+    trigger_clob_order::*,
 };

@@ -25,6 +25,7 @@ const CRANKS = [
 	['trigger', 'trigger_order / trigger_clob_order'],
 	['liquidation', 'liquidate_perp_with_fill'],
 	['force-cancel', 'force_cancel_clob_orders'],
+	['refill', 'refill_crank_reservoir (paid by the crank treasury)'],
 ] as const;
 
 /**
@@ -75,6 +76,7 @@ export function readCrankCostUnits(
 		trigger: read('trigger'),
 		liquidation: read('liquidation'),
 		forceCancel: read('force-cancel'),
+		refill: read('refill'),
 	};
 }
 

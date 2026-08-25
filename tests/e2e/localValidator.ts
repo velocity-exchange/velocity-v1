@@ -53,6 +53,7 @@ import {
 	BN,
 	BulkAccountLoader,
 	getClobCrankConditionsPublicKey,
+	getCrankTreasuryPublicKey,
 	getPerpMarketPublicKeySync,
 	getLimitOrderParams,
 	generateSignedMsgUuid,
@@ -777,8 +778,10 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		clobEntry = registration.quoter;
 		await send(registration.ixs);
 
-		// Attach as the market's canonical CLOB (creates conditions) + fund
-		// the crank reservoir.
+		// Attach as the market's canonical CLOB. The conditions account is
+		// created holding only its rent, exactly as a market is attached in
+		// production: the refill crank fills the reservoir from the treasury,
+		// so nothing here seeds it by hand.
 		conditions = getClobCrankConditionsPublicKey(VELOCITY_ID, 0);
 		await send([
 			admin.program.instruction.updatePerpMarketClobQuoter(
@@ -793,6 +796,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					trigger: 40_000,
 					liquidation: 120_000,
 					forceCancel: 60_000,
+					refill: 30_000,
 				},
 				new BN(1500), // cross fallback poll interval
 				// min_cross_surplus: 0 keeps the bare strictly-profitable rule,
@@ -808,16 +812,12 @@ describe('e2e localnet: programs + publisher + redis', function () {
 						clobProgram: CLOB_ID,
 						quoterSigner,
 						crankConditions: conditions,
+						treasury: getCrankTreasuryPublicKey(VELOCITY_ID),
 						rent: SYSVAR_RENT_PUBKEY,
 						systemProgram: SystemProgram.programId,
 					},
 				}
 			),
-			SystemProgram.transfer({
-				fromPubkey: payer.publicKey,
-				toPubkey: conditions,
-				lamports: LAMPORTS_PER_SOL,
-			}),
 		]);
 	};
 
@@ -1314,6 +1314,21 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				.instruction(),
 		]);
 		await admin.subscribe();
+
+		// The single treasury every market's crank reservoir refills from. The
+		// CLOB crank resolver names it, so it exists before any condition can
+		// be resolved. Priced, then funded by a plain transfer — there is no
+		// deposit instruction because crediting lamports needs no program.
+		await send([
+			await admin.getInitializeCrankTreasuryIx(),
+			await admin.getUpdateCrankTreasuryIx(1000, 100),
+			SystemProgram.transfer({
+				fromPubkey: payer.publicKey,
+				toPubkey: getCrankTreasuryPublicKey(VELOCITY_ID),
+				lamports: 5 * LAMPORTS_PER_SOL,
+			}),
+		]);
+
 		await initializeQuoteSpotMarket(admin, usdcMint.publicKey);
 		await admin.initializePerpMarket(
 			0,
@@ -2013,6 +2028,51 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		);
 	});
 
+	it('refills a market reservoir from the treasury with nobody submitting', async function () {
+		this.timeout(180_000);
+		// A market is attached with an empty reservoir and a zero mirror, which
+		// reads as below the watermark, so the refill is due from the moment the
+		// market exists. Nobody here submits it: the condition sits on the
+		// conditions account, the same account the market's watch already
+		// covers, and a relay turner finds it the way it finds every other
+		// crank.
+		const treasuryPk = getCrankTreasuryPublicKey(VELOCITY_ID);
+		const readTreasury = async () =>
+			admin.program.coder.accounts.decode(
+				'crankTreasuryV0',
+				(await connection.getAccountInfo(treasuryPk))!.data
+			);
+
+		await pollUntil('relay to refill the market reservoir', 120_000, async () => {
+			const treasury = await readTreasury();
+			return treasury.totalRefilled.gtn(0) ? true : undefined;
+		});
+
+		const treasury = await readTreasury();
+		// Nothing seeded this reservoir: it was created holding rent alone, and
+		// every lamport in it past that came from the treasury.
+		const conditionsBalance = await connection.getBalance(conditions);
+		assert.isTrue(
+			treasury.totalRefilled.gtn(0) &&
+				conditionsBalance > treasury.totalRefilled.toNumber(),
+			'the reservoir holds what the treasury sent it'
+		);
+		assert.isTrue(
+			treasury.totalPaid.gtn(0),
+			'the keeper that refilled was paid from the treasury'
+		);
+
+		// And it is level-triggered, not a loop: once the mirror is restated
+		// above the watermark the condition stops being due, so a second refill
+		// does not follow the first on an idle market.
+		const refilledOnce = treasury.totalRefilled;
+		await new Promise((resolve) => setTimeout(resolve, 15_000));
+		assert.isTrue(
+			(await readTreasury()).totalRefilled.eq(refilledOnce),
+			'a full reservoir is not refilled again'
+		);
+	});
+
 	it('fires an armed trigger order when the oracle crosses', async function () {
 		this.timeout(180_000);
 		// A stop: sell 0.5 if the oracle climbs through 104.
@@ -2101,12 +2161,13 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			'victim entered the full intended size'
 		);
 
-		// Opt them into relay liquidation coverage: thresholds from their
-		// live positions, a self-sync watch, and a funded sync reservoir.
+		// Opt them into relay liquidation coverage: thresholds from their live
+		// positions and a self-sync watch. The account holds no reservoir —
+		// the protocol treasury pays whoever resyncs it, so an underfunded
+		// user cannot leave its own thresholds stale.
 		const victimUser = userOf(victimKp.publicKey);
 		const userConditions = getUserConditionsPublicKey(VELOCITY_ID, victimUser);
 		await syncUserConditions(victimUser);
-		await airdrop(userConditions, 1);
 		await registerWatch(userConditions);
 
 		// Standing bid for the liquidation's fill leg to route into, close

@@ -39,7 +39,10 @@ use {
     crate::{
         error::ErrorCode,
         state::{
-            clob_crank::{ClobCrankConditionsV0, CrankPaymentsV0, CLOB_CRANK_CROSS_FALLBACK},
+            clob_crank::{
+                ClobCrankConditionsV0, CrankPaymentsV0, CLOB_CRANK_CROSS_FALLBACK,
+                CLOB_CRANK_REFILL,
+            },
             prop_amm::{ClobCrankAccountV0, ClobCrankConditionsArgsV0, ClobCrankResolverV0},
         },
         validate,
@@ -72,7 +75,7 @@ impl ClobCrankConditionKeys {
     /// velocity's resolvers with identical accounts.
     ///
     /// [`ResolveClobCrank`]: super::crank_common::ResolveClobCrank
-    fn resolver_accounts(&self) -> [AccountRefV0; 6] {
+    fn resolver_accounts(&self) -> [AccountRefV0; 7] {
         [
             AccountRefV0::writable(crate::state::pdas::relay_scratch().to_bytes()),
             AccountRefV0::readonly(self.crank_conditions.to_bytes()),
@@ -80,6 +83,7 @@ impl ClobCrankConditionKeys {
             AccountRefV0::readonly(self.quoter.to_bytes()),
             AccountRefV0::readonly(self.state.to_bytes()),
             AccountRefV0::readonly(self.clob_program.to_bytes()),
+            AccountRefV0::readonly(crate::state::pdas::crank_treasury().to_bytes()),
         ]
     }
 }
@@ -135,6 +139,7 @@ pub fn write_clob_crank_conditions(
     payments: CrankPaymentsV0,
     min_cross_surplus: u64,
     cross_fallback_slots: u64,
+    refill_watermark_lamports: u64,
 ) -> Result<()> {
     validate!(
         payments.all_priced(),
@@ -154,6 +159,7 @@ pub fn write_clob_crank_conditions(
     let resolvers = conditions.write_resolvers(&keys.resolver_accounts())?;
 
     conditions.market_index = market_index;
+    conditions.refill_watermark_lamports = refill_watermark_lamports;
     conditions.crank_payments = payments;
     conditions.min_cross_surplus = min_cross_surplus;
     conditions.oracle = keys.oracle;
@@ -173,5 +179,40 @@ pub fn write_clob_crank_conditions(
             resolvers,
         ),
     )?;
+    // The reservoir's own liveness. A lamport balance is account metadata and
+    // a watch reads account data, so the account mirrors its spendable balance
+    // into `spendable_mirror` and this wakes on that value falling to the
+    // watermark. Watched account and block account are the same one, so the
+    // watch that finds this block already covers the value.
+    conditions.set_condition(
+        CLOB_CRANK_REFILL,
+        &ConditionV0::on_value_cross(
+            keys.crank_conditions.to_bytes(),
+            <u32 as core::convert::TryFrom<usize>>::try_from(
+                crate::state::clob_crank::CLOB_CRANK_SPENDABLE_MIRROR_OFFSET,
+            )
+            .map_err(|_| error!(ErrorCode::DefaultError))?,
+            8,
+            relay_spec::WatchValue::Unsigned(refill_watermark_lamports),
+            // Due when the mirrored balance is at or below the watermark.
+            1,
+            CrankSpecV0 {
+                resolver_program: crate::ID.to_bytes(),
+                resolver_disc: disc8(crate::instruction::ResolveClobCrank::DISCRIMINATOR)?,
+                // A turner drops any condition advertising less than its own
+                // configured floor, so this states what the refill really
+                // pays. Priced from the same rails as every other crank and
+                // stored on this account, so re-pricing the network re-prices
+                // it on the next attach — the treasury holds the lamports, not
+                // the price.
+                min_payment: u64::from(payments.refill),
+            },
+            resolvers,
+        ),
+    )?;
+    // A new account's mirror is zero, which reads as below the watermark, so
+    // the refill fires as soon as the market is attached. That is the intent:
+    // a market funds its own reservoir from the treasury and nobody seeds it
+    // by hand.
     Ok(())
 }

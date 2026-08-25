@@ -29,10 +29,13 @@ use {
         crank_clob_remove_expired::stage_expired_removal,
         crank_common::{validate_linkage, ResolveClobCrank},
         crank_cross_match::stage_cross,
+        refill_crank_reservoir::stage_refill,
     },
     crate::{
-        error::ErrorCode, instructions::relay_harness::resolve_into,
-        state::clob_crank::CLOB_CRANK_CROSS_FALLBACK, validate,
+        error::ErrorCode,
+        instructions::relay_harness::resolve_into,
+        state::clob_crank::{CLOB_CRANK_CROSS_FALLBACK, CLOB_CRANK_REFILL},
+        validate,
     },
     anchor_lang::prelude::*,
 };
@@ -68,6 +71,9 @@ enum ClobCrankWork {
     /// The book crossing itself, whether by a new best, an order reaching its
     /// activation slot, or a PropAMM repricing into it.
     Cross,
+    /// The reservoir that pays this market's cranks has fallen to its
+    /// watermark and is due a refill from the protocol treasury.
+    Refill,
 }
 
 enum Removal {
@@ -106,13 +112,14 @@ impl FiredConditionArgV0 {
             "fired condition names {}, which is neither this market's book nor its conditions",
             self.target
         )?;
-        validate!(
-            usize::from(self.index) == CLOB_CRANK_CROSS_FALLBACK,
-            ErrorCode::DefaultError,
-            "conditions slot {} is not a crank velocity serves",
-            self.index
-        )?;
-        Ok(ClobCrankWork::Cross)
+        match usize::from(self.index) {
+            CLOB_CRANK_CROSS_FALLBACK => Ok(ClobCrankWork::Cross),
+            CLOB_CRANK_REFILL => Ok(ClobCrankWork::Refill),
+            other => {
+                msg!("conditions slot {} is not a crank velocity serves", other);
+                Err(ErrorCode::DefaultError.into())
+            }
+        }
     }
 }
 
@@ -126,6 +133,7 @@ pub fn handle_resolve_clob_crank(
         ClobCrankWork::Removal(Removal::Expired) => stage_expired_removal(&ctx),
         ClobCrankWork::Removal(Removal::Evictable) => stage_eviction(&ctx),
         ClobCrankWork::Cross => stage_cross(&ctx),
+        ClobCrankWork::Refill => stage_refill(&ctx),
     })
 }
 

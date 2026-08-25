@@ -60,6 +60,13 @@ pub struct RemoveInsuranceFundStake<'info> {
     pub insurance_fund_stake: AccountLoader<'info, InsuranceFundStake>,
     #[account(
         mut,
+        seeds = [b"spot_market_vault".as_ref(), market_index.to_le_bytes().as_ref()],
+        bump,
+        seeds::program = velocity_program.key(),
+    )]
+    pub velocity_spot_market_vault: Box<Account<'info, TokenAccount>>,
+    #[account(
+        mut,
         seeds = [b"insurance_fund_vault".as_ref(), market_index.to_le_bytes().as_ref()],
         bump,
         seeds::program = velocity_program.key(),
@@ -129,6 +136,11 @@ impl<'info> RemoveInsuranceFundStakeCPI for Context<'info, RemoveInsuranceFundSt
             insurance_fund_stake: self.accounts.insurance_fund_stake.to_account_info().clone(),
             user_stats: self.accounts.velocity_user_stats.clone(),
             authority: self.accounts.vault.to_account_info().clone(),
+            spot_market_vault: self
+                .accounts
+                .velocity_spot_market_vault
+                .to_account_info()
+                .clone(),
             insurance_fund_vault: self.accounts.insurance_fund_vault.to_account_info().clone(),
             user_token_account: self
                 .accounts

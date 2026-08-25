@@ -3284,6 +3284,9 @@ export class VaultClient {
 		return await this.program.methods
 			.removeInsuranceFundStake(spotMarketIndex)
 			.accounts({
+				// The unstake settles allocated revenue into the insurance fund vault
+				// first, so it now takes the spot market vault too.
+				// velocitySpotMarketVault is a PDA and auto-resolves from its seeds.
 				vault: vault,
 				managerTokenAccount,
 				velocityState: await this.velocityClient.getStatePublicKey(),

@@ -542,7 +542,8 @@ accounts/events with the previous TS shapes should note:
 - **Layouts changed**: `User` is 4376 → 4496 bytes. `PerpMarket` grew across several PRs:
   1216 → 1240 (#16, Anchor-1.0 16-byte `PoolBalance` alignment), reorganized through the
   AMM decoupling (#65) and `HedgeConfig` addition down to 1224 (#66), then 1224 → 1304
-  (#75, embedded `FeeLedger` + protocol fee fields). The current size is **1304 bytes**,
+  (#75, embedded `FeeLedger` + protocol fee fields), then 1304 → 1560 for the per-market IF
+  revenue receivable and a 248-byte future tail. The current size is **1560 bytes**,
   with u128/i128 fields front-loaded for alignment. Any custom (non-IDL) decoder must be
   rebuilt against `sdk/src/idl/velocity.json`.
 - **`PerpMarket.pending_revenue_share: u64`** (audit #73) was carved in place from the
@@ -625,6 +626,22 @@ accounts/events with the previous TS shapes should note:
   accounts stay valid and read the new fields as 0 (default 25% breaker, disabled deposit cap).
   SDK `SpotMarketAccount` gains `withdrawCircuitBreakerBps` / `maxDepositBpsPerDay` (`number`,
   basis points) and `depositGuardThreshold` (`BN`).
+- **Per-market swept IF revenue accounting** extends both market accounts. `PerpMarket` appends
+  `insurance_fund_revenue_receivable: u64`, the source market's insurance fees already moved into
+  the quote revenue pool but not yet settled into the shared IF vault. `SpotMarket` appends
+  `perp_market_if_revenue_receivable: u64`, the aggregate reserved from generic revenue settlement,
+  spot bankruptcy and withdrawals. It remains source owned and is excluded from IF NAV until
+  settlement. `SpotMarket` also appends `revenue_settle_allowance: u64`, the remaining shared
+  capacity that generic revenue and all source claims may consume in the current period.
+  `PerpMarket` appends 248 zeroed future bytes and `SpotMarket` appends 240, making
+  `PerpMarket` **1560 bytes** and `SpotMarket` **1064 bytes**. Existing accounts must be grown with
+  `extend_account` after deployment. The permissionless
+  `settle_perp_market_if_revenue_to_insurance_fund` instruction physically settles one source
+  claim under the quote market's normal settlement cadence, utilization, percentage and APR caps,
+  then clears the paid amount from both counters. Unused capacity remains available to another
+  source or generic revenue in the same period. A perp bankruptcy consumes its own receivable
+  before shared IF capital, so one market cannot spend another market's swept but unsettled
+  insurance fees.
 - **`User` layout**: `equity_floor: u64` and `equity_floor_buffer: u64` were carved from
   the tail padding after `special_user_status` (3 padding bytes, then the 8-byte fields at
   offsets 4472 and 4480 — the buffer consumed the last 8 padding bytes). Account size is
@@ -737,6 +754,36 @@ accounts/events with the previous TS shapes should note:
   `PerpPosition.position_flag`. It marks the position whose debt is counted in its
   market's `pending_bankruptcy_claims`, so a repeated latch cannot count the same debt
   twice. Decoders that match `position_flag` exactly (rather than masking) must add it.
+- **`SpotMarket.spot_fee_pool: PoolBalance` is retired** and its 32-byte slot at offset 416 is
+  split into `padding_former_spot_fee_pool: [u8; 16]` and
+  `insurance_fund_revenue_receivable_scaled: u128`. Account size (800 bytes) and every other
+  field offset are unchanged. The whole slot was always zero on chain — spot trading charges no
+  fee and the pool was only ever written as `PoolBalance::default()` — so existing accounts read
+  an empty receivable. Custom decoders must replace the pool with the two fields. The 16 padding
+  bytes are reserve, and they are the only reserve `SpotMarket` has: a dead field still counts as
+  content, so retiring this one is what created it. The receivable holds revenue that is
+  allocated to the insurance fund but still sits in the spot vault, which happens when a
+  withdraw pause blocks the transfer. It is a third claim inside `deposit_balance` beside
+  `revenue_pool` and `protocol_fee_pool`, and it is held the same way they are: a **scaled
+  balance**, not a token amount, so the claim earns deposit interest until the transfer
+  completes and the fund collects that interest. Read its token value through
+  `SpotMarket::get_insurance_fund_revenue_receivable`
+  (SDK `getInsuranceFundRevenueReceivableTokenAmount`), never as a raw integer. Insurance fund
+  shares are priced off `get_insurance_fund_nav` (SDK `getInsuranceFundNav`), which adds that
+  token value to the live vault balance, so any integrator pricing shares off the vault
+  balance alone now understates the fund. The receivable is reserved from spot egress:
+  withdrawals and borrows are capped by `deposits - borrows - receivable`, and
+  `validate_spot_balances` refuses a state where the depositors' claim falls below it.
+- **`remove_insurance_fund_stake` takes one more account**, `spot_market_vault`, in position 6
+  (after `authority`, before `insurance_fund_vault`). The instruction settles allocated revenue
+  into the insurance fund vault before it prices the payout, which the add, request-remove and
+  cancel instructions already did. The vaults program's CPI wrapper gains the matching
+  `velocity_spot_market_vault` account; it is a PDA and the vaults SDK resolves it from its
+  seeds. Because the settle runs first, the receivable is normally empty by the time the payout
+  is priced. **An unstake still refuses rather than paying part of a claim** when it is not:
+  only vault cash can pay an unstake, and a frozen request value above the cash on hand reverts
+  with `InvalidIFUnstakeSize` (6363). That can only happen while a pause blocks the transfer,
+  and the unstake succeeds once the pause lifts.
 - **`SpotMarket.if_last_settle_vault_amount: u64`** replaces the 8-byte trailing padding.
   Account size (800 bytes) and every other field offset are unchanged — existing accounts
   stay valid (the field reads as 0 until the market settles revenue once; new markets
@@ -985,6 +1032,7 @@ accounts/events with the previous TS shapes should note:
 | builder-fee-margin-gate | Close the remainder of a Medium audit finding (OtterSec #83). PR #309 capped the builder fee at 1% of notional, which rate-limits the transfer but does not stop it: a taker below initial margin reduces the position in slices, and each slice both routes up to 1% of its notional to a builder the taker approves and lowers the maintenance requirement that gates the next slice. `fulfill_perp_order` now charges the builder fee only while the taker meets initial margin, the gate a withdrawal clears. The gate applies the withdraw gate's oracle rules too: strict (TWAP-bounded) prices, no collateral for a deposit with an invalid oracle, and every liability oracle valid — so one oracle push, or one stale oracle on an unrelated position, cannot open it for the instant the fill needs. The fee is waived, not the fill — the taker still closes the position and the builder is paid nothing for that fill. The waiver is what this gate does on its own; a spot borrow oracle the calculation cannot value fails the fill outright on the separate `all_spot_liability_oracles_valid` gate in the same handler (fill-stale-margin-bad-debt, above), so the waiver is the observable outcome for an invalid perp or deposit oracle. Perp only; the referrer reward is carved out of the taker fee rather than added to it, so it is unaffected. SDK: new `User.isBuilderFeeCharged()`, consulted by `User.calculatePerpTakerFee` and `VelocityClient.getMarketFees`. No account-layout, IDL, or error-code change |
 | liquidation-throttle-tolerance | Tighten two bounds left loose by #267 (`liquidation-fee-basis` / `liquidation-math`). (1) `liquidate_perp_pnl_for_deposit` rejects a loss-making transfer up front instead of after the fact: the seizure premium (`asset_weight × liquidator premium / liquidator discount`) must stay below the buffered pnl liability weight, else the call reverts with `LiquidationWorsensAccountHealth` (6361) before any balance moves. The "shortage must not grow" postcondition is now exact — the $1 tolerance is gone. It existed because `calculate_asset_transfer_for_liability_transfer` rounds the seizure up to the user's whole deposit when the remainder is worth under $1, taking collateral the pnl relief does not pay for; a liquidator picks the transfer size, so any tolerance is an amount to stay under and repeat. The seizure now uses a new exact conversion (`calculate_asset_transfer_for_liability_transfer_exact`, no round-up) and takes the whole deposit only when the deposit is what limited the transfer, where the round-up is base-unit truncation rather than value. **A liquidation that previously swept a sub-$1 remainder now leaves it with the user**, so `LiquidatePerpPnlForDepositRecord.asset_transfer` can be smaller and the user can keep a dust spot position. Market pairs whose combined liquidator fees exceed the liquidation margin buffer are refused by this path entirely — route them through `liquidate_spot` or `liquidate_borrow_for_perp_pnl`. `MarketStatus::Settlement` stays exempt. (2) `liquidate_spot_with_swap_begin` drops the 25 bps headroom it added on top of the max-pct-to-liquidate throttle and derives the bound with the exact conversion, so `max_asset_transfer` equals the throttled asset transfer instead of the throttle plus 25 bps, or the whole deposit when the throttle lands within $1 of it. Begin and end run in one transaction off the same oracle prices, and `swap_end` bounds the exchange rate on its own. No layout/IDL/error-code change |
 | slot-duration-scaling | `State.slot_duration_ms` + `update_state_slot_duration_ms` (warm admin, stages exact-successor on the 400->350->300->250->200 schedule during the target IBRL gate warmup; State auto-switches at the effective slot via `pending_slot_duration_ms`/`slot_duration_effective_slot`); all wall-clock windows/ramps/rates become typed durations (`math::time::Millis` + `SlotDuration`, program; `math/time.ts` branded `Millis` + `SlotDurationMs`, SDK) expressed in actual slots at read; code constants defined in ms, legacy stored fields decode from their 400ms-unit encoding via typed getters (`DelayOverride` types the i8 sentinels); `block_operation`'s funding gate keeps its current wall-clock width (~40% of the funding period) across gates instead of widening with faster slots — the pre-existing period-vs-seconds behavior is preserved, not corrected; SDK `SLOT_TIME_ESTIMATE_MS` deprecated (`IDLE_TIME_SLOTS` -> `IDLE_TIME`, `MM_ORACLE_MIN_SLOT_GAP` -> `MM_ORACLE_MIN_WRITE_GAP`, `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` -> `MM_ORACLE_MAX_SOURCE_AGE`), oracle/liquidation/idle math takes an optional `SlotDurationMs`; admin CLI `exchange set-slot-duration-ms` |
+| if-revenue-receivable | Revenue due to the insurance fund is preserved as a spot vault receivable instead of being skipped while transfers are paused. `attempt_settle_revenue_to_insurance_fund` used to return early under the global withdraw pause or a market's `SpotOperation::Withdraw` bit, so a settle period that elapsed during a pause was lost and the two pause gates on `request_remove_insurance_fund_stake` existed only to stop a staker freezing a pre-settle exit value. The settle now books the revenue whatever the pause state and only the token transfer waits, so those two gates are removed and the frozen value is always post-allocation. `SpotMarket.spot_fee_pool` is retired to make room: its 32-byte slot splits into `padding_former_spot_fee_pool: [u8; 16]` + `insurance_fund_revenue_receivable_scaled: u128`, size 800 and every other offset unchanged, and the slot was always zero so existing markets read an empty receivable. The 16 padding bytes are the only reserve `SpotMarket` has (§5). The receivable is a **scaled** claim held inside `deposit_balance`, so it earns deposit interest while it waits and the fund collects it; a token amount would leave that interest inside `deposit_balance` owned by nobody and raise recorded claims above the tokens backing them. Share pricing moves from the live vault balance to `get_insurance_fund_nav` (vault + receivable) everywhere: add, request-remove, cancel, remove, `update_user_stats_if_stake_amount`, and the revenue-settle APR cap base. Loss draws spend the receivable before vault cash and need no token movement for that part, so `resolve_perp_bankruptcy`, `resolve_spot_bankruptcy` and `resolve_perp_pnl_deficit` return only the vault portion for transfer while `record_insurance_fund_outflow` records the whole NAV change. The receivable is reserved from spot egress (withdraw, borrow, and two new `validate_spot_balances` / `validate_spot_market_vault_amount` invariants), and `update_spot_balances_and_cumulative_deposits_with_limits` now validates balances, so a borrow that would cross the reservation reverts with `SpotMarketVaultInvariantViolated`. `remove_insurance_fund_stake` gains a `spot_market_vault` account and settles allocated revenue before it prices the payout, so the receivable is normally empty by then; when a pause holds it back, the unstake reverts with `InvalidIFUnstakeSize` rather than paying part of the claim (§5). `settle_revenue_to_insurance_fund` accepts a call outside the settle period when only a receivable transfer is pending. SDK: `SpotMarketAccount.spotFeePool` removed, `paddingFormerSpotFeePool` + `insuranceFundRevenueReceivableScaled` added, new `getInsuranceFundNav` and `getInsuranceFundRevenueReceivableTokenAmount`, and `calculateWithdrawLimit` reserves the receivable from the withdraw, exception and borrow limits. No error-code change |
 | off-chain-slot-clock | The off-chain half of `slot-duration-scaling`: the resolver TypeScript clients read the live slot length with, so no client holds a slot length of its own. New SDK `currentSlotClock(source, currentSlot)` -> `{ slotDurationMs, isLive }` and `currentSlotDuration(...)` (`math/time`), both delegating the staged-flip decision to the existing `activeSlotDurationFromState` so a client's prediction matches the on-chain value across a gate boundary. `source` is duck-typed on `{ getStateAccount() }`, keeping `math/time` importing only `BN`. When state or the slot feed is unavailable, or the decoded staging fields are not valid, both helpers fall back to the hardcoded 400ms `SLOT_DURATION_BASELINE` and report `isLive: false` (callers do not pass a fallback). New `SLOT_DURATION_SCHEDULE_MS` mirrors the program's schedule and `SLOT_DURATION_FLOOR` (200ms) is what a slots-to-ms call site substitutes on a dead feed, where the 400ms baseline would widen the window instead of tightening it. A missing or `0` `currentSlot` resolves to the baseline instead of being read as slot zero, since a failed slot subscription reports `0` and slot zero precedes every effective slot, which would otherwise return the pre-flip base while looking live. `keeper-bots-v2` drops its local copy for the shared helper. `SLOT_TIME_ESTIMATE_MS` stays exported and deprecated. No program, layout, IDL, or error-code change |
 | #429 accelerated-referrals | Two referrer reward rates. Standard stays per-fee-tier (`FeeTier.referrer_reward_numerator`, fresh default 15% -> 10%), Accelerated is the fixed `ACCELERATED_REFERRER_REWARD_PERCENT` constant, independent of the tier; the referee discount still comes from the tier. New `UserStats.accelerated_referral_status` (padding carve-out, no layout break) and the `AcceleratedReferralStatus` flags. Automatic enrollment on account init, perp fills (taker and maker, excluding a liquidation's liquidatee), and completed swaps, gated by the beta-scoped `ACCELERATED_REFERRAL_ENROLLMENT_ENABLED` constant rather than a state field, so ending the beta is a program upgrade. Warm/cold-admin `update_user_accelerated_referral_status`; a revoke blocks reenrollment until a grant clears it. New `AcceleratedReferralStatusChangedRecord` event. The referred taker's fill paths accept an optional readonly referrer `UserStats` after the taker's `RevenueShareEscrow`; omitting it applies the Standard rate rather than failing the fill. |
 
@@ -1016,7 +1064,7 @@ accounts/events with the previous TS shapes should note:
     don't use builders. If you are a filler, attach the taker's `RevenueShareEscrow` in
     remaining accounts when the taker has a builder order or a referred escrow (see §3
     fill-time enforcement).
-11. **Re-pull the IDL and types** for the fee redesign — `PerpMarket` is now 1304 bytes and
+11. **Re-pull the IDL and types** for the fee redesign — `PerpMarket` is now 1560 bytes and
     fee fields live in `feeLedger` (§4.4). IF stakers receive 100% of settled revenue (no
     protocol share mint). If you index fees, the authoritative flow description is
     [`FEES.md`](../FEES.md).

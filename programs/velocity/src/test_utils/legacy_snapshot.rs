@@ -809,7 +809,12 @@ pub fn regenerate_spot_market_snapshot(old_b64: &str) -> String {
     sm.historical_oracle_data = l.historical_oracle_data;
     sm.historical_index_data = l.historical_index_data;
     sm.revenue_pool = l.revenue_pool.to_current();
-    sm.spot_fee_pool = l.spot_fee_pool.to_current();
+    // The retired spot fee pool shared the slot the reserve and the receivable
+    // now occupy. It was always empty, so both start empty.
+    sm.padding_former_spot_fee_pool = [0; 16];
+    sm.insurance_fund_revenue_receivable_scaled = 0;
+    sm.perp_market_if_revenue_receivable = 0;
+    sm.revenue_settle_allowance = 0;
     sm.insurance_fund = l.insurance_fund;
     sm.total_spot_fee = l.total_spot_fee;
     sm.deposit_balance = l.deposit_balance;
@@ -889,7 +894,7 @@ mod tests {
 
     /// New PerpMarket is the size the tests will write into.
     #[test]
-    fn current_perp_market_size_unchanged() {
+    fn current_perp_market_size_includes_future_tail() {
         // Cached spread state lives back on AMM: 4×u128 spread reserves,
         // i64 last_oracle_reserve_price_spread_pct, u64 last_spread_update_slot,
         // 2×u32 long/short_spread, i32 reference_price_offset. The 5 former
@@ -898,9 +903,10 @@ mod tests {
         // discriminator = 1224. The protocol-fee redesign then appended
         // `protocol_fee_pool` (32) + `pending_protocol_fee`/`pending_if_fee`
         // (2×16) + `protocol_liquidation_fee` (4) + pad (12) = 80 bytes at the
-        // tail → 1296 content, 1304 with discriminator.
-        assert_eq!(std::mem::size_of::<PerpMarket>(), 1296);
-        assert_eq!(PerpMarket::SIZE, 1304);
+        // tail → 1296 content, then this migration adds one u64 receivable
+        // and 248 future bytes.
+        assert_eq!(std::mem::size_of::<PerpMarket>(), 1552);
+        assert_eq!(PerpMarket::SIZE, 1560);
     }
 
     /// One-shot regeneration helper. Run with:

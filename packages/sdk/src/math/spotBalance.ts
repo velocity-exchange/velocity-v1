@@ -933,7 +933,7 @@ export function calculateWithdrawLimit(
 		maxBorrowTokensTwap
 	);
 
-	const withdrawLimit = BN.max(
+	let withdrawLimit = BN.max(
 		marketDepositTokenAmount.sub(minDepositTokens),
 		ZERO
 	);
@@ -955,7 +955,7 @@ export function calculateWithdrawLimit(
 		minDepositTokens.sub(spotMarket.withdrawGuardThreshold),
 		ZERO
 	);
-	const exceptionWithdrawLimit = BN.max(
+	let exceptionWithdrawLimit = BN.max(
 		marketDepositTokenAmount.sub(exceptionFloor),
 		ZERO
 	);
@@ -983,6 +983,38 @@ export function calculateWithdrawLimit(
 
 	if (withdrawLimit.eq(ZERO) || isVariant(spotMarket.assetTier, 'protected')) {
 		borrowLimit = ZERO;
+	}
+
+	// Revenue already allocated to the insurance fund still sits in this vault.
+	// Tokens that leave the protocol must leave that claim behind, so every
+	// egress limit is capped by the free liquidity that remains after it. A
+	// market with no receivable keeps the limits it had before the reservation.
+	//
+	// The program reserves the same amount in
+	// `get_max_withdraw_for_market_with_token_amount`, and enforces it as a hard
+	// revert in `validate_spot_balances` rather than through the limit this
+	// function mirrors. Capping here reports a limit the chain will honor instead
+	// of one that reverts with `SpotMarketVaultInvariantViolated`. The program
+	// caps the sum of the withdraw and borrow room once; each limit is capped
+	// here on its own, which can report less room than the chain allows when a
+	// caller adds two of them. Reporting less never proposes a failing
+	// transaction, so the difference is left in the safe direction.
+	const receivable = getTokenAmount(
+		spotMarket.insuranceFundRevenueReceivableScaled,
+		spotMarket,
+		SpotBalanceType.DEPOSIT
+	);
+	if (receivable.gt(ZERO)) {
+		const unreservedLiquidity = BN.max(
+			marketDepositTokenAmount.sub(marketBorrowTokenAmount).sub(receivable),
+			ZERO
+		);
+		withdrawLimit = BN.min(withdrawLimit, unreservedLiquidity);
+		exceptionWithdrawLimit = BN.min(
+			exceptionWithdrawLimit,
+			unreservedLiquidity
+		);
+		borrowLimit = BN.min(borrowLimit, unreservedLiquidity);
 	}
 
 	return {

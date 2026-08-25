@@ -6592,6 +6592,40 @@ export type Velocity = {
           ]
         },
         {
+          "name": "spotMarketVault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "marketIndex"
+              }
+            ]
+          }
+        },
+        {
           "name": "insuranceFundVault",
           "writable": true,
           "pda": {
@@ -7611,6 +7645,163 @@ export type Velocity = {
               "name": "settlePnlMode"
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "settlePerpMarketIfRevenueToInsuranceFund",
+      "discriminator": [
+        109,
+        79,
+        105,
+        71,
+        84,
+        112,
+        50,
+        93
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "perpMarket",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  112,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "perpMarketIndex"
+              }
+            ]
+          }
+        },
+        {
+          "name": "spotMarket",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "perpMarket"
+              }
+            ]
+          }
+        },
+        {
+          "name": "spotMarketVault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "perpMarket"
+              }
+            ]
+          }
+        },
+        {
+          "name": "velocitySigner"
+        },
+        {
+          "name": "insuranceFundVault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  110,
+                  115,
+                  117,
+                  114,
+                  97,
+                  110,
+                  99,
+                  101,
+                  95,
+                  102,
+                  117,
+                  110,
+                  100,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "perpMarket"
+              }
+            ]
+          }
+        },
+        {
+          "name": "tokenProgram"
+        }
+      ],
+      "args": [
+        {
+          "name": "perpMarketIndex",
+          "type": "u16"
         }
       ]
     },
@@ -22372,6 +22563,30 @@ export type Velocity = {
                 "name": "hedgeConfig"
               }
             }
+          },
+          {
+            "name": "insuranceFundRevenueReceivable",
+            "docs": [
+              "This market's insurance fees that were swept from its pnl pool into the",
+              "quote spot market revenue pool but have not yet reached the insurance",
+              "fund vault. Bankruptcy for this market can reclaim the amount before",
+              "drawing shared insurance capital. Other markets cannot consume it.",
+              "precision: QUOTE_PRECISION"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "paddingFuture",
+            "docs": [
+              "Reserved tail space for future fields. Account extension is expensive",
+              "operationally, so this upgrade allocates enough room for later additions."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                248
+              ]
+            }
           }
         ]
       }
@@ -23843,16 +24058,44 @@ export type Velocity = {
             }
           },
           {
-            "name": "spotFeePool",
+            "name": "paddingFormerSpotFeePool",
             "docs": [
-              "The fees collected from swaps between this market and the quote market",
-              "Is settled to the quote markets revenue pool"
+              "Free bytes from the retired spot fee pool. The pool was 32 bytes and the",
+              "receivable below takes 16 of them, so these 16 are reserve for the next",
+              "field. They start at a multiple of 16, so they hold one u128 or two u64.",
+              "The whole slot was always zero on chain, so nothing has to be migrated."
             ],
             "type": {
-              "defined": {
-                "name": "poolBalance"
-              }
+              "array": [
+                "u8",
+                16
+              ]
             }
+          },
+          {
+            "name": "insuranceFundRevenueReceivableScaled",
+            "docs": [
+              "Revenue allocated to the insurance fund that still sits in the spot",
+              "vault, which happens while a withdraw pause holds back the transfer.",
+              "",
+              "This is a third claim inside `deposit_balance`, beside `revenue_pool` and",
+              "`protocol_fee_pool`, and it is held the same way they are. A scaled",
+              "balance earns deposit interest for as long as the tokens stay here, and",
+              "the fund collects that interest when the transfer completes. A token",
+              "amount could not do this: the claim grows with",
+              "`cumulative_deposit_interest`, and a fixed integer would leave the",
+              "difference inside `deposit_balance` owned by nobody.",
+              "",
+              "This is a u128 that follows a `PoolBalance`, which the field ordering",
+              "rule in `docs/alignment-and-native-offsets.md` otherwise forbids. It is",
+              "safe here for the two reasons that rule exists to guarantee, and both are",
+              "pinned by asserts: `PoolBalance` is 32 bytes on the host and on SBF, so",
+              "`revenue_pool` ends at 416 on both, and this field starts at 432, which",
+              "is a multiple of 16. No architecture specific gap can open. Do not copy",
+              "the pattern to a field whose offset is not asserted.",
+              "precision: SPOT_BALANCE_PRECISION"
+            ],
+            "type": "u128"
           },
           {
             "name": "historicalOracleData",
@@ -24262,18 +24505,19 @@ export type Velocity = {
           {
             "name": "ifLastSettleVaultAmount",
             "docs": [
-              "Lowest insurance-fund vault balance since the end of the last revenue",
-              "settle. `settle_revenue_to_insurance_fund` starts each period by writing",
-              "the live vault balance plus the amount that settle transfers in, and",
-              "`record_insurance_fund_outflow` lowers it on every path that moves tokens",
-              "out of the vault: `remove_insurance_fund_stake`,",
+              "Lowest insurance fund NAV since the end of the last revenue settle.",
+              "NAV includes the live vault balance and allocated revenue that remains",
+              "in the spot vault as a receivable. Revenue allocation starts each period",
+              "by writing the resulting NAV, and `record_insurance_fund_outflow` lowers",
+              "it on every path that moves value out of the fund:",
+              "`remove_insurance_fund_stake`,",
               "`resolve_perp_pnl_deficit`, `resolve_perp_bankruptcy`, and",
               "`resolve_spot_bankruptcy`. A transfer into the vault never raises it, so",
               "it lags the live vault by up to one `revenue_settle_period`.",
               "",
               "The per-period revenue-settle APR cap is sized off",
-              "`min(live_if_vault, this)`, so it counts only capital the fund held for",
-              "the whole period. A donation spiked into the live vault right before a",
+              "`min(current_if_nav, this)`, so it counts only capital the fund held for",
+              "the whole period. A donation sent into the live vault right before a",
               "settle is absent from this field and cannot lift the cap. Tracking the",
               "running minimum is what closes the same trick after a dip: a loss draw",
               "takes the vault to 100, a donation puts it back to 1000, and a plain",
@@ -24285,11 +24529,49 @@ export type Velocity = {
               "was empty. Both give a cap base of `0` for one period and then self-heal,",
               "because the settle that reads `0` still writes the new period's balance.",
               "",
-              "(The unstake-cancel share forfeiture is donation-proofed differently — by",
-              "withdraw-and-restake at the active share price — and does *not* read this",
-              "field.) Repurposed from trailing padding — layout and size are unchanged."
+              "The unstake cancel share forfeiture is protected from donations by",
+              "withdrawing and restaking at the active share price. It does not read",
+              "this field."
             ],
             "type": "u64"
+          },
+          {
+            "name": "perpMarketIfRevenueReceivable",
+            "docs": [
+              "Insurance fee revenue swept from perp markets into this market's",
+              "revenue pool but not yet settled into the insurance fund vault or",
+              "reclaimed by its source perp market during bankruptcy.",
+              "",
+              "This is the aggregate backing all perp market",
+              "`insurance_fund_revenue_receivable` fields that settle in this spot",
+              "market. It reserves those tokens from generic revenue settlement and",
+              "spot bankruptcy. Individual ownership remains on each perp market, and",
+              "this aggregate is not part of insurance fund NAV until settled.",
+              "precision: token mint precision"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "revenueSettleAllowance",
+            "docs": [
+              "Revenue admission capacity left in the current settlement period.",
+              "Generic revenue and source market receivables consume the same allowance.",
+              "precision: token mint precision"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "paddingFuture",
+            "docs": [
+              "Reserved tail space for future fields. Account extension is expensive",
+              "operationally, so this upgrade allocates enough room for later additions."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                240
+              ]
+            }
           }
         ]
       }

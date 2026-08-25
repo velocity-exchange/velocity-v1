@@ -24,8 +24,9 @@ static_assertions = "1.1.0"
 wincode = { version = "0.5", features = ["derive"] }
 # Declares the quoter wire types this program writes. `wincode-derive` gives
 # them the same derives the rest of this program's wire structs use. No borsh
-# reaches this binary: the spec's anchor derives are behind a feature only
-# velocity turns on.
+# crate reaches this binary: the spec's anchor derives are behind a feature only
+# velocity turns on. Where a comment on this wire says borsh, it names the byte
+# framing that wincode's `BORSH_CONFIG` produces, never a dependency.
 quoter-spec = { path = "../../../crates/quoter-spec" }
 clob-wire = { path = "../../../crates/clob-wire" }
 # The relay condition block this market hosts. Expiry, activation, capacity and

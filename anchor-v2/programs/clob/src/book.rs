@@ -791,7 +791,7 @@ impl ClobBook for ClobMarketV0 {
 
     /// Aggregate the levels a taker of `direction`/`size` would clear,
     /// best-first, capped at the market's `max_quote_levels`, and stream them
-    /// into the response region as borsh [`crate::state::QuoteResponseV0`].
+    /// into the response region as wincode [`crate::state::QuoteResponseV0`].
     /// Skips expired orders, orders still inside their activation delay, and
     /// the taker's own orders (self-trade prevention — same rule as
     /// [`Self::execute`], shared through [`is_matchable`]). Applies the same
@@ -1017,7 +1017,7 @@ impl ClobBook for ClobMarketV0 {
     }
 
     /// Consume matchable orders best-first, removing filled orders and
-    /// streaming each maker's share into the response region as borsh
+    /// streaming each maker's share into the response region as wincode
     /// [`crate::state::ExecuteResponseV0`] for velocity to apply. Expired
     /// orders are skipped, never removed here — reclamation goes through
     /// [`Self::remove_expired`] so the maker's aggregates update. A partial
@@ -1663,7 +1663,7 @@ fn best_actionable_price(
     Ok(best)
 }
 
-/// Append one borsh `PriceLevel` to the quote response, after re-checking on
+/// Append one wincode `PriceLevel` to the quote response, after re-checking on
 /// the way out what the wire type promises: levels are best-price-first and
 /// every one is a real, fillable level.
 ///

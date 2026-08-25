@@ -100,7 +100,7 @@ pub(super) fn streamed(book: &ClobMarketV0, pointer: ResponsePointerV0) -> Vec<u
 }
 
 #[test]
-fn quote_streams_the_borsh_encoding_of_its_levels() {
+fn quote_streams_the_wincode_encoding_of_its_levels() {
     let market = TestMarket::new(16);
     let mut book = market.book();
     let (maker_a, maker_b) = (user(0xA), user(0xB));

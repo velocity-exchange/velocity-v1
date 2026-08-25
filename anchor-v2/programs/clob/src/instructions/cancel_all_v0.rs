@@ -68,7 +68,7 @@ pub fn handle_cancel_all_v0(
     })
 }
 
-/// The borsh tag the wire enum encodes to, for the record's `sides` byte.
+/// The tag the wire enum encodes to, for the record's `sides` byte.
 fn sides_tag(sides: CancelSidesV0) -> u8 {
     match sides {
         CancelSidesV0::Bids => 0,

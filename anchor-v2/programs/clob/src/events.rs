@@ -67,7 +67,7 @@ pub struct OrdersCancelRecordV0 {
     pub ask_base_asset_amount: u64,
     pub market_index: u16,
     pub sub_account_id: u16,
-    /// Which sides the sweep covered, as the wire enum's borsh tag
+    /// Which sides the sweep covered, as the wire enum's tag
     /// (0 = bids, 1 = asks, 2 = both).
     pub sides: u8,
     pub exhaustive: bool,

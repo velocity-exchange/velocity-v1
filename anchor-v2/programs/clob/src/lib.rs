@@ -1,6 +1,6 @@
 //! Velocity CLOB quoter program (Anchor v2 / anchor-next). Price-time-priority
 //! resting book, exposed to velocity through the quoter interface: `quote_v0`/
-//! `execute_v0` write borsh responses into the market's response-buffer PDA
+//! `execute_v0` write wincode responses into the market's response-buffer PDA
 //! and return a `ResponsePointerV0` via return data.
 //!
 //! Placement policy lives in velocity: `place_authority` (velocity's quoter
@@ -14,11 +14,10 @@
 //! the velocity quoter registry stores `[u8; 8]` discriminators.
 //!
 //! Module layout: [`state`] is the account layout and wire types, [`book`]
-//! the order-book algorithm over them (arena access, traversal, invariants),
-//! [`response`] the streaming borsh encoder that writes quote/execute
-//! payloads straight into the market's response region, [`emit`] the
-//! allocation-free event log path, and [`instructions`] one file per
-//! instruction.
+//! the order-book algorithm over them (arena access, traversal, invariants)
+//! plus the streaming encoder that writes quote/execute payloads straight
+//! into the market's response region, [`emit`] the allocation-free event log
+//! path, and [`instructions`] one file per instruction.
 
 use anchor_lang_v2::prelude::*;
 

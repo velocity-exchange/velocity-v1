@@ -4,7 +4,7 @@
 //! `ClobMarketV0` backed by a stack account buffer — see [`market`]. They
 //! cover the pieces the litesvm suite can't reach from outside: index
 //! validation, the free-list guards, the post-operation invariants, that the
-//! streamed response bytes are exactly the borsh encoding of the declared
+//! streamed response bytes are exactly the wincode encoding of the declared
 //! response types, and that the stack-buffer event path emits exactly what
 //! anchor's `Event::data()` would.
 

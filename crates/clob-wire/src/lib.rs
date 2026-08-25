@@ -26,7 +26,7 @@
 //!
 //! Per-consumer, as in `quoter-spec`: velocity encodes with anchor's borsh and
 //! needs the IDL plumbing, while the book writes the bytes itself and carries
-//! no borsh dependency (its binary size and CU budget are why). The two
+//! no borsh crate (its binary size and CU budget are why). The two
 //! encodings are byte-compatible — wincode's configuration here is anchor's
 //! `BORSH_CONFIG` — so one declaration serves both.
 

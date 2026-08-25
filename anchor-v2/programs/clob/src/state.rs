@@ -72,23 +72,23 @@ pub const RESPONSE_BUFFER_BYTES: usize = {
 // them, and `tests::response::wire_widths_match_the_response_types` pins every
 // one against wincode's encoding of that record.
 
-/// Byte width of a borsh sequence count (a `Vec`'s length prefix).
+/// Byte width of a borsh-framed sequence count (a `Vec`'s length prefix).
 pub const COUNT_BYTES: usize = core::mem::size_of::<u32>();
 
 /// Width of a sequence length in the *response region*, which is wincode's
 /// framing rather than borsh's. Distinct from [`COUNT_BYTES`]: that one is the
-/// borsh count the event records carry, and widening it here silently changed
-/// an emitted event before the two were separated.
+/// borsh-framed count the event records carry, and widening it here silently
+/// changed an emitted event before the two were separated.
 pub const RESPONSE_LEN_BYTES: usize = quoter_spec::LEN_BYTES;
 
 /// Width of a [`UserRefV0`]: 32-byte authority + u16 sub-account.
 pub const USER_REF_BYTES: usize = quoter_spec::UserRefV0::SIZE;
 
-/// Borsh width of a [`PriceLevel`].
+/// Encoded width of a [`PriceLevel`].
 pub const PRICE_LEVEL_BYTES: usize = quoter_spec::PRICE_LEVEL_BYTES;
 
-/// Width of an order id in an event payload. Events are borsh, not the
-/// response wire — [`crate::emit`] sizes its buffers from this.
+/// Width of an order id in an event payload. Events carry borsh framing, not
+/// the response wire's — [`crate::emit`] sizes its buffers from this.
 pub const ORDER_ID_BYTES: usize = core::mem::size_of::<u64>();
 
 /// Width of a [`UserBalanceChangeV0`]. One fixed stride: the orders a change
@@ -615,14 +615,14 @@ pub type PriceLevel = quoter_spec::PriceLevelV0;
 /// Which sides a `cancel_all_v0` withdraws. Declared by `quoter-spec`; this
 /// program's reading of them is [`CancelSidesExt`].
 pub use quoter_spec::CancelSidesV0;
-/// Where in the market account the borsh response was written. Declared by
+/// Where in the market account the response was written. Declared by
 /// `quoter-spec`, which owns every shape on this wire.
 pub use quoter_spec::ResponsePointerV0;
 /// One user's share of an executed fill. Mirrors velocity's quoter-interface
 /// `UserBalanceChangeV0`.
 ///
 /// `execute` writes this encoding into the response region field by field
-/// (see [`crate::response`]) rather than serializing this struct — the type
+/// (see [`crate::book`]) rather than serializing this struct — the type
 /// remains the schema of record for that layout, and the response unit
 /// tests pin the two against each other.
 pub use quoter_spec::UserBalanceChangeV0;

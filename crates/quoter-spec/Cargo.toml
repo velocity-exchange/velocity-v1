@@ -24,9 +24,11 @@ repository = "https://github.com/velocity-exchange/velocity-v1/crates/quoter-spe
 solana-address = { version = "~2.6", features = ["bytemuck", "copy", "wincode"] }
 
 # Serialization is per-consumer, because the two halves of the wire do not agree
-# on a framework: velocity decodes the response with borsh, and the v2 programs
-# write the bytes themselves and must not be handed a borsh dependency (the
-# CLOB's binary size and CU budget are why it has none). `Address` already
+# on a framework: both ends read the responses with wincode, but velocity also
+# needs anchor's derives on every type that reaches its own instruction
+# arguments and its IDL, while the v2 programs write the bytes themselves and
+# must not be handed a borsh dependency (the CLOB's binary size and CU budget
+# are why it has none). `Address` already
 # carries both derives behind its own features, and both are already enabled in
 # their respective trees, so neither feature below adds anything to either
 # dependency graph.

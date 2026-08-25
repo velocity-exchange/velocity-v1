@@ -250,11 +250,28 @@ describe('currentSlotDuration (off-chain resolver)', () => {
 
 	it('accepts an off-schedule duration, as the program does', () => {
 		// The program's reader takes any u16; only the setter enforces the
-		// schedule. Rejecting 275 here would return 400 where the chain
-		// returns 275, which is the mirror divergence this SDK must not have.
-		const clock = currentSlotClock(source(stateAt(275)), 5_000);
-		assert.equal(clock.slotDurationMs, 275);
-		assert.isTrue(clock.isLive);
+		// schedule. Rejecting 201 or 275 here would return 400 where the chain
+		// returns the stored value, the mirror divergence this SDK must not
+		// have. Off-schedule values are not reachable through the setter, but
+		// the resolver must not be stricter than the reader it mirrors.
+		for (const ms of [201, 275, 399, 65_535]) {
+			const clock = currentSlotClock(source(stateAt(ms)), 5_000);
+			assert.equal(clock.slotDurationMs, ms);
+			assert.isTrue(clock.isLive);
+		}
+	});
+
+	it('applies a staged flip at a realistic mainnet effective slot', () => {
+		// The effective slot is a chain slot read from the IBRL feature gate,
+		// not a duration: validating it against the duration schedule would
+		// reject every real staging and make the flip unreachable.
+		const state: SlotDurationState = {
+			slotDurationMs: 250,
+			pendingSlotDurationMs: 200,
+			slotDurationEffectiveSlot: new BN(372_000_000),
+		};
+		assert.equal(currentSlotDuration(source(state), 371_999_999), 250);
+		assert.equal(currentSlotDuration(source(state), 372_000_000), 200);
 	});
 
 	it('treats a negative, fractional or non-finite slot as a dead feed', () => {

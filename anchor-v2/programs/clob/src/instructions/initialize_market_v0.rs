@@ -12,8 +12,9 @@ pub struct InitializeMarketV0 {
     /// Registered as the market's place authority (accounts, not args:
     /// duplicated accounts cost one index byte in the tx).
     pub place_authority: UncheckedAccount,
-    /// Pre-created zeroed account of exactly [`ClobMarketV0::SIZE`] bytes
-    /// (~98KB — larger than CPI alloc limits, so the client creates it).
+    /// Pre-created zeroed account of [`ClobMarketV0::space_for`] the wanted
+    /// capacity (~98KB — larger than CPI alloc limits, so the client creates
+    /// it). [`crate::instructions::resize_market_v0`] grows it later.
     #[account(zeroed)]
     pub market: ClobMarketV0,
 }

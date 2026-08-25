@@ -149,7 +149,7 @@ pub const EXECUTE_FILLS_CEILING: u16 = 113;
 
 /// Hard cap on the orders one `cancel_all_v0` removes. Bounds three things at
 /// once: the removal work in a single call, the id list the cancel record logs
-/// ([`CANCEL_ALL_RECORD_LOG_BYTES`]), and how far a maker's aggregate unwind
+/// ([`crate::emit::CANCEL_ALL_RECORD_LOG_BYTES`]), and how far a maker's aggregate unwind
 /// can drift from one instruction. A maker holding more than this cancels in
 /// repeated calls — the instruction reports whether it finished (see
 /// [`CancelAllOutcome::exhaustive`]).

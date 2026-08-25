@@ -37,6 +37,7 @@ import {
 	PerpMarkets,
 	MMOraclePriceData,
 	msToSlotsNum,
+	currentSlotDuration,
 } from '@velocity-exchange/sdk';
 import { Mutex, tryAcquire, E_ALREADY_LOCKED } from 'async-mutex';
 
@@ -94,7 +95,6 @@ import {
 	validMinimumGasAmount,
 	validRebalanceSettledPnlThreshold,
 	isFillableByVAMMDetails,
-	currentSlotDuration,
 } from '../utils';
 import { selectMakers } from '../makerSelection';
 import { BundleSender, JITO_METRIC_TYPES } from '../bundleSender';

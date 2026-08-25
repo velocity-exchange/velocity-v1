@@ -240,10 +240,12 @@ export const ACCOUNT_AGE_DELETION_CUTOFF_SECONDS = 60 * 60 * 24 * 13; // 13 days
 export const IDLE_TIME = millisFromSecs(3_600);
 /**
  * @deprecated Solana slot time is no longer a constant (400 -> 350 -> 300 ->
- * 250 -> 200ms via feature gates). Read the live value from
- * `State.slotDurationMs` (0 means unset = 400) via
- * `slotDurationFromState(state.slotDurationMs)` in `math/time.ts`, and use
- * its `millisToSlots`/`millisFromSlots` helpers for conversions.
+ * 250 -> 200ms via feature gates). Resolve the live value with
+ * `currentSlotDuration(client, currentSlot)` from `math/time.ts` (or
+ * `currentSlotClock` when you need to know whether it came from live data),
+ * and convert with its `millisToSlots`/`millisFromSlots` helpers. Given a
+ * decoded `State` and a slot already in hand, call
+ * `activeSlotDurationFromState(state, slot)` directly.
  */
 export const SLOT_TIME_ESTIMATE_MS = 400;
 

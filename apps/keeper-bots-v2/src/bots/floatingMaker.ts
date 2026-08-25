@@ -12,8 +12,8 @@ import {
 	Order,
 	PerpPosition,
 	msToSlotsNum,
+	currentSlotDuration,
 } from '@velocity-exchange/sdk';
-import { currentSlotDuration } from '../utils';
 import { Mutex, tryAcquire, E_ALREADY_LOCKED } from 'async-mutex';
 
 import { logger } from '../logger';

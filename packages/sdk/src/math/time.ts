@@ -49,6 +49,26 @@ export type SlotDurationMs = number & {
 export const SLOT_DURATION_BASELINE = STORED_UNIT_MS as SlotDurationMs;
 
 /**
+ * Every slot length the gate rollout schedules, longest first — the mirror of
+ * the program's `SLOT_DURATION_SCHEDULE_MS`. The setter is monotonic-decreasing
+ * and rejects gate skips, so the live duration is always one of these.
+ */
+export const SLOT_DURATION_SCHEDULE_MS: readonly SlotDurationMs[] = [
+	400, 350, 300, 250, 200,
+] as SlotDurationMs[];
+
+/**
+ * The shortest scheduled slot length (200ms, fully rolled out). The safe
+ * assumption for a **user-protection window** (swift signing budgets, blockhash
+ * and auction countdowns) when the slot feed is dead: it under-promises the
+ * wall clock the user has instead of doubling it. The opposite direction from
+ * {@link SLOT_DURATION_BASELINE} — see `docs/SLOT-DURATION.md`.
+ */
+export const SLOT_DURATION_FLOOR = SLOT_DURATION_SCHEDULE_MS[
+	SLOT_DURATION_SCHEDULE_MS.length - 1
+] as SlotDurationMs;
+
+/**
  * The historical 400ms calibration period of the legacy per-slot rates
  * (mirrors `Millis::UNIT`).
  */
@@ -66,6 +86,38 @@ export function slotDurationFromState(raw?: number): SlotDurationMs {
 }
 
 /**
+ * The three `State` staging fields the live slot duration is resolved from.
+ * Declared structurally rather than as `Pick<StateAccount, ...>`: importing
+ * `StateAccount` closes the cycle `types.ts -> constants/numericConstants.ts ->
+ * math/time.ts`, and `numericConstants` calls into this module at load time.
+ * `StateAccount` satisfies this shape.
+ */
+export type SlotDurationState = {
+	slotDurationMs?: number;
+	pendingSlotDurationMs?: number;
+	slotDurationEffectiveSlot?: BN;
+};
+
+/**
+ * Anything holding a subscribed `State` account, e.g. `VelocityClient`. Kept
+ * duck-typed so `math/time` keeps importing only `BN`.
+ */
+export type SlotDurationSource = {
+	getStateAccount(): SlotDurationState;
+};
+
+/**
+ * The slot length a client should convert with right now, plus whether it came
+ * from live chain data. `isLive` is false whenever the fallback was used, so a
+ * caller can degrade its UI or logging instead of presenting an assumption as
+ * a measurement.
+ */
+export type SlotClock = {
+	slotDurationMs: SlotDurationMs;
+	isLive: boolean;
+};
+
+/**
  * The live slot duration at `currentSlot`, mirroring
  * `State::active_slot_duration_ms`: the staged `pendingSlotDurationMs` once
  * `currentSlot` reaches `slotDurationEffectiveSlot`, otherwise the base
@@ -74,21 +126,106 @@ export function slotDurationFromState(raw?: number): SlotDurationMs {
  * pre-switch value.
  */
 export function activeSlotDurationFromState(
-	state: {
-		slotDurationMs?: number;
-		pendingSlotDurationMs?: number;
-		slotDurationEffectiveSlot?: BN;
-	},
+	state: SlotDurationState,
 	currentSlot: BN
 ): SlotDurationMs {
 	// Tolerate hand-built / older State objects that omit the staging fields:
 	// an absent pending field means nothing is staged, not `undefined !== 0`.
+	// `isBN` rather than `!== undefined` so a null/garbage effective slot reads
+	// as "nothing staged" instead of throwing out of `gte`.
 	const pending = state.pendingSlotDurationMs ?? 0;
 	const effective = state.slotDurationEffectiveSlot;
-	if (pending !== 0 && effective !== undefined && currentSlot.gte(effective)) {
+	if (pending !== 0 && BN.isBN(effective) && currentSlot.gte(effective)) {
 		return slotDurationFromState(pending);
 	}
 	return slotDurationFromState(state.slotDurationMs);
+}
+
+/**
+ * Resolve the slot clock an off-chain client should convert with: the live
+ * duration from `source`'s subscribed `State` at `currentSlot`, or the 400ms
+ * {@link SLOT_DURATION_BASELINE} when state/slot is unavailable.
+ *
+ * `currentSlot` must be the live chain slot (e.g. `slotSubscriber.getSlot()`),
+ * NOT the slot `State` was last written at. `State` does not change at the gate
+ * boundary, so a cached State slot would never trigger the staged switch.
+ * A missing or `0` slot is treated as a dead feed rather than as slot zero: a
+ * failed slot subscription reports `0`, and slot zero precedes every effective
+ * slot, so it would resolve to the pre-flip base while looking live.
+ *
+ * The fallback is the longest scheduled slot (400ms). Which direction that is
+ * safe in depends on the conversion, not on the caller: converting **ms into
+ * slots** (a staleness threshold, a rate limit, an auction duration) tightens,
+ * converting **slots into ms** (a countdown, a cache TTL, a signing budget)
+ * widens — up to 2x once the chain reaches 200ms. Callers in the widening
+ * direction, and user-protection windows generally, should branch on `isLive`
+ * and substitute {@link SLOT_DURATION_FLOOR} rather than consume
+ * `slotDurationMs` blindly.
+ */
+export function currentSlotClock(
+	source: SlotDurationSource,
+	currentSlot: number | undefined
+): SlotClock {
+	const dead: SlotClock = {
+		slotDurationMs: SLOT_DURATION_BASELINE,
+		isLive: false,
+	};
+
+	// `0`, NaN, undefined, negatives and fractions are all dead feeds rather
+	// than slot numbers. `isSafeInteger` also keeps a garbage magnitude out of
+	// `new BN`, which asserts above 2^53 rather than returning anything.
+	if (!currentSlot || !Number.isSafeInteger(currentSlot) || currentSlot < 0) {
+		return dead;
+	}
+
+	let state: SlotDurationState | undefined;
+	try {
+		state = source?.getStateAccount();
+	} catch {
+		// Not subscribed yet: the client throws rather than returning undefined.
+		return dead;
+	}
+
+	// Validate, don't just test for presence. A duration only ever reaches this
+	// module through Anchor decoding, but the staging fields are optional and
+	// hand-built State is a supported input, so a partial object must not be
+	// reported as a measurement: a NaN duration propagates silently through
+	// every threshold comparison, and a non-BN effective slot throws out of
+	// `BN.gte`. Both would surface deep in a filler loop instead of here.
+	// The duration itself is deliberately NOT checked against
+	// SLOT_DURATION_SCHEDULE_MS: the program's reader takes any u16 and only
+	// its setter enforces the schedule, so rejecting an off-schedule value here
+	// would return 400ms where the chain returns the stored one.
+	if (
+		!state ||
+		!isPlainSlotDuration(state.slotDurationMs) ||
+		!isPlainSlotDuration(state.pendingSlotDurationMs) ||
+		!BN.isBN(state.slotDurationEffectiveSlot) ||
+		state.slotDurationEffectiveSlot.isNeg()
+	) {
+		return dead;
+	}
+
+	return {
+		slotDurationMs: activeSlotDurationFromState(state, new BN(currentSlot)),
+		isLive: true,
+	};
+}
+
+/** A decoded `u16` duration field: a non-negative integer (`0` = unset). */
+function isPlainSlotDuration(raw: number | undefined): raw is number {
+	return raw !== undefined && Number.isInteger(raw) && raw >= 0;
+}
+
+/**
+ * The slot duration half of {@link currentSlotClock}, for call sites that do
+ * not branch on liveness. See that function for the `currentSlot` rules.
+ */
+export function currentSlotDuration(
+	source: SlotDurationSource,
+	currentSlot: number | undefined
+): SlotDurationMs {
+	return currentSlotClock(source, currentSlot).slotDurationMs;
 }
 
 export function millis(ms: number): Millis {

@@ -528,7 +528,8 @@ accounts/events with the previous TS shapes should note:
 - **Layouts changed**: `User` is 4376 → 4496 bytes. `PerpMarket` grew across several PRs:
   1216 → 1240 (#16, Anchor-1.0 16-byte `PoolBalance` alignment), reorganized through the
   AMM decoupling (#65) and `HedgeConfig` addition down to 1224 (#66), then 1224 → 1304
-  (#75, embedded `FeeLedger` + protocol fee fields). The current size is **1304 bytes**,
+  (#75, embedded `FeeLedger` + protocol fee fields), then 1304 → 1560 for the per-market IF
+  revenue receivable and a 248-byte future tail. The current size is **1560 bytes**,
   with u128/i128 fields front-loaded for alignment. Any custom (non-IDL) decoder must be
   rebuilt against `sdk/src/idl/velocity.json`.
 - **`PerpMarket.pending_revenue_share: u64`** (audit #73) was carved in place from the
@@ -611,6 +612,22 @@ accounts/events with the previous TS shapes should note:
   accounts stay valid and read the new fields as 0 (default 25% breaker, disabled deposit cap).
   SDK `SpotMarketAccount` gains `withdrawCircuitBreakerBps` / `maxDepositBpsPerDay` (`number`,
   basis points) and `depositGuardThreshold` (`BN`).
+- **Per-market swept IF revenue accounting** extends both market accounts. `PerpMarket` appends
+  `insurance_fund_revenue_receivable: u64`, the source market's insurance fees already moved into
+  the quote revenue pool but not yet settled into the shared IF vault. `SpotMarket` appends
+  `perp_market_if_revenue_receivable: u64`, the aggregate reserved from generic revenue settlement,
+  spot bankruptcy and withdrawals. It remains source owned and is excluded from IF NAV until
+  settlement. `SpotMarket` also appends `revenue_settle_allowance: u64`, the remaining shared
+  capacity that generic revenue and all source claims may consume in the current period.
+  `PerpMarket` appends 248 zeroed future bytes and `SpotMarket` appends 240, making
+  `PerpMarket` **1560 bytes** and `SpotMarket` **1064 bytes**. Existing accounts must be grown with
+  `extend_account` after deployment. The permissionless
+  `settle_perp_market_if_revenue_to_insurance_fund` instruction physically settles one source
+  claim under the quote market's normal settlement cadence, utilization, percentage and APR caps,
+  then clears the paid amount from both counters. Unused capacity remains available to another
+  source or generic revenue in the same period. A perp bankruptcy consumes its own receivable
+  before shared IF capital, so one market cannot spend another market's swept but unsettled
+  insurance fees.
 - **`User` layout**: `equity_floor: u64` and `equity_floor_buffer: u64` were carved from
   the tail padding after `special_user_status` (3 padding bytes, then the 8-byte fields at
   offsets 4472 and 4480 — the buffer consumed the last 8 padding bytes). Account size is
@@ -1032,7 +1049,7 @@ accounts/events with the previous TS shapes should note:
     don't use builders. If you are a filler, attach the taker's `RevenueShareEscrow` in
     remaining accounts when the taker has a builder order or a referred escrow (see §3
     fill-time enforcement).
-11. **Re-pull the IDL and types** for the fee redesign — `PerpMarket` is now 1304 bytes and
+11. **Re-pull the IDL and types** for the fee redesign — `PerpMarket` is now 1560 bytes and
     fee fields live in `feeLedger` (§4.4). IF stakers receive 100% of settled revenue (no
     protocol share mint). If you index fees, the authoritative flow description is
     [`FEES.md`](../FEES.md).

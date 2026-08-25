@@ -288,6 +288,32 @@ pub struct SpotMarket {
     /// withdrawing and restaking at the active share price. It does not read
     /// this field.
     pub if_last_settle_vault_amount: u64,
+    /// Insurance fee revenue swept from perp markets into this market's
+    /// revenue pool but not yet settled into the insurance fund vault or
+    /// reclaimed by its source perp market during bankruptcy.
+    ///
+    /// This is the aggregate backing all perp market
+    /// `insurance_fund_revenue_receivable` fields that settle in this spot
+    /// market. It reserves those tokens from generic revenue settlement and
+    /// spot bankruptcy. Individual ownership remains on each perp market, and
+    /// this aggregate is not part of insurance fund NAV until settled.
+    ///
+    /// This is a token figure, not a scaled balance, and no path re-indexes it.
+    /// The revenue pool earns deposit interest, so the pool grows while this
+    /// reserve holds still. The growth falls outside the reserve and generic
+    /// settlement may spend it. That is correct: a source market is owed the
+    /// fees it swept, not a yield on them, and the reserve can then only
+    /// under-claim the pool. `resolve_spot_bankruptcy` handles the opposite
+    /// case, where a haircut lowers the index and the flat figure over-claims.
+    /// precision: token mint precision
+    pub perp_market_if_revenue_receivable: u64,
+    /// Revenue admission capacity left in the current settlement period.
+    /// Generic revenue and source market receivables consume the same allowance.
+    /// precision: token mint precision
+    pub revenue_settle_allowance: u64,
+    /// Reserved tail space for future fields. Account extension is expensive
+    /// operationally, so this upgrade allocates enough room for later additions.
+    pub _padding_future: [u8; 240],
 }
 
 // Layout guards: the deployed account layout is frozen, and the borsh/IDL
@@ -295,7 +321,7 @@ pub struct SpotMarket {
 // padding (off-chain decoders read the IDL's packed layout). If one of these
 // fires after a struct change, re-size the explicit padding fields — never
 // let the compiler insert implicit padding.
-const _: () = assert!(std::mem::size_of::<SpotMarket>() == 800);
+const _: () = assert!(std::mem::size_of::<SpotMarket>() == 1056);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, padding_former_spot_fee_pool) == 416);
 const _: () =
     assert!(std::mem::offset_of!(SpotMarket, insurance_fund_revenue_receivable_scaled) == 432);
@@ -306,6 +332,9 @@ const _: () = assert!(std::mem::offset_of!(SpotMarket, protocol_fee_pool) == 752
 const _: () = assert!(std::mem::offset_of!(SpotMarket, protocol_liquidation_fee) == 784);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, protocol_fee_factor) == 788);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, if_last_settle_vault_amount) == 792);
+const _: () = assert!(std::mem::offset_of!(SpotMarket, perp_market_if_revenue_receivable) == 800);
+const _: () = assert!(std::mem::offset_of!(SpotMarket, revenue_settle_allowance) == 808);
+const _: () = assert!(std::mem::offset_of!(SpotMarket, _padding_future) == 816);
 
 impl Default for SpotMarket {
     fn default() -> Self {
@@ -377,12 +406,15 @@ impl Default for SpotMarket {
             protocol_liquidation_fee: 0,
             protocol_fee_factor: 0,
             if_last_settle_vault_amount: 0,
+            perp_market_if_revenue_receivable: 0,
+            revenue_settle_allowance: 0,
+            _padding_future: [0; 240],
         }
     }
 }
 
 impl Size for SpotMarket {
-    const SIZE: usize = 808;
+    const SIZE: usize = 1064;
 }
 
 impl MarketIndexOffset for SpotMarket {

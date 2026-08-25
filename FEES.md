@@ -133,6 +133,20 @@ pool's surplus over live user claims — the AMM is never a conduit:
       rejects while `pending_bankruptcy_claims` is above zero, so every
       bankruptcy is resolved before wind-down, and the pnl pool is drained
       wholesale right after.
+
+      Every token amount materialized by the sweep creates an equal
+      `PerpMarket.insurance_fund_revenue_receivable`. The quote spot market
+      stores their aggregate in `perp_market_if_revenue_receivable` and
+      reserves that amount from generic revenue settlement and spot
+      bankruptcy. Until the tokens physically reach the IF vault, only the
+      source perp market can reclaim them for bankruptcy, and they are excluded
+      from IF NAV. The permissionless
+      `settle_perp_market_if_revenue_to_insurance_fund` instruction converts
+      one market's receivable into shared IF vault capital under the quote
+      market's normal settlement cadence and caps, then clears the paid amount
+      from both counters. Generic revenue and source claims draw from one
+      shared allowance per period. A partial settlement leaves the unused
+      allowance available to either kind of revenue in the same period.
    3. `pending_amm_provision` → tokenized into `amm.fee_pool` (the AMM's
       ledger was already credited at fill — this is a pure token transfer)
    Steps 2-3 additionally leave the `fee_pool_buffer_target` retention margin
@@ -186,15 +200,20 @@ waterfall (`resolve_perp_bankruptcy`, `controller/liquidation.rs`):
    movement. The sweep keeps this tranche stocked (see the waterfall above):
    the latch freezes the whole counter, and `bankruptcy_if_floor_pct` holds a
    standing floor before any latch, so a front-running sweep can't clear it
-2. **Insurance fund vault** (bounded by the market's `insurance_claim` caps;
-   real tokens → pnl pool)
-3. **Provision clawback** — capped at `amm_protocol_fees_received`, two
+2. **Swept market IF revenue** — the same market's insurance fees already in
+   the quote revenue pool but not yet settled into the shared IF vault. The
+   per-market receivable makes this source-owned first-loss capital; another
+   market cannot consume it
+3. **Insurance fund vault and allocated IF revenue** (bounded by the market's
+   `insurance_claim` caps; allocated revenue moves internally and real vault
+   tokens move into the pnl pool)
+4. **Provision clawback** — capped at `amm_protocol_fees_received`, two
    phases: first the not-yet-tokenized `pending_amm_provision` (counter-only),
    then tokenized provision moves `amm.fee_pool → pnl_pool` (capped by what
    the fee pool actually holds). Both phases debit the AMM's books
    (`record_amm_pnl`) — the provision was credited at fill — and dent the
    drawdown breaker.
-4. **Socialization** across counterparties
+5. **Socialization** across counterparties
 
 The AMM's own spread/trading capital beyond the provision is never tapped, and
 the external LP pool (VLP constituent vaults) is untouched by bankruptcy
@@ -216,7 +235,12 @@ precision `IF_FACTOR_PRECISION` = 1e6, sum validated ≤ 100%):
 
 - `revenue_pool` has exactly one purpose: staging IF fees. Its only exit is
   `settle_revenue_to_insurance_fund` (throttles unchanged: ≤ min(1/10 pool,
-  MAX_APR cap) per period with stakers present).
+  MAX_APR cap) per period with stakers present). Source-owned perp IF fee
+  receivables use `settle_perp_market_if_revenue_to_insurance_fund` under the
+  same quote market period, utilization, percentage and APR policy. Both paths
+  consume one shared remaining allowance, so a small first settlement cannot
+  suppress the rest of the period capacity. The settlement clears only the
+  selected perp market claim and matching quote market aggregate.
 - **No protocol shares.** The settle-time protocol mint, `total_factor` /
   `user_factor` split, `admin_withdraw_from_insurance_fund_vault`, and
   `transfer_protocol_if_shares_to_revenue_pool` are **removed**. 100% of every
@@ -275,6 +299,7 @@ flowchart LR
     FP["AMM.fee_pool (AMM's own money only)"]:::pool
     PFP["protocol_fee_pool (per market)"]:::revenue
     RP["SpotMarket.revenue_pool (IF staging only)"]:::pool
+    PMR["PerpMarket IF revenue receivable"]:::ledger
     IFV["IF vault — 100% staker-owned backstop"]:::liability
     WALLET["State.protocol_fee_recipient_perp / _spot"]:::revenue
     STK["IF stakers"]:::passthru
@@ -283,7 +308,9 @@ flowchart LR
     LIQ -->|perp| PEND
     PEND -.->|"token value settles into"| PNL
     PNL -->|"sweep_market_fees (above user claims): 1. protocol (buffer-exempt)"| PFP
-    PNL -->|"2. IF (above buffer)"| RP
+    PNL -->|"2. IF (above buffer)"| PMR
+    PMR -->|"backed in quote revenue pool"| RP
+    RP -->|"source market bankruptcy reclaim"| PNL
     PNL -->|"3. AMM provision tokenized (above buffer)"| FP
     FP -->|"bankruptcy clawback (capped at provision received)"| PNL
     LIQ -->|"spot (direct)"| RP

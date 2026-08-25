@@ -404,20 +404,21 @@ pub fn get_max_withdraw_for_market_with_token_amount(
         spot_market,
         &SpotBalanceType::Borrow,
     )?;
-    let insurance_fund_revenue_receivable = spot_market.get_insurance_fund_revenue_receivable()?;
+    let reserved_insurance_fund_revenue =
+        get_reserved_insurance_fund_revenue_token_amount(spot_market)?;
 
     // Revenue already allocated to the insurance fund still sits in this vault.
     // Tokens that leave the protocol must leave that claim behind, so every
     // egress limit is capped by the free liquidity that remains after it. A
     // market with no receivable keeps the limit it had before the reservation.
     let reserve_receivable = |limit: u128| {
-        if !is_leaving_velocity || insurance_fund_revenue_receivable == 0 {
+        if !is_leaving_velocity || reserved_insurance_fund_revenue == 0 {
             return limit;
         }
 
         let unreserved_liquidity = deposit_token_amount
             .saturating_sub(borrow_token_amount)
-            .saturating_sub(insurance_fund_revenue_receivable);
+            .saturating_sub(reserved_insurance_fund_revenue);
 
         limit.min(unreserved_liquidity)
     };
@@ -493,6 +494,14 @@ pub fn get_max_withdraw_for_market_with_token_amount(
     Ok(reserve_receivable(max_withdraw_and_borrow))
 }
 
+pub fn get_reserved_insurance_fund_revenue_token_amount(
+    spot_market: &SpotMarket,
+) -> VelocityResult<u128> {
+    spot_market
+        .get_insurance_fund_revenue_receivable()?
+        .safe_add(spot_market.perp_market_if_revenue_receivable.cast()?)
+}
+
 pub fn validate_spot_balances(spot_market: &SpotMarket) -> VelocityResult<i64> {
     let depositors_amount: u64 = get_token_amount(
         spot_market.deposit_balance,
@@ -524,6 +533,7 @@ pub fn validate_spot_balances(spot_market: &SpotMarket) -> VelocityResult<i64> {
     let insurance_fund_revenue_receivable: u64 = spot_market
         .get_insurance_fund_revenue_receivable()?
         .cast()?;
+    let perp_market_if_revenue_receivable = spot_market.perp_market_if_revenue_receivable;
 
     let depositors_claim = depositors_amount
         .cast::<i64>()?
@@ -554,11 +564,22 @@ pub fn validate_spot_balances(spot_market: &SpotMarket) -> VelocityResult<i64> {
     )?;
 
     validate!(
-        depositors_claim >= insurance_fund_revenue_receivable.cast::<i64>()?,
+        perp_market_if_revenue_receivable <= revenue_amount,
         ErrorCode::SpotMarketVaultInvariantViolated,
-        "depositors_claim={} lower than reserved insurance fund revenue receivable={}",
+        "perp market IF revenue receivable={} exceeds revenue pool={}",
+        perp_market_if_revenue_receivable,
+        revenue_amount
+    )?;
+
+    let reserved_insurance_fund_revenue =
+        insurance_fund_revenue_receivable.safe_add(perp_market_if_revenue_receivable)?;
+
+    validate!(
+        depositors_claim >= reserved_insurance_fund_revenue.cast::<i64>()?,
+        ErrorCode::SpotMarketVaultInvariantViolated,
+        "depositors_claim={} lower than reserved insurance fund revenue={}",
         depositors_claim,
-        insurance_fund_revenue_receivable
+        reserved_insurance_fund_revenue
     )?;
 
     Ok(depositors_claim)
@@ -578,15 +599,14 @@ pub fn validate_spot_market_vault_amount(
         depositors_claim
     )?;
 
-    let insurance_fund_revenue_receivable = spot_market
-        .get_insurance_fund_revenue_receivable()?
-        .cast::<u64>()?;
+    let reserved_insurance_fund_revenue =
+        get_reserved_insurance_fund_revenue_token_amount(spot_market)?.cast::<u64>()?;
     validate!(
-        vault_amount >= insurance_fund_revenue_receivable,
+        vault_amount >= reserved_insurance_fund_revenue,
         ErrorCode::SpotMarketVaultInvariantViolated,
-        "spot market vault={} lower than reserved insurance fund revenue receivable={}",
+        "spot market vault={} lower than reserved insurance fund revenue={}",
         vault_amount,
-        insurance_fund_revenue_receivable
+        reserved_insurance_fund_revenue
     )?;
 
     Ok(depositors_claim)
@@ -658,7 +678,7 @@ mod tests {
     }
 
     #[test]
-    fn insurance_fund_revenue_receivable_is_reserved_from_withdrawals_and_borrows() {
+    fn insurance_fund_revenue_is_reserved_from_withdrawals_and_borrows() {
         let mut market = SpotMarket {
             market_index: 0,
             decimals: 6,
@@ -666,7 +686,13 @@ mod tests {
             cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
             deposit_balance: scaled(1_000 * QUOTE_PRECISION),
             borrow_balance: scaled(100 * QUOTE_PRECISION),
-            insurance_fund_revenue_receivable_scaled: scaled(200 * QUOTE_PRECISION),
+            revenue_pool: PoolBalance {
+                market_index: 0,
+                scaled_balance: scaled(75 * QUOTE_PRECISION),
+                ..PoolBalance::default()
+            },
+            insurance_fund_revenue_receivable_scaled: scaled(125 * QUOTE_PRECISION),
+            perp_market_if_revenue_receivable: (75 * QUOTE_PRECISION) as u64,
             ..SpotMarket::default()
         };
 
@@ -680,7 +706,7 @@ mod tests {
             get_token_amount(market.deposit_balance, &market, &SpotBalanceType::Deposit).unwrap();
         let borrows =
             get_token_amount(market.borrow_balance, &market, &SpotBalanceType::Borrow).unwrap();
-        let receivable = market.get_insurance_fund_revenue_receivable().unwrap();
+        let receivable = get_reserved_insurance_fund_revenue_token_amount(&market).unwrap();
         assert_eq!(
             max_withdraw,
             deposits.saturating_sub(borrows).saturating_sub(receivable)

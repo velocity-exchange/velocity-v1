@@ -1817,6 +1817,7 @@ pub fn booked_revenue_prices_cancel_during_transfer_pause() {
         1,
         false,
         false,
+        true,
     )
     .unwrap();
 
@@ -1869,6 +1870,7 @@ pub fn settling_receivable_moves_cash_without_changing_if_nav() {
         1,
         false,
         false,
+        true,
     )
     .unwrap();
     let nav_before = get_insurance_fund_nav(insurance_vault_amount, &spot_market).unwrap();
@@ -1961,6 +1963,7 @@ pub fn repeated_revenue_booking_cannot_reuse_receivable_backing() {
         1,
         false,
         false,
+        true,
     )
     .unwrap();
 
@@ -2222,6 +2225,7 @@ pub fn settling_a_receivable_after_interest_accrues_clears_its_whole_claim() {
         1,
         false,
         false,
+        true,
     )
     .unwrap();
     assert!(booked > 0);
@@ -2310,4 +2314,439 @@ pub fn a_settle_unblocks_an_unstake_the_vault_could_not_pay() {
 
     assert!(payout > 0);
     assert_eq!(stake.last_withdraw_request_shares, 0);
+}
+
+#[test]
+pub fn perp_if_revenue_receivable_is_owned_by_its_source_market() {
+    let mut spot_market = SpotMarket {
+        market_index: 0,
+        decimals: 6,
+        deposit_balance: 80 * SPOT_BALANCE_PRECISION,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        revenue_pool: PoolBalance {
+            market_index: 0,
+            scaled_balance: 80 * SPOT_BALANCE_PRECISION,
+            ..PoolBalance::default()
+        },
+        perp_market_if_revenue_receivable: 80 * QUOTE_PRECISION as u64,
+        ..SpotMarket::default()
+    };
+    let mut market_a = PerpMarket {
+        market_index: 1,
+        quote_spot_market_index: 0,
+        insurance_fund_revenue_receivable: 50 * QUOTE_PRECISION as u64,
+        ..PerpMarket::default()
+    };
+    let mut market_b = PerpMarket {
+        market_index: 2,
+        quote_spot_market_index: 0,
+        insurance_fund_revenue_receivable: 30 * QUOTE_PRECISION as u64,
+        ..PerpMarket::default()
+    };
+
+    let paid_to_b = transfer_perp_market_if_revenue_receivable_to_pool(
+        &mut spot_market,
+        &mut market_b,
+        100 * QUOTE_PRECISION,
+    )
+    .unwrap();
+
+    assert_eq!(paid_to_b, 30 * QUOTE_PRECISION);
+    assert_eq!(market_b.insurance_fund_revenue_receivable, 0);
+    assert_eq!(
+        market_a.insurance_fund_revenue_receivable,
+        50 * QUOTE_PRECISION as u64
+    );
+    assert_eq!(
+        spot_market.perp_market_if_revenue_receivable,
+        50 * QUOTE_PRECISION as u64
+    );
+    assert_eq!(
+        market_b.pnl_pool.scaled_balance,
+        30 * SPOT_BALANCE_PRECISION
+    );
+    assert_eq!(
+        spot_market.revenue_pool.scaled_balance,
+        50 * SPOT_BALANCE_PRECISION
+    );
+    validate_spot_balances(&spot_market).unwrap();
+
+    let paid_again = transfer_perp_market_if_revenue_receivable_to_pool(
+        &mut spot_market,
+        &mut market_b,
+        100 * QUOTE_PRECISION,
+    )
+    .unwrap();
+    assert_eq!(paid_again, 0);
+    assert_eq!(
+        market_a.insurance_fund_revenue_receivable,
+        50 * QUOTE_PRECISION as u64
+    );
+    assert_eq!(
+        spot_market.perp_market_if_revenue_receivable,
+        50 * QUOTE_PRECISION as u64
+    );
+
+    let settled = transfer_perp_market_if_revenue_receivable_to_insurance_fund(
+        &mut spot_market,
+        &mut market_a,
+        u64::MAX,
+    )
+    .unwrap();
+    assert_eq!(settled, 50 * QUOTE_PRECISION as u64);
+    assert_eq!(market_a.insurance_fund_revenue_receivable, 0);
+    assert_eq!(spot_market.perp_market_if_revenue_receivable, 0);
+    assert_eq!(spot_market.revenue_pool.scaled_balance, 0);
+    validate_spot_balances(&spot_market).unwrap();
+}
+
+#[test]
+pub fn settling_one_perp_receivable_preserves_other_market_backing() {
+    let market_a_claim = 50 * QUOTE_PRECISION as u64 + 2;
+    let market_b_claim = 50 * QUOTE_PRECISION as u64 + 1;
+    let aggregate = market_a_claim + market_b_claim;
+    let mut spot_market = SpotMarket {
+        market_index: 0,
+        decimals: 6,
+        cumulative_deposit_interest: 1111 * SPOT_CUMULATIVE_INTEREST_PRECISION / 1000,
+        perp_market_if_revenue_receivable: aggregate,
+        ..SpotMarket::default()
+    };
+    let revenue_pool_balance = get_spot_balance(
+        aggregate as u128,
+        &spot_market,
+        &SpotBalanceType::Deposit,
+        true,
+    )
+    .unwrap();
+    spot_market.revenue_pool = PoolBalance {
+        market_index: 0,
+        scaled_balance: revenue_pool_balance,
+        ..PoolBalance::default()
+    };
+    spot_market.deposit_balance = revenue_pool_balance;
+
+    let mut market_a = PerpMarket {
+        market_index: 1,
+        quote_spot_market_index: 0,
+        insurance_fund_revenue_receivable: market_a_claim,
+        ..PerpMarket::default()
+    };
+    let market_b = PerpMarket {
+        market_index: 2,
+        quote_spot_market_index: 0,
+        insurance_fund_revenue_receivable: market_b_claim,
+        ..PerpMarket::default()
+    };
+
+    let settled = transfer_perp_market_if_revenue_receivable_to_insurance_fund(
+        &mut spot_market,
+        &mut market_a,
+        u64::MAX,
+    )
+    .unwrap();
+
+    assert!(settled > 0);
+    assert!(settled <= market_a_claim);
+    assert_eq!(
+        market_a.insurance_fund_revenue_receivable + market_b.insurance_fund_revenue_receivable,
+        spot_market.perp_market_if_revenue_receivable
+    );
+    let remaining_revenue = get_token_amount(
+        spot_market.revenue_pool.scaled_balance,
+        &spot_market,
+        &SpotBalanceType::Deposit,
+    )
+    .unwrap();
+    assert!(
+        remaining_revenue >= spot_market.perp_market_if_revenue_receivable as u128,
+        "remaining revenue {} below aggregate {} after settling {}",
+        remaining_revenue,
+        spot_market.perp_market_if_revenue_receivable,
+        settled
+    );
+    assert_eq!(market_b.insurance_fund_revenue_receivable, market_b_claim);
+    validate_spot_balances(&spot_market).unwrap();
+}
+
+#[test]
+pub fn perp_receivable_settlement_uses_normal_revenue_caps_and_updates_period() {
+    let claim = 100 * QUOTE_PRECISION as u64;
+    let insurance_vault_amount = 1_000 * QUOTE_PRECISION as u64;
+    let now = ONE_YEAR as i64;
+    let mut spot_market = SpotMarket {
+        market_index: 0,
+        decimals: 6,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        deposit_balance: 100 * SPOT_BALANCE_PRECISION,
+        revenue_pool: PoolBalance {
+            market_index: 0,
+            scaled_balance: 100 * SPOT_BALANCE_PRECISION,
+            ..PoolBalance::default()
+        },
+        perp_market_if_revenue_receivable: claim,
+        insurance_fund: InsuranceFund {
+            total_shares: insurance_vault_amount as u128,
+            user_shares: insurance_vault_amount as u128,
+            revenue_settle_period: now,
+            ..InsuranceFund::default()
+        },
+        if_last_settle_vault_amount: insurance_vault_amount,
+        ..SpotMarket::default()
+    };
+    let mut perp_market = PerpMarket {
+        market_index: 1,
+        quote_spot_market_index: 0,
+        insurance_fund_revenue_receivable: claim,
+        ..PerpMarket::default()
+    };
+    let nav_before = get_insurance_fund_nav(insurance_vault_amount, &spot_market).unwrap();
+
+    let settled = settle_perp_market_if_revenue_to_insurance_fund(
+        claim,
+        insurance_vault_amount,
+        &mut spot_market,
+        &mut perp_market,
+        now,
+        true,
+    )
+    .unwrap();
+
+    assert_eq!(settled, 10 * QUOTE_PRECISION as u64);
+    assert_eq!(
+        perp_market.insurance_fund_revenue_receivable,
+        spot_market.perp_market_if_revenue_receivable
+    );
+    assert!(perp_market.insurance_fund_revenue_receivable <= claim - settled);
+    assert_eq!(spot_market.insurance_fund.last_revenue_settle_ts, now);
+    let nav_after = get_insurance_fund_nav(insurance_vault_amount + settled, &spot_market).unwrap();
+    assert!(nav_after >= nav_before + settled - 1);
+    assert!(nav_after <= nav_before + settled);
+    assert_eq!(spot_market.if_last_settle_vault_amount, nav_after);
+    validate_spot_balances(&spot_market).unwrap();
+}
+
+#[test]
+pub fn generic_revenue_booking_leaves_perp_market_receivables_in_revenue_pool() {
+    let mut spot_market = SpotMarket {
+        market_index: 0,
+        decimals: 6,
+        cumulative_deposit_interest: 1111 * SPOT_CUMULATIVE_INTEREST_PRECISION / 1000,
+        perp_market_if_revenue_receivable: 80 * QUOTE_PRECISION as u64,
+        insurance_fund: InsuranceFund {
+            revenue_settle_period: 1,
+            ..InsuranceFund::default()
+        },
+        ..SpotMarket::default()
+    };
+    let revenue_pool_balance = get_spot_balance(
+        100 * QUOTE_PRECISION,
+        &spot_market,
+        &SpotBalanceType::Deposit,
+        true,
+    )
+    .unwrap();
+    spot_market.revenue_pool = PoolBalance {
+        market_index: 0,
+        scaled_balance: revenue_pool_balance,
+        ..PoolBalance::default()
+    };
+    spot_market.deposit_balance = revenue_pool_balance;
+
+    let booked = book_revenue_to_insurance_fund(
+        100 * QUOTE_PRECISION as u64,
+        0,
+        &mut spot_market,
+        1,
+        false,
+        false,
+        true,
+    )
+    .unwrap();
+
+    assert!(booked <= 20 * QUOTE_PRECISION as u64);
+    let revenue_pool_tokens = get_token_amount(
+        spot_market.revenue_pool.scaled_balance,
+        &spot_market,
+        &SpotBalanceType::Deposit,
+    )
+    .unwrap();
+    assert!(revenue_pool_tokens >= 80 * QUOTE_PRECISION);
+    assert_eq!(
+        spot_market.perp_market_if_revenue_receivable,
+        80 * QUOTE_PRECISION as u64
+    );
+    validate_spot_balances(&spot_market).unwrap();
+}
+
+#[test]
+pub fn source_and_generic_revenue_share_one_settlement_allowance() {
+    let source_claim = 30 * QUOTE_PRECISION as u64;
+    let insurance_vault_amount = 1_000 * QUOTE_PRECISION as u64;
+    let spot_vault_amount = 1_000 * QUOTE_PRECISION as u64;
+    let now = ONE_YEAR as i64;
+    let mut spot_market = SpotMarket {
+        market_index: 0,
+        decimals: 6,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        deposit_balance: 1_000 * SPOT_BALANCE_PRECISION,
+        revenue_pool: PoolBalance {
+            market_index: 0,
+            scaled_balance: 1_000 * SPOT_BALANCE_PRECISION,
+            ..PoolBalance::default()
+        },
+        perp_market_if_revenue_receivable: source_claim,
+        insurance_fund: InsuranceFund {
+            total_shares: insurance_vault_amount as u128,
+            user_shares: insurance_vault_amount as u128,
+            revenue_settle_period: now,
+            ..InsuranceFund::default()
+        },
+        if_last_settle_vault_amount: insurance_vault_amount,
+        ..SpotMarket::default()
+    };
+    let mut perp_market = PerpMarket {
+        market_index: 1,
+        quote_spot_market_index: 0,
+        insurance_fund_revenue_receivable: source_claim,
+        ..PerpMarket::default()
+    };
+
+    let source_settled = settle_perp_market_if_revenue_to_insurance_fund(
+        spot_vault_amount,
+        insurance_vault_amount,
+        &mut spot_market,
+        &mut perp_market,
+        now,
+        true,
+    )
+    .unwrap();
+
+    assert_eq!(source_settled, source_claim);
+    assert_eq!(
+        spot_market.revenue_settle_allowance,
+        70 * QUOTE_PRECISION as u64
+    );
+
+    let generic_settled = continue_revenue_settle_to_insurance_fund(
+        spot_vault_amount - source_settled,
+        insurance_vault_amount + source_settled,
+        &mut spot_market,
+        now,
+        true,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(generic_settled, 70 * QUOTE_PRECISION as u64);
+    assert_eq!(spot_market.revenue_settle_allowance, 0);
+    assert_eq!(spot_market.insurance_fund.last_revenue_settle_ts, now);
+    assert_eq!(spot_market.perp_market_if_revenue_receivable, 0);
+    assert_eq!(perp_market.insurance_fund_revenue_receivable, 0);
+    validate_spot_balances(&spot_market).unwrap();
+}
+
+#[test]
+pub fn zero_settlement_snapshot_is_seeded_without_consuming_source_revenue() {
+    let claim = 100 * QUOTE_PRECISION as u64;
+    let insurance_vault_amount = 1_000 * QUOTE_PRECISION as u64;
+    let now = ONE_YEAR as i64;
+    let mut spot_market = SpotMarket {
+        market_index: 0,
+        decimals: 6,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        deposit_balance: 100 * SPOT_BALANCE_PRECISION,
+        revenue_pool: PoolBalance {
+            market_index: 0,
+            scaled_balance: 100 * SPOT_BALANCE_PRECISION,
+            ..PoolBalance::default()
+        },
+        perp_market_if_revenue_receivable: claim,
+        insurance_fund: InsuranceFund {
+            total_shares: insurance_vault_amount as u128,
+            user_shares: insurance_vault_amount as u128,
+            revenue_settle_period: now,
+            ..InsuranceFund::default()
+        },
+        if_last_settle_vault_amount: 0,
+        ..SpotMarket::default()
+    };
+    let mut perp_market = PerpMarket {
+        market_index: 1,
+        quote_spot_market_index: 0,
+        insurance_fund_revenue_receivable: claim,
+        ..PerpMarket::default()
+    };
+
+    let settled = settle_perp_market_if_revenue_to_insurance_fund(
+        claim,
+        insurance_vault_amount,
+        &mut spot_market,
+        &mut perp_market,
+        now,
+        true,
+    )
+    .unwrap();
+
+    assert_eq!(settled, 0);
+    assert_eq!(spot_market.revenue_settle_allowance, 0);
+    assert_eq!(spot_market.insurance_fund.last_revenue_settle_ts, now);
+    assert_eq!(
+        spot_market.if_last_settle_vault_amount,
+        insurance_vault_amount
+    );
+    assert_eq!(spot_market.perp_market_if_revenue_receivable, claim);
+    assert_eq!(perp_market.insurance_fund_revenue_receivable, claim);
+    validate_spot_balances(&spot_market).unwrap();
+}
+
+#[test]
+pub fn revenue_settle_survives_round_up_on_a_nine_decimal_market() {
+    // At 9 decimals `10^(19 - decimals)` equals SPOT_CUMULATIVE_INTEREST_PRECISION,
+    // so one scaled unit is worth one token unit. The round-up debit then reads
+    // back one token above the amount that sized it. The allowance must absorb
+    // that, or every settle on the market reverts.
+    let mut spot_market = SpotMarket {
+        decimals: 9,
+        deposit_balance: 10_000 * SPOT_BALANCE_PRECISION,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        revenue_pool: PoolBalance {
+            market_index: 0,
+            scaled_balance: 1_000 * SPOT_BALANCE_PRECISION,
+            ..PoolBalance::default()
+        },
+        insurance_fund: InsuranceFund {
+            revenue_settle_period: (ONE_YEAR / 1_000) as i64,
+            total_shares: 1_000,
+            user_shares: 1_000,
+            ..InsuranceFund::default()
+        },
+        ..SpotMarket::default()
+    };
+
+    let insurance_vault_amount = 10_000_000 * SPOT_BALANCE_PRECISION as u64;
+    spot_market.if_last_settle_vault_amount = insurance_vault_amount;
+    let spot_market_vault_amount = 10_000 * SPOT_BALANCE_PRECISION as u64;
+
+    // The allowance caps at a tenth of the revenue pool, below the pool itself,
+    // so the round-up path runs.
+    let allowance = 100 * SPOT_BALANCE_PRECISION as u64;
+
+    let flow = settle_revenue_to_insurance_fund(
+        spot_market_vault_amount,
+        insurance_vault_amount,
+        &mut spot_market,
+        1,
+        true,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(flow, allowance + 1);
+    assert_eq!(spot_market.revenue_settle_allowance, 0);
+    assert_eq!(
+        spot_market.revenue_pool.scaled_balance,
+        1_000 * SPOT_BALANCE_PRECISION - (allowance as u128 + 1)
+    );
+    assert_eq!(spot_market.insurance_fund_revenue_receivable_scaled, 0);
 }

@@ -7643,6 +7643,163 @@
       ]
     },
     {
+      "name": "settle_perp_market_if_revenue_to_insurance_fund",
+      "discriminator": [
+        109,
+        79,
+        105,
+        71,
+        84,
+        112,
+        50,
+        93
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "perp_market",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  112,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "perp_market_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "spot_market",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "perp_market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "spot_market_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  115,
+                  112,
+                  111,
+                  116,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "perp_market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "velocity_signer"
+        },
+        {
+          "name": "insurance_fund_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  110,
+                  115,
+                  117,
+                  114,
+                  97,
+                  110,
+                  99,
+                  101,
+                  95,
+                  102,
+                  117,
+                  110,
+                  100,
+                  95,
+                  118,
+                  97,
+                  117,
+                  108,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "perp_market"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "perp_market_index",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "settle_perp_to_lp_pool",
       "discriminator": [
         5,
@@ -22400,6 +22557,30 @@
                 "name": "HedgeConfig"
               }
             }
+          },
+          {
+            "name": "insurance_fund_revenue_receivable",
+            "docs": [
+              "This market's insurance fees that were swept from its pnl pool into the",
+              "quote spot market revenue pool but have not yet reached the insurance",
+              "fund vault. Bankruptcy for this market can reclaim the amount before",
+              "drawing shared insurance capital. Other markets cannot consume it.",
+              "precision: QUOTE_PRECISION"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "_padding_future",
+            "docs": [
+              "Reserved tail space for future fields. Account extension is expensive",
+              "operationally, so this upgrade allocates enough room for later additions."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                248
+              ]
+            }
           }
         ]
       }
@@ -24347,6 +24528,44 @@
               "this field."
             ],
             "type": "u64"
+          },
+          {
+            "name": "perp_market_if_revenue_receivable",
+            "docs": [
+              "Insurance fee revenue swept from perp markets into this market's",
+              "revenue pool but not yet settled into the insurance fund vault or",
+              "reclaimed by its source perp market during bankruptcy.",
+              "",
+              "This is the aggregate backing all perp market",
+              "`insurance_fund_revenue_receivable` fields that settle in this spot",
+              "market. It reserves those tokens from generic revenue settlement and",
+              "spot bankruptcy. Individual ownership remains on each perp market, and",
+              "this aggregate is not part of insurance fund NAV until settled.",
+              "precision: token mint precision"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "revenue_settle_allowance",
+            "docs": [
+              "Revenue admission capacity left in the current settlement period.",
+              "Generic revenue and source market receivables consume the same allowance.",
+              "precision: token mint precision"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "_padding_future",
+            "docs": [
+              "Reserved tail space for future fields. Account extension is expensive",
+              "operationally, so this upgrade allocates enough room for later additions."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                240
+              ]
+            }
           }
         ]
       }

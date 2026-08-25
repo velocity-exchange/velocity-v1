@@ -44,6 +44,9 @@ use {
             tiers::{perp_tier_is_as_safe_as, AssetTierExt, ContractTierExt},
         },
         priority_fee_subscriber::PriorityFeeSubscriber,
+        program::math::oracle::{
+            is_oracle_valid_for_action, oracle_validity, LogMode, OracleValidity, VelocityAction,
+        },
         titan::{self, TitanSwapApi},
         types::{
             accounts::{PerpMarket, SpotMarket, User},
@@ -581,6 +584,7 @@ impl LiquidatorBot {
         };
 
         let tx_sig_to_collateral: Arc<DashMap<Signature, (u128, u64)>> = Arc::new(DashMap::new());
+        let perp_fill_fallbacks: Arc<DashMap<(Pubkey, u16), ()>> = Arc::new(DashMap::new());
 
         let tx_worker = TxWorker::new(
             velocity.clone(),
@@ -589,6 +593,7 @@ impl LiquidatorBot {
             Some(Arc::clone(&txs_in_flight)),
             Some(Arc::clone(&tx_sig_to_collateral)),
             Some(Arc::clone(&free_collateral_per_subaccount)),
+            Some(Arc::clone(&perp_fill_fallbacks)),
         );
         let rt = tokio::runtime::Handle::current();
         let tx_sender = tx_worker.run(rt);
@@ -678,6 +683,7 @@ impl LiquidatorBot {
                 txs_in_flight: Arc::clone(&txs_in_flight),
                 tx_sig_to_collateral: Arc::clone(&tx_sig_to_collateral),
                 free_collateral_per_subaccount: Arc::clone(&free_collateral_per_subaccount),
+                perp_fill_fallbacks,
             }),
             liq_rx,
             cu_limit,
@@ -1896,6 +1902,25 @@ struct PositionInfo {
     quote_amount: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PerpOracleRoutePolicy {
+    safe_match_allowed: bool,
+    exchange_match_allowed: bool,
+    liquidation_allowed: bool,
+    uses_pyth_update: bool,
+}
+
+fn consume_perp_fill_fallback(
+    fallbacks: &DashMap<(Pubkey, u16), ()>,
+    key: (Pubkey, u16),
+    liquidation_allowed: bool,
+    collateral_available: u128,
+    collateral_required: u128,
+) -> bool {
+    let fallback_pending = fallbacks.remove(&key).is_some();
+    fallback_pending && liquidation_allowed && collateral_available >= collateral_required
+}
+
 /// Primary liquidation strategy
 pub struct PrimaryLiquidationStrategy {
     pub velocity: VelocityClient,
@@ -1908,22 +1933,159 @@ pub struct PrimaryLiquidationStrategy {
     // Map(Signature,(collateral, ts))
     pub tx_sig_to_collateral: Arc<DashMap<Signature, (u128, u64)>>,
     pub free_collateral_per_subaccount: Arc<DashMap<Pubkey, u128>>,
+    pub perp_fill_fallbacks: Arc<DashMap<(Pubkey, u16), ()>>,
 }
 
 impl PrimaryLiquidationStrategy {
-    /// Liquidation policy: prefer filling against resting maker orders; fall back to a
-    /// collateral-funded takeover when the book is empty; skip when neither is possible.
+    /// Prefer a valid maker fill, then use collateral takeover.
     fn decide_perp_method(
         collateral_available: u128,
         collateral_required: u128,
         has_makers: bool,
+        match_allowed: bool,
+        liquidation_allowed: bool,
+        force_takeover: bool,
     ) -> LiquidationType {
-        if has_makers {
+        if force_takeover {
+            if liquidation_allowed && collateral_available >= collateral_required {
+                return LiquidationType::PerpTakeover;
+            }
+            return LiquidationType::Skip;
+        }
+        if match_allowed && has_makers {
             LiquidationType::PerpWithFill
-        } else if collateral_available >= collateral_required {
+        } else if liquidation_allowed && collateral_available >= collateral_required {
             LiquidationType::PerpTakeover
         } else {
             LiquidationType::Skip
+        }
+    }
+
+    fn route_policy_from_validities(
+        exchange_validity: OracleValidity,
+        safe_validity: OracleValidity,
+        uses_pyth_update: bool,
+    ) -> Option<PerpOracleRoutePolicy> {
+        Some(PerpOracleRoutePolicy {
+            safe_match_allowed: is_oracle_valid_for_action(
+                safe_validity,
+                Some(VelocityAction::FillOrderMatch),
+            )
+            .ok()?,
+            exchange_match_allowed: is_oracle_valid_for_action(
+                exchange_validity,
+                Some(VelocityAction::FillOrderMatch),
+            )
+            .ok()?,
+            liquidation_allowed: is_oracle_valid_for_action(
+                exchange_validity,
+                Some(VelocityAction::Liquidate),
+            )
+            .ok()?,
+            uses_pyth_update,
+        })
+    }
+
+    fn perp_oracle_route_policy(
+        velocity: &VelocityClient,
+        market_index: u16,
+        slot: u64,
+        pyth_price_update: Option<&PythPriceUpdate>,
+    ) -> Option<PerpOracleRoutePolicy> {
+        let market = velocity.try_get_perp_market_account(market_index).ok()?;
+        let state = velocity.state_account().ok()?;
+        let oracle = velocity.try_get_oracle_price_data_and_slot(MarketId::perp(market_index))?;
+        let mut exchange_oracle = oracle.data;
+        let elapsed_slots = slot.saturating_sub(oracle.slot);
+        exchange_oracle.delay = exchange_oracle
+            .delay
+            .saturating_add(i64::try_from(elapsed_slots).unwrap_or(i64::MAX));
+
+        let uses_pyth_update = pyth_price_update.is_some_and(|update| {
+            update.market_type == MarketType::Perp
+                && update.market_id == market_index
+                && update.price != exchange_oracle.price.unsigned_abs()
+                && exchange_oracle
+                    .sequence_id
+                    .is_none_or(|publish_time| update.ts.0 > publish_time)
+        });
+        if let Some(update) = pyth_price_update.filter(|_| uses_pyth_update) {
+            exchange_oracle = OraclePriceData {
+                price: i64::try_from(update.price).ok()?,
+                confidence: update.price / 500,
+                delay: 0,
+                has_sufficient_number_of_data_points: true,
+                sequence_id: Some(update.ts.0),
+            };
+        }
+
+        let validity_guard_rails: velocity_rs::program::state::state::ValidityGuardRails =
+            unsafe { std::mem::transmute_copy(&state.oracle_guard_rails.validity) };
+        let slot_duration = velocity.slot_duration_at(slot);
+        let exchange_validity = oracle_validity(
+            MarketType::Perp,
+            market.market_index,
+            market
+                .market_stats
+                .historical_oracle_data
+                .last_oracle_price_twap,
+            &exchange_oracle,
+            &validity_guard_rails,
+            market.get_max_confidence_interval_multiplier().ok()?,
+            &market.oracle_source,
+            LogMode::ExchangeOracle,
+            market.oracle_slot_delay_override,
+            false,
+            market.oracle_low_risk_slot_delay_override,
+            slot_duration,
+        )
+        .ok()?;
+
+        let mm_oracle = market
+            .get_mm_oracle_price_data(exchange_oracle, slot, &validity_guard_rails, slot_duration)
+            .ok()?;
+        let safe_oracle = mm_oracle.get_safe_oracle_price_data();
+        let safe_validity = oracle_validity(
+            MarketType::Perp,
+            market.market_index,
+            market
+                .market_stats
+                .historical_oracle_data
+                .last_oracle_price_twap,
+            &safe_oracle,
+            &validity_guard_rails,
+            market.get_max_confidence_interval_multiplier().ok()?,
+            &market.oracle_source,
+            LogMode::SafeMMOracle,
+            market.oracle_slot_delay_override,
+            mm_oracle.is_safe_price_mm_sourced(),
+            market.oracle_low_risk_slot_delay_override,
+            slot_duration,
+        )
+        .ok()?;
+
+        Self::route_policy_from_validities(exchange_validity, safe_validity, uses_pyth_update)
+    }
+
+    fn eligible_makers_for_oracle_policy(
+        mut makers: Option<Vec<User>>,
+        liquidatee: &User,
+        policy: PerpOracleRoutePolicy,
+    ) -> Option<Vec<User>> {
+        if !policy.safe_match_allowed
+            || (liquidatee.equity_floor > 0 && !policy.exchange_match_allowed)
+        {
+            return None;
+        }
+
+        let makers = makers.as_mut()?;
+        if !policy.exchange_match_allowed {
+            makers.retain(|maker| maker.equity_floor == 0);
+        }
+        if makers.is_empty() {
+            None
+        } else {
+            Some(std::mem::take(makers))
         }
     }
 
@@ -2631,6 +2793,142 @@ impl PrimaryLiquidationStrategy {
         }
     }
 
+    async fn try_liquidate_perp_position(
+        &self,
+        velocity: &VelocityClient,
+        dlob: &'static DLOB,
+        market_state: Arc<RwLock<MarketState>>,
+        metrics: Arc<Metrics>,
+        subaccounts: &[Pubkey],
+        liquidatee: Pubkey,
+        user_account: &User,
+        position: &PerpPosition,
+        kind: &'static str,
+        tx_sender: TxSender,
+        priority_fee: u64,
+        cu_limit: u32,
+        slot: u64,
+        pyth_price_update: Option<PythPriceUpdate>,
+    ) -> LiquidationOutcome {
+        let Some(match_subaccount) = subaccounts.first() else {
+            return LiquidationOutcome::Skipped("no_subaccount");
+        };
+        let Some(policy) = Self::perp_oracle_route_policy(
+            velocity,
+            position.market_index,
+            slot,
+            pyth_price_update.as_ref(),
+        ) else {
+            return LiquidationOutcome::Skipped("invalid_oracle");
+        };
+        let Some(collateral_required) = Self::calculate_perp_collateral_requirement(
+            Arc::clone(&market_state),
+            position.market_index,
+            position.base_asset_amount,
+        ) else {
+            return LiquidationOutcome::Skipped("collateral_calc_failed");
+        };
+
+        let free_collateral = subaccounts
+            .iter()
+            .filter_map(|subaccount| {
+                self.free_collateral_per_subaccount
+                    .get(subaccount)
+                    .map(|value| *value)
+            })
+            .max()
+            .unwrap_or(0);
+        let makers = Self::eligible_makers_for_oracle_policy(
+            Self::find_top_makers(
+                velocity,
+                dlob,
+                Arc::clone(&market_state),
+                position.market_index,
+                position.base_asset_amount,
+            ),
+            user_account,
+            policy,
+        );
+        let fallback_key = (liquidatee, position.market_index);
+        let force_takeover = consume_perp_fill_fallback(
+            &self.perp_fill_fallbacks,
+            fallback_key,
+            policy.liquidation_allowed,
+            free_collateral,
+            collateral_required,
+        );
+        let method = Self::decide_perp_method(
+            free_collateral,
+            collateral_required,
+            makers.is_some(),
+            policy.safe_match_allowed,
+            policy.liquidation_allowed,
+            force_takeover,
+        );
+        let pyth_update = pyth_price_update.filter(|_| policy.uses_pyth_update);
+
+        metrics
+            .liquidation_attempts
+            .with_label_values(&["perp"])
+            .inc();
+        log::info!(
+            target: TARGET,
+            "attempting liquidation: kind={kind} liquidatee={liquidatee:?} market={} method={method:?} force_takeover={force_takeover} slot={slot}",
+            position.market_index,
+        );
+
+        match method {
+            LiquidationType::PerpWithFill => {
+                let Some(makers) = makers else {
+                    return LiquidationOutcome::Skipped("no_makers");
+                };
+                Self::try_liquidate_with_match(
+                    velocity,
+                    position.market_index,
+                    *match_subaccount,
+                    liquidatee,
+                    makers.as_slice(),
+                    tx_sender,
+                    priority_fee,
+                    cu_limit,
+                    slot,
+                    pyth_update,
+                )
+                .await
+            }
+            LiquidationType::PerpTakeover => {
+                let Some(subaccount) = Self::find_best_subaccount_for_liquidation(
+                    velocity,
+                    subaccounts,
+                    true,
+                    false,
+                    &self.free_collateral_per_subaccount,
+                    collateral_required,
+                ) else {
+                    return LiquidationOutcome::Skipped("no_subaccount_for_takeover");
+                };
+                self.try_liquidate_with_collateral(
+                    velocity,
+                    position.market_index,
+                    subaccount,
+                    liquidatee,
+                    position.base_asset_amount.unsigned_abs(),
+                    collateral_required,
+                    tx_sender,
+                    priority_fee,
+                    cu_limit,
+                    slot,
+                    pyth_update,
+                )
+                .await
+            }
+            _ if !policy.liquidation_allowed && makers.is_none() => {
+                LiquidationOutcome::Skipped("oracle_not_eligible")
+            }
+            _ => LiquidationOutcome::Skipped("no_eligible_route"),
+        }
+    }
+
     /// Attempt perp liquidation with order matching or collateral
     async fn liquidate_perp(
         &self,
@@ -2648,75 +2946,36 @@ impl PrimaryLiquidationStrategy {
         pyth_price_update: Option<PythPriceUpdate>,
         status: &UserMarginStatus,
     ) -> LiquidationOutcome {
-        let Some(subaccount) = subaccounts.first() else {
-            log::warn!(target: TARGET, "no subaccount configured");
-            return LiquidationOutcome::Skipped("no_subaccount");
-        };
-
-        // Check isolated liquidations first. A failure on one isolated market must not
-        // block the remaining isolated markets or the cross-margin check below.
         let mut last_skip: Option<&'static str> = None;
         for (market_index, iso_status) in &status.isolated {
             if *iso_status != MarginStatus::Liquidatable {
                 continue;
             }
-            let Some(pos) = user_account.perp_positions.iter().find(|p| {
-                p.market_index == *market_index && p.isolated_position_scaled_balance != 0
+            let Some(position) = user_account.perp_positions.iter().find(|position| {
+                position.market_index == *market_index
+                    && position.isolated_position_scaled_balance != 0
             }) else {
                 continue;
             };
 
-            metrics
-                .liquidation_attempts
-                .with_label_values(&["perp"])
-                .inc();
-
-            let oracle_price = {
-                let state = market_state.read().unwrap();
-                match state.get_perp_oracle_price(pos.market_index) {
-                    Some(data) if data.price > 0 => data.price as u64,
-                    _ => {
-                        log::warn!(target: TARGET, "invalid oracle price for market {}, skipping isolated liquidation", pos.market_index);
-                        last_skip = Some("invalid_oracle");
-                        continue;
-                    }
-                }
-            };
-
-            log::info!(
-                target: TARGET,
-                "attempting liquidation: kind=perp_isolated liquidatee={liquidatee:?} market={market_index} base_asset_amount={} oracle_price={oracle_price} slot={slot}",
-                pos.base_asset_amount,
-            );
-
-            let Some(makers) = Self::find_top_makers(
-                velocity,
-                dlob,
-                Arc::clone(&market_state),
-                *market_index,
-                pos.base_asset_amount,
-            ) else {
-                last_skip = Some("no_makers");
-                continue;
-            };
-
-            let pyth_update = pyth_price_update
-                .clone()
-                .filter(|update| update.price != oracle_price);
-
-            let outcome = Self::try_liquidate_with_match(
-                velocity,
-                *market_index,
-                *subaccount,
-                liquidatee,
-                makers.as_slice(),
-                tx_sender.clone(),
-                priority_fee,
-                cu_limit,
-                slot,
-                pyth_update,
-            )
-            .await;
+            let outcome = self
+                .try_liquidate_perp_position(
+                    velocity,
+                    dlob,
+                    Arc::clone(&market_state),
+                    Arc::clone(&metrics),
+                    subaccounts,
+                    liquidatee,
+                    &user_account,
+                    position,
+                    "perp_isolated",
+                    tx_sender.clone(),
+                    priority_fee,
+                    cu_limit,
+                    slot,
+                    pyth_price_update.clone(),
+                )
+                .await;
             if outcome.is_sent() {
                 return outcome;
             }
@@ -2742,140 +3001,23 @@ impl PrimaryLiquidationStrategy {
             return LiquidationOutcome::Skipped("no_perp_positions");
         };
 
-        // Get oracle price once, up front, so the liquidation attempt event below
-        // carries the price that drove it (and we bail early on an invalid oracle).
-        let oracle_price = {
-            let state = market_state.read().unwrap();
-            match state.get_perp_oracle_price(pos.market_index) {
-                Some(data) if data.price > 0 => data.price as u64,
-                _ => {
-                    log::warn!(target: TARGET, "invalid oracle price for market {}, skipping liquidation", pos.market_index);
-                    return LiquidationOutcome::Skipped("invalid_oracle");
-                }
-            }
-        };
-
-        log::info!(
-            target: TARGET,
-            "attempting liquidation: kind=perp_cross liquidatee={liquidatee:?} market={} base_asset_amount={} quote_asset_amount={} oracle_price={oracle_price} slot={slot}",
-            pos.market_index,
-            pos.base_asset_amount,
-            pos.quote_asset_amount,
-        );
-
-        // Calculate collateral required
-        let Some(collateral_required) = Self::calculate_perp_collateral_requirement(
-            Arc::clone(&market_state),
-            pos.market_index,
-            pos.base_asset_amount,
-        ) else {
-            log::warn!(target: TARGET, "failed to calculate collateral requirement for market {}", pos.market_index);
-            return LiquidationOutcome::Skipped("collateral_calc_failed");
-        };
-
-        // Check available collateral. Copy the value out — holding the DashMap guard
-        // across the awaits below deadlocks against the get_mut in
-        // try_liquidate_with_collateral.
-        let free_collateral: u128 = match self.free_collateral_per_subaccount.get(subaccount) {
-            Some(fc) => *fc,
-            None => {
-                log::warn!(target: TARGET, "no free collateral for keeper subaccount");
-                return LiquidationOutcome::Skipped("no_free_collateral");
-            }
-        };
-
-        // Find makers and decide method
-        let makers = Self::find_top_makers(
+        self.try_liquidate_perp_position(
             velocity,
             dlob,
-            Arc::clone(&market_state),
-            pos.market_index,
-            pos.base_asset_amount,
-        );
-
-        let pyth_update = pyth_price_update.filter(|update| update.price != oracle_price);
-
-        let method =
-            Self::decide_perp_method(free_collateral, collateral_required, makers.is_some());
-
-        metrics
-            .liquidation_attempts
-            .with_label_values(&["perp"])
-            .inc();
-
-        match method {
-            LiquidationType::PerpWithFill => {
-                let Some(makers) = makers else {
-                    return LiquidationOutcome::Skipped("no_makers");
-                };
-                Self::try_liquidate_with_match(
-                    velocity,
-                    pos.market_index,
-                    *subaccount,
-                    liquidatee,
-                    makers.as_slice(),
-                    tx_sender,
-                    priority_fee,
-                    cu_limit,
-                    slot,
-                    pyth_update,
-                )
-                .await
-            }
-            LiquidationType::PerpTakeover => {
-                let Some(subaccount) = Self::find_best_subaccount_for_liquidation(
-                    velocity,
-                    subaccounts,
-                    true,
-                    false,
-                    &self.free_collateral_per_subaccount,
-                    collateral_required,
-                ) else {
-                    log::warn!(target: TARGET, "no subaccount available for takeover");
-                    return LiquidationOutcome::Skipped("no_subaccount_for_takeover");
-                };
-
-                let free_collateral: u128 =
-                    match self.free_collateral_per_subaccount.get(&subaccount) {
-                        Some(fc) => *fc,
-                        None => {
-                            log::warn!(target: TARGET, "no free collateral for subaccount");
-                            return LiquidationOutcome::Skipped("no_free_collateral");
-                        }
-                    };
-
-                let base_amount_to_liquidate = if free_collateral >= collateral_required {
-                    pos.base_asset_amount.unsigned_abs()
-                } else {
-                    let scaled_collateral = (free_collateral as f64 * 0.9) as u128;
-                    let scale_factor = scaled_collateral as f64 / collateral_required as f64;
-                    (pos.base_asset_amount.unsigned_abs() as f64 * scale_factor) as u64
-                };
-
-                self.try_liquidate_with_collateral(
-                    velocity,
-                    pos.market_index,
-                    subaccount,
-                    liquidatee,
-                    base_amount_to_liquidate,
-                    collateral_required,
-                    tx_sender,
-                    priority_fee,
-                    cu_limit,
-                    slot,
-                    pyth_update,
-                )
-                .await
-            }
-            _ => {
-                log::info!(
-                    target: TARGET,
-                    "skipping liquidation: reason=no_makers_insufficient_collateral liquidatee={liquidatee:?} market={} collateral_required={collateral_required} free_collateral={free_collateral}",
-                    pos.market_index,
-                );
-                LiquidationOutcome::Skipped("no_makers_insufficient_collateral")
-            }
-        }
+            market_state,
+            metrics,
+            subaccounts,
+            liquidatee,
+            &user_account,
+            pos,
+            "perp_cross",
+            tx_sender,
+            priority_fee,
+            cu_limit,
+            slot,
+            pyth_price_update,
+        )
+        .await
     }
 
     /// Attempt spot liquidation with Jupiter swap
@@ -3852,20 +3994,139 @@ mod tests {
 
     #[test]
     fn decide_perp_method_prefers_fill_falls_back_to_takeover() {
-        // regression: method was hardcoded to PerpWithFill and the caller
-        // unwrapped a None makers list, panicking on an empty book
         assert_eq!(
-            PrimaryLiquidationStrategy::decide_perp_method(0, 100, true),
+            PrimaryLiquidationStrategy::decide_perp_method(0, 100, true, true, true, false),
             LiquidationType::PerpWithFill
         );
         assert_eq!(
-            PrimaryLiquidationStrategy::decide_perp_method(100, 100, false),
+            PrimaryLiquidationStrategy::decide_perp_method(100, 100, true, false, true, false),
             LiquidationType::PerpTakeover
         );
         assert_eq!(
-            PrimaryLiquidationStrategy::decide_perp_method(99, 100, false),
+            PrimaryLiquidationStrategy::decide_perp_method(99, 100, true, false, true, false),
             LiquidationType::Skip
         );
+        assert_eq!(
+            PrimaryLiquidationStrategy::decide_perp_method(100, 100, true, true, true, true),
+            LiquidationType::PerpTakeover
+        );
+    }
+
+    #[test]
+    fn perp_fill_fallback_is_consumed_once() {
+        let fallbacks = DashMap::new();
+        let key = (Pubkey::new_unique(), 7);
+
+        fallbacks.insert(key, ());
+        let force_takeover = consume_perp_fill_fallback(&fallbacks, key, true, 99, 100);
+        assert!(!force_takeover);
+        assert!(!fallbacks.contains_key(&key));
+        assert_eq!(
+            PrimaryLiquidationStrategy::decide_perp_method(
+                99,
+                100,
+                true,
+                true,
+                true,
+                force_takeover,
+            ),
+            LiquidationType::PerpWithFill
+        );
+
+        fallbacks.insert(key, ());
+        assert!(!consume_perp_fill_fallback(
+            &fallbacks, key, false, 100, 100
+        ));
+        assert!(!fallbacks.contains_key(&key));
+
+        fallbacks.insert(key, ());
+        assert!(consume_perp_fill_fallback(&fallbacks, key, true, 100, 100));
+        assert!(!fallbacks.contains_key(&key));
+    }
+
+    #[test]
+    fn oracle_policy_uses_takeover_when_matching_is_not_allowed() {
+        let policy = PrimaryLiquidationStrategy::route_policy_from_validities(
+            OracleValidity::TooUncertain,
+            OracleValidity::TooUncertain,
+            false,
+        )
+        .unwrap();
+
+        assert!(!policy.safe_match_allowed);
+        assert!(!policy.exchange_match_allowed);
+        assert!(policy.liquidation_allowed);
+        assert_eq!(
+            PrimaryLiquidationStrategy::decide_perp_method(
+                100,
+                100,
+                true,
+                policy.exchange_match_allowed,
+                policy.liquidation_allowed,
+                false,
+            ),
+            LiquidationType::PerpTakeover
+        );
+    }
+
+    #[test]
+    fn oracle_policy_skips_when_liquidation_is_not_allowed() {
+        for validity in [OracleValidity::NonPositive, OracleValidity::TooVolatile] {
+            let policy = PrimaryLiquidationStrategy::route_policy_from_validities(
+                validity,
+                OracleValidity::Valid,
+                false,
+            )
+            .unwrap();
+
+            assert!(!policy.exchange_match_allowed);
+            assert!(!policy.liquidation_allowed);
+            assert_eq!(
+                PrimaryLiquidationStrategy::decide_perp_method(
+                    100,
+                    100,
+                    true,
+                    policy.exchange_match_allowed,
+                    policy.liquidation_allowed,
+                    false,
+                ),
+                LiquidationType::Skip
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_exchange_oracle_excludes_floored_match_participants() {
+        let policy = PrimaryLiquidationStrategy::route_policy_from_validities(
+            OracleValidity::TooUncertain,
+            OracleValidity::Valid,
+            false,
+        )
+        .unwrap();
+        let mut liquidatee = User::default();
+        let mut floored_maker = User::default();
+        floored_maker.equity_floor = 1;
+        let regular_maker = User::default();
+
+        liquidatee.equity_floor = 1;
+        assert!(
+            PrimaryLiquidationStrategy::eligible_makers_for_oracle_policy(
+                Some(vec![regular_maker.clone()]),
+                &liquidatee,
+                policy,
+            )
+            .is_none()
+        );
+
+        liquidatee.equity_floor = 0;
+        let makers = PrimaryLiquidationStrategy::eligible_makers_for_oracle_policy(
+            Some(vec![floored_maker, regular_maker]),
+            &liquidatee,
+            policy,
+        )
+        .unwrap();
+        assert_eq!(makers.len(), 1);
+        assert_eq!(makers[0].equity_floor, 0);
     }
 
     #[test]

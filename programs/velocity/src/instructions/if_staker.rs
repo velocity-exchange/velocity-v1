@@ -396,8 +396,8 @@ pub fn handle_remove_insurance_fund_stake<'c: 'info, 'info>(
     // unstake prices its payout. An unstake can only be paid in vault cash, so a
     // claim left in the spot vault holds back part of the exit until someone
     // else settles it. Settling here lets the staker complete the exit alone.
-    // While transfers are paused the settle skips, and the unstake pays the cash
-    // share it can.
+    // While transfers are paused the settle skips. The unstake then succeeds
+    // only when the vault cash covers the full payout.
     {
         if spot_market.has_transfer_hook() {
             controller::insurance::attempt_settle_revenue_to_insurance_fund(

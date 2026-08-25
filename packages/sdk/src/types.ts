@@ -1247,6 +1247,8 @@ export type PerpMarketAccount = {
 		/** scalar for the share of fees transferred to the hedge pool */
 		feeTransferScalar: number;
 	};
+	/** reserved for future market fields */
+	paddingFuture: number[];
 	/** bitmask, see `MarketConfigFlag` */
 	marketConfig: number;
 
@@ -1371,6 +1373,8 @@ export type SpotMarketAccount = {
 	 * refills a mid-period dip can lift it (see `settle_revenue_to_insurance_fund`);
 	 * `0` = the market never settled revenue */
 	ifLastSettleVaultAmount: BN;
+	/** reserved for future market fields */
+	paddingFuture: number[];
 
 	/** token mint decimals; token-mint precision throughout this account is 10^decimals */
 	decimals: number;
@@ -1433,8 +1437,8 @@ export type SpotMarketAccount = {
 	/** token mint precision; 0 = no limit */
 	maxPositionSize: BN;
 	nextFillRecordId: BN;
-	/** fees collected from swaps between this market and the quote market, settled to the quote market's revenue pool; SPOT_BALANCE_PRECISION (1e9) scaled balance */
-	spotFeePool: PoolBalance;
+	/** reserved bytes from the retired spot fee pool */
+	paddingFormerSpotFeePool: number[];
 	/** QUOTE_PRECISION (1e6) */
 	totalSpotFee: BN;
 	/** token mint precision; total fees received from swaps */

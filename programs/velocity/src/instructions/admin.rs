@@ -424,7 +424,7 @@ pub fn handle_initialize_spot_market(
         max_position_size: 0,
         next_fill_record_id: 1,
         next_deposit_record_id: 1,
-        spot_fee_pool: PoolBalance::default(), // in quote asset
+        padding_former_spot_fee_pool: [0; 32],
         total_spot_fee: 0,
         orders_enabled: spot_market_index != 0,
         paused_operations: 0,
@@ -447,6 +447,7 @@ pub fn handle_initialize_spot_market(
         protocol_liquidation_fee: 0,
         protocol_fee_factor: 0,
         if_last_settle_vault_amount: 0,
+        _padding_future: [0; 256],
         deposit_guard_threshold: 0,
         withdraw_circuit_breaker_bps: 0, // 0 => default 25%
         max_deposit_bps_per_day: 0,      // disabled
@@ -867,6 +868,7 @@ pub fn handle_initialize_perp_market(
         taker_fee_addon_tenth_bps: 0,
         _padding_buffer: [0; 2],
         fee_pool_buffer_target: FEE_POOL_TO_REVENUE_POOL_THRESHOLD as u64,
+        _padding_future: [0; 256],
     };
 
     safe_increment!(state.number_of_markets, 1);

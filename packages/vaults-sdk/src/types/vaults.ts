@@ -4697,15 +4697,13 @@ export type Vaults = {
 						};
 					},
 					{
-						name: 'spotFeePool';
+						name: 'paddingFormerSpotFeePool';
 						docs: [
-							'The fees collected from swaps between this market and the quote market',
-							'Is settled to the quote markets revenue pool',
+							'Reserved bytes from the retired spot fee pool. Spot swaps do not charge',
+							'a fee and the pool has never been used.',
 						];
 						type: {
-							defined: {
-								name: 'poolBalance';
-							};
+							array: ['u8', 32];
 						};
 					},
 					{
@@ -5139,6 +5137,16 @@ export type Vaults = {
 							'field.) Repurposed from trailing padding — layout and size are unchanged.',
 						];
 						type: 'u64';
+					},
+					{
+						name: 'paddingFuture';
+						docs: [
+							'Reserved for future fields. Existing accounts must be extended before',
+							'the program loads them with this layout.',
+						];
+						type: {
+							array: ['u8', 256];
+						};
 					},
 				];
 			};

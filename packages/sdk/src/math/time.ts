@@ -171,8 +171,10 @@ export function currentSlotClock(
 		isLive: false,
 	};
 
-	// `0`, NaN, undefined and negatives are all dead feeds, not slot numbers.
-	if (!currentSlot || !Number.isFinite(currentSlot) || currentSlot < 0) {
+	// `0`, NaN, undefined, negatives and fractions are all dead feeds rather
+	// than slot numbers. `isSafeInteger` also keeps a garbage magnitude out of
+	// `new BN`, which asserts above 2^53 rather than returning anything.
+	if (!currentSlot || !Number.isSafeInteger(currentSlot) || currentSlot < 0) {
 		return dead;
 	}
 
@@ -190,11 +192,16 @@ export function currentSlotClock(
 	// reported as a measurement: a NaN duration propagates silently through
 	// every threshold comparison, and a non-BN effective slot throws out of
 	// `BN.gte`. Both would surface deep in a filler loop instead of here.
+	// The duration itself is deliberately NOT checked against
+	// SLOT_DURATION_SCHEDULE_MS: the program's reader takes any u16 and only
+	// its setter enforces the schedule, so rejecting an off-schedule value here
+	// would return 400ms where the chain returns the stored one.
 	if (
 		!state ||
 		!isPlainSlotDuration(state.slotDurationMs) ||
 		!isPlainSlotDuration(state.pendingSlotDurationMs) ||
-		!BN.isBN(state.slotDurationEffectiveSlot)
+		!BN.isBN(state.slotDurationEffectiveSlot) ||
+		state.slotDurationEffectiveSlot.isNeg()
 	) {
 		return dead;
 	}

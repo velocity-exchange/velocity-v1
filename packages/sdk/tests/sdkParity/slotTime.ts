@@ -220,6 +220,7 @@ describe('currentSlotDuration (off-chain resolver)', () => {
 			{ slotDurationEffectiveSlot: undefined },
 			{ slotDurationEffectiveSlot: null as unknown as BN },
 			{ slotDurationEffectiveSlot: 1_000 as unknown as BN },
+			{ slotDurationEffectiveSlot: new BN(-1) },
 		];
 		for (const override of malformed) {
 			const clock = currentSlotClock(
@@ -247,8 +248,19 @@ describe('currentSlotDuration (off-chain resolver)', () => {
 		assert.equal(activeSlotDurationFromState(state, new BN(5_000)), 250);
 	});
 
-	it('treats a negative or non-finite slot as a dead feed', () => {
-		for (const slot of [-5, NaN, Infinity]) {
+	it('accepts an off-schedule duration, as the program does', () => {
+		// The program's reader takes any u16; only the setter enforces the
+		// schedule. Rejecting 275 here would return 400 where the chain
+		// returns 275, which is the mirror divergence this SDK must not have.
+		const clock = currentSlotClock(source(stateAt(275)), 5_000);
+		assert.equal(clock.slotDurationMs, 275);
+		assert.isTrue(clock.isLive);
+	});
+
+	it('treats a negative, fractional or non-finite slot as a dead feed', () => {
+		// 1_000.5 truncates in `new BN`, and anything past 2^53 asserts, so
+		// neither may reach it.
+		for (const slot of [-5, NaN, Infinity, 1_000.5, 2 ** 53]) {
 			const clock = currentSlotClock(source(stateAt(200)), slot);
 			assert.equal(clock.slotDurationMs, SLOT_DURATION_BASELINE);
 			assert.isFalse(clock.isLive, String(slot));

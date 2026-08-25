@@ -738,7 +738,10 @@ mod calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy {
             constants::{
                 QUOTE_PRECISION, SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
             },
-            liquidation::calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy,
+            liquidation::{
+                calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy,
+                calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy_with_reserve,
+            },
         },
         state::spot_market::SpotMarket,
     };
@@ -774,6 +777,45 @@ mod calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy {
                 .unwrap();
 
         assert_eq!(delta, 916666667);
+    }
+
+    #[test]
+    fn source_owned_revenue_is_excluded_from_socialized_deposits() {
+        let loss = 10 * QUOTE_PRECISION;
+        let spot_market = SpotMarket {
+            deposit_balance: 1_020 * SPOT_BALANCE_PRECISION,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            ..SpotMarket::default()
+        };
+
+        let delta = calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy_with_reserve(
+            loss,
+            20 * QUOTE_PRECISION,
+            &spot_market,
+        )
+        .unwrap();
+
+        assert_eq!(delta, SPOT_CUMULATIVE_INTEREST_PRECISION / 100);
+    }
+
+    #[test]
+    fn bankruptcy_cannot_haircut_only_source_owned_revenue() {
+        let spot_market = SpotMarket {
+            deposit_balance: 20 * SPOT_BALANCE_PRECISION,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            ..SpotMarket::default()
+        };
+
+        assert!(
+            calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy_with_reserve(
+                QUOTE_PRECISION,
+                20 * QUOTE_PRECISION,
+                &spot_market,
+            )
+            .is_err()
+        );
     }
 
     #[test]

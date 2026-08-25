@@ -1,7 +1,10 @@
 use {
     crate::{
         controller::{
-            spot_balance::{update_spot_balances, update_spot_market_cumulative_interest},
+            spot_balance::{
+                transfer_revenue_pool_to_spot_balance, update_revenue_pool_balances,
+                update_spot_balances, update_spot_market_cumulative_interest,
+            },
             token::send_from_program_vault,
         },
         emit,
@@ -58,6 +61,26 @@ pub fn get_insurance_fund_nav(
             .get_insurance_fund_revenue_receivable()?
             .cast()?,
     )
+}
+
+/// Source market receivables stay in the revenue pool until their own market
+/// settles them, so generic settlement must exclude them.
+pub fn get_unreserved_revenue_pool_token_amount(spot_market: &SpotMarket) -> VelocityResult<u128> {
+    let revenue_pool_token_amount = get_token_amount(
+        spot_market.revenue_pool.scaled_balance,
+        spot_market,
+        &SpotBalanceType::Deposit,
+    )?;
+    let reserved: u128 = spot_market.perp_market_if_revenue_receivable.cast()?;
+    validate!(
+        reserved <= revenue_pool_token_amount,
+        ErrorCode::InvalidSpotMarketState,
+        "perp market IF revenue receivable {} exceeds revenue pool {}",
+        reserved,
+        revenue_pool_token_amount
+    )?;
+
+    revenue_pool_token_amount.safe_sub(reserved)
 }
 
 /// Lower the revenue-settle cap base to the fund value that an outflow leaves
@@ -611,11 +634,13 @@ pub fn attempt_settle_revenue_to_insurance_fund<'info>(
         state.withdraw_paused()? || spot_market.is_operation_paused(SpotOperation::Withdraw);
     let has_receivable = spot_market.insurance_fund_revenue_receivable_scaled > 0;
 
-    if !valid_revenue_settle_time && !has_receivable {
+    let has_settle_allowance = spot_market.revenue_settle_allowance > 0;
+
+    if !valid_revenue_settle_time && !has_receivable && !has_settle_allowance {
         return Ok(());
     }
 
-    if valid_revenue_settle_time {
+    if valid_revenue_settle_time || has_settle_allowance {
         book_revenue_to_insurance_fund(
             spot_market_vault.amount,
             insurance_fund_vault.amount,
@@ -623,6 +648,7 @@ pub fn attempt_settle_revenue_to_insurance_fund<'info>(
             now,
             false,
             state.funding_paused()?,
+            valid_revenue_settle_time,
         )?;
     } else {
         update_spot_market_cumulative_interest(spot_market, None, now, state.funding_paused()?)?;
@@ -655,6 +681,69 @@ pub fn attempt_settle_revenue_to_insurance_fund<'info>(
     Ok(())
 }
 
+fn apply_revenue_settle_caps(
+    mut token_amount: u128,
+    insurance_vault_amount: u64,
+    spot_market: &SpotMarket,
+) -> VelocityResult<u128> {
+    if spot_market.insurance_fund.user_shares == 0 {
+        return Ok(token_amount);
+    }
+
+    let insurance_fund_nav = get_insurance_fund_nav(insurance_vault_amount, spot_market)?;
+    let cap_vault_amount = insurance_fund_nav.min(spot_market.if_last_settle_vault_amount);
+    let capped_apr_amount = cap_vault_amount
+        .cast::<u128>()?
+        .safe_mul(MAX_APR_PER_REVENUE_SETTLE_TO_INSURANCE_FUND_VAULT)?
+        .safe_div(PERCENTAGE_PRECISION)?
+        .safe_div(
+            ONE_YEAR
+                .safe_div(spot_market.insurance_fund.revenue_settle_period.cast()?)?
+                .max(1),
+        )?;
+    let capped_token_pct_amount = token_amount.safe_div(10)?;
+    token_amount = capped_token_pct_amount.min(capped_apr_amount);
+
+    Ok(token_amount)
+}
+
+fn open_revenue_settle_period(
+    spot_market_vault_amount: u64,
+    insurance_vault_amount: u64,
+    spot_market: &mut SpotMarket,
+    now: i64,
+) -> VelocityResult<bool> {
+    let depositors_claim =
+        validate_spot_market_vault_amount(spot_market, spot_market_vault_amount)?;
+    let reserved_if_revenue = spot_market.get_insurance_fund_revenue_receivable()?;
+    let unreserved_depositors_claim = depositors_claim
+        .max(0)
+        .cast::<u128>()?
+        .saturating_sub(reserved_if_revenue);
+    let mut token_amount = get_token_amount(
+        spot_market.revenue_pool.scaled_balance,
+        spot_market,
+        &SpotBalanceType::Deposit,
+    )?;
+
+    if unreserved_depositors_claim < token_amount {
+        token_amount = unreserved_depositors_claim.safe_div(2)?;
+    }
+
+    let cap_base_was_unset =
+        spot_market.insurance_fund.user_shares > 0 && spot_market.if_last_settle_vault_amount == 0;
+    token_amount = apply_revenue_settle_caps(token_amount, insurance_vault_amount, spot_market)?;
+    spot_market.revenue_settle_allowance = get_proportion_u128(
+        token_amount,
+        SHARE_OF_REVENUE_ALLOCATED_TO_INSURANCE_FUND_VAULT_NUMERATOR,
+        SHARE_OF_REVENUE_ALLOCATED_TO_INSURANCE_FUND_VAULT_DENOMINATOR,
+    )?
+    .cast()?;
+    spot_market.insurance_fund.last_revenue_settle_ts = now;
+
+    Ok(cap_base_was_unset)
+}
+
 fn book_revenue_to_insurance_fund(
     spot_market_vault_amount: u64,
     insurance_vault_amount: u64,
@@ -662,6 +751,7 @@ fn book_revenue_to_insurance_fund(
     now: i64,
     check_invariants: bool,
     funding_paused: bool,
+    open_period: bool,
 ) -> VelocityResult<u64> {
     update_spot_market_cumulative_interest(spot_market, None, now, funding_paused)?;
 
@@ -670,67 +760,43 @@ fn book_revenue_to_insurance_fund(
         return Ok(0);
     }
 
-    let depositors_claim =
-        validate_spot_market_vault_amount(spot_market, spot_market_vault_amount)?;
+    let cap_base_was_unset = if open_period {
+        open_revenue_settle_period(
+            spot_market_vault_amount,
+            insurance_vault_amount,
+            spot_market,
+            now,
+        )?
+    } else {
+        false
+    };
+    let mut insurance_fund_token_amount = get_unreserved_revenue_pool_token_amount(spot_market)?
+        .cast::<u64>()?
+        .min(spot_market.revenue_settle_allowance);
 
-    let mut token_amount = get_token_amount(
-        spot_market.revenue_pool.scaled_balance,
-        spot_market,
-        &SpotBalanceType::Deposit,
-    )?;
-
-    let existing_receivable = spot_market.get_insurance_fund_revenue_receivable()?;
-    let unreserved_depositors_claim = depositors_claim
-        .max(0)
-        .cast::<u128>()?
-        .saturating_sub(existing_receivable);
-
-    if unreserved_depositors_claim < token_amount {
-        // only allow half of withdraw available when utilization is high
-        token_amount = unreserved_depositors_claim.safe_div(2)?;
+    if insurance_fund_token_amount > 0 && spot_market.perp_market_if_revenue_receivable > 0 {
+        let minimum_reserved_balance = get_spot_balance(
+            spot_market.perp_market_if_revenue_receivable.cast()?,
+            spot_market,
+            &SpotBalanceType::Deposit,
+            true,
+        )?;
+        validate!(
+            minimum_reserved_balance <= spot_market.revenue_pool.scaled_balance,
+            ErrorCode::InvalidSpotMarketState,
+            "perp market IF revenue reserve exceeds revenue pool backing"
+        )?;
+        let available_balance = spot_market
+            .revenue_pool
+            .scaled_balance
+            .safe_sub(minimum_reserved_balance)?;
+        let max_reclassifiable = get_token_amount(
+            available_balance.saturating_sub(1),
+            spot_market,
+            &SpotBalanceType::Deposit,
+        )?;
+        insurance_fund_token_amount = insurance_fund_token_amount.min(max_reclassifiable.cast()?);
     }
-
-    if spot_market.insurance_fund.user_shares > 0 {
-        // Size the APR cap off the balance the fund held for the whole period, not off
-        // the live vault alone. `insurance_vault_amount` is the raw token-account
-        // balance, which anyone can inflate with a direct SPL transfer right before a
-        // settle to lift the cap toward the 1/10-of-revenue-pool bound.
-        // `if_last_settle_vault_amount` is the lowest balance the vault held since the
-        // last settle, so it predates any such transfer and it already carries every
-        // dip in between. The `min` of the two counts only capital that was present
-        // throughout, which a pre-settle donation is not. Capital that does span a full
-        // period already belongs to the stakers pro rata, so counting it is correct. A
-        // `0` snapshot (never settled, or settled on an empty vault) gives a `0` cap for
-        // one period; the snapshot written below then heals it.
-        let insurance_fund_nav = get_insurance_fund_nav(insurance_vault_amount, spot_market)?;
-        let cap_vault_amount = insurance_fund_nav.min(spot_market.if_last_settle_vault_amount);
-
-        // only allow MAX_APR_PER_REVENUE_SETTLE_TO_INSURANCE_FUND_VAULT or 1/10th of revenue pool to be settled
-        let capped_apr_amount = cap_vault_amount
-            .cast::<u128>()?
-            .safe_mul(MAX_APR_PER_REVENUE_SETTLE_TO_INSURANCE_FUND_VAULT)?
-            .safe_div(PERCENTAGE_PRECISION)?
-            .safe_div(
-                ONE_YEAR
-                    .safe_div(spot_market.insurance_fund.revenue_settle_period.cast()?)?
-                    .max(1),
-            )?;
-        let capped_token_pct_amount = token_amount.safe_div(10)?;
-        token_amount = capped_token_pct_amount.min(capped_apr_amount);
-    }
-
-    let mut insurance_fund_token_amount = get_proportion_u128(
-        token_amount,
-        SHARE_OF_REVENUE_ALLOCATED_TO_INSURANCE_FUND_VAULT_NUMERATOR,
-        SHARE_OF_REVENUE_ALLOCATED_TO_INSURANCE_FUND_VAULT_DENOMINATOR,
-    )?
-    .cast::<u64>()?;
-
-    // True when the cap above collapsed to `0` only because this market has no
-    // snapshot yet. Read it before the write below replaces the snapshot.
-    let cap_base_was_unset =
-        spot_market.insurance_fund.user_shares > 0 && spot_market.if_last_settle_vault_amount == 0;
-
     let insurance_fund_nav_before = get_insurance_fund_nav(insurance_vault_amount, spot_market)?;
 
     // Move the scaled claim itself from the revenue pool to the receivable. Both
@@ -773,6 +839,9 @@ fn book_revenue_to_insurance_fund(
 
         insurance_fund_token_amount =
             get_token_amount(balance_delta, spot_market, &SpotBalanceType::Deposit)?.cast()?;
+        spot_market.revenue_settle_allowance = spot_market
+            .revenue_settle_allowance
+            .safe_sub(insurance_fund_token_amount)?;
     }
 
     // `NoRevenueToSettleToIF` tells the keeper that the settle was pointless. The settle
@@ -787,8 +856,6 @@ fn book_revenue_to_insurance_fund(
             "no amount to settle to insurance fund"
         )?;
     }
-
-    spot_market.insurance_fund.last_revenue_settle_ts = now;
 
     // The insurance fund is staker-owned: once stakers exist, the entire settled
     // amount accrues to them as share-price appreciation (no protocol shares
@@ -809,8 +876,10 @@ fn book_revenue_to_insurance_fund(
             .cast()?;
     }
 
-    spot_market.if_last_settle_vault_amount =
-        insurance_fund_nav_before.safe_add(insurance_fund_token_amount)?;
+    if open_period {
+        spot_market.if_last_settle_vault_amount =
+            insurance_fund_nav_before.safe_add(insurance_fund_token_amount)?;
+    }
 
     emit!(InsuranceFundRecord {
         ts: now,
@@ -928,6 +997,227 @@ pub fn transfer_insurance_fund_revenue_receivable_to_pool(
     Ok(receivable_payment)
 }
 
+/// Records insurance fees moved from one perp pnl pool into the quote revenue
+/// pool. The perp field preserves source ownership and the spot aggregate
+/// reserves the same tokens from unrelated consumers.
+pub fn accrue_perp_market_if_revenue_receivable(
+    spot_market: &mut SpotMarket,
+    perp_market: &mut PerpMarket,
+    amount: u128,
+) -> VelocityResult {
+    validate!(
+        perp_market.quote_spot_market_index == spot_market.market_index,
+        ErrorCode::InvalidSpotMarketAccount,
+        "perp market {} settles in spot market {}, not {}",
+        perp_market.market_index,
+        perp_market.quote_spot_market_index,
+        spot_market.market_index
+    )?;
+
+    let amount: u64 = amount.cast()?;
+    let new_aggregate = spot_market
+        .perp_market_if_revenue_receivable
+        .safe_add(amount)?;
+    let revenue_pool_token_amount = get_token_amount(
+        spot_market.revenue_pool.scaled_balance,
+        spot_market,
+        &SpotBalanceType::Deposit,
+    )?;
+    validate!(
+        new_aggregate.cast::<u128>()? <= revenue_pool_token_amount,
+        ErrorCode::InvalidSpotMarketState,
+        "perp market IF revenue receivable {} exceeds revenue pool backing {}",
+        new_aggregate,
+        revenue_pool_token_amount
+    )?;
+
+    perp_market.insurance_fund_revenue_receivable = perp_market
+        .insurance_fund_revenue_receivable
+        .safe_add(amount)?;
+    spot_market.perp_market_if_revenue_receivable = new_aggregate;
+
+    Ok(())
+}
+
+fn consume_perp_market_if_revenue_receivable(
+    spot_market: &mut SpotMarket,
+    perp_market: &mut PerpMarket,
+    amount: u128,
+) -> VelocityResult {
+    let amount: u64 = amount.cast()?;
+    validate!(
+        perp_market.quote_spot_market_index == spot_market.market_index,
+        ErrorCode::InvalidSpotMarketAccount,
+        "perp market {} settles in spot market {}, not {}",
+        perp_market.market_index,
+        perp_market.quote_spot_market_index,
+        spot_market.market_index
+    )?;
+    validate!(
+        amount <= perp_market.insurance_fund_revenue_receivable
+            && amount <= spot_market.perp_market_if_revenue_receivable,
+        ErrorCode::InvalidSpotMarketState,
+        "perp IF revenue receivable {} exceeds market claim {} or spot aggregate {}",
+        amount,
+        perp_market.insurance_fund_revenue_receivable,
+        spot_market.perp_market_if_revenue_receivable
+    )?;
+
+    perp_market.insurance_fund_revenue_receivable = perp_market
+        .insurance_fund_revenue_receivable
+        .safe_sub(amount)?;
+    spot_market.perp_market_if_revenue_receivable = spot_market
+        .perp_market_if_revenue_receivable
+        .safe_sub(amount)?;
+
+    Ok(())
+}
+
+/// Reclaims this perp market's swept insurance fees from the quote revenue
+/// pool into its pnl pool. No tokens leave the spot vault.
+pub fn transfer_perp_market_if_revenue_receivable_to_pool(
+    spot_market: &mut SpotMarket,
+    perp_market: &mut PerpMarket,
+    max_amount: u128,
+) -> VelocityResult<u128> {
+    let payment = max_amount.min(perp_market.insurance_fund_revenue_receivable.cast()?);
+    if payment == 0 {
+        return Ok(0);
+    }
+
+    transfer_revenue_pool_to_spot_balance(payment, spot_market, &mut perp_market.pnl_pool)?;
+    consume_perp_market_if_revenue_receivable(spot_market, perp_market, payment)?;
+
+    Ok(payment)
+}
+
+fn transfer_perp_market_if_revenue_receivable_to_insurance_fund(
+    spot_market: &mut SpotMarket,
+    perp_market: &mut PerpMarket,
+    max_amount: u64,
+) -> VelocityResult<u64> {
+    let remaining_aggregate = spot_market
+        .perp_market_if_revenue_receivable
+        .safe_sub(perp_market.insurance_fund_revenue_receivable)?;
+    let minimum_remaining_balance = get_spot_balance(
+        remaining_aggregate.cast()?,
+        spot_market,
+        &SpotBalanceType::Deposit,
+        true,
+    )?;
+    validate!(
+        minimum_remaining_balance <= spot_market.revenue_pool.scaled_balance,
+        ErrorCode::InvalidSpotMarketState,
+        "remaining perp market IF revenue reserve exceeds revenue pool backing"
+    )?;
+
+    let available_balance = spot_market
+        .revenue_pool
+        .scaled_balance
+        .safe_sub(minimum_remaining_balance)?;
+    // A physical outflow rounds the scaled balance debit up. Leave one scaled
+    // unit outside the token conversion so that debit cannot consume the
+    // minimum balance backing other markets.
+    let settlement_balance = if remaining_aggregate > 0 {
+        available_balance.saturating_sub(1)
+    } else {
+        available_balance
+    };
+    let available_token_amount =
+        get_token_amount(settlement_balance, spot_market, &SpotBalanceType::Deposit)?;
+    let amount = perp_market
+        .insurance_fund_revenue_receivable
+        .min(max_amount)
+        .min(available_token_amount.cast()?);
+    if amount == 0 {
+        return Ok(0);
+    }
+
+    let revenue_before = get_token_amount(
+        spot_market.revenue_pool.scaled_balance,
+        spot_market,
+        &SpotBalanceType::Deposit,
+    )?;
+    update_revenue_pool_balances(amount.cast()?, &SpotBalanceType::Borrow, spot_market, true)?;
+    let revenue_after = get_token_amount(
+        spot_market.revenue_pool.scaled_balance,
+        spot_market,
+        &SpotBalanceType::Deposit,
+    )?;
+    let claim_consumed = revenue_before
+        .safe_sub(revenue_after)?
+        .min(perp_market.insurance_fund_revenue_receivable.cast()?);
+    consume_perp_market_if_revenue_receivable(spot_market, perp_market, claim_consumed)?;
+
+    Ok(amount)
+}
+
+/// Settles one perp market's swept insurance fees from the quote spot vault
+/// into the insurance fund vault under the ordinary revenue settlement caps.
+/// The caller performs the token transfer.
+pub fn settle_perp_market_if_revenue_to_insurance_fund(
+    spot_market_vault_amount: u64,
+    insurance_vault_amount: u64,
+    spot_market: &mut SpotMarket,
+    perp_market: &mut PerpMarket,
+    now: i64,
+    open_period: bool,
+) -> VelocityResult<u64> {
+    let cap_base_was_unset = if open_period {
+        open_revenue_settle_period(
+            spot_market_vault_amount,
+            insurance_vault_amount,
+            spot_market,
+            now,
+        )?
+    } else {
+        validate_spot_market_vault_amount(spot_market, spot_market_vault_amount)?;
+        false
+    };
+    let total_if_shares_before = spot_market.insurance_fund.total_shares;
+    let settle_allowance = spot_market.revenue_settle_allowance;
+    let settled = transfer_perp_market_if_revenue_receivable_to_insurance_fund(
+        spot_market,
+        perp_market,
+        settle_allowance,
+    )?;
+
+    if !cap_base_was_unset {
+        validate!(
+            settled > 0,
+            ErrorCode::NoRevenueToSettleToIF,
+            "perp market {} has no IF revenue receivable eligible to settle",
+            perp_market.market_index
+        )?;
+    }
+    spot_market.revenue_settle_allowance =
+        spot_market.revenue_settle_allowance.safe_sub(settled)?;
+
+    let insurance_fund_nav_after =
+        get_insurance_fund_nav(insurance_vault_amount.safe_add(settled)?, spot_market)?;
+    if total_if_shares_before == 0 {
+        spot_market.insurance_fund.total_shares = insurance_fund_nav_after.cast()?;
+    }
+    if open_period {
+        spot_market.if_last_settle_vault_amount = insurance_fund_nav_after;
+    }
+
+    emit!(InsuranceFundRecord {
+        ts: now,
+        spot_market_index: spot_market.market_index,
+        perp_market_index: perp_market.market_index,
+        amount: settled.cast()?,
+        user_if_factor: spot_market.insurance_fund.if_fee_factor,
+        total_if_factor: spot_market.insurance_fund.if_fee_factor,
+        vault_amount_before: spot_market_vault_amount,
+        insurance_vault_amount_before: insurance_vault_amount,
+        total_if_shares_before,
+        total_if_shares_after: spot_market.insurance_fund.total_shares,
+    });
+
+    Ok(settled)
+}
+
 pub fn settle_revenue_to_insurance_fund(
     spot_market_vault_amount: u64,
     insurance_vault_amount: u64,
@@ -943,6 +1233,28 @@ pub fn settle_revenue_to_insurance_fund(
         now,
         check_invariants,
         funding_paused,
+        true,
+    )?;
+
+    settle_insurance_fund_revenue_receivable(spot_market)
+}
+
+pub fn continue_revenue_settle_to_insurance_fund(
+    spot_market_vault_amount: u64,
+    insurance_vault_amount: u64,
+    spot_market: &mut SpotMarket,
+    now: i64,
+    check_invariants: bool,
+    funding_paused: bool,
+) -> VelocityResult<u64> {
+    book_revenue_to_insurance_fund(
+        spot_market_vault_amount,
+        insurance_vault_amount,
+        spot_market,
+        now,
+        check_invariants,
+        funding_paused,
+        false,
     )?;
 
     settle_insurance_fund_revenue_receivable(spot_market)

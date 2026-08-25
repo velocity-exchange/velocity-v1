@@ -11140,8 +11140,8 @@ pub mod resolve_perp_bankruptcy {
     /// The waterfall's sign convention: `loss` is NEGATIVE (validated), every
     /// tranche payment is positive, and each `safe_add` moves the running loss
     /// toward zero — i.e. ADDING a payment IS the offset. This test walks all
-    /// four stages (pending IF -> IF vault -> untokenized provision ->
-    /// tokenized provision) and pins the socialized remainder to
+    /// five stages: pending IF, market receivable, shared IF,
+    /// untokenized provision and tokenized provision. It pins the socialized remainder to
     /// `|loss| − sum(tranche payments)`; a sign flip anywhere would balloon
     /// the socialized loss instead of shrinking it and fail every assertion
     /// below.
@@ -11167,11 +11167,12 @@ pub mod resolve_perp_bankruptcy {
         )
         .unwrap();
 
-        // loss = -100. Tranches: pending IF 30 (counter-only), allocated IF
-        // revenue 10, IF vault 15 (the combined IF draw is capped at 25),
+        // loss = -100. Tranches: pending IF 30, market IF
+        // receivable 20, allocated shared IF revenue 10, IF vault 15
+        // (the combined shared IF draw is capped at 25),
         // provision clawback 15 = 8
         // untokenized (counter-only) + 7 tokenized (fee_pool -> pnl_pool).
-        // Socialized remainder: 100 - 30 - 25 - 15 = 30.
+        // Socialized remainder: 100 - 30 - 20 - 25 - 15 = 10.
         let mut market = PerpMarket {
             amm: AMM {
                 base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
@@ -11198,6 +11199,7 @@ pub mod resolve_perp_bankruptcy {
                 quote_max_insurance: 25 * QUOTE_PRECISION_I64 as u64,
                 ..InsuranceClaim::default()
             },
+            insurance_fund_revenue_receivable: 20 * QUOTE_PRECISION_U64,
             margin_ratio_initial: 1000,
             margin_ratio_maintenance: 500,
             status: MarketStatus::Initialized,
@@ -11224,6 +11226,12 @@ pub mod resolve_perp_bankruptcy {
             decimals: 6,
             initial_asset_weight: SPOT_WEIGHT_PRECISION,
             insurance_fund_revenue_receivable_scaled: 10 * SPOT_BALANCE_PRECISION,
+            perp_market_if_revenue_receivable: 20 * QUOTE_PRECISION_U64,
+            revenue_pool: PoolBalance {
+                scaled_balance: 20 * SPOT_BALANCE_PRECISION,
+                market_index: QUOTE_SPOT_MARKET_INDEX,
+                ..PoolBalance::default()
+            },
             ..SpotMarket::default()
         };
         create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
@@ -11274,9 +11282,9 @@ pub mod resolve_perp_bankruptcy {
         expected_user.total_social_loss = 100 * QUOTE_PRECISION_I64 as u64;
 
         let mut expected_market = market;
-        // 30 QUOTE socialized over 10 base -> 3 QUOTE/base funding delta
-        expected_market.cumulative_funding_rate_long = 1003 * FUNDING_RATE_PRECISION_I128;
-        expected_market.cumulative_funding_rate_short = -1003 * FUNDING_RATE_PRECISION_I128;
+        // 10 QUOTE socialized over 10 base gives 1 QUOTE per base funding delta
+        expected_market.cumulative_funding_rate_long = 1001 * FUNDING_RATE_PRECISION_I128;
+        expected_market.cumulative_funding_rate_short = -1001 * FUNDING_RATE_PRECISION_I128;
         // AMM stamp resynced past the socialization bump (OtterSec #89)
         expected_market.amm.last_cumulative_funding_rate_long =
             expected_market.cumulative_funding_rate_long as i64;
@@ -11289,17 +11297,19 @@ pub mod resolve_perp_bankruptcy {
             m.amm.last_cumulative_funding_rate_long = m.cumulative_funding_rate_long as i64;
             m.amm.last_cumulative_funding_rate_short = m.cumulative_funding_rate_short as i64;
         }
-        expected_market.total_social_loss = 30 * QUOTE_PRECISION_I64 as u128;
-        expected_market.net_unsettled_funding_pnl = -30 * QUOTE_PRECISION_I64;
+        expected_market.total_social_loss = 10 * QUOTE_PRECISION_I64 as u128;
+        expected_market.net_unsettled_funding_pnl = -10 * QUOTE_PRECISION_I64;
         expected_market.quote_asset_amount = -50 * QUOTE_PRECISION_I128;
         expected_market.number_of_users = 0;
-        // tranche 1 + 3a are counter-only; tranche 2 (25) and 3b (7) move
+        // pending IF and untokenized provision only change counters. The market
+        // receivable (20), shared IF (25), and tokenized provision (7) move
         // real tokens into the pnl pool
         expected_market.fee_ledger.pending_if_fee = 0;
         expected_market.fee_ledger.pending_amm_provision = 0;
         expected_market.fee_ledger.amm_protocol_fees_received = 0;
         expected_market.insurance_claim.quote_settled_insurance = 25 * QUOTE_PRECISION_I64 as u64;
-        expected_market.pnl_pool.scaled_balance = 32 * SPOT_BALANCE_PRECISION;
+        expected_market.insurance_fund_revenue_receivable = 0;
+        expected_market.pnl_pool.scaled_balance = 52 * SPOT_BALANCE_PRECISION;
         expected_market.amm.fee_pool.scaled_balance = 43 * SPOT_BALANCE_PRECISION;
         // the AMM's books pay exactly the clawback (8 + 7), nothing else
         expected_market.amm.total_fee_minus_distributions = -15 * QUOTE_PRECISION_I128;
@@ -11326,6 +11336,13 @@ pub mod resolve_perp_bankruptcy {
                 .get_ref(&0)
                 .unwrap()
                 .insurance_fund_revenue_receivable_scaled,
+            0
+        );
+        assert_eq!(
+            spot_market_map
+                .get_ref(&0)
+                .unwrap()
+                .perp_market_if_revenue_receivable,
             0
         );
         assert_eq!(expected_user, user);
@@ -11987,7 +12004,7 @@ pub mod resolve_perp_bankruptcy {
     /// front-running sweep clears the pending IF tranche and the identical
     /// loss is socialized through cumulative funding instead.
     #[test]
-    pub fn bankruptcy_if_floor_disabled_sweep_socializes_loss() {
+    pub fn bankruptcy_if_floor_disabled_sweep_preserves_source_claim() {
         let now = 0_i64;
         let slot = 0_u64;
 
@@ -12088,7 +12105,7 @@ pub mod resolve_perp_bankruptcy {
         let user_key = Pubkey::default();
         let liquidator_key = Pubkey::default();
 
-        // no floor: the front-running sweep drains the entire tranche
+        // With no floor the sweep moves the entire counter into the revenue pool.
         {
             let mut market = market_map.get_ref_mut(&0).unwrap();
             let mut spot_market = spot_market_map.get_ref_mut(&0).unwrap();
@@ -12113,14 +12130,26 @@ pub mod resolve_perp_bankruptcy {
         )
         .unwrap();
 
-        // with no tranche left, the whole loss socializes: counterparties pay
+        // The swept revenue remains owned by this market and covers the loss.
         let market_after = market_map.get_ref(&0).unwrap().clone();
+        let spot_market_after = spot_market_map.get_ref(&0).unwrap().clone();
+        assert_eq!(market_after.total_social_loss, 0);
         assert_eq!(
-            market_after.total_social_loss,
-            100 * QUOTE_PRECISION_I64 as u128
+            market_after.cumulative_funding_rate_long,
+            1000 * FUNDING_RATE_PRECISION_I128
         );
-        assert!(market_after.cumulative_funding_rate_long > 1000 * FUNDING_RATE_PRECISION_I128);
-        assert!(market_after.cumulative_funding_rate_short < -1000 * FUNDING_RATE_PRECISION_I128);
+        assert_eq!(
+            market_after.cumulative_funding_rate_short,
+            -1000 * FUNDING_RATE_PRECISION_I128
+        );
+        assert_eq!(
+            market_after.insurance_fund_revenue_receivable,
+            50 * QUOTE_PRECISION_U64
+        );
+        assert_eq!(
+            spot_market_after.perp_market_if_revenue_receivable,
+            50 * QUOTE_PRECISION_U64
+        );
     }
 
     /// Clawing back a provision that was never tokenized is counter-only:
@@ -13736,7 +13765,8 @@ pub mod resolve_spot_bankruptcy {
         create_anchor_account_info!(market, PerpMarket, market_account_info);
         let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
 
-        // $1000 of depositor claims + $30 revenue pool + $20 allocated IF revenue
+        // $1000 of depositor claims + $30 generic revenue + $20 source-owned
+        // revenue + $20 allocated IF revenue.
         let mut spot_market = SpotMarket {
             market_index: 0,
             oracle_source: OracleSource::QuoteAsset,
@@ -13744,14 +13774,15 @@ pub mod resolve_spot_bankruptcy {
             cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
             decimals: 6,
             initial_asset_weight: SPOT_WEIGHT_PRECISION,
-            deposit_balance: 1050 * SPOT_BALANCE_PRECISION,
+            deposit_balance: 1070 * SPOT_BALANCE_PRECISION,
             borrow_balance: 100 * SPOT_BALANCE_PRECISION,
             revenue_pool: PoolBalance {
                 market_index: 0,
-                scaled_balance: 30 * SPOT_BALANCE_PRECISION,
+                scaled_balance: 50 * SPOT_BALANCE_PRECISION,
                 ..PoolBalance::default()
             },
             insurance_fund_revenue_receivable_scaled: 20 * SPOT_BALANCE_PRECISION,
+            perp_market_if_revenue_receivable: 20 * QUOTE_PRECISION_U64,
             historical_oracle_data: HistoricalOracleData::default_price(QUOTE_PRECISION_I64),
             ..SpotMarket::default()
         };
@@ -13800,20 +13831,6 @@ pub mod resolve_spot_bankruptcy {
         // gross bad debt, unaffected by the tranche payments
         expected_user.total_social_loss = 100 * QUOTE_PRECISION as u64;
 
-        let mut expected_spot_market = spot_market;
-        expected_spot_market.borrow_balance = 0;
-        // revenue pool fully consumed as tranche 1
-        expected_spot_market.revenue_pool.scaled_balance = 0;
-        // The receivable holds a scaled claim, so the tranche removes exactly the
-        // claim it spends and leaves no conversion dust behind.
-        expected_spot_market.insurance_fund_revenue_receivable_scaled = 0;
-        expected_spot_market.deposit_balance = 1000 * SPOT_BALANCE_PRECISION;
-        expected_spot_market.cumulative_deposit_interest =
-            99 * SPOT_CUMULATIVE_INTEREST_PRECISION / 100;
-        // socialized loss only ($10), not the gross $100
-        expected_spot_market.total_social_loss = 10 * QUOTE_PRECISION;
-        expected_spot_market.total_quote_social_loss = 10 * QUOTE_PRECISION;
-
         // +1 so `insurance_fund_vault_balance - 1` leaves exactly $40 payable
         let if_payment = resolve_spot_bankruptcy(
             0,
@@ -13834,15 +13851,33 @@ pub mod resolve_spot_bankruptcy {
         // revenue pool tranche needs no token movement
         assert_eq!(if_payment, (40 * QUOTE_PRECISION) as u64);
         assert_eq!(expected_user, user);
-        assert_eq!(expected_spot_market, *spot_market_map.get_ref(&0).unwrap());
 
         let spot_market = spot_market_map.get_ref_mut(&0).unwrap();
+        assert_eq!(spot_market.borrow_balance, 0);
+        assert_eq!(spot_market.insurance_fund_revenue_receivable_scaled, 0);
+        assert_eq!(
+            spot_market.perp_market_if_revenue_receivable,
+            20 * QUOTE_PRECISION_U64
+        );
+        assert_eq!(spot_market.total_social_loss, 10 * QUOTE_PRECISION);
+        assert_eq!(spot_market.total_quote_social_loss, 10 * QUOTE_PRECISION);
+
+        let remaining_revenue = get_token_amount(
+            spot_market.revenue_pool.scaled_balance,
+            &spot_market,
+            &SpotBalanceType::Deposit,
+        )
+        .unwrap();
+        assert!(remaining_revenue >= 20 * QUOTE_PRECISION);
+
         let deposit_balance = spot_market.deposit_balance;
         let deposit_token_amount =
             get_token_amount(deposit_balance, &spot_market, &SpotBalanceType::Deposit).unwrap();
 
-        // Depositors lose the socialized $10 and nothing else.
-        assert_eq!(deposit_token_amount, 990 * QUOTE_PRECISION);
+        // The source-owned $20 remains fully backed while ordinary depositors
+        // bear only the final $10 socialized tranche.
+        assert!(deposit_token_amount >= 1010 * QUOTE_PRECISION - 1);
+        assert!(deposit_token_amount <= 1010 * QUOTE_PRECISION);
     }
 }
 

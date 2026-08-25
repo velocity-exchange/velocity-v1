@@ -9,7 +9,9 @@ use {
             funding::settle_funding_payment,
             insurance::{
                 consume_insurance_fund_revenue_receivable,
+                get_unreserved_revenue_pool_token_amount,
                 transfer_insurance_fund_revenue_receivable_to_pool,
+                transfer_perp_market_if_revenue_receivable_to_pool,
             },
             orders::{self, cancel_order, fill_perp_order, place_perp_order},
             position::{
@@ -40,7 +42,7 @@ use {
                 calculate_asset_transfer_for_liability_transfer,
                 calculate_asset_transfer_for_liability_transfer_exact,
                 calculate_base_asset_amount_to_cover_margin_shortage,
-                calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy,
+                calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy_with_reserve,
                 calculate_funding_rate_deltas_to_resolve_bankruptcy,
                 calculate_liability_transfer_implied_by_asset_amount,
                 calculate_liability_transfer_to_cover_margin_shortage,
@@ -64,7 +66,7 @@ use {
             },
             position::calculate_base_asset_value_with_oracle_price,
             safe_math::SafeMath,
-            spot_balance::{get_token_amount, get_token_value},
+            spot_balance::{get_spot_balance, get_token_amount, get_token_value},
             time::Millis,
         },
         msg,
@@ -4366,7 +4368,30 @@ pub fn resolve_perp_bankruptcy(
 
     let loss_after_pending = loss.safe_add(pending_if_payment.cast::<i128>()?)?;
 
-    // Tranche 2: allocated IF revenue in the spot vault, followed by physical
+    // Tranche 2: this market's IF fees already swept into the quote revenue
+    // pool. The market receivable preserves their source, so another perp
+    // market cannot consume them before this market's bankruptcy resolves.
+    let market_receivable_payment = {
+        let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
+        let mut spot_market = spot_market_map.get_ref_mut(&QUOTE_SPOT_MARKET_INDEX)?;
+        let payment = transfer_perp_market_if_revenue_receivable_to_pool(
+            &mut spot_market,
+            &mut perp_market,
+            loss_after_pending.unsigned_abs(),
+        )?;
+        if payment > 0 {
+            msg!(
+                "bankruptcy market IF revenue receivable tranche: {}",
+                payment
+            );
+        }
+        payment
+    };
+
+    let loss_after_market_receivable =
+        loss_after_pending.safe_add(market_receivable_payment.cast::<i128>()?)?;
+
+    // Tranche 3: allocated IF revenue in the spot vault, followed by physical
     // cash in the shared insurance fund vault.
     let (if_payment, if_vault_payment) = {
         let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
@@ -4392,7 +4417,7 @@ pub fn resolve_perp_bankruptcy(
         let available_if_capital = spot_market
             .get_insurance_fund_revenue_receivable()?
             .safe_add(insurance_fund_vault_balance.saturating_sub(1).cast()?)?;
-        let if_payment = loss_after_pending
+        let if_payment = loss_after_market_receivable
             .unsigned_abs()
             .min(available_if_capital)
             .min(max_insurance_withdraw);
@@ -4412,14 +4437,15 @@ pub fn resolve_perp_bankruptcy(
         (if_payment, if_vault_payment)
     };
 
-    let losses_remaining: i128 = loss_after_pending.safe_add(if_payment.cast::<i128>()?)?;
+    let losses_remaining: i128 =
+        loss_after_market_receivable.safe_add(if_payment.cast::<i128>()?)?;
     validate!(
         losses_remaining <= 0,
         ErrorCode::InvalidPerpPositionToLiquidate,
         "losses_remaining must be non-positive"
     )?;
 
-    // Tranche 3: claw back the AMM's fee provision — the backstop of LAST
+    // Tranche 4: claw back the AMM's fee provision — the backstop of LAST
     // resort, capped at `amm_protocol_fees_received` (cumulative provision
     // granted via the amm_fee_numerator cut, net of prior clawbacks). The
     // AMM's own spread/trading capital beyond the provision is never tapped
@@ -4820,12 +4846,9 @@ pub fn resolve_spot_bankruptcy(
     // pool is first-loss capital.
     let revenue_pool_payment = {
         let mut spot_market = spot_market_map.get_ref_mut(&market_index)?;
-        let revenue_pool_token_amount = get_token_amount(
-            spot_market.revenue_pool.scaled_balance,
-            spot_market.deref(),
-            &SpotBalanceType::Deposit,
-        )?;
-        let payment = borrow_amount.min(revenue_pool_token_amount);
+        let unreserved_revenue_pool =
+            get_unreserved_revenue_pool_token_amount(spot_market.deref())?;
+        let payment = borrow_amount.min(unreserved_revenue_pool);
         if payment > 0 {
             // counter-only draw, no tokens leave the vault
             update_revenue_pool_balances(
@@ -4860,9 +4883,14 @@ pub fn resolve_spot_bankruptcy(
         .safe_sub(revenue_pool_payment)?
         .safe_sub(if_payment)?;
 
+    let reserved_perp_if_revenue = spot_market_map
+        .get_ref(&market_index)?
+        .perp_market_if_revenue_receivable
+        .cast::<u128>()?;
     let cumulative_deposit_interest_delta =
-        calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy(
+        calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy_with_reserve(
             loss_to_socialize,
+            reserved_perp_if_revenue,
             spot_market_map.get_ref(&market_index)?.deref(),
         )?;
 
@@ -4892,6 +4920,26 @@ pub fn resolve_spot_bankruptcy(
         spot_market.cumulative_deposit_interest = spot_market
             .cumulative_deposit_interest
             .safe_sub(cumulative_deposit_interest_delta)?;
+
+        if reserved_perp_if_revenue > 0 {
+            let minimum_revenue_pool_balance = get_spot_balance(
+                reserved_perp_if_revenue,
+                &spot_market,
+                &SpotBalanceType::Deposit,
+                true,
+            )?;
+            if minimum_revenue_pool_balance > spot_market.revenue_pool.scaled_balance {
+                let reserve_balance_delta = minimum_revenue_pool_balance
+                    .safe_sub(spot_market.revenue_pool.scaled_balance)?;
+                spot_market.revenue_pool.scaled_balance = spot_market
+                    .revenue_pool
+                    .scaled_balance
+                    .safe_add(reserve_balance_delta)?;
+                spot_market.deposit_balance = spot_market
+                    .deposit_balance
+                    .safe_add(reserve_balance_delta)?;
+            }
+        }
 
         spot_market.total_social_loss = spot_market
             .total_social_loss

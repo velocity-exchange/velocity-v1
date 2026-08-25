@@ -1202,6 +1202,8 @@ export type PerpMarketAccount = {
 	pendingBankruptcyClaims: number;
 	/** QUOTE_PRECISION (1e6); aggregate builder/referrer revenue share accrued but not yet paid out of this market's pnl pool. The fee sweep reserves it (like `max(net_user_pnl, 0)` and the floored IF tranche) so a protocol-fee drain can't leave accrued revenue-share claims temporarily unpayable */
 	pendingRevenueShare: BN;
+	/** QUOTE_PRECISION (1e6); this market's IF fees swept into the quote revenue pool but not yet settled into the IF vault. Only this market can reclaim the amount during bankruptcy */
+	insuranceFundRevenueReceivable: BN;
 	/** MARGIN_PRECISION (1e4); scales margin ratio up for large positions */
 	imfFactor: number;
 	/** MARGIN_PRECISION (1e4); discounts positive-unrealized-pnl asset weight for large positions */
@@ -1381,6 +1383,10 @@ export type SpotMarketAccount = {
 	 * then collects. Read the token value with
 	 * `getInsuranceFundRevenueReceivableTokenAmount` */
 	insuranceFundRevenueReceivableScaled: BN;
+	/** token mint precision; aggregate of source-market IF revenue receivables still held in this spot market's revenue pool. Reserved and source owned, but excluded from IF NAV until settled */
+	perpMarketIfRevenueReceivable: BN;
+	/** token mint precision; shared generic and source revenue admission capacity left in the current settlement period */
+	revenueSettleAllowance: BN;
 
 	/** token mint decimals; token-mint precision throughout this account is 10^decimals */
 	decimals: number;

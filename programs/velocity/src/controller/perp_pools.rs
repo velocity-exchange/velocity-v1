@@ -175,8 +175,24 @@ pub fn sweep_market_fees(
         .saturating_sub(market.get_pending_if_fee_floor(force)?)
         .min(available);
     if if_drain > 0 {
+        let revenue_before = get_token_amount(
+            spot_market.revenue_pool.scaled_balance,
+            spot_market,
+            &SpotBalanceType::Deposit,
+        )?;
         transfer_spot_balance_to_revenue_pool(if_drain, spot_market, &mut market.pnl_pool)?;
+        let revenue_after = get_token_amount(
+            spot_market.revenue_pool.scaled_balance,
+            spot_market,
+            &SpotBalanceType::Deposit,
+        )?;
+        let receivable_amount = revenue_after.safe_sub(revenue_before)?;
         market.fee_ledger.consume_pending_if(if_drain)?;
+        crate::controller::insurance::accrue_perp_market_if_revenue_receivable(
+            spot_market,
+            market,
+            receivable_amount,
+        )?;
         available = available.safe_sub(if_drain)?;
     }
 

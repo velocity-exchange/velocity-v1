@@ -5204,6 +5204,41 @@ export type Vaults = {
 						];
 						type: 'u64';
 					},
+					{
+						name: 'perpMarketIfRevenueReceivable';
+						docs: [
+							"Insurance fee revenue swept from perp markets into this market's",
+							'revenue pool but not yet settled into the insurance fund vault or',
+							'reclaimed by its source perp market during bankruptcy.',
+							'',
+							'This is the aggregate backing all perp market',
+							'`insurance_fund_revenue_receivable` fields that settle in this spot',
+							'market. It reserves those tokens from generic revenue settlement and',
+							'spot bankruptcy. Individual ownership remains on each perp market, and',
+							'this aggregate is not part of insurance fund NAV until settled.',
+							'precision: token mint precision',
+						];
+						type: 'u64';
+					},
+					{
+						name: 'revenueSettleAllowance';
+						docs: [
+							'Revenue admission capacity left in the current settlement period.',
+							'Generic revenue and source market receivables consume the same allowance.',
+							'precision: token mint precision',
+						];
+						type: 'u64';
+					},
+					{
+						name: 'paddingFuture';
+						docs: [
+							'Reserved tail space for future fields. Account extension is expensive',
+							'operationally, so this upgrade allocates enough room for later additions.',
+						];
+						type: {
+							array: ['u8', 240];
+						};
+					},
 				];
 			};
 		},

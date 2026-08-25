@@ -448,6 +448,9 @@ pub fn handle_initialize_spot_market(
         protocol_liquidation_fee: 0,
         protocol_fee_factor: 0,
         if_last_settle_vault_amount: 0,
+        perp_market_if_revenue_receivable: 0,
+        revenue_settle_allowance: 0,
+        _padding_future: [0; 240],
         deposit_guard_threshold: 0,
         withdraw_circuit_breaker_bps: 0, // 0 => default 25%
         max_deposit_bps_per_day: 0,      // disabled
@@ -766,6 +769,8 @@ pub fn handle_initialize_perp_market(
             fee_transfer_scalar: 1,
             padding: [0; 11],
         },
+        insurance_fund_revenue_receivable: 0,
+        _padding_future: [0; 248],
         oracle: *ctx.accounts.oracle.key,
         oracle_source,
         oracle_slot_delay_override: -1,

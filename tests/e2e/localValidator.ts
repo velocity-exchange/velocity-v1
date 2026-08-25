@@ -2043,10 +2043,14 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				(await connection.getAccountInfo(treasuryPk))!.data
 			);
 
-		await pollUntil('relay to refill the market reservoir', 120_000, async () => {
-			const treasury = await readTreasury();
-			return treasury.totalRefilled.gtn(0) ? true : undefined;
-		});
+		await pollUntil(
+			'relay to refill the market reservoir',
+			120_000,
+			async () => {
+				const treasury = await readTreasury();
+				return treasury.totalRefilled.gtn(0) ? true : undefined;
+			}
+		);
 
 		const treasury = await readTreasury();
 		// Nothing seeded this reservoir: it was created holding rent alone, and

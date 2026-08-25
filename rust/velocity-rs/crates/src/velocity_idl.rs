@@ -4449,25 +4449,6 @@ pub mod types {
         Debug,
         PartialEq,
     )]
-    pub struct LiqSlotMetaV0 {
-        pub target_market_index: u16,
-        pub active: u8,
-        #[serde(skip)]
-        pub padding: Padding<1>,
-    }
-    #[repr(C)]
-    #[derive(
-        AnchorSerialize,
-        AnchorDeserialize,
-        InitSpace,
-        Serialize,
-        Deserialize,
-        Copy,
-        Clone,
-        Default,
-        Debug,
-        PartialEq,
-    )]
     pub struct LiquidateBorrowForPerpPnlRecord {
         pub perp_market_index: u16,
         pub market_oracle_price: i64,
@@ -5713,8 +5694,8 @@ pub mod types {
         Debug,
         PartialEq,
     )]
-    pub struct RelayBlock22x32 {
-        pub bytes: ByteArray<5312>,
+    pub struct RelayBlock11x32 {
+        pub bytes: ByteArray<3200>,
     }
     #[repr(C)]
     #[derive(
@@ -6682,8 +6663,7 @@ pub mod types {
         PartialEq,
     )]
     pub struct UserConditionsV0 {
-        pub relay: RelayBlock22x32,
-        pub slots: [LiqSlotMetaV0; 12],
+        pub relay: RelayBlock11x32,
         pub trigger_slots: [TriggerSlotMetaV0; 8],
         pub trigger_resolvers: ByteArray<1344>,
         pub user: Pubkey,
@@ -8398,8 +8378,7 @@ pub mod accounts {
         PartialEq,
     )]
     pub struct UserConditionsV0 {
-        pub relay: RelayBlock22x32,
-        pub slots: [LiqSlotMetaV0; 12],
+        pub relay: RelayBlock11x32,
         pub trigger_slots: [TriggerSlotMetaV0; 8],
         pub trigger_resolvers: ByteArray<1344>,
         pub user: Pubkey,

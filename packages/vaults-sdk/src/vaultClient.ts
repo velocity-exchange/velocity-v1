@@ -5,6 +5,7 @@ import {
 	getInsuranceFundStakeAccountPublicKey,
 	getUserAccountPublicKey,
 	getUserAccountPublicKeySync,
+	getUserConditionsPublicKey,
 	getUserStatsAccountPublicKey,
 	TEN,
 	UserMap,
@@ -734,6 +735,12 @@ export class VaultClient {
 			velocitySpotMarketMint: spotMarket.mint,
 			velocityUserStats: userStatsKey,
 			velocityUser: userKey,
+			// A vault's velocity user holds positions like any other, so it
+			// carries the same relay liquidation coverage, created with it.
+			velocityUserConditions: getUserConditionsPublicKey(
+				this.velocityClient.program.programId,
+				userKey
+			),
 			velocityState,
 			vault,
 			tokenAccount,

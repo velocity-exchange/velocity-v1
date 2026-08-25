@@ -668,7 +668,9 @@ export function registerFees(parent: Command): void {
 
 	withGlobalOptions(
 		fees
-			.command('set-crank-treasury <refillTargetCranks> <refillWatermarkCranks>')
+			.command(
+				'set-crank-treasury <refillTargetCranks> <refillWatermarkCranks>'
+			)
 			.description(
 				"Set the two levels a market's crank reservoir is held between (warm/cold admin), both counted in that market's most expensive crank rather than in lamports, so one setting serves every market: a market whose cranks cost more carries a proportionally larger float. <refillWatermarkCranks> is when a refill wakes and must cover the refill's own round trip, since the reservoir keeps paying cranks while it lands; <refillTargetCranks> is how full it leaves the reservoir and must exceed it. The target reaches every market at once; a new watermark reaches a market on its next quoter set-market-clob. What a refill pays is priced on the market it fills (--crank-cu-refill)."
 			)
@@ -720,7 +722,10 @@ export function registerFees(parent: Command): void {
 				opts.multisig ? new PublicKey(opts.multisig) : undefined,
 				'velocity-admin fees withdraw-crank-treasury'
 			);
-			reportDispatch(`withdrew ${lamports} lamports from crank treasury`, result);
+			reportDispatch(
+				`withdrew ${lamports} lamports from crank treasury`,
+				result
+			);
 		} finally {
 			await client.unsubscribe();
 		}
@@ -732,25 +737,30 @@ export function registerFees(parent: Command): void {
 			.description(
 				"Move lamports from a market's crank reservoir back to the treasury (warm/cold admin). Lamports reach a reservoir through the refill crank and leave it as crank payments, so without this they only travel one way and a retired or over-provisioned market would hold them for good. Never goes below the account rent, and a reservoir swept under its watermark refills itself."
 			)
-	).action(async (marketIndex: string, lamports: string, _flags, cmd: Command) => {
-		const market = Number.parseInt(marketIndex, 10);
-		const opts = readGlobalOpts(cmd);
-		const provider = buildProvider(opts);
-		const client = await buildAdminClient(opts);
-		try {
-			const ix = await client.getSweepCrankReservoirIx(market, new BN(lamports));
-			const result = await sendOrPropose(
-				provider,
-				[ix],
-				opts.multisig ? new PublicKey(opts.multisig) : undefined,
-				'velocity-admin fees sweep-crank-reservoir'
-			);
-			reportDispatch(
-				`swept ${lamports} lamports from market ${market} reservoir`,
-				result
-			);
-		} finally {
-			await client.unsubscribe();
+	).action(
+		async (marketIndex: string, lamports: string, _flags, cmd: Command) => {
+			const market = Number.parseInt(marketIndex, 10);
+			const opts = readGlobalOpts(cmd);
+			const provider = buildProvider(opts);
+			const client = await buildAdminClient(opts);
+			try {
+				const ix = await client.getSweepCrankReservoirIx(
+					market,
+					new BN(lamports)
+				);
+				const result = await sendOrPropose(
+					provider,
+					[ix],
+					opts.multisig ? new PublicKey(opts.multisig) : undefined,
+					'velocity-admin fees sweep-crank-reservoir'
+				);
+				reportDispatch(
+					`swept ${lamports} lamports from market ${market} reservoir`,
+					result
+				);
+			} finally {
+				await client.unsubscribe();
+			}
 		}
-	});
+	);
 }

@@ -5929,8 +5929,11 @@ fn the_distress_ladder_stages_a_cancel_before_a_liquidation() {
 /// (the level wake costs a turner nothing until the price is near), and
 /// the self-sync watch covers the user's own position bytes.
 #[test]
-fn liq_conditions_write_a_conservative_downward_threshold() {
-    use velocity::state::user_conditions::{UserConditionsV0, LIQ_SYNC_FALLBACK, LIQ_SYNC_WATCH};
+fn liq_conditions_arm_the_liveness_poll() {
+    use velocity::state::user_conditions::{
+        UserConditionsV0, LIQ_LIVENESS_POLL, LIQ_LIVENESS_POLL_SLOTS, LIQ_SYNC_FALLBACK,
+        LIQ_SYNC_WATCH,
+    };
 
     let mut fixture = setup();
     const PAYMENT: u64 = 10_000;
@@ -5961,28 +5964,23 @@ fn liq_conditions_write_a_conservative_downward_threshold() {
     let (header, block) = velocity::relay_spec::read_block(acct.block(), 0).unwrap();
     assert_eq!(header.num_conditions as usize, USER_CONDITIONS);
 
-    // Slot 0: the perp exposure's threshold — a downward value cross on the
-    // market oracle, strictly below spot and above zero.
-    assert_eq!(value_cross(&block[0]).0, fixture.oracle.to_bytes());
+    // The liveness poll: a clock, not a prediction. Velocity used to solve
+    // each exposure's liquidation price here and watch that number, which
+    // meant a second implementation of the margin engine beside the real one.
+    // The resolver runs the real one, so the poll only has to keep asking.
     assert_eq!(
-        value_cross(&block[0]).4,
-        1,
-        "a long is liquidated as price falls"
+        block[LIQ_LIVENESS_POLL].wake(),
+        Ok(velocity::relay_spec::WakeView::EverySlots {
+            slots: LIQ_LIVENESS_POLL_SLOTS
+        })
     );
-    // The distance is real, not epsilon: ~$50 free collateral against a
-    // 9.5-unit-equivalent slope puts the ceteris-paribus boundary ~$5.26
-    // below spot, and the 20% haircut arms the watch ~$4.21 below. A
-    // threshold a whisker under spot means the slope/distance scales
-    // diverged again (the localnet harness caught exactly that: every
-    // perp watch due on any tick, every spot watch never armed).
-    let threshold = value_cross(&block[0]).3;
-    assert!(
-        threshold > (94 * PRICE) as i64 && threshold < (97 * PRICE) as i64,
-        "threshold {threshold} should sit ~4 dollars below spot"
+    assert_eq!(
+        block[LIQ_LIVENESS_POLL].crank_spec().resolver_disc,
+        velocity::instruction::ResolveLiquidatePerpWithFill::DISCRIMINATOR
     );
-    assert_eq!(block[0].min_payment(), PAYMENT);
-    assert_eq!(acct.slots[0].target_market_index, 0);
-    assert_eq!(acct.slots[0].active, 1);
+    // Priced at what the market pays for a liquidation, because relay holds a
+    // keeper's balance growth to the floor a condition advertises.
+    assert_eq!(block[LIQ_LIVENESS_POLL].min_payment(), PAYMENT);
 
     // The self-maintenance pair: a watch over the user's own position bytes
     // whose executor is the sync, plus the coarse poll.
@@ -6274,8 +6272,6 @@ fn liq_self_sync_stages_an_unsigned_executor_and_pays_from_the_treasury() {
         fixture.svm.get_balance(&conditions).unwrap(),
         conditions_before
     );
-    let acct: UserConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
-    assert_eq!(acct.slots[0].active, 0);
 }
 
 /// A filler cannot quietly drop a quoter the taker signed for.

@@ -52,6 +52,28 @@ liquidations all land with nobody submitting them: `ClobCrankConditionsV0` per m
 `UserConditionsV0` per user hold relay condition blocks and a keeper-payment reservoir, with
 simulation-only resolvers staging each executor. `getUserConditionsPublicKey`,
 `getClobCrankConditionsPublicKey` and `getRelayScratchPublicKey` replace the per-flow condition PDAs.
+
+**Every user gets a `UserConditionsV0`.** `initializeUser` now *requires* the `userConditions`
+account rather than accepting `None`, and the payer funds its rent with the account. Relay can
+only watch an account that exists, and the moment coverage matters is the moment somebody else's
+transaction gave the user a position — a resting maker order filled by a keeper, or a
+signed-message order submitted by a filler — where the user is not a signer and no rent can be
+charged to them. Creating it up front is also what makes every later sync permissionless: the
+account is already paid for, so anyone can keep it current. Vault velocity users are no
+exception, so `initializeVault` and `initializeVaultWithProtocol` gain `velocityUserConditions`.
+
+**Relay liquidation predicts nothing.** `UserConditionsV0` no longer stores per-exposure
+liquidation thresholds; `LiqSlotMetaV0` and the `slots` array are gone and the account is 5,512
+bytes rather than 7,864. Solving, per position, the price at which an account turns liquidatable
+meant a second implementation of the margin engine beside the real one — approximate by
+construction, needing to track every future change to margin — to buy latency a keeper bot
+already provides. Instead a `LIQ_LIVENESS_POLL` condition wakes on a clock and the resolver runs
+`calculate_margin_requirement_and_total_collateral_and_liability_info`, the same code the
+executor runs, reporting no work when the account is healthy. What the account carries for
+liquidation is the margin map that calculation needs, and the watch and fallback keep it current.
+Spot-only distress stays a keeper-bot path: `liquidate_spot` settles by handing the liquidator the
+borrow and the collateral behind it, so a protocol keeper would take on inventory it has no venue
+to unwind.
 Cross cranks are permissionless and revert unless the spread clears both takers' fees and the
 market's `min_cross_surplus` floor. Each crank's keeper payment is *derived*, not set:
 `StateAccount.transactionFeeRails` says what one transaction costs to land — an inclusion fee, a

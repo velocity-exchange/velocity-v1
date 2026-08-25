@@ -72,17 +72,51 @@ pub const LIQ_SYNC_MAX_COST_UNITS: u32 = 200_000;
 /// PDA seed: `["user_conditions", user key]`.
 pub const USER_CONDITIONS_PDA_SEED: &[u8] = b"user_conditions";
 
-/// Watched exposures per user (perp positions + non-quote spot exposures).
-pub const LIQ_THRESHOLD_SLOTS: usize = 12;
-/// Threshold slots, then the sync watch, then the fallback poll.
-pub const LIQ_SYNC_WATCH: usize = LIQ_THRESHOLD_SLOTS;
-pub const LIQ_SYNC_FALLBACK: usize = LIQ_THRESHOLD_SLOTS + 1;
+/// The sync watch, the sync fallback, then the liveness poll.
+///
+/// There are no per-exposure threshold slots. Velocity used to solve, per
+/// position, the price at which the account turned liquidatable and watch that
+/// number. Doing so meant a second implementation of the margin engine living
+/// beside the real one, approximate by construction and needing to be kept in
+/// step with every future change to margin — for a latency gain over the poll
+/// below that a keeper bot already provides. The resolver runs the real
+/// calculation, so the poll is exact and the estimate bought nothing that
+/// justified maintaining it.
+pub const LIQ_SYNC_WATCH: usize = 0;
+pub const LIQ_SYNC_FALLBACK: usize = 1;
+/// The coverage floor: a slow poll that asks the liquidation resolver the
+/// real question rather than re-deriving a threshold.
+///
+/// The thresholds are a latency device. Each one predicts, from a snapshot,
+/// the price at which an account turns liquidatable, and a prediction can be
+/// wrong in ways no arithmetic fixes: funding and borrow interest accrue
+/// against a clock rather than a watched value, an admin can raise a margin
+/// ratio, an oracle's confidence can widen, and the account can hold more
+/// exposures than there are slots.
+///
+/// None of that has to be predicted, because the resolver recomputes the real
+/// maintenance-margin calculation before it stages anything and reports no
+/// work when the account is healthy. A wake that fires early costs one
+/// simulation. A wake that never fires is the only failure. So this poll
+/// exists to guarantee that something asks, and the thresholds exist to make
+/// the asking early.
+pub const LIQ_LIVENESS_POLL: usize = 2;
+
+/// How often the liveness poll asks.
+///
+/// A floor on how long an account can be liquidatable with every threshold
+/// having missed it, so shorter is safer for the protocol. It is not free:
+/// the poll resolves to no work almost every time, relay tracks how often a
+/// program's cranks turn out to be worth landing, and a program that mostly
+/// wastes a turner's simulation is one turners learn to deprioritize. Roughly
+/// two minutes of slots keeps the floor tight without flooding.
+pub const LIQ_LIVENESS_POLL_SLOTS: u64 = 300;
 /// Trigger-order slots follow the liquidation ones in the same block.
 /// One account per user, not two: both are keyed by the user, invalidated
 /// by the same account changing, and want the same margin map — carrying
 /// them separately paid rent, a `WatchV0`, and a turner registry entry
 /// twice for one user.
-pub const TRIGGER_SLOT_BASE: usize = LIQ_THRESHOLD_SLOTS + 2;
+pub const TRIGGER_SLOT_BASE: usize = 3;
 pub const TRIGGER_CONDITION_SLOTS: usize = 8;
 pub const USER_CONDITIONS: usize = TRIGGER_SLOT_BASE + TRIGGER_CONDITION_SLOTS;
 
@@ -124,19 +158,6 @@ pub const LIQ_SYNC_ACCOUNTS_MAX: usize = 32;
 /// [`UserConditionsV0::read_sync_accounts`] skips them.
 pub const LIQ_RESOLVER_PREFIX: usize = 4;
 
-/// Per-threshold-slot metadata: which perp market the staged liquidation
-/// targets (for a perp exposure, its own market; for a spot-collateral
-/// exposure, the user's largest perp position).
-#[zero_copy(unsafe)]
-#[derive(Default, Eq, PartialEq, Debug)]
-#[repr(C)]
-pub struct LiqSlotMetaV0 {
-    pub target_market_index: u16,
-    /// 1 = live slot.
-    pub active: u8,
-    pub padding: [u8; 1],
-}
-
 #[account(zero_copy(unsafe))]
 #[derive(Debug)]
 #[repr(C)]
@@ -145,8 +166,6 @@ pub struct UserConditionsV0 {
     /// the condition slots, and the shared sync account list (see
     /// [`LIQ_SYNC_ACCOUNTS_MAX`]). First field, so its watch offset is 8.
     pub relay: RelayBlock<USER_CONDITIONS, LIQ_SYNC_ACCOUNTS_MAX>,
-    /// Parallel to the threshold condition slots.
-    pub slots: [LiqSlotMetaV0; LIQ_THRESHOLD_SLOTS],
     /// Parallel to the trigger condition slots.
     pub trigger_slots: [TriggerSlotMetaV0; TRIGGER_CONDITION_SLOTS],
     /// Per-slot trigger resolver lists (see [`TRIGGER_RESOLVERS_LEN`]).
@@ -190,7 +209,6 @@ impl Default for UserConditionsV0 {
     fn default() -> Self {
         Self {
             relay: RelayBlock::default(),
-            slots: [LiqSlotMetaV0::default(); LIQ_THRESHOLD_SLOTS],
             trigger_slots: [TriggerSlotMetaV0::default(); TRIGGER_CONDITION_SLOTS],
             trigger_resolvers: [0; TRIGGER_RESOLVERS_LEN],
             user: Pubkey::default(),
@@ -206,7 +224,6 @@ impl Default for UserConditionsV0 {
 impl UserConditionsV0 {
     pub const SIZE: usize = 8
         + RelayBlockV0::<USER_CONDITIONS, LIQ_SYNC_ACCOUNTS_MAX>::SIZE
-        + LIQ_THRESHOLD_SLOTS * core::mem::size_of::<LiqSlotMetaV0>()
         + TRIGGER_CONDITION_SLOTS * core::mem::size_of::<TriggerSlotMetaV0>()
         + TRIGGER_RESOLVERS_LEN
         + 32
@@ -379,7 +396,11 @@ mod merged_size_tests {
     /// drift as fields are added.
     #[test]
     fn size_is_pinned() {
-        assert_eq!(USER_CONDITIONS, 22);
+        // The sync watch, the sync fallback, the liveness poll, then the
+        // trigger slots. No per-exposure thresholds.
+        assert_eq!(USER_CONDITIONS, 11);
+        assert_eq!(LIQ_LIVENESS_POLL, 2);
+        assert_eq!(TRIGGER_SLOT_BASE, 3);
         assert_eq!(relay_spec::CONDITION_LEN, 192);
         println!("UserConditionsV0::SIZE = {}", UserConditionsV0::SIZE);
         assert!(UserConditionsV0::SIZE <= 10_240);

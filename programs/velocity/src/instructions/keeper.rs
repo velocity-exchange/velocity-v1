@@ -4425,6 +4425,11 @@ pub struct LiquidatePerp<'info> {
 #[derive(Accounts)]
 pub struct LiquidateSpot<'info> {
     pub state: AccountLoader<'info, State>,
+    /// A spot liquidation settles by handing the liquidator the borrow and
+    /// the collateral behind it, so whoever liquidates takes on that inventory
+    /// and its price risk. That rules out a protocol keeper, which has no way
+    /// to unwind it, and therefore rules out relay: an executor may name no
+    /// signer, so a path that requires one is a signed-keeper path only.
     pub authority: Signer<'info>,
     #[account(
         mut,

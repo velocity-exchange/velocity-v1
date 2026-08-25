@@ -190,8 +190,17 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
                 .map(|p| p.market_index)
         };
         let Some(market_index) = target else {
-            // Nothing perp-shaped to liquidate (spot-only distress): the
-            // keeper bots own that path.
+            // Spot-only distress. The account is liquidatable and the check
+            // above proved it, but there is no crank that can act on it.
+            //
+            // `liquidate_spot` settles by giving the liquidator the borrow and
+            // the collateral behind it, so a protocol keeper would end up
+            // holding spot inventory and its price risk. The perp path avoids
+            // that by routing the fill through the book; spot has no such
+            // flavor without an external swap venue, which nothing here wires.
+            // A real liquidator carries that inventory on its own balance
+            // sheet and unwinds it elsewhere, so this stays a keeper-bot path
+            // by design rather than by omission.
             return Ok(None);
         };
 

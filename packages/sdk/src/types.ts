@@ -639,14 +639,6 @@ export type ForceCancelClobRefV0 = {
 	side: ClobSide;
 };
 
-/** Which perp market a `UserConditionsV0` liquidation-threshold slot watches, parallel to the slot's condition. */
-export type LiqSlotMetaV0 = {
-	targetMarketIndex: number;
-	/** 1 = live slot */
-	active: number;
-	padding: number[];
-};
-
 /** The order a `UserConditionsV0` trigger slot watches, plus the CLOB it goes onto when it fires. All three CLOB keys are the default pubkey for a trigger that cranks onto the DLOB instead. */
 export type TriggerSlotMetaV0 = {
 	quoter: PublicKey;
@@ -658,21 +650,28 @@ export type TriggerSlotMetaV0 = {
 };
 
 /**
- * One user's relay conditions: the precomputed liquidation thresholds for
- * their live exposures and one watch per armed trigger order, rewritten as a
- * whole by `syncLiqConditions` / `syncTriggerConditions` (permissionless and
- * idempotent — the block is a hint set, and the keeper-bot path remains the
- * correctness floor for anything not in it).
+ * One user's relay conditions: a liquidation liveness poll and one watch per
+ * armed trigger order, rewritten as a whole by `syncLiqConditions` /
+ * `syncTriggerConditions` (permissionless and idempotent).
+ *
+ * There are no per-exposure liquidation thresholds. The poll wakes on a clock
+ * and the resolver runs the real maintenance-margin calculation, so what this
+ * account carries for liquidation is the margin map that calculation needs —
+ * the markets and oracles of the user's exposures — rather than a prediction
+ * of the price at which they turn liquidatable.
+ *
+ * Created with the `User` itself, so the address always exists and every later
+ * sync is permissionless with no rent to pay. Keeper bots remain the
+ * correctness floor for anything relay cannot crank, spot-only distress in
+ * particular.
  *
  * `positionsDigest` is what makes a stale block detectable: it digests the
  * exposures the last sync ran against, so the self-maintenance watch can tell
- * that the thresholds no longer describe the account.
+ * that the stored margin map no longer describes the account.
  */
 export type UserConditionsV0Account = {
-	/** relay-spec RelayBlockV0<22, 32> wire bytes, parsed by relay tooling, not the SDK */
+	/** relay-spec RelayBlockV0<11, 32> wire bytes, parsed by relay tooling, not the SDK */
 	relay: number[];
-	/** parallel to the 12 threshold condition slots */
-	slots: LiqSlotMetaV0[];
 	/** parallel to the 8 trigger condition slots */
 	triggerSlots: TriggerSlotMetaV0[];
 	/** per-slot trigger resolver account lists, relay-spec wire bytes */

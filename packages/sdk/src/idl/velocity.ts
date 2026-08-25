@@ -5969,7 +5969,6 @@ export type Velocity = {
             "up empty is fine — the first sync writes the thresholds."
           ],
           "writable": true,
-          "optional": true,
           "pda": {
             "seeds": [
               {
@@ -6388,6 +6387,13 @@ export type Velocity = {
         },
         {
           "name": "authority",
+          "docs": [
+            "A spot liquidation settles by handing the liquidator the borrow and",
+            "the collateral behind it, so whoever liquidates takes on that inventory",
+            "and its price risk. That rules out a protocol keeper, which has no way",
+            "to unwind it, and therefore rules out relay: an executor may name no",
+            "signer, so a path that requires one is a signed-keeper path only."
+          ],
           "signer": true
         },
         {
@@ -24749,43 +24755,6 @@ export type Velocity = {
       }
     },
     {
-      "name": "liqSlotMetaV0",
-      "docs": [
-        "Per-threshold-slot metadata: which perp market the staged liquidation",
-        "targets (for a perp exposure, its own market; for a spot-collateral",
-        "exposure, the user's largest perp position)."
-      ],
-      "serialization": "bytemuckunsafe",
-      "repr": {
-        "kind": "c"
-      },
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "targetMarketIndex",
-            "type": "u16"
-          },
-          {
-            "name": "active",
-            "docs": [
-              "1 = live slot."
-            ],
-            "type": "u8"
-          },
-          {
-            "name": "padding",
-            "type": {
-              "array": [
-                "u8",
-                1
-              ]
-            }
-          }
-        ]
-      }
-    },
-    {
       "name": "liquidateBorrowForPerpPnlRecord",
       "type": {
         "kind": "struct",
@@ -28582,9 +28551,9 @@ export type Velocity = {
       }
     },
     {
-      "name": "relayBlock22x32",
+      "name": "relayBlock11x32",
       "docs": [
-        "relay condition block (spec v0), 22 conditions, as one opaque wire region"
+        "relay condition block (spec v0), 11 conditions, as one opaque wire region"
       ],
       "serialization": "bytemuckunsafe",
       "repr": {
@@ -28598,7 +28567,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                5312
+                3200
               ]
             }
           }
@@ -31608,11 +31577,11 @@ export type Velocity = {
             ],
             "type": {
               "defined": {
-                "name": "relayBlock22x32",
+                "name": "relayBlock11x32",
                 "generics": [
                   {
                     "kind": "const",
-                    "value": "22"
+                    "value": "11"
                   },
                   {
                     "kind": "const",
@@ -31620,22 +31589,6 @@ export type Velocity = {
                   }
                 ]
               }
-            }
-          },
-          {
-            "name": "slots",
-            "docs": [
-              "Parallel to the threshold condition slots."
-            ],
-            "type": {
-              "array": [
-                {
-                  "defined": {
-                    "name": "liqSlotMetaV0"
-                  }
-                },
-                12
-              ]
             }
           },
           {

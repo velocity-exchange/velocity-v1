@@ -3814,9 +3814,11 @@ impl<'a> TransactionBuilder<'a> {
             system_program: SYSTEM_PROGRAM_ID,
             // Optional, but passed by default so a new user is covered by
             // relay liquidation/trigger conditions from birth.
-            user_conditions: Some(
-                Pubkey::find_program_address(&[b"user_conditions", user.as_ref()], &program::ID).0,
-            ),
+            user_conditions: Pubkey::find_program_address(
+                &[b"user_conditions", user.as_ref()],
+                &program::ID,
+            )
+            .0,
         }
         .to_account_metas(None);
         if let Some(referrer) = referrer {

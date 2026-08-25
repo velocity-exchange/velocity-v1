@@ -111,7 +111,7 @@ fn initialize_user_creates_its_liq_conditions() {
                 payer: admin.pubkey(),
                 rent,
                 system_program,
-                user_conditions: Some(user_conditions),
+                user_conditions,
             }
             .to_account_metas(None),
         ),

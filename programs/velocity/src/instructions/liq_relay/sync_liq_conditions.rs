@@ -42,40 +42,28 @@
 use {
     crate::{
         error::ErrorCode,
-        math::{
-            casting::Cast,
-            constants::{MARGIN_PRECISION_U128, PRICE_PRECISION_I128, SPOT_WEIGHT_PRECISION_U128},
-            safe_math::SafeMath,
-            spot_balance::get_token_amount,
-        },
+        math::constants::PRICE_PRECISION_I128,
         state::{
             clob_crank::ClobCrankConditionsV0,
             oracle::OracleSource,
-            oracle_watch::{oracle_watch, OracleWatchV0, WatchDirection},
+            oracle_watch::{oracle_watch, OracleWatchV0},
             pdas,
             perp_market::PerpMarket,
             prop_amm::QuoterV0,
-            spot_market::{SpotBalanceType, SpotMarket},
+            spot_market::SpotMarket,
             state::State,
             user::User,
             user_conditions::{
-                LiqSlotMetaV0, UserConditionsV0, LIQ_SYNC_FALLBACK, LIQ_SYNC_WATCH,
-                LIQ_THRESHOLD_SLOTS, USER_CONDITIONS_PDA_SEED,
+                UserConditionsV0, LIQ_LIVENESS_POLL, LIQ_LIVENESS_POLL_SLOTS, LIQ_SYNC_FALLBACK,
+                LIQ_SYNC_WATCH, USER_CONDITIONS_PDA_SEED,
             },
         },
         validate,
     },
     anchor_lang::{prelude::*, Discriminator},
-    relay_spec::{AccountRefV0, ConditionV0, CrankSpecV0, ResolverListV0},
+    relay_spec::{AccountRefV0, ConditionV0, CrankSpecV0},
     std::{collections::BTreeMap, convert::TryInto},
 };
-
-/// Fraction of the distance-to-liquidation the threshold is pulled in by,
-/// so a watch fires while there is still buffer: 20%. Absorbs the
-/// single-oracle approximation, funding accrual, and price moves between
-/// syncs; the cost of firing early is one free resolver simulation.
-const THRESHOLD_HAIRCUT_BPS: i128 = 2_000;
-const BPS_DENOM: i128 = 10_000;
 
 /// The user's account region a sync watch covers: `perp_positions` through
 /// `spot_positions`, i.e. everything whose change alters the thresholds.
@@ -159,13 +147,9 @@ pub fn handle_sync_liq_conditions<'c: 'info, 'info>(
     ctx: Context<'info, SyncLiqConditions<'info>>,
     args: SyncLiqConditionsArgs,
 ) -> Result<()> {
+    let state_rails = ctx.accounts.state.load()?.transaction_fee_rails;
     let terms = SyncLiqConditionsTerms {
-        sync_payment_lamports: ctx
-            .accounts
-            .state
-            .load()?
-            .transaction_fee_rails
-            .transaction_cost(u64::from(args.sync_cost_units), 1)?,
+        sync_payment_lamports: state_rails.transaction_cost(u64::from(args.sync_cost_units), 1)?,
         sync_fallback_slots: args.sync_fallback_slots,
     };
     // The opt-in caller pays its own way: it submitted the transaction, so
@@ -341,111 +325,42 @@ pub fn rewrite_liq_conditions<'info>(
     // `[spot_positions, orders)`, which is where `open_orders` / `open_bids` /
     // `open_asks` live, so the cancel that empties the book and the placement
     // that refills it both re-run this sync and re-derive the stage.
-    let tier = if user
-        .perp_positions
-        .iter()
-        .any(|position| user.clob_resident_open_orders(position.market_index) > 0)
-    {
-        CollateralTier::Initial
-    } else {
-        CollateralTier::Maintenance
-    };
-    let (free_collateral, target_market) = estimate_free_collateral(&user, &perps, &spots, tier)?;
-
-    let mut slot_index = 0usize;
-    if free_collateral > 0 {
-        if let Some(target_market_index) = target_market {
-            // One threshold per exposure, each solved against its own price.
-            for position in user.perp_positions.iter() {
-                if slot_index >= LIQ_THRESHOLD_SLOTS {
-                    break;
-                }
-                if position.base_asset_amount == 0 {
-                    continue;
-                }
-                let Some(inputs) = perps.get(&position.market_index).copied() else {
-                    continue;
-                };
-                // Slope in BASE_PRECISION fixed-point: free collateral
-                // (QUOTE_PRECISION) moves `slope / BASE_PRECISION` per raw
-                // price unit (PRICE_PRECISION).
-                let base = position.base_asset_amount as i128;
-                let slope = base.safe_sub(
-                    base.abs()
-                        .safe_mul(inputs.maintenance_ratio as i128)?
-                        .safe_div(MARGIN_PRECISION_U128 as i128)?,
-                )?;
-                if let Some(condition) = threshold_condition(
-                    &inputs,
-                    slope,
-                    free_collateral,
-                    resolvers,
-                    disc8(crate::instruction::ResolveLiquidatePerpWithFill::DISCRIMINATOR)?,
-                )? {
-                    conditions.set_condition(slot_index, &condition)?;
-                    conditions.slots[slot_index] = LiqSlotMetaV0 {
-                        target_market_index: position.market_index,
-                        active: 1,
-                        padding: [0; 1],
-                    };
-                    slot_index += 1;
-                }
-            }
-            for position in user.spot_positions.iter() {
-                if slot_index >= LIQ_THRESHOLD_SLOTS {
-                    break;
-                }
-                // Quote collateral has no price risk; borrows and non-quote
-                // deposits both move health with their oracle.
-                if position.market_index == 0 || position.scaled_balance == 0 {
-                    continue;
-                }
-                let Some(inputs) = spots.get(&position.market_index).copied() else {
-                    continue;
-                };
-                let amount = get_token_amount(
-                    position.scaled_balance.cast::<u128>()?,
-                    &spot_market_stub(&inputs),
-                    &position.balance_type,
-                )?
-                .cast::<i128>()?;
-                // Collateral slope per unit price, in the same
-                // BASE_PRECISION fixed-point as the perp slope: deposits
-                // help, borrows hurt.
-                let signed = match position.balance_type {
-                    SpotBalanceType::Deposit => amount,
-                    SpotBalanceType::Borrow => -amount,
-                };
-                let slope = signed
-                    .safe_mul(crate::math::constants::BASE_PRECISION_I128)?
-                    .safe_mul(inputs.maintenance_ratio as i128)?
-                    .safe_div(SPOT_WEIGHT_PRECISION_U128 as i128)?
-                    .safe_div(10i128.pow(inputs.decimals.min(18)))?;
-                // A spot exposure's liquidation is still a perp liquidation
-                // here (the with-fill flavor); target the user's largest
-                // perp position.
-                if let Some(condition) = threshold_condition(
-                    &inputs,
-                    slope,
-                    free_collateral,
-                    resolvers,
-                    disc8(crate::instruction::ResolveLiquidatePerpWithFill::DISCRIMINATOR)?,
-                )? {
-                    conditions.set_condition(slot_index, &condition)?;
-                    conditions.slots[slot_index] = LiqSlotMetaV0 {
-                        target_market_index,
-                        active: 1,
-                        padding: [0; 1],
-                    };
-                    slot_index += 1;
-                }
-            }
-        }
-    }
-    for index in slot_index..LIQ_THRESHOLD_SLOTS {
-        conditions.set_condition(index, &relay_spec::bytemuck::Zeroable::zeroed())?;
-        conditions.slots[index] = LiqSlotMetaV0::default();
-    }
+    // The whole of velocity's liquidation coverage for this account. It
+    // predicts nothing: it wakes on a clock and lets the resolver run the real
+    // maintenance-margin calculation, the same code the executor runs, which
+    // reports no work when the account is healthy.
+    //
+    // What this account carries for the resolver is the margin map — the
+    // markets and oracles that calculation needs — and keeping that list
+    // current is what the watch and the fallback above are for.
+    //
+    // Priced at the cheapest liquidation any of the user's markets pays. Relay
+    // holds a keeper's balance growth to the floor a condition advertises, so
+    // a floor above what the market actually pays would fail the crank it
+    // asked for.
+    // Priced at the cheapest liquidation any of this user's markets pays.
+    // Relay holds a keeper's balance growth to the floor a condition
+    // advertises, so a floor above what the market actually pays would fail
+    // the crank it asked for.
+    let poll_payment = perps
+        .values()
+        .filter_map(|inputs| inputs.keeper_payment_lamports)
+        .min()
+        .unwrap_or(0);
+    conditions.set_condition(
+        LIQ_LIVENESS_POLL,
+        &ConditionV0::every_slots(
+            LIQ_LIVENESS_POLL_SLOTS,
+            CrankSpecV0 {
+                resolver_program: crate::ID.to_bytes(),
+                resolver_disc: disc8(
+                    crate::instruction::ResolveLiquidatePerpWithFill::DISCRIMINATOR,
+                )?,
+                min_payment: poll_payment,
+            },
+            resolvers,
+        ),
+    )?;
 
     // Self-maintenance: the user's own position bytes changing re-derives
     // the thresholds, and a coarse poll catches whatever that misses.
@@ -475,179 +390,6 @@ pub fn rewrite_liq_conditions<'info>(
         conditions.set_condition(LIQ_SYNC_FALLBACK, &relay_spec::bytemuck::Zeroable::zeroed())?;
     }
     Ok(())
-}
-
-/// A `SpotMarket` shaped just enough for `get_token_amount`.
-fn spot_market_stub(inputs: &MarketInputs) -> SpotMarket {
-    let mut market = SpotMarket::default();
-    market.cumulative_deposit_interest = inputs.cumulative_deposit_interest;
-    market.cumulative_borrow_interest = inputs.cumulative_deposit_interest;
-    market.decimals = inputs.decimals;
-    market
-}
-
-/// Free collateral (maintenance) approximated from the same linear model,
-/// plus the user's largest perp position (the liquidation target for
-/// spot-driven thresholds). Deliberately a local estimate: the executor
-/// does the real calculation.
-/// Which tier's ratios [`estimate_free_collateral`] values the account at.
-///
-/// `Maintenance` answers "when is this liquidatable"; `Initial` answers "when
-/// does this stop being allowed to rest risk-increasing orders" — the gate
-/// `force_cancel_clob_orders` gets its grounds from. Initial is the stricter
-/// requirement, so its free collateral is always the smaller number and its
-/// crossing is always the earlier price.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum CollateralTier {
-    Initial,
-    Maintenance,
-}
-
-fn estimate_free_collateral(
-    user: &User,
-    perps: &BTreeMap<u16, MarketInputs>,
-    spots: &BTreeMap<u16, MarketInputs>,
-    tier: CollateralTier,
-) -> Result<(i128, Option<u16>)> {
-    let perp_ratio = |inputs: &MarketInputs| match tier {
-        CollateralTier::Initial => inputs.initial_ratio,
-        CollateralTier::Maintenance => inputs.maintenance_ratio,
-    };
-    let mut collateral: i128 = 0;
-    let mut requirement: i128 = 0;
-    let mut largest: Option<(u16, i128)> = None;
-
-    for position in user.perp_positions.iter() {
-        if position.base_asset_amount == 0 && position.quote_asset_amount == 0 {
-            continue;
-        }
-        let Some(inputs) = perps.get(&position.market_index) else {
-            continue;
-        };
-        let base = position.base_asset_amount as i128;
-        let notional = base
-            .abs()
-            .safe_mul(inputs.price)?
-            .safe_div(crate::math::constants::BASE_PRECISION_I128)?;
-        collateral = collateral.safe_add(
-            base.safe_mul(inputs.price)?
-                .safe_div(crate::math::constants::BASE_PRECISION_I128)?
-                .safe_add(position.quote_asset_amount as i128)?,
-        )?;
-        requirement = requirement.safe_add(
-            notional
-                .safe_mul(perp_ratio(inputs) as i128)?
-                .safe_div(MARGIN_PRECISION_U128 as i128)?,
-        )?;
-        if base != 0 && largest.is_none_or(|(_, n)| notional > n) {
-            largest = Some((position.market_index, notional));
-        }
-    }
-    for position in user.spot_positions.iter() {
-        if position.scaled_balance == 0 {
-            continue;
-        }
-        let Some(inputs) = spots.get(&position.market_index) else {
-            continue;
-        };
-        let amount = get_token_amount(
-            position.scaled_balance as u128,
-            &spot_market_stub(inputs),
-            &position.balance_type,
-        )?
-        .cast::<i128>()?;
-        let price = if position.market_index == 0 {
-            crate::math::constants::PRICE_PRECISION_I128
-        } else {
-            inputs.price
-        };
-        let value = amount
-            .safe_mul(price)?
-            .safe_div(10i128.pow(inputs.decimals.clamp(1, 18)))?;
-        match position.balance_type {
-            SpotBalanceType::Deposit => {
-                let weight = if position.market_index == 0 {
-                    SPOT_WEIGHT_PRECISION_U128 as i128
-                } else {
-                    perp_ratio(inputs) as i128
-                };
-                collateral = collateral.safe_add(
-                    value
-                        .safe_mul(weight)?
-                        .safe_div(SPOT_WEIGHT_PRECISION_U128 as i128)?,
-                )?;
-            }
-            SpotBalanceType::Borrow => {
-                collateral = collateral.safe_sub(value)?;
-                requirement = requirement.safe_add(value)?;
-            }
-        }
-    }
-    Ok((collateral.safe_sub(requirement)?, largest.map(|(m, _)| m)))
-}
-
-/// Solve one exposure's ceteris-paribus liquidation price and turn it into
-/// a haircut `OnValueCross` condition. `None` when the exposure can't be
-/// watched (no lazer layout, zero slope, or a threshold off the price
-/// axis) — those stay on the keeper-bot floor.
-#[allow(clippy::too_many_arguments)]
-fn threshold_condition(
-    inputs: &MarketInputs,
-    slope: i128,
-    free_collateral: i128,
-    resolvers: ResolverListV0,
-    resolver_disc: [u8; 8],
-) -> Result<Option<ConditionV0>> {
-    let (Some(oracle), Some(watch), Some(min_payment)) =
-        (inputs.oracle, inputs.watch, inputs.keeper_payment_lamports)
-    else {
-        return Ok(None);
-    };
-    if slope == 0 || inputs.price <= 0 {
-        return Ok(None);
-    }
-    // Δprice (raw PRICE_PRECISION units) that exhausts free collateral,
-    // haircut toward early. `slope` is BASE_PRECISION fixed-point (free
-    // collateral per raw price unit), so the scale cancels here — using
-    // PRICE_PRECISION instead put every perp threshold a thousandth of the
-    // true distance from spot (a wake on every tick) and drove every spot
-    // threshold off the price axis (never armed).
-    let distance = free_collateral
-        .safe_mul(crate::math::constants::BASE_PRECISION_I128)?
-        .safe_div(slope.abs())?;
-    let haircut = distance
-        .safe_mul(BPS_DENOM.safe_sub(THRESHOLD_HAIRCUT_BPS)?)?
-        .safe_div(BPS_DENOM)?;
-    // Positive slope = health falls as the price falls (long perp, deposit).
-    let (threshold_price, direction) = if slope > 0 {
-        (inputs.price - haircut, WatchDirection::AtOrBelow)
-    } else {
-        (inputs.price + haircut, WatchDirection::AtOrAbove)
-    };
-    if threshold_price <= 0 {
-        return Ok(None);
-    }
-    let Some(raw) = watch.raw_threshold(threshold_price, direction) else {
-        return Ok(None);
-    };
-
-    // The resolver needs its three named accounts *and* the whole margin
-    // map — more than a condition holds inline — so it reads the list that
-    // `rewrite_liq_conditions` already stored on this very account.
-    Ok(Some(ConditionV0::on_value_cross(
-        oracle.to_bytes(),
-        watch.price_offset,
-        watch.price_len,
-        // Signed: every registered watch layout stores its price as i64.
-        relay_spec::WatchValue::Signed(raw),
-        direction.cmp(),
-        CrankSpecV0 {
-            resolver_program: crate::ID.to_bytes(),
-            resolver_disc,
-            min_payment,
-        },
-        resolvers,
-    )))
 }
 
 // Referenced by the doc comment's precision notes.

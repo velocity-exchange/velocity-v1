@@ -2112,8 +2112,10 @@ export class VelocityClient {
 					systemProgram: SystemProgram.programId,
 					state: await this.getStatePublicKey(),
 					// Relay liquidation coverage, created with the account it
-					// watches. Rent is on the same payer; pass the program id
-					// (anchor's `None`) to decline it.
+					// watches and paid for by the same payer. Not optional:
+					// the moment coverage matters is the moment somebody
+					// else's transaction gave this user a position, and the
+					// user is not a signer on that one.
 					userConditions: getUserConditionsPublicKey(
 						this.program.programId,
 						userAccountPublicKey

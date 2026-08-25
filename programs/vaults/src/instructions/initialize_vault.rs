@@ -110,6 +110,11 @@ pub struct InitializeVault<'info> {
     /// CHECK: checked in velocity cpi
     #[account(mut)]
     pub velocity_user: AccountInfo<'info>,
+    /// CHECK: checked in velocity cpi, which creates it at the PDA it derives
+    /// from `velocity_user`. A vault's velocity user holds positions like any
+    /// other, so it carries the same relay liquidation coverage.
+    #[account(mut)]
+    pub velocity_user_conditions: AccountInfo<'info>,
     /// CHECK: checked in velocity cpi
     #[account(mut)]
     pub velocity_state: AccountInfo<'info>,
@@ -144,9 +149,9 @@ impl<'info> InitializeUserCPI for Context<'info, InitializeVault<'info>> {
             payer: self.accounts.payer.to_account_info().clone(),
             rent: self.accounts.rent.to_account_info().clone(),
             system_program: self.accounts.system_program.to_account_info().clone(),
-            // A vault's velocity user is managed, never liquidated through
-            // the relay path, so it declines the conditions rent.
-            user_conditions: None,
+            // A vault's velocity user can be liquidated like any other, so
+            // it carries the same conditions account, on the same payer.
+            user_conditions: self.accounts.velocity_user_conditions.clone(),
         };
         let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signers);
         let sub_account_id = 0_u16;

@@ -127,17 +127,29 @@ pub fn handle_initialize_user<'c: 'info, 'info>(
 ) -> Result<()> {
     let user_key = ctx.accounts.user.key();
 
-    // Stamp the liquidation-conditions block so the account is a valid
-    // (all-inactive) block from birth. Nothing is armed yet: the user has
-    // no exposure, and the first `sync_liq_conditions` derives thresholds.
+    // Every user gets a conditions block, and pays its rent here as part of
+    // what an account costs.
+    //
+    // Not optional, and not created later. Relay can only watch an account
+    // that exists, and the moment coverage matters is the moment someone else
+    // has given this user a position — a maker order filled by a keeper, or a
+    // signed-message order submitted by a filler. The user does not sign
+    // either, so there is no later point at which rent can be charged to them.
+    // Creating it here is what makes every subsequent sync permissionless: the
+    // account is already paid for, so anyone can keep it current.
+    //
+    // Nothing is armed yet. The account carries no exposure and no margin map,
+    // and the first sync writes both.
     //
     // Before the user is loaded, not after: `load_init` does not write the
     // discriminator until the instruction exits, so a `load_mut` of the
     // user in between reads a zeroed one and fails.
-    if let Some(user_conditions) = &ctx.accounts.user_conditions {
-        let mut conditions = user_conditions
+    {
+        let mut conditions = ctx
+            .accounts
+            .user_conditions
             .load_init()
-            .or_else(|_| user_conditions.load_mut())?;
+            .or_else(|_| ctx.accounts.user_conditions.load_mut())?;
         conditions.user = user_key;
         conditions.init_block()?;
     }
@@ -5333,7 +5345,7 @@ pub struct InitializeUser<'info> {
         bump,
         payer = payer
     )]
-    pub user_conditions: Option<AccountLoader<'info, UserConditionsV0>>,
+    pub user_conditions: AccountLoader<'info, UserConditionsV0>,
     #[account(
         mut,
         has_one = authority

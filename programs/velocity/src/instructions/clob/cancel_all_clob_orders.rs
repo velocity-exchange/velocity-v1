@@ -30,7 +30,7 @@ use {
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             prop_amm::{
-                clob_hint_scan, ClobCancelAllArgsV0, ClobCancelSides, ClobCancelSidesExt,
+                ClobCancelAllArgsV0, ClobCancelAllOutcomeExt, ClobCancelSides, ClobCancelSidesExt,
                 ClobMarket, ClobUserRefV0, QuoterV0,
             },
             state::State,
@@ -182,30 +182,17 @@ pub fn handle_cancel_all_clob_orders(
         (0..orders).for_each(|_| user.decrement_open_orders(false));
 
         // Free the placed-trigger shadows whose live orders the sweep took.
-        let book = ctx.accounts.clob_market.try_borrow_data()?;
         let shadows = crate::state::prop_amm::release_swept_trigger_shadows(
             &mut user,
-            &book,
+            &clob.reader(),
             params.market_index,
             params.sides,
-        );
-        drop(book);
+        )?;
         if shadows > 0 {
             msg!("released {} placed-trigger shadows", shadows);
         }
 
         user.update_last_active_slot(clock.slot);
-    }
-
-    // Repair the wake hints from the post-sweep book: orders left, so the
-    // earliest expiry and the earliest pending activation can only have moved
-    // later.
-    if let Some(conditions_loader) = &ctx.accounts.crank_conditions {
-        let (min_expiry, min_activation) =
-            clob_hint_scan(&ctx.accounts.clob_market.try_borrow_data()?, clock.slot);
-        let mut conditions = load_mut!(conditions_loader)?;
-        conditions.repair_expiry(min_expiry)?;
-        conditions.repair_activation(min_activation)?;
     }
 
     if removed.exhaustive {

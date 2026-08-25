@@ -479,22 +479,80 @@ export type RouterQuoteBufferV0Account = {
  * attaches a CLOB to the market (`updatePerpMarketClobQuoter`). `relay` is
  * an opaque relay-spec block (conditions + resolver account list) read by
  * crank turners; resolvers stage into the program's shared scratch account.
- * The account's own lamport balance is the reservoir that pays keepers
- * `keeperPaymentLamports` per crank.
+ * The account's own lamport balance is the reservoir the cranks pay their
+ * keepers from.
+ *
+ * It holds one condition: the poll that catches a cross a PropAMM created by
+ * repricing, which writes to neither account a watch could cover. The four
+ * that describe the book's own state — an expired order, a side at its
+ * eviction threshold, a crossed book, an order reaching its activation slot —
+ * live on the CLOB market account, registered by the same attach. They name
+ * velocity's resolvers and pay out of this reservoir.
  */
 export type ClobCrankConditionsV0Account = {
-	/** relay-spec RelayBlockV0<6, 8> wire bytes (header + 6 conditions + the resolver account list), parsed by relay tooling, not the SDK */
+	/** relay-spec RelayBlockV0<1, 8> wire bytes (header + 1 condition + the resolver account list), parsed by relay tooling, not the SDK */
 	relay: number[];
 	/** the market's oracle, captured at attach time */
 	oracle: PublicKey;
-	/** lamports paid to the keeper per crank, drawn from this account's balance */
-	keeperPaymentLamports: BN;
+	/** lamports each of the market's cranks pays its keeper, drawn from this account's balance; derived at attach time from `State.transactionFeeRails` and the cost units the admin measured for each crank */
+	crankPayments: CrankPaymentsV0;
 	/** floor on the protocol's quote surplus from a cross-match crank, QUOTE_PRECISION (1e6); cranking a cross pays the reservoir's keeper fee, so a cross that clears by less is declined. 0 = strictly-profitable only */
 	minCrossSurplus: BN;
+	/** account-data offset of the book's own condition block, as it reported at attach — what the book's relay watch registers at. A market needs two watches: this account at offset 8, and the book here. */
+	clobBlockOffset: number;
+	/** the region of the book that changes when either side's best moves, as it reported at attach — what a cross watch on the book registers at */
+	topOfBookOffset: number;
+	topOfBookLen: number;
 	marketIndex: number;
 	quoteSpotMarketIndex: number;
 	padding: number[];
 };
+
+/**
+ * What the network charges to land one transaction, split the way the fee
+ * model splits it: a fixed inclusion fee, a per-signature fee, and a rate on
+ * the cost units the transaction requests. Set by `updateTransactionFeeRails`.
+ *
+ * A zero `resourceFeeDenominator` prices cost units at nothing, which is the
+ * fee model that charges per signature alone.
+ */
+export type TransactionFeeRails = {
+	/** charged once per transaction, whatever it contains */
+	inclusionLamports: number;
+	/** charged per signature the transaction carries */
+	signatureLamports: number;
+	/** lamports per requested cost unit, as a fraction; rounded up */
+	resourceFeeNumerator: number;
+	/** zero prices cost units at nothing */
+	resourceFeeDenominator: number;
+};
+
+/**
+ * What each of a market's cranks pays its keeper, in lamports. One figure per
+ * crank rather than one for the market: a book removal and a two-legged cross
+ * differ by an order of magnitude in what they request, and the network
+ * charges a transaction for what it requests.
+ */
+export type CrankPaymentsV0 = {
+	/** `evictWorst` / `removeExpired` */
+	removal: number;
+	/** `crankCrossMatch` */
+	cross: number;
+	/** `crankTakerOriginCross` */
+	takerOriginCross: number;
+	/** `triggerOrder` / `triggerClobOrder` in program-keeper mode */
+	trigger: number;
+	/** `liquidatePerpWithFill` in program-keeper mode */
+	liquidation: number;
+	/** `forceCancelClobOrders` */
+	forceCancel: number;
+};
+
+/**
+ * Cost units each of a market's cranks requests, measured by simulating it —
+ * the argument `updatePerpMarketClobQuoter` prices into `CrankPaymentsV0`.
+ */
+export type CrankCostUnitsV0 = CrankPaymentsV0;
 
 /**
  * Per-market relay conditions that watch a Custom quoter for a cross against
@@ -1272,6 +1330,12 @@ export type StateAccount = {
 	hotAccountExtension: PublicKey;
 	/** the retail-flow attestation key (swift's): transactions co-signed by it are attested flow — required for faster-than-default CLOB activation; `PublicKey.default()` disables fast activation */
 	hotFlowAuthority: PublicKey;
+	/** what the network charges to land one transaction; every relay crank payment is derived from it */
+	transactionFeeRails: TransactionFeeRails;
+	/** most of a liquidation's filled quote value the protocol will repay whoever cranked it, in basis points; 0 disables the reimbursement and leaves the flat payment */
+	liquidationCrankReimbursementBps: number;
+	/** spot market whose oracle prices SOL, for converting a quote-denominated reimbursement into lamports; 0 disables it */
+	solSpotMarketIndex: number;
 	/** treasury PERP protocol fees are withdrawn to (settable only by `coldAdmin`); `PublicKey.default()` makes perp fee withdrawals inert */
 	protocolFeeRecipientPerp: PublicKey;
 	/** treasury SPOT protocol fees are withdrawn to (settable only by `coldAdmin`); `PublicKey.default()` makes spot fee withdrawals inert */
@@ -2216,6 +2280,13 @@ export type BaseTxParams = ExactType<{
 	computeUnits?: number;
 	/** micro-lamports per compute unit for the priority fee */
 	computeUnitsPrice?: number;
+	/**
+	 * ceiling, in bytes, on the account data the transaction may load — its own accounts plus the
+	 * programs it names and their program data. A transaction is charged for the limit it requests,
+	 * and the default when none is requested is 64 MiB, so leaving this unset is the most expensive
+	 * option however little the transaction loads. 0 requests no limit and takes that default.
+	 */
+	loadedAccountsDataSize?: number;
 }>;
 
 /** Controls how the SDK derives compute-unit limit/price when not explicitly given in `BaseTxParams`. */

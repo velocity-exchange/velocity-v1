@@ -98,6 +98,10 @@ pub struct QuoteInputs<'a> {
     /// budgets passes over a different set of orders than it quoted.
     pub reference_price: i64,
     pub taker: ClobUserRefV0,
+    /// The worst price this fill will accept, or zero for no bound. A quoter
+    /// that honours it stops its walk where the router would have discarded
+    /// the rest. Advisory: see [`QuoteArgsV0::limit_price`].
+    pub limit_price: u64,
     pub quoter_signer: Pubkey,
     pub quoter_signer_nonce: u8,
 }
@@ -173,6 +177,7 @@ impl<'info> QuotedRoute<'info> {
                         size: inputs.size,
                         users: inputs.users,
                         taker: Some(inputs.taker),
+                        limit_price: inputs.limit_price,
                     },
                     &inputs.quoter_signer,
                     inputs.quoter_signer_nonce,

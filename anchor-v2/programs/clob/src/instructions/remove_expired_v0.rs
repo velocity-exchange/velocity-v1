@@ -1,10 +1,10 @@
 use {
     crate::{
-        book::ClobBook,
+        book::{BookHeader, ClobBook},
         emit::emit_pod,
         error::ClobError,
         events::OrderExpireRecordV0,
-        state::{ClobMarketV0, OrderRefV0, RemovedOrderV0},
+        state::{ClobMarketV0, RemovedOrderV0},
     },
     anchor_lang_v2::prelude::*,
 };
@@ -17,10 +17,8 @@ pub struct RemoveExpiredV0 {
     pub place_authority: Signer,
 }
 
-#[derive(Clone, Copy, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct RemoveExpiredArgsV0 {
-    pub order_ref: OrderRefV0,
-}
+/// Declared by `clob-wire`.
+pub use clob_wire::RemoveExpiredArgsV0;
 
 /// Crank reclamation of an expired order (quote/execute only skip expired —
 /// removal without the maker's `User` loaded would leak the open-order
@@ -32,6 +30,9 @@ pub fn handle_remove_expired_v0(
     let clock = Clock::get()?;
     let market = &mut ctx.accounts.market;
     let removed = market.remove_expired(args.order_ref, clock.unix_timestamp)?;
+    // The removal path takes no clock, so an activation hint the chain
+    // has already reached is dropped here instead.
+    market.expire_activation_hint(clock.slot)?;
 
     emit_pod!(OrderExpireRecordV0 {
         authority: removed.user.authority,
@@ -51,5 +52,6 @@ pub fn handle_remove_expired_v0(
         base_asset_amount: removed.base_asset_amount,
         side: removed.side,
         taker_origin: removed.taker_origin,
+        max_ts: removed.max_ts,
     })
 }

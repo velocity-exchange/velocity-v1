@@ -1,0 +1,24 @@
+[package]
+name = "clob-wire"
+description = "The CLOB's instruction arguments and return data: the bytes velocity writes and the book reads, declared once"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/velocity-exchange/velocity-v1/crates/clob-wire/"
+
+[dependencies]
+# The shared scalars this wire is built out of — `UserRefV0`, `SideV0`,
+# `CancelSidesV0`. They belong to the quoter interface, which the book also
+# speaks, so they are declared there and used here rather than restated.
+quoter-spec = { path = "../quoter-spec" }
+
+# Serialization is per-consumer for the same reason it is in `quoter-spec`:
+# velocity encodes with anchor's borsh and needs the IDL plumbing, and the
+# book writes the bytes itself and must not be handed a borsh dependency.
+anchor-lang = { version = "1.0.2", optional = true }
+wincode = { version = "0.5", features = ["derive"] }
+
+[features]
+default = []
+anchor-derive = ["dep:anchor-lang", "quoter-spec/anchor-derive"]
+idl-build = ["anchor-derive", "anchor-lang/idl-build", "quoter-spec/idl-build"]

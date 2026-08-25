@@ -109,7 +109,41 @@ pub struct State {
     /// own equivalent check. `Pubkey::default()` (unset) disables fast
     /// activation entirely rather than leaving it open.
     pub hot_flow_authority: Pubkey,
-    pub padding: [u8; 206],
+    /// Alignment slack ahead of `transaction_fee_rails`, taken out of the
+    /// former padding: the tail's offset is odd by two and the rails hold
+    /// `u32`s.
+    pub padding_0: [u8; 2],
+    /// What one transaction costs the account that sends it, as the network
+    /// prices it now. Every relay crank payment is derived from this, so a
+    /// change to the network's fee model is one write here instead of a
+    /// re-price of every market.
+    pub transaction_fee_rails: TransactionFeeRails,
+    /// Most of a liquidation's filled quote value the protocol will spend
+    /// reimbursing whoever cranked it, in basis points.
+    ///
+    /// A crank that nobody can afford to land is a liquidation that does not
+    /// happen, and a fee market moves faster than any figure the protocol can
+    /// keep written down. So the liquidation crank repays what the
+    /// transaction actually cost — its base fee plus the priority fee it
+    /// paid — and this bounds that at a share of what the liquidation
+    /// recovered. Small liquidations stop being worth landing in heavy
+    /// congestion, which is the right answer: the recovery does not cover the
+    /// gas.
+    ///
+    /// Reimbursing a cost the keeper chooses is safe here because it is not a
+    /// cost the keeper keeps: a priority fee goes to the validator, so
+    /// bidding it up buys nothing. A keeper that is also the validator can
+    /// recapture some of it, and this cap is what bounds that to a share the
+    /// protocol chose.
+    ///
+    /// Zero disables reimbursement, leaving the flat payment.
+    pub liquidation_crank_reimbursement_bps: u16,
+    /// Spot market whose oracle prices SOL, for the one place the protocol
+    /// pays lamports against a quote-denominated figure. Zero disables the
+    /// reimbursement as surely as a zero share does: market zero is the quote
+    /// market, which prices nothing useful here.
+    pub sol_spot_market_index: u16,
+    pub padding: [u8; 184],
 }
 
 /// Purpose-specific hot role keys held on `State`. Each variant maps to one of the
@@ -214,7 +248,11 @@ impl Default for State {
             solvency_status: 0,
             promo_fee_tier: 0,
             hot_flow_authority: Pubkey::default(),
-            padding: [0; 206],
+            padding_0: [0; 2],
+            transaction_fee_rails: TransactionFeeRails::default(),
+            liquidation_crank_reimbursement_bps: 0,
+            sol_spot_market_index: 0,
+            padding: [0; 184],
         }
     }
 }
@@ -457,9 +495,70 @@ impl Size for State {
     // hot_if_rebalance was removed with the if-rebalance machinery (its 32 B went into
     // the padding); protocol_fee_recipient_spot later took 32 B back out; solvency_status
     // took 1 B out of the padding; hot_account_extension took another 32 B out;
-    // promo_fee_tier took 1 B and hot_flow_authority took 32 B.
+    // promo_fee_tier took 1 B and hot_flow_authority took 32 B; transaction_fee_rails
+    // took 16 B plus 2 B of alignment slack ahead of it.
     // SIZE stays constant and (SIZE - 8) % 16 == 0 holds (1744).
     const SIZE: usize = 1752;
+}
+
+/// What the network charges to land one transaction, split the way the fee
+/// model splits it.
+///
+/// Relay cranks pay their keeper out of a reservoir, and the payment has to
+/// cover the keeper's own transaction or nobody cranks. The cost is a function
+/// of what the transaction asks for: a fixed charge to be included, plus a rate
+/// on the cost units it requests. A crank's cost units differ by an order of
+/// magnitude between a book removal and a two-legged cross, and the rate is
+/// the network's to change, so every payment is derived from these fields
+/// rather than set beside them.
+///
+/// Setting `resource_fee_denominator` to zero prices resource units at nothing,
+/// which is the fee model that charges per signature alone.
+#[derive(Copy, AnchorSerialize, AnchorDeserialize, Clone, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct TransactionFeeRails {
+    /// Charged once per transaction, whatever it contains.
+    pub inclusion_lamports: u32,
+    /// Charged per signature the transaction carries.
+    pub signature_lamports: u32,
+    /// Lamports per requested cost unit, as a fraction. Rounded up: a payment
+    /// short by a lamport is a crank nobody runs.
+    pub resource_fee_numerator: u32,
+    /// Zero prices cost units at nothing.
+    pub resource_fee_denominator: u32,
+}
+
+impl TransactionFeeRails {
+    /// The fee model that charges for signatures and nothing else. What the
+    /// network does today, and what `initialize` writes.
+    pub const FLAT_PER_SIGNATURE: Self = Self {
+        inclusion_lamports: 0,
+        signature_lamports: 5_000,
+        resource_fee_numerator: 0,
+        resource_fee_denominator: 0,
+    };
+
+    /// Lamports a transaction of this shape costs whoever sends it.
+    ///
+    /// `cost_units` is the sum the block-packing cost model charges for:
+    /// signatures, write locks, instruction-data bytes, the requested compute
+    /// limit, and the requested loaded-accounts data size. The requested
+    /// figures, not the consumed ones — a transaction pays for the room it
+    /// asks for.
+    ///
+    /// Rounded up, because this sizes a payment and a payment short by a
+    /// lamport buys nothing.
+    pub fn transaction_cost(&self, cost_units: u64, signatures: u64) -> VelocityResult<u64> {
+        let fixed = u64::from(self.inclusion_lamports)
+            .safe_add(u64::from(self.signature_lamports).safe_mul(signatures)?)?;
+        if self.resource_fee_denominator == 0 {
+            return Ok(fixed);
+        }
+        let resource = cost_units
+            .safe_mul(u64::from(self.resource_fee_numerator))?
+            .safe_div_ceil(u64::from(self.resource_fee_denominator))?;
+        fixed.safe_add(resource)
+    }
 }
 
 #[derive(Copy, AnchorSerialize, AnchorDeserialize, Clone, Debug)]

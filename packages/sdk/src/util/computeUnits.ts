@@ -84,18 +84,69 @@ export function isSetComputeUnitPriceIx(ix: TransactionInstruction): boolean {
 }
 
 /**
- * Checks a list of instructions for the presence of compute-budget limit/price instructions —
- * used by tx builders to avoid appending a duplicate `setComputeUnitLimit`/`setComputeUnitPrice`
- * instruction when the caller already supplied one.
+ * Checks whether `ix` is a `SetLoadedAccountsDataSizeLimit` instruction, by matching the program
+ * id and the instruction discriminator byte (`4`).
+ * @param ix - Instruction to check.
+ * @returns `true` if `ix` sets the transaction's loaded-accounts data size limit.
+ */
+export function isSetLoadedAccountsDataSizeIx(
+	ix: TransactionInstruction
+): boolean {
+	// Compute budget program discriminator is first byte
+	// 4: set loaded accounts data size limit
+	return (
+		ix.programId.equals(ComputeBudgetProgram.programId) &&
+		// @ts-ignore
+		ix.data.at(0) === 4
+	);
+}
+
+/**
+ * Builds a `SetLoadedAccountsDataSizeLimit` instruction: the ceiling, in bytes, on the account
+ * data a transaction may load — its own accounts plus the programs it names and their program
+ * data.
+ *
+ * Hand-rolled because `@solana/web3.js` v1 has no builder for it. The encoding is the compute
+ * budget program's: a discriminator byte, then the limit as a little-endian `u32`.
+ *
+ * Worth setting on every transaction. The limit is priced, and it is priced on what a transaction
+ * *asks for*, so a transaction that asks for nothing in particular is charged for the 64 MiB
+ * default however little it loads. Asking under what the transaction really loads makes it fail
+ * to load at all, so leave headroom.
+ *
+ * Add it at the **end** of the instruction list. The runtime finds compute-budget instructions by
+ * program id wherever they sit, and an instruction added at the front shifts every index behind
+ * it — which the signed-message flows encode (see `createMinimalEd25519VerifyIx`).
+ * @param bytes - The limit, in bytes.
+ * @returns The instruction.
+ */
+export function setLoadedAccountsDataSizeLimitIx(
+	bytes: number
+): TransactionInstruction {
+	const data = Buffer.alloc(5);
+	data.writeUInt8(4, 0);
+	data.writeUInt32LE(bytes, 1);
+	return new TransactionInstruction({
+		programId: ComputeBudgetProgram.programId,
+		keys: [],
+		data,
+	});
+}
+
+/**
+ * Checks a list of instructions for the presence of compute-budget instructions — used by tx
+ * builders to avoid appending a duplicate when the caller already supplied one.
  * @param ixs - Instructions to scan (typically an in-progress transaction's instruction list).
- * @returns Whether a `setComputeUnitLimit` and/or `setComputeUnitPrice` instruction is present.
+ * @returns Which of the three compute-budget instructions are present.
  */
 export function containsComputeUnitIxs(ixs: TransactionInstruction[]): {
 	hasSetComputeUnitLimitIx: boolean;
 	hasSetComputeUnitPriceIx: boolean;
+	hasSetLoadedAccountsDataSizeIx: boolean;
 } {
 	return {
 		hasSetComputeUnitLimitIx: ixs.some(isSetComputeUnitsIx),
 		hasSetComputeUnitPriceIx: ixs.some(isSetComputeUnitPriceIx),
+		hasSetLoadedAccountsDataSizeIx: ixs.some(isSetLoadedAccountsDataSizeIx),
 	};
 }

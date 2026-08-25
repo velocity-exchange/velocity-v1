@@ -2132,6 +2132,34 @@ impl<'a> TransactionBuilder<'a> {
         self
     }
 
+    /// Cap the account data this tx may load, in bytes.
+    ///
+    /// Optional: [`Self::build`] adds
+    /// [`crate::constants::LOADED_ACCOUNTS_DATA_SIZE_DEFAULT`] when no limit is
+    /// set. Call this to widen it for a transaction that loads more, or to
+    /// narrow it for one that loads much less.
+    ///
+    /// Worth setting on every transaction. The limit is priced, and it is
+    /// priced on what the transaction asks for — so a transaction that asks
+    /// for nothing in particular is charged for the 64 MiB default however
+    /// little it loads. The velocity program and its program data count
+    /// toward the limit, because the transaction names the program, so leave
+    /// headroom above them: asking under what the transaction really loads
+    /// makes it fail to load at all.
+    ///
+    /// Appended, not inserted at the front. The runtime finds compute-budget
+    /// instructions by program id wherever they sit, and an instruction added
+    /// at the front shifts every index behind it — which
+    /// [`Self::place_swift_order`] encodes: its ed25519 verify instruction
+    /// points at the instruction holding the message it verifies, by absolute
+    /// index. Only the tail is free.
+    pub fn with_loaded_accounts_data_size(mut self, bytes: u32) -> Self {
+        self.ixs
+            .push(ComputeBudgetInstruction::set_loaded_accounts_data_size_limit(bytes));
+
+        self
+    }
+
     /// Append an ix to the Tx
     pub fn add_ix(mut self, ix: Instruction) -> Self {
         self.ixs.push(ix);
@@ -4063,6 +4091,9 @@ impl<'a> TransactionBuilder<'a> {
                 liquidator: self.sub_account,
                 liquidator_stats: Wallet::derive_stats_account(&self.owner()),
                 crank_conditions: None,
+                // A signed keeper pays its own fee; the sysvar is there for a
+                // relay crank that wants its priority fee repaid.
+                instructions_sysvar: None,
             },
             [&self.account_data, user_account].into_iter(),
             std::iter::empty(),
@@ -4112,6 +4143,9 @@ impl<'a> TransactionBuilder<'a> {
                 liquidator: self.sub_account,
                 liquidator_stats: Wallet::derive_stats_account(&self.owner()),
                 crank_conditions: None,
+                // A signed keeper pays its own fee; the sysvar is there for a
+                // relay crank that wants its priority fee repaid.
+                instructions_sysvar: None,
             },
             [&self.account_data, liquidatee].into_iter().chain(makers),
             std::iter::empty(),
@@ -4298,7 +4332,25 @@ impl<'a> TransactionBuilder<'a> {
     }
 
     /// Build the transaction message ready for signing and sending
-    pub fn build(self) -> VersionedMessage {
+    /// Compile the assembled instructions into a message.
+    ///
+    /// A loaded-accounts data size limit is added if the caller did not set
+    /// one. The limit is priced, and it is priced on what a transaction asks
+    /// for — so a transaction that asks for nothing in particular is charged
+    /// for the 64 MiB default however little it loads. There is no case where
+    /// taking that default is what a caller wanted, so the default here is a
+    /// figure with room in it rather than nothing at all.
+    ///
+    /// It goes at the end, where it shifts no index — see
+    /// [`Self::with_loaded_accounts_data_size`].
+    pub fn build(mut self) -> VersionedMessage {
+        if !self.ixs.iter().any(is_loaded_accounts_data_size_ix) {
+            self.ixs.push(
+                ComputeBudgetInstruction::set_loaded_accounts_data_size_limit(
+                    crate::constants::LOADED_ACCOUNTS_DATA_SIZE_DEFAULT,
+                ),
+            );
+        }
         let payer = self.fee_payer.unwrap_or(self.authority);
         if self.legacy {
             let message = Message::new(self.ixs.as_ref(), Some(&payer));
@@ -4437,6 +4489,16 @@ pub fn build_accounts<'a>(
     let mut account_metas = base_accounts.to_account_metas(None);
     account_metas.extend(accounts.into_iter().map(Into::into));
     account_metas
+}
+
+/// Whether `ix` is the compute budget program's
+/// `SetLoadedAccountsDataSizeLimit`.
+///
+/// Matched on the program id and the leading discriminator byte rather than by
+/// decoding, so an instruction a caller built by hand counts the same as one
+/// from the builder.
+fn is_loaded_accounts_data_size_ix(ix: &Instruction) -> bool {
+    ix.program_id == solana_compute_budget_interface::id() && ix.data.first() == Some(&4)
 }
 
 #[cfg(test)]

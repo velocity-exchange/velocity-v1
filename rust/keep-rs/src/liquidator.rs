@@ -8,7 +8,7 @@
 //!
 use {
     crate::{
-        filler::{TxSender, TxWorker},
+        filler::{TxSender, TxWorker, MAX_COMPUTE_UNITS},
         http::{
             DashboardState, DashboardStateRef, HighRiskUser, MarginStatus, Metrics,
             OraclePriceInfo, UserMarginStatus,
@@ -2442,15 +2442,15 @@ impl PrimaryLiquidationStrategy {
             top_makers,
         );
 
-        // large accounts list, bump CU limit to compensate
-        if let Some(ix) = tx_builder.ixs().last() {
-            if ix.accounts.len() >= 20 {
-                tx_builder = tx_builder.set_ix(
-                    1,
-                    ComputeBudgetInstruction::set_compute_unit_limit(cu_limit * 2),
-                );
-            }
-        }
+        // Ask for the ceiling here and let the send path size it down. It
+        // simulates before it signs, so the limit that gets signed comes from
+        // what the transaction burned rather than from a guess about the shape
+        // of its account list — and the limit that gets signed is the one the
+        // network bills.
+        tx_builder = tx_builder.set_ix(
+            1,
+            ComputeBudgetInstruction::set_compute_unit_limit(MAX_COMPUTE_UNITS as u32),
+        );
 
         let tx = tx_builder.build();
 
@@ -2525,15 +2525,15 @@ impl PrimaryLiquidationStrategy {
             None,
         );
 
-        // large accounts list, bump CU limit to compensate
-        if let Some(ix) = tx_builder.ixs().last() {
-            if ix.accounts.len() >= 20 {
-                tx_builder = tx_builder.set_ix(
-                    1,
-                    ComputeBudgetInstruction::set_compute_unit_limit(cu_limit * 2),
-                );
-            }
-        }
+        // Ask for the ceiling here and let the send path size it down. It
+        // simulates before it signs, so the limit that gets signed comes from
+        // what the transaction burned rather than from a guess about the shape
+        // of its account list — and the limit that gets signed is the one the
+        // network bills.
+        tx_builder = tx_builder.set_ix(
+            1,
+            ComputeBudgetInstruction::set_compute_unit_limit(MAX_COMPUTE_UNITS as u32),
+        );
 
         let tx = tx_builder.build();
 

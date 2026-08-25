@@ -765,13 +765,28 @@ pub struct QuoteArgsV0<'a> {
     /// The taker's own user, whose resting liquidity is skipped
     /// unconditionally (self-trade prevention).
     pub taker: Option<UserRefV0>,
+    /// The worst price the caller will fill at, in PRICE_PRECISION. Zero
+    /// means no bound.
+    ///
+    /// A ladder is walked best price first, so a quoter may stop as soon as a
+    /// level is worse than this: the caller discards those levels anyway. The
+    /// walk is what a quoter is charged for, and a transaction is charged for
+    /// the compute limit it requests, so a bound the quoter ignores is paid
+    /// for by whoever sent the transaction.
+    ///
+    /// **Not a trust boundary**, like the caps above. Honouring it saves the
+    /// caller compute; ignoring it wastes the caller's compute and returns
+    /// levels the caller drops. It never widens what a quoter may fill.
+    pub limit_price: u64,
 }
 
 /// Arguments to `execute_v0`: commit a fill.
 ///
-/// The same shape as [`QuoteArgsV0`] because it answers the same question,
-/// having committed to it. A quoter may fill less than `size`; what it
-/// actually filled is whatever its returned balance changes sum to.
+/// [`QuoteArgsV0`] without the price bound, because it answers the same
+/// question having committed to it: `size` is already only the depth the
+/// caller chose off the ladder, so the walk that fills it visits no level a
+/// bound would have cut. A quoter may fill less than `size`; what it actually
+/// filled is whatever its returned balance changes sum to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
 pub struct ExecuteArgsV0<'a> {
     /// Same contract as [`QuoteArgsV0::users`], and it leads for the same

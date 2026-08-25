@@ -19,7 +19,6 @@ use {
         msg,
         signer::QUOTER_SIGNER_SEED,
         state::{
-            clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             market_status::MarketStatus,
             perp_market_map::MarketSet,
             prop_amm::{ClobMarket, ClobPlaceOrderArgsV0, ClobSide, QuoterV0},
@@ -57,20 +56,6 @@ pub struct PlaceClobOrder<'info> {
     /// must be the authority on nothing.
     #[account(seeds = [QUOTER_SIGNER_SEED], bump)]
     pub quoter_signer: UncheckedAccount<'info>,
-    /// The market's relay conditions account, so an expiring placement
-    /// min-folds its `max_ts` into the expire condition's `wake_ts` hint.
-    /// Optional — placement must not brick on a market whose conditions were
-    /// never initialized, and a missed hint is caught by the fallback poll
-    /// condition (latency, not liveness).
-    #[account(
-        mut,
-        seeds = [
-            CLOB_CRANK_CONDITIONS_PDA_SEED,
-            params.market_index.to_le_bytes().as_ref(),
-        ],
-        bump
-    )]
-    pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
     /// CHECK: the instructions sysvar, locked by address. Required only for
     /// a faster-than-default activation delay: the handler introspects it
     /// for the flow-authority co-signer (the attestation).
@@ -147,7 +132,7 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
     // (swift) co-signed after serving the hold window off-chain. Anything
     // at-or-above the book's default needs no attestation.
     if let Some(requested) = params.activation_delay_slots {
-        let default_delay = clob.default_activation_delay_slots()?;
+        let default_delay = clob.reader().order_rules()?.default_activation_delay_slots;
         if requested < default_delay {
             let flow_authority = state.hot_key(crate::state::state::HotRole::FlowAuthority);
             validate!(
@@ -241,27 +226,6 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
         isolated_market_index,
     )?;
 
-    // Wake the cranks no later than this order matters: min-fold its expiry
-    // into the expire hint, and — when it rests behind a speed bump — its
-    // activation slot into the cross-activation hint, so a cross that makers
-    // lined up for fires the moment the order becomes matchable. Best-effort:
-    // the fallback poll covers placements that omit the account.
-    if let Some(conditions) = &ctx.accounts.crank_conditions {
-        let mut conditions = load_mut!(conditions)?;
-        if params.max_ts != 0 {
-            conditions.note_expiry(params.max_ts)?;
-        }
-        let delay = match params.activation_delay_slots {
-            Some(delay) => delay,
-            // Mirror the CLOB's default (`slot + default_delay`), read
-            // straight off the book's header bytes.
-            None => clob.default_activation_delay_slots()?,
-        };
-        if delay > 0 {
-            conditions.note_activation(clock.slot.saturating_add(delay as u64))?;
-        }
-    }
-
     msg!(
         "placed clob order {} (node {}) for user {}",
         order_ref.order_id,
@@ -321,7 +285,6 @@ pub fn try_place_remainder_on_clob<'info>(
     clob_program: &AccountInfo<'info>,
     quoter_signer: &AccountInfo<'info>,
     quoter_signer_nonce: u8,
-    crank_conditions: Option<&AccountLoader<'info, ClobCrankConditionsV0>>,
     perp_market_map: &crate::state::perp_market_map::PerpMarketMap,
     spot_market_map: &crate::state::spot_market_map::SpotMarketMap,
     oracle_map: &mut crate::state::oracle_map::OracleMap,
@@ -429,18 +392,6 @@ pub fn try_place_remainder_on_clob<'info>(
         // counterparty's price.
         taker_origin: true,
     })?;
-
-    // Wake the cranks no later than this order matters.
-    if let Some(conditions) = crank_conditions {
-        let mut conditions = load_mut!(conditions)?;
-        if max_ts != 0 {
-            conditions.note_expiry(max_ts)?;
-        }
-        let delay = clob.default_activation_delay_slots()?;
-        if delay > 0 {
-            conditions.note_activation(clock.slot.saturating_add(delay as u64))?;
-        }
-    }
 
     msg!(
         "placed remainder as clob order {} (node {})",

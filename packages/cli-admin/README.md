@@ -51,6 +51,8 @@ velocity-admin feature-flags vamm-maker-rebate <true|false>  # bit 8; enabling r
 
 velocity-admin fees set-recipient <pubkey> <perp|spot>           # cold admin
 velocity-admin fees set-split <ammFeeNumerator> <ifFeeNumerator> # warm/cold admin
+velocity-admin fees set-transaction-rails <inclusionLamports> <signatureLamports> <resourceFeeNum> <resourceFeeDenom>  # warm/cold admin; what a transaction costs to land. Every relay crank payment is derived from it, so this re-prices them all; markets take the new figures on their next set-market-clob
+velocity-admin fees set-liquidation-crank-reimbursement <shareBps> <solSpotMarketIndex>  # cap on what the protocol repays a liquidation cranker (its priority fee, bounded by a share of the recovery), and the market pricing it in SOL; warm/cold admin
 velocity-admin fees set-taker-addon <market> <tenthBps>          # warm/cold admin; additive taker-fee add-on, -100..100 tenth-bps
 velocity-admin fees set-promo-tier <tier>                        # warm/cold admin; promo fee-tier floor for everyone, 0 = off
 velocity-admin fees withdraw-perp <market> <amount>  # FeeWithdraw hot key; pays the recipient's ATA (created if needed)
@@ -77,12 +79,21 @@ velocity-admin quoter update-config <quoter> [--response-account <pk>] [--quote-
 velocity-admin quoter set-active <quoter> <true|false> [--authority <pk>]  # maker kill switch; entry authority signs
 velocity-admin quoter set-approved <quoter> <true|false> [--admin <pk>]    # warm/cold admin vetting gate
 velocity-admin quoter set-priority <quoter> <0-255> [--admin <pk>]         # warm/cold admin; lower fills first, pro rata within a tier
-velocity-admin quoter set-market-clob <market> <quoter> <clobMarket> <keeperPaymentLamports> [expireFallbackSlots] [--admin <pk>]  # warm/cold admin; names the mandatory-baseline CLOB and stands up (or re-prices) the market's relay crank conditions + reservoir
+velocity-admin quoter set-market-clob <market> <quoter> <clobMarket> [expireFallbackSlots] [--crank-cu <n>] [--crank-cu-<crank> <n>] [--admin <pk>]  # warm/cold admin; names the mandatory-baseline CLOB and stands up (or re-prices) the market's relay crank conditions + reservoir. Each crank's keeper payment is derived from the cost units it requests and the fee rails
 velocity-admin quoter set-watch <quoter> --watch-account <pk> --offset <n> --len <n> [-a <pk>]  # entry authority; declares the reprice region relay cross-discovery wakes on (len 0 clears); resets approval
 velocity-admin quoter attach-cross <quoter> [--fallback-slots <n>]           # permissionless; stands up (or re-prices) the entry's relay cross-discovery conditions
 
-velocity-admin clob-market init <market> <keeperPaymentLamports> --clob-program <pk> [--capacity <n>] [--fund-reservoir <lamports>] [--relay-program <pk>|none] [book config flags]  # one-shot bring-up: book create+init, quoter register+approve, canonical attach (creates crank conditions), relay watch; warm/cold admin, direct-send only
-velocity-admin clob-market register-watch <market> [--relay-program <pk>]  # register a relay WatchV0 over an existing market's conditions block; permissionless, direct-send only
+velocity-admin clob-market init <market> --clob-program <pk> [--capacity <n>] [--crank-cu <n>] [--crank-cu-<crank> <n>] [--fund-reservoir <lamports>] [--relay-program <pk>|none] [book config flags]  # one-shot bring-up: book create+init, quoter register+approve, canonical attach (creates crank conditions), relay watches (both blocks); warm/cold admin, direct-send only
+velocity-admin clob-market register-watch <market> [--relay-program <pk>]  # register a relay WatchV0 over BOTH of an existing market's condition blocks (velocity's conditions account and the book's own); permissionless, direct-send only
+
+> **Turner scoping.** A market's conditions live on two accounts: velocity's
+> crank-conditions PDA (the cross fallback poll) and the CLOB market itself
+> (expiry, activation, a side at its eviction threshold, a crossed book — all
+> facts about the book's own account, kept current by the book). Both get a
+> relay watch, and a turner must allow both programs:
+> `--target-program <velocity-id>,<clob-id>`. Allowing only velocity filters
+> the book's watches out at the registry query, and none of its cranks fire.
+
 
 velocity-admin if stake <market> <amount> [--authority <pk>] [--user-token-account <pk>]  # inits the stake account if missing
 

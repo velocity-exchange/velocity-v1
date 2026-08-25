@@ -354,6 +354,7 @@ fn quote_args<'a>(direction: Direction, size: u64) -> QuoteArgsV0<'a> {
         caps: UserCapsV0::EMPTY,
         reference_price: 0,
         taker: None,
+        limit_price: 0,
     }
 }
 

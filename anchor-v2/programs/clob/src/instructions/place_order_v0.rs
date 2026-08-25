@@ -4,7 +4,7 @@ use {
         emit::emit_pod,
         error::ClobError,
         events::OrderPlaceRecordV0,
-        state::{ClobMarketV0, ClobSideExt, OrderRefV0, PlaceOrderParams, Side, UserRefV0},
+        state::{ClobMarketV0, ClobSideExt, OrderRefV0, PlaceOrderParams},
     },
     anchor_lang_v2::prelude::*,
 };
@@ -17,25 +17,10 @@ pub struct PlaceOrderV0 {
     pub place_authority: Signer,
 }
 
-#[derive(Clone, Copy, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct PlaceOrderArgsV0 {
-    pub side: Side,
-    pub price: u64,
-    pub base_asset_amount: u64,
-    /// None = market default. Some(d) must be <= max (auction flow). Zero is
-    /// allowed — the caller (velocity) owns attestation policy.
-    pub activation_delay_slots: Option<u32>,
-    pub max_ts: i64,
-    /// The velocity user the order settles against, in derivable form
-    /// (velocity verified control before the CPI; the CLOB trusts its
-    /// `place_authority` for identity).
-    pub user: UserRefV0,
-    /// Mark the order [`crate::state::OrderBitFlag::TakerOrigin`]: it is an
-    /// unfilled taker remainder velocity migrated onto the book, not a quote
-    /// its owner chose to post. Only velocity can know that, so it is an
-    /// argument rather than something the CLOB infers.
-    pub taker_origin: bool,
-}
+/// Declared by `clob-wire`, which owns every shape on this program's
+/// instruction surface. `taker_origin` marks the order
+/// [`crate::state::OrderBitFlag::TakerOrigin`].
+pub use clob_wire::PlaceOrderArgsV0;
 
 /// Place a resting order. Returns the new order's [`OrderRefV0`] (as return
 /// data) so the CPI caller can persist the hint.

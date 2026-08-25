@@ -11,14 +11,18 @@ use {
             prelude::Address, solana_program::instruction::Instruction, Discriminator, Event,
         },
         events::{ExecuteRecordV0, FillSlimV0, OrdersCancelRecordV0},
-        instruction,
+        instruction, relay_spec,
         state::{
             CancelSidesV0, ClobDirectionExt, ClobHeaderV0, ClobMarketV0, ClobSideExt, Direction,
             MarketConfigV0, OrderBitFlag, OrderNodeV0, OrderRefV0, Side, UserCapsV0, UserRefV0,
-            CANCEL_ALL_ORDERS_CEILING, EXECUTE_FILLS_CEILING, ORDERS_OFFSET, REMOVED_ORDER_BYTES,
+            CANCEL_ALL_ORDERS_CEILING, CRANK_ACTIVATION, CRANK_BLOCK_OFFSET, CRANK_CAPACITY,
+            CRANK_CONDITIONS, CRANK_CROSS, CRANK_EXPIRY, EXECUTE_FILLS_CEILING, ORDERS_OFFSET,
+            REMOVED_ORDER_BYTES,
         },
-        CancelAllArgsV0, CancelOrderArgsV0, EvictWorstArgsV0, ExecuteArgsV0, PlaceOrderArgsV0,
-        QuoteArgsV0, RemoveExpiredArgsV0, ResizeMarketArgsV0, UpdateMarketArgsV0,
+        CancelAllArgsV0, CancelOrderArgsV0, ClobRemovalKindV0, CrankAccountV0,
+        CrankConditionsArgsV0, CrankResolverV0, EvictWorstArgsV0, ExecuteArgsV0, NextRemovalArgsV0,
+        OrderViewV0, OrdersArgsV0, PlaceOrderArgsV0, QuoteArgsV0, RemoveExpiredArgsV0,
+        ResizeMarketArgsV0, UpdateMarketArgsV0,
     },
     litesvm::types::{FailedTransactionMetadata, TransactionMetadata},
     solana_clock::Clock,
@@ -120,6 +124,21 @@ fn setup_with_capacity(capacity: usize) -> Ctx {
 /// Sign with payer plus whichever of the known keys the metas mark as signer.
 fn send(ctx: &mut Ctx, ix: Instruction) -> Result<TransactionMetadata, FailedTransactionMetadata> {
     send_with_budget(ctx, ix, None)
+}
+
+/// `send` with one extra signer the context does not hold — for the cases
+/// that check a key is refused rather than missing.
+fn send_signed(
+    ctx: &mut Ctx,
+    ix: Instruction,
+    extra: &Keypair,
+) -> Result<TransactionMetadata, FailedTransactionMetadata> {
+    ctx.svm.expire_blockhash();
+    let blockhash = ctx.svm.latest_blockhash();
+    let msg = Message::new_with_blockhash(&[ix], Some(&ctx.payer.pubkey()), &blockhash);
+    let signers: Vec<&dyn anchor_v2_testing::Signer> = vec![&ctx.payer, extra];
+    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &signers).unwrap();
+    ctx.svm.send_transaction(tx)
 }
 
 /// `send`, optionally preceded by a compute-budget instruction. The default
@@ -276,6 +295,17 @@ fn quote_meta_users(
     size: u64,
     users: Option<Vec<Address>>,
 ) -> Result<TransactionMetadata, FailedTransactionMetadata> {
+    quote_meta_limited(ctx, direction, size, users, 0)
+}
+
+/// [`quote_meta_users`] with a worst-acceptable-price bound; zero is none.
+fn quote_meta_limited(
+    ctx: &mut Ctx,
+    direction: Direction,
+    size: u64,
+    users: Option<Vec<Address>>,
+    limit_price: u64,
+) -> Result<TransactionMetadata, FailedTransactionMetadata> {
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
             caps: UserCapsV0::EMPTY,
@@ -284,6 +314,7 @@ fn quote_meta_users(
             size,
             users: &user_set(users),
             taker: None,
+            limit_price,
         },
     }
     .to_instruction(accounts::QuoteV0 {
@@ -377,6 +408,23 @@ fn evict_worst(
         place_authority: addr(ctx.place_auth.pubkey()),
     });
     send(ctx, ix)
+}
+
+/// Ask the book what it would let a caller remove next. Read-only, and what a
+/// resolver runs under simulation to find work.
+fn next_removal(ctx: &mut Ctx, kind: ClobRemovalKindV0) -> OrderViewV0 {
+    let ix = instruction::NextRemovalV0 {
+        args: NextRemovalArgsV0 { kind },
+    }
+    .to_instruction(accounts::NextRemovalV0Accounts {
+        market: addr(ctx.market),
+    });
+    let meta = send(ctx, ix).expect("next_removal_v0 runs");
+    anchor_lang_v2::wincode::config::deserialize(
+        &meta.return_data.data,
+        anchor_lang_v2::BORSH_CONFIG,
+    )
+    .expect("decodes as NextRemovalV0")
 }
 
 fn remove_expired(
@@ -768,6 +816,7 @@ fn hard_cap_rejects_placement_and_crank_evicts_tail() {
         evict_worst(&mut ctx, Side::Bid),
         err_code(clob::error::ClobError::BelowEvictThreshold),
     );
+    assert!(!next_removal(&mut ctx, ClobRemovalKindV0::Evictable).found());
 
     // At the hard cap every placement is rejected, even better-priced —
     // eviction is crank-mediated so the evicted maker's aggregates update.
@@ -780,6 +829,13 @@ fn hard_cap_rejects_placement_and_crank_evicts_tail() {
         send(&mut ctx, ix),
         err_code(clob::error::ClobError::SideAtCapacity),
     );
+
+    // Past the threshold the book names the tail itself, and the side: a
+    // caller never reads the threshold or the counts to pick either.
+    let work = next_removal(&mut ctx, ClobRemovalKindV0::Evictable);
+    assert!(work.found());
+    assert_eq!(work.side, Side::Bid);
+    assert_eq!(node(&ctx, work.order_ref.node_index).price, 100);
 
     // The crank removes the tail (worst price) and reports it for velocity.
     let meta = evict_worst(&mut ctx, Side::Bid).unwrap();
@@ -798,6 +854,21 @@ fn hard_cap_rejects_placement_and_crank_evicts_tail() {
         evict_worst(&mut ctx, Side::Ask),
         err_code(clob::error::ClobError::BelowEvictThreshold),
     );
+    // With only the bid side over the threshold, that is the side the book
+    // names.
+    assert_eq!(
+        next_removal(&mut ctx, ClobRemovalKindV0::Evictable).side,
+        Side::Bid
+    );
+
+    // Both sides over the threshold: the book relieves the fuller one.
+    for i in 0..8u64 {
+        place(&mut ctx, place_args(Side::Ask, 300 + i, 1), user);
+    }
+    evict_worst(&mut ctx, Side::Bid).unwrap();
+    let work = next_removal(&mut ctx, ClobRemovalKindV0::Evictable);
+    assert_eq!(work.side, Side::Ask);
+    assert_eq!(node(&ctx, work.order_ref.node_index).price, 307);
 }
 
 #[test]
@@ -871,6 +942,308 @@ fn zero_delay_activates_immediately() {
     assert_eq!(quote(&mut ctx, Direction::Long, 5).len(), 1);
 }
 
+/// Register a resolver for every one of the book's own conditions, the way
+/// the program that owns the book's flow does at attach.
+fn set_crank_conditions(ctx: &mut Ctx, resolver: Pubkey) -> u32 {
+    let entry = |disc: u8, min_payment: u64| CrankResolverV0 {
+        program: resolver.to_bytes(),
+        disc: [disc; 8],
+        min_payment,
+    };
+    let ix = instruction::SetCrankConditionsV0 {
+        args: CrankConditionsArgsV0 {
+            expiry: entry(1, 1_000),
+            activation: entry(2, 2_000),
+            capacity: entry(3, 3_000),
+            cross: entry(4, 4_000),
+            accounts: vec![
+                CrankAccountV0 {
+                    address: ctx.market.to_bytes(),
+                    writable: 1,
+                },
+                CrankAccountV0 {
+                    address: resolver.to_bytes(),
+                    writable: 0,
+                },
+            ],
+        },
+    }
+    .to_instruction(accounts::SetCrankConditionsV0 {
+        market: addr(ctx.market),
+        place_authority: addr(ctx.place_auth.pubkey()),
+    });
+    let meta = send(ctx, ix).expect("set_crank_conditions_v0 runs");
+    u32::from_le_bytes(meta.return_data.data[..4].try_into().unwrap())
+}
+
+/// The block on the market account, read the way a turner does: by account
+/// and offset, with no knowledge of what else the account holds.
+fn crank_block(ctx: &Ctx, offset: u32) -> Vec<relay_spec::ConditionV0> {
+    let account = ctx.svm.get_account(&ctx.market).unwrap();
+    let (header, conditions) = relay_spec::read_block(&account.data[offset as usize..], 0).unwrap();
+    assert_eq!(header.num_conditions as usize, CRANK_CONDITIONS);
+    conditions.to_vec()
+}
+
+/// The book keeps the wakes that describe its own state, and the program that
+/// owns its flow says who answers them.
+///
+/// Neither half is the other's: a caller cannot maintain a hint it would have
+/// to read the arena to compute, and the book cannot resolve work whose
+/// consequences it does not hold.
+#[test]
+fn the_book_hosts_the_conditions_that_watch_its_own_state() {
+    let mut ctx = setup();
+    let user = addr(Pubkey::new_unique());
+    let resolver = Pubkey::new_unique();
+    set_unix_timestamp(&mut ctx, 1_000);
+    ctx.svm.warp_to_slot(50);
+
+    // Before registration the block is stamped but every slot is inactive: a
+    // book nobody cranks wakes nobody.
+    let offset = CRANK_BLOCK_OFFSET as u32;
+    assert!(crank_block(&ctx, offset).iter().all(|c| !c.is_active()));
+
+    let reported = set_crank_conditions(&mut ctx, resolver);
+    assert_eq!(reported, offset, "the block reports where it sits");
+
+    // An empty book has no expiry and no pending activation, so both wakes are
+    // set to never rather than left at zero — a zero would be permanently due.
+    let conditions = crank_block(&ctx, offset);
+    assert!(conditions.iter().all(|c| c.is_active()));
+    assert_eq!(
+        conditions[CRANK_EXPIRY].wake(),
+        Ok(relay_spec::WakeView::AtTimestamp { unix_ts: i64::MAX })
+    );
+    assert_eq!(
+        conditions[CRANK_ACTIVATION].wake(),
+        Ok(relay_spec::WakeView::AtSlot { slot: u64::MAX })
+    );
+    assert_eq!(conditions[CRANK_EXPIRY].min_payment(), 1_000);
+    assert_eq!(conditions[CRANK_CROSS].min_payment(), 4_000);
+
+    // The two watches point at this account's own fields, so a caller never
+    // has to know where the counts or the side heads sit.
+    let market = ctx.market.to_bytes();
+    assert_eq!(
+        conditions[CRANK_CAPACITY].wake(),
+        Ok(relay_spec::WakeView::OnAccountChange {
+            address: market,
+            offset: clob::state::SIDE_COUNTS_OFFSET as u32,
+            len: 8,
+        })
+    );
+    assert_eq!(
+        conditions[CRANK_CROSS].wake(),
+        Ok(relay_spec::WakeView::OnAccountChange {
+            address: market,
+            offset: clob::state::TOP_OF_BOOK_OFFSET as u32,
+            len: 8,
+        })
+    );
+
+    // A placement moves both wakes, in the same instruction that changes what
+    // they describe — nothing else is passed and nothing else is called.
+    let order_ref = place(
+        &mut ctx,
+        PlaceOrderArgsV0 {
+            max_ts: 1_020,
+            activation_delay_slots: Some(10),
+            ..place_args(Side::Ask, 100, 5)
+        },
+        user,
+    );
+    let conditions = crank_block(&ctx, offset);
+    assert_eq!(
+        conditions[CRANK_EXPIRY].wake(),
+        Ok(relay_spec::WakeView::AtTimestamp { unix_ts: 1_020 })
+    );
+    assert_eq!(
+        conditions[CRANK_ACTIVATION].wake(),
+        Ok(relay_spec::WakeView::AtSlot { slot: 60 })
+    );
+
+    // And removing the order that held them puts both back to never.
+    set_unix_timestamp(&mut ctx, 1_021);
+    remove_expired(&mut ctx, order_ref).unwrap();
+    let conditions = crank_block(&ctx, offset);
+    assert_eq!(
+        conditions[CRANK_EXPIRY].wake(),
+        Ok(relay_spec::WakeView::AtTimestamp { unix_ts: i64::MAX })
+    );
+
+    // A resolver registered with a zeroed program is a condition the caller
+    // does not want; the slot goes inactive rather than waking into nothing.
+    let ix = instruction::SetCrankConditionsV0 {
+        args: CrankConditionsArgsV0 {
+            expiry: CrankResolverV0 {
+                program: [0u8; 32],
+                disc: [0u8; 8],
+                min_payment: 0,
+            },
+            activation: CrankResolverV0 {
+                program: resolver.to_bytes(),
+                disc: [2; 8],
+                min_payment: 2_000,
+            },
+            capacity: CrankResolverV0 {
+                program: resolver.to_bytes(),
+                disc: [3; 8],
+                min_payment: 3_000,
+            },
+            cross: CrankResolverV0 {
+                program: resolver.to_bytes(),
+                disc: [4; 8],
+                min_payment: 4_000,
+            },
+            accounts: vec![CrankAccountV0 {
+                address: ctx.market.to_bytes(),
+                writable: 1,
+            }],
+        },
+    }
+    .to_instruction(accounts::SetCrankConditionsV0 {
+        market: addr(ctx.market),
+        place_authority: addr(ctx.place_auth.pubkey()),
+    });
+    send(&mut ctx, ix).unwrap();
+    let conditions = crank_block(&ctx, offset);
+    assert!(!conditions[CRANK_EXPIRY].is_active());
+    assert!(conditions[CRANK_CROSS].is_active());
+}
+
+/// Only the key the book's flow already belongs to may say who cranks it.
+#[test]
+fn registering_a_resolver_is_place_authority_only() {
+    let mut ctx = setup();
+    let stranger = Keypair::new();
+    ctx.svm.airdrop(&stranger.pubkey(), 1_000_000_000).unwrap();
+    let ix = instruction::SetCrankConditionsV0 {
+        args: CrankConditionsArgsV0 {
+            expiry: CrankResolverV0 {
+                program: Pubkey::new_unique().to_bytes(),
+                disc: [1; 8],
+                min_payment: 1,
+            },
+            activation: CrankResolverV0 {
+                program: [0u8; 32],
+                disc: [0u8; 8],
+                min_payment: 0,
+            },
+            capacity: CrankResolverV0 {
+                program: [0u8; 32],
+                disc: [0u8; 8],
+                min_payment: 0,
+            },
+            cross: CrankResolverV0 {
+                program: [0u8; 32],
+                disc: [0u8; 8],
+                min_payment: 0,
+            },
+            accounts: vec![],
+        },
+    }
+    .to_instruction(accounts::SetCrankConditionsV0 {
+        market: addr(ctx.market),
+        place_authority: addr(stranger.pubkey()),
+    });
+    assert_clob_err(
+        send_signed(&mut ctx, ix, &stranger),
+        err_code(clob::error::ClobError::InvalidAuthority),
+    );
+}
+
+/// Ask the book about a set of refs, the way a caller that holds refs but not
+/// the arena does.
+fn orders(ctx: &mut Ctx, refs: &[OrderRefV0]) -> Vec<OrderViewV0> {
+    let ix = instruction::OrdersV0 {
+        args: OrdersArgsV0 {
+            refs: refs.to_vec(),
+        },
+    }
+    .to_instruction(accounts::OrdersV0Accounts {
+        market: addr(ctx.market),
+    });
+    let meta = send(ctx, ix).expect("orders_v0 runs");
+    let answer: clob::OrdersV0 = anchor_lang_v2::wincode::config::deserialize(
+        &meta.return_data.data,
+        anchor_lang_v2::BORSH_CONFIG,
+    )
+    .expect("decodes as OrdersV0");
+    answer.orders
+}
+
+/// A caller holding refs asks the book what they still name, instead of
+/// decoding its arena.
+///
+/// The answers are positional: a ref whose order is gone comes back empty in
+/// its own slot, so the caller reads them straight against its own list.
+#[test]
+fn the_book_describes_the_orders_a_caller_holds_refs_for() {
+    let mut ctx = setup();
+    let user = addr(Pubkey::new_unique());
+    let other = addr(Pubkey::new_unique());
+    set_unix_timestamp(&mut ctx, 1_000);
+
+    let bid = place(
+        &mut ctx,
+        PlaceOrderArgsV0 {
+            max_ts: 1_500,
+            ..place_args(Side::Bid, 100, 7)
+        },
+        user,
+    );
+    let ask = place(&mut ctx, place_args(Side::Ask, 300, 4), other);
+    // Never placed: node 0 holds the bid, so this id names nothing.
+    let ghost = OrderRefV0 {
+        node_index: bid.node_index,
+        order_id: 999,
+    };
+
+    let views = orders(&mut ctx, &[bid, ghost, ask]);
+    assert_eq!(views.len(), 3);
+
+    assert!(views[0].found());
+    assert_eq!(views[0].order_ref, bid);
+    assert_eq!(views[0].user.authority, user);
+    assert_eq!(views[0].side, Side::Bid);
+    assert_eq!(views[0].price, 100);
+    assert_eq!(views[0].base_asset_amount, 7);
+    assert_eq!(views[0].max_ts, 1_500);
+    assert!(!views[0].taker_origin);
+
+    // A live node holding a different order is not this caller's order. Ids
+    // are never reused, so the id alone settles it.
+    assert!(!views[1].found());
+
+    assert!(views[2].found());
+    assert_eq!(views[2].user.authority, other);
+    assert_eq!(views[2].side, Side::Ask);
+    assert_eq!(views[2].max_ts, 0, "good-till-cancelled");
+
+    // Cancel the bid: its ref stops naming an order, and the ask is
+    // unaffected.
+    cancel(&mut ctx, bid, user).unwrap();
+    let views = orders(&mut ctx, &[bid, ask]);
+    assert!(!views[0].found());
+    assert!(views[1].found());
+
+    // More refs than the book answers about in one call is a caller error,
+    // not a truncated answer.
+    let ix = instruction::OrdersV0 {
+        args: OrdersArgsV0 {
+            refs: vec![ask; clob::ORDER_VIEW_CEILING + 1],
+        },
+    }
+    .to_instruction(accounts::OrdersV0Accounts {
+        market: addr(ctx.market),
+    });
+    assert_clob_err(
+        send(&mut ctx, ix),
+        err_code(clob::error::ClobError::InvalidConfig),
+    );
+}
+
 #[test]
 fn expired_orders_are_skipped_and_cranked_off() {
     let mut ctx = setup();
@@ -892,7 +1265,18 @@ fn expired_orders_are_skipped_and_cranked_off() {
         err_code(clob::error::ClobError::OrderNotExpired),
     );
 
+    // And the book says it has no expiry work either.
+    assert!(!next_removal(&mut ctx, ClobRemovalKindV0::Expired).found());
+
     set_unix_timestamp(&mut ctx, 1_021);
+    // Now the book names the order to remove, so a caller never has to read
+    // the arena to find it.
+    let work = next_removal(&mut ctx, ClobRemovalKindV0::Expired);
+    assert!(work.found());
+    assert_eq!(work.order_ref, order_ref);
+    assert_eq!(work.user.authority, user);
+    assert_eq!(work.side, Side::Ask);
+
     // Skipped by quote/execute but NOT removed — reclamation goes through
     // velocity (remove_expired) so the maker's aggregates update.
     assert!(quote(&mut ctx, Direction::Long, 5).is_empty());
@@ -910,6 +1294,7 @@ fn expired_orders_are_skipped_and_cranked_off() {
     let state = market_state(&ctx);
     assert_eq!(state.ask_count, 0);
     assert_eq!(state.free_count, CAPACITY as u32);
+    assert!(!next_removal(&mut ctx, ClobRemovalKindV0::Expired).found());
     // Freed node: the stale ref fails closed.
     assert_clob_err(
         remove_expired(&mut ctx, order_ref),
@@ -1166,6 +1551,7 @@ fn cu_benchmarks() {
             size: u64::MAX,
             users: &[],
             taker: None,
+            limit_price: 0,
         },
     }
     .to_instruction(accounts::QuoteV0 {
@@ -1483,6 +1869,7 @@ fn quote_taker(ctx: &mut Ctx, direction: Direction, size: u64, taker: Address) -
             size,
             users: &[],
             taker: Some(uref(taker)),
+            limit_price: 0,
         },
     }
     .to_instruction(accounts::QuoteV0 {
@@ -1793,6 +2180,7 @@ fn cu_benchmark_quote_with_a_taker_origin_head() {
             size: u64::MAX,
             users: &[],
             taker: None,
+            limit_price: 0,
         },
     }
     .to_instruction(accounts::QuoteV0 {

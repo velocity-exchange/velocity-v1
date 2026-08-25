@@ -54,9 +54,9 @@ use {
             margin_calculation::MarginContext,
             perp_market_map::MarketSet,
             prop_amm::{
-                clob_hint_scan, read_clob_node, ClobCancelAllArgsV0, ClobCancelOrderArgsV0,
-                ClobCancelSides, ClobCancelSidesExt, ClobMarket, ClobOrderRefV0,
-                ClobRemovedOrderV0, ClobSide, ClobUserRefV0, QuoterV0, WireDirectionExt,
+                ClobCancelAllArgsV0, ClobCancelOrderArgsV0, ClobCancelSides, ClobCancelSidesExt,
+                ClobMarket, ClobOrderRefV0, ClobRemovedOrderV0, ClobSide, ClobUserRefV0, QuoterV0,
+                WireDirectionExt,
             },
             spot_market_map::get_writable_spot_market_set,
             state::State,
@@ -68,8 +68,11 @@ use {
     std::ops::DerefMut,
 };
 
-/// Refs per call, bounding CPI count and compute.
+/// Refs per call, bounding CPI count and compute. The book answers about at
+/// most `CLOB_ORDER_VIEW_CEILING` refs in one call, so this cannot exceed it.
 pub const MAX_FORCE_CANCEL_CLOB_ORDERS: usize = 8;
+const _: () =
+    assert!(MAX_FORCE_CANCEL_CLOB_ORDERS <= crate::state::prop_amm::CLOB_ORDER_VIEW_CEILING,);
 
 /// One order the caller wants reclaimed.
 ///
@@ -286,34 +289,33 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
             (false, false) => None,
         };
 
-        // Read each hinted node off the book. A hint that no longer holds a
-        // live order is dropped — relay or a fill got there first, which is
-        // the expected outcome of the race, not an error. A hint pointing at
-        // someone else's order is the caller being wrong about what it
-        // passed, and fails loudly.
+        // Ask the book what each hinted ref still holds. A ref that no longer
+        // names a live order comes back empty — relay or a fill got there
+        // first, which is the expected outcome of the race, not an error. A
+        // ref naming someone else's order is the caller being wrong about
+        // what it passed, and fails loudly.
         //
-        // Risk-reducing orders are dropped here rather than after the CPI:
+        // Risk-reducing orders are dropped here rather than after the cancel:
         // cancelling one would only make the account worse, and a caller
         // whose refs went stale against a position that moved must not take
-        // the transaction down for it.
-        let book = ctx.accounts.clob_market.try_borrow_data()?;
+        // the transaction down for it. That decision needs the order's size,
+        // which is why this asks before removing rather than reading the
+        // answer out of what came back.
+        let views = clob
+            .reader()
+            .orders(order_refs.iter().map(|r| r.order_ref).collect())?;
         let cancellable = order_refs
             .iter()
-            .filter_map(|order_ref| {
-                let node = read_clob_node(&book, order_ref.order_ref.node_index)?;
-                if !node.is_open() || node.order_id != order_ref.order_ref.order_id {
-                    return None;
-                }
-                Some((order_ref, node))
-            })
-            .map(|(order_ref, node)| {
+            .zip(views.iter())
+            .filter(|(_, view)| view.found())
+            .map(|(order_ref, view)| {
                 validate!(
-                    node.user_ref() == user_ref,
+                    view.user == user_ref,
                     ErrorCode::DefaultError,
                     "order {} belongs to {}/{}, not the passed user",
                     order_ref.order_ref.order_id,
-                    node.user_ref().authority,
-                    node.user_ref().sub_account_id
+                    view.user.authority,
+                    view.user.sub_account_id
                 )?;
                 // The sweep is taking this whole side; a per-order CPI for it
                 // would be a second call for work already done.
@@ -323,7 +325,7 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
                 }
                 let reducing = is_order_position_reducing(
                     &order_ref.side.to_position_direction(),
-                    node.base_asset_amount,
+                    view.base_asset_amount,
                     position_base,
                 )?;
                 Ok((!reducing).then_some(*order_ref))
@@ -413,15 +415,13 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
                 ErrorCode::DefaultError,
                 "clob swept orders for a different user"
             )?;
-            let book = ctx.accounts.clob_market.try_borrow_data()?;
             let orders = crate::state::prop_amm::unwind_swept_orders(
                 user,
-                &book,
+                &clob.reader(),
                 market_index,
                 sides,
                 &swept,
             )?;
-            drop(book);
             total_fee = total_fee.safe_add(
                 state
                     .perp_fee_structure
@@ -445,16 +445,12 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
         user.update_last_active_slot(clock.slot);
     }
 
-    // Repair the wake hints from the post-cancel book, and pay the relay
-    // turner out of the reservoir when it is the one that cranked.
+    // Pay the relay turner out of the reservoir when it is the one that
+    // cranked.
     if let Some(conditions_loader) = &ctx.accounts.crank_conditions {
-        let (min_expiry, min_activation) =
-            clob_hint_scan(&ctx.accounts.clob_market.try_borrow_data()?, clock.slot);
         let payment = {
-            let mut conditions = load_mut!(conditions_loader)?;
-            conditions.repair_expiry(min_expiry)?;
-            conditions.repair_activation(min_activation)?;
-            conditions.keeper_payment_lamports
+            let conditions = load_mut!(conditions_loader)?;
+            u64::from(conditions.crank_payments.force_cancel)
         };
         if program_keeper_mode {
             let conditions_info = conditions_loader.to_account_info();

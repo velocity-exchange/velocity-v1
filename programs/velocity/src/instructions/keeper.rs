@@ -50,7 +50,7 @@ use {
         optional_accounts::{get_token_mint, update_prelaunch_oracle},
         print_error, safe_decrement,
         state::{
-            clob_crank::ClobCrankConditionsV0,
+            clob_crank::{ClobCrankConditionsV0, CrankPaymentsV0},
             events::{DeleteUserRecord, OrderActionExplanation, SignedMsgOrderRecord},
             fill_mode::FillMode,
             insurance_fund_stake::InsuranceFundStake,
@@ -242,7 +242,7 @@ fn fill_order<'c: 'info, 'info>(
     // borrowing from there costs nothing where cloning every account did.
     let tail_from = remaining_accounts.len() - remaining_accounts_iter.len();
     let tail = &remaining_accounts[tail_from..];
-    let (direction, unfilled, taker_ref, route_digest) = {
+    let (direction, unfilled, taker_ref, route_digest, quote_limit_price) = {
         let user = load!(accounts.user)?;
         let order = user
             .get_order(order_id)
@@ -263,6 +263,11 @@ fn fill_order<'c: 'info, 'info>(
                 sub_account_id: user.sub_account_id.into(),
             },
             order.route_digest,
+            FillMode::Fill.quote_limit_price(
+                order,
+                clock.slot,
+                perp_market_map.get_ref(&market_index)?.order_tick_size,
+            ),
         )
     };
     let (quoter_signer, quoter_signer_nonce) = crate::signer::find_quoter_signer();
@@ -288,6 +293,7 @@ fn fill_order<'c: 'info, 'info>(
             )?,
             reference_price: route_reference_price,
             taker: taker_ref,
+            limit_price: quote_limit_price,
             quoter_signer,
             quoter_signer_nonce,
         };
@@ -394,7 +400,6 @@ fn fill_order<'c: 'info, 'info>(
                     clob.clob_program,
                     clob.quoter_signer,
                     clob.quoter_signer_nonce,
-                    clob.crank_conditions,
                     &perp_market_map,
                     &spot_market_map,
                     &mut oracle_map,
@@ -1567,6 +1572,70 @@ pub fn handle_liquidate_perp<'c: 'info, 'info>(
     Ok(())
 }
 
+/// What the protocol adds to a liquidation crank's flat payment: the priority
+/// fee the transaction paid, bounded by a share of what the liquidation
+/// recovered.
+///
+/// Reads the fee out of the transaction's own compute-budget instructions,
+/// and prices it against the *stored* cost units rather than the limit the
+/// caller requested — a keeper made whole for a fair crank has no reason to
+/// ask for room it does not use, and cannot inflate the bill by asking
+/// anyway.
+///
+/// Every reason to decline pays nothing extra rather than erroring: a crank
+/// that lands is worth more than one that reverts over its own tip, and the
+/// flat payment still stands. That includes an unusable SOL price — this
+/// converts quote to lamports, so it is a value transfer driven by an oracle
+/// and takes the same validity gate as any other.
+fn liquidation_reimbursement<'info>(
+    instructions_sysvar: &Option<UncheckedAccount<'info>>,
+    state: &State,
+    spot_market_map: &SpotMarketMap,
+    oracle_map: &mut OracleMap,
+    filled_quote: u64,
+) -> Result<u64> {
+    let Some(sysvar) = instructions_sysvar else {
+        return Ok(0);
+    };
+    if state.liquidation_crank_reimbursement_bps == 0 || state.sol_spot_market_index == 0 {
+        return Ok(0);
+    }
+    let (price_per_unit, requested_units) =
+        crate::instructions::optional_accounts::tx_compute_budget(sysvar)?;
+    if price_per_unit == 0 || requested_units == 0 {
+        return Ok(0);
+    }
+    let Ok(sol_market) = spot_market_map.get_ref(&state.sol_spot_market_index) else {
+        return Ok(0);
+    };
+    let (oracle_data, validity) = oracle_map.get_price_data_and_validity(
+        MarketType::Spot,
+        sol_market.market_index,
+        &sol_market.oracle_id(),
+        sol_market.historical_oracle_data.last_oracle_price_twap,
+        sol_market.get_max_confidence_interval_multiplier()?,
+        -1,
+        0,
+        None,
+    )?;
+    if !matches!(validity, crate::math::oracle::OracleValidity::Valid) {
+        msg!("sol oracle is not valid for pricing the crank; paying the flat figure");
+        return Ok(0);
+    }
+    let sol_price = oracle_data.price;
+    drop(sol_market);
+
+    let priority_lamports =
+        CrankPaymentsV0::crank_priority_lamports(price_per_unit, requested_units)?;
+    CrankPaymentsV0::liquidation_reimbursement(
+        filled_quote,
+        sol_price,
+        priority_lamports,
+        state.liquidation_crank_reimbursement_bps,
+    )
+    .map_err(Into::into)
+}
+
 #[access_control(
     liq_not_paused(&ctx.accounts.state)
     fill_not_paused(&ctx.accounts.state)
@@ -1602,7 +1671,7 @@ pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
     let (makers_and_referrer, makers_and_referrer_stats) =
         load_user_maps(remaining_accounts_iter, true)?;
 
-    controller::liquidation::liquidate_perp_with_fill(
+    let filled_quote = controller::liquidation::liquidate_perp_with_fill(
         market_index,
         &ctx.accounts.user,
         &user_key,
@@ -1621,9 +1690,18 @@ pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
 
     // Program-keeper mode: the caller's payout account earns reservoir
     // lamports for the crank — the same loop every other relay executor
-    // closes. Reaching here means a real (partial or full) liquidation
-    // fill happened; the controller errors otherwise.
-    let program_keeper_mode = ctx.accounts.liquidator.load()?.authority == state.signer;
+    // closes.
+    //
+    // Only for a crank that actually liquidated something. Several paths
+    // through the controller succeed without filling: a user who can exit
+    // liquidation exits it, and a shortage that allows no transfer transfers
+    // nothing. Those are correct outcomes rather than errors, but they are
+    // not work, and paying for them would let anyone empty the reservoir by
+    // cranking a healthy account in a loop — which stops the cranks that do
+    // matter. The filled quote is the proof, and it is the same figure the
+    // reimbursement is capped against.
+    let program_keeper_mode =
+        filled_quote > 0 && ctx.accounts.liquidator.load()?.authority == state.signer;
     if program_keeper_mode {
         let reservoir = ctx.accounts.crank_conditions.as_ref().ok_or_else(
             || -> anchor_lang::error::Error {
@@ -1640,7 +1718,15 @@ pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
                 conditions.market_index,
                 market_index
             )?;
-            conditions.keeper_payment_lamports
+            u64::from(conditions.crank_payments.liquidation).saturating_add(
+                liquidation_reimbursement(
+                    &ctx.accounts.instructions_sysvar,
+                    &state,
+                    &spot_market_map,
+                    &mut oracle_map,
+                    filled_quote,
+                )?,
+            )
         };
         let info = reservoir.to_account_info();
         let rent_minimum = Rent::get()?.minimum_balance(info.data_len());
@@ -4328,6 +4414,12 @@ pub struct LiquidatePerp<'info> {
     /// the handler). Required in program-keeper mode.
     #[account(mut)]
     pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
+    /// CHECK: the instructions sysvar, locked by address. Present only for a
+    /// crank that wants its priority fee reimbursed — the fee is stated in
+    /// the transaction's own compute-budget instructions and read back from
+    /// here. Absent, the crank takes the flat payment.
+    #[account(address = solana_program::sysvar::instructions::ID)]
+    pub instructions_sysvar: Option<UncheckedAccount<'info>>,
 }
 
 #[derive(Accounts)]

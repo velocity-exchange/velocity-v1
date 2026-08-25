@@ -1,10 +1,10 @@
 use {
     crate::{
-        book::ClobBook,
+        book::{BookHeader, ClobBook},
         emit::emit_pod,
         error::ClobError,
         events::OrderEvictRecordV0,
-        state::{ClobMarketV0, RemovedOrderV0, Side},
+        state::{ClobMarketV0, RemovedOrderV0},
     },
     anchor_lang_v2::prelude::*,
 };
@@ -17,10 +17,8 @@ pub struct EvictWorstV0 {
     pub place_authority: Signer,
 }
 
-#[derive(Clone, Copy, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct EvictWorstArgsV0 {
-    pub side: Side,
-}
+/// Declared by `clob-wire`.
+pub use clob_wire::EvictWorstArgsV0;
 
 /// Crank eviction of the side's tail, allowed once the side is at or above
 /// `evict_threshold_per_side`. Velocity is the caller: it loads the evicted
@@ -33,6 +31,9 @@ pub fn handle_evict_worst_v0(
     let clock = Clock::get()?;
     let market = &mut ctx.accounts.market;
     let removed = market.evict_worst(args.side)?;
+    // The removal path takes no clock, so an activation hint the chain
+    // has already reached is dropped here instead.
+    market.expire_activation_hint(clock.slot)?;
 
     emit_pod!(OrderEvictRecordV0 {
         authority: removed.user.authority,
@@ -52,5 +53,6 @@ pub fn handle_evict_worst_v0(
         base_asset_amount: removed.base_asset_amount,
         side: removed.side,
         taker_origin: removed.taker_origin,
+        max_ts: removed.max_ts,
     })
 }

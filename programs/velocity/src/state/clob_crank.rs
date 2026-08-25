@@ -3,33 +3,29 @@
 //! Relay turners discover work by reading a *condition block* — a
 //! `relay-spec` wire structure naming, per condition, when to wake, which
 //! instruction to simulate to find work (the resolver), and which instruction
-//! does it (the executor). The block lives on a velocity-owned account rather
-//! than the CLOB's for two reasons: removal has to adjust the maker's `User`
-//! (open-order aggregates and the reward debit), which only velocity can do;
-//! and the resolver has to stage *velocity's* account list. `ConditionV0`
-//! names its wake account explicitly, so a velocity-hosted condition watching
-//! foreign CLOB bytes is native to `relay-spec` — nothing is mirrored.
+//! does it (the executor).
 //!
-//! [`CLOB_CRANK_CONDITIONS`] conditions per market, in fixed slots so the
-//! resolver can address them by index — the three removal ones below, plus
-//! [`CLOB_CRANK_CROSS`], [`CLOB_CRANK_CROSS_FALLBACK`], and
-//! [`CLOB_CRANK_CROSS_ACTIVATION`] for cross discovery:
+//! A condition splits into two halves with different owners. The wake is a
+//! fact about an account, so it belongs to the program that writes that
+//! account. The resolver is what to do about it, and removing an order adjusts
+//! the maker's `User` — open-order aggregates and the reward debit — which
+//! only velocity can do. So the book hosts the wakes for its own state and
+//! velocity registers the resolvers that answer them, and this account holds
+//! the one wake that is velocity's own.
 //!
-//! - [`CLOB_CRANK_EVICT`] — `WakeKind::OnAccountChange` over the CLOB market's
-//!   `bid_count` / `ask_count`, so a turner wakes when the book grows toward
-//!   its soft cap.
-//! - [`CLOB_CRANK_EXPIRE`] — `WakeKind::AtTimestamp`. Velocity mediates every
-//!   placement (`place_clob_order`), so it maintains a min-over-inserts
-//!   `wake_ts` hint here as it places; the executor recomputes the true value
-//!   as it works, repairing the hint.
-//! - [`CLOB_CRANK_EXPIRE_FALLBACK`] — `WakeKind::EverySlots`, the same
-//!   resolver/executor as the expire condition. The hint above is best-effort:
-//!   `place_clob_order` takes the conditions account as an *optional* account
-//!   (placement must not brick on a market whose conditions were never
-//!   initialized), so an expiring placement that omits it would otherwise be
-//!   work with no wake: an order past its `max_ts` that no turner is ever told
-//!   about, resting on the book until some unrelated wake happens to fire. The
-//!   fallback poll makes a missed hint cost latency, never liveness.
+//! One condition per market, [`CLOB_CRANK_CROSS_FALLBACK`]: the periodic poll
+//! that catches a cross a PropAMM created by repricing, which changes nothing
+//! on the book and so fires no watch.
+//!
+//! The book's own work — an expired order, a side at its eviction threshold,
+//! a crossed book, an order reaching its activation slot — wakes off
+//! conditions the CLOB hosts on the market account itself, registered here at
+//! attach through `set_crank_conditions_v0`. They name velocity's resolvers
+//! and pay out of this account's reservoir, so what runs is still velocity's;
+//! what is watched is the book's. That split is why there is no expiry
+//! fallback poll any more: a poll covers a hint whose maintenance is
+//! best-effort, and the book maintains those in the same instruction that
+//! changes what they describe.
 //!
 //! Resolvers stage their `ResolvedCrankV0` (executor account list + args) into
 //! the program-wide [`crate::state::relay_scratch::RelayScratchV0`], not into
@@ -48,43 +44,34 @@
 //! discriminator), which is the 8-aligned offset `read_block` requires.
 
 use {
-    crate::error::ErrorCode,
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        math::safe_math::SafeMath,
+    },
     anchor_lang::prelude::*,
     relay_anchor::RelayBlock,
     relay_spec::{ConditionBlock, RelayBlockV0},
+    std::convert::TryFrom,
 };
 
 /// PDA seed: `["clob_crank_conditions", market_index]`.
 pub const CLOB_CRANK_CONDITIONS_PDA_SEED: &[u8] = b"clob_crank_conditions";
 
-/// Index of the evict condition (book grew toward its soft cap).
-pub const CLOB_CRANK_EVICT: usize = 0;
-/// Index of the expire condition (an order's `wake_ts` came due).
-pub const CLOB_CRANK_EXPIRE: usize = 1;
-/// Index of the expire fallback (periodic poll catching missed hints).
-pub const CLOB_CRANK_EXPIRE_FALLBACK: usize = 2;
-/// Index of the cross condition (the book's best bid/ask moved — a crossing
-/// order is by definition a new best, so the watch catches every new cross).
+/// Index of the cross fallback: `WakeKind::EverySlots`.
 ///
-/// Its resolver answers for both cross cranks: a crossed taker remainder at the
-/// top of the book is staged as `crank_taker_origin_cross`, so the improvement
-/// reaches the taker, and anything else crossed as `crank_cross_match`. A
-/// `ResolvedCrankV0` names its own executor, so the second crank needs neither a
-/// slot of its own nor a second wake — the two wakes below are already the only
-/// ways a top-of-book cross can appear.
-pub const CLOB_CRANK_CROSS: usize = 3;
-/// Index of the cross fallback (periodic poll — the liveness floor for
-/// PropAMM-side crosses, which have no single account to watch).
-pub const CLOB_CRANK_CROSS_FALLBACK: usize = 4;
-/// Index of the cross-activation condition: `WakeKind::AtSlot` over the
-/// minimum *upcoming* `activation_slot` on the book. Activation changes
-/// nothing on-chain, but it is exactly when makers who lined up against a
-/// speed-bumped order expect the cross to fire — so the program tells
-/// turners the slot precisely, min-folded at placement and repaired to the
-/// next future activation (or `u64::MAX`) by every landing crank's scan.
-pub const CLOB_CRANK_CROSS_ACTIVATION: usize = 5;
+/// The only condition velocity hosts for a market. The book hosts the four
+/// that describe its own state — an expiry, an activation, a side at its cap,
+/// a crossed book — because it is the account those facts live on and the
+/// only program that can keep their wakes current without being handed a
+/// second account on every write.
+///
+/// This one is not about the book. A PropAMM that reprices into a cross with
+/// the book changes nothing on the book's account, so no watch on it fires,
+/// and the maker's own reprice watch belongs to the maker's conditions. The
+/// poll is that case's liveness floor.
+pub const CLOB_CRANK_CROSS_FALLBACK: usize = 0;
 /// Conditions hosted per market.
-pub const CLOB_CRANK_CONDITIONS: usize = 6;
+pub const CLOB_CRANK_CONDITIONS: usize = 1;
 
 /// Every condition on this account resolves with the same five accounts;
 /// the capacity is [`RelayBlockV0`]'s minimum granularity of 8.
@@ -92,6 +79,218 @@ pub const CLOB_CRANK_RESOLVER_CAPACITY: usize = 8;
 
 /// Account-data offset of the relay block (what a `WatchV0` registers at).
 pub const CLOB_CRANK_BLOCK_OFFSET: usize = relay_spec::block_offset!(ClobCrankConditionsV0, relay);
+
+/// Seconds past an order's expiry at which its crank pays the full
+/// escalation. See [`CrankPaymentsV0::expiry_escalation`].
+pub const EXPIRY_ESCALATION_SECONDS: u64 = 300;
+/// The most an expiry crank adds to its base payment, in lamports.
+pub const EXPIRY_ESCALATION_CEILING: u32 = 5_000;
+
+/// Compute units a liquidation crank's priority fee is reimbursed against.
+///
+/// Deliberately a measured figure rather than the limit a transaction asks
+/// for: reimbursing the request would let a caller inflate its own bill, and
+/// a keeper paid for an honest crank has every reason to size its request
+/// tightly.
+pub const LIQUIDATION_CRANK_REIMBURSED_UNITS: u32 = 400_000;
+
+/// Cost units each of a market's cranks requests, one field per crank.
+///
+/// Measured, not guessed: a turner simulates the crank and requests a compute
+/// limit from what it burned, and the rest of the sum — signatures, write
+/// locks, instruction-data bytes, the loaded-accounts limit — falls out of the
+/// transaction it assembles. An admin passes those totals here.
+///
+/// The unit is the block-packing cost unit, which is what the network prices a
+/// transaction by. `State.transaction_fee_rails` turns it into lamports.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CrankCostUnitsV0 {
+    /// `evict_worst` / `remove_expired`: one book write and a hint repair.
+    pub removal: u32,
+    /// `crank_cross_match`: two settlement legs through the router.
+    pub cross: u32,
+    /// `crank_taker_origin_cross`: the same, against a taker remainder.
+    pub taker_origin_cross: u32,
+    /// `trigger_order` / `trigger_clob_order` in program-keeper mode.
+    pub trigger: u32,
+    /// `liquidate_perp_with_fill` in program-keeper mode.
+    pub liquidation: u32,
+    /// `force_cancel_clob_orders`.
+    pub force_cancel: u32,
+}
+
+/// What each of a market's cranks pays its keeper, in lamports.
+///
+/// One figure per crank rather than one for the market. A book removal and a
+/// two-legged cross differ by an order of magnitude in what they request, and
+/// the network charges a transaction for what it requests — so a single figure
+/// either underpays the cross, and nobody runs it, or overpays every removal.
+///
+/// Derived once at attach time from [`CrankCostUnitsV0`] and
+/// `State.transaction_fee_rails`. Stored rather than recomputed at crank time
+/// for two reasons: pricing itself would cost a crank compute and an extra
+/// account, and a staged executor that could re-derive its own terms could
+/// re-price its own work.
+#[zero_copy(unsafe)]
+#[derive(Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct CrankPaymentsV0 {
+    pub removal: u32,
+    pub cross: u32,
+    pub taker_origin_cross: u32,
+    pub trigger: u32,
+    pub liquidation: u32,
+    pub force_cancel: u32,
+}
+
+impl CrankPaymentsV0 {
+    /// Price every crank off one measurement each and the network's current
+    /// fee model.
+    ///
+    /// A crank transaction carries exactly one signature — the turner's fee
+    /// payer. Executors name no signer at all (relay refuses to sign a
+    /// transaction whose executor account list contains one), so there is
+    /// never a second.
+    pub fn derive(
+        rails: &crate::state::state::TransactionFeeRails,
+        units: &CrankCostUnitsV0,
+    ) -> Result<Self> {
+        let price = |cost_units: u32| -> Result<u32> {
+            let lamports = rails.transaction_cost(u64::from(cost_units), 1)?;
+            u32::try_from(lamports).map_err(|_| {
+                msg!("crank payment {} lamports does not fit u32", lamports);
+                error!(ErrorCode::MathError)
+            })
+        };
+        Ok(Self {
+            removal: price(units.removal)?,
+            cross: price(units.cross)?,
+            taker_origin_cross: price(units.taker_origin_cross)?,
+            trigger: price(units.trigger)?,
+            liquidation: price(units.liquidation)?,
+            force_cancel: price(units.force_cancel)?,
+        })
+    }
+
+    /// Extra lamports an expiry crank pays for every second it went unclaimed,
+    /// on top of the base removal payment.
+    ///
+    /// A crank's base payment covers what the transaction costs to land in a
+    /// quiet market and nothing more, so a turner paying any priority fee is
+    /// out of pocket and rationally declines — exactly when congestion is what
+    /// stopped the crank in the first place. The offer therefore climbs with
+    /// the delay, and the turner takes it at whatever point it beats the fee
+    /// it has to pay. Nobody is reimbursed for a number they chose: the
+    /// protocol sets the price and the turner decides whether to accept it.
+    ///
+    /// Linear, from nothing at the moment the order comes due to
+    /// [`EXPIRY_ESCALATION_CEILING`] after [`EXPIRY_ESCALATION_SECONDS`].
+    ///
+    /// The period is long because an expired order is not urgent: quote and
+    /// execute already skip it, so it causes no bad fills while it rests. The
+    /// only cost of leaving it is its owner's margin staying reserved. A fast
+    /// ramp would pay a premium for ordinary latency; this one still clears a
+    /// stuck order inside a congestion episode.
+    pub fn expiry_escalation(max_ts: i64, now: i64) -> u32 {
+        if max_ts == 0 {
+            return 0;
+        }
+        let late = now.saturating_sub(max_ts).max(0) as u64;
+        let scaled = late
+            .saturating_mul(u64::from(EXPIRY_ESCALATION_CEILING))
+            .saturating_div(EXPIRY_ESCALATION_SECONDS);
+        u32::try_from(scaled.min(u64::from(EXPIRY_ESCALATION_CEILING)))
+            .unwrap_or(EXPIRY_ESCALATION_CEILING)
+    }
+
+    /// What a liquidation crank pays on top of its base figure: what the
+    /// transaction actually cost, bounded by a share of what the liquidation
+    /// recovered.
+    ///
+    /// `filled_quote` is the liquidation's own filled value, `sol_price` the
+    /// oracle's SOL price — both in `PRICE_PRECISION`-scaled quote — and
+    /// `priority_lamports` the fee the transaction paid for its position in
+    /// the block. The base figure already covers the signature, so only the
+    /// priority fee is added back.
+    ///
+    /// Returns zero when the share is unset, the price is unusable, or the
+    /// cap is below what was spent. The last of those is not a failure: it
+    /// says this liquidation was too small to be worth landing at this
+    /// moment's fee, and a keeper that agrees will leave it. It becomes worth
+    /// landing when fees fall or the account deteriorates further.
+    /// The priority fee this transaction paid for the work a liquidation
+    /// crank is reimbursed for.
+    ///
+    /// Priced on the lesser of what the transaction asked for and what the
+    /// crank was measured to need. Both bounds are load-bearing, in opposite
+    /// directions. The runtime charges the priority fee on the limit a
+    /// transaction *requests*, so a fixed figure would pay a caller that
+    /// requests less than that figure more than it spent — a profit, drawn
+    /// from the reservoir, on every liquidation. The request alone would
+    /// instead let a caller inflate the limit and bill the difference.
+    /// The smaller of the two leaves nothing in either direction.
+    pub fn crank_priority_lamports(
+        price_per_unit: u64,
+        requested_units: u32,
+    ) -> VelocityResult<u64> {
+        let units = u64::from(requested_units).min(u64::from(LIQUIDATION_CRANK_REIMBURSED_UNITS));
+        u64::try_from(
+            u128::from(price_per_unit)
+                .safe_mul(u128::from(units))?
+                .safe_div_ceil(1_000_000)?,
+        )
+        .map_err(|_| ErrorCode::MathError.into())
+    }
+
+    pub fn liquidation_reimbursement(
+        filled_quote: u64,
+        sol_price: i64,
+        priority_lamports: u64,
+        share_bps: u16,
+    ) -> VelocityResult<u64> {
+        if share_bps == 0 || sol_price <= 0 || priority_lamports == 0 {
+            return Ok(0);
+        }
+        // Quote the protocol will spend at most, then the same figure in
+        // lamports: `quote / sol_price` is SOL, and a SOL is `LAMPORTS_PER_SOL`.
+        let capped_quote = (filled_quote as u128)
+            .safe_mul(u128::from(share_bps))?
+            .safe_div(10_000)?;
+        let cap_lamports = capped_quote
+            .safe_mul(u128::from(crate::math::constants::LAMPORTS_PER_SOL_U64))?
+            .safe_div(sol_price as u128)?;
+        Ok(u64::try_from(cap_lamports.min(u128::from(priority_lamports))).unwrap_or(0))
+    }
+
+    /// The largest of them. What the reservoir has to be able to cover for
+    /// every crank on the market to run.
+    pub fn max(&self) -> u32 {
+        [
+            self.removal,
+            self.cross,
+            self.taker_origin_cross,
+            self.trigger,
+            self.liquidation,
+            self.force_cancel,
+        ]
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(0)
+    }
+
+    /// True when every crank on this market is priced. A zero payment is a
+    /// crank no turner takes, so it is a configuration error rather than a
+    /// free crank.
+    pub fn all_priced(&self) -> bool {
+        self.removal > 0
+            && self.cross > 0
+            && self.taker_origin_cross > 0
+            && self.trigger > 0
+            && self.liquidation > 0
+            && self.force_cancel > 0
+    }
+}
 
 #[account(zero_copy(unsafe))]
 #[derive(Debug)]
@@ -106,43 +305,63 @@ pub struct ClobCrankConditionsV0 {
     /// from here rather than from the perp market account; an admin oracle
     /// rotation goes live for the cranks on re-attach.
     pub oracle: Pubkey,
-    /// Lamports the executor pays the keeper per crank, mirrored into each
-    /// conditions' `min_payment`. This account doubles as the reservoir those
-    /// lamports come from: relay's `assert_paid_v0` measures the keeper's
-    /// lamport balance, so a crank that moves no lamports cannot express a
-    /// fee, and turners would have no signal to prioritize (or decline) the
-    /// work. Held here rather than in a global PDA because the executor
-    /// already has to touch this account to repair the expiry hint — so the
-    /// reservoir costs no extra account in a crank transaction.
+    /// Lamports each executor pays its keeper, mirrored into that crank's
+    /// `min_payment`. This account doubles as the reservoir those lamports
+    /// come from: relay's `assert_paid_v0` measures the keeper's lamport
+    /// balance, so a crank that moves no lamports cannot express a fee, and
+    /// turners would have no signal to prioritize (or decline) the work. Held
+    /// here rather than in a global PDA because the executor already has to
+    /// touch this account to repair the expiry hint — so the reservoir costs
+    /// no extra account in a crank transaction.
     ///
     /// Refilled by the maker, not the protocol: the flat removal reward the
     /// maker pays accrues to a protocol-owned `User`, and a hot role withdraws
     /// that quote and converts it to SOL to top these reservoirs off. An empty
     /// reservoir stops cranks rather than silently paying nothing, which is the
     /// failure mode ops can actually see.
-    pub keeper_payment_lamports: u64,
+    pub crank_payments: CrankPaymentsV0,
     /// Floor on the protocol's quote surplus from a cross-match crank, in
     /// QUOTE_PRECISION. A cross costs the protocol real SOL — the reservoir
-    /// pays `keeper_payment_lamports` to whoever cranked it — so a cross that
+    /// pays `crank_payments.cross` to whoever cranked it — so a cross that
     /// clears by a cent is a cross worth declining. Zero keeps the bare
     /// "strictly profitable" rule.
     ///
     /// Denominated in quote rather than derived from the lamport cost because
     /// the conversion needs a SOL price, and the cross crank carries no SOL
     /// oracle (it holds the perp's oracle and its map section, nothing more).
-    /// Admins set it to cover the lamport payout with margin and re-price it
-    /// alongside `keeper_payment_lamports`, which is the same cadence.
+    /// Admins set it to cover the cross payout with margin and re-price it
+    /// alongside the payments, which is the same cadence.
     pub min_cross_surplus: u64,
+    /// Where the book's own condition block sits in the market account, as it
+    /// reported at attach.
+    ///
+    /// A market has two blocks and each needs its own relay watch: this
+    /// account's, whose block is its first field at offset 8, and the book's,
+    /// which holds the four conditions describing the book itself. A
+    /// registrar that watches only this account leaves the book's cranks
+    /// unwoken, so the offset is captured here for it to find.
+    pub clob_block_offset: u32,
+    /// The region of the book that changes whenever either side's best moves,
+    /// as the book reported it at attach.
+    ///
+    /// A crossing order is by definition a new best, so a relay watch here
+    /// catches every cross the moment it appears. Captured rather than
+    /// derived: the book answers where its own heads sit, so velocity
+    /// registers a watch on it without knowing its layout. Read by the
+    /// per-quoter cross conditions, which watch this same book for a cross
+    /// against a PropAMM.
+    pub top_of_book_offset: u32,
+    pub top_of_book_len: u32,
     /// The perp market these conditions crank. Also the PDA seed.
     pub market_index: u16,
     /// The market's quote spot market, captured at attach time (the staged
     /// executor's map section needs its PDA).
     pub quote_spot_market_index: u16,
-    /// Tail reserve: 4 bytes of alignment slack plus room for two more
-    /// captured pubkeys, so a resolver that needs another fixed account can
+    /// Tail reserve: 4 bytes of alignment slack plus room for a captured
+    /// pubkey and change, so a resolver that needs another fixed account can
     /// take it from here instead of forcing an `extend_account` migration on
     /// every market's conditions.
-    pub padding: [u8; 68],
+    pub padding: [u8; 40],
 }
 
 // `padding` is longer than 32 bytes, which `#[derive(Default)]` does not
@@ -152,11 +371,14 @@ impl Default for ClobCrankConditionsV0 {
         Self {
             relay: RelayBlock::default(),
             oracle: Pubkey::default(),
-            keeper_payment_lamports: 0,
+            crank_payments: CrankPaymentsV0::default(),
             min_cross_surplus: 0,
+            clob_block_offset: 0,
+            top_of_book_offset: 0,
+            top_of_book_len: 0,
             market_index: 0,
             quote_spot_market_index: 0,
-            padding: [0; 68],
+            padding: [0; 40],
         }
     }
 }
@@ -167,11 +389,14 @@ impl ClobCrankConditionsV0 {
     pub const SIZE: usize = 8
         + RelayBlockV0::<CLOB_CRANK_CONDITIONS, CLOB_CRANK_RESOLVER_CAPACITY>::SIZE
         + 32
+        + 24
         + 8
-        + 8
+        + 4
+        + 4
+        + 4
         + 2
         + 2
-        + 68;
+        + 40;
 
     /// Store the resolver account list and describe where it landed.
     pub fn write_resolvers(
@@ -268,71 +493,6 @@ impl ClobCrankConditionsV0 {
             .ok_or(ErrorCode::MathError)?;
         Ok(amount)
     }
-
-    /// The expire condition's `wake_ts` hint.
-    pub fn expire_wake_ts(&self) -> Result<i64> {
-        match self.get_condition(CLOB_CRANK_EXPIRE)?.wake() {
-            Ok(relay_spec::WakeView::AtTimestamp { unix_ts }) => Ok(unix_ts),
-            _ => Err(error!(ErrorCode::DefaultError)),
-        }
-    }
-
-    /// Min-fold a newly placed order's `max_ts` into the expire hint — the
-    /// cheap, conservative maintenance `place_clob_order` does. Only ever
-    /// moves the wake earlier, so it can never make the hint fire late.
-    pub fn note_expiry(&mut self, max_ts: i64) -> Result<()> {
-        let current = self.expire_wake_ts()?;
-        self.edit_condition(CLOB_CRANK_EXPIRE, |c| {
-            c.set_wake(relay_spec::WakeView::AtTimestamp {
-                unix_ts: current.min(max_ts),
-            })
-        })
-    }
-
-    /// Overwrite the expire hint with a recomputed true minimum (`i64::MAX`
-    /// when no live order expires) — what the crank executor does after a
-    /// removal, so a due hint goes quiet instead of firing forever.
-    pub fn repair_expiry(&mut self, true_min_ts: i64) -> Result<()> {
-        self.edit_condition(CLOB_CRANK_EXPIRE, |c| {
-            c.set_wake(relay_spec::WakeView::AtTimestamp {
-                unix_ts: true_min_ts,
-            })
-        })
-    }
-
-    /// The cross-activation condition's `wake_slot` hint.
-    pub fn activation_wake_slot(&self) -> Result<u64> {
-        match self.get_condition(CLOB_CRANK_CROSS_ACTIVATION)?.wake() {
-            Ok(relay_spec::WakeView::AtSlot { slot }) => Ok(slot),
-            _ => Err(error!(ErrorCode::DefaultError)),
-        }
-    }
-
-    /// Min-fold a newly placed order's activation slot into the
-    /// cross-activation wake — cheap, conservative placement-side
-    /// maintenance, exactly like [`Self::note_expiry`]. Only future slots
-    /// matter: an already-active placement is covered by the cross
-    /// condition's change-watch over the book's bests.
-    pub fn note_activation(&mut self, activation_slot: u64) -> Result<()> {
-        let current = self.activation_wake_slot()?;
-        self.edit_condition(CLOB_CRANK_CROSS_ACTIVATION, |c| {
-            c.set_wake(relay_spec::WakeView::AtSlot {
-                slot: current.min(activation_slot),
-            })
-        })
-    }
-
-    /// Overwrite the cross-activation hint with the recomputed minimum
-    /// *future* activation (`u64::MAX` when nothing is pending) — every
-    /// landing crank does this from its book scan, so a fired hint goes
-    /// quiet even when the activation produced no cross.
-    pub fn repair_activation(&mut self, min_future_slot: u64) -> Result<()> {
-        self.edit_condition(CLOB_CRANK_CROSS_ACTIVATION, |c| {
-            c.set_wake(relay_spec::WakeView::AtSlot {
-                slot: min_future_slot,
-            })
-        })
-    }
 }
 
 // The block must start at an 8-aligned offset for `read_block`'s zero-copy
@@ -348,20 +508,179 @@ const _: () = assert!((ClobCrankConditionsV0::SIZE - 8) % 16 == 0);
 mod tests {
     use {
         super::*,
+        crate::math::constants::{PRICE_PRECISION_I64, QUOTE_PRECISION_U64},
         relay_spec::{bytemuck::Zeroable, ResolvedCrankV0, ResponsePointerV0},
     };
 
-    /// The surplus floor came out of the padding tail, so the account's size
-    /// — and therefore every live conditions PDA — is untouched by it. If this
-    /// fails, the field was added rather than carved and attaching a CLOB
-    /// needs a resize.
+    /// The account holds one condition: the poll for a cross a PropAMM
+    /// created by repricing. The book's own four moved onto the book, and the
+    /// block shrank with them. If this fails, a condition was added here that
+    /// belongs on the account whose state it describes.
     #[test]
-    fn the_cross_surplus_floor_costs_no_account_space() {
-        assert_eq!(std::mem::size_of::<ClobCrankConditionsV0>(), 1_568);
-        assert_eq!(ClobCrankConditionsV0::SIZE, 1_576);
+    fn the_crank_terms_cost_no_account_space() {
+        assert_eq!(CLOB_CRANK_CONDITIONS, 1);
+        assert_eq!(std::mem::size_of::<ClobCrankConditionsV0>(), 608);
+        assert_eq!(ClobCrankConditionsV0::SIZE, 616);
         // Default is the bare "strictly profitable" rule: a market that never
         // sets a floor behaves as it did before the field existed.
         assert_eq!(ClobCrankConditionsV0::default().min_cross_surplus, 0);
+        // And an unpriced market arms nothing: every payment is zero, which
+        // `write_clob_crank_conditions` refuses.
+        assert!(!ClobCrankConditionsV0::default().crank_payments.all_priced());
+    }
+
+    /// The offer climbs with the wait and then stops, so a stuck expiry
+    /// eventually beats any fee a turner is paying without the protocol
+    /// writing a blank cheque.
+    #[test]
+    fn an_expiry_offer_climbs_with_the_delay_and_caps() {
+        // Not yet due, and exactly due, add nothing.
+        assert_eq!(CrankPaymentsV0::expiry_escalation(1_000, 900), 0);
+        assert_eq!(CrankPaymentsV0::expiry_escalation(1_000, 1_000), 0);
+        // Linear across the window.
+        let half = EXPIRY_ESCALATION_SECONDS as i64 / 2;
+        assert_eq!(
+            CrankPaymentsV0::expiry_escalation(1_000, 1_000 + half),
+            EXPIRY_ESCALATION_CEILING / 2
+        );
+        // At the window and far past it, the ceiling and no more.
+        let full = EXPIRY_ESCALATION_SECONDS as i64;
+        assert_eq!(
+            CrankPaymentsV0::expiry_escalation(1_000, 1_000 + full),
+            EXPIRY_ESCALATION_CEILING
+        );
+        assert_eq!(
+            CrankPaymentsV0::expiry_escalation(1_000, 1_000 + full * 1_000),
+            EXPIRY_ESCALATION_CEILING
+        );
+        // A good-till-cancelled order never escalates: it has no deadline to
+        // be late for.
+        assert_eq!(CrankPaymentsV0::expiry_escalation(0, i64::MAX), 0);
+    }
+
+    /// A liquidation repays what the crank spent, and never more than the
+    /// share of the recovery the protocol set aside for it.
+    #[test]
+    fn a_liquidation_repays_the_fee_up_to_its_share() {
+        const SOL: i64 = 200 * PRICE_PRECISION_I64; // $200
+        const HUNDRED_DOLLARS: u64 = 100 * QUOTE_PRECISION_U64;
+
+        // 20% of $100 is $20, which at $200/SOL is 0.1 SOL.
+        let cap = 100_000_000u64;
+        // A fee under the cap is repaid in full — the keeper is made whole
+        // and no more, so bidding higher wins it nothing.
+        assert_eq!(
+            CrankPaymentsV0::liquidation_reimbursement(HUNDRED_DOLLARS, SOL, 30_000, 2_000)
+                .unwrap(),
+            30_000
+        );
+        // A fee over the cap is truncated to it. The keeper is short, so it
+        // declines — this liquidation is not worth landing at that fee.
+        assert_eq!(
+            CrankPaymentsV0::liquidation_reimbursement(HUNDRED_DOLLARS, SOL, cap * 5, 2_000)
+                .unwrap(),
+            cap
+        );
+        // Everything that means "do not reimburse" pays nothing rather than
+        // failing: the flat payment still stands and the crank still lands.
+        assert_eq!(
+            CrankPaymentsV0::liquidation_reimbursement(HUNDRED_DOLLARS, SOL, 30_000, 0).unwrap(),
+            0
+        );
+        assert_eq!(
+            CrankPaymentsV0::liquidation_reimbursement(HUNDRED_DOLLARS, 0, 30_000, 2_000).unwrap(),
+            0
+        );
+        assert_eq!(
+            CrankPaymentsV0::liquidation_reimbursement(HUNDRED_DOLLARS, SOL, 0, 2_000).unwrap(),
+            0
+        );
+        // A cent of recovery buys a cent's worth of crank: 20% of $0.01 at
+        // $200/SOL is 10,000 lamports, short of the 30,000 fee. The keeper
+        // declines and the liquidation waits for a cheaper block or a worse
+        // account — which is the answer, not a failure.
+        assert_eq!(
+            CrankPaymentsV0::liquidation_reimbursement(
+                QUOTE_PRECISION_U64 / 100,
+                SOL,
+                30_000,
+                2_000
+            )
+            .unwrap(),
+            10_000
+        );
+    }
+
+    /// One measurement per crank, one rate for the protocol.
+    ///
+    /// The point of deriving rather than setting: the cross costs six times
+    /// the removal because it requests six times as much, and a single figure
+    /// for the market would have to be one or the other.
+    #[test]
+    fn each_crank_is_priced_from_what_it_requests() {
+        let units = CrankCostUnitsV0 {
+            removal: 30_000,
+            cross: 180_000,
+            taker_origin_cross: 190_000,
+            trigger: 40_000,
+            liquidation: 120_000,
+            force_cancel: 60_000,
+        };
+
+        // A flat charge per signature prices every crank the same, however
+        // much it asks for. This is the model the payments were sized under
+        // when they were one number.
+        let flat = CrankPaymentsV0::derive(
+            &crate::state::state::TransactionFeeRails::FLAT_PER_SIGNATURE,
+            &units,
+        )
+        .unwrap();
+        assert_eq!(flat.removal, 5_000);
+        assert_eq!(flat.cross, 5_000);
+        assert_eq!(flat.max(), 5_000);
+
+        // Charge for what a transaction requests and they separate.
+        let rails = crate::state::state::TransactionFeeRails {
+            inclusion_lamports: 2_500,
+            signature_lamports: 0,
+            resource_fee_numerator: 1,
+            resource_fee_denominator: 2,
+        };
+        let priced = CrankPaymentsV0::derive(&rails, &units).unwrap();
+        assert_eq!(priced.removal, 2_500 + 15_000);
+        assert_eq!(priced.cross, 2_500 + 90_000);
+        assert_eq!(priced.taker_origin_cross, 2_500 + 95_000);
+        assert_eq!(priced.max(), priced.taker_origin_cross);
+        assert!(priced.all_priced());
+        // A removal paid the cross's price is four times what it costs; a
+        // cross paid the removal's price is a crank nobody runs.
+        assert!(priced.cross > priced.removal * 4);
+    }
+
+    /// The rate is rounded up and a zero denominator is the whole resource
+    /// fee switched off, not a division.
+    #[test]
+    fn the_resource_rate_rounds_up_and_switches_off_cleanly() {
+        use crate::state::state::TransactionFeeRails;
+
+        let tenth = TransactionFeeRails {
+            inclusion_lamports: 2_500,
+            signature_lamports: 0,
+            resource_fee_numerator: 1,
+            resource_fee_denominator: 10,
+        };
+        // 3 units at a tenth of a lamport each is a third of a lamport, and a
+        // payment short by a lamport buys nothing.
+        assert_eq!(tenth.transaction_cost(3, 1).unwrap(), 2_501);
+        assert_eq!(tenth.transaction_cost(30_000, 1).unwrap(), 2_500 + 3_000);
+
+        let off = TransactionFeeRails {
+            inclusion_lamports: 2_500,
+            signature_lamports: 5_000,
+            resource_fee_numerator: 1,
+            resource_fee_denominator: 0,
+        };
+        assert_eq!(off.transaction_cost(u64::MAX, 2).unwrap(), 2_500 + 10_000);
     }
 
     #[test]
@@ -398,7 +717,8 @@ mod tests {
             },
             resolvers,
         );
-        acct.set_condition(CLOB_CRANK_EXPIRE, &condition).unwrap();
+        acct.set_condition(CLOB_CRANK_CROSS_FALLBACK, &condition)
+            .unwrap();
 
         // relay's own reader must accept what we wrote, at offset 0 of the
         // region (offset 8 of the account).
@@ -406,38 +726,17 @@ mod tests {
         assert_eq!(header.num_conditions, CLOB_CRANK_CONDITIONS as u8);
         assert_eq!(conditions.len(), CLOB_CRANK_CONDITIONS);
         assert_eq!(
-            conditions[CLOB_CRANK_EXPIRE].wake(),
+            conditions[CLOB_CRANK_CROSS_FALLBACK].wake(),
             Ok(relay_spec::WakeView::AtTimestamp { unix_ts: 1_234 })
         );
-        assert!(conditions[CLOB_CRANK_EXPIRE].is_active());
-        // The untouched slots are zeroed (inactive) conditions, not garbage.
-        assert!(!conditions[CLOB_CRANK_EVICT].is_active());
-        assert!(!conditions[CLOB_CRANK_EXPIRE_FALLBACK].is_active());
+        assert!(conditions[CLOB_CRANK_CROSS_FALLBACK].is_active());
 
         assert_eq!(
-            acct.get_condition(CLOB_CRANK_EXPIRE).unwrap().wake(),
+            acct.get_condition(CLOB_CRANK_CROSS_FALLBACK)
+                .unwrap()
+                .wake(),
             Ok(relay_spec::WakeView::AtTimestamp { unix_ts: 1_234 })
         );
-    }
-
-    #[test]
-    fn expiry_hint_min_folds_and_repairs() {
-        let mut acct = ClobCrankConditionsV0::default();
-        acct.init_block().unwrap();
-        let mut condition = relay_spec::ConditionV0::zeroed();
-        condition.set_wake(relay_spec::WakeView::AtTimestamp { unix_ts: i64::MAX });
-        acct.set_condition(CLOB_CRANK_EXPIRE, &condition).unwrap();
-
-        acct.note_expiry(5_000).unwrap();
-        assert_eq!(acct.expire_wake_ts().unwrap(), 5_000);
-        // A later expiry never moves the hint back.
-        acct.note_expiry(9_000).unwrap();
-        assert_eq!(acct.expire_wake_ts().unwrap(), 5_000);
-        acct.note_expiry(1_000).unwrap();
-        assert_eq!(acct.expire_wake_ts().unwrap(), 1_000);
-
-        acct.repair_expiry(i64::MAX).unwrap();
-        assert_eq!(acct.expire_wake_ts().unwrap(), i64::MAX);
     }
 
     #[test]
@@ -477,4 +776,43 @@ mod tests {
             .is_err());
         assert!(acct.get_condition(CLOB_CRANK_CONDITIONS).is_err());
     }
+
+    /// A crank that requests less than the measured figure is reimbursed for
+    /// what it requested. Reimbursing the measured figure would hand it the
+    /// difference as profit on every liquidation.
+    #[test]
+    fn priority_lamports_price_the_smaller_request() {
+        let under = LIQUIDATION_CRANK_REIMBURSED_UNITS / 2;
+        assert_eq!(
+            CrankPaymentsV0::crank_priority_lamports(1_000_000, under).unwrap(),
+            u64::from(under)
+        );
+    }
+
+    /// A crank that inflates its limit is reimbursed only for the measured
+    /// figure, so it cannot bill the difference.
+    #[test]
+    fn priority_lamports_cap_an_inflated_request() {
+        let capped =
+            CrankPaymentsV0::crank_priority_lamports(1_000_000, LIQUIDATION_CRANK_REIMBURSED_UNITS)
+                .unwrap();
+        assert_eq!(
+            CrankPaymentsV0::crank_priority_lamports(1_000_000, u32::MAX).unwrap(),
+            capped
+        );
+        assert_eq!(capped, u64::from(LIQUIDATION_CRANK_REIMBURSED_UNITS));
+    }
+
+    /// An honest crank is made whole: the fee it paid is the fee it gets back.
+    #[test]
+    fn priority_lamports_match_what_the_runtime_charges() {
+        let price = 37_500;
+        let units = 250_000;
+        let charged = u64::from(price) * u64::from(units) / 1_000_000;
+        assert_eq!(
+            CrankPaymentsV0::crank_priority_lamports(price, units).unwrap(),
+            charged
+        );
+    }
 }
+

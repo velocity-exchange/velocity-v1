@@ -122,7 +122,7 @@ pub fn rewrite_trigger_conditions<'info>(
                 markets
                     .entry(conditions.market_index)
                     .or_default()
-                    .keeper_payment_lamports = Some(conditions.keeper_payment_lamports);
+                    .keeper_payment_lamports = Some(u64::from(conditions.crank_payments.trigger));
                 continue;
             }
             if let Ok(loader) = AccountLoader::<QuoterV0>::try_from(info) {

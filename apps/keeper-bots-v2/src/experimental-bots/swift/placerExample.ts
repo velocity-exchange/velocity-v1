@@ -14,6 +14,7 @@ import {
 	Order,
 	OrderParams,
 	OrderStatus,
+	getRouteDigest,
 	OrderTriggerCondition,
 	PerpMarkets,
 	PositionDirection,
@@ -313,6 +314,9 @@ export class SwiftPlacer {
 						quoteAssetAmountFilled: ZERO,
 						bitFlags: signedMsgOrderParams.bitFlags,
 						postedSlotTail: 0,
+						// The route the taker signed, digested the way the program
+						// does: a fill has to claim a route matching this one.
+						routeDigest: getRouteDigest(signedMessage.route),
 					};
 
 					const makerInfos: MakerInfo[] = [];

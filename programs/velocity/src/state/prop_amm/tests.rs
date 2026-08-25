@@ -132,263 +132,6 @@ fn a_custom_quoter_still_moves_only_its_registered_user() {
     assert!(!subjects.permits(&user_ref(2, 0), &key(2), &taker));
 }
 
-/// One live order in a synthetic book's node arena. Mirrors
-/// [`read_clob_node`]'s offsets, which is the point: these tests pin the
-/// walk, and the litesvm crank tests pin the offsets against the real
-/// program.
-struct TestNode {
-    user: ClobUserRefV0,
-    price: u64,
-    base_asset_amount: u64,
-    activation_slot: u64,
-    max_ts: i64,
-    next: u32,
-}
-
-impl TestNode {
-    fn live(user: ClobUserRefV0, price: u64, base_asset_amount: u64, next: u32) -> Self {
-        Self {
-            user,
-            price,
-            base_asset_amount,
-            activation_slot: 0,
-            max_ts: 0,
-            next,
-        }
-    }
-}
-
-/// A book account's bytes holding `nodes`, with `side`'s head at index 0.
-fn book_bytes(side: ClobSide, nodes: &[TestNode]) -> Vec<u8> {
-    let mut data = vec![0u8; CLOB_ORDERS_OFFSET + nodes.len().max(1) * CLOB_NODE_LEN];
-    let head_offset = match side {
-        ClobSide::Bid => CLOB_BEST_BID_OFFSET,
-        ClobSide::Ask => CLOB_BEST_ASK_OFFSET,
-    };
-    data[head_offset..head_offset + 4].copy_from_slice(&0u32.to_le_bytes());
-    for (index, node) in nodes.iter().enumerate() {
-        let at = CLOB_ORDERS_OFFSET + index * CLOB_NODE_LEN;
-        data[at..at + 32].copy_from_slice(&node.user.authority.to_bytes());
-        data[at + 32..at + 40].copy_from_slice(&node.price.to_le_bytes());
-        data[at + 40..at + 48].copy_from_slice(&node.base_asset_amount.to_le_bytes());
-        data[at + 48..at + 56].copy_from_slice(&node.activation_slot.to_le_bytes());
-        data[at + 56..at + 64].copy_from_slice(&node.max_ts.to_le_bytes());
-        data[at + 84..at + 88].copy_from_slice(&node.next.to_le_bytes());
-        data[at + 88] = CLOB_ORDER_BIT_FLAG_OPEN;
-        data[at + 90..at + 92].copy_from_slice(&node.user.sub_account_id.to_le_bytes());
-    }
-    data
-}
-
-/// The permitted set is the run of orders the fill could actually reach,
-/// so the walk stops once the requested size is covered — a maker deeper
-/// in the book than the fill goes is not a subject.
-#[test]
-fn the_resting_walk_covers_the_requested_size_and_stops() {
-    let data = book_bytes(
-        ClobSide::Ask,
-        &[
-            TestNode::live(user_ref(1, 0), 100, 5, 1),
-            TestNode::live(user_ref(2, 0), 101, 5, 2),
-            TestNode::live(user_ref(3, 0), 102, 5, CLOB_NIL),
-        ],
-    );
-    let walk = |size| {
-        clob_resting_prefix(
-            &data,
-            ClobSide::Ask,
-            size,
-            &[],
-            &QuoterUserCapsV0::EMPTY,
-            &user_ref(9, 0),
-            0,
-            0,
-        )
-    };
-    assert_eq!(walk(5).len(), 1);
-    assert_eq!(walk(6).len(), 2);
-    assert_eq!(walk(100).len(), 3);
-    let prefix = walk(6);
-    assert_eq!(prefix[0].user, user_ref(1, 0));
-    assert_eq!(prefix[1].price, 101);
-}
-
-/// Orders execute would pass over are passed over here too, and crucially
-/// they don't end the walk: execute keeps going to the next order, so a
-/// maker it really does fill has to stay in the permitted set.
-#[test]
-fn the_resting_walk_skips_what_execute_skips_and_keeps_going() {
-    let (slot, now) = (10u64, 1_000i64);
-    let unreachable = user_ref(1, 0);
-    let reachable = user_ref(2, 0);
-    for head in [
-        TestNode {
-            // Still inside its activation delay.
-            activation_slot: slot + 1,
-            ..TestNode::live(unreachable, 100, 5, 1)
-        },
-        TestNode {
-            // Expired.
-            max_ts: now - 1,
-            ..TestNode::live(unreachable, 100, 5, 1)
-        },
-    ] {
-        let data = book_bytes(
-            ClobSide::Ask,
-            &[head, TestNode::live(reachable, 101, 5, CLOB_NIL)],
-        );
-        let prefix = clob_resting_prefix(
-            &data,
-            ClobSide::Ask,
-            5,
-            &[],
-            &QuoterUserCapsV0::EMPTY,
-            &user_ref(9, 0),
-            slot,
-            now,
-        );
-        assert_eq!(prefix.len(), 1);
-        assert_eq!(prefix[0].user, reachable);
-    }
-}
-
-#[test]
-fn the_resting_walk_skips_the_taker_and_unsettleable_makers() {
-    let taker = user_ref(1, 0);
-    let stranger = user_ref(2, 0);
-    let loaded = user_ref(3, 0);
-    let data = book_bytes(
-        ClobSide::Ask,
-        &[
-            TestNode::live(taker, 100, 5, 1),
-            TestNode::live(stranger, 101, 5, 2),
-            TestNode::live(loaded, 102, 5, CLOB_NIL),
-        ],
-    );
-    let users = quoter_wire_users([taker, loaded]).unwrap();
-    let prefix = clob_resting_prefix(
-        &data,
-        ClobSide::Ask,
-        5,
-        &users,
-        &QuoterUserCapsV0::EMPTY,
-        &taker,
-        0,
-        0,
-    );
-    assert_eq!(prefix.len(), 1);
-    assert_eq!(prefix[0].user, loaded);
-}
-
-/// A partial budget is the book's business, not this walk's. Velocity leaves
-/// it alone so the prefix stays a *superset* of what execute fills: spending
-/// a budget here could retire a maker's room before the book retires it, and
-/// the walk would stop short of a maker execute still reaches — whose balance
-/// change velocity would then refuse.
-#[test]
-fn a_partial_budget_does_not_shorten_the_permitted_set() {
-    let capped = user_ref(1, 0);
-    let behind = user_ref(2, 0);
-    let data = book_bytes(
-        ClobSide::Ask,
-        &[
-            TestNode::live(capped, 100, 10, 1),
-            TestNode::live(behind, 101, 10, CLOB_NIL),
-        ],
-    );
-    let users = quoter_wire_users([capped, behind]).unwrap();
-    let caps = QuoterUserCapsV0::from_caps([QuoterUserCapV0 {
-        index: 0,
-        budget: 4,
-    }]);
-    let prefix = clob_resting_prefix(
-        &data,
-        ClobSide::Ask,
-        10,
-        &users,
-        &caps,
-        &user_ref(9, 0),
-        0,
-        0,
-    );
-
-    assert_eq!(prefix.len(), 1, "the first order already covers the sweep");
-    assert_eq!(prefix[0].user, capped);
-
-    // And when the budget does cut the first maker short on the book, the
-    // maker behind them is already in the set to receive the rest.
-    let deeper = clob_resting_prefix(
-        &data,
-        ClobSide::Ask,
-        20,
-        &users,
-        &caps,
-        &user_ref(9, 0),
-        0,
-        0,
-    );
-    assert_eq!(deeper.len(), 2);
-    assert_eq!(deeper[1].user, behind);
-}
-
-/// An exclusion is the stronger case: the maker is absent from the permitted
-/// set entirely, so a book that filled them anyway returns a change velocity
-/// refuses.
-#[test]
-fn no_room_keeps_a_maker_out_of_the_permitted_set() {
-    let excluded = user_ref(1, 0);
-    let behind = user_ref(2, 0);
-    let data = book_bytes(
-        ClobSide::Ask,
-        &[
-            TestNode::live(excluded, 100, 10, 1),
-            TestNode::live(behind, 101, 10, CLOB_NIL),
-        ],
-    );
-    let users = quoter_wire_users([excluded, behind]).unwrap();
-    let caps = QuoterUserCapsV0::from_caps([QuoterUserCapV0 {
-        index: 0,
-        budget: 0,
-    }]);
-    let prefix = clob_resting_prefix(
-        &data,
-        ClobSide::Ask,
-        10,
-        &users,
-        &caps,
-        &user_ref(9, 0),
-        0,
-        0,
-    );
-
-    assert_eq!(prefix.len(), 1);
-    assert_eq!(prefix[0].user, behind);
-}
-
-/// A hostile or corrupted link list must terminate: the walk is bounded by
-/// what the arena can hold, whatever the links say.
-#[test]
-fn the_resting_walk_terminates_on_a_cyclic_book() {
-    let data = book_bytes(
-        ClobSide::Ask,
-        &[
-            TestNode::live(user_ref(1, 0), 100, 1, 1),
-            TestNode::live(user_ref(2, 0), 101, 1, 0),
-        ],
-    );
-    let prefix = clob_resting_prefix(
-        &data,
-        ClobSide::Ask,
-        u64::MAX,
-        &[],
-        &QuoterUserCapsV0::EMPTY,
-        &user_ref(9, 0),
-        0,
-        0,
-    );
-    assert_eq!(prefix.len(), 2);
-}
-
 /// Fixed width, and the same width the CLOB's `UserSetV0` pins on its own
 /// side — the two decode each other by offset. Critically, the borrowed
 /// writer velocity actually uses must produce byte-for-byte what serializing
@@ -481,6 +224,7 @@ fn the_user_set_encodes_to_what_it_carries() {
         caps: QuoterUserCapsV0::EMPTY,
         reference_price: 0,
         taker: None,
+        limit_price: 0,
     };
     let mut bytes = Vec::new();
     quoter_spec::write_args(&mut bytes, &args).unwrap();
@@ -605,6 +349,7 @@ fn the_cpi_buffer_holds_exactly_what_the_args_serialize_to() {
         caps: QuoterUserCapsV0::EMPTY,
         reference_price: i64::MAX,
         taker: Some(user_ref(0xFF, 0)),
+        limit_price: u64::MAX,
     };
     let execute = ExecuteArgsV0 {
         users: &all,
@@ -615,13 +360,18 @@ fn the_cpi_buffer_holds_exactly_what_the_args_serialize_to() {
         taker: Some(user_ref(0xFF, 0)),
     };
     // Eight for the anchor discriminator the caller writes ahead of the args.
+    // The quote is the wider leg, by the price bound execute does not carry.
     assert_eq!(
         quoter_spec::args_size(&quote).unwrap() + 8,
         QUOTER_CPI_DATA_MAX
     );
     assert_eq!(
         quoter_spec::args_size(&execute).unwrap() + 8,
-        QUOTER_CPI_DATA_MAX
+        quoter_cpi_data_len(MAX_QUOTER_WIRE_USERS, true)
+    );
+    assert_eq!(
+        QUOTER_CPI_DATA_MAX,
+        quoter_cpi_data_len(MAX_QUOTER_WIRE_USERS, true) + 8
     );
 
     // And a call that carries fewer users costs less, exactly. A quote view
@@ -636,7 +386,110 @@ fn the_cpi_buffer_holds_exactly_what_the_args_serialize_to() {
             let mut bytes = Vec::new();
             quoter_spec::write_args(&mut bytes, &args).unwrap();
             assert_eq!(bytes.len(), quoter_spec::args_size(&args).unwrap());
-            assert_eq!(bytes.len() + 8, quoter_cpi_data_len(count, taker.is_some()));
+            assert_eq!(bytes.len() + 8, quote_cpi_data_len(count, taker.is_some()));
         }
     }
+}
+
+/// The two encoders on the CLOB wire agree, byte for byte.
+///
+/// Velocity writes these args with anchor's borsh and the book reads them with
+/// wincode. One declaration in `clob-wire` is what stops the *shapes* drifting
+/// apart; this is what stops the *encodings* drifting apart, which no shared
+/// declaration can catch. Every field is given a value that would move if a
+/// width or an order changed.
+#[test]
+fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
+    use anchor_lang::AnchorSerialize;
+
+    fn agree<T>(what: &str, value: &T)
+    where
+        T: AnchorSerialize + quoter_spec::wincode::SchemaWrite<quoter_spec::ArgsConfig, Src = T>,
+    {
+        let mut borsh = Vec::new();
+        value.serialize(&mut borsh).unwrap();
+        let mut wincode = Vec::new();
+        quoter_spec::write_args(&mut wincode, value).unwrap();
+        assert_eq!(
+            borsh, wincode,
+            "{what} encodes differently on the two sides"
+        );
+    }
+
+    let user = user_ref(0xAB, 0x1234);
+    let order_ref = ClobOrderRefV0 {
+        node_index: 0x0102_0304,
+        order_id: 0x0506_0708_090A_0B0C,
+    };
+
+    agree("OrderRefV0", &order_ref);
+    agree(
+        "PlaceOrderArgsV0",
+        &ClobPlaceOrderArgsV0 {
+            side: ClobSide::Ask,
+            price: 0x1122_3344_5566_7788,
+            base_asset_amount: 0x99AA_BBCC_DDEE_FF00,
+            activation_delay_slots: Some(0x0A0B_0C0D),
+            max_ts: -0x0102_0304_0506_0708,
+            user,
+            taker_origin: true,
+        },
+    );
+    // The absent-option arm encodes its tag differently; both are on the wire.
+    agree(
+        "PlaceOrderArgsV0 (no delay)",
+        &ClobPlaceOrderArgsV0 {
+            side: ClobSide::Bid,
+            price: 1,
+            base_asset_amount: 2,
+            activation_delay_slots: None,
+            max_ts: 0,
+            user,
+            taker_origin: false,
+        },
+    );
+    agree(
+        "CancelOrderArgsV0",
+        &ClobCancelOrderArgsV0 { order_ref, user },
+    );
+    agree(
+        "CancelAllArgsV0",
+        &ClobCancelAllArgsV0 {
+            user,
+            sides: ClobCancelSides::Both,
+        },
+    );
+    agree(
+        "EvictWorstArgsV0",
+        &ClobEvictWorstArgsV0 {
+            side: ClobSide::Bid,
+        },
+    );
+    agree(
+        "RemoveExpiredArgsV0",
+        &ClobRemoveExpiredArgsV0 { order_ref },
+    );
+    agree(
+        "RemovedOrderV0",
+        &ClobRemovedOrderV0 {
+            user,
+            order_id: 0x1111_2222_3333_4444,
+            price: 0x5555_6666_7777_8888,
+            base_asset_amount: 0x9999_AAAA_BBBB_CCCC,
+            side: ClobSide::Ask,
+            taker_origin: true,
+            max_ts: 0x0102_0304_0506_0708,
+        },
+    );
+    agree(
+        "CancelAllOutcomeV0",
+        &ClobCancelAllOutcomeV0 {
+            user,
+            bid_base_asset_amount: 0x0102_0304_0506_0708,
+            ask_base_asset_amount: 0x090A_0B0C_0D0E_0F10,
+            bid_orders: 0x1112_1314,
+            ask_orders: 0x1516_1718,
+            exhaustive: true,
+        },
+    );
 }

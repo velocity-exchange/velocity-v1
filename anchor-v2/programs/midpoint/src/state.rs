@@ -638,6 +638,7 @@ impl MidpointQuoterV0 {
         &mut self,
         direction: Direction,
         size: u64,
+        limit_price: u64,
         slot: u64,
         open: bool,
     ) -> Result<ResponsePointerV0> {
@@ -670,6 +671,12 @@ impl MidpointQuoterV0 {
             let Some(price) = params.level_price(direction, level.offset_ppm) else {
                 continue;
             };
+            // Past the caller's worst acceptable price. Rungs carry strictly
+            // ascending offsets, so every rung behind this one prices further
+            // from the mid and is worse still.
+            if worse_than_limit(direction, price, limit_price) {
+                break;
+            }
             let quoted = remaining.min(wanted);
             writer
                 .push_level(
@@ -721,6 +728,22 @@ impl MidpointQuoterV0 {
             .finish(&mut self.response[..], &[], &[])
             .map_err(MidpointError::from)?;
         Ok(response_pointer(len))
+    }
+}
+
+/// Whether a rung at `price` is past the caller's worst acceptable price.
+///
+/// Zero is no bound. A rung exactly at the limit is acceptable, so the
+/// comparison is strict. A long taker buys the ask ladder and refuses to pay
+/// above its limit; a short taker sells the bid ladder and refuses to receive
+/// below it.
+fn worse_than_limit(direction: Direction, price: u64, limit_price: u64) -> bool {
+    if limit_price == 0 {
+        return false;
+    }
+    match direction {
+        Direction::Long => price > limit_price,
+        Direction::Short => price < limit_price,
     }
 }
 
@@ -856,7 +879,7 @@ mod tests {
                 );
                 let expected = reference_quote(&quoter, direction, size);
                 let pointer = quoter
-                    .write_quote_response(direction, size, 0, true)
+                    .write_quote_response(direction, size, 0, 0, true)
                     .unwrap();
                 assert_eq!(written(&quoter, pointer), expected);
             }
@@ -872,12 +895,12 @@ mod tests {
     fn a_closed_gate_streams_an_empty_level_vec() {
         let mut quoter = quoter(&[(1_000, UNIT)], &[(1_000, UNIT)]);
         let closed = quoter
-            .write_quote_response(Direction::Long, UNIT, 0, false)
+            .write_quote_response(Direction::Long, UNIT, 0, 0, false)
             .unwrap();
         assert_eq!(written(&quoter, closed), vec![0u8; EMPTY_QUOTE]);
         // A stale mid is the same silence, even with the gate open.
         let stale = quoter
-            .write_quote_response(Direction::Long, UNIT, 10_000, true)
+            .write_quote_response(Direction::Long, UNIT, 0, 10_000, true)
             .unwrap();
         assert_eq!(written(&quoter, stale), vec![0u8; EMPTY_QUOTE]);
     }
@@ -896,7 +919,7 @@ mod tests {
     fn quote_truncates_at_the_takers_size_and_rounds_away_from_mid() {
         let mut quoter = quoter(&[(1_000, UNIT)], &[(1_000, UNIT), (3_000, UNIT)]);
         let pointer = quoter
-            .write_quote_response(Direction::Long, UNIT + UNIT / 2, 0, true)
+            .write_quote_response(Direction::Long, UNIT + UNIT / 2, 0, 0, true)
             .unwrap();
         let bytes = written(&quoter, pointer);
         let response = QuoteResponseV0::parse(&bytes).unwrap();
@@ -911,13 +934,52 @@ mod tests {
     }
 
     #[test]
+    fn the_price_bound_stops_the_ladder_at_the_limit() {
+        // Rungs at +0.1% and +0.3% of a 100.0 mid: 100.1 and 100.3.
+        let mut quoter = quoter(&[(1_000, UNIT)], &[(1_000, UNIT), (3_000, UNIT)]);
+
+        // A long taker paying no more than 100.2 gets the first rung only.
+        let pointer = quoter
+            .write_quote_response(Direction::Long, u64::MAX, 100_200_000, 0, true)
+            .unwrap();
+        let bytes = written(&quoter, pointer);
+        let response = QuoteResponseV0::parse(&bytes).unwrap();
+        assert_eq!(response.levels.len(), 1);
+        assert_eq!(response.levels[0].price, 100_100_000);
+
+        // The rung exactly at the limit is acceptable.
+        let pointer = quoter
+            .write_quote_response(Direction::Long, u64::MAX, 100_300_000, 0, true)
+            .unwrap();
+        let bytes = written(&quoter, pointer);
+        assert_eq!(QuoteResponseV0::parse(&bytes).unwrap().levels.len(), 2);
+
+        // Zero is no bound.
+        let pointer = quoter
+            .write_quote_response(Direction::Long, u64::MAX, 0, 0, true)
+            .unwrap();
+        let bytes = written(&quoter, pointer);
+        assert_eq!(QuoteResponseV0::parse(&bytes).unwrap().levels.len(), 2);
+
+        // A short taker sells the bid ladder, so its bound cuts the low side.
+        let mut bid_side = super::tests::quoter(&[(1_000, UNIT), (3_000, UNIT)], &[(1_000, UNIT)]);
+        let pointer = bid_side
+            .write_quote_response(Direction::Short, u64::MAX, 99_800_000, 0, true)
+            .unwrap();
+        let bytes = written(&bid_side, pointer);
+        let response = QuoteResponseV0::parse(&bytes).unwrap();
+        assert_eq!(response.levels.len(), 1);
+        assert_eq!(response.levels[0].price, 99_900_000);
+    }
+
+    #[test]
     fn a_full_ladder_response_fits_the_buffer() {
         let side: Vec<(u64, u64)> = (0..MAX_SPLINE_LEVELS as u64)
             .map(|i| (1_000 + i, UNIT))
             .collect();
         let mut quoter = quoter(&side, &side);
         let pointer = quoter
-            .write_quote_response(Direction::Long, u64::MAX, 0, true)
+            .write_quote_response(Direction::Long, u64::MAX, 0, 0, true)
             .unwrap();
         assert_eq!(
             pointer.len as usize,
@@ -1008,7 +1070,7 @@ mod tests {
         assert_eq!(quoter.asks[0].size, 2 * UNIT);
         quoter.validate().unwrap();
         assert!(quoter
-            .write_quote_response(Direction::Short, UNIT, 0, true)
+            .write_quote_response(Direction::Short, UNIT, 0, 0, true)
             .is_ok());
         assert!(quoter.fill(Direction::Short, UNIT, 0).unwrap().base == 0);
         assert_eq!(quoter.fill(Direction::Long, UNIT, 0).unwrap().base, UNIT);

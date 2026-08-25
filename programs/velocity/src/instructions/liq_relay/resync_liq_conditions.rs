@@ -12,7 +12,7 @@
 //! lamports.
 
 use {
-    super::sync_liq_conditions::{rewrite_liq_conditions, SyncLiqConditionsArgs},
+    super::sync_liq_conditions::{rewrite_liq_conditions, SyncLiqConditionsTerms},
     crate::{
         error::ErrorCode,
         state::{
@@ -47,7 +47,7 @@ pub fn handle_resync_liq_conditions<'c: 'info, 'info>(
     // means a staged resync can never re-price itself.
     let args = {
         let conditions = ctx.accounts.liq_conditions.load()?;
-        SyncLiqConditionsArgs {
+        SyncLiqConditionsTerms {
             sync_payment_lamports: conditions.sync_payment_lamports,
             sync_fallback_slots: conditions.sync_fallback_slots,
         }

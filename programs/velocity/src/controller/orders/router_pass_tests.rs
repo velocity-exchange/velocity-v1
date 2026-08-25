@@ -693,8 +693,8 @@ pub mod amm_jit {
     #[test]
     fn router_pass_rejects_an_external_quoter_naming_another_sources_maker() {
         use crate::state::prop_amm::{
-            ClobRestingOrderV0, ClobUserRefV0, Direction, ExecuteResponseV0,
-            ExternalQuoterExecutor, PriceLevel, QuoterSubjects, QuoterType, UserBalanceChangeV0,
+            ClobUserRefV0, Direction, ExecuteResponseV0, ExternalQuoterExecutor, PriceLevel,
+            QuoterSubjects, QuoterType, UserBalanceChangeV0,
         };
 
         /// Its book rests `resting`; its response names `names`.

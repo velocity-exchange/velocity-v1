@@ -29,6 +29,7 @@ pub fn handle_quote_v0(ctx: &mut Context<QuoteV0>, args: QuoteArgsV0) -> Result<
         &args.caps,
         args.reference_price,
         args.taker.as_ref(),
+        args.limit_price,
         clock.slot,
         clock.unix_timestamp,
     )

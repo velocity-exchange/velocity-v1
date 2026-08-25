@@ -18,6 +18,21 @@ pub const SYSVAR_INSTRUCTIONS_PUBKEY: Pubkey =
 pub const SYSVAR_RENT_PUBKEY: Pubkey =
     solana_pubkey::pubkey!("SysvarRent111111111111111111111111111111111");
 
+/// Default ceiling on the account data one transaction may load, in bytes.
+///
+/// A transaction is charged for the limit it requests, not for what it loads,
+/// and the limit it gets without asking is 64 MiB. Every velocity transaction
+/// is charged for that 64 MiB today while loading a few megabytes of it — the
+/// velocity program and its program data, which count because the transaction
+/// names the program, plus its accounts.
+///
+/// 12 MiB is roughly twice what the program and a full account list come to,
+/// so it leaves room for the program to grow and for a caller to bundle
+/// another program's instruction alongside. A transaction that loads more than
+/// this is refused before it runs, so a caller assembling something unusually
+/// wide should raise it rather than find out.
+pub const LOADED_ACCOUNTS_DATA_SIZE_DEFAULT: u32 = 12 * 1024 * 1024;
+
 /// Velocity program address
 pub const PROGRAM_ID: Pubkey =
     solana_pubkey::pubkey!("vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P");

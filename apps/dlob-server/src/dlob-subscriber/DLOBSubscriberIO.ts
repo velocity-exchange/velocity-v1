@@ -15,6 +15,7 @@ import {
 	ZERO,
 	calculateBidAskPrice,
 	getLimitPrice,
+	getRouteDigest,
 	isOperationPaused,
 	isVariant,
 } from '@velocity-exchange/sdk';
@@ -243,6 +244,9 @@ export class DLOBSubscriberIO extends DLOBSubscriber {
 										quoteAssetAmountFilled: ZERO,
 										bitFlags: 0,
 										postedSlotTail: 0,
+										// An indicative quote is a maker's advertised price, not
+										// an order anyone signed a route for.
+										routeDigest: getRouteDigest(),
 									};
 
 									if (quote['bid_size'] && quote['bid_price'] != null) {

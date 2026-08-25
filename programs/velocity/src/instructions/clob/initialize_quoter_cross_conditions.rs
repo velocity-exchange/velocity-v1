@@ -91,29 +91,49 @@ pub fn handle_initialize_quoter_cross_conditions(
         "market's canonical CLOB entry required"
     )?;
 
-    let keeper_payment_lamports = {
+    // Its resolver stages `crank_cross_match` and nothing else, so the floor
+    // is exactly that crank's payment out of the market's reservoir. The
+    // watched region comes from the same account: the book reported it when
+    // the market attached, so nothing here derives where its heads sit.
+    let (keeper_payment_lamports, top_of_book_offset, top_of_book_len) = {
         let market_conditions = ctx.accounts.market_conditions.load()?;
-        market_conditions.keeper_payment_lamports
+        (
+            u64::from(market_conditions.crank_payments.cross),
+            market_conditions.top_of_book_offset,
+            market_conditions.top_of_book_len,
+        )
     };
+    validate!(
+        top_of_book_len > 0,
+        ErrorCode::InvalidQuoterConfig,
+        "market conditions carry no top-of-book region; re-run the market's attach"
+    )?;
     let (oracle, quote_spot_market_index) = {
         let market = ctx.accounts.perp_market.load()?;
         (market.oracle, market.quote_spot_market_index)
     };
     let clob_market = clob.response_account;
 
-    // The resolver's account list: the conditions (index 0 — where the
-    // response pointer says the payload lives), the CLOB book, the state,
-    // the entry, its quoted user, then the entry's full registered quote
-    // surface and program — everything the generic quote CPI needs. Stored
-    // ONCE next to the block; each condition points at it with relay's
-    // resolver-list indirection instead of inlining a copy.
+    // The resolver's account list: the shared scratch (index 0 — where the
+    // response pointer says the payload lives), the conditions, the CLOB book,
+    // the state, the entry, its quoted user, the CLOB's own registry entry and
+    // program, then the entry's full registered quote surface and program —
+    // everything the two generic quote CPIs need. Stored ONCE next to the
+    // block; each condition points at it with relay's resolver-list
+    // indirection instead of inlining a copy.
+    //
+    // The book is writable because the resolver quotes it through
+    // `quote_l3_v0`, which streams its answer into the market account's own
+    // response tail. Nothing a resolver sends ever lands.
     let mut resolver_accounts = vec![
         AccountRefV0::writable(crate::state::pdas::relay_scratch().to_bytes()),
         AccountRefV0::readonly(ctx.accounts.cross_conditions.key().to_bytes()),
-        AccountRefV0::readonly(clob_market.to_bytes()),
+        AccountRefV0::writable(clob_market.to_bytes()),
         AccountRefV0::readonly(ctx.accounts.state.key().to_bytes()),
         AccountRefV0::readonly(ctx.accounts.quoter.key().to_bytes()),
         AccountRefV0::readonly(quoter.user.to_bytes()),
+        AccountRefV0::readonly(ctx.accounts.clob_quoter.key().to_bytes()),
+        AccountRefV0::readonly(clob.program_id.to_bytes()),
     ];
     for meta in &quoter.quote_accounts[..quoter.quote_accounts_count as usize] {
         resolver_accounts.push(if meta.is_writable {
@@ -168,12 +188,12 @@ pub fn handle_initialize_quoter_cross_conditions(
     }
     conditions.set_condition(
         QUOTER_CROSS_CLOB,
-        // Both u32 side heads, `best_bid` then `best_ask`, in one 8-byte
-        // watch — a crossing order is always a new best.
+        // The book's own top-of-book region — a crossing order is always a
+        // new best, so a change there is every cross this entry could take.
         &(ConditionV0::on_account_change(
             clob_market.to_bytes(),
-            crate::state::prop_amm::CLOB_BEST_BID_OFFSET as u32,
-            8,
+            top_of_book_offset,
+            top_of_book_len,
             spec,
             resolvers,
         )),

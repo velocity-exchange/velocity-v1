@@ -593,13 +593,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "clob-spec"
+name = "clob-wire"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
+ "anchor-lang",
  "quoter-spec",
- "solana-address 2.6.0",
- "static_assertions",
+ "wincode",
 ]
 
 [[package]]
@@ -3195,7 +3194,7 @@ dependencies = [
  "bytemuck",
  "byteorder",
  "bytes",
- "clob-spec",
+ "clob-wire",
  "enumflags2",
  "hex",
  "num-integer",

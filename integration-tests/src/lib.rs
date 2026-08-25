@@ -138,6 +138,10 @@ pub fn set_state(svm: &mut LiteSVM, warm_admin: &Pubkey) {
     let (signer, nonce) = velocity_signer_pda();
     state.signer = anchor_lang::prelude::Pubkey::new_from_array(signer.to_bytes());
     state.signer_nonce = nonce;
+    // What `initialize` writes, so a fixture prices a crank the way a fresh
+    // exchange does. A zeroed rails prices every crank at nothing, which the
+    // attach refuses.
+    state.transaction_fee_rails = velocity::state::state::TransactionFeeRails::FLAT_PER_SIGNATURE;
     set_zero_copy_account(svm, state_pda(), State::DISCRIMINATOR, &state, State::SIZE);
 }
 
@@ -232,6 +236,32 @@ pub fn send_with_ixs(
         .collect();
     let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &signers).unwrap();
     svm.send_transaction(tx)
+}
+
+/// Run one instruction without landing it, and hand back its return data
+/// together with the post-simulation bytes of `observed`.
+///
+/// What an off-chain reader does, and what a relay turner does with a
+/// resolver. The legs that stream their answer into an account write it in the
+/// simulated post-state, so a caller reads the pointer out of return data and
+/// the payload out of the account it names.
+pub fn simulate(
+    svm: &LiteSVM,
+    payer: &Keypair,
+    ix: Instruction,
+    observed: &Pubkey,
+) -> Result<(Vec<u8>, Vec<u8>), FailedTransactionMetadata> {
+    let msg = Message::new_with_blockhash(&[ix], Some(&payer.pubkey()), &svm.latest_blockhash());
+    let tx = VersionedTransaction::try_new(VersionedMessage::Legacy(msg), &[payer]).unwrap();
+    use solana_account::ReadableAccount;
+    let info = svm.simulate_transaction(tx)?;
+    let data = info
+        .post_accounts
+        .iter()
+        .find(|(key, _)| key.to_bytes() == observed.to_bytes())
+        .map(|(_, account)| account.data().to_vec())
+        .unwrap_or_default();
+    Ok((info.meta.return_data.data, data))
 }
 
 /// Read a zero-copy account body (past the discriminator), unaligned.

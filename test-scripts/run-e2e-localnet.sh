@@ -15,6 +15,8 @@
 # program + turner are built from source, the same way velocity's are.
 #
 # Usage: bash test-scripts/run-e2e-localnet.sh [--skip-build]
+#        E2E_SCRATCH=<dir> keeps the run's ledger and logs (a green run
+#        otherwise removes the scratch directory it created).
 # Requires: solana-test-validator, redis-server (brew install redis), bun.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -22,7 +24,18 @@ cd "$(dirname "$0")/.."
 RPC_PORT="${RPC_PORT:-8899}"
 REDIS_PORT="${REDIS_PORT:-6399}"
 RELAY_REPO="${RELAY_REPO:-$HOME/source/relay}"
-SCRATCH="${E2E_SCRATCH:-$(mktemp -d /tmp/velocity-e2e.XXXXXX)}"
+# Scratch holds the validator ledger and every service's log — a few hundred
+# MB per run. A caller that names the directory owns it and it is never
+# removed; one this script made is removed on success and kept on failure,
+# where it is the only record of what happened. Pass E2E_SCRATCH=<dir> to keep
+# a green run's artifacts.
+if [ -n "${E2E_SCRATCH:-}" ]; then
+  SCRATCH="$E2E_SCRATCH"
+  SCRATCH_OWNED=0
+else
+  SCRATCH="$(mktemp -d /tmp/velocity-e2e.XXXXXX)"
+  SCRATCH_OWNED=1
+fi
 export SDKROOT="${SDKROOT:-$(xcrun --show-sdk-path 2>/dev/null || true)}"
 
 command -v solana-test-validator >/dev/null || { echo "solana-test-validator not on PATH" >&2; exit 1; }
@@ -74,9 +87,15 @@ else
 fi
 
 PIDS=()
+SUITE_GREEN=0
 cleanup() {
   for pid in "${PIDS[@]:-}"; do kill "$pid" 2>/dev/null || true; done
   wait 2>/dev/null || true
+  if [ "$SUITE_GREEN" = 1 ] && [ "$SCRATCH_OWNED" = 1 ] && [ -n "$SCRATCH" ]; then
+    rm -rf "$SCRATCH"
+  else
+    echo "== scratch kept: $SCRATCH ==" >&2
+  fi
 }
 trap cleanup EXIT INT TERM
 
@@ -132,3 +151,4 @@ echo "== running e2e suite (scratch: $SCRATCH) =="
 PATH="$PWD/node_modules/.bin:$PATH" \
   ts-mocha -t 900000 ./tests/e2e/localValidator.ts
 echo "== e2e suite green =="
+SUITE_GREEN=1

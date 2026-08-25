@@ -4,12 +4,14 @@
 
 use {
     super::crank_common::{
-        crank_clob_removal, derive_user_pdas, removal_call, validate_linkage, ClobRemoval,
+        clob_reader, crank_clob_removal, derive_user_pdas, removal_call, ClobRemoval,
         CrankClobOrderRemoval, ResolveClobCrank,
     },
     crate::{
-        instructions::relay_harness::resolve_into,
-        state::prop_amm::{clob_find_expired, ClobOrderRefV0, ClobRemoveExpiredArgsV0},
+        instructions::relay_harness::StagedCall,
+        state::prop_amm::{
+            ClobNextRemovalArgsV0, ClobOrderRefV0, ClobRemovalKindV0, ClobRemoveExpiredArgsV0,
+        },
     },
     anchor_lang::prelude::*,
 };
@@ -26,28 +28,23 @@ pub fn handle_crank_clob_remove_expired(
     )
 }
 
-pub fn handle_resolve_crank_clob_remove_expired(ctx: Context<ResolveClobCrank>) -> Result<()> {
-    validate_linkage(&ctx)?;
-    resolve_into(&ctx.accounts.scratch, || {
-        let now = Clock::get()?.unix_timestamp;
-        let (node_index, node) = {
-            let data = ctx.accounts.clob_market.try_borrow_data()?;
-            match clob_find_expired(&data, now) {
-                Some(found) => found,
-                None => return Ok(None),
-            }
-        };
-        let market_index = ctx.accounts.crank_conditions.load()?.market_index;
-        Ok(Some(
-            removal_call::<crate::instruction::CrankClobRemoveExpired>(
-                &ctx,
-                derive_user_pdas(&node.user_ref()).0,
-            )?
-            .arg(market_index)?
-            .arg(ClobOrderRefV0 {
-                node_index,
-                order_id: node.order_id,
-            })?,
-        ))
-    })
+/// The expiry slot's answer: the order the book says is due, if any.
+pub(super) fn stage_expired_removal(ctx: &Context<ResolveClobCrank>) -> Result<Option<StagedCall>> {
+    // The book finds the expired order: expiry is its own bookkeeping,
+    // and it holds the timestamps.
+    let found = clob_reader(ctx).next_removal(ClobNextRemovalArgsV0 {
+        kind: ClobRemovalKindV0::Expired,
+    })?;
+    if !found.found() {
+        return Ok(None);
+    }
+    let market_index = ctx.accounts.crank_conditions.load()?.market_index;
+    Ok(Some(
+        removal_call::<crate::instruction::CrankClobRemoveExpired>(
+            &ctx,
+            derive_user_pdas(&found.user).0,
+        )?
+        .arg(market_index)?
+        .arg(found.order_ref)?,
+    ))
 }

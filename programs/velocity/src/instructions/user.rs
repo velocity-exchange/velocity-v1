@@ -3343,7 +3343,7 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
         // borrowing from there costs nothing where cloning every account did.
         let tail_from = remaining_accounts.len() - remaining_accounts_iter.len();
         let tail = &remaining_accounts[tail_from..];
-        let (direction, unfilled, taker_ref) = {
+        let (direction, unfilled, taker_ref, quote_limit_price) = {
             let user = load!(user_loader)?;
             let order = user
                 .get_order(order_id)
@@ -3362,6 +3362,13 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
                     authority: user.authority,
                     sub_account_id: user.sub_account_id.into(),
                 },
+                fill_mode.quote_limit_price(
+                    order,
+                    clock.slot,
+                    perp_market_map
+                        .get_ref(&params.market_index)?
+                        .order_tick_size,
+                ),
             )
         };
         let (quoter_signer, quoter_signer_nonce) = crate::signer::find_quoter_signer();
@@ -3385,6 +3392,7 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
             )?,
             reference_price: route_reference_price,
             taker: taker_ref,
+            limit_price: quote_limit_price,
             quoter_signer,
             quoter_signer_nonce,
         };
@@ -3518,7 +3526,6 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
                         clob.clob_program,
                         clob.quoter_signer,
                         clob.quoter_signer_nonce,
-                        clob.crank_conditions,
                         &perp_market_map,
                         &spot_market_map,
                         &mut oracle_map,
@@ -3719,7 +3726,6 @@ pub fn place_and_make_perp_order<'c: 'info, 'info>(
                     clob.clob_program,
                     clob.quoter_signer,
                     clob.quoter_signer_nonce,
-                    clob.crank_conditions,
                     &perp_market_map,
                     &spot_market_map,
                     &mut oracle_map,

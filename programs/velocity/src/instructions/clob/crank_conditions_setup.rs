@@ -1,26 +1,46 @@
-//! Writes a market's [`ClobCrankConditionsV0`] block — the relay conditions
-//! turners read to discover the market's CLOB crank work. Not an instruction:
-//! standing up the cranks is part of attaching a CLOB to a market
-//! (`update_perp_market_clob_quoter` creates the account `init_if_needed` and
-//! calls this), so a new market needs no separate conditions ceremony and
-//! re-attaching re-prices the crank.
+//! Stands up a market's CLOB cranks: the one condition velocity hosts, and
+//! the registration that tells the book which resolver answers each of its
+//! own. Not an instruction: standing up the cranks is part of attaching a
+//! CLOB to a market (`update_perp_market_clob_quoter` creates the conditions
+//! account `init_if_needed` and calls this), so a new market needs no separate
+//! ceremony and re-attaching re-prices the crank.
 //!
-//! The three conditions share one resolver account list, in the fixed order
-//! the resolvers' `#[derive(Accounts)]` expects: the conditions account
-//! (writable — the staging region lives on it, at index 0 as
-//! [`ClobCrankConditionsV0::stage`] encodes), the CLOB market, the quoter
-//! registry entry, and the state.
+//! # Where each condition lives
+//!
+//! A condition is a wake and an answer, and the two have different owners.
+//! The wake is a fact about an account, so it belongs to the program that
+//! writes that account: an expiry, an activation, a side at its eviction
+//! threshold and a crossed book are the book's, and the book keeps their
+//! wakes current in the same instruction that changes what they describe. The
+//! answer is what to do about it, and every one of these removes an order,
+//! which releases a maker's margin reservation, pays a reward and frees a
+//! trigger slot — none of which the book holds.
+//!
+//! So [`register_clob_crank_conditions`] hands the book velocity's resolvers
+//! and velocity's account list, and [`write_clob_crank_conditions`] keeps the
+//! one wake that is not about the book: the poll that catches a cross a
+//! PropAMM created by repricing.
+//!
+//! # The resolver account list
+//!
+//! One list serves every condition, in the fixed order the resolvers'
+//! `#[derive(Accounts)]` expects: the shared scratch account (writable — the
+//! staging region lives on it, at index 0 as [`ClobCrankConditionsV0::stage`]
+//! encodes), the CLOB market, the conditions account, the quoter registry
+//! entry, the state, and the CLOB program.
+//!
+//! The program is there because a resolver asks the book what work it has
+//! rather than reading the answer out of the book's bytes, and the book is
+//! writable because one of those questions is `quote_l3_v0`, which streams its
+//! answer into the market account's own response tail. Both are
+//! simulation-only calls: nothing a resolver sends ever lands.
 
 use {
     crate::{
         error::ErrorCode,
         state::{
-            clob_crank::{
-                ClobCrankConditionsV0, CLOB_CRANK_CROSS, CLOB_CRANK_CROSS_ACTIVATION,
-                CLOB_CRANK_CROSS_FALLBACK, CLOB_CRANK_EVICT, CLOB_CRANK_EXPIRE,
-                CLOB_CRANK_EXPIRE_FALLBACK,
-            },
-            prop_amm::{CLOB_BEST_BID_OFFSET, CLOB_BID_COUNT_OFFSET},
+            clob_crank::{ClobCrankConditionsV0, CrankPaymentsV0, CLOB_CRANK_CROSS_FALLBACK},
+            prop_amm::{ClobCrankAccountV0, ClobCrankConditionsArgsV0, ClobCrankResolverV0},
         },
         validate,
     },
@@ -34,6 +54,9 @@ use {
 pub struct ClobCrankConditionKeys {
     pub crank_conditions: Pubkey,
     pub clob_market: Pubkey,
+    /// The book's own program. A resolver asks the book what work it has
+    /// rather than reading its arena, so it needs the program to call.
+    pub clob_program: Pubkey,
     pub quoter: Pubkey,
     pub state: Pubkey,
     /// The perp market's oracle, stored on the conditions account so the
@@ -43,110 +66,112 @@ pub struct ClobCrankConditionKeys {
     pub quote_spot_market_index: u16,
 }
 
+impl ClobCrankConditionKeys {
+    /// The resolver account list, in the order [`ResolveClobCrank`] declares
+    /// it. The book stores the same list, so both sides of the split call
+    /// velocity's resolvers with identical accounts.
+    ///
+    /// [`ResolveClobCrank`]: super::crank_common::ResolveClobCrank
+    fn resolver_accounts(&self) -> [AccountRefV0; 6] {
+        [
+            AccountRefV0::writable(crate::state::pdas::relay_scratch().to_bytes()),
+            AccountRefV0::readonly(self.crank_conditions.to_bytes()),
+            AccountRefV0::writable(self.clob_market.to_bytes()),
+            AccountRefV0::readonly(self.quoter.to_bytes()),
+            AccountRefV0::readonly(self.state.to_bytes()),
+            AccountRefV0::readonly(self.clob_program.to_bytes()),
+        ]
+    }
+}
+
 fn disc8(disc: &[u8]) -> Result<[u8; 8]> {
     disc.try_into().map_err(|_| error!(ErrorCode::DefaultError))
 }
 
-/// (Re)write the full condition block: evict, expire (+ fallback), and
-/// cross (+ fallback). `initial_expire_wake_ts` preserves a live hint across
-/// a re-price (`i64::MAX` on first write).
+/// What the book's four conditions wake into, and what each pays.
+///
+/// One resolver for all four: relay hands it the condition that fired, so it
+/// asks the book only about the work that condition describes. `min_payment`
+/// stays per-condition, because that is where relay reads it — a removal is
+/// held to a removal's payment, a cross to the cheaper of the two crosses its
+/// answer can stage. The dearer one pays more than the floor, which passes,
+/// while a floor set to the dearer one would fail the cheaper.
+pub fn clob_crank_registration(
+    keys: &ClobCrankConditionKeys,
+    payments: CrankPaymentsV0,
+) -> Result<ClobCrankConditionsArgsV0> {
+    let resolver = |min_payment: u32| -> Result<ClobCrankResolverV0> {
+        Ok(ClobCrankResolverV0 {
+            program: crate::ID.to_bytes(),
+            disc: disc8(crate::instruction::ResolveClobCrank::DISCRIMINATOR)?,
+            min_payment: u64::from(min_payment),
+        })
+    };
+    let cross = resolver(payments.cross.min(payments.taker_origin_cross))?;
+    Ok(ClobCrankConditionsArgsV0 {
+        expiry: resolver(payments.removal)?,
+        // Activation makes an order matchable with no account change, so the
+        // book names the slot and the cross answer resolves it.
+        activation: cross,
+        capacity: resolver(payments.removal)?,
+        cross,
+        accounts: keys
+            .resolver_accounts()
+            .iter()
+            .map(|account| ClobCrankAccountV0 {
+                address: account.address,
+                writable: account.writable,
+            })
+            .collect(),
+    })
+}
+
+/// (Re)write velocity's own block: the cross fallback poll, and the market
+/// references every staged executor is built from.
 pub fn write_clob_crank_conditions(
     conditions: &mut ClobCrankConditionsV0,
     keys: &ClobCrankConditionKeys,
     market_index: u16,
-    keeper_payment_lamports: u64,
+    payments: CrankPaymentsV0,
     min_cross_surplus: u64,
-    expire_fallback_slots: u64,
-    initial_expire_wake_ts: i64,
-    initial_activation_wake_slot: u64,
+    cross_fallback_slots: u64,
 ) -> Result<()> {
     validate!(
-        keeper_payment_lamports > 0,
+        payments.all_priced(),
         ErrorCode::DefaultError,
-        "keeper payment must be nonzero: turners have no signal to take unpaid work"
+        "every crank must be priced: turners have no signal to take unpaid work"
     )?;
     validate!(
-        expire_fallback_slots > 0,
+        cross_fallback_slots > 0,
         ErrorCode::DefaultError,
-        "expire fallback interval must be nonzero"
+        "cross fallback interval must be nonzero"
     )?;
 
     // The block stamps its own account offset before anything points into
-    // it. Stored once on the account; every condition below points at it.
+    // it. Stored once on the account; the condition below points at it.
     // Index 0 by contract: the staged response pointer names the scratch.
     conditions.init_block()?;
-    let resolvers = conditions.write_resolvers(&[
-        AccountRefV0::writable(crate::state::pdas::relay_scratch().to_bytes()),
-        AccountRefV0::readonly(keys.crank_conditions.to_bytes()),
-        AccountRefV0::readonly(keys.clob_market.to_bytes()),
-        AccountRefV0::readonly(keys.quoter.to_bytes()),
-        AccountRefV0::readonly(keys.state.to_bytes()),
-    ])?;
-    // Only the resolver: which executor a fired condition runs is that
-    // resolver's answer, staged with its payload.
-    let spec = |resolver_disc: &[u8]| -> Result<CrankSpecV0> {
-        Ok(CrankSpecV0 {
-            resolver_program: crate::ID.to_bytes(),
-            resolver_disc: disc8(resolver_disc)?,
-            min_payment: keeper_payment_lamports,
-        })
-    };
-    let evict_spec = spec(crate::instruction::ResolveCrankClobEvict::DISCRIMINATOR)?;
-    let expire_spec = spec(crate::instruction::ResolveCrankClobRemoveExpired::DISCRIMINATOR)?;
+    let resolvers = conditions.write_resolvers(&keys.resolver_accounts())?;
 
     conditions.market_index = market_index;
-    conditions.keeper_payment_lamports = keeper_payment_lamports;
+    conditions.crank_payments = payments;
     conditions.min_cross_surplus = min_cross_surplus;
     conditions.oracle = keys.oracle;
     conditions.quote_spot_market_index = keys.quote_spot_market_index;
     conditions.set_condition(
-        CLOB_CRANK_EVICT,
-        // Both u32 counts, `bid_count` then `ask_count`, in one 8-byte watch.
-        &ConditionV0::on_account_change(
-            keys.clob_market.to_bytes(),
-            CLOB_BID_COUNT_OFFSET as u32,
-            8,
-            evict_spec,
-            resolvers,
-        ),
-    )?;
-    conditions.set_condition(
-        CLOB_CRANK_EXPIRE,
-        &ConditionV0::at_timestamp(initial_expire_wake_ts, expire_spec, resolvers),
-    )?;
-    conditions.set_condition(
-        CLOB_CRANK_EXPIRE_FALLBACK,
-        &ConditionV0::every_slots(expire_fallback_slots, expire_spec, resolvers),
-    )?;
-    let cross_spec = spec(crate::instruction::ResolveCrankCrossMatch::DISCRIMINATOR)?;
-    conditions.set_condition(
-        CLOB_CRANK_CROSS,
-        // Both u32 side heads, `best_bid` then `best_ask`, in one 8-byte
-        // watch — a crossing order is always a new best.
-        &ConditionV0::on_account_change(
-            keys.clob_market.to_bytes(),
-            CLOB_BEST_BID_OFFSET as u32,
-            8,
-            cross_spec,
-            resolvers,
-        ),
-    )?;
-    conditions.set_condition(
         CLOB_CRANK_CROSS_FALLBACK,
-        // A PropAMM crossing the CLOB has no single account to watch — the
-        // poll is that case's liveness floor (the book publisher is the
-        // fast path).
-        &ConditionV0::every_slots(expire_fallback_slots, cross_spec, resolvers),
-    )?;
-    let activation = ConditionV0::at_slot(initial_activation_wake_slot, cross_spec, resolvers);
-    conditions.set_condition(
-        CLOB_CRANK_CROSS_ACTIVATION,
-        // Activation-slot maturation makes an order matchable with no
-        // account change — but it is exactly when makers who lined up
-        // against a speed-bumped order expect the cross, so the program
-        // names the slot precisely: min-folded at placement, repaired by
-        // every landing crank's scan.
-        &activation,
+        // A PropAMM crossing the CLOB writes to neither account the book's
+        // own cross watch covers, so the poll is that case's liveness floor
+        // (the book publisher is the fast path).
+        &ConditionV0::every_slots(
+            cross_fallback_slots,
+            CrankSpecV0 {
+                resolver_program: crate::ID.to_bytes(),
+                resolver_disc: disc8(crate::instruction::ResolveClobCrank::DISCRIMINATOR)?,
+                min_payment: u64::from(payments.cross.min(payments.taker_origin_cross)),
+            },
+            resolvers,
+        ),
     )?;
     Ok(())
 }

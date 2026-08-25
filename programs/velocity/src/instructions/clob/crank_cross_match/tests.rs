@@ -1,45 +1,16 @@
 //! Which crossing prefix the cross resolver offers `crank_cross_match`.
 //!
-//! The book is built from `clob-spec`'s own node, so these fixtures cannot
-//! drift from the layout the book writes; the litesvm crank tests pin the same
-//! declaration against the real CLOB program.
+//! The input is the book's own `quote_l3_v0` answer, so these cases say
+//! nothing about how the book stores an order; the litesvm crank tests pin the
+//! reporting against the real CLOB program.
 
 use {
     super::*,
-    crate::state::prop_amm::{
-        ClobNodeView, ClobOrderBitFlag, ClobUserRefV0, CLOB_BEST_ASK_OFFSET, CLOB_BEST_BID_OFFSET,
-        CLOB_NIL, CLOB_NODE_LEN, CLOB_ORDERS_OFFSET,
-    },
-    bytemuck::Zeroable,
+    crate::state::prop_amm::{ClobUserRefV0, L3RowV0, L3_ROW_FLAG_TAKER_ORIGIN},
 };
 
 const UNIT: u64 = crate::math::constants::BASE_PRECISION_U64;
 const PRICE: u64 = crate::math::constants::PRICE_PRECISION_U64;
-
-/// One live order, best-first within its side.
-#[derive(Clone, Copy)]
-struct Node {
-    authority: u8,
-    price: u64,
-    base_asset_amount: u64,
-    taker_origin: bool,
-}
-
-fn maker(authority: u8, price: u64, base_asset_amount: u64) -> Node {
-    Node {
-        authority,
-        price,
-        base_asset_amount,
-        taker_origin: false,
-    }
-}
-
-fn remainder(authority: u8, price: u64, base_asset_amount: u64) -> Node {
-    Node {
-        taker_origin: true,
-        ..maker(authority, price, base_asset_amount)
-    }
-}
 
 fn user(authority: u8) -> ClobUserRefV0 {
     ClobUserRefV0 {
@@ -48,38 +19,28 @@ fn user(authority: u8) -> ClobUserRefV0 {
     }
 }
 
-/// A book from two best-first side ladders: the bids occupy the first nodes,
-/// the asks the rest, each side linked in the order given.
-fn book_bytes(bids: &[Node], asks: &[Node]) -> Vec<u8> {
-    let mut data = vec![0u8; CLOB_ORDERS_OFFSET + (bids.len() + asks.len()) * CLOB_NODE_LEN];
-    let mut index = 0u32;
-    for (head_offset, side) in [(CLOB_BEST_BID_OFFSET, bids), (CLOB_BEST_ASK_OFFSET, asks)] {
-        let head = if side.is_empty() { CLOB_NIL } else { index };
-        data[head_offset..head_offset + 4].copy_from_slice(&head.to_le_bytes());
-        for (position, node) in side.iter().enumerate() {
-            let at = CLOB_ORDERS_OFFSET + index as usize * CLOB_NODE_LEN;
-            let next = if position + 1 == side.len() {
-                CLOB_NIL
-            } else {
-                index + 1
-            };
-            let mut slot = ClobNodeView::zeroed();
-            slot.authority = Pubkey::new_from_array([node.authority; 32]);
-            slot.price = node.price;
-            slot.base_asset_amount = node.base_asset_amount;
-            slot.next = next;
-            slot.prev = CLOB_NIL;
-            slot.bit_flags = ClobOrderBitFlag::Open as u8
-                | ClobOrderBitFlag::TakerOrigin.bit_if(node.taker_origin);
-            data[at..at + CLOB_NODE_LEN].copy_from_slice(bytemuck::bytes_of(&slot));
-            index += 1;
-        }
+/// One resting order, best-first within its side.
+fn maker(authority: u8, price: u64, size: u64) -> L3RowV0 {
+    L3RowV0 {
+        price,
+        size,
+        order_id: 1,
+        user: user(authority),
+        flags: 0,
+        _pad: [0; 5],
     }
-    data
 }
 
-fn find(bids: &[Node], asks: &[Node]) -> ClobCross {
-    find_clob_cross(&book_bytes(bids, asks), 100, 1_000).unwrap()
+/// A migrated taker remainder: the same row, flagged.
+fn remainder(authority: u8, price: u64, size: u64) -> L3RowV0 {
+    L3RowV0 {
+        flags: L3_ROW_FLAG_TAKER_ORIGIN,
+        ..maker(authority, price, size)
+    }
+}
+
+fn find(bids: &[L3RowV0], asks: &[L3RowV0]) -> ClobCross {
+    cross_prefix(bids, asks)
 }
 
 #[test]

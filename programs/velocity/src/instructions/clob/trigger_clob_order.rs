@@ -452,20 +452,6 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
         user.update_last_active_slot(slot);
     }
 
-    // Wake the cranks no later than this order matters (best-effort,
-    // backstopped by the fallback poll): its expiry, and its activation —
-    // trigger placements take the book's default speed bump.
-    if let Some(conditions) = &ctx.accounts.crank_conditions {
-        let mut conditions = load_mut!(conditions)?;
-        if max_ts != 0 {
-            conditions.note_expiry(max_ts)?;
-        }
-        let delay = clob.default_activation_delay_slots()?;
-        if delay > 0 {
-            conditions.note_activation(slot.saturating_add(delay as u64))?;
-        }
-    }
-
     super::crank_common::finish_trigger_crank(
         &ctx.accounts.state,
         &ctx.accounts.filler,

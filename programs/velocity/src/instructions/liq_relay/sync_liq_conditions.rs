@@ -56,6 +56,7 @@ use {
             perp_market::PerpMarket,
             prop_amm::QuoterV0,
             spot_market::{SpotBalanceType, SpotMarket},
+            state::State,
             user::User,
             user_conditions::{
                 LiqSlotMetaV0, UserConditionsV0, LIQ_SYNC_FALLBACK, LIQ_SYNC_WATCH,
@@ -93,6 +94,8 @@ pub struct SyncLiqConditions<'info> {
     /// account's own lamports). Writable for both roles.
     #[account(mut)]
     pub payer: Signer<'info>,
+    /// Read for the fee rails the sync's own keeper payment is priced from.
+    pub state: AccountLoader<'info, State>,
     pub user: AccountLoader<'info, User>,
     #[account(
         init_if_needed,
@@ -106,13 +109,28 @@ pub struct SyncLiqConditions<'info> {
     pub system_program: Program<'info, System>,
 }
 
+/// What the caller asks for; the terms the account ends up holding are
+/// [`SyncLiqConditionsTerms`], derived from these.
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
 pub struct SyncLiqConditionsArgs {
-    /// Fee the staged self-sync pays its keeper, from this account's own
-    /// lamports. 0 keeps the watch/poll conditions inactive (manual syncs
-    /// only) — turners have no signal to take unpaid work.
-    pub sync_payment_lamports: u64,
+    /// Cost units the staged self-sync requests, measured by simulating it.
+    /// Priced against `State.transaction_fee_rails`. 0 keeps the watch/poll
+    /// conditions inactive (manual syncs only) — turners have no signal to
+    /// take unpaid work.
+    pub sync_cost_units: u32,
     /// Coarse fallback interval, in slots. 0 = use the previous value.
+    pub sync_fallback_slots: u64,
+}
+
+/// The terms a block is written with: a lamport fee and a poll interval.
+///
+/// Separate from [`SyncLiqConditionsArgs`] because the two callers reach them
+/// differently. The opt-in sync prices its cost units against the live rails.
+/// The staged resync re-reads what the account already holds — re-deriving
+/// would let a staged executor re-price its own work.
+#[derive(Clone, Copy)]
+pub struct SyncLiqConditionsTerms {
+    pub sync_payment_lamports: u64,
     pub sync_fallback_slots: u64,
 }
 
@@ -141,6 +159,15 @@ pub fn handle_sync_liq_conditions<'c: 'info, 'info>(
     ctx: Context<'info, SyncLiqConditions<'info>>,
     args: SyncLiqConditionsArgs,
 ) -> Result<()> {
+    let terms = SyncLiqConditionsTerms {
+        sync_payment_lamports: ctx
+            .accounts
+            .state
+            .load()?
+            .transaction_fee_rails
+            .transaction_cost(u64::from(args.sync_cost_units), 1)?,
+        sync_fallback_slots: args.sync_fallback_slots,
+    };
     // The opt-in caller pays rent and funds the reservoir; paying them a
     // sync fee out of the account they just funded would be a wash, so the
     // fee belongs to the relay path only.
@@ -148,7 +175,7 @@ pub fn handle_sync_liq_conditions<'c: 'info, 'info>(
         &ctx.accounts.liq_conditions,
         &ctx.accounts.user,
         ctx.remaining_accounts,
-        args,
+        terms,
     )
 }
 
@@ -158,7 +185,7 @@ pub fn rewrite_liq_conditions<'info>(
     liq_conditions: &AccountLoader<'info, UserConditionsV0>,
     user_loader: &AccountLoader<'info, User>,
     remaining_accounts: &'info [AccountInfo<'info>],
-    args: SyncLiqConditionsArgs,
+    args: SyncLiqConditionsTerms,
 ) -> Result<()> {
     let user_key = user_loader.key();
     let mut perps: BTreeMap<u16, MarketInputs> = BTreeMap::new();
@@ -199,7 +226,8 @@ pub fn rewrite_liq_conditions<'info>(
                 perps
                     .entry(conditions.market_index)
                     .or_default()
-                    .keeper_payment_lamports = Some(conditions.keeper_payment_lamports);
+                    .keeper_payment_lamports =
+                    Some(u64::from(conditions.crank_payments.liquidation));
                 tail_refs.push(AccountRefV0::readonly(info.key.to_bytes()));
                 continue;
             }
@@ -619,7 +647,7 @@ const _: () = {
 
 pub fn validate_sync_args(args: &SyncLiqConditionsArgs) -> Result<()> {
     validate!(
-        args.sync_fallback_slots > 0 || args.sync_payment_lamports == 0,
+        args.sync_fallback_slots > 0 || args.sync_cost_units == 0,
         ErrorCode::DefaultError,
         "a paid self-sync needs a fallback interval"
     )?;

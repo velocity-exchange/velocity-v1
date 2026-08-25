@@ -33,7 +33,7 @@
 //! the existing wakes already cover this crank.
 
 use {
-    super::crank_common::{next_matchable, ResolveClobCrank},
+    super::crank_common::{clob_reader, ResolveClobCrank},
     crate::{
         controller::{
             self,
@@ -56,10 +56,9 @@ use {
             pdas,
             perp_market_map::{get_writable_perp_market_set, MarketSet},
             prop_amm::{
-                clob_hint_scan, clob_resting_levels, read_clob_u32, ClobCancelOrderArgsV0,
-                ClobMarket, ClobNodeView, ClobOrderRefV0, ClobPlaceOrderArgsV0, ClobRemovedOrderV0,
-                ClobSide, ClobUserRefV0, Direction, ExecuteArgsV0, QuoterSubjects, QuoterV0,
-                WireDirectionExt, CLOB_BEST_ASK_OFFSET, CLOB_BEST_BID_OFFSET,
+                ClobCancelOrderArgsV0, ClobMarket, ClobNextCrossV0, ClobOrderRefV0,
+                ClobOrderViewV0, ClobPlaceOrderArgsV0, ClobRemovedOrderV0, ClobSide, ClobUserRefV0,
+                Direction, ExecuteArgsV0, QuoterSubjects, QuoterV0, WireDirectionExt,
             },
             state::State,
             user::{OrderStatus, User, UserStats},
@@ -148,15 +147,14 @@ enum TakerOriginCrossKind {
     /// against a maker the cross was never priced for, or failing the response
     /// validation. Cancelling both sides takes them out of the book's reach
     /// entirely, and two removals is everything the settlement needs.
-    Pair { counterparty_node: u32 },
+    Pair,
 }
 
 /// One resolvable cross: the aggressor (a taker-origin order) and the
 /// counterparty whose price the match settles at.
 pub(crate) struct TakerOriginCross {
-    taker_origin: ClobNodeView,
-    taker_origin_node: u32,
-    counterparty: ClobNodeView,
+    taker_origin: ClobOrderViewV0,
+    counterparty: ClobOrderViewV0,
     /// Side the aggressor rests on (the counterparty is on the other).
     side: ClobSide,
     kind: TakerOriginCrossKind,
@@ -175,25 +173,15 @@ impl TakerOriginCross {
     }
 }
 
-/// Did `a` rest before `b`?
-///
-/// Price-time priority between two crossing taker remainders: the earlier one
-/// is the maker, and its price is the one the match settles at. Ties on the
-/// slot break on the CLOB order id, which is sound rather than arbitrary — a
-/// book's `next_order_id` only ever increases, so within one slot the lower id
-/// was placed first.
-fn rested_first(a: &ClobNodeView, b: &ClobNodeView) -> bool {
-    (a.placed_slot, a.order_id) < (b.placed_slot, b.order_id)
-}
-
 /// The taker-origin cross at the top of the book, if there is one.
 ///
-/// Only the best matchable order on each side is considered. A taker-origin
-/// order sitting *behind* a better one on its own side is crossed by the same
-/// counterparty as that better order, which makes the pair an ordinary
-/// maker×maker cross — `crank_cross_match`'s job — and once that clears, the
-/// taker-origin order is the best and this crank sees it. So the two cranks
-/// compose instead of duplicating each other's search.
+/// Only the best matchable order on each side is considered — which is exactly
+/// what the book reports. A taker-origin order sitting *behind* a better one
+/// on its own side is crossed by the same counterparty as that better order,
+/// which makes the pair an ordinary maker×maker cross — `crank_cross_match`'s
+/// job — and once that clears, the taker-origin order is the best and this
+/// crank sees it. So the two cranks compose instead of duplicating each
+/// other's search.
 ///
 /// When **both** sides are taker-origin, both are demanding liquidity and
 /// neither price is "the counterparty's price" by construction, so the tie is
@@ -205,46 +193,33 @@ fn rested_first(a: &ClobNodeView, b: &ClobNodeView) -> bool {
 ///
 /// The one refused pair, leaving the book untouched: a counterparty owned by
 /// the taker (self-trade).
-pub(crate) fn find_taker_origin_cross(
-    data: &[u8],
-    slot: u64,
-    now: i64,
-) -> Result<Option<TakerOriginCross>> {
-    let head = |offset: usize| -> Result<u32> {
-        read_clob_u32(data, offset).ok_or_else(|| error!(ErrorCode::DefaultError))
-    };
-    let bid = next_matchable(data, head(CLOB_BEST_BID_OFFSET)?, slot, now);
-    let ask = next_matchable(data, head(CLOB_BEST_ASK_OFFSET)?, slot, now);
-    let (Some((bid_node, bid)), Some((ask_node, ask))) = (bid, ask) else {
-        return Ok(None);
-    };
-    if bid.price < ask.price {
-        return Ok(None);
+pub(crate) fn find_taker_origin_cross(heads: &ClobNextCrossV0) -> Option<TakerOriginCross> {
+    if !heads.crosses() {
+        return None;
     }
-    let bid_aggresses = (ClobSide::Bid, bid_node, bid, ask, ask_node);
-    let ask_aggresses = (ClobSide::Ask, ask_node, ask, bid, bid_node);
-    let (side, taker_origin_node, taker_origin, counterparty, counterparty_node) =
-        match (bid.is_taker_origin(), ask.is_taker_origin()) {
-            (false, false) => return Ok(None),
-            (true, false) => bid_aggresses,
-            (false, true) => ask_aggresses,
-            (true, true) if rested_first(&bid, &ask) => ask_aggresses,
-            (true, true) => bid_aggresses,
-        };
-    if counterparty.user_ref() == taker_origin.user_ref() {
-        return Ok(None);
+    let bid_aggresses = (ClobSide::Bid, heads.bid, heads.ask);
+    let ask_aggresses = (ClobSide::Ask, heads.ask, heads.bid);
+    let (side, taker_origin, counterparty) = match (heads.bid.taker_origin, heads.ask.taker_origin)
+    {
+        (false, false) => return None,
+        (true, false) => bid_aggresses,
+        (false, true) => ask_aggresses,
+        (true, true) if heads.bid.rested_before(&heads.ask) => ask_aggresses,
+        (true, true) => bid_aggresses,
+    };
+    if counterparty.user == taker_origin.user {
+        return None;
     }
-    Ok(Some(TakerOriginCross {
+    Some(TakerOriginCross {
         taker_origin,
-        taker_origin_node,
         counterparty,
         side,
-        kind: if counterparty.is_taker_origin() {
-            TakerOriginCrossKind::Pair { counterparty_node }
+        kind: if counterparty.taker_origin {
+            TakerOriginCrossKind::Pair
         } else {
             TakerOriginCrossKind::Maker
         },
-    }))
+    })
 }
 
 /// Put a leftover back on the book, if the book can hold it.
@@ -265,7 +240,7 @@ fn rest_leftover(
     leftover: u64,
     max_ts: i64,
 ) -> Result<Option<ClobOrderRefV0>> {
-    if leftover == 0 || leftover < clob.min_order_size()? {
+    if leftover == 0 || leftover < clob.reader().order_rules()?.min_order_size {
         return Ok(None);
     }
     clob.place(ClobPlaceOrderArgsV0 {
@@ -370,11 +345,8 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
 
     // ---- Discovery and pricing: everything that can refuse the cross runs
     // before the first CPI, so a refusal leaves the book exactly as it was.
-    let cross = {
-        let data = ctx.accounts.clob_market.try_borrow_data()?;
-        find_taker_origin_cross(&data, clock.slot, clock.unix_timestamp)?
-    }
-    .ok_or(ErrorCode::NoTakerOriginCross)?;
+    let cross = find_taker_origin_cross(&clob.reader().next_cross()?)
+        .ok_or(ErrorCode::NoTakerOriginCross)?;
     let taker_ref = {
         let taker = load!(ctx.accounts.taker)?;
         ClobUserRefV0 {
@@ -383,11 +355,11 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         }
     };
     validate!(
-        cross.taker_origin.user_ref() == taker_ref,
+        cross.taker_origin.user == taker_ref,
         ErrorCode::DefaultError,
         "the taker-origin order belongs to {}/{}, not the passed taker",
-        cross.taker_origin.user_ref().authority,
-        cross.taker_origin.user_ref().sub_account_id
+        cross.taker_origin.user.authority,
+        cross.taker_origin.user.sub_account_id
     )?;
 
     let size = cross.size();
@@ -416,10 +388,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     // book uncrossed for the counterparty's fill, so the book's own
     // taker-origin protection cannot fire on the way through.
     let removed = clob.cancel(ClobCancelOrderArgsV0 {
-        order_ref: ClobOrderRefV0 {
-            node_index: cross.taker_origin_node,
-            order_id: cross.taker_origin.order_id,
-        },
+        order_ref: cross.taker_origin.order_ref,
         user: taker_ref,
     })?;
     validate!(
@@ -447,27 +416,42 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
                 PositionDirection::Long => Direction::Long,
                 PositionDirection::Short => Direction::Short,
             };
-            let users = [taker_ref, cross.counterparty.user_ref()];
-            // The book is the quote here: the crank carries no quote leg, so
-            // the run these orders rest at is what the response is held to.
-            let levels = clob_resting_levels(
-                &ctx.accounts.clob_market.try_borrow_data()?,
-                direction.side(),
-                size,
-                &users,
-                &crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
-                &taker_ref,
-                clock.slot,
-                clock.unix_timestamp,
-            );
-            // The execute leg's account list is the registry's, resolved
-            // against the accounts this instruction already names — the book,
-            // the CPI signer, and the program.
+            let users = [taker_ref, cross.counterparty.user];
+            // Both legs' account lists are the registry's, resolved against
+            // the accounts this instruction already names — the book, the CPI
+            // signer, and the program.
             let accounts = [
                 ctx.accounts.clob_market.to_account_info(),
                 ctx.accounts.quoter_signer.to_account_info(),
                 ctx.accounts.clob_program.to_account_info(),
             ];
+            // Quote before executing: execute consumes the orders the ladder
+            // describes. The book is the quote here — the crank carries no
+            // quote of its own, so the run these orders rest at is what the
+            // response is held to — and it comes back through the same
+            // `quote_v0` every source answers on, with the identities the
+            // execute below carries.
+            let levels = quoter
+                .quote(
+                    market_index,
+                    crate::state::prop_amm::QuoteArgsV0 {
+                        caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
+                        // No budgets to price, so nothing reads this.
+                        reference_price: 0,
+                        direction,
+                        size,
+                        users: &users,
+                        taker: Some(taker_ref),
+                        // The cross already priced itself against the
+                        // counterparty; the ladder is the bound, not a filter
+                        // on it.
+                        limit_price: 0,
+                    },
+                    &ctx.accounts.quoter_signer.key(),
+                    ctx.bumps.quoter_signer,
+                    &accounts,
+                )?
+                .levels;
             let located = quoter.execute(
                 market_index,
                 ExecuteArgsV0 {
@@ -495,13 +479,10 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         // interfere and nothing for a fill to reach the wrong maker through.
         // The removal carries the price, the size and the owner, which is the
         // whole of what settling the pair needs.
-        TakerOriginCrossKind::Pair { counterparty_node } => {
-            let counterparty_ref = cross.counterparty.user_ref();
+        TakerOriginCrossKind::Pair => {
+            let counterparty_ref = cross.counterparty.user;
             let removed_counterparty = clob.cancel(ClobCancelOrderArgsV0 {
-                order_ref: ClobOrderRefV0 {
-                    node_index: counterparty_node,
-                    order_id: cross.counterparty.order_id,
-                },
+                order_ref: cross.counterparty.order_ref,
                 user: counterparty_ref,
             })?;
             validate!(
@@ -563,7 +544,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     // as the transaction's return data (the CLOB writes it) besides riding the
     // record below.
     let taker_leftover = removed.base_asset_amount.saturating_sub(fill.base_filled);
-    let taker_rested = rest_leftover(&clob, &removed, taker_leftover, cross.taker_origin.max_ts)?;
+    let taker_rested = rest_leftover(&clob, &removed, taker_leftover, removed.max_ts)?;
     if taker_rested.is_none() {
         let mut taker = load_mut!(ctx.accounts.taker)?;
         unwind_leftover(
@@ -586,7 +567,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
                 &clob,
                 counterparty_removed,
                 leftover,
-                cross.counterparty.max_ts,
+                counterparty_removed.max_ts,
             )?;
             if rested.is_none() {
                 let mut maker = makers_and_referrer.get_ref_mut(&fill.maker)?;
@@ -614,15 +595,11 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         (None, None) => (Pubkey::default(), 0, 0),
     };
 
-    // ---- Wake hints and the keeper's lamports, as every CLOB crank does.
+    // ---- The keeper's lamports, as every CLOB crank does.
     if let Some(conditions_loader) = &ctx.accounts.crank_conditions {
-        let (min_expiry, min_activation) =
-            clob_hint_scan(&ctx.accounts.clob_market.try_borrow_data()?, clock.slot);
         let payment = {
-            let mut conditions = load_mut!(conditions_loader)?;
-            conditions.repair_expiry(min_expiry)?;
-            conditions.repair_activation(min_activation)?;
-            conditions.keeper_payment_lamports
+            let conditions = load_mut!(conditions_loader)?;
+            u64::from(conditions.crank_payments.taker_origin_cross)
         };
         if program_keeper_mode {
             let conditions_info = conditions_loader.to_account_info();
@@ -712,7 +689,6 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
 /// costs latency rather than liveness.
 pub(super) fn stage_taker_origin_cross(
     ctx: &Context<ResolveClobCrank>,
-    clock: &Clock,
 ) -> Result<Option<StagedCall>> {
     let quoter = ctx.accounts.quoter.load()?;
     if !quoter.is_active || !quoter.is_approved {
@@ -721,17 +697,13 @@ pub(super) fn stage_taker_origin_cross(
         // eviction and force-cancel paths'.
         return Ok(None);
     }
-    let cross = {
-        let data = ctx.accounts.clob_market.try_borrow_data()?;
-        find_taker_origin_cross(&data, clock.slot, clock.unix_timestamp)?
-    };
-    let Some(cross) = cross else {
+    let Some(cross) = find_taker_origin_cross(&clob_reader(ctx).next_cross()?) else {
         return Ok(None);
     };
 
     let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
-    let taker_ref = cross.taker_origin.user_ref();
-    let counterparty_ref = cross.counterparty.user_ref();
+    let taker_ref = cross.taker_origin.user;
+    let counterparty_ref = cross.counterparty.user;
     let (taker, taker_stats) = pdas::user_pair(&taker_ref.authority, taker_ref.sub_account_id);
     // The protocol `User` is the filler on this path, and the crank loads each
     // margin account exactly once, so it cannot also be a side of the cross it

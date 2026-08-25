@@ -807,7 +807,11 @@ pub fn liquidate_perp_with_fill(
     oracle_map: &mut OracleMap,
     clock: &Clock,
     state: &State,
-) -> VelocityResult {
+) -> VelocityResult<u64> {
+    // Returns the quote value the liquidation actually filled, or zero when
+    // nothing was liquidated. The crank prices its keeper payment against it:
+    // a liquidation is worth landing in proportion to what it recovers, and
+    // that is the one figure a caller cannot inflate.
     let now = clock.unix_timestamp;
     let slot = clock.slot;
 
@@ -915,7 +919,7 @@ pub fn liquidate_perp_with_fill(
         && liquidation_mode.can_exit_liquidation(&margin_calculation)?
     {
         liquidation_mode.exit_liquidation(&mut user)?;
-        return Ok(());
+        return Ok(0);
     }
 
     user.get_perp_position(market_index).inspect_err(|_e| {
@@ -1023,7 +1027,7 @@ pub fn liquidate_perp_with_fill(
             });
 
             liquidation_mode.exit_liquidation(&mut user)?;
-            return Ok(());
+            return Ok(0);
         }
 
         intermediate_margin_calculation
@@ -1033,7 +1037,7 @@ pub fn liquidate_perp_with_fill(
 
     if user.perp_positions[position_index].base_asset_amount == 0 {
         msg!("User has no base asset amount");
-        return Ok(());
+        return Ok(0);
     }
 
     let oracle_price_too_divergent = is_oracle_too_divergent_with_twap_5min(
@@ -1126,7 +1130,7 @@ pub fn liquidate_perp_with_fill(
 
     if max_base_asset_amount_allowed_to_be_transferred == 0 {
         msg!("max_base_asset_amount_allowed_to_be_transferred == 0");
-        return Ok(());
+        return Ok(0);
     }
 
     let base_asset_value =
@@ -1297,7 +1301,7 @@ pub fn liquidate_perp_with_fill(
         ..LiquidationRecord::default()
     });
 
-    Ok(())
+    Ok(fill_quote_asset_amount)
 }
 
 pub fn liquidate_spot(

@@ -40,6 +40,7 @@ use {
         optional_accounts::get_token_mint,
         safe_decrement, safe_increment,
         state::{
+            clob_crank::{CrankCostUnitsV0, CrankPaymentsV0},
             events::{
                 DepositDirection, DepositExplanation, DepositRecord, SpotMarketVaultDepositRecord,
             },
@@ -63,7 +64,7 @@ use {
             spot_market_map::get_writable_spot_market_set,
             state::{
                 ExchangeStatus, FeeStructure, HotRole, LpPoolFeatureBitFlags, OracleGuardRails,
-                SolvencyStatus, State,
+                SolvencyStatus, State, TransactionFeeRails,
             },
             traits::Size,
             user::{MarketType, SpecialUserStatus, User, UserStats},
@@ -164,7 +165,15 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         solvency_status: SolvencyStatus::active(),
         promo_fee_tier: 0,
         hot_flow_authority: Pubkey::default(),
-        padding: [0; 206],
+        padding_0: [0; 2],
+        transaction_fee_rails: TransactionFeeRails::FLAT_PER_SIGNATURE,
+        // A fifth of a liquidation's value is the ceiling on what the
+        // protocol will spend getting it cranked; see the field's docs.
+        liquidation_crank_reimbursement_bps: 2_000,
+        // Set by the admin once a SOL spot market exists; until then the
+        // liquidation crank pays its flat figure and nothing more.
+        sol_spot_market_index: 0,
+        padding: [0; 184],
     };
 
     Ok(())
@@ -2434,23 +2443,29 @@ pub fn handle_update_perp_market_paused_operations(
 ///
 /// The attach also stands up (or, on re-attach, rewrites) the market's relay
 /// crank conditions: the evict/expire condition block plus the lamport
-/// reservoir that pays relay keepers `keeper_payment_lamports` per crank.
-/// This is the earliest point the full reference graph (book + registry
-/// entry) exists, so a new market needs no separate conditions ceremony, and
-/// re-pricing the crank is just re-running the attach.
+/// reservoir that pays relay keepers per crank. This is the earliest point the
+/// full reference graph (book + registry entry) exists, so a new market needs
+/// no separate conditions ceremony, and re-pricing the cranks is just
+/// re-running the attach.
+///
+/// `crank_cost_units` is what each crank requests, measured by simulating it.
+/// The lamport payments are derived here from `State.transaction_fee_rails`,
+/// so a change in what the network charges is one write to the rails plus a
+/// re-run of this instruction per market — not a fresh round of guesswork per
+/// market.
 #[access_control(
     perp_market_valid(&ctx.accounts.perp_market)
 )]
 pub fn handle_update_perp_market_clob_quoter(
     ctx: Context<AdminUpdatePerpMarketClobQuoter>,
-    keeper_payment_lamports: u64,
+    crank_cost_units: CrankCostUnitsV0,
     expire_fallback_slots: u64,
     min_cross_surplus: u64,
 ) -> Result<()> {
     let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
     msg!("perp market {}", perp_market.market_index);
 
-    {
+    let clob_program = {
         let quoter = ctx.accounts.quoter.load()?;
         validate!(
             quoter.quoter_type == crate::state::prop_amm::QuoterType::Clob,
@@ -2471,37 +2486,76 @@ pub fn handle_update_perp_market_clob_quoter(
             ErrorCode::DefaultError,
             "clob market is not registered on the quoter entry"
         )?;
-    }
+        quoter.program_id
+    };
+
+    validate!(
+        clob_program == ctx.accounts.clob_program.key(),
+        ErrorCode::DefaultError,
+        "clob program does not match the quoter entry"
+    )?;
+    let keys = crate::instructions::ClobCrankConditionKeys {
+        crank_conditions: ctx.accounts.crank_conditions.key(),
+        clob_market: ctx.accounts.clob_market.key(),
+        clob_program,
+        quoter: ctx.accounts.quoter.key(),
+        state: ctx.accounts.state.key(),
+        oracle: perp_market.oracle,
+        quote_spot_market_index: perp_market.quote_spot_market_index,
+    };
+    let payments = CrankPaymentsV0::derive(
+        &ctx.accounts.state.load()?.transaction_fee_rails,
+        &crank_cost_units,
+    )?;
+
+    // The book's own conditions first: velocity registers which resolver
+    // answers each one and what it pays, and the book keeps their wakes
+    // current. What comes back — where its condition block sits, and which of
+    // its bytes change when its top of book moves — is reported rather than
+    // derived, so nothing here knows the market account's layout.
+    let block = {
+        let quoter = ctx.accounts.quoter.load()?;
+        crate::state::prop_amm::ClobMarket::from_quoter(
+            &quoter,
+            perp_market.market_index,
+            &ctx.accounts.clob_market,
+            &ctx.accounts.clob_program,
+            &ctx.accounts.quoter_signer,
+            ctx.bumps.quoter_signer,
+        )?
+        .set_crank_conditions(crate::instructions::clob_crank_registration(
+            &keys, payments,
+        )?)?
+    };
+    msg!(
+        "clob crank conditions at book offset {}",
+        block.block_offset
+    );
 
     // First attach initializes the conditions account; a re-attach rewrites
-    // the block in place, preserving live wake hints across the re-price.
-    let (mut conditions, initial_expire_wake_ts, initial_activation_wake_slot) =
-        match ctx.accounts.crank_conditions.load_init() {
-            Ok(fresh) => (fresh, i64::MAX, u64::MAX),
-            Err(_) => {
-                let existing = load_mut!(ctx.accounts.crank_conditions)?;
-                let expire = existing.expire_wake_ts().unwrap_or(i64::MAX);
-                let activation = existing.activation_wake_slot().unwrap_or(u64::MAX);
-                (existing, expire, activation)
-            }
-        };
-    crate::instructions::write_clob_crank_conditions(
-        &mut conditions,
-        &crate::instructions::ClobCrankConditionKeys {
-            crank_conditions: ctx.accounts.crank_conditions.key(),
-            clob_market: ctx.accounts.clob_market.key(),
-            quoter: ctx.accounts.quoter.key(),
-            state: ctx.accounts.state.key(),
-            oracle: perp_market.oracle,
-            quote_spot_market_index: perp_market.quote_spot_market_index,
-        },
-        perp_market.market_index,
-        keeper_payment_lamports,
-        min_cross_surplus,
-        expire_fallback_slots,
-        initial_expire_wake_ts,
-        initial_activation_wake_slot,
-    )?;
+    // the block in place. One borrow: a freshly initialized account's
+    // discriminator is not visible to a second load in the same instruction.
+    {
+        let mut conditions = ctx
+            .accounts
+            .crank_conditions
+            .load_init()
+            .or_else(|_| load_mut!(ctx.accounts.crank_conditions))?;
+        crate::instructions::write_clob_crank_conditions(
+            &mut conditions,
+            &keys,
+            perp_market.market_index,
+            payments,
+            min_cross_surplus,
+            expire_fallback_slots,
+        )?;
+        // A Custom quoter's cross conditions watch this same region for a
+        // cross against the book (`initialize_quoter_cross_conditions`), and
+        // read it from here rather than deriving it.
+        conditions.clob_block_offset = block.block_offset;
+        conditions.top_of_book_offset = block.top_of_book_offset;
+        conditions.top_of_book_len = block.top_of_book_len;
+    }
 
     // A market names its book once. Re-pricing the crank config above is
     // fine, and pointing the market at a *different* entry is not: a book
@@ -2654,6 +2708,72 @@ pub fn handle_update_promo_fee_tier(
     );
 
     state.promo_fee_tier = promo_fee_tier;
+    Ok(())
+}
+
+/// Re-price what the network charges to land a transaction.
+///
+/// Every relay crank pays its keeper enough to cover the keeper's own
+/// transaction, and that cost is a function of the network's fee model. When
+/// the model changes — a new rate on requested cost units, a different
+/// inclusion fee — this is the one write that moves it.
+///
+/// Payments already stored on a market's conditions account hold their figures
+/// until that market's attach runs again. That fails in the loud direction: a
+/// stored floor above what the executor pays stops the crank at
+/// `assert_paid_v0`, where a floor below it only overpays.
+pub fn handle_update_transaction_fee_rails(
+    ctx: Context<AdminUpdateState>,
+    rails: TransactionFeeRails,
+) -> Result<()> {
+    validate!(
+        rails.resource_fee_denominator > 0 || rails.resource_fee_numerator == 0,
+        ErrorCode::DefaultError,
+        "a resource fee rate needs a denominator"
+    )?;
+
+    msg!(
+        "transaction_fee_rails: {:?} -> {:?}",
+        ctx.accounts.state.load()?.transaction_fee_rails,
+        rails
+    );
+
+    ctx.accounts.state.load_mut()?.transaction_fee_rails = rails;
+    Ok(())
+}
+
+/// Set what the protocol will spend getting a liquidation cranked, and the
+/// market whose oracle prices it.
+///
+/// A liquidation crank repays the priority fee its keeper paid, so the crank
+/// stays worth landing when the fee market moves — and this bounds that at a
+/// share of what the liquidation recovers, so a recovery too small to cover
+/// its own gas is simply left. Both halves are needed: a share with no SOL
+/// market has no way to turn quote into lamports, and a market with no share
+/// spends nothing.
+///
+/// Zero in either field is a valid setting. It leaves the flat payment, which
+/// is where every market starts.
+pub fn handle_update_liquidation_crank_reimbursement(
+    ctx: Context<AdminUpdateState>,
+    share_bps: u16,
+    sol_spot_market_index: u16,
+) -> Result<()> {
+    validate!(
+        share_bps <= 10_000,
+        ErrorCode::DefaultError,
+        "a share of a liquidation cannot exceed the liquidation"
+    )?;
+    let mut state = ctx.accounts.state.load_mut()?;
+    msg!(
+        "liquidation crank reimbursement: {}bps market {} -> {}bps market {}",
+        state.liquidation_crank_reimbursement_bps,
+        state.sol_spot_market_index,
+        share_bps,
+        sol_spot_market_index
+    );
+    state.liquidation_crank_reimbursement_bps = share_bps;
+    state.sol_spot_market_index = sol_spot_market_index;
     Ok(())
 }
 
@@ -4795,9 +4915,18 @@ pub struct AdminUpdatePerpMarketClobQuoter<'info> {
     pub perp_market: AccountLoader<'info, PerpMarket>,
     pub quoter: AccountLoader<'info, crate::state::prop_amm::QuoterV0>,
     /// CHECK: validated against the quoter entry's registered execute
-    /// accounts in the handler; the evict condition's change-watch points at
-    /// its book counts.
+    /// accounts in the handler. Writable because the attach registers
+    /// velocity's resolvers on the book itself: the wakes for an expiry, an
+    /// activation, a side at its cap and a crossed book are facts about this
+    /// account, so the conditions that watch for them live on it.
+    #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
+    /// CHECK: locked to the quoter entry's registered program in the handler.
+    pub clob_program: UncheckedAccount<'info>,
+    /// CHECK: the quoter CPI signer PDA — what a book's `place_authority` is
+    /// set to, and therefore the only key that may register its cranks.
+    #[account(seeds = [crate::signer::QUOTER_SIGNER_SEED], bump)]
+    pub quoter_signer: UncheckedAccount<'info>,
     /// The market's relay conditions + keeper reservoir, stood up (or
     /// re-priced) as part of the attach so a new market needs no separate
     /// crank ceremony.

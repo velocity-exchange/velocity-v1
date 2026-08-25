@@ -10,12 +10,10 @@ use {
         error::{ErrorCode, VelocityResult},
         msg,
         state::prop_amm::{
-            clob_resting_levels, find_account, read_clob_u16, ClobCancelAllArgsV0,
-            ClobCancelAllOutcomeV0, ClobCancelSides, ClobMarket, ClobUserRefV0, Direction,
-            ExecuteArgsV0, ExternalQuoterExecutor, PriceLevel, QuoterSubjects, QuoterType,
-            ResponseLocationV0, CLOB_MARKET_INDEX_OFFSET,
+            find_account, ClobCancelAllArgsV0, ClobCancelAllOutcomeV0, ClobCancelSides, ClobMarket,
+            ClobUserRefV0, Direction, ExecuteArgsV0, ExternalQuoterExecutor, PriceLevel,
+            QuoteArgsV0, QuoterSubjects, QuoterType, ResponseLocationV0,
         },
-        validate,
     },
     anchor_lang::prelude::*,
 };
@@ -80,43 +78,48 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
         if self.quoter_type(index) != QuoterType::Clob {
             return Ok(None);
         }
-        let book_key = self
+        let loader = self
             .quoted
             .get(index)
-            .map(|quoted| &quoted.response_account)
+            .map(|quoted| &quoted.entry)
             .ok_or_else(|| {
                 msg!("router executor index {} out of range", index);
                 ErrorCode::DefaultError
             })?;
-        let book = find_account(self.accounts, book_key).ok_or_else(|| {
-            msg!("clob book {} missing from the account map", book_key);
+        let quoter = loader.load().map_err(|_| {
+            msg!("router executor failed to load quoter {}", index);
             ErrorCode::DefaultError
         })?;
-        let data = book.try_borrow_data().map_err(|_| {
-            msg!("clob book {} is already borrowed", book_key);
-            ErrorCode::DefaultError
-        })?;
-        // The registry says this account holds the entry's responses; that it
-        // is also the book serving this market is re-derived from its bytes,
-        // so a misregistered entry reads as an error rather than as a book
-        // with no prices to bind against.
-        validate!(
-            read_clob_u16(&data, CLOB_MARKET_INDEX_OFFSET) == Some(self.market_index),
-            ErrorCode::InvalidQuoterConfig,
-            "clob entry's response account {} is not the book for market {}",
-            book_key,
-            self.market_index
-        )?;
-        Ok(Some(clob_resting_levels(
-            &data,
-            direction.side(),
-            size,
-            &self.users,
-            &self.caps,
-            &self.taker,
-            self.slot,
-            self.now,
-        )))
+        // The book's own `quote_v0`, with the identities and budgets the
+        // execute below carries. Quote and execute are held to spending the
+        // same set the same way, so a ladder taken here is the one that
+        // execute fills — which is what makes it a bound the fill can be
+        // checked against.
+        Ok(Some(
+            quoter
+                .quote(
+                    self.market_index,
+                    QuoteArgsV0 {
+                        users: self.users,
+                        direction,
+                        size,
+                        caps: self.caps,
+                        reference_price: self.reference_price,
+                        taker: Some(self.taker),
+                        // The bound is the fill's own, applied by the caller
+                        // against the ladder that comes back.
+                        limit_price: 0,
+                    },
+                    &self.quoter_signer,
+                    self.quoter_signer_nonce,
+                    self.accounts,
+                )
+                .map_err(|_| {
+                    msg!("clob quote for entry {} failed", loader.key());
+                    ErrorCode::DefaultError
+                })?
+                .levels,
+        ))
     }
 
     fn subjects(
@@ -130,24 +133,6 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
         } else {
             QuoterSubjects::Account(self.quoter_user(index))
         })
-    }
-
-    fn with_book(&self, index: usize, f: &mut dyn FnMut(&[u8])) -> VelocityResult<bool> {
-        if self.quoter_type(index) != QuoterType::Clob {
-            return Ok(false);
-        }
-        let book_key = self
-            .quoted
-            .get(index)
-            .map(|quoted| &quoted.response_account)
-            .ok_or(ErrorCode::DefaultError)?;
-        let book = find_account(self.accounts, book_key).ok_or(ErrorCode::DefaultError)?;
-        let data = book.try_borrow_data().map_err(|_| {
-            msg!("clob book {} is already borrowed", book_key);
-            ErrorCode::DefaultError
-        })?;
-        f(&data);
-        Ok(true)
     }
 
     fn cancel_all(

@@ -7,6 +7,10 @@ import {
 	QuoterCpiLeg,
 	QuoterType,
 } from '@velocity-exchange/sdk';
+import {
+	readCrankCostUnits,
+	withCrankCostUnitOptions,
+} from '../lib/crankCostUnits';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
 import { reportDispatch, sendOrPropose } from '../lib/squads';
@@ -493,13 +497,15 @@ export function registerQuoter(parent: Command): void {
 	);
 
 	withGlobalOptions(
-		quoter
-			.command(
-				'set-market-clob <market> <quoter> <clobMarket> <keeperPaymentLamports> [expireFallbackSlots]'
-			)
-			.description(
-				"Name a perp market's canonical CLOB quoter entry (warm/cold admin): once set, every router fill must carry it (mandatory baseline). Also stands up (or re-prices) the market's relay crank conditions account in the same instruction — the evict/expire condition block plus the lamport reservoir that pays relay keepers <keeperPaymentLamports> per crank. Top the reservoir off with a plain lamport transfer to the conditions PDA. [expireFallbackSlots] is the expire fallback poll interval (default 1500 slots, ~10 min)."
-			)
+		withCrankCostUnitOptions(
+			quoter
+				.command(
+					'set-market-clob <market> <quoter> <clobMarket> [expireFallbackSlots]'
+				)
+				.description(
+					"Name a perp market's canonical CLOB quoter entry (warm/cold admin): once set, every router fill must carry it (mandatory baseline). Also stands up (or re-prices) the market's cranks in the same instruction: the lamport reservoir relay keepers are paid from, and the registration that tells the book which resolver answers each of its own conditions (an expired order, a side at its cap, a crossed book, an order reaching its activation slot). Each crank's payment is derived here from the cost units it requests and State.transactionFeeRails, so re-running this is how a market is re-priced after the network's fee model changes. Top the reservoir off with a plain lamport transfer to the conditions PDA. [expireFallbackSlots] is the cross fallback poll interval (default 1500 slots, ~10 min), the liveness floor for a cross a PropAMM created by repricing."
+				)
+		)
 			.option(
 				'--min-cross-surplus <quote>',
 				"floor on what the protocol must net from a cross-match crank, in QUOTE_PRECISION (1e6). Cranking a cross pays the reservoir's keeper fee, so a cross that clears by a cent is one worth declining. 0 keeps the bare strictly-profitable rule",
@@ -514,18 +520,38 @@ export function registerQuoter(parent: Command): void {
 			market: string,
 			quoterArg: string,
 			clobMarket: string,
-			keeperPaymentLamports: string,
 			expireFallbackSlots: string | undefined,
 			flags: { admin?: string; minCrossSurplus: string },
 			cmd: Command
 		) => {
+			const crankCostUnits = readCrankCostUnits(
+				flags as unknown as Record<string, string | undefined>
+			);
 			const marketIndex = Number.parseInt(market, 10);
 			const opts = readGlobalOpts(cmd);
 			const provider = buildProvider(opts);
 			const client = await buildAdminClient(opts, false);
 			try {
+				// The book's program comes off the entry rather than the
+				// command line: the attach registers velocity's resolvers on
+				// the book, and the entry is what the registration is checked
+				// against.
+				const entryInfo = await provider.connection.getAccountInfo(
+					new PublicKey(quoterArg)
+				);
+				if (!entryInfo) {
+					throw new Error(`quoter entry ${quoterArg} not found`);
+				}
+				const clobProgramId = new PublicKey(
+					(
+						client.program.coder.accounts.decode(
+							'quoterV0',
+							entryInfo.data
+						) as { programId: PublicKey }
+					).programId
+				);
 				const ix = client.program.instruction.updatePerpMarketClobQuoter(
-					new BN(keeperPaymentLamports),
+					crankCostUnits,
 					new BN(expireFallbackSlots ?? 1500),
 					new BN(flags.minCrossSurplus),
 					{
@@ -540,6 +566,8 @@ export function registerQuoter(parent: Command): void {
 							),
 							quoter: new PublicKey(quoterArg),
 							clobMarket: new PublicKey(clobMarket),
+							clobProgram: clobProgramId,
+							quoterSigner: client.getQuoterSignerPublicKey(),
 							crankConditions: getClobCrankConditionsPublicKey(
 								client.program.programId,
 								marketIndex
@@ -556,7 +584,9 @@ export function registerQuoter(parent: Command): void {
 					'velocity-admin quoter set-market-clob'
 				);
 				reportDispatch(
-					`perp-market[${market}] clob_quoter = ${quoterArg}, crank pays ${keeperPaymentLamports} lamports`,
+					`perp-market[${market}] clob_quoter = ${quoterArg}, cranks priced from ${JSON.stringify(
+						crankCostUnits
+					)} cost units`,
 					result
 				);
 			} finally {

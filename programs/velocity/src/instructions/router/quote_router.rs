@@ -171,6 +171,10 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                         // restriction: quote everything the book holds.
                         users: &[],
                         taker: None,
+                        // No taker, so no price to bound the ladder at. A
+                        // caller reads this view to decide what to route,
+                        // which needs the depth a bound would cut.
+                        limit_price: 0,
                     },
                     &quoter_signer,
                     quoter_signer_nonce,

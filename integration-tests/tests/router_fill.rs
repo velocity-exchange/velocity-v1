@@ -9,7 +9,7 @@
 //! `set_account` with the same values the controller unit fixtures use.
 
 use {
-    anchor_lang::{Discriminator, InstructionData, ToAccountMetas},
+    anchor_lang::{AnchorDeserialize, Discriminator, InstructionData, ToAccountMetas},
     bytemuck::Zeroable,
     solana_account::Account,
     solana_instruction::{AccountMeta, Instruction},
@@ -27,13 +27,17 @@ use {
             SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
         },
         state::{
+            clob_crank::CrankCostUnitsV0,
             market_status::MarketStatus,
             oracle::OracleSource,
             perp_market::PerpMarket,
-            prop_amm::{ClobCancelSides, ClobOrderRefV0, QuoterCpiLeg, QuoterType},
+            prop_amm::{
+                ClobCancelSides, ClobOrderRefV0, Direction, L3ArgsV0, L3ResponseV0, L3RowV0,
+                QuoterCpiLeg, QuoterType, ResponsePointerV0,
+            },
             pyth_lazer_oracle::PythLazerOracle,
             spot_market::{SpotBalanceType, SpotMarket},
-            state::{FeeStructure, OracleGuardRails, State},
+            state::{FeeStructure, OracleGuardRails, State, TransactionFeeRails},
             traits::Size,
             user::{MarketType, Order, OrderStatus, OrderType, User, UserStats},
         },
@@ -91,6 +95,10 @@ fn set_trading_state(svm: &mut litesvm::LiteSVM, admin: &Pubkey) {
     state.oracle_guard_rails = OracleGuardRails::default();
     state.number_of_markets = 1;
     state.number_of_spot_markets = 1;
+    // What `initialize` writes, so a fixture prices a crank the way a fresh
+    // exchange does. A zeroed rails prices every crank at nothing, which the
+    // attach refuses.
+    state.transaction_fee_rails = TransactionFeeRails::FLAT_PER_SIGNATURE;
     set_zero_copy_account(svm, state_pda(), State::DISCRIMINATOR, &state, State::SIZE);
 }
 
@@ -229,12 +237,14 @@ fn set_user_stats_account(svm: &mut litesvm::LiteSVM, address: Pubkey, authority
     );
 }
 
-/// `[disc][ClobHeaderV0 8480][len u32][pad][OrderNodeV0 x cap]`. The header
-/// is the CLOB's `size_of::<ClobHeaderV0>()` — a 128-byte reserve for future
-/// fields sits between the config and the 8192-byte response region.
+/// Bytes to give a market account, for a book of at least `capacity` orders.
+///
+/// Deliberately generous rather than exact: `initialize_market_v0` derives the
+/// arena's capacity from the account's length, so a header that grows costs
+/// this book a few slots rather than silently sizing it wrong. Restating the
+/// header's width here is what used to go stale.
 fn clob_market_space(capacity: usize) -> usize {
-    let orders_offset = (8 + 8480 + 4usize).next_multiple_of(8);
-    orders_offset + capacity * 96
+    32 * 1024 + capacity * 128
 }
 
 fn clob_ix(name: &str, args: Vec<u8>, accounts: Vec<AccountMeta>) -> Instruction {
@@ -267,30 +277,78 @@ fn clob_market_config(market_index: u16) -> Vec<u8> {
     v
 }
 
-fn clob_ask_count(svm: &litesvm::LiteSVM, market: &Pubkey) -> u32 {
-    let data = svm.get_account(market).unwrap().data;
-    u32::from_le_bytes(data[140..144].try_into().unwrap())
+/// Ask the book something, without landing anything.
+///
+/// Simulated, which is what an off-chain reader does and what a relay turner
+/// does with a resolver: the answer comes back as return data and, for the
+/// legs that stream, in the post-simulation account. Nothing here decodes the
+/// market account's layout — the tests introspect the book through the same
+/// instructions velocity does.
+fn ask_clob(
+    svm: &litesvm::LiteSVM,
+    payer: &Keypair,
+    market: &Pubkey,
+    name: &str,
+    args: Vec<u8>,
+    writable: bool,
+) -> (Vec<u8>, Vec<u8>) {
+    let meta = AccountMeta {
+        pubkey: *market,
+        is_signer: false,
+        is_writable: writable,
+    };
+    simulate(svm, payer, clob_ix(name, args, vec![meta]), market)
+        .unwrap_or_else(|fail| panic!("{name} simulates: {:?}", fail.err))
 }
 
-fn clob_bid_count(svm: &litesvm::LiteSVM, market: &Pubkey) -> u32 {
-    let data = svm.get_account(market).unwrap().data;
-    u32::from_le_bytes(data[136..140].try_into().unwrap())
-}
-
-/// The price of the best resting bid, read through the same node offsets the
-/// program uses so a header change breaks both together.
-fn clob_best_bid_price(svm: &litesvm::LiteSVM, market: &Pubkey) -> Option<u64> {
-    use velocity::state::prop_amm::{read_clob_node, CLOB_BEST_BID_OFFSET, CLOB_NIL};
-    let data = svm.get_account(market).unwrap().data;
-    let head = u32::from_le_bytes(
-        data[CLOB_BEST_BID_OFFSET..CLOB_BEST_BID_OFFSET + 4]
-            .try_into()
-            .unwrap(),
+/// The orders resting on one side, best price first, as the book reports them
+/// through `quote_l3_v0` — one row per order.
+fn clob_side(fixture: &Fixture, direction: Direction) -> Vec<L3RowV0> {
+    let mut args = Vec::new();
+    velocity::state::prop_amm::write_l3_args(
+        &mut args,
+        &L3ArgsV0 {
+            direction,
+            // Zero describes the side up to `max_rows`.
+            size: 0,
+            max_rows: 128,
+        },
+    )
+    .unwrap();
+    // Writable: the rows stream into the market's own response tail, and the
+    // pointer that comes back locates them there.
+    let (pointer, account) = ask_clob(
+        &fixture.svm,
+        &fixture.keeper,
+        &fixture.clob_market,
+        "quote_l3_v0",
+        args,
+        true,
     );
-    if head == CLOB_NIL {
-        return None;
-    }
-    read_clob_node(&data, head).map(|node| node.price)
+    // The quoter wire's pointer, not relay's: `quote_l3_v0` answers on the
+    // interface every source shares.
+    let pointer = ResponsePointerV0::deserialize(&mut pointer.as_slice()).unwrap();
+    let at = pointer.offset as usize;
+    L3ResponseV0::parse(&account[at..at + pointer.len as usize])
+        .unwrap()
+        .rows
+        .to_vec()
+}
+
+/// How many orders rest on a side. A buyer consumes the asks.
+fn clob_ask_count(fixture: &Fixture) -> usize {
+    clob_side(fixture, Direction::Long).len()
+}
+
+fn clob_bid_count(fixture: &Fixture) -> usize {
+    clob_side(fixture, Direction::Short).len()
+}
+
+/// The price of the best resting bid, as the book names it.
+fn clob_best_bid_price(fixture: &Fixture) -> Option<u64> {
+    clob_side(fixture, Direction::Short)
+        .first()
+        .map(|row| row.price)
 }
 
 /// Init a CLOB book with `place_authority` = the velocity signer, so every
@@ -420,7 +478,6 @@ fn place_clob_order_ix(
     quoter: Pubkey,
     clob_market: Pubkey,
     oracle: Pubkey,
-    crank_conditions: Option<Pubkey>,
     params: PlaceClobOrderParams,
 ) -> Instruction {
     let (quoter_signer, _) = quoter_signer_pda();
@@ -432,7 +489,6 @@ fn place_clob_order_ix(
         clob_market,
         clob_program: clob_id(),
         quoter_signer,
-        crank_conditions,
         instructions_sysvar: None,
     }
     .to_account_metas(None);
@@ -456,6 +512,12 @@ struct Fixture {
     quoter: Pubkey,
     clob_maker_user: Pubkey,
     clob_maker_authority: Keypair,
+    /// The book's own admin, for the cases that reconfigure it.
+    clob_admin: Keypair,
+    /// Where the book's condition block sits, as the attach reported it. A
+    /// turner learns it the same way — from the registration — rather than by
+    /// knowing the market account's layout.
+    crank_block_offset: u32,
 }
 
 fn setup() -> Fixture {
@@ -512,6 +574,8 @@ fn setup() -> Fixture {
         quoter,
         clob_maker_user,
         clob_maker_authority,
+        clob_admin,
+        crank_block_offset: 0,
     }
 }
 
@@ -597,7 +661,6 @@ fn place_clob_ask(fixture: &mut Fixture, price: u64, size: u64) -> ClobOrderRefV
         fixture.quoter,
         fixture.clob_market,
         fixture.oracle,
-        None,
         PlaceClobOrderParams {
             market_index: 0,
             direction: PositionDirection::Short,
@@ -619,17 +682,42 @@ fn place_clob_ask(fixture: &mut Fixture, price: u64, size: u64) -> ClobOrderRefV
 /// below-default activation delay must fail without the flow authority
 /// co-signing the transaction, and pass with it — while at-or-above the
 /// default stays permissionless.
+/// Borsh `UpdateMarketArgsV0` setting only `default_activation_delay_slots`:
+/// ten `Option`s, each a presence byte, in the order the book declares them.
+fn set_clob_default_activation_delay(fixture: &mut Fixture, slots: u32) {
+    let mut args = Vec::new();
+    for _ in 0..3 {
+        args.push(0u8); // tick size, step size, min order size
+    }
+    args.push(1u8);
+    args.extend_from_slice(&slots.to_le_bytes());
+    for _ in 0..6 {
+        args.push(0u8); // max activation delay, grace, evict threshold, ceilings
+    }
+    let admin = fixture.clob_admin.insecure_clone();
+    let ix = clob_ix(
+        "update_market_v0",
+        args,
+        vec![
+            AccountMeta::new(fixture.clob_market, false),
+            AccountMeta::new_readonly(admin.pubkey(), true),
+            // The optional new place authority, absent: encoded as the
+            // program id.
+            AccountMeta::new_readonly(clob_id(), false),
+        ],
+    );
+    send(&mut fixture.svm, &admin, ix, &[]).unwrap();
+}
+
 #[test]
 fn fast_activation_requires_the_flow_authority_attestation() {
     use velocity::state::state::HotRole;
 
     let mut fixture = setup();
     // The fixture's book has a zero default (every test placement is
-    // "fast"); raise it so below-default is expressible.
-    let mut book = fixture.svm.get_account(&fixture.clob_market).unwrap();
-    let at = velocity::state::prop_amm::CLOB_DEFAULT_ACTIVATION_DELAY_OFFSET;
-    book.data[at..at + 4].copy_from_slice(&2u32.to_le_bytes());
-    fixture.svm.set_account(fixture.clob_market, book).unwrap();
+    // "fast"); raise it through the book's own admin instruction so
+    // below-default is expressible.
+    set_clob_default_activation_delay(&mut fixture, 2);
 
     let place = |fixture: &Fixture, delay: Option<u32>, with_sysvar: bool| {
         let mut ix = place_clob_order_ix(
@@ -638,7 +726,6 @@ fn fast_activation_requires_the_flow_authority_attestation() {
             fixture.quoter,
             fixture.clob_market,
             fixture.oracle,
-            None,
             PlaceClobOrderParams {
                 market_index: 0,
                 direction: PositionDirection::Short,
@@ -651,8 +738,6 @@ fn fast_activation_requires_the_flow_authority_attestation() {
         if with_sysvar {
             // The optional slot is encoded as a program-id placeholder;
             // swap the real sysvar in.
-            // Two optionals are encoded as placeholders (crank_conditions,
-            // then instructions_sysvar) — the sysvar is the LAST one.
             let placeholder = ix
                 .accounts
                 .iter()
@@ -731,7 +816,7 @@ fn a_fill_that_leaves_out_a_book_maker_cannot_hand_its_flow_to_a_worse_price() {
 
     // The book: 1.0 @ 99, aged well past the grace window by fill time.
     place_clob_ask(&mut fixture, 99 * PRICE, UNIT);
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 1);
+    assert_eq!(clob_ask_count(&fixture), 1);
 
     // The assembler's own liquidity, priced worse than the book.
     let dlob_maker_authority = Keypair::new();
@@ -851,7 +936,7 @@ fn a_fill_that_leaves_out_a_book_maker_cannot_hand_its_flow_to_a_worse_price() {
 
     // And the book still holds what it was holding, for a transaction that
     // brings the accounts to reach it.
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 1);
+    assert_eq!(clob_ask_count(&fixture), 1);
 }
 
 /// Immediate-or-cancel is the exception, and it has to be: that order bought
@@ -983,7 +1068,7 @@ fn router_fill_splits_across_clob_dlob_and_vamm_sources() {
     assert_eq!(clob_maker.perp_positions[0].open_asks, -((UNIT / 2) as i64));
     assert_eq!(clob_maker.perp_positions[0].open_orders, 1);
     assert_eq!(clob_maker.open_orders, 1);
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 1);
+    assert_eq!(clob_ask_count(&fixture), 1);
 
     // DLOB maker: post-only ask 0.5 @ 100.
     let dlob_maker_authority = Keypair::new();
@@ -1121,7 +1206,7 @@ fn router_fill_splits_across_clob_dlob_and_vamm_sources() {
     assert_eq!(clob_maker.perp_positions[0].open_asks, 0);
     assert_eq!(clob_maker.perp_positions[0].open_orders, 0);
     assert_eq!(clob_maker.open_orders, 0);
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(clob_ask_count(&fixture), 0);
 
     // DLOB maker: short 0.5, order fully filled.
     let dlob_maker: User = read_zero_copy(&fixture.svm, &dlob_maker_user);
@@ -1145,7 +1230,6 @@ fn place_clob_bid(fixture: &mut Fixture, price: u64, size: u64) -> ClobOrderRefV
         fixture.quoter,
         fixture.clob_market,
         fixture.oracle,
-        None,
         PlaceClobOrderParams {
             market_index: 0,
             direction: PositionDirection::Long,
@@ -1217,8 +1301,8 @@ fn cancel_all_clob_orders_unwinds_a_whole_ladder_in_one_instruction() {
     assert_eq!(after_bids.perp_positions[0].open_asks, -(ask_base as i64));
     assert_eq!(after_bids.perp_positions[0].open_orders, 5);
     assert_eq!(after_bids.open_orders, 5);
-    assert_eq!(clob_bid_count(&fixture.svm, &fixture.clob_market), 0);
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 5);
+    assert_eq!(clob_bid_count(&fixture), 0);
+    assert_eq!(clob_ask_count(&fixture), 5);
 
     let ix = cancel_all_clob_ix(&fixture, ClobCancelSides::Both);
     send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[]).unwrap();
@@ -1228,7 +1312,7 @@ fn cancel_all_clob_orders_unwinds_a_whole_ladder_in_one_instruction() {
     assert_eq!(after.perp_positions[0].open_orders, 0);
     assert_eq!(after.open_orders, 0);
     assert!(!after.has_open_order);
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(clob_ask_count(&fixture), 0);
 
     // Idempotent: nothing left to take is a success, not a failed transaction.
     let ix = cancel_all_clob_ix(&fixture, ClobCancelSides::Both);
@@ -1283,7 +1367,6 @@ fn cancel_all_clob_orders_only_takes_the_signing_users_orders() {
             fixture.quoter,
             fixture.clob_market,
             fixture.oracle,
-            None,
             PlaceClobOrderParams {
                 market_index: 0,
                 direction: PositionDirection::Short,
@@ -1295,12 +1378,12 @@ fn cancel_all_clob_orders_only_takes_the_signing_users_orders() {
         );
         send(&mut fixture.svm, &other_authority, ix, &[]).unwrap();
     }
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 4);
+    assert_eq!(clob_ask_count(&fixture), 4);
 
     let ix = cancel_all_clob_ix(&fixture, ClobCancelSides::Both);
     send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[]).unwrap();
 
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 2);
+    assert_eq!(clob_ask_count(&fixture), 2);
     let mine: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert_eq!(mine.perp_positions[0].open_asks, 0);
     assert_eq!(mine.perp_positions[0].open_orders, 0);
@@ -1419,7 +1502,7 @@ fn cancel_clob_order_unwinds_the_reserved_aggregates() {
     assert_eq!(clob_maker.perp_positions[0].open_asks, 0);
     assert_eq!(clob_maker.perp_positions[0].open_orders, 0);
     assert_eq!(clob_maker.open_orders, 0);
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(clob_ask_count(&fixture), 0);
 
     // The stale ref fails closed on a second cancel.
     let ix2 = Instruction {
@@ -1538,7 +1621,6 @@ fn crank_remove_expired_unwinds_aggregates_and_pays_the_keeper() {
         fixture.quoter,
         fixture.clob_market,
         fixture.oracle,
-        None,
         PlaceClobOrderParams {
             market_index: 0,
             direction: PositionDirection::Short,
@@ -1597,7 +1679,7 @@ fn crank_remove_expired_unwinds_aggregates_and_pays_the_keeper() {
     assert_eq!(maker.perp_positions[0].open_asks, 0);
     assert_eq!(maker.perp_positions[0].open_orders, 0);
     assert_eq!(maker.open_orders, 0);
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(clob_ask_count(&fixture), 0);
     // Flat reward moved maker → keeper (perps_default flat_filler_fee).
     assert!(maker.perp_positions[0].quote_asset_amount < 0);
     let filler: User = read_zero_copy(&fixture.svm, &filler_user);
@@ -1648,7 +1730,7 @@ fn crank_evict_unwinds_the_tails_aggregates() {
     let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert_eq!(maker.perp_positions[0].open_asks, 0);
     assert_eq!(maker.perp_positions[0].open_orders, 0);
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(clob_ask_count(&fixture), 0);
 }
 
 /// The quote view, end to end: one simulated instruction returns verified
@@ -1757,7 +1839,7 @@ fn quote_router_returns_verified_books_for_every_source() {
         data: velocity::instruction::QuoteRouter {
             args: velocity::instructions::QuoteRouterArgs {
                 market_index: 0,
-                direction: velocity::state::prop_amm::Direction::Long,
+                direction: Direction::Long,
                 size: 2 * UNIT,
                 quoter_count: 1,
                 include_vamm: true,
@@ -1867,10 +1949,46 @@ fn set_protocol_user(svm: &mut litesvm::LiteSVM) -> Pubkey {
     user
 }
 
+/// Cost units to sync with when the test does not care what the sync costs.
+const ANY_SYNC_COST_UNITS: u32 = 20_000;
+
+/// Cost units to attach with when the test does not care what a crank costs.
+/// Nonzero is all the attach requires; under the flat-per-signature rails the
+/// fixture starts on, the figure does not reach the payment.
+const ANY_CRANK_COST_UNITS: CrankCostUnitsV0 = CrankCostUnitsV0 {
+    removal: 30_000,
+    cross: 180_000,
+    taker_origin_cross: 190_000,
+    trigger: 40_000,
+    liquidation: 120_000,
+    force_cancel: 60_000,
+};
+
 /// Attach the CLOB to the market through the admin ix — which also stands up
 /// the crank conditions account, so no separate init exists to call.
+///
+/// Takes the lamport payment the test wants to see, and gets it by putting the
+/// exchange on the flat-per-signature fee model at that price. Under that model
+/// every crank is worth one signature, whatever it requests, which is what lets
+/// a test assert one number.
 fn init_crank_conditions(fixture: &mut Fixture, keeper_payment_lamports: u64) -> Pubkey {
     init_crank_conditions_with_floor(fixture, keeper_payment_lamports, 0)
+}
+
+/// Put the exchange on a flat fee of `lamports` per signature.
+fn set_flat_transaction_fee(fixture: &mut Fixture, lamports: u32) {
+    let mut state: State = read_zero_copy(&fixture.svm, &state_pda());
+    state.transaction_fee_rails = TransactionFeeRails {
+        signature_lamports: lamports,
+        ..TransactionFeeRails::FLAT_PER_SIGNATURE
+    };
+    set_zero_copy_account(
+        &mut fixture.svm,
+        state_pda(),
+        State::DISCRIMINATOR,
+        &state,
+        State::SIZE,
+    );
 }
 
 /// `min_cross_surplus` is the floor on what the protocol must net from a
@@ -1878,6 +1996,16 @@ fn init_crank_conditions(fixture: &mut Fixture, keeper_payment_lamports: u64) ->
 fn init_crank_conditions_with_floor(
     fixture: &mut Fixture,
     keeper_payment_lamports: u64,
+    min_cross_surplus: u64,
+) -> Pubkey {
+    set_flat_transaction_fee(fixture, keeper_payment_lamports as u32);
+    attach_clob(fixture, ANY_CRANK_COST_UNITS, min_cross_surplus)
+}
+
+/// The attach itself, with the cranks' cost units passed through.
+fn attach_clob(
+    fixture: &mut Fixture,
+    crank_cost_units: CrankCostUnitsV0,
     min_cross_surplus: u64,
 ) -> Pubkey {
     let conditions = crank_conditions_pda();
@@ -1889,6 +2017,8 @@ fn init_crank_conditions_with_floor(
             perp_market: perp_market_pda(0),
             quoter: fixture.quoter,
             clob_market: fixture.clob_market,
+            clob_program: clob_id(),
+            quoter_signer: quoter_signer_pda().0,
             crank_conditions: conditions,
             rent: "SysvarRent111111111111111111111111111111111"
                 .parse()
@@ -1897,15 +2027,71 @@ fn init_crank_conditions_with_floor(
         }
         .to_account_metas(None),
         data: velocity::instruction::UpdatePerpMarketClobQuoter {
-            keeper_payment_lamports,
+            crank_cost_units,
             expire_fallback_slots: 100,
             min_cross_surplus,
         }
         .data(),
     };
     let admin = fixture.admin.insecure_clone();
-    send(&mut fixture.svm, &admin, ix, &[]).unwrap();
+    let meta = send(&mut fixture.svm, &admin, ix, &[]).unwrap();
+    // The book reports where its block sits; the registrant does not derive it.
+    fixture.crank_block_offset = u32::from_le_bytes(meta.return_data.data[..4].try_into().unwrap());
     conditions
+}
+
+/// The book's condition slots, in the order the CLOB program declares them.
+/// Restated here because the harness does not link the book's crate — the
+/// litesvm run loads it as a deployed program, like anything else.
+const BOOK_CRANK_EXPIRY: usize = 0;
+const BOOK_CRANK_ACTIVATION: usize = 1;
+const BOOK_CRANK_CAPACITY: usize = 2;
+const BOOK_CRANK_CROSS: usize = 3;
+const BOOK_CONDITIONS: usize = 4;
+
+/// The book's own condition block, read the way a turner does: by account and
+/// offset, with no knowledge of what else the market account holds.
+fn book_conditions(fixture: &Fixture) -> Vec<velocity::relay_spec::ConditionV0> {
+    assert_ne!(
+        fixture.crank_block_offset, 0,
+        "attach the book's cranks first"
+    );
+    let data = fixture.svm.get_account(&fixture.clob_market).unwrap().data;
+    let (header, conditions) =
+        velocity::relay_spec::read_block(&data[fixture.crank_block_offset as usize..], 0).unwrap();
+    assert_eq!(header.num_conditions as usize, BOOK_CONDITIONS);
+    conditions.to_vec()
+}
+
+/// The book's expiry wake.
+fn book_expiry_wake(fixture: &Fixture) -> i64 {
+    match book_conditions(fixture)[BOOK_CRANK_EXPIRY].wake() {
+        Ok(velocity::relay_spec::WakeView::AtTimestamp { unix_ts }) => unix_ts,
+        other => panic!("expiry condition is not a timestamp wake: {other:?}"),
+    }
+}
+
+/// The book's activation wake.
+fn book_activation_wake(fixture: &Fixture) -> u64 {
+    match book_conditions(fixture)[BOOK_CRANK_ACTIVATION].wake() {
+        Ok(velocity::relay_spec::WakeView::AtSlot { slot }) => slot,
+        other => panic!("activation condition is not a slot wake: {other:?}"),
+    }
+}
+
+/// The condition a turner says fired. Velocity's resolver reads which work to
+/// look for out of this, so a test asking for a particular crank names its
+/// slot the same way relay would.
+fn fired_condition(
+    target: Pubkey,
+    block_offset: u32,
+    index: u8,
+) -> velocity::instructions::FiredConditionArgV0 {
+    velocity::instructions::FiredConditionArgV0 {
+        target,
+        block_offset,
+        index,
+    }
 }
 
 /// Run a resolver as a real transaction (a turner would only simulate it)
@@ -1924,13 +2110,24 @@ fn run_resolver(
             clob_market: fixture.clob_market,
             quoter: fixture.quoter,
             state: state_pda(),
+            clob_program: clob_id(),
         }
         .to_account_metas(None),
-        data: if expire {
-            velocity::instruction::ResolveCrankClobRemoveExpired {}.data()
-        } else {
-            velocity::instruction::ResolveCrankClobEvict {}.data()
-        },
+        // Relay names the condition that fired, and one resolver answers for
+        // all of them — so which crank this asks for is the slot, not the
+        // instruction.
+        data: velocity::instruction::ResolveClobCrank {
+            fired: fired_condition(
+                fixture.clob_market,
+                fixture.crank_block_offset,
+                if expire {
+                    velocity::state::prop_amm::CLOB_CRANK_SLOT_EXPIRY
+                } else {
+                    velocity::state::prop_amm::CLOB_CRANK_SLOT_CAPACITY
+                },
+            ),
+        }
+        .data(),
     };
     let keeper = fixture.keeper.insecure_clone();
     let meta = send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
@@ -1959,9 +2156,17 @@ fn run_cross_resolver(
             clob_market: fixture.clob_market,
             quoter: fixture.quoter,
             state: state_pda(),
+            clob_program: clob_id(),
         }
         .to_account_metas(None),
-        data: velocity::instruction::ResolveCrankCrossMatch {}.data(),
+        data: velocity::instruction::ResolveClobCrank {
+            fired: fired_condition(
+                fixture.clob_market,
+                fixture.crank_block_offset,
+                velocity::state::prop_amm::CLOB_CRANK_SLOT_CROSS,
+            ),
+        }
+        .data(),
     };
     let keeper = fixture.keeper.insecure_clone();
     let meta = send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
@@ -2019,45 +2224,212 @@ fn run_staged_executor(
     send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
 }
 
-/// The full program-keeper expiry loop: init conditions, place an expiring
-/// order through the adapter (min-folding the wake hint), resolve, and
-/// submit the staged executor unsigned. The maker's reward accrues to the
-/// protocol User, the payout account is paid reservoir lamports, and the
-/// hint is repaired.
+/// The attach prices each crank off what it requests, and writes the same
+/// figure into the condition a turner reads.
+///
+/// The two have to agree: the executor pays what the account holds, and relay
+/// holds the keeper's balance growth to what the condition advertises. A
+/// condition asking for more than its executor pays is a crank that does the
+/// work and then reverts.
 #[test]
-fn program_keeper_expire_crank_pays_reservoir_lamports_to_an_unsigned_keeper() {
-    use velocity::state::clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_EVICT};
+fn each_crank_is_priced_from_what_it_requests_and_the_condition_agrees() {
+    use velocity::state::{clob_crank::ClobCrankConditionsV0, state::TransactionFeeRails};
 
     let mut fixture = setup();
-    const PAYMENT: u64 = 50_000;
-    let conditions = init_crank_conditions(&mut fixture, PAYMENT);
-    let protocol_user = set_protocol_user(&mut fixture.svm);
-    // Top off the reservoir (lamport credits to a program-owned account are
-    // unrestricted — this is the hot role's off-chain top-off leg).
+    // A rate on requested cost units, which is what separates the cranks.
+    let mut state: State = read_zero_copy(&fixture.svm, &state_pda());
+    state.transaction_fee_rails = TransactionFeeRails {
+        inclusion_lamports: 2_500,
+        signature_lamports: 0,
+        resource_fee_numerator: 1,
+        resource_fee_denominator: 2,
+    };
+    set_zero_copy_account(
+        &mut fixture.svm,
+        state_pda(),
+        State::DISCRIMINATOR,
+        &state,
+        State::SIZE,
+    );
+
+    let units = CrankCostUnitsV0 {
+        removal: 30_000,
+        cross: 180_000,
+        taker_origin_cross: 190_000,
+        trigger: 40_000,
+        liquidation: 120_000,
+        force_cancel: 60_000,
+    };
+    let conditions_key = attach_clob(&mut fixture, units, 0);
+    let conditions: ClobCrankConditionsV0 = read_zero_copy(&fixture.svm, &conditions_key);
+
+    // 2,500 to be included, plus half a lamport per unit requested.
+    assert_eq!(conditions.crank_payments.removal, 2_500 + 15_000);
+    assert_eq!(conditions.crank_payments.cross, 2_500 + 90_000);
+    assert_eq!(conditions.crank_payments.taker_origin_cross, 2_500 + 95_000);
+    assert_eq!(conditions.crank_payments.trigger, 2_500 + 20_000);
+    assert_eq!(conditions.crank_payments.liquidation, 2_500 + 60_000);
+    assert_eq!(conditions.crank_payments.force_cancel, 2_500 + 30_000);
+
+    // A market needs two relay watches, and the attach is what tells a
+    // registrar where the second one goes: velocity's conditions account
+    // holds one block at offset 8, the book holds the four that describe
+    // itself. A registrar that watches only the first leaves every one of the
+    // book's own cranks unwoken, so both regions are recorded here rather
+    // than derived from the market account's layout.
+    assert_eq!(
+        conditions.clob_block_offset, fixture.crank_block_offset,
+        "the attach records where the book's block sits"
+    );
+    assert_ne!(conditions.clob_block_offset, 0);
+    assert_eq!(
+        conditions.top_of_book_len, 8,
+        "both u32 heads in one region"
+    );
+    assert_eq!(
+        account_change(&book_conditions(&fixture)[BOOK_CRANK_CROSS]).1,
+        conditions.top_of_book_offset,
+        "the book's own cross watch and the recorded region are the same bytes"
+    );
+
+    // The attach carries the same figures onto the book, which is where the
+    // conditions that watch its state live.
+    let book = book_conditions(&fixture);
+    assert_eq!(
+        book[BOOK_CRANK_CAPACITY].min_payment(),
+        u64::from(conditions.crank_payments.removal)
+    );
+    assert_eq!(
+        book[BOOK_CRANK_EXPIRY].min_payment(),
+        u64::from(conditions.crank_payments.removal)
+    );
+    // The cross conditions advertise the cheaper of the two crosses their
+    // resolver can stage, so whichever it picks clears the floor.
+    assert_eq!(
+        book[BOOK_CRANK_CROSS].min_payment(),
+        u64::from(conditions.crank_payments.cross)
+    );
+}
+
+/// One resolver serves every CLOB crank condition, and the fired condition is
+/// what picks the work.
+///
+/// The point of the merge is that a wake does not go looking for work the
+/// condition did not describe: a capacity wake resolves an eviction and never
+/// touches the cross path. A slot that velocity does not serve, or a target
+/// that is neither the book nor the market's conditions, is refused rather
+/// than read as some other slot.
+#[test]
+fn the_fired_condition_picks_which_crank_the_resolver_stages() {
+    let mut fixture = setup();
+    let conditions = init_crank_conditions(&mut fixture, 50_000);
+    set_protocol_user(&mut fixture.svm);
     fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
 
-    // The init wrote the evict watch over the book's counts and mirrored the
-    // payment into min_payment.
-    let acct: ClobCrankConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
-    let evict = acct.get_condition(CLOB_CRANK_EVICT).unwrap();
-    assert_eq!(evict.min_payment(), PAYMENT);
-    assert_eq!(
-        account_change(&evict).0,
-        fixture.clob_market.to_bytes(),
-        "evict watch must point at the CLOB market"
-    );
-    assert_eq!(acct.expire_wake_ts().unwrap(), i64::MAX);
-
-    // An expiring ask placed WITH the conditions account min-folds the hint.
+    // A single ask, expiring, on a book whose evict threshold is 1: both an
+    // expiry and an eviction are available, so the slot alone decides which
+    // the resolver answers with.
     let clock: solana_clock::Clock = fixture.svm.get_sysvar();
-    let max_ts = clock.unix_timestamp + 10;
     let ix = place_clob_order_ix(
         fixture.clob_maker_user,
         &fixture.clob_maker_authority,
         fixture.quoter,
         fixture.clob_market,
         fixture.oracle,
-        Some(conditions),
+        PlaceClobOrderParams {
+            market_index: 0,
+            direction: PositionDirection::Short,
+            price: 110 * PRICE,
+            base_asset_amount: UNIT / 4,
+            max_ts: clock.unix_timestamp + 10,
+            activation_delay_slots: Some(0),
+        },
+    );
+    let maker = fixture.clob_maker_authority.insecure_clone();
+    send(&mut fixture.svm, &maker, ix, &[]).unwrap();
+    let mut clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    clock.unix_timestamp += 20;
+    fixture.svm.set_sysvar(&clock);
+
+    let book = fixture.clob_market;
+    let quoter_entry = fixture.quoter;
+    let resolve = |fixture: &mut Fixture, target: Pubkey, index: u8| {
+        let ix = Instruction {
+            program_id: velocity_id(),
+            accounts: velocity::accounts::ResolveClobCrank {
+                scratch: relay_scratch_pda(),
+                crank_conditions: conditions,
+                clob_market: fixture.clob_market,
+                quoter: fixture.quoter,
+                state: state_pda(),
+                clob_program: clob_id(),
+            }
+            .to_account_metas(None),
+            data: velocity::instruction::ResolveClobCrank {
+                fired: fired_condition(target, fixture.crank_block_offset, index),
+            }
+            .data(),
+        };
+        let keeper = fixture.keeper.insecure_clone();
+        send(&mut fixture.svm, &keeper, ix, &[])
+    };
+
+    let staged = |fixture: &Fixture, meta: &litesvm::types::TransactionMetadata| {
+        let pointer =
+            velocity::relay_spec::ResponsePointerV0::read(&meta.return_data.data).unwrap();
+        let data = fixture.svm.get_account(&relay_scratch_pda()).unwrap().data;
+        let bytes = &data[pointer.offset() as usize..(pointer.offset() + pointer.len()) as usize];
+        velocity::relay_spec::ResolvedCrankV0::read(bytes)
+            .unwrap()
+            .executor_disc
+    };
+
+    // Expiry slot -> the expiry crank.
+    let meta = resolve(&mut fixture, book, 0).unwrap();
+    assert_eq!(
+        staged(&fixture, &meta),
+        velocity::instruction::CrankClobRemoveExpired::DISCRIMINATOR,
+        "the expiry slot stages the expiry crank"
+    );
+
+    // Capacity slot -> the eviction crank, off the same book and state.
+    let meta = resolve(&mut fixture, book, 2).unwrap();
+    assert_eq!(
+        staged(&fixture, &meta),
+        velocity::instruction::CrankClobEvict::DISCRIMINATOR,
+        "the capacity slot stages the eviction crank"
+    );
+
+    // A slot the book does not host, and an account that hosts no block this
+    // resolver serves, are both refused.
+    assert!(resolve(&mut fixture, book, 9).is_err());
+    assert!(resolve(&mut fixture, quoter_entry, 0).is_err());
+}
+
+/// A placement through velocity moves the book's own expiry wake, so relay is
+/// told when the reclaim is due.
+///
+/// The two halves are owned by different programs and only meet on a real
+/// pair of them: velocity forwards the order's `max_ts` on the CLOB wire, and
+/// the book folds it into the condition it hosts. Neither program's own tests
+/// can see the join, and when it breaks nothing fails — the order simply
+/// rests until something else happens to wake a turner.
+#[test]
+fn a_placement_through_velocity_arms_the_books_expiry_wake() {
+    let mut fixture = setup();
+    init_crank_conditions(&mut fixture, 50_000);
+    let clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    let max_ts = clock.unix_timestamp + 10;
+
+    // Nothing expires yet, so the wake is set to never.
+    assert_eq!(book_expiry_wake(&fixture), i64::MAX);
+
+    let ix = place_clob_order_ix(
+        fixture.clob_maker_user,
+        &fixture.clob_maker_authority,
+        fixture.quoter,
+        fixture.clob_market,
+        fixture.oracle,
         PlaceClobOrderParams {
             market_index: 0,
             direction: PositionDirection::Short,
@@ -2069,8 +2441,137 @@ fn program_keeper_expire_crank_pays_reservoir_lamports_to_an_unsigned_keeper() {
     );
     let maker = fixture.clob_maker_authority.insecure_clone();
     send(&mut fixture.svm, &maker, ix, &[]).unwrap();
-    let acct: ClobCrankConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
-    assert_eq!(acct.expire_wake_ts().unwrap(), max_ts);
+
+    assert_eq!(
+        book_expiry_wake(&fixture),
+        max_ts,
+        "the order's expiry reached the book's own wake"
+    );
+}
+
+/// The book re-arms its expiry wake for the next order after a reclaim.
+///
+/// The first expiry is easy: a fresh book folds it in. The one that matters is
+/// the second, because a reclaim recomputes the wake to "never" first — and a
+/// fold that does not publish over that leaves an order resting with nothing
+/// scheduled to reclaim it. Nothing errors when it happens; the order just
+/// sits there, which is why this is asserted rather than left to a crank test
+/// noticing.
+#[test]
+fn the_books_expiry_wake_re_arms_after_a_reclaim() {
+    let mut fixture = setup();
+    const PAYMENT: u64 = 50_000;
+    let conditions = init_crank_conditions(&mut fixture, PAYMENT);
+    set_protocol_user(&mut fixture.svm);
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+
+    let place_expiring = |fixture: &mut Fixture, price: u64, max_ts: i64| {
+        let ix = place_clob_order_ix(
+            fixture.clob_maker_user,
+            &fixture.clob_maker_authority,
+            fixture.quoter,
+            fixture.clob_market,
+            fixture.oracle,
+            PlaceClobOrderParams {
+                market_index: 0,
+                direction: PositionDirection::Short,
+                price,
+                base_asset_amount: UNIT / 4,
+                max_ts,
+                activation_delay_slots: Some(0),
+            },
+        );
+        let maker = fixture.clob_maker_authority.insecure_clone();
+        send(&mut fixture.svm, &maker, ix, &[]).unwrap();
+    };
+
+    let clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    let first = clock.unix_timestamp + 10;
+    place_expiring(&mut fixture, 110 * PRICE, first);
+    assert_eq!(book_expiry_wake(&fixture), first);
+
+    // Reclaim it. The recompute leaves no live expiry, so the wake goes quiet.
+    let mut clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    clock.unix_timestamp = first + 1;
+    fixture.svm.set_sysvar(&clock);
+    let resolved = run_resolver(&mut fixture, conditions, true).expect("expired order is work");
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::CrankClobRemoveExpired::DISCRIMINATOR,
+        payout,
+    );
+    assert_eq!(book_expiry_wake(&fixture), i64::MAX);
+
+    // The second order has to arm it again.
+    let second = clock.unix_timestamp + 10;
+    place_expiring(&mut fixture, 111 * PRICE, second);
+    assert_eq!(
+        book_expiry_wake(&fixture),
+        second,
+        "a placement after a reclaim re-arms the wake"
+    );
+
+    // And the crank finds it, so the whole loop repeats.
+    let mut clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    clock.unix_timestamp = second + 1;
+    fixture.svm.set_sysvar(&clock);
+    assert!(
+        run_resolver(&mut fixture, conditions, true).is_some(),
+        "the second expiry is discoverable work"
+    );
+}
+
+/// The full program-keeper expiry loop: init conditions, place an expiring
+/// order through the adapter (min-folding the wake hint), resolve, and
+/// submit the staged executor unsigned. The maker's reward accrues to the
+/// protocol User, the payout account is paid reservoir lamports, and the
+/// hint is repaired.
+#[test]
+fn program_keeper_expire_crank_pays_reservoir_lamports_to_an_unsigned_keeper() {
+    let mut fixture = setup();
+    const PAYMENT: u64 = 50_000;
+    let conditions = init_crank_conditions(&mut fixture, PAYMENT);
+    let protocol_user = set_protocol_user(&mut fixture.svm);
+    // Top off the reservoir (lamport credits to a program-owned account are
+    // unrestricted — this is the hot role's off-chain top-off leg).
+    fixture.svm.airdrop(&conditions, 1_000_000_000).unwrap();
+
+    // The attach registered the capacity watch on the book itself, over the
+    // book's own counts, and mirrored the payment into min_payment.
+    let evict = book_conditions(&fixture)[BOOK_CRANK_CAPACITY];
+    assert_eq!(evict.min_payment(), PAYMENT);
+    assert_eq!(
+        account_change(&evict).0,
+        fixture.clob_market.to_bytes(),
+        "the book's capacity watch points at the book"
+    );
+    assert_eq!(book_expiry_wake(&fixture), i64::MAX);
+
+    // An expiring ask moves the book's expiry wake, in the same instruction
+    // that rests it — no second account travels with the placement.
+    let clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    let max_ts = clock.unix_timestamp + 10;
+    let ix = place_clob_order_ix(
+        fixture.clob_maker_user,
+        &fixture.clob_maker_authority,
+        fixture.quoter,
+        fixture.clob_market,
+        fixture.oracle,
+        PlaceClobOrderParams {
+            market_index: 0,
+            direction: PositionDirection::Short,
+            price: 99 * PRICE,
+            base_asset_amount: UNIT / 2,
+            max_ts,
+            activation_delay_slots: Some(0),
+        },
+    );
+    let maker = fixture.clob_maker_authority.insecure_clone();
+    send(&mut fixture.svm, &maker, ix, &[]).unwrap();
+    assert_eq!(book_expiry_wake(&fixture), max_ts);
 
     // Nothing expired yet: the resolver reports no work.
     assert!(run_resolver(&mut fixture, conditions, true).is_none());
@@ -2112,17 +2613,26 @@ fn program_keeper_expire_crank_pays_reservoir_lamports_to_an_unsigned_keeper() {
     assert!(maker_user.perp_positions[0].quote_asset_amount < 0);
     let protocol: User = read_zero_copy(&fixture.svm, &protocol_user);
     assert!(protocol.perp_positions[0].quote_asset_amount > 0);
+
+    // The base payment plus what the order's lateness earned. The order came
+    // due ten seconds before the crank ran, and the escalation is linear to
+    // its ceiling over the window, so the keeper is paid a little over the
+    // flat figure for having waited — which is the whole point: at some fee
+    // level the flat figure stops being worth taking, and this is what keeps
+    // climbing until somebody takes it.
+    let escalation = u64::from(velocity::state::clob_crank::EXPIRY_ESCALATION_CEILING) * 10
+        / velocity::state::clob_crank::EXPIRY_ESCALATION_SECONDS;
+    assert_eq!(escalation, 166);
     assert_eq!(
         fixture.svm.get_account(&payout).unwrap().lamports,
-        1_000_000_000 + PAYMENT
+        1_000_000_000 + PAYMENT + escalation
     );
     assert_eq!(
         fixture.svm.get_account(&conditions).unwrap().lamports,
-        reservoir_before - PAYMENT
+        reservoir_before - PAYMENT - escalation
     );
-    let acct: ClobCrankConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
-    assert_eq!(acct.expire_wake_ts().unwrap(), i64::MAX);
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(book_expiry_wake(&fixture), i64::MAX);
+    assert_eq!(clob_ask_count(&fixture), 0);
 }
 
 /// The evict resolver walks both sides: with both at the soft cap it stages
@@ -2151,7 +2661,6 @@ fn program_keeper_evict_crank_resolves_both_sides() {
             fixture.quoter,
             fixture.clob_market,
             fixture.oracle,
-            Some(conditions),
             PlaceClobOrderParams {
                 market_index: 0,
                 direction,
@@ -2192,7 +2701,7 @@ fn program_keeper_evict_crank_resolves_both_sides() {
     let maker_user: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert_eq!(maker_user.perp_positions[0].open_asks, 0);
     assert_eq!(maker_user.perp_positions[0].open_orders, 0);
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(clob_ask_count(&fixture), 0);
     assert_eq!(
         fixture.svm.get_account(&payout).unwrap().lamports,
         1_000_000_000 + 2 * PAYMENT
@@ -2343,7 +2852,7 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
         maker.perp_positions[0].quote_asset_amount < 0,
         "keeper reward paid from the user"
     );
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 1);
+    assert_eq!(clob_ask_count(&fixture), 1);
     let _ = node_index;
 
     // A second trigger attempt on the placed slot fails.
@@ -2388,7 +2897,7 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
         "armed slot counts again"
     );
     assert_eq!(maker.open_orders, 1);
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(clob_ask_count(&fixture), 0);
 
     // Still through the trigger: the edge gate refuses to re-fire.
     let ix = trigger_clob_order_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
@@ -2408,7 +2917,7 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
     send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
     let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert!(!maker.orders[0].is_bit_flag_set(OrderBitFlag::AwaitingTriggerRecross));
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(clob_ask_count(&fixture), 0);
 
     // Crossed again: re-places.
     set_oracle(
@@ -2423,7 +2932,7 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
     let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert!(maker.orders[0].is_placed_on_clob());
     let (node_index, clob_order_id) = maker.orders[0].clob_order_ref();
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 1);
+    assert_eq!(clob_ask_count(&fixture), 1);
 
     // Expire the CLOB order: the expiry crank frees the shadow for good.
     let mut clock: solana_clock::Clock = fixture.svm.get_sysvar();
@@ -2460,7 +2969,7 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
     assert_eq!(maker.perp_positions[0].open_orders, 0);
     assert_eq!(maker.open_orders, 0);
     assert_eq!(maker.perp_positions[0].open_asks, 0);
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(clob_ask_count(&fixture), 0);
 }
 
 /// A sweep frees placed-trigger shadows too. The handler can't match returned
@@ -2525,7 +3034,7 @@ fn cancel_all_frees_placed_trigger_shadows() {
     let before: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert!(before.orders[0].is_placed_on_clob());
     assert_eq!(before.perp_positions[0].open_orders, 2);
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 2);
+    assert_eq!(clob_ask_count(&fixture), 2);
 
     let ix = cancel_all_clob_ix(&fixture, ClobCancelSides::Asks);
     send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[]).unwrap();
@@ -2535,7 +3044,7 @@ fn cancel_all_frees_placed_trigger_shadows() {
     assert_eq!(after.perp_positions[0].open_orders, 0);
     assert_eq!(after.open_orders, 0);
     assert_eq!(after.perp_positions[0].open_asks, 0);
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(clob_ask_count(&fixture), 0);
 }
 
 /// A user cancels a placed trigger through `cancel_clob_order` (the shadow
@@ -2644,7 +3153,7 @@ fn placed_trigger_cancels_through_the_clob_only() {
     assert_eq!(maker.perp_positions[0].open_orders, 0);
     assert_eq!(maker.open_orders, 0);
     assert_eq!(maker.perp_positions[0].open_asks, 0);
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(clob_ask_count(&fixture), 0);
 }
 
 /// A cross the protocol barely clears is a cross worth declining: cranking
@@ -2686,7 +3195,6 @@ fn a_cross_below_the_markets_surplus_floor_is_declined() {
         fixture.quoter,
         fixture.clob_market,
         fixture.oracle,
-        None,
         PlaceClobOrderParams {
             market_index: 0,
             direction: PositionDirection::Long,
@@ -2799,7 +3307,6 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
         fixture.quoter,
         fixture.clob_market,
         fixture.oracle,
-        None,
         PlaceClobOrderParams {
             market_index: 0,
             direction: PositionDirection::Long,
@@ -2853,7 +3360,14 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
         }
     };
     let keeper = fixture.keeper.insecure_clone();
-    send(&mut fixture.svm, &keeper, cross_ix(), &[]).unwrap();
+    let meta = send(&mut fixture.svm, &keeper, cross_ix(), &[]).unwrap();
+    // The crank pays its keeper out of the reservoir, priced from the cost
+    // units an admin measured — so what this burns is what a market has to
+    // register for it.
+    println!(
+        "CU — crank_cross_match over a self-crossed book: {}",
+        meta.compute_units_consumed
+    );
 
     // The maker round-tripped against themselves: net base zero, they paid
     // the spread; both orders consumed, aggregates unwound.
@@ -2863,7 +3377,7 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
     assert_eq!(maker.perp_positions[0].open_bids, 0);
     assert_eq!(maker.perp_positions[0].open_asks, 0);
     assert_eq!(maker.open_orders, 0);
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(clob_ask_count(&fixture), 0);
 
     // The protocol User kept the spread net of fees: bought 0.5 @ 99, sold
     // 0.5 @ 101 -> 1.0 quote gross, minus two taker fees.
@@ -2919,7 +3433,6 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
         fixture.quoter,
         fixture.clob_market,
         fixture.oracle,
-        Some(conditions),
         PlaceClobOrderParams {
             market_index: 0,
             direction: PositionDirection::Long,
@@ -2930,15 +3443,11 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
         },
     );
     send(&mut fixture.svm, &maker_authority, ix, &[]).unwrap();
-    {
-        use velocity::state::clob_crank::ClobCrankConditionsV0;
-        let acct: ClobCrankConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
-        assert_eq!(
-            acct.activation_wake_slot().unwrap(),
-            23,
-            "placement min-folds the activation slot into the AtSlot wake"
-        );
-    }
+    assert_eq!(
+        book_activation_wake(&fixture),
+        23,
+        "the book folds the activation slot into its own AtSlot wake"
+    );
     // Before activation the crossing bid isn't matchable: no work.
     assert!(
         resolve_cross(&mut fixture).is_none(),
@@ -2975,18 +3484,14 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
         "second surplus accrued, got {}",
         protocol.perp_positions[0].quote_asset_amount
     );
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(clob_ask_count(&fixture), 0);
     assert_eq!(
         fixture.svm.get_account(&payout).unwrap().lamports,
         1_000_000_000 + 2 * PAYMENT
     );
-    // The landing executor repaired the activation hint forward: nothing
+    // The book moved its activation wake forward as it matched: nothing
     // pending, so the AtSlot wake goes quiet.
-    {
-        use velocity::state::clob_crank::ClobCrankConditionsV0;
-        let acct: ClobCrankConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
-        assert_eq!(acct.activation_wake_slot().unwrap(), u64::MAX);
-    }
+    assert_eq!(book_activation_wake(&fixture), u64::MAX);
     // Empty again: no work.
     assert!(resolve_cross(&mut fixture).is_none());
 }
@@ -3045,7 +3550,7 @@ fn force_cancel_reclaims_a_failing_makers_clob_orders() {
         send(&mut fixture.svm, &keeper, ix, &[]).expect("a healthy account is a no-op");
     }
     assert_eq!(
-        clob_ask_count(&fixture.svm, &fixture.clob_market),
+        clob_ask_count(&fixture),
         1,
         "the no-op took nothing off the book"
     );
@@ -3059,7 +3564,7 @@ fn force_cancel_reclaims_a_failing_makers_clob_orders() {
     assert_eq!(maker.perp_positions[0].open_asks, 0);
     assert_eq!(maker.perp_positions[0].open_orders, 0);
     assert_eq!(maker.open_orders, 0);
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(clob_ask_count(&fixture), 0);
     // Flat fee moved maker -> filler through the quote spot balances.
     let filler: User = read_zero_copy(&fixture.svm, &filler_user);
     assert!(filler.spot_positions[0].scaled_balance > 0);
@@ -3136,7 +3641,7 @@ fn a_tripped_equity_breaker_is_grounds_on_its_own() {
     // Control: latch clear, account healthy, so there is nothing to do.
     let ix = build(&fixture);
     send(&mut fixture.svm, &keeper, ix, &[]).expect("healthy is a no-op");
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 1);
+    assert_eq!(clob_ask_count(&fixture), 1);
 
     // Latch set: the same call now reclaims the order.
     set_tripped_user_stats(
@@ -3146,7 +3651,7 @@ fn a_tripped_equity_breaker_is_grounds_on_its_own() {
     );
     let ix = build(&fixture);
     send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(clob_ask_count(&fixture), 0);
     let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert_eq!(maker.perp_positions[0].open_asks, 0);
     assert_eq!(maker.perp_positions[0].open_orders, 0);
@@ -3209,12 +3714,12 @@ fn force_cancel_passes_over_a_risk_reducing_order() {
     );
     send(&mut fixture.svm, &keeper, ix, &[]).expect("a reducing ref is passed over, not fatal");
     assert_eq!(
-        clob_ask_count(&fixture.svm, &fixture.clob_market),
+        clob_ask_count(&fixture),
         1,
         "the reducing ask stays on the book"
     );
     assert_eq!(
-        clob_bid_count(&fixture.svm, &fixture.clob_market),
+        clob_bid_count(&fixture),
         0,
         "the risk-increasing bid in the same call was still reclaimed"
     );
@@ -3238,10 +3743,7 @@ fn a_maker_cannot_outrun_cleanup_by_resting_more_orders() {
         place_clob_ask(&mut fixture, (99 + i as u64) * PRICE, UNIT / 8);
         total_base += UNIT / 8;
     }
-    assert_eq!(
-        clob_ask_count(&fixture.svm, &fixture.clob_market),
-        RESTED as u32
-    );
+    assert_eq!(clob_ask_count(&fixture), RESTED);
 
     // Flat and broke: with no open position no ask can be reducing, so the
     // whole side is reclaimable.
@@ -3281,7 +3783,7 @@ fn a_maker_cannot_outrun_cleanup_by_resting_more_orders() {
     send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
 
     assert_eq!(
-        clob_ask_count(&fixture.svm, &fixture.clob_market),
+        clob_ask_count(&fixture),
         0,
         "every order went in the one call, however many there were"
     );
@@ -3475,7 +3977,7 @@ fn place_and_take_v1_fills_a_retail_taker_off_the_clob() {
         "the book's maker is short the other side"
     );
     assert_eq!(maker.perp_positions[0].open_asks, 0, "reservation released");
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(clob_ask_count(&fixture), 0);
 }
 
 /// A fill skips a latched maker and lands, instead of reverting on them.
@@ -3501,7 +4003,7 @@ fn a_fill_skips_a_latched_maker_instead_of_reverting() {
     );
     place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 4);
     place_clob_ask(&mut fixture, 100 * PRICE, UNIT / 4);
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 2);
+    assert_eq!(clob_ask_count(&fixture), 2);
 
     let taker_authority = Keypair::new();
     fixture
@@ -3580,7 +4082,7 @@ fn a_fill_skips_a_latched_maker_instead_of_reverting() {
 
     // Passed over, not filled and not cancelled.
     assert_eq!(
-        clob_ask_count(&fixture.svm, &fixture.clob_market),
+        clob_ask_count(&fixture),
         2,
         "a latched maker's orders are skipped, not taken off the book"
     );
@@ -3612,7 +4114,7 @@ fn a_maker_fills_as_far_as_its_collateral_reaches() {
     );
     place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 4);
     place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 4);
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 2);
+    assert_eq!(clob_ask_count(&fixture), 2);
 
     // Read back after placing, so the reserve the placements took is kept.
     let mut maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
@@ -3699,7 +4201,7 @@ fn a_maker_fills_as_far_as_its_collateral_reaches() {
         "0.4 of headroom, less the haircut, buys 0.36 base at a gap of 1"
     );
     assert_eq!(
-        clob_ask_count(&fixture.svm, &fixture.clob_market),
+        clob_ask_count(&fixture),
         1,
         "the second ask is filled part way and its remainder still rests"
     );
@@ -3961,7 +4463,7 @@ fn place_and_take_rests_a_market_order_remainder_on_the_clob() {
         "nothing is left on the DLOB, where nothing would fill it"
     );
     assert_eq!(
-        clob_bid_count(&fixture.svm, &fixture.clob_market),
+        clob_bid_count(&fixture),
         1,
         "the remainder rests on the book instead"
     );
@@ -4504,7 +5006,7 @@ fn router_fill_splits_across_clob_midpoint_and_vamm() {
         clob_maker.perp_positions[0].base_asset_amount,
         -((UNIT / 2) as i64)
     );
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(clob_ask_count(&fixture), 0);
 
     let mm: User = read_zero_copy(&fixture.svm, &maker.user);
     assert_eq!(mm.perp_positions[0].base_asset_amount, -((UNIT / 2) as i64));
@@ -4602,8 +5104,9 @@ fn attach_quoter_cross(fixture: &mut Fixture, maker: &MidpointMaker) -> Pubkey {
 }
 
 /// Run the generic resolver the way a turner does. Its account list is
-/// exactly what the attach registered: conditions, book, state, entry,
-/// user, then the entry's registered quote surface + program.
+/// exactly what the attach registered: conditions, book, state, entry, user,
+/// the CLOB's own entry and program, then the entry's registered quote
+/// surface + program.
 fn run_quoter_cross_resolver(
     fixture: &mut Fixture,
     maker: &MidpointMaker,
@@ -4616,6 +5119,8 @@ fn run_quoter_cross_resolver(
         state: state_pda(),
         quoter: maker.entry,
         user: maker.user,
+        clob_quoter: fixture.quoter,
+        clob_program: clob_id(),
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new(maker.instance, false));
@@ -4688,13 +5193,17 @@ fn generic_quoter_cross_conditions_discover_and_fill_a_midpoint_clob_cross() {
         conditions[QUOTER_CROSS_FALLBACK].wake(),
         Ok(velocity::relay_spec::WakeView::EverySlots { slots: 100 })
     );
-    // The resolver list (shared scratch, then the entry's registered quote
-    // surface) is stored once in the relay block's built-in region; every
-    // condition points at it indirectly.
-    // Ten, not nine: the midpoint's quote leg now names velocity's State,
-    // which it reads the live flow authority from.
-    assert_eq!(conditions[QUOTER_CROSS_WATCH].resolvers().count, 10);
-    assert_eq!(acct.relay.resolver_refs().len(), 10);
+    // The resolver list (shared scratch, the named accounts, the CLOB's own
+    // entry and program, then the entry's registered quote surface) is stored
+    // once in the relay block's built-in region; every condition points at it
+    // indirectly.
+    //
+    // The midpoint's quote leg names velocity's State, which it reads the live
+    // flow authority from. The CLOB entry and program are there because the
+    // resolver quotes the book through the registry too, rather than reading
+    // its account.
+    assert_eq!(conditions[QUOTER_CROSS_WATCH].resolvers().count, 12);
+    assert_eq!(acct.relay.resolver_refs().len(), 12);
 
     // Nothing crossed yet: the resolver reports no work.
     fixture.svm.warp_to_slot(12);
@@ -4714,7 +5223,6 @@ fn generic_quoter_cross_conditions_discover_and_fill_a_midpoint_clob_cross() {
         fixture.quoter,
         fixture.clob_market,
         fixture.oracle,
-        None,
         PlaceClobOrderParams {
             market_index: 0,
             direction: PositionDirection::Long,
@@ -4770,7 +5278,7 @@ fn generic_quoter_cross_conditions_discover_and_fill_a_midpoint_clob_cross() {
         fixture.svm.get_balance(&payout).unwrap(),
         payout_before + PAYMENT
     );
-    assert_eq!(clob_bid_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(clob_bid_count(&fixture), 0);
     // The midpoint's rung depleted (standing intent).
     let (_, filled) = midpoint_ask_level(&fixture.svm, &maker.instance, 0);
     assert_eq!(filled, UNIT);
@@ -5100,6 +5608,7 @@ fn merged_sync_keeps_the_stored_map_section_parseable() {
     let conditions = user_conditions_pda(&user);
     let mut accounts = velocity::accounts::SyncUserConditions {
         payer: fixture.keeper.pubkey(),
+        state: state_pda(),
         user,
         user_conditions: conditions,
         rent: "SysvarRent111111111111111111111111111111111"
@@ -5118,7 +5627,7 @@ fn merged_sync_keeps_the_stored_map_section_parseable() {
         accounts,
         data: velocity::instruction::SyncUserConditions {
             args: velocity::instructions::SyncLiqConditionsArgs {
-                sync_payment_lamports: 20_000,
+                sync_cost_units: 20_000,
                 sync_fallback_slots: 3000,
             },
         }
@@ -5170,11 +5679,12 @@ fn sync_liq_conditions(
     fixture: &mut Fixture,
     user: Pubkey,
     market_conditions: Pubkey,
-    sync_payment_lamports: u64,
+    sync_cost_units: u32,
 ) -> Pubkey {
     let conditions = user_conditions_pda(&user);
     let mut accounts = velocity::accounts::SyncLiqConditions {
         payer: fixture.keeper.pubkey(),
+        state: state_pda(),
         user,
         liq_conditions: conditions,
         rent: "SysvarRent111111111111111111111111111111111"
@@ -5196,7 +5706,7 @@ fn sync_liq_conditions(
         accounts,
         data: velocity::instruction::SyncLiqConditions {
             args: velocity::instructions::SyncLiqConditionsArgs {
-                sync_payment_lamports,
+                sync_cost_units,
                 sync_fallback_slots: 3000,
             },
         }
@@ -5291,7 +5801,12 @@ fn the_distress_ladder_stages_a_cancel_before_a_liquidation() {
     maker.next_order_id = 2;
     set_user_account(&mut fixture.svm, maker_user, &maker);
 
-    sync_liq_conditions(&mut fixture, maker_user, market_conditions, PAYMENT);
+    sync_liq_conditions(
+        &mut fixture,
+        maker_user,
+        market_conditions,
+        ANY_SYNC_COST_UNITS,
+    );
 
     // Stage one: orders are in the way, so the sweep is what gets staged —
     // not the liquidation that is also available right now.
@@ -5313,7 +5828,7 @@ fn the_distress_ladder_stages_a_cancel_before_a_liquidation() {
         velocity::instruction::ForceCancelClobOrders::DISCRIMINATOR,
         payout,
     );
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(clob_ask_count(&fixture), 0);
     let after: User = read_zero_copy(&fixture.svm, &maker_user);
     assert_eq!(after.perp_positions[0].open_orders, 0);
 
@@ -5361,7 +5876,8 @@ fn liq_conditions_write_a_conservative_downward_threshold() {
     set_user_account(&mut fixture.svm, user, &account);
 
     use velocity::state::user_conditions::USER_CONDITIONS;
-    let conditions = sync_liq_conditions(&mut fixture, user, market_conditions, 5_000);
+    let conditions =
+        sync_liq_conditions(&mut fixture, user, market_conditions, ANY_SYNC_COST_UNITS);
     let acct: UserConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
     let (header, block) = velocity::relay_spec::read_block(acct.block(), 0).unwrap();
     assert_eq!(header.num_conditions as usize, USER_CONDITIONS);
@@ -5396,7 +5912,10 @@ fn liq_conditions_write_a_conservative_downward_threshold() {
         block[LIQ_SYNC_WATCH].crank_spec().resolver_disc,
         velocity::instruction::ResolveResyncLiqConditions::DISCRIMINATOR
     );
-    assert_eq!(block[LIQ_SYNC_WATCH].min_payment(), 5_000);
+    // The sync's own fee is derived like every other crank's. Under the
+    // fixture's flat-per-signature rails that is one signature's worth,
+    // whatever cost units it asked for.
+    assert_eq!(block[LIQ_SYNC_WATCH].min_payment(), PAYMENT);
     assert_eq!(
         block[LIQ_SYNC_FALLBACK].wake(),
         Ok(velocity::relay_spec::WakeView::EverySlots { slots: 3000 })
@@ -5524,6 +6043,7 @@ fn plain_liquidation_rejects_the_protocol_user() {
         user,
         user_stats,
         crank_conditions: None,
+        instructions_sysvar: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -5578,8 +6098,12 @@ fn liq_self_sync_stages_an_unsigned_executor_and_pays_from_its_own_lamports() {
     account.perp_positions[0].quote_asset_amount = -((1000 * 1_000_000) as i64);
     set_user_account(&mut fixture.svm, user, &account);
 
+    // The fixture's rails charge one flat fee per signature, so the sync's own
+    // payment is that fee whatever it requests.
     const SYNC_FEE: u64 = 5_000;
-    let conditions = sync_liq_conditions(&mut fixture, user, market_conditions, SYNC_FEE);
+    set_flat_transaction_fee(&mut fixture, SYNC_FEE as u32);
+    let conditions =
+        sync_liq_conditions(&mut fixture, user, market_conditions, ANY_SYNC_COST_UNITS);
     // Fund the sync reservoir (whoever wants this user's hints
     // self-maintaining pays for it).
     fixture.svm.airdrop(&conditions, 100_000_000).unwrap();
@@ -5904,7 +6428,7 @@ fn place_and_make_v1_rests_the_unmatched_remainder_on_the_book() {
         "the remainder is reserved against the book"
     );
     assert_eq!(maker.open_orders, 1);
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 1);
+    assert_eq!(clob_ask_count(&fixture), 1);
 }
 
 /// A keeper fill's restable remainder migrates to the book.
@@ -6039,11 +6563,7 @@ fn fill_v1_migrates_a_restable_remainder_to_the_book() {
         (UNIT / 2) as i64,
         "the remainder is reserved against the book"
     );
-    assert_eq!(
-        clob_bid_count(&fixture.svm, &fixture.clob_market),
-        1,
-        "and rests there as a bid"
-    );
+    assert_eq!(clob_bid_count(&fixture), 1, "and rests there as a bid");
 }
 
 // ---------------------------------------------------------------------------
@@ -6118,7 +6638,6 @@ fn place_clob_order_for(
         fixture.quoter,
         fixture.clob_market,
         fixture.oracle,
-        None,
         PlaceClobOrderParams {
             market_index: 0,
             direction,
@@ -6266,7 +6785,7 @@ fn taker_origin_cross_settles_at_the_best_counterpartys_price() {
         101 * PRICE,
         UNIT,
     );
-    assert_eq!(clob_bid_count(&fixture.svm, &fixture.clob_market), 1);
+    assert_eq!(clob_bid_count(&fixture), 1);
     assert_eq!(
         perp_position(&fixture.svm, &taker.user).open_bids,
         UNIT as i64,
@@ -6369,8 +6888,8 @@ fn taker_origin_cross_settles_at_the_best_counterpartys_price() {
     // The half the counterparty was too small to take went back on the book,
     // still taker-origin — cancelling it would let a cranker delete a taker's
     // whole order by crossing one unit of it.
-    assert_eq!(clob_bid_count(&fixture.svm, &fixture.clob_market), 1);
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 1);
+    assert_eq!(clob_bid_count(&fixture), 1);
+    assert_eq!(clob_ask_count(&fixture), 1);
     assert_eq!(
         perp_position(&fixture.svm, &taker.user).open_bids,
         (UNIT / 2) as i64,
@@ -6397,8 +6916,8 @@ fn taker_origin_cross_settles_at_the_best_counterpartys_price() {
     assert_eq!(taker_position.base_asset_amount, UNIT as i64);
     assert_eq!(taker_position.open_bids, 0, "nothing left resting");
     assert_eq!(taker_position.open_orders, 0);
-    assert_eq!(clob_bid_count(&fixture.svm, &fixture.clob_market), 0);
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(clob_bid_count(&fixture), 0);
+    assert_eq!(clob_ask_count(&fixture), 0);
 
     // Nothing crossed anymore: the crank declines rather than doing something
     // arbitrary.
@@ -6556,8 +7075,8 @@ fn rest_crossing_remainders(
     );
     rest_taker_origin_order(fixture, late_party, late_direction, late_price, late_size);
     cancel_clob_order_for(fixture, blocker, blocker_ref);
-    assert_eq!(clob_bid_count(&fixture.svm, &fixture.clob_market), 1);
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 1);
+    assert_eq!(clob_bid_count(&fixture), 1);
+    assert_eq!(clob_ask_count(&fixture), 1);
 }
 
 /// Two taker remainders crossing each other, resolved by price-time priority:
@@ -6654,8 +7173,8 @@ fn two_crossed_remainders_settle_at_the_one_that_rested_first() {
         "the re-placed leftover keeps its reservation"
     );
     assert_eq!(early_position.open_orders, 1);
-    assert_eq!(clob_bid_count(&fixture.svm, &fixture.clob_market), 1);
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(clob_bid_count(&fixture), 1);
+    assert_eq!(clob_ask_count(&fixture), 0);
     // The re-placed leftover's new handle is the transaction's return data: the
     // old order id is stale, and a client holding it has to re-read this one.
     let new_order_id = u64::from_le_bytes(meta.return_data.data[4..12].try_into().unwrap());
@@ -6752,8 +7271,8 @@ fn the_aggressors_own_leftover_goes_back_on_its_side() {
     assert_eq!(late_position.base_asset_amount, (UNIT / 2) as i64);
     assert_eq!(late_position.open_bids, (UNIT / 2) as i64);
     assert_eq!(late_position.open_orders, 1);
-    assert_eq!(clob_bid_count(&fixture.svm, &fixture.clob_market), 1);
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(clob_bid_count(&fixture), 1);
+    assert_eq!(clob_ask_count(&fixture), 0);
 
     // The earlier ask was consumed outright: nothing reserved, no order left.
     let early_position = perp_position(&fixture.svm, &early.user);
@@ -6904,8 +7423,8 @@ fn cross_conditions_stage_the_taker_origin_crank_for_a_crossed_remainder() {
     );
     // The unconsumed half is back on the book with nothing crossing it —
     // ordinary depth, so the conditions go quiet.
-    assert_eq!(clob_bid_count(&fixture.svm, &fixture.clob_market), 1);
-    assert_eq!(clob_ask_count(&fixture.svm, &fixture.clob_market), 0);
+    assert_eq!(clob_bid_count(&fixture), 1);
+    assert_eq!(clob_ask_count(&fixture), 0);
     assert!(run_cross_resolver(&mut fixture, conditions).is_none());
 }
 
@@ -7247,10 +7766,7 @@ fn fill_v1_rests_a_market_remainder_at_its_auction_bound() {
         (UNIT / 2) as i64,
         "the remainder is reserved against the book"
     );
-    let (bid_count, best_bid) = (
-        clob_bid_count(&fixture.svm, &fixture.clob_market),
-        clob_best_bid_price(&fixture.svm, &fixture.clob_market),
-    );
+    let (bid_count, best_bid) = (clob_bid_count(&fixture), clob_best_bid_price(&fixture));
     assert_eq!(bid_count, 1, "and rests there");
     assert_eq!(
         best_bid,
@@ -7360,7 +7876,7 @@ fn the_arb_crank_refuses_a_book_holding_a_crossed_taker_remainder() {
         taker_account.perp_positions[0].base_asset_amount, 0,
         "the remainder was not filled"
     );
-    assert_eq!(clob_bid_count(&fixture.svm, &fixture.clob_market), 1);
+    assert_eq!(clob_bid_count(&fixture), 1);
 }
 
 /// A quoter whose CPI reverts is identifiable only from the runtime's own
@@ -7443,7 +7959,7 @@ fn a_reverting_quoter_leaves_only_its_cpi_frame_in_the_logs() {
         data: velocity::instruction::QuoteRouter {
             args: velocity::instructions::QuoteRouterArgs {
                 market_index: 0,
-                direction: velocity::state::prop_amm::Direction::Long,
+                direction: Direction::Long,
                 size: 2 * UNIT,
                 quoter_count: 1,
                 include_vamm: true,
@@ -7570,7 +8086,7 @@ fn a_quoter_velocity_refuses_is_named_in_the_logs() {
         data: velocity::instruction::QuoteRouter {
             args: velocity::instructions::QuoteRouterArgs {
                 market_index: 0,
-                direction: velocity::state::prop_amm::Direction::Long,
+                direction: Direction::Long,
                 size: 2 * UNIT,
                 quoter_count: 1,
                 include_vamm: true,
@@ -7667,7 +8183,7 @@ fn a_pass_that_clears_include_vamm_returns_only_its_quoters() {
             data: velocity::instruction::QuoteRouter {
                 args: velocity::instructions::QuoteRouterArgs {
                     market_index: 0,
-                    direction: velocity::state::prop_amm::Direction::Long,
+                    direction: Direction::Long,
                     size: 2 * UNIT,
                     quoter_count: 1,
                     include_vamm,
@@ -7853,7 +8369,7 @@ fn bench_quote_case(
         data: velocity::instruction::QuoteRouter {
             args: velocity::instructions::QuoteRouterArgs {
                 market_index: 0,
-                direction: velocity::state::prop_amm::Direction::Long,
+                direction: Direction::Long,
                 size: 1_000 * UNIT,
                 quoter_count: makers.len() as u8 + u8::from(!quoters_only),
                 include_vamm: !quoters_only,

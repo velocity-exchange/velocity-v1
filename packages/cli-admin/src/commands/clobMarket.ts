@@ -16,6 +16,10 @@ import {
 	QuoterCpiLeg,
 	QuoterType,
 } from '@velocity-exchange/sdk';
+import {
+	readCrankCostUnits,
+	withCrankCostUnitOptions,
+} from '../lib/crankCostUnits';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
 
@@ -83,18 +87,26 @@ function clobMarketConfig(marketIndex: number, flags: ClobConfigFlags): Buffer {
 }
 
 /**
- * Instructions registering the market's crank-conditions account as a relay
- * `WatchV0`: create the zeroed watch account, then `register_watch_v0`
- * pointing at the condition block (account-data offset 8). Registration is
- * permissionless on relay's side — the registrar only gains the right to
- * close the watch and reclaim its rent.
+ * Instructions registering one condition block as a relay `WatchV0`: create
+ * the zeroed watch account, then `register_watch_v0` pointing at the block's
+ * account-data offset. Registration is permissionless on relay's side — the
+ * registrar only gains the right to close the watch and reclaim its rent.
+ *
+ * A market has two blocks, and both need a watch. Velocity's conditions
+ * account holds the cross fallback poll, at offset 8 (the block is its first
+ * field). The CLOB market account holds the four conditions that describe the
+ * book itself — an expired order, a side at its eviction threshold, a crossed
+ * book, an order reaching its activation slot — at whatever offset
+ * `updatePerpMarketClobQuoter` reported when it registered velocity's
+ * resolvers there. Watch only the first and the book's own cranks never fire.
  */
 async function watchRegistrationIxs(
 	connection: { getMinimumBalanceForRentExemption(n: number): Promise<number> },
 	payer: PublicKey,
 	relayProgram: PublicKey,
 	target: PublicKey,
-	watch: Keypair
+	watch: Keypair,
+	blockOffset: number
 ): Promise<TransactionInstruction[]> {
 	const rent = await connection.getMinimumBalanceForRentExemption(
 		WATCH_ACCOUNT_LEN
@@ -107,7 +119,7 @@ async function watchRegistrationIxs(
 		programId: relayProgram,
 	});
 	const offsetArg = Buffer.alloc(4);
-	offsetArg.writeUInt32LE(8); // the block is the account's first field, past the discriminator
+	offsetArg.writeUInt32LE(blockOffset);
 	const register = new TransactionInstruction({
 		programId: relayProgram,
 		keys: [
@@ -118,6 +130,85 @@ async function watchRegistrationIxs(
 		data: Buffer.concat([ixDiscriminator('register_watch_v0'), offsetArg]),
 	});
 	return [create, register];
+}
+
+/** Just enough of a connection to fetch an account and price its rent. */
+type RpcConnection = {
+	getAccountInfo(key: PublicKey): Promise<{ data: Buffer } | null>;
+	getMinimumBalanceForRentExemption(n: number): Promise<number>;
+};
+
+/** Just enough of the client to decode a velocity account by name. */
+type AccountDecoder = {
+	program: {
+		coder: { accounts: { decode(name: string, data: Buffer): unknown } };
+	};
+};
+
+/**
+ * The account-data offset of the book's own condition block, as the market's
+ * attach recorded it.
+ *
+ * Read rather than derived: `updatePerpMarketClobQuoter` gets it back from
+ * the book when it registers velocity's resolvers there, so nothing off chain
+ * has to know the market account's layout.
+ */
+async function clobBlockOffset(
+	client: AccountDecoder,
+	connection: RpcConnection,
+	conditions: PublicKey
+): Promise<number> {
+	const info = await connection.getAccountInfo(conditions);
+	if (!info) {
+		throw new Error(`crank conditions ${conditions.toBase58()} not found`);
+	}
+	const decoded = client.program.coder.accounts.decode(
+		'clobCrankConditionsV0',
+		info.data
+	) as { clobBlockOffset: number };
+	if (!decoded.clobBlockOffset) {
+		throw new Error(
+			`crank conditions ${conditions.toBase58()} carry no book block offset; re-run the market attach`
+		);
+	}
+	return decoded.clobBlockOffset;
+}
+
+/**
+ * Both of a market's condition blocks, registered as relay watches: velocity's
+ * conditions account (its block is the first field, at offset 8) and the CLOB
+ * market account (the four conditions describing the book). Watching only the
+ * first leaves the book's own cranks — expiry, eviction, a crossed book, an
+ * activation coming due — with nothing to wake a turner.
+ */
+async function marketWatchIxs(
+	client: AccountDecoder,
+	connection: RpcConnection,
+	payer: PublicKey,
+	relayProgram: PublicKey,
+	conditions: PublicKey,
+	clobMarket: PublicKey,
+	watches: [Keypair, Keypair]
+): Promise<TransactionInstruction[]> {
+	const bookOffset = await clobBlockOffset(client, connection, conditions);
+	return [
+		...(await watchRegistrationIxs(
+			connection,
+			payer,
+			relayProgram,
+			conditions,
+			watches[0],
+			8
+		)),
+		...(await watchRegistrationIxs(
+			connection,
+			payer,
+			relayProgram,
+			clobMarket,
+			watches[1],
+			bookOffset
+		)),
+	];
 }
 
 /**
@@ -140,11 +231,13 @@ export function registerClobMarket(parent: Command): void {
 		);
 
 	withGlobalOptions(
-		clobMarket
-			.command('init <market> <keeperPaymentLamports>')
-			.description(
-				"Stand up a perp market's CLOB in one command: create the book account, initialize it on the CLOB program (place_authority = the quoter CPI signer), register + approve its quoter entry, attach it as the market's canonical CLOB (creating the crank conditions + reservoir), and optionally register the relay watch and fund the reservoir. Signer must hold warm/cold admin (approval + attach). Direct-send only — fresh account keypairs must co-sign, so --multisig is rejected."
-			)
+		withCrankCostUnitOptions(
+			clobMarket
+				.command('init <market>')
+				.description(
+					"Stand up a perp market's CLOB in one command: create the book account, initialize it on the CLOB program (place_authority = the quoter CPI signer), register + approve its quoter entry, attach it as the market's canonical CLOB (creating the crank conditions + reservoir), and optionally register the relay watch and fund the reservoir. Signer must hold warm/cold admin (approval + attach). Direct-send only — fresh account keypairs must co-sign, so --multisig is rejected."
+				)
+		)
 			.requiredOption('--clob-program <pubkey>', 'deployed CLOB program id')
 			.option('--capacity <n>', 'order-node arena capacity', '4096')
 			.option(
@@ -197,7 +290,6 @@ export function registerClobMarket(parent: Command): void {
 	).action(
 		async (
 			market: string,
-			keeperPaymentLamports: string,
 			flags: ClobConfigFlags & {
 				clobProgram: string;
 				capacity: string;
@@ -209,6 +301,9 @@ export function registerClobMarket(parent: Command): void {
 			},
 			cmd: Command
 		) => {
+			const crankCostUnits = readCrankCostUnits(
+				flags as unknown as Record<string, string | undefined>
+			);
 			const marketIndex = Number.parseInt(market, 10);
 			const opts = readGlobalOpts(cmd);
 			if (opts.multisig) {
@@ -336,7 +431,7 @@ export function registerClobMarket(parent: Command): void {
 				// 3. Attach: names the canonical CLOB and stands up the crank
 				// conditions + reservoir; optionally fund the reservoir.
 				const attach = client.program.instruction.updatePerpMarketClobQuoter(
-					new BN(keeperPaymentLamports),
+					crankCostUnits,
 					new BN(flags.expireFallbackSlots),
 					new BN(flags.minCrossSurplus),
 					{
@@ -346,6 +441,8 @@ export function registerClobMarket(parent: Command): void {
 							perpMarket,
 							quoter: quoterPda,
 							clobMarket: book.publicKey,
+							clobProgram,
+							quoterSigner: client.getQuoterSignerPublicKey(),
 							crankConditions: conditions,
 							rent: SYSVAR_RENT_PUBKEY,
 							systemProgram: SystemProgram.programId,
@@ -370,19 +467,28 @@ export function registerClobMarket(parent: Command): void {
 							: '')
 				);
 
-				// 4. Relay watch, so turners discover the conditions block.
+				// 4. Relay watches, so turners discover both condition blocks:
+				// velocity's and the book's own.
 				if (flags.relayProgram.toLowerCase() !== 'none') {
 					const relayProgram = new PublicKey(flags.relayProgram);
-					const watch = Keypair.generate();
-					const ixs = await watchRegistrationIxs(
+					const watches: [Keypair, Keypair] = [
+						Keypair.generate(),
+						Keypair.generate(),
+					];
+					const ixs = await marketWatchIxs(
+						client,
 						provider.connection,
 						wallet,
 						relayProgram,
 						conditions,
-						watch
+						book.publicKey,
+						watches
 					);
-					await provider.sendAndConfirm(new Transaction().add(...ixs), [watch]);
-					console.log(`relay watch ${watch.publicKey.toBase58()} registered`);
+					await provider.sendAndConfirm(new Transaction().add(...ixs), watches);
+					console.log(
+						`relay watches registered: ${watches[0].publicKey.toBase58()} -> conditions, ` +
+							`${watches[1].publicKey.toBase58()} -> book`
+					);
 				}
 			} finally {
 				if ((client as any).isSubscribed) {
@@ -419,17 +525,53 @@ export function registerClobMarket(parent: Command): void {
 					client.program.programId,
 					marketIndex
 				);
-				const watch = Keypair.generate();
-				const ixs = await watchRegistrationIxs(
+				const perpMarket = getPerpMarketPublicKeySync(
+					client.program.programId,
+					marketIndex
+				);
+				const marketInfo = await provider.connection.getAccountInfo(perpMarket);
+				if (!marketInfo) {
+					throw new Error(`perp market ${marketIndex} not found`);
+				}
+				const clobMarket = new PublicKey(
+					(
+						client.program.coder.accounts.decode(
+							'perpMarket',
+							marketInfo.data
+						) as { clobQuoter: PublicKey }
+					).clobQuoter
+				);
+				const entryInfo = await provider.connection.getAccountInfo(clobMarket);
+				if (!entryInfo) {
+					throw new Error(
+						`clob quoter entry ${clobMarket.toBase58()} not found`
+					);
+				}
+				const book = new PublicKey(
+					(
+						client.program.coder.accounts.decode(
+							'quoterV0',
+							entryInfo.data
+						) as { responseAccount: PublicKey }
+					).responseAccount
+				);
+				const watches: [Keypair, Keypair] = [
+					Keypair.generate(),
+					Keypair.generate(),
+				];
+				const ixs = await marketWatchIxs(
+					client,
 					provider.connection,
 					provider.wallet.publicKey,
 					new PublicKey(flags.relayProgram),
 					conditions,
-					watch
+					book,
+					watches
 				);
-				await provider.sendAndConfirm(new Transaction().add(...ixs), [watch]);
+				await provider.sendAndConfirm(new Transaction().add(...ixs), watches);
 				console.log(
-					`relay watch ${watch.publicKey.toBase58()} -> conditions ${conditions.toBase58()} (offset 8)`
+					`relay watches: ${watches[0].publicKey.toBase58()} -> conditions ${conditions.toBase58()} (offset 8), ` +
+						`${watches[1].publicKey.toBase58()} -> book ${book.toBase58()}`
 				);
 			} finally {
 				if ((client as any).isSubscribed) {

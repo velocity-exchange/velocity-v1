@@ -42,6 +42,7 @@ import {
 	getRelayScratchPublicKey,
 	getUserConditionsPublicKey,
 	getPerpMarketPublicKeySync,
+	getVelocityStateAccountPublicKey,
 	getSpotMarketPublicKeySync,
 	Wallet,
 } from '@velocity-exchange/sdk';
@@ -52,13 +53,19 @@ const RELAY_PROGRAM = new PublicKey(
 const WATCH_V0_LEN = 112;
 /** Block offset within every velocity conditions account (past anchor's disc). */
 const BLOCK_OFFSET = 8;
+/**
+ * Bytes after `UserConditionsV0.sync_payment_lamports`: `syncFallbackSlots`,
+ * `positionsDigest`, and the 72-byte tail reserve. Measured from the end so a
+ * field added ahead of it does not move the read.
+ */
+const BYTES_AFTER_SYNC_PAYMENT = 8 + 8 + 72;
 
 type Args = {
 	url: string;
 	keypair: string;
 	dryRun: boolean;
 	limit: number;
-	syncPaymentLamports: bigint;
+	syncCostUnits: number;
 	fallbackSlots: bigint;
 };
 
@@ -75,7 +82,7 @@ function parseArgs(): Args {
 		keypair: get('--keypair', `${process.env.HOME}/.config/solana/id.json`),
 		dryRun: argv.includes('--dry-run'),
 		limit: Number.parseInt(get('--limit', '0'), 10),
-		syncPaymentLamports: BigInt(get('--sync-payment', '20000')),
+		syncCostUnits: Number.parseInt(get('--sync-cost-units', '20000'), 10),
 		fallbackSlots: BigInt(get('--fallback-slots', '3000')),
 	};
 }
@@ -96,15 +103,15 @@ function ixDiscriminator(name: string): Buffer {
  * so this list is a superset — listing a type that never grew is harmless. */
 const RESIZABLE: { name: string; size: number }[] = [
 	{ name: 'User', size: 8 + 4496 },
-	{ name: 'PerpMarket', size: 8 + 1328 },
-	{ name: 'QuoterV0', size: 8 + 2752 },
+	{ name: 'perpMarket', size: 8 + 1328 },
+	{ name: 'quoterV0', size: 8 + 2752 },
 	// Relay condition hosts. Sizes come from the `sizes_for_the_migration_script`
 	// test in `state/relay_scratch.rs` — run it (`cargo test -p velocity --lib
 	// sizes_for_the_migration_script -- --show-output`) and paste, rather than
 	// working them out by hand. A type missing from (or stale in) this table is
 	// the failure that has no symptom until an account is read at the wrong
 	// offset.
-	{ name: 'ClobCrankConditionsV0', size: 1576 },
+	{ name: 'clobCrankConditionsV0', size: 1576 },
 	{ name: 'QuoterCrossConditionsV0', size: 2168 },
 	{ name: 'UserConditionsV0', size: 7672 },
 ];
@@ -123,6 +130,7 @@ async function main() {
 	);
 	const program = new Program(idl, provider);
 	const velocity = program.programId;
+	const statePda = await getVelocityStateAccountPublicKey(velocity);
 	const plan: string[] = [];
 	const act = async (
 		label: string,
@@ -214,14 +222,14 @@ async function main() {
 		// Decoded through the IDL rather than by byte offset: layouts move,
 		// and a migration reading the wrong field is worse than one that
 		// fails loudly.
-		const decoded: any = program.coder.accounts.decode('PerpMarket', account.data);
+		const decoded: any = program.coder.accounts.decode('perpMarket', account.data);
 		marketOracles.set(decoded.marketIndex, decoded.oracle);
 	}
 
 	let covered = 0;
 	for (const { pubkey: user, account } of users) {
 		if (args.limit && covered >= args.limit) break;
-		const decodedUser: any = program.coder.accounts.decode('User', account.data);
+		const decodedUser: any = program.coder.accounts.decode('user', account.data);
 		const marketIndexes = exposedPerpMarkets(decodedUser);
 		if (marketIndexes.length === 0) continue;
 		const userConditions = getUserConditionsPublicKey(velocity, user);
@@ -249,9 +257,11 @@ async function main() {
 				isWritable: false,
 			}))
 		);
-		const argsBuf = Buffer.alloc(16);
-		argsBuf.writeBigUInt64LE(args.syncPaymentLamports, 0);
-		argsBuf.writeBigUInt64LE(args.fallbackSlots, 8);
+		// `SyncLiqConditionsArgs`: cost units (u32) then the fallback interval.
+		// The lamport fee is derived on chain from `State.transactionFeeRails`.
+		const argsBuf = Buffer.alloc(12);
+		argsBuf.writeUInt32LE(args.syncCostUnits, 0);
+		argsBuf.writeBigUInt64LE(args.fallbackSlots, 4);
 		await act(
 			`${existing ? 'sync' : 'create+sync'} liq conditions for ${user.toBase58()}`,
 			[
@@ -259,6 +269,7 @@ async function main() {
 					programId: velocity,
 					keys: [
 						{ pubkey: payer.publicKey, isSigner: true, isWritable: true },
+						{ pubkey: statePda, isSigner: false, isWritable: false },
 						{ pubkey: user, isSigner: false, isWritable: false },
 						{ pubkey: userConditions, isSigner: false, isWritable: true },
 						{ pubkey: SYSVAR_RENT_PUBKEY, isSigner: false, isWritable: false },
@@ -282,7 +293,16 @@ async function main() {
 			const floor = await connection.getMinimumBalanceForRentExemption(
 				info?.data.length ?? 7272
 			);
-			const want = floor + Number(args.syncPaymentLamports) * 50;
+			// Fifty syncs' worth. The fee is priced on chain, so read what the
+			// account was actually written with rather than restating it.
+			const paid = info
+				? Number(
+						info.data.readBigUInt64LE(
+							info.data.length - BYTES_AFTER_SYNC_PAYMENT - 8
+						)
+				  )
+				: 0;
+			const want = floor + paid * 50;
 			if ((info?.lamports ?? 0) < want) {
 				await act(`fund sync reservoir ${userConditions.toBase58()}`, [
 					SystemProgram.transfer({
@@ -302,8 +322,28 @@ async function main() {
 	console.log('');
 	for (const [marketIndex] of marketOracles) {
 		const conditions = getClobCrankConditionsPublicKey(velocity, marketIndex);
-		if (!(await connection.getAccountInfo(conditions))) continue;
+		const info = await connection.getAccountInfo(conditions);
+		if (!info) continue;
 		await ensureWatch(connection, provider, payer, conditions, act);
+		// The book hosts the four conditions that describe itself, so it needs
+		// a watch of its own. Where its block sits and which account it is are
+		// both recorded on the conditions above, by the attach that registered
+		// velocity's resolvers there.
+		const decoded = program.coder.accounts.decode(
+			'clobCrankConditionsV0',
+			info.data
+		) as { clobBlockOffset: number };
+		const book = await clobBookFor(connection, velocity, marketIndex, program);
+		if (book && decoded.clobBlockOffset) {
+			await ensureWatch(
+				connection,
+				provider,
+				payer,
+				book,
+				act,
+				decoded.clobBlockOffset
+			);
+		}
 	}
 	const quoters = await connection.getProgramAccounts(velocity, {
 		filters: [
@@ -325,6 +365,31 @@ async function main() {
 	if (plan.length > 40) console.log(`  … ${plan.length - 40} more`);
 }
 
+/** The market's book account: its perp market names the CLOB quoter entry,
+ * and the entry names the book as its response account. */
+async function clobBookFor(
+	connection: Connection,
+	velocity: PublicKey,
+	marketIndex: number,
+	program: { coder: { accounts: { decode(name: string, data: Buffer): unknown } } }
+): Promise<PublicKey | undefined> {
+	const perpMarket = getPerpMarketPublicKeySync(velocity, marketIndex);
+	const marketInfo = await connection.getAccountInfo(perpMarket);
+	if (!marketInfo) return undefined;
+	const { clobQuoter } = program.coder.accounts.decode(
+		'perpMarket',
+		marketInfo.data
+	) as { clobQuoter: PublicKey };
+	if (!clobQuoter || clobQuoter.equals(PublicKey.default)) return undefined;
+	const entryInfo = await connection.getAccountInfo(new PublicKey(clobQuoter));
+	if (!entryInfo) return undefined;
+	const { responseAccount } = program.coder.accounts.decode(
+		'quoterV0',
+		entryInfo.data
+	) as { responseAccount: PublicKey };
+	return new PublicKey(responseAccount);
+}
+
 /** Register a relay watch over a conditions block, unless one already
  * exists for that (target, offset). */
 async function ensureWatch(
@@ -336,7 +401,8 @@ async function ensureWatch(
 		label: string,
 		ixs: TransactionInstruction[],
 		signers?: Keypair[]
-	) => Promise<void>
+	) => Promise<void>,
+	blockOffset: number = BLOCK_OFFSET
 ) {
 	// WatchV0 leads with target_program then target, so the registry is
 	// queryable by target without decoding.
@@ -347,7 +413,7 @@ async function ensureWatch(
 	if (existing.length > 0) return;
 	const watch = Keypair.generate();
 	const offset = Buffer.alloc(4);
-	offset.writeUInt32LE(BLOCK_OFFSET);
+	offset.writeUInt32LE(blockOffset);
 	await act(
 		`register watch -> ${target.toBase58()}`,
 		[

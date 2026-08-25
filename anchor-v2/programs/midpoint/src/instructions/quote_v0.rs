@@ -29,10 +29,10 @@ pub struct QuoteV0 {
 /// order, so a mirror that is missing one reads every field after it from the
 /// wrong place and reports nothing wrong.
 ///
-/// The midpoint reads `users` and `taker`. It ignores `caps` and
-/// `reference_price`: it settles against one standing-intent user and holds
-/// no orders, so there is no per-user budget to spend and nothing to skip
-/// mid-book.
+/// The midpoint reads `users`, `taker` and `limit_price`. It ignores `caps`
+/// and `reference_price`: it settles against one standing-intent user and
+/// holds no orders, so there is no per-user budget to spend and nothing to
+/// skip mid-book.
 pub use quoter_spec::QuoteArgsV0;
 
 /// Whether this quoter has anything to say to this caller: settleability,
@@ -87,7 +87,11 @@ pub fn handle_quote_v0(ctx: &mut Context<QuoteV0>, args: QuoteArgsV0) -> Result<
         ctx.accounts.instructions_sysvar.account(),
         ctx.accounts.velocity_state.account(),
     )?;
-    ctx.accounts
-        .quoter
-        .write_quote_response(args.direction, args.size, clock.slot, open)
+    ctx.accounts.quoter.write_quote_response(
+        args.direction,
+        args.size,
+        args.limit_price,
+        clock.slot,
+        open,
+    )
 }

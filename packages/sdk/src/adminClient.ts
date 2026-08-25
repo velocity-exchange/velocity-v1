@@ -40,6 +40,7 @@ import {
 	ConstituentStatus,
 	LPPoolAccount,
 	TransferFeeAndPnlPoolDirection,
+	TransactionFeeRails,
 	MarketType,
 	SpotMarketAccount,
 	UserAccount,
@@ -5431,6 +5432,96 @@ export class AdminClient extends VelocityClient {
 		const tx = await this.buildTransaction(ix);
 		const { txSig } = await this.sendTransaction(tx, [], this.opts);
 		return txSig;
+	}
+
+	/**
+	 * Sets what the protocol will spend getting a liquidation cranked, and the
+	 * spot market whose oracle prices that spend in SOL.
+	 *
+	 * A liquidation crank repays the priority fee its keeper paid, so it stays
+	 * worth landing when the fee market moves; `shareBps` bounds that at a
+	 * share of what the liquidation recovers, so a recovery too small to cover
+	 * its own gas is left rather than subsidised. Zero in either field leaves
+	 * the flat payment.
+	 * @param shareBps - Most of a liquidation's filled quote the protocol will repay, in basis points (max 10,000).
+	 * @param solSpotMarketIndex - Spot market whose oracle prices SOL; 0 disables the reimbursement.
+	 * @returns The transaction signature.
+	 */
+	public async updateLiquidationCrankReimbursement(
+		shareBps: number,
+		solSpotMarketIndex: number
+	): Promise<TransactionSignature> {
+		const ix = await this.getUpdateLiquidationCrankReimbursementIx(
+			shareBps,
+			solSpotMarketIndex
+		);
+		const tx = await this.buildTransaction(ix);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `updateLiquidationCrankReimbursement` instruction without
+	 * sending it. See `updateLiquidationCrankReimbursement`.
+	 * @param shareBps - Most of a liquidation's filled quote the protocol will repay, in basis points.
+	 * @param solSpotMarketIndex - Spot market whose oracle prices SOL.
+	 * @returns The unsigned instruction.
+	 */
+	public async getUpdateLiquidationCrankReimbursementIx(
+		shareBps: number,
+		solSpotMarketIndex: number
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.updateLiquidationCrankReimbursement(
+			shareBps,
+			solSpotMarketIndex,
+			{
+				accounts: {
+					admin: this.isSubscribed
+						? this.getStateAccount().warmAdmin
+						: this.wallet.publicKey,
+					state: await this.getStatePublicKey(),
+				},
+			}
+		);
+	}
+
+	/**
+	 * Sets what the protocol believes a transaction costs to land: a fixed inclusion fee, a
+	 * per-signature fee, and a rate in lamports per requested cost unit. Warm/cold admin.
+	 *
+	 * Every relay crank pays its keeper enough to cover the keeper's own transaction, and that
+	 * cost is a function of the network's fee model. When the model changes, this is the one
+	 * write that moves it. Payments already stored on a market's conditions account keep their
+	 * old figures until that market's attach (`updatePerpMarketClobQuoter`) is re-run.
+	 * @param rails - The fee model to write.
+	 * @returns The transaction signature.
+	 */
+	public async updateTransactionFeeRails(
+		rails: TransactionFeeRails
+	): Promise<TransactionSignature> {
+		const ix = await this.getUpdateTransactionFeeRailsIx(rails);
+		const tx = await this.buildTransaction(ix);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `updateTransactionFeeRails` instruction without sending it. See
+	 * `updateTransactionFeeRails`.
+	 * @param rails - The fee model to write.
+	 * @returns The unsigned `updateTransactionFeeRails` instruction.
+	 */
+	public async getUpdateTransactionFeeRailsIx(
+		rails: TransactionFeeRails
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.updateTransactionFeeRails(rails, {
+			accounts: {
+				admin: this.isSubscribed
+					? this.getStateAccount().warmAdmin
+					: this.wallet.publicKey,
+				state: await this.getStatePublicKey(),
+			},
+		});
 	}
 
 	/**

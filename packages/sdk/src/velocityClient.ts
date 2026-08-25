@@ -273,7 +273,7 @@ import { getOrderParams } from './orderParams';
 import { numberToSafeBN } from './math/utils';
 import { TransactionParamProcessor } from './tx/txParamProcessor';
 import { isOracleValid, getOracleValidity } from './math/oracles';
-import { TxHandler } from './tx/txHandler';
+import { LOADED_ACCOUNTS_DATA_SIZE_DEFAULT, TxHandler } from './tx/txHandler';
 import { createMinimalEd25519VerifyIx } from './util/ed25519Utils';
 import {
 	createNativeInstructionDiscriminatorBuffer,
@@ -436,8 +436,11 @@ export class VelocityClient {
 	 *     passing more than one throws. `subAccountIds` is shorthand for
 	 *     `authoritySubAccountMap = { [authority]: subAccountIds }`.
 	 *   - `txVersion` defaults based on whether `config.wallet` supports versioned transactions.
-	 *   - `txParams.computeUnits` defaults to `600_000` and `computeUnitsPrice` to `0` (no priority fee)
-	 *     when not provided.
+	 *   - `txParams.useSimulatedComputeUnits` defaults to `true`: the compute limit comes from
+	 *     simulating the transaction. `txParams.computeUnits` (default `600_000`) is the ceiling
+	 *     that clamps it and the fallback when simulation fails; `computeUnitsPrice` defaults to
+	 *     `0` (no priority fee), and `loadedAccountsDataSize` to
+	 *     `LOADED_ACCOUNTS_DATA_SIZE_DEFAULT`.
 	 *   - `config.accountSubscription.type` selects `PollingVelocityClientAccountSubscriber`,
 	 *     a grpc subscriber, or (default) `WebSocketVelocityClientAccountSubscriber`.
 	 *   - `config.userStats` (default falsy) additionally constructs a `UserStats` instance for the
@@ -478,8 +481,22 @@ export class VelocityClient {
 		this.txVersion =
 			config.txVersion ?? this.getTxVersionForNewWallet(config.wallet);
 		this.txParams = {
+			...config.txParams,
+			// The ceiling a simulation-derived limit is clamped to, and the limit
+			// requested when simulation is off or fails. Kept generous for that
+			// reason; it is not meant to be what a transaction normally asks for.
 			computeUnits: config.txParams?.computeUnits ?? 600_000,
 			computeUnitsPrice: config.txParams?.computeUnitsPrice ?? 0,
+			loadedAccountsDataSize:
+				config.txParams?.loadedAccountsDataSize ??
+				LOADED_ACCOUNTS_DATA_SIZE_DEFAULT,
+			// A transaction is charged for the compute limit it requests, so
+			// asking for a flat ceiling on every transaction pays for room almost
+			// none of them use. Simulating costs one RPC round trip and is worth
+			// it. A failed simulation falls back to the ceiling above rather than
+			// throwing, so the worst case is what a static limit gave.
+			useSimulatedComputeUnits:
+				config.txParams?.useSimulatedComputeUnits ?? true,
 		};
 
 		this.txHandler =
@@ -11075,8 +11092,12 @@ export class VelocityClient {
 				liquidator,
 				liquidatorStats: liquidatorStatsPublicKey,
 				// Signed-keeper path: the relay reservoir account is absent,
-				// encoded as the program id (anchor's `None`).
+				// encoded as the program id (anchor's `None`). The
+				// instructions sysvar likewise — it exists so a relay crank can
+				// have its priority fee repaid, and a signed keeper is paying
+				// its own way.
 				crankConditions: this.program.programId,
+				instructionsSysvar: this.program.programId,
 			},
 			remainingAccounts: remainingAccounts,
 		});

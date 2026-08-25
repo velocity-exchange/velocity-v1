@@ -37,13 +37,12 @@ use {
         load_mut, msg,
         signer::QUOTER_SIGNER_SEED,
         state::{
-            clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
+            clob_crank::{ClobCrankConditionsV0, CrankPaymentsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             pdas,
             perp_market::PerpMarket,
             prop_amm::{
-                clob_hint_scan, read_clob_node, ClobEvictWorstArgsV0, ClobMarket, ClobNodeView,
-                ClobRemoveExpiredArgsV0, ClobRemovedOrderV0, ClobUserRefV0, QuoterV0,
-                WireDirectionExt, CLOB_NIL,
+                ClobEvictWorstArgsV0, ClobMarket, ClobReader, ClobRemoveExpiredArgsV0,
+                ClobRemovedOrderV0, ClobUserRefV0, QuoterV0, WireDirectionExt,
             },
             state::State,
             user::{User, UserStats},
@@ -234,16 +233,17 @@ pub fn crank_clob_removal(
     }
 
     if let Some(conditions_loader) = &ctx.accounts.crank_conditions {
-        // Repair both wake hints against the post-removal book in one scan,
-        // so a due hint goes quiet once its work is gone.
-        let (min_expiry, min_activation) =
-            clob_hint_scan(&ctx.accounts.clob_market.try_borrow_data()?, clock.slot);
-        let payment = {
-            let mut conditions = load_mut!(conditions_loader)?;
-            conditions.repair_expiry(min_expiry)?;
-            conditions.repair_activation(min_activation)?;
-            conditions.keeper_payment_lamports
+        // An expiry that went unclaimed pays for the wait. Priced off the
+        // order's own `max_ts`, which the removal reports, so the figure is
+        // the protocol's and a caller cannot name its own. Eviction is a
+        // capacity crank rather than a deadline, so it does not escalate.
+        let escalation = if is_evict {
+            0
+        } else {
+            CrankPaymentsV0::expiry_escalation(removed.max_ts, clock.unix_timestamp)
         };
+        let payment = u64::from(load_mut!(conditions_loader)?.crank_payments.removal)
+            .saturating_add(u64::from(escalation));
         if program_keeper_mode {
             let conditions_info = conditions_loader.to_account_info();
             let rent_minimum = Rent::get()?.minimum_balance(conditions_info.data_len());
@@ -278,16 +278,41 @@ pub struct ResolveClobCrank<'info> {
     pub crank_conditions: AccountLoader<'info, ClobCrankConditionsV0>,
     /// CHECK: validated against the quoter entry's registered execute
     /// accounts, same as the executor it stages.
+    ///
+    /// Writable for the book's response tail: the cross resolver asks the book
+    /// for its resting orders through `quote_l3_v0`, which streams the answer
+    /// into that tail. Nothing a resolver sends ever lands, and the tail is a
+    /// scratch region the book rewrites on every quote.
+    #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
     pub quoter: AccountLoader<'info, QuoterV0>,
     pub state: AccountLoader<'info, State>,
+    /// CHECK: checked against the quoter entry's `program_id`. A resolver asks
+    /// the book which order to remove instead of reading its arena, so it
+    /// calls the program rather than parsing the account.
+    pub clob_program: UncheckedAccount<'info>,
 }
 
 pub fn validate_linkage(ctx: &Context<ResolveClobCrank>) -> Result<()> {
     let quoter = ctx.accounts.quoter.load()?;
     let conditions = ctx.accounts.crank_conditions.load()?;
     quoter.validate_clob_book(conditions.market_index, &ctx.accounts.clob_market.key())?;
+    validate!(
+        quoter.program_id == ctx.accounts.clob_program.key(),
+        ErrorCode::DefaultError,
+        "clob program does not match the quoter entry"
+    )?;
     Ok(())
+}
+
+/// The book, bound for the read-only questions a resolver asks it.
+pub fn clob_reader<'a, 'info>(
+    ctx: &'a Context<'_, ResolveClobCrank<'info>>,
+) -> ClobReader<'a, 'info> {
+    ClobReader {
+        market: &ctx.accounts.clob_market,
+        program: &ctx.accounts.clob_program,
+    }
 }
 
 /// Derive the `(User, UserStats)` PDAs from a node's derivable identity —
@@ -301,23 +326,6 @@ pub fn derive_user_pdas(user: &ClobUserRefV0) -> (Pubkey, Pubkey) {
 /// created through the normal initialize_user path) and its stats PDA.
 pub fn derive_protocol_user_pdas(signer: &Pubkey) -> (Pubkey, Pubkey) {
     pdas::user_pair(signer, 0)
-}
-
-/// Advance a cursor to the next node that is live and matchable right now.
-pub fn next_matchable(
-    data: &[u8],
-    mut cursor: u32,
-    slot: u64,
-    now: i64,
-) -> Option<(u32, ClobNodeView)> {
-    while cursor != CLOB_NIL {
-        let node = read_clob_node(data, cursor)?;
-        if node.is_matchable(slot, now) {
-            return Some((cursor, node));
-        }
-        cursor = node.next;
-    }
-    None
 }
 
 /// The removal executor's call: `CrankClobOrderRemoval`'s full account
@@ -396,7 +404,7 @@ pub fn finish_trigger_crank<'info>(
                 conditions.market_index,
                 market_index
             )?;
-            conditions.keeper_payment_lamports
+            u64::from(conditions.crank_payments.trigger)
         };
         let info = reservoir.to_account_info();
         let rent_minimum = Rent::get()?.minimum_balance(info.data_len());

@@ -1,9 +1,9 @@
 use {
     crate::{
-        book::ClobBook,
+        book::{BookHeader, ClobBook},
         emit::CancelAllRecord,
         error::ClobError,
-        state::{CancelAllOutcomeV0, CancelSidesV0, ClobMarketV0, UserRefV0},
+        state::{CancelAllOutcomeV0, CancelSidesV0, ClobMarketV0},
     },
     anchor_lang_v2::prelude::*,
 };
@@ -16,12 +16,8 @@ pub struct CancelAllV0 {
     pub place_authority: Signer,
 }
 
-#[derive(Clone, Copy, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct CancelAllArgsV0 {
-    /// Whose orders to withdraw (velocity verified control before the CPI).
-    pub user: UserRefV0,
-    pub sides: CancelSidesV0,
-}
+/// Declared by `clob-wire`. The owner is verified against each node.
+pub use clob_wire::CancelAllArgsV0;
 
 /// Withdraw every order one user holds on a side (or both) in a single call.
 ///
@@ -57,6 +53,9 @@ pub fn handle_cancel_all_v0(
     let outcome = market.cancel_all(args.user, args.sides, &mut |order_id| {
         record.push_id(order_id)
     })?;
+    // The removal path takes no clock, so an activation hint the chain
+    // has already reached is dropped here instead.
+    market.expire_activation_hint(clock.slot)?;
     record.finish(&outcome)?;
 
     Ok(CancelAllOutcomeV0 {

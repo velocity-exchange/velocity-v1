@@ -110,7 +110,17 @@ fn quote_streams_the_borsh_encoding_of_its_levels() {
     place(&mut book, Side::Ask, 101, 10, maker_b);
 
     let pointer = book
-        .quote(Direction::Long, 100, &[], &UserCapsV0::EMPTY, 0, None, 0, 0)
+        .quote(
+            Direction::Long,
+            100,
+            &[],
+            &UserCapsV0::EMPTY,
+            0,
+            None,
+            0,
+            0,
+            0,
+        )
         .unwrap();
     assert_eq!(
         streamed(&book, pointer),
@@ -128,7 +138,17 @@ fn quote_streams_the_borsh_encoding_of_its_levels() {
 
     // Capped at the requested size, and an empty book is an empty vec.
     let pointer = book
-        .quote(Direction::Long, 6, &[], &UserCapsV0::EMPTY, 0, None, 0, 0)
+        .quote(
+            Direction::Long,
+            6,
+            &[],
+            &UserCapsV0::EMPTY,
+            0,
+            None,
+            0,
+            0,
+            0,
+        )
         .unwrap();
     assert_eq!(
         streamed(&book, pointer),
@@ -138,7 +158,17 @@ fn quote_streams_the_borsh_encoding_of_its_levels() {
         }])
     );
     let pointer = book
-        .quote(Direction::Short, 10, &[], &UserCapsV0::EMPTY, 0, None, 0, 0)
+        .quote(
+            Direction::Short,
+            10,
+            &[],
+            &UserCapsV0::EMPTY,
+            0,
+            None,
+            0,
+            0,
+            0,
+        )
         .unwrap();
     assert_eq!(streamed(&book, pointer), encode_quote(&[]));
 }
@@ -164,6 +194,7 @@ fn quote_stops_at_the_level_cap() {
             &UserCapsV0::EMPTY,
             0,
             None,
+            0,
             0,
             0,
         )
@@ -302,18 +333,19 @@ fn wire_widths_match_the_response_types() {
         base_asset_amount: 3,
         side: Side::Ask,
         taker_origin: true,
+        max_ts: 4,
     };
     assert_eq!(encode(&removed).len(), REMOVED_ORDER_BYTES);
-    assert_eq!(
-        encode(&removed)[REMOVED_ORDER_BYTES - 2..],
-        [Side::Ask.to_u8(), 1]
-    );
+    // Side and the taker-origin flag, then the expiry that trails them.
+    let tail = REMOVED_ORDER_BYTES - 2 - core::mem::size_of::<i64>();
+    assert_eq!(encode(&removed)[tail..tail + 2], [Side::Ask.to_u8(), 1]);
+    assert_eq!(encode(&removed)[tail + 2..], 4i64.to_le_bytes());
     assert_eq!(
         encode(&RemovedOrderV0 {
             side: Side::Bid,
             taker_origin: false,
             ..removed
-        })[REMOVED_ORDER_BYTES - 2..],
+        })[tail..tail + 2],
         [Side::Bid.to_u8(), 0]
     );
     // Every record is one fixed stride: a change carries no ids, so it cannot
@@ -413,6 +445,7 @@ fn the_args_round_trip_with_caps_between_the_set_and_the_taker() {
         caps: UserCapsV0::EMPTY,
         reference_price: 0,
         taker: Some(taker),
+        limit_price: 0,
     };
     let bytes = encode(&args);
     let decoded: QuoteArgsV0 =
@@ -461,6 +494,7 @@ fn the_user_set_is_read_in_place_and_costs_only_what_it_carries() {
         caps: UserCapsV0::EMPTY,
         reference_price: 0,
         taker: None,
+        limit_price: 0,
     };
     let bytes = encode(&args);
 
@@ -468,9 +502,11 @@ fn the_user_set_is_read_in_place_and_costs_only_what_it_carries() {
     // offset — which is the alignment a `UserRefV0` reference needs.
     assert_eq!(bytes[..4], 2u32.to_le_bytes());
     assert_eq!(bytes[4..4 + USER_REF_BYTES], encode(&user(0xA))[..]);
+    // The trailing bytes: direction, size, caps, reference price, the absent
+    // taker's option tag, and the price bound.
     assert_eq!(
         bytes.len(),
-        4 + 2 * USER_REF_BYTES + 1 + 8 + USER_CAPS_BYTES + 8 + 1
+        4 + 2 * USER_REF_BYTES + 1 + 8 + USER_CAPS_BYTES + 8 + 1 + 8
     );
 
     let decoded: QuoteArgsV0 =
@@ -605,6 +641,7 @@ fn a_corrupt_book_cannot_produce_a_response() {
                 None,
                 0,
                 0,
+                0,
             ),
             ClobError::InvalidResponseLevel,
         );
@@ -638,7 +675,17 @@ fn quote_accepts_the_orders_a_healthy_book_produces() {
     place(&mut book, Side::Bid, 99, 5, maker);
 
     let pointer = book
-        .quote(Direction::Short, 15, &[], &UserCapsV0::EMPTY, 0, None, 0, 0)
+        .quote(
+            Direction::Short,
+            15,
+            &[],
+            &UserCapsV0::EMPTY,
+            0,
+            None,
+            0,
+            0,
+            0,
+        )
         .unwrap();
     assert_eq!(
         streamed(&book, pointer),
@@ -740,7 +787,17 @@ fn a_quote_promises_no_more_depth_than_execute_can_deliver() {
     }
 
     let pointer = book
-        .quote(Direction::Long, 100, &[], &UserCapsV0::EMPTY, 0, None, 0, 0)
+        .quote(
+            Direction::Long,
+            100,
+            &[],
+            &UserCapsV0::EMPTY,
+            0,
+            None,
+            0,
+            0,
+            0,
+        )
         .unwrap();
     let quote_bytes = streamed(&book, pointer);
     let quoted = QuoteResponseV0::parse(&quote_bytes).unwrap();

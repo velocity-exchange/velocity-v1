@@ -1384,13 +1384,13 @@ pub mod velocity {
 
     pub fn update_perp_market_clob_quoter(
         ctx: Context<AdminUpdatePerpMarketClobQuoter>,
-        keeper_payment_lamports: u64,
+        crank_cost_units: crate::state::clob_crank::CrankCostUnitsV0,
         expire_fallback_slots: u64,
         min_cross_surplus: u64,
     ) -> Result<()> {
         handle_update_perp_market_clob_quoter(
             ctx,
-            keeper_payment_lamports,
+            crank_cost_units,
             expire_fallback_slots,
             min_cross_surplus,
         )
@@ -1445,6 +1445,23 @@ pub mod velocity {
             ctx,
             reference_price_offset_deadband_pct,
         )
+    }
+
+    pub fn update_transaction_fee_rails(
+        ctx: Context<AdminUpdateState>,
+        rails: crate::state::state::TransactionFeeRails,
+    ) -> Result<()> {
+        handle_update_transaction_fee_rails(ctx, rails)
+    }
+
+    /// Set what the protocol spends getting a liquidation cranked, and the
+    /// spot market whose oracle prices it in SOL.
+    pub fn update_liquidation_crank_reimbursement(
+        ctx: Context<AdminUpdateState>,
+        share_bps: u16,
+        sol_spot_market_index: u16,
+    ) -> Result<()> {
+        handle_update_liquidation_crank_reimbursement(ctx, share_bps, sol_spot_market_index)
     }
 
     pub fn update_perp_fee_structure(
@@ -2448,20 +2465,16 @@ pub mod velocity {
 
     /// Relay resolver for the evict condition. Meant to be simulated, not
     /// landed: stages the executor call and returns a response pointer.
-    pub fn resolve_crank_clob_evict(ctx: Context<ResolveClobCrank>) -> Result<()> {
-        handle_resolve_crank_clob_evict(ctx)
-    }
-
-    /// Relay resolver for the expire (and expire-fallback) condition. Meant
-    /// to be simulated, not landed.
-    pub fn resolve_crank_clob_remove_expired(ctx: Context<ResolveClobCrank>) -> Result<()> {
-        handle_resolve_crank_clob_remove_expired(ctx)
-    }
-
-    /// Relay resolver for the cross (and cross-fallback) condition. Meant to
-    /// be simulated, not landed.
-    pub fn resolve_crank_cross_match(ctx: Context<ResolveClobCrank>) -> Result<()> {
-        handle_resolve_crank_cross_match(ctx)
+    /// Resolver for every condition a market's CLOB cranks wake on: an
+    /// expired order, a side at its eviction threshold, the book crossing
+    /// itself, and the poll that catches a cross a PropAMM created. Relay
+    /// hands over which condition fired, so one resolver answers for all of
+    /// them and stages the executor that fits.
+    pub fn resolve_clob_crank(
+        ctx: Context<ResolveClobCrank>,
+        fired: FiredConditionArgV0,
+    ) -> Result<()> {
+        instructions::handle_resolve_clob_crank(ctx, fired)
     }
 
     /// Stand up (or re-price) a Custom quoter's relay cross-discovery

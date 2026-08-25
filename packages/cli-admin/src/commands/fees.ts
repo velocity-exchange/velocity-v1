@@ -57,6 +57,91 @@ export function registerFees(parent: Command): void {
 
 	withGlobalOptions(
 		fees
+			.command(
+				'set-liquidation-crank-reimbursement <shareBps> <solSpotMarketIndex>'
+			)
+			.description(
+				'Set what the protocol will spend getting a liquidation cranked, and the spot market whose oracle prices that spend in SOL (warm/cold admin). A liquidation crank repays the priority fee its keeper paid, so it stays worth landing when the fee market moves; <shareBps> caps that at a share of what the liquidation recovered, so a recovery too small to cover its own gas is left rather than subsidised. 2000 is a fifth. Zero in either argument leaves the flat payment, which is where every market starts.'
+			)
+	).action(
+		async (
+			shareBps: string,
+			solSpotMarketIndex: string,
+			_flags,
+			cmd: Command
+		) => {
+			const share = Number.parseInt(shareBps, 10);
+			const market = Number.parseInt(solSpotMarketIndex, 10);
+			const opts = readGlobalOpts(cmd);
+			const provider = buildProvider(opts);
+			const client = await buildAdminClient(opts);
+			try {
+				const ix = await client.getUpdateLiquidationCrankReimbursementIx(
+					share,
+					market
+				);
+				const result = await sendOrPropose(
+					provider,
+					[ix],
+					opts.multisig ? new PublicKey(opts.multisig) : undefined,
+					'velocity-admin fees set-liquidation-crank-reimbursement'
+				);
+				reportDispatch(
+					`liquidation_crank_reimbursement = ${share}bps, sol spot market ${market}`,
+					result
+				);
+			} finally {
+				await client.unsubscribe();
+			}
+		}
+	);
+
+	withGlobalOptions(
+		fees
+			.command(
+				'set-transaction-rails <inclusionLamports> <signatureLamports> <resourceFeeNumerator> <resourceFeeDenominator>'
+			)
+			.description(
+				'Set what the protocol believes a transaction costs to land (warm/cold admin). Relay crank payments are derived from it, so this is the one write that re-prices every crank when the network changes its fee model: a fixed inclusion fee, a per-signature fee, and a rate in lamports per requested cost unit. A zero denominator prices cost units at nothing, which is the model that charges per signature alone. Markets keep the payments already written on their conditions accounts until their attach is re-run (velocity-admin quoter set-market-clob).'
+			)
+	).action(
+		async (
+			inclusionLamports: string,
+			signatureLamports: string,
+			resourceFeeNumerator: string,
+			resourceFeeDenominator: string,
+			_flags,
+			cmd: Command
+		) => {
+			const rails = {
+				inclusionLamports: Number.parseInt(inclusionLamports, 10),
+				signatureLamports: Number.parseInt(signatureLamports, 10),
+				resourceFeeNumerator: Number.parseInt(resourceFeeNumerator, 10),
+				resourceFeeDenominator: Number.parseInt(resourceFeeDenominator, 10),
+			};
+			const opts = readGlobalOpts(cmd);
+			const provider = buildProvider(opts);
+			const client = await buildAdminClient(opts);
+			try {
+				const ix = await client.getUpdateTransactionFeeRailsIx(rails);
+				const result = await sendOrPropose(
+					provider,
+					[ix],
+					opts.multisig ? new PublicKey(opts.multisig) : undefined,
+					'velocity-admin fees set-transaction-rails'
+				);
+				reportDispatch(
+					`transaction_fee_rails = ${JSON.stringify(rails)}`,
+					result
+				);
+			} finally {
+				await client.unsubscribe();
+			}
+		}
+	);
+
+	withGlobalOptions(
+		fees
 			.command('set-recipient <pubkey> <marketType>')
 			.description(
 				'Set the protocol fee recipient for one side (cold admin only): <marketType> is "perp" (quote-denominated perp fees) or "spot" (per-market lending/liquidation fees). Withdrawals pay the ATA of the configured key.'

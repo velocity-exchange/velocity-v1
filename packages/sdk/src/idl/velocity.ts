@@ -6152,6 +6152,16 @@ export type Velocity = {
           ],
           "writable": true,
           "optional": true
+        },
+        {
+          "name": "instructionsSysvar",
+          "docs": [
+            "crank that wants its priority fee reimbursed — the fee is stated in",
+            "the transaction's own compute-budget instructions and read back from",
+            "here. Absent, the crank takes the flat payment."
+          ],
+          "optional": true,
+          "address": "Sysvar1nstructions1111111111111111111111111"
         }
       ],
       "args": [
@@ -6279,6 +6289,16 @@ export type Velocity = {
           ],
           "writable": true,
           "optional": true
+        },
+        {
+          "name": "instructionsSysvar",
+          "docs": [
+            "crank that wants its priority fee reimbursed — the fee is stated in",
+            "the transaction's own compute-budget instructions and read back from",
+            "here. Absent, the crank takes the flat payment."
+          ],
+          "optional": true,
+          "address": "Sysvar1nstructions1111111111111111111111111"
         }
       ],
       "args": [
@@ -7274,49 +7294,6 @@ export type Velocity = {
           }
         },
         {
-          "name": "crankConditions",
-          "docs": [
-            "Wake-hint host for the replacement; optional like every other CLOB",
-            "placement path."
-          ],
-          "writable": true,
-          "optional": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  108,
-                  111,
-                  98,
-                  95,
-                  99,
-                  114,
-                  97,
-                  110,
-                  107,
-                  95,
-                  99,
-                  111,
-                  110,
-                  100,
-                  105,
-                  116,
-                  105,
-                  111,
-                  110,
-                  115
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "params.market_index"
-              }
-            ]
-          }
-        },
-        {
           "name": "instructionsSysvar",
           "docs": [
             "faster-than-default activation delay on the replacement."
@@ -8123,52 +8100,6 @@ export type Velocity = {
                   101,
                   114
                 ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "crankConditions",
-          "docs": [
-            "The market's relay conditions account, so an expiring placement",
-            "min-folds its `max_ts` into the expire condition's `wake_ts` hint.",
-            "Optional — placement must not brick on a market whose conditions were",
-            "never initialized, and a missed hint is caught by the fallback poll",
-            "condition (latency, not liveness)."
-          ],
-          "writable": true,
-          "optional": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  108,
-                  111,
-                  98,
-                  95,
-                  99,
-                  114,
-                  97,
-                  110,
-                  107,
-                  95,
-                  99,
-                  111,
-                  110,
-                  100,
-                  105,
-                  116,
-                  105,
-                  111,
-                  110,
-                  115
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "params.market_index"
               }
             ]
           }
@@ -9170,20 +9101,25 @@ export type Velocity = {
       ]
     },
     {
-      "name": "resolveCrankClobEvict",
+      "name": "resolveClobCrank",
       "docs": [
         "Relay resolver for the evict condition. Meant to be simulated, not",
-        "landed: stages the executor call and returns a response pointer."
+        "landed: stages the executor call and returns a response pointer.",
+        "Resolver for every condition a market's CLOB cranks wake on: an",
+        "expired order, a side at its eviction threshold, the book crossing",
+        "itself, and the poll that catches a cross a PropAMM created. Relay",
+        "hands over which condition fired, so one resolver answers for all of",
+        "them and stages the executor that fits."
       ],
       "discriminator": [
-        107,
-        234,
-        33,
-        219,
+        0,
+        10,
+        93,
+        76,
+        45,
+        249,
         99,
-        9,
-        84,
-        143
+        54
       ],
       "accounts": [
         {
@@ -9226,155 +9162,39 @@ export type Velocity = {
         {
           "name": "clobMarket",
           "docs": [
-            "accounts, same as the executor it stages."
-          ]
-        },
-        {
-          "name": "quoter"
-        },
-        {
-          "name": "state"
-        }
-      ],
-      "args": []
-    },
-    {
-      "name": "resolveCrankClobRemoveExpired",
-      "docs": [
-        "Relay resolver for the expire (and expire-fallback) condition. Meant",
-        "to be simulated, not landed."
-      ],
-      "discriminator": [
-        255,
-        25,
-        138,
-        136,
-        201,
-        36,
-        41,
-        113
-      ],
-      "accounts": [
-        {
-          "name": "scratch",
-          "docs": [
-            "The shared staging account, index 0 by convention — a resolver's",
-            "response pointer is interpreted against it."
+            "accounts, same as the executor it stages.",
+            "",
+            "Writable for the book's response tail: the cross resolver asks the book",
+            "for its resting orders through `quote_l3_v0`, which streams the answer",
+            "into that tail. Nothing a resolver sends ever lands, and the tail is a",
+            "scratch region the book rewrites on every quote."
           ],
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  114,
-                  101,
-                  108,
-                  97,
-                  121,
-                  95,
-                  115,
-                  99,
-                  114,
-                  97,
-                  116,
-                  99,
-                  104
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "crankConditions",
-          "docs": [
-            "Read-only: resolvers stage into the shared scratch account, not",
-            "into the block they read."
-          ]
-        },
-        {
-          "name": "clobMarket",
-          "docs": [
-            "accounts, same as the executor it stages."
-          ]
+          "writable": true
         },
         {
           "name": "quoter"
         },
         {
           "name": "state"
+        },
+        {
+          "name": "clobProgram",
+          "docs": [
+            "the book which order to remove instead of reading its arena, so it",
+            "calls the program rather than parsing the account."
+          ]
         }
       ],
-      "args": []
-    },
-    {
-      "name": "resolveCrankCrossMatch",
-      "docs": [
-        "Relay resolver for the cross (and cross-fallback) condition. Meant to",
-        "be simulated, not landed."
-      ],
-      "discriminator": [
-        192,
-        165,
-        30,
-        105,
-        235,
-        92,
-        239,
-        53
-      ],
-      "accounts": [
+      "args": [
         {
-          "name": "scratch",
-          "docs": [
-            "The shared staging account, index 0 by convention — a resolver's",
-            "response pointer is interpreted against it."
-          ],
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  114,
-                  101,
-                  108,
-                  97,
-                  121,
-                  95,
-                  115,
-                  99,
-                  114,
-                  97,
-                  116,
-                  99,
-                  104
-                ]
-              }
-            ]
+          "name": "fired",
+          "type": {
+            "defined": {
+              "name": "firedConditionArgV0"
+            }
           }
-        },
-        {
-          "name": "crankConditions",
-          "docs": [
-            "Read-only: resolvers stage into the shared scratch account, not",
-            "into the block they read."
-          ]
-        },
-        {
-          "name": "clobMarket",
-          "docs": [
-            "accounts, same as the executor it stages."
-          ]
-        },
-        {
-          "name": "quoter"
-        },
-        {
-          "name": "state"
         }
-      ],
-      "args": []
+      ]
     },
     {
       "name": "resolveCrankCrossMatchQuoter",
@@ -9432,7 +9252,12 @@ export type Velocity = {
           ]
         },
         {
-          "name": "clobMarket"
+          "name": "clobMarket",
+          "docs": [
+            "book's response tail, which is where `quote_l3_v0` streams the resting",
+            "orders this resolver crosses the entry against."
+          ],
+          "writable": true
         },
         {
           "name": "state"
@@ -9449,6 +9274,17 @@ export type Velocity = {
             "The entry's quoted user — the maker every staged balance change",
             "lands on; its identity derives the staged `(User, UserStats)` pair."
           ]
+        },
+        {
+          "name": "clobQuoter",
+          "docs": [
+            "The market's CLOB registry entry: the other leg is quoted through the",
+            "same registered interface as this one, so neither side is read out of",
+            "an account."
+          ]
+        },
+        {
+          "name": "clobProgram"
         }
       ],
       "args": []
@@ -10941,6 +10777,12 @@ export type Velocity = {
           "signer": true
         },
         {
+          "name": "state",
+          "docs": [
+            "Read for the fee rails the sync's own keeper payment is priced from."
+          ]
+        },
+        {
           "name": "user"
         },
         {
@@ -11096,6 +10938,12 @@ export type Velocity = {
           "name": "payer",
           "writable": true,
           "signer": true
+        },
+        {
+          "name": "state",
+          "docs": [
+            "Read for the fee rails the sync's own keeper payment is priced from."
+          ]
         },
         {
           "name": "user"
@@ -13033,6 +12881,43 @@ export type Velocity = {
       ]
     },
     {
+      "name": "updateLiquidationCrankReimbursement",
+      "docs": [
+        "Set what the protocol spends getting a liquidation cranked, and the",
+        "spot market whose oracle prices it in SOL."
+      ],
+      "discriminator": [
+        228,
+        33,
+        165,
+        153,
+        37,
+        218,
+        237,
+        252
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "shareBps",
+          "type": "u16"
+        },
+        {
+          "name": "solSpotMarketIndex",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "updateLiquidationDuration",
       "discriminator": [
         28,
@@ -13594,9 +13479,43 @@ export type Velocity = {
         {
           "name": "clobMarket",
           "docs": [
-            "accounts in the handler; the evict condition's change-watch points at",
-            "its book counts."
-          ]
+            "accounts in the handler. Writable because the attach registers",
+            "velocity's resolvers on the book itself: the wakes for an expiry, an",
+            "activation, a side at its cap and a crossed book are facts about this",
+            "account, so the conditions that watch for them live on it."
+          ],
+          "writable": true
+        },
+        {
+          "name": "clobProgram"
+        },
+        {
+          "name": "quoterSigner",
+          "docs": [
+            "set to, and therefore the only key that may register its cranks."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  105,
+                  103,
+                  110,
+                  101,
+                  114
+                ]
+              }
+            ]
+          }
         },
         {
           "name": "crankConditions",
@@ -13652,8 +13571,12 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "keeperPaymentLamports",
-          "type": "u64"
+          "name": "crankCostUnits",
+          "type": {
+            "defined": {
+              "name": "crankCostUnitsV0"
+            }
+          }
         },
         {
           "name": "expireFallbackSlots",
@@ -16418,6 +16341,39 @@ export type Velocity = {
         {
           "name": "settlementDuration",
           "type": "u16"
+        }
+      ]
+    },
+    {
+      "name": "updateTransactionFeeRails",
+      "discriminator": [
+        196,
+        239,
+        164,
+        219,
+        198,
+        45,
+        242,
+        11
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "rails",
+          "type": {
+            "defined": {
+              "name": "transactionFeeRails"
+            }
+          }
         }
       ]
     },
@@ -21755,11 +21711,11 @@ export type Velocity = {
             ],
             "type": {
               "defined": {
-                "name": "relayBlock6x8",
+                "name": "relayBlock1x8",
                 "generics": [
                   {
                     "kind": "const",
-                    "value": "6"
+                    "value": "1"
                   },
                   {
                     "kind": "const",
@@ -21780,16 +21736,16 @@ export type Velocity = {
             "type": "pubkey"
           },
           {
-            "name": "keeperPaymentLamports",
+            "name": "crankPayments",
             "docs": [
-              "Lamports the executor pays the keeper per crank, mirrored into each",
-              "conditions' `min_payment`. This account doubles as the reservoir those",
-              "lamports come from: relay's `assert_paid_v0` measures the keeper's",
-              "lamport balance, so a crank that moves no lamports cannot express a",
-              "fee, and turners would have no signal to prioritize (or decline) the",
-              "work. Held here rather than in a global PDA because the executor",
-              "already has to touch this account to repair the expiry hint — so the",
-              "reservoir costs no extra account in a crank transaction.",
+              "Lamports each executor pays its keeper, mirrored into that crank's",
+              "`min_payment`. This account doubles as the reservoir those lamports",
+              "come from: relay's `assert_paid_v0` measures the keeper's lamport",
+              "balance, so a crank that moves no lamports cannot express a fee, and",
+              "turners would have no signal to prioritize (or decline) the work. Held",
+              "here rather than in a global PDA because the executor already has to",
+              "touch this account to repair the expiry hint — so the reservoir costs",
+              "no extra account in a crank transaction.",
               "",
               "Refilled by the maker, not the protocol: the flat removal reward the",
               "maker pays accrues to a protocol-owned `User`, and a hot role withdraws",
@@ -21797,24 +21753,61 @@ export type Velocity = {
               "reservoir stops cranks rather than silently paying nothing, which is the",
               "failure mode ops can actually see."
             ],
-            "type": "u64"
+            "type": {
+              "defined": {
+                "name": "crankPaymentsV0"
+              }
+            }
           },
           {
             "name": "minCrossSurplus",
             "docs": [
               "Floor on the protocol's quote surplus from a cross-match crank, in",
               "QUOTE_PRECISION. A cross costs the protocol real SOL — the reservoir",
-              "pays `keeper_payment_lamports` to whoever cranked it — so a cross that",
+              "pays `crank_payments.cross` to whoever cranked it — so a cross that",
               "clears by a cent is a cross worth declining. Zero keeps the bare",
               "\"strictly profitable\" rule.",
               "",
               "Denominated in quote rather than derived from the lamport cost because",
               "the conversion needs a SOL price, and the cross crank carries no SOL",
               "oracle (it holds the perp's oracle and its map section, nothing more).",
-              "Admins set it to cover the lamport payout with margin and re-price it",
-              "alongside `keeper_payment_lamports`, which is the same cadence."
+              "Admins set it to cover the cross payout with margin and re-price it",
+              "alongside the payments, which is the same cadence."
             ],
             "type": "u64"
+          },
+          {
+            "name": "clobBlockOffset",
+            "docs": [
+              "Where the book's own condition block sits in the market account, as it",
+              "reported at attach.",
+              "",
+              "A market has two blocks and each needs its own relay watch: this",
+              "account's, whose block is its first field at offset 8, and the book's,",
+              "which holds the four conditions describing the book itself. A",
+              "registrar that watches only this account leaves the book's cranks",
+              "unwoken, so the offset is captured here for it to find."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "topOfBookOffset",
+            "docs": [
+              "The region of the book that changes whenever either side's best moves,",
+              "as the book reported it at attach.",
+              "",
+              "A crossing order is by definition a new best, so a relay watch here",
+              "catches every cross the moment it appears. Captured rather than",
+              "derived: the book answers where its own heads sit, so velocity",
+              "registers a watch on it without knowing its layout. Read by the",
+              "per-quoter cross conditions, which watch this same book for a cross",
+              "against a PropAMM."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "topOfBookLen",
+            "type": "u32"
           },
           {
             "name": "marketIndex",
@@ -21834,15 +21827,15 @@ export type Velocity = {
           {
             "name": "padding",
             "docs": [
-              "Tail reserve: 4 bytes of alignment slack plus room for two more",
-              "captured pubkeys, so a resolver that needs another fixed account can",
+              "Tail reserve: 4 bytes of alignment slack plus room for a captured",
+              "pubkey and change, so a resolver that needs another fixed account can",
               "take it from here instead of forcing an `extend_account` migration on",
               "every market's conditions."
             ],
             "type": {
               "array": [
                 "u8",
-                68
+                40
               ]
             }
           }
@@ -21852,8 +21845,15 @@ export type Velocity = {
     {
       "name": "clobOrderRefV0",
       "docs": [
-        "Order handle on the CLOB: an O(1) node hint verified against the order id",
-        "there, so a stale hint fails closed on the CLOB side."
+        "Order handle: an O(1) node hint verified against the order id, so a stale",
+        "hint (node freed or reused) fails closed rather than acting on whichever",
+        "order took the slot.",
+        "",
+        "The `Clob` prefix is load-bearing and stutters here on purpose. This is the",
+        "one type on this wire that reaches velocity's *instruction* arguments, so",
+        "it is the one that lands in velocity's IDL — beside `Order`, `OrderType`",
+        "and `OrderParams`, where a bare `OrderRefV0` names no program. Anchor takes",
+        "the declared name, not the alias, so renaming it here renames it there."
       ],
       "type": {
         "kind": "struct",
@@ -22311,6 +22311,117 @@ export type Velocity = {
       }
     },
     {
+      "name": "crankCostUnitsV0",
+      "docs": [
+        "Cost units each of a market's cranks requests, one field per crank.",
+        "",
+        "Measured, not guessed: a turner simulates the crank and requests a compute",
+        "limit from what it burned, and the rest of the sum — signatures, write",
+        "locks, instruction-data bytes, the loaded-accounts limit — falls out of the",
+        "transaction it assembles. An admin passes those totals here.",
+        "",
+        "The unit is the block-packing cost unit, which is what the network prices a",
+        "transaction by. `State.transaction_fee_rails` turns it into lamports."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "removal",
+            "docs": [
+              "`evict_worst` / `remove_expired`: one book write and a hint repair."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "cross",
+            "docs": [
+              "`crank_cross_match`: two settlement legs through the router."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "takerOriginCross",
+            "docs": [
+              "`crank_taker_origin_cross`: the same, against a taker remainder."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "trigger",
+            "docs": [
+              "`trigger_order` / `trigger_clob_order` in program-keeper mode."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "liquidation",
+            "docs": [
+              "`liquidate_perp_with_fill` in program-keeper mode."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "forceCancel",
+            "docs": [
+              "`force_cancel_clob_orders`."
+            ],
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "crankPaymentsV0",
+      "docs": [
+        "What each of a market's cranks pays its keeper, in lamports.",
+        "",
+        "One figure per crank rather than one for the market. A book removal and a",
+        "two-legged cross differ by an order of magnitude in what they request, and",
+        "the network charges a transaction for what it requests — so a single figure",
+        "either underpays the cross, and nobody runs it, or overpays every removal.",
+        "",
+        "Derived once at attach time from [`CrankCostUnitsV0`] and",
+        "`State.transaction_fee_rails`. Stored rather than recomputed at crank time",
+        "for two reasons: pricing itself would cost a crank compute and an extra",
+        "account, and a staged executor that could re-derive its own terms could",
+        "re-price its own work."
+      ],
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "removal",
+            "type": "u32"
+          },
+          {
+            "name": "cross",
+            "type": "u32"
+          },
+          {
+            "name": "takerOriginCross",
+            "type": "u32"
+          },
+          {
+            "name": "trigger",
+            "type": "u32"
+          },
+          {
+            "name": "liquidation",
+            "type": "u32"
+          },
+          {
+            "name": "forceCancel",
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
       "name": "deleteUserRecord",
       "type": {
         "kind": "struct",
@@ -22705,6 +22816,45 @@ export type Velocity = {
           {
             "name": "refereeFeeDenominator",
             "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "firedConditionArgV0",
+      "docs": [
+        "Which condition relay is asking about.",
+        "",
+        "Byte-identical to `relay_spec::FiredConditionV0`, which is what the turner",
+        "appends to a resolver's instruction data. Declared here because that crate",
+        "carries no borsh derives, and stated in velocity's own types — a `Pubkey`",
+        "and a `u32` rather than the byte arrays a `Pod` layout needs — so the IDL",
+        "reads as an argument list instead of a blob. `tests::the_fired_condition_is",
+        "_what_relay_appends` pins the two encodings together."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "target",
+            "docs": [
+              "The account holding the condition block."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "blockOffset",
+            "docs": [
+              "Byte offset of that block within the account."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "index",
+            "docs": [
+              "Slot of the condition within the block."
+            ],
+            "type": "u8"
           }
         ]
       }
@@ -27785,6 +27935,30 @@ export type Velocity = {
       }
     },
     {
+      "name": "relayBlock1x8",
+      "docs": [
+        "relay condition block (spec v0), 1 conditions, as one opaque wire region"
+      ],
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bytes",
+            "type": {
+              "array": [
+                "u8",
+                488
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
       "name": "relayBlock22x32",
       "docs": [
         "relay condition block (spec v0), 22 conditions, as one opaque wire region"
@@ -27826,30 +28000,6 @@ export type Velocity = {
               "array": [
                 "u8",
                 1928
-              ]
-            }
-          }
-        ]
-      }
-    },
-    {
-      "name": "relayBlock6x8",
-      "docs": [
-        "relay condition block (spec v0), 6 conditions, as one opaque wire region"
-      ],
-      "serialization": "bytemuckunsafe",
-      "repr": {
-        "kind": "c"
-      },
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "bytes",
-            "type": {
-              "array": [
-                "u8",
-                1448
               ]
             }
           }
@@ -29911,11 +30061,74 @@ export type Velocity = {
             "type": "pubkey"
           },
           {
+            "name": "padding0",
+            "docs": [
+              "Alignment slack ahead of `transaction_fee_rails`, taken out of the",
+              "former padding: the tail's offset is odd by two and the rails hold",
+              "`u32`s."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                2
+              ]
+            }
+          },
+          {
+            "name": "transactionFeeRails",
+            "docs": [
+              "What one transaction costs the account that sends it, as the network",
+              "prices it now. Every relay crank payment is derived from this, so a",
+              "change to the network's fee model is one write here instead of a",
+              "re-price of every market."
+            ],
+            "type": {
+              "defined": {
+                "name": "transactionFeeRails"
+              }
+            }
+          },
+          {
+            "name": "liquidationCrankReimbursementBps",
+            "docs": [
+              "Most of a liquidation's filled quote value the protocol will spend",
+              "reimbursing whoever cranked it, in basis points.",
+              "",
+              "A crank that nobody can afford to land is a liquidation that does not",
+              "happen, and a fee market moves faster than any figure the protocol can",
+              "keep written down. So the liquidation crank repays what the",
+              "transaction actually cost — its base fee plus the priority fee it",
+              "paid — and this bounds that at a share of what the liquidation",
+              "recovered. Small liquidations stop being worth landing in heavy",
+              "congestion, which is the right answer: the recovery does not cover the",
+              "gas.",
+              "",
+              "Reimbursing a cost the keeper chooses is safe here because it is not a",
+              "cost the keeper keeps: a priority fee goes to the validator, so",
+              "bidding it up buys nothing. A keeper that is also the validator can",
+              "recapture some of it, and this cap is what bounds that to a share the",
+              "protocol chose.",
+              "",
+              "Zero disables reimbursement, leaving the flat payment."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "solSpotMarketIndex",
+            "docs": [
+              "Spot market whose oracle prices SOL, for the one place the protocol",
+              "pays lamports against a quote-denominated figure. Zero disables the",
+              "reimbursement as surely as a zero share does: market zero is the quote",
+              "market, which prices nothing useful here."
+            ],
+            "type": "u16"
+          },
+          {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                206
+                184
               ]
             }
           }
@@ -29994,17 +30207,22 @@ export type Velocity = {
     },
     {
       "name": "syncLiqConditionsArgs",
+      "docs": [
+        "What the caller asks for; the terms the account ends up holding are",
+        "[`SyncLiqConditionsTerms`], derived from these."
+      ],
       "type": {
         "kind": "struct",
         "fields": [
           {
-            "name": "syncPaymentLamports",
+            "name": "syncCostUnits",
             "docs": [
-              "Fee the staged self-sync pays its keeper, from this account's own",
-              "lamports. 0 keeps the watch/poll conditions inactive (manual syncs",
-              "only) — turners have no signal to take unpaid work."
+              "Cost units the staged self-sync requests, measured by simulating it.",
+              "Priced against `State.transaction_fee_rails`. 0 keeps the watch/poll",
+              "conditions inactive (manual syncs only) — turners have no signal to",
+              "take unpaid work."
             ],
-            "type": "u64"
+            "type": "u32"
           },
           {
             "name": "syncFallbackSlots",
@@ -30178,6 +30396,61 @@ export type Velocity = {
           {
             "name": "lastPositionSlot",
             "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "transactionFeeRails",
+      "docs": [
+        "What the network charges to land one transaction, split the way the fee",
+        "model splits it.",
+        "",
+        "Relay cranks pay their keeper out of a reservoir, and the payment has to",
+        "cover the keeper's own transaction or nobody cranks. The cost is a function",
+        "of what the transaction asks for: a fixed charge to be included, plus a rate",
+        "on the cost units it requests. A crank's cost units differ by an order of",
+        "magnitude between a book removal and a two-legged cross, and the rate is",
+        "the network's to change, so every payment is derived from these fields",
+        "rather than set beside them.",
+        "",
+        "Setting `resource_fee_denominator` to zero prices resource units at nothing,",
+        "which is the fee model that charges per signature alone."
+      ],
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "inclusionLamports",
+            "docs": [
+              "Charged once per transaction, whatever it contains."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "signatureLamports",
+            "docs": [
+              "Charged per signature the transaction carries."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "resourceFeeNumerator",
+            "docs": [
+              "Lamports per requested cost unit, as a fraction. Rounded up: a payment",
+              "short by a lamport is a crank nobody runs."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "resourceFeeDenominator",
+            "docs": [
+              "Zero prices cost units at nothing."
+            ],
+            "type": "u32"
           }
         ]
       }

@@ -1401,13 +1401,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 
 [[package]]
-name = "clob-spec"
+name = "clob-wire"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
+ "anchor-lang",
  "quoter-spec",
- "solana-address 2.6.1",
- "static_assertions",
+ "wincode",
 ]
 
 [[package]]
@@ -8945,7 +8944,7 @@ dependencies = [
  "borsh",
  "bytemuck",
  "byteorder",
- "clob-spec",
+ "clob-wire",
  "enumflags2",
  "hex",
  "num-integer",

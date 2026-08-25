@@ -43,12 +43,11 @@ use {
         msg,
         signer::QUOTER_SIGNER_SEED,
         state::{
-            clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             market_status::MarketStatus,
             perp_market_map::MarketSet,
             prop_amm::{
-                read_clob_node, ClobCancelOrderArgsV0, ClobMarket, ClobOrderRefV0,
-                ClobPlaceOrderArgsV0, ClobUserRefV0, QuoterV0, WireDirectionExt,
+                ClobCancelOrderArgsV0, ClobMarket, ClobOrderRefV0, ClobPlaceOrderArgsV0,
+                ClobUserRefV0, QuoterV0, WireDirectionExt,
             },
             state::State,
             user::User,
@@ -84,17 +83,6 @@ pub struct ModifyClobOrder<'info> {
     /// must be the authority on nothing.
     #[account(seeds = [QUOTER_SIGNER_SEED], bump)]
     pub quoter_signer: UncheckedAccount<'info>,
-    /// Wake-hint host for the replacement; optional like every other CLOB
-    /// placement path.
-    #[account(
-        mut,
-        seeds = [
-            CLOB_CRANK_CONDITIONS_PDA_SEED,
-            params.market_index.to_le_bytes().as_ref(),
-        ],
-        bump
-    )]
-    pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
     /// CHECK: the instructions sysvar, locked by address. Required only for a
     /// faster-than-default activation delay on the replacement.
     #[account(address = solana_program::sysvar::instructions::ID)]
@@ -174,7 +162,7 @@ pub fn handle_modify_clob_order<'c: 'info, 'info>(
     // The attestation rule is the replacement's, not the original's: a modify
     // that asks for a faster-than-default bump is a new fast placement.
     if let Some(requested) = params.activation_delay_slots {
-        let default_delay = clob.default_activation_delay_slots()?;
+        let default_delay = clob.reader().order_rules()?.default_activation_delay_slots;
         if requested < default_delay {
             let flow_authority = state.hot_key(crate::state::state::HotRole::FlowAuthority);
             validate!(
@@ -205,27 +193,6 @@ pub fn handle_modify_clob_order<'c: 'info, 'info>(
         }
     };
 
-    // The removal response carries price/size/side but not the expiry, so
-    // read the node while it is still on the book — that is the only way
-    // `max_ts: None` can mean "keep". A hint that doesn't hold this user's
-    // live order fails here rather than after a CPI.
-    let resting_max_ts = {
-        let book = ctx.accounts.clob_market.try_borrow_data()?;
-        let node = read_clob_node(&book, params.order_ref.node_index).ok_or_else(|| {
-            msg!("order ref points past the book's node arena");
-            ErrorCode::DefaultError
-        })?;
-        validate!(
-            node.is_open()
-                && node.order_id == params.order_ref.order_id
-                && node.user_ref() == user_ref,
-            ErrorCode::OrderDoesNotExist,
-            "order ref {} is not a live order of this user",
-            params.order_ref.order_id
-        )?;
-        node.max_ts
-    };
-
     // ---- Cancel first, so the margin gate below sees the net change. ----
     let removed = clob.cancel(ClobCancelOrderArgsV0 {
         order_ref: params.order_ref,
@@ -248,7 +215,10 @@ pub fn handle_modify_clob_order<'c: 'info, 'info>(
     let base_asset_amount = params
         .base_asset_amount
         .unwrap_or(removed.base_asset_amount);
-    let max_ts = params.max_ts.unwrap_or(resting_max_ts);
+    // `None` means keep the expiry the order was resting with, which the
+    // removal reports — the only moment it is still knowable, and the reason
+    // it is on that response rather than read off the node.
+    let max_ts = params.max_ts.unwrap_or(removed.max_ts);
     validate!(
         base_asset_amount > 0 && price > 0,
         ErrorCode::InvalidOrder,
@@ -331,22 +301,6 @@ pub fn handle_modify_clob_order<'c: 'info, 'info>(
             order.base_asset_amount_filled = 0;
             order.price = price;
             order.max_ts = max_ts;
-        }
-    }
-
-    // Wake the cranks no later than the replacement matters (best-effort,
-    // backstopped by the fallback poll) — same maintenance a placement does.
-    if let Some(conditions) = &ctx.accounts.crank_conditions {
-        let mut conditions = load_mut!(conditions)?;
-        if max_ts != 0 {
-            conditions.note_expiry(max_ts)?;
-        }
-        let delay = match params.activation_delay_slots {
-            Some(delay) => delay,
-            None => clob.default_activation_delay_slots()?,
-        };
-        if delay > 0 {
-            conditions.note_activation(clock.slot.saturating_add(delay as u64))?;
         }
     }
 

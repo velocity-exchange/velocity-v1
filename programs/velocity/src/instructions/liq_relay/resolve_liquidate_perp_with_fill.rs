@@ -212,6 +212,9 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
                     user: ctx.accounts.user.key(),
                     user_stats,
                     crank_conditions: Some(crate::state::pdas::clob_crank_conditions(market_index)),
+                    // The crank reads its own priority fee back from
+                    // here to price the reimbursement.
+                    instructions_sysvar: Some(solana_program::sysvar::instructions::ID),
                 },
             )
             .refs(stored)

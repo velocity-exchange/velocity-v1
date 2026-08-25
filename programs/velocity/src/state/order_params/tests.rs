@@ -2461,4 +2461,9 @@ fn a_signed_route_digests_canonically() {
         "adding a quoter is a different route"
     );
     assert_ne!(route_digest(&[a]), [0; 4], "a real route is never 'none'");
+
+    // Pinned bytes, so the SDK mirror (`getRouteDigest`) has something exact to
+    // agree with rather than only the properties above.
+    assert_eq!(route_digest(&[a]), [0x4b, 0xb0, 0x6f, 0x8e]);
+    assert_eq!(route_digest(&[a, b]), [0x49, 0x44, 0x0f, 0xa4]);
 }

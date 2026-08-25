@@ -27,10 +27,12 @@ wincode = { version = "0.5", features = ["derive"] }
 # reaches this binary: the spec's anchor derives are behind a feature only
 # velocity turns on.
 quoter-spec = { path = "../../../crates/quoter-spec" }
-# The market account's layout, declared where velocity can read it too. The
-# structs below are asserted against it, so a field that moves here fails to
-# compile rather than misparsing on the reader's side.
-clob-spec = { path = "../../../crates/clob-spec" }
+clob-wire = { path = "../../../crates/clob-wire" }
+# The relay condition block this market hosts. Expiry, activation, capacity and
+# a crossed book are facts about this account, so the wakes that watch for them
+# live on it. bytemuck-only, so no framework reaches this binary; the resolver
+# each condition names is registered by the program that owns the book's flow.
+relay-spec = { git = "https://github.com/velocity-exchange/relay", rev = "88419fd1de3ee189e44ef591d9e8f5c558d58a9d" }
 
 [dev-dependencies]
 # `testing` adds the stack-backed AccountBuffer the src/tests/ unit tests

@@ -1,10 +1,10 @@
 use {
     crate::{
-        book::ClobBook,
+        book::{BookHeader, ClobBook},
         emit::emit_pod,
         error::ClobError,
         events::OrderCancelRecordV0,
-        state::{ClobMarketV0, OrderRefV0, RemovedOrderV0, UserRefV0},
+        state::{ClobMarketV0, RemovedOrderV0},
     },
     anchor_lang_v2::prelude::*,
 };
@@ -17,13 +17,8 @@ pub struct CancelOrderV0 {
     pub place_authority: Signer,
 }
 
-#[derive(Clone, Copy, wincode::SchemaRead, wincode::SchemaWrite)]
-pub struct CancelOrderArgsV0 {
-    pub order_ref: OrderRefV0,
-    /// Owner of the order being cancelled (verified against the node;
-    /// velocity verified control before the CPI).
-    pub user: UserRefV0,
-}
+/// Declared by `clob-wire`. The owner is verified against the node.
+pub use clob_wire::CancelOrderArgsV0;
 
 /// Cancel a resting order. Returns the removed order (as return data) so the
 /// CPI caller (velocity) can decrement the maker's open-order aggregates by
@@ -35,6 +30,9 @@ pub fn handle_cancel_order_v0(
     let clock = Clock::get()?;
     let market = &mut ctx.accounts.market;
     let removed = market.cancel(args.user, args.order_ref)?;
+    // The removal path takes no clock, so an activation hint the chain
+    // has already reached is dropped here instead.
+    market.expire_activation_hint(clock.slot)?;
     emit_pod!(OrderCancelRecordV0 {
         authority: removed.user.authority,
         ts: clock.unix_timestamp,
@@ -52,5 +50,6 @@ pub fn handle_cancel_order_v0(
         base_asset_amount: removed.base_asset_amount,
         side: removed.side,
         taker_origin: removed.taker_origin,
+        max_ts: removed.max_ts,
     })
 }

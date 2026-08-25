@@ -72,6 +72,7 @@ use {
     },
     anchor_lang_v2::{address_eq, prelude::*},
     quoter_spec::{ExecuteWriter, L3Writer, QuoteWriter},
+    relay_spec::ConditionBlock,
 };
 
 /// Null link sentinel. The account zero-inits and 0 is a valid node index,
@@ -117,6 +118,7 @@ pub trait ClobBook {
         caps: &UserCapsV0,
         reference_price: i64,
         taker: Option<&UserRefV0>,
+        limit_price: u64,
         slot: u64,
         now: i64,
     ) -> Result<ResponsePointerV0>;
@@ -162,9 +164,133 @@ pub(crate) trait BookHeader {
     /// Hand out the next order id and advance the counter. The only place
     /// `next_order_id` is read or written, so ids can never be reused.
     fn consume_order_id(&mut self) -> Result<u64>;
+    fn fold_wake_hints(
+        &mut self,
+        max_ts: i64,
+        activation_slot: u64,
+        placed_slot: u64,
+    ) -> Result<()>;
+    fn publish_wakes(&mut self) -> Result<()>;
+    fn repair_expiry_hint_for(&mut self, removed: &OrderNodeV0) -> Result<()>;
+    fn expire_activation_hint(&mut self, slot: u64) -> Result<()>;
+    fn recompute_wake_hints(&mut self, expiry: bool, activation: Option<u64>) -> Result<()>;
 }
 
 impl BookHeader for ClobMarketV0 {
+    /// Fold one order's wake inputs into the header's hints.
+    ///
+    /// Only ever moves a hint earlier, which is the safe direction: a hint
+    /// that fires early costs a caller a simulation that finds nothing, one
+    /// that fires late is work nobody is woken for.
+    ///
+    /// An activation already at or behind the slot it was placed on is not
+    /// pending, so it is not folded in — a zero-delay order would otherwise
+    /// peg the hint to the past.
+    fn fold_wake_hints(
+        &mut self,
+        max_ts: i64,
+        activation_slot: u64,
+        placed_slot: u64,
+    ) -> Result<()> {
+        if max_ts != 0 && max_ts < self.next_expiry_ts {
+            self.next_expiry_ts = max_ts;
+        }
+        if activation_slot > placed_slot && activation_slot < self.next_activation_slot {
+            self.next_activation_slot = activation_slot;
+        }
+        self.publish_wakes()
+    }
+
+    /// Copy the two hints into the conditions that watch for them.
+    ///
+    /// The block holds the turner-facing copy of the same two facts, so every
+    /// write to either hint ends here. A market nobody has registered cranks
+    /// for has an inactive block, and a wake written into an inactive slot is
+    /// not something a turner reads — so this needs no guard.
+    fn publish_wakes(&mut self) -> Result<()> {
+        let (unix_ts, slot) = (self.next_expiry_ts, self.next_activation_slot);
+        let mut write = |index: usize, wake: relay_spec::WakeView| {
+            self.crank
+                .update_condition(index, |condition| condition.set_wake(wake))
+                .map_err(|_| ClobError::InvalidConfig)
+        };
+        write(
+            crate::state::CRANK_EXPIRY,
+            relay_spec::WakeView::AtTimestamp { unix_ts },
+        )?;
+        write(
+            crate::state::CRANK_ACTIVATION,
+            relay_spec::WakeView::AtSlot { slot },
+        )?;
+        Ok(())
+    }
+
+    /// Recompute the expiry hint if the removed order was holding it.
+    ///
+    /// Expiry only. The activation hint is a *future* slot, so repairing it
+    /// needs the current one, and removal is the one mutation that does not
+    /// know it — a cancel takes no clock. Leaving it is safe: it can only be
+    /// early, and [`Self::expire_activation_hint`] moves it on at the next
+    /// write that does know the slot.
+    ///
+    /// A removal only invalidates a hint it *was* the minimum of, so the
+    /// ordinary case is one comparison. The walk is owed once per holder,
+    /// which for expiry is the expiry crank itself — the one removal that
+    /// always takes the minimum.
+    fn repair_expiry_hint_for(&mut self, removed: &OrderNodeV0) -> Result<()> {
+        if removed.max_ts != 0 && removed.max_ts <= self.next_expiry_ts {
+            self.recompute_wake_hints(true, None)?;
+        }
+        Ok(())
+    }
+
+    /// Move the activation hint past a slot the chain has reached.
+    ///
+    /// The expiry hint needs no equivalent: it is a timestamp a caller
+    /// compares against the clock, so it stays true as time moves. A pending
+    /// activation becomes an arrived one with nothing writing to the book, so
+    /// a stored slot at or behind the current one would leave its wake
+    /// permanently due.
+    fn expire_activation_hint(&mut self, slot: u64) -> Result<()> {
+        if self.next_activation_slot != u64::MAX && self.next_activation_slot <= slot {
+            self.recompute_wake_hints(false, Some(slot))?;
+        }
+        Ok(())
+    }
+
+    /// One walk of the arena for whichever hints were asked for. `activation`
+    /// carries the slot a pending activation has to be ahead of.
+    ///
+    /// The walk lives here rather than in a caller because the arena is this
+    /// program's own state: a reader outside it would have to know where a
+    /// node keeps its expiry, which is the coupling these hints exist to
+    /// remove.
+    fn recompute_wake_hints(&mut self, expiry: bool, activation: Option<u64>) -> Result<()> {
+        let capacity = self.len() as u32;
+        let (mut min_ts, mut min_slot) = (i64::MAX, u64::MAX);
+        for index in 0..capacity {
+            let node = self.read_node(index)?;
+            if !node.is_bit_flag_set(OrderBitFlag::Open) {
+                continue;
+            }
+            if node.max_ts != 0 && node.max_ts < min_ts {
+                min_ts = node.max_ts;
+            }
+            if activation.is_some_and(|slot| node.activation_slot > slot)
+                && node.activation_slot < min_slot
+            {
+                min_slot = node.activation_slot;
+            }
+        }
+        if expiry {
+            self.next_expiry_ts = min_ts;
+        }
+        if activation.is_some() {
+            self.next_activation_slot = min_slot;
+        }
+        self.publish_wakes()
+    }
+
     fn set_best(&mut self, side: Side, index: u32) {
         match side {
             Side::Bid => self.best_bid = index,
@@ -338,8 +464,11 @@ impl ClobBook for ClobMarketV0 {
             max_quote_levels,
             max_execute_fills,
             max_execute_users,
+            next_expiry_ts,
+            next_activation_slot,
             padding,
             response,
+            crank,
         } = &mut **self;
         *authority = new_authority;
         *place_authority = new_place_authority;
@@ -362,8 +491,17 @@ impl ClobBook for ClobMarketV0 {
         *max_quote_levels = config.max_quote_levels;
         *max_execute_fills = config.max_execute_fills;
         *max_execute_users = config.max_execute_users;
+        // An empty book has no expiry and no pending activation.
+        *next_expiry_ts = i64::MAX;
+        *next_activation_slot = u64::MAX;
         padding.fill(0);
         response.fill(0);
+        // A block with no conditions written is inactive, which is what a
+        // market that nobody has registered cranks for should be. Stamping it
+        // here means `set_crank_conditions_v0` only ever writes conditions.
+        crank
+            .init(crate::state::CRANK_BLOCK_OFFSET as u32)
+            .map_err(|_| ClobError::InvalidConfig)?;
 
         *free_head = 0;
         *free_count = cap;
@@ -498,6 +636,10 @@ impl ClobBook for ClobMarketV0 {
                 ClobError::BookInvariantViolated
             );
         }
+        self.fold_wake_hints(max_ts, activation_slot, placed_slot)?;
+        // Placement is the book's most frequent write and it knows the slot,
+        // so it is where an activation hint the chain has passed gets dropped.
+        self.expire_activation_hint(placed_slot)?;
         self.validate_book()?;
 
         Ok(OrderRefV0 {
@@ -668,6 +810,7 @@ impl ClobBook for ClobMarketV0 {
         caps: &UserCapsV0,
         reference_price: i64,
         taker: Option<&UserRefV0>,
+        limit_price: u64,
         slot: u64,
         now: i64,
     ) -> Result<ResponsePointerV0> {
@@ -726,6 +869,13 @@ impl ClobBook for ClobMarketV0 {
             // Mirrors `execute`'s own stop, in the same place in the walk, so
             // the ladder ends exactly where the fill would.
             if remaining == 0 || fills == max_fills {
+                return Ok(Walk::Stop);
+            }
+            // Past the caller's worst acceptable price. The walk is ordered
+            // best price first, so nothing behind this order is acceptable
+            // either. The caller drops these levels, and a hop it does not
+            // need is compute it still pays for.
+            if worse_than_limit(side, node.price, limit_price) {
                 return Ok(Walk::Stop);
             }
             // Reasons to pass over an order, cheapest first: the order's own
@@ -1073,6 +1223,11 @@ impl ClobBook for ClobMarketV0 {
             self.node_count(side) == expected_count,
             ClobError::BookInvariantViolated
         );
+        // A fill is a removal path too: it consumes orders whole and culls a
+        // sub-minimum remainder, either of which can retire the activation the
+        // hint was pointing at. It is the one such path that knows the slot
+        // without being handed it.
+        self.expire_activation_hint(slot)?;
         self.validate_book()?;
 
         Ok(ExecuteOutcome {
@@ -1205,6 +1360,7 @@ fn removed_order(node: &OrderNodeV0) -> RemovedOrder {
         base_asset_amount: node.base_asset_amount,
         side: node.side(),
         taker_origin: node.is_taker_origin(),
+        max_ts: node.max_ts,
     }
 }
 
@@ -1519,6 +1675,15 @@ fn best_actionable_price(
 /// price-sorted list whose equal-priced orders are contiguous, so aggregation
 /// leaves the written prices strictly monotone); this is the check that says
 /// so.
+/// Whether a level at `price` is past the caller's worst acceptable price.
+///
+/// Zero is no bound. A level exactly at the limit is acceptable, so the
+/// comparison is strict — the caller's own at-or-better check treats it the
+/// same way.
+fn worse_than_limit(side: Side, price: u64, limit_price: u64) -> bool {
+    limit_price != 0 && side.is_worse_price(price, limit_price)
+}
+
 fn write_level(
     book: &mut ClobMarketV0,
     writer: &mut QuoteWriter,
@@ -1670,5 +1835,8 @@ fn remove_order(book: &mut ClobMarketV0, index: u32) -> Result<()> {
         .free_count
         .checked_add(1)
         .ok_or(ClobError::BookInvariantViolated)?;
+    // The order that just left may have been the one holding the expiry hint.
+    // Only then is a walk owed — an ordinary removal costs one comparison.
+    book.repair_expiry_hint_for(&node)?;
     Ok(())
 }

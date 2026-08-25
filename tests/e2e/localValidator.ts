@@ -161,19 +161,17 @@ async function pollUntil<T>(
 	}
 }
 
-// --- CLOB book byte offsets. These are a hand copy of the `CLOB_*_OFFSET`
-// constants in `programs/velocity/src/state/prop_amm.rs`, which are the
-// authoritative set (pinned there against the CLOB's own litesvm tests).
-// Nothing checks the copy, so re-read them whenever the CLOB header changes:
-// a stale arena offset reads live orders as zeros, which looks like an order
-// that never rested rather than like a decoding bug.
-const CLOB_BEST_BID_OFFSET = 112;
-const CLOB_BEST_ASK_OFFSET = 116;
-const CLOB_BID_COUNT_OFFSET = 136;
-const CLOB_ASK_COUNT_OFFSET = 140;
-const CLOB_ORDERS_OFFSET = 8520;
+// --- Reading the book. Through its own instructions, never through its
+// bytes: the market account's layout is the CLOB's, and a hand copy of it
+// here went stale the moment the book grew a field — which reads live orders
+// as zeros, and looks like an order that never rested rather than like a
+// decoding bug.
+//
+// `quote_l3_v0` reports one row per resting order, best price first, so the
+// counts and the tops of book both fall out of it. Simulated, like any
+// read-only leg: nothing lands and the book is untouched.
+
 const CLOB_NODE_LEN = 96;
-const CLOB_NIL = 0xffffffff;
 
 type ClobView = {
 	bidCount: number;
@@ -182,19 +180,8 @@ type ClobView = {
 	bestAskPrice?: BN;
 };
 
-function readClobView(data: Buffer): ClobView {
-	const nodePrice = (index: number): BN | undefined => {
-		if (index === CLOB_NIL) return undefined;
-		const off = CLOB_ORDERS_OFFSET + index * CLOB_NODE_LEN;
-		return new BN(data.subarray(off + 32, off + 40), 'le');
-	};
-	return {
-		bidCount: data.readUInt32LE(CLOB_BID_COUNT_OFFSET),
-		askCount: data.readUInt32LE(CLOB_ASK_COUNT_OFFSET),
-		bestBidPrice: nodePrice(data.readUInt32LE(CLOB_BEST_BID_OFFSET)),
-		bestAskPrice: nodePrice(data.readUInt32LE(CLOB_BEST_ASK_OFFSET)),
-	};
-}
+/** One `quote_l3_v0` row: price, size, order id, owner. */
+type ClobRow = { price: BN; size: BN; orderId: BN };
 
 /** The CLOB program's anchor wire (it has no TS client). */
 const clobIx = {
@@ -224,9 +211,30 @@ const clobIx = {
 			]),
 		});
 	},
-	/** `[disc][ClobHeaderV0][len u32][pad to 8]` then the 96-byte node arena. */
+	/** `quote_l3_v0`: one row per resting order on a side, best price first. */
+	quoteL3(book: PublicKey, direction: 0 | 1, maxRows: number) {
+		return new TransactionInstruction({
+			programId: CLOB_ID,
+			// Writable for the response tail the rows stream into.
+			keys: [rw(book)],
+			data: Buffer.concat([
+				ixDiscriminator('quote_l3_v0'),
+				Buffer.from([direction]), // 0 = long (consumes asks), 1 = short
+				u64(0), // size: zero describes the side up to max_rows
+				u16(maxRows),
+			]),
+		});
+	},
+	/**
+	 * Bytes for a market account holding at least `capacity` orders.
+	 *
+	 * Deliberately generous rather than exact: `initialize_market_v0` derives
+	 * the arena's capacity from the account's length, so a header that grows
+	 * costs this book a few slots instead of silently sizing it wrong.
+	 * Restating the header's width here is what used to go stale.
+	 */
 	space(capacity: number): number {
-		return Math.ceil((8 + 8352 + 4) / 8) * 8 + capacity * CLOB_NODE_LEN;
+		return 32 * 1024 + capacity * CLOB_NODE_LEN;
 	},
 };
 
@@ -351,12 +359,16 @@ const relayIx = {
 	registerWatch(
 		payer: PublicKey,
 		target: PublicKey,
-		watch: PublicKey
+		watch: PublicKey,
+		blockOffset: number
 	): TransactionInstruction {
 		return new TransactionInstruction({
 			programId: RELAY_ID,
 			keys: [signerRo(payer), ro(target), rw(watch)],
-			data: Buffer.concat([ixDiscriminator('register_watch_v0'), u32(8)]),
+			data: Buffer.concat([
+				ixDiscriminator('register_watch_v0'),
+				u32(blockOffset),
+			]),
 		});
 	},
 };
@@ -770,8 +782,19 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		conditions = getClobCrankConditionsPublicKey(VELOCITY_ID, 0);
 		await send([
 			admin.program.instruction.updatePerpMarketClobQuoter(
-				new BN(10_000), // keeper_payment_lamports
-				new BN(1500), // expire_fallback_slots
+				// Cost units each crank requests. The lamport payments are derived
+				// from these and State.transactionFeeRails, which `initialize` sets
+				// to a flat fee per signature — so on this harness every crank pays
+				// that flat fee whatever it asks for.
+				{
+					removal: 30_000,
+					cross: 180_000,
+					takerOriginCross: 190_000,
+					trigger: 40_000,
+					liquidation: 120_000,
+					forceCancel: 60_000,
+				},
+				new BN(1500), // cross fallback poll interval
 				// min_cross_surplus: 0 keeps the bare strictly-profitable rule,
 				// which is what the cross-match scenario below asserts against.
 				new BN(0),
@@ -782,6 +805,8 @@ describe('e2e localnet: programs + publisher + redis', function () {
 						perpMarket,
 						quoter: clobEntry,
 						clobMarket: clobBook.publicKey,
+						clobProgram: CLOB_ID,
+						quoterSigner,
 						crankConditions: conditions,
 						rent: SYSVAR_RENT_PUBKEY,
 						systemProgram: SystemProgram.programId,
@@ -910,7 +935,6 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					clobMarket: clobBook.publicKey,
 					clobProgram: CLOB_ID,
 					quoterSigner,
-					crankConditions: conditions,
 					// No fast activation here: absent, encoded as the
 					// program id (anchor's `None`).
 					instructionsSysvar: VELOCITY_ID,
@@ -921,17 +945,84 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		await client.sendTransaction(new Transaction().add(ix));
 	};
 
-	const readClob = async (): Promise<ClobView> => {
-		const info = await connection.getAccountInfo(clobBook.publicKey);
-		return readClobView(info!.data);
+	/**
+	 * The orders resting on one side, as the book itself reports them.
+	 *
+	 * Simulated: `quote_l3_v0` streams its rows into the market's own response
+	 * tail and returns a pointer to them, so the answer comes out of the
+	 * simulated post-state and nothing lands.
+	 */
+	const readClobSide = async (direction: 0 | 1): Promise<ClobRow[]> => {
+		const message = new TransactionMessage({
+			payerKey: payer.publicKey,
+			recentBlockhash: (await connection.getLatestBlockhash()).blockhash,
+			instructions: [clobIx.quoteL3(clobBook.publicKey, direction, 128)],
+		}).compileToV0Message();
+		const sim = await connection.simulateTransaction(
+			new VersionedTransaction(message),
+			{
+				sigVerify: false,
+				accounts: {
+					encoding: 'base64',
+					addresses: [clobBook.publicKey.toBase58()],
+				},
+			}
+		);
+		assert.isNull(
+			sim.value.err,
+			`quote_l3_v0 simulation failed: ${JSON.stringify(
+				sim.value.err
+			)} ${JSON.stringify(sim.value.logs?.slice(-4))}`
+		);
+		// `ResponsePointerV0 { offset: u32, len: u32 }` in return data; the
+		// rows themselves in the account it points into.
+		const pointer = Buffer.from(sim.value.returnData!.data[0], 'base64');
+		const offset = pointer.readUInt32LE(0);
+		const length = pointer.readUInt32LE(4);
+		const account = Buffer.from(
+			sim.value.accounts![0]!.data[0] as string,
+			'base64'
+		);
+		const region = account.subarray(offset, offset + length);
+		// `L3ResponseV0`: a row sequence, then the `more` flag. The sequence
+		// prefix is `quoter_spec::LEN_BYTES` — eight, not four, so the
+		// records that follow stay 8-byte aligned and both programs can cast
+		// them in place.
+		const LEN_BYTES = 8;
+		const ROW = 64; // L3RowV0: price, size, order_id, user(34), flags, pad
+		const rows = region.readUInt32LE(0);
+		return Array.from({ length: rows }, (_, i) => {
+			const at = LEN_BYTES + i * ROW;
+			return {
+				price: new BN(region.subarray(at, at + 8), 'le'),
+				size: new BN(region.subarray(at + 8, at + 16), 'le'),
+				orderId: new BN(region.subarray(at + 16, at + 24), 'le'),
+			};
+		});
 	};
 
-	const registerWatch = async (target: PublicKey) => {
+	const readClob = async (): Promise<ClobView> => {
+		// A buyer consumes the asks, a seller the bids.
+		const [asks, bids] = [await readClobSide(0), await readClobSide(1)];
+		return {
+			bidCount: bids.length,
+			askCount: asks.length,
+			bestBidPrice: bids[0]?.price,
+			bestAskPrice: asks[0]?.price,
+		};
+	};
+
+	const registerWatch = async (target: PublicKey, blockOffset = 8) => {
 		const watch = Keypair.generate();
 		await send(
 			[
 				await createAccount(watch.publicKey, WATCH_V0_LEN, RELAY_ID),
-				relayIx.registerWatch(payer.publicKey, target, watch.publicKey),
+				relayIx.registerWatch(
+					payer.publicKey,
+					target,
+					watch.publicKey,
+					blockOffset
+				),
 			],
 			[watch]
 		);
@@ -949,9 +1040,14 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				writeKeypair('turner-keeper', turnerKeeper),
 				'--program-id',
 				RELAY_ID.toBase58(),
-				// Scoped to velocity's watches, as an operator would run it.
+				// Scoped as an operator would run it — and to BOTH programs
+				// that host this market's conditions. A condition's wake lives
+				// on the account whose state it describes, so the book holds
+				// the four that describe itself, and its account is owned by
+				// the CLOB. A turner allowed only velocity filters those
+				// watches out at the registry query and never cranks them.
 				'--target-program',
-				VELOCITY_ID.toBase58(),
+				`${VELOCITY_ID.toBase58()},${CLOB_ID.toBase58()}`,
 				// Untrusted mode: velocity gets no trust flag, so relay
 				// insists on a non-signing payout account and refuses any
 				// executor that names a signer.
@@ -1134,12 +1230,16 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		send([
 			admin.program.instruction.syncUserConditions(
 				{
-					syncPaymentLamports: new BN(20_000), // from its own lamports
+					// Cost units the staged self-sync requests; the lamport fee is
+					// derived on chain from State.transactionFeeRails and paid from
+					// this account's own lamports.
+					syncCostUnits: 20_000,
 					syncFallbackSlots: new BN(3000), // coarse fallback poll
 				},
 				{
 					accounts: {
 						payer: payer.publicKey,
+						state: statePdaCache,
 						user,
 						userConditions: getUserConditionsPublicKey(VELOCITY_ID, user),
 						rent: SYSVAR_RENT_PUBKEY,
@@ -1350,11 +1450,28 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			return doc ?? undefined;
 		});
 
-		// Relay: register the market's crank conditions (evict / expire /
-		// cross / activation all live in that one block) and start a
+		// Relay: register both of the market's condition blocks and start a
 		// turner. Everything after this point is cranked by relay unless a
 		// test explicitly submits.
+		//
+		// Two watches, because a condition's wake lives on the account whose
+		// state it describes. Velocity's conditions account holds the cross
+		// fallback poll, its block the first field at offset 8. The book holds
+		// the four that describe itself — an expired order, a side at its
+		// eviction threshold, a crossed book, an activation coming due — at
+		// the offset the attach recorded when it registered velocity's
+		// resolvers there. Watch only the first and none of the book's own
+		// cranks ever fire.
+		const conditionsAccount = await connection.getAccountInfo(conditions);
+		const bookBlockOffset = (
+			admin.program.coder.accounts.decode(
+				'clobCrankConditionsV0',
+				conditionsAccount!.data
+			) as { clobBlockOffset: number }
+		).clobBlockOffset;
+		assert.isAbove(bookBlockOffset, 0, 'the attach recorded the book block');
 		await registerWatch(conditions);
+		await registerWatch(clobBook.publicKey, bookBlockOffset);
 		startTurner();
 
 		// Attested flow: register swift's co-signing key as the on-chain
@@ -1844,7 +1961,14 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		await clobMaker.fetchAccounts();
 		const makerSizeBefore =
 			clobMaker.getUser().getPerpPosition(0)?.baseAssetAmount ?? new BN(0);
-		const now = Math.floor(Date.now() / 1000);
+		// Chain time, not wall clock: `max_ts` is compared against the
+		// validator's `Clock::unix_timestamp`, and a local validator's clock
+		// tracks its own slot production rather than the host's. Reading the
+		// wrong one arms an expiry that never comes due.
+		const chainNow =
+			(await connection.getBlockTime(await connection.getSlot('confirmed'))) ??
+			Math.floor(Date.now() / 1000);
+		const now = chainNow;
 		await placeClobOrder(
 			clobMaker,
 			clobMakerKp,
@@ -1855,13 +1979,26 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		);
 		const armed = await readClob();
 		assert.equal(armed.askCount, before.askCount + 1);
+		await clobMaker.fetchAccounts();
+		const openAsksArmed =
+			clobMaker.getUser().getPerpPosition(0)?.openAsks ?? new BN(0);
 
 		// Nobody in this test submits anything from here on.
+		//
+		// Waiting on the *maker's* reservation rather than on the book's
+		// depth: an expired order stops being matchable the moment it comes
+		// due, so it leaves a depth reading before anything reclaims it. What
+		// the crank does is unwind the reservation, and that only moves when
+		// the crank lands.
 		await pollUntil('relay to reclaim the expired order', 120_000, async () => {
-			const book = await readClob();
-			return book.askCount === before.askCount ? true : undefined;
+			await clobMaker.fetchAccounts();
+			const openAsks =
+				clobMaker.getUser().getPerpPosition(0)?.openAsks ?? new BN(0);
+			// An ask's reservation is held negative, so an unwind moves it
+			// toward zero. Compare what it reserves, not the signed value.
+			return openAsks.abs().lt(openAsksArmed.abs()) ? true : undefined;
 		});
-		// Reclaimed, not filled: a cross would also drop the count.
+		// Reclaimed, not filled: a fill would also unwind the reservation.
 		await clobMaker.fetchAccounts();
 		assert.isTrue(
 			(clobMaker.getUser().getPerpPosition(0)?.baseAssetAmount ?? new BN(0)).eq(
@@ -2314,7 +2451,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			'the maker the fill could not carry is not filled'
 		);
 		const book = await readClob();
-		assert.isAtLeast(book.askCount, 1, 'its ask is still resting');
+		assert.isAtLeast(book.askCount, 1, 'its ask is still on the book');
 
 		// The maker it *could* carry did fill, which is what says the walk
 		// reached the book and got past the first order — so stopping at the

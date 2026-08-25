@@ -707,9 +707,10 @@ dependencies = [
  "anchor-lang-v2",
  "anchor-v2-testing",
  "bytemuck",
- "clob-spec",
+ "clob-wire",
  "litesvm",
  "quoter-spec",
+ "relay-spec",
  "solana-account",
  "solana-clock",
  "solana-pubkey 3.0.0",
@@ -718,13 +719,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "clob-spec"
+name = "clob-wire"
 version = "0.1.0"
 dependencies = [
- "bytemuck",
  "quoter-spec",
- "solana-address 2.6.1",
- "static_assertions",
+ "wincode",
 ]
 
 [[package]]
@@ -2019,6 +2018,14 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "relay-spec"
+version = "0.1.0"
+source = "git+https://github.com/velocity-exchange/relay?rev=88419fd1de3ee189e44ef591d9e8f5c558d58a9d#88419fd1de3ee189e44ef591d9e8f5c558d58a9d"
+dependencies = [
+ "bytemuck",
+]
 
 [[package]]
 name = "rfc6979"

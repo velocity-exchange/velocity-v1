@@ -5,16 +5,13 @@
 
 use {
     super::crank_common::{
-        crank_clob_removal, derive_user_pdas, removal_call, validate_linkage, ClobRemoval,
+        clob_reader, crank_clob_removal, derive_user_pdas, removal_call, ClobRemoval,
         CrankClobOrderRemoval, ResolveClobCrank,
     },
     crate::{
-        error::ErrorCode,
-        instructions::relay_harness::resolve_into,
+        instructions::relay_harness::StagedCall,
         state::prop_amm::{
-            read_clob_node, read_clob_u32, ClobEvictWorstArgsV0, ClobSide, CLOB_ASK_COUNT_OFFSET,
-            CLOB_BID_COUNT_OFFSET, CLOB_EVICT_THRESHOLD_OFFSET, CLOB_NIL, CLOB_WORST_ASK_OFFSET,
-            CLOB_WORST_BID_OFFSET,
+            ClobEvictWorstArgsV0, ClobNextRemovalArgsV0, ClobRemovalKindV0, ClobSide,
         },
     },
     anchor_lang::prelude::*,
@@ -32,43 +29,22 @@ pub fn handle_crank_clob_evict(
     )
 }
 
-pub fn handle_resolve_crank_clob_evict(ctx: Context<ResolveClobCrank>) -> Result<()> {
-    validate_linkage(&ctx)?;
-    resolve_into(&ctx.accounts.scratch, || {
-        let (side, maker) = {
-            let data = ctx.accounts.clob_market.try_borrow_data()?;
-            let read = |offset: usize| {
-                read_clob_u32(&data, offset).ok_or_else(|| error!(ErrorCode::DefaultError))
-            };
-            let threshold = read(CLOB_EVICT_THRESHOLD_OFFSET)?;
-            let bid_count = read(CLOB_BID_COUNT_OFFSET)?;
-            let ask_count = read(CLOB_ASK_COUNT_OFFSET)?;
-            // The fuller side at/above the soft cap; the CLOB itself re-checks
-            // the threshold at execution.
-            let side = match (bid_count >= threshold, ask_count >= threshold) {
-                (true, true) if ask_count > bid_count => ClobSide::Ask,
-                (true, _) => ClobSide::Bid,
-                (_, true) => ClobSide::Ask,
-                _ => return Ok(None),
-            };
-            let tail_offset = match side {
-                ClobSide::Bid => CLOB_WORST_BID_OFFSET,
-                ClobSide::Ask => CLOB_WORST_ASK_OFFSET,
-            };
-            let tail = read(tail_offset)?;
-            if tail == CLOB_NIL {
-                return Ok(None);
-            }
-            let node =
-                read_clob_node(&data, tail).ok_or_else(|| error!(ErrorCode::DefaultError))?;
-            (side, derive_user_pdas(&node.user_ref()).0)
-        };
+/// The capacity slot's answer: the order the book would evict, if any.
+pub(super) fn stage_eviction(ctx: &Context<ResolveClobCrank>) -> Result<Option<StagedCall>> {
+    // The book picks the side and the order: the eviction threshold and
+    // which side to relieve first are its policy, not velocity's.
+    let found = clob_reader(ctx).next_removal(ClobNextRemovalArgsV0 {
+        kind: ClobRemovalKindV0::Evictable,
+    })?;
+    if !found.found() {
+        return Ok(None);
+    }
+    let maker = derive_user_pdas(&found.user).0;
 
-        let market_index = ctx.accounts.crank_conditions.load()?.market_index;
-        Ok(Some(
-            removal_call::<crate::instruction::CrankClobEvict>(&ctx, maker)?
-                .arg(market_index)?
-                .arg(side)?,
-        ))
-    })
+    let market_index = ctx.accounts.crank_conditions.load()?.market_index;
+    Ok(Some(
+        removal_call::<crate::instruction::CrankClobEvict>(ctx, maker)?
+            .arg(market_index)?
+            .arg(found.side)?,
+    ))
 }

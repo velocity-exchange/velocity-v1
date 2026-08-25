@@ -19,7 +19,7 @@
 
 use {
     super::{
-        crank_common::{next_matchable, validate_linkage, ResolveClobCrank, MAX_CROSS_MAKERS},
+        crank_common::{ResolveClobCrank, MAX_CROSS_MAKERS},
         crank_taker_origin_cross::stage_taker_origin_cross,
     },
     crate::{
@@ -28,7 +28,7 @@ use {
         instructions::{
             constraints::*,
             optional_accounts::{load_maps, AccountMaps},
-            relay_harness::resolve_into,
+            relay_harness::{resolve_into, StagedCall},
             router::{cpi_executor::CpiQuoterExecutor, quoted_route::QuotedEntry},
         },
         load, msg,
@@ -36,7 +36,7 @@ use {
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             pdas,
             perp_market_map::{get_writable_perp_market_set, MarketSet},
-            prop_amm::{ClobNodeView, PriceLevel, QuoterType, QuoterV0},
+            prop_amm::{PriceLevel, QuoterType, QuoterV0},
             state::State,
             user::{User, UserStats},
             user_map::load_user_maps,
@@ -215,16 +215,17 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         .iter()
         .filter(|quoted| quoted.quoter_type == QuoterType::Clob)
     {
-        let book = crate::state::prop_amm::find_account(&accounts, &clob.response_account)
-            .ok_or_else(|| error!(ErrorCode::DefaultError))?;
-        let data = book.try_borrow_data()?;
+        let find = |key: &Pubkey| {
+            crate::state::prop_amm::find_account(&accounts, key)
+                .ok_or_else(|| error!(ErrorCode::DefaultError))
+        };
+        let reader = crate::state::prop_amm::ClobReader {
+            market: find(&clob.response_account)?,
+            program: find(&clob.entry.load()?.program_id)?,
+        };
         validate!(
-            super::crank_taker_origin_cross::find_taker_origin_cross(
-                &data,
-                clock.slot,
-                clock.unix_timestamp
-            )?
-            .is_none(),
+            super::crank_taker_origin_cross::find_taker_origin_cross(&reader.next_cross()?)
+                .is_none(),
             ErrorCode::CrossedTakerRemainderPending,
             "a crossed taker remainder must be resolved by crank_taker_origin_cross"
         )?;
@@ -248,27 +249,12 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         ctx.accounts.crank_conditions.load()?.min_cross_surplus,
     )?;
 
-    // Repair the wake hints from the post-match book when a leg was the
-    // CLOB (a matched activation is exactly when the activation hint fires;
-    // this is what sends it forward to the next pending slot).
-    let clob_book = quoted
-        .iter()
-        .find(|quoted| quoted.quoter_type == QuoterType::Clob)
-        .map(|quoted| quoted.response_account);
-    let payment = {
-        let mut conditions = crate::load_mut!(ctx.accounts.crank_conditions)?;
-        if let Some(book_key) = clob_book {
-            if let Some(book) = crate::state::prop_amm::find_account(&accounts, &book_key) {
-                let (min_expiry, min_activation) =
-                    crate::state::prop_amm::clob_hint_scan(&book.try_borrow_data()?, clock.slot);
-                conditions.repair_expiry(min_expiry)?;
-                conditions.repair_activation(min_activation)?;
-            }
-        }
-        // The keeper's fee, so relay's assert_paid_v0 has a balance to
-        // measure.
-        conditions.keeper_payment_lamports
-    };
+    // The keeper's fee, so relay's assert_paid_v0 has a balance to measure.
+    let payment = u64::from(
+        crate::load_mut!(ctx.accounts.crank_conditions)?
+            .crank_payments
+            .cross,
+    );
     let conditions_info = ctx.accounts.crank_conditions.to_account_info();
     let rent_minimum = Rent::get()?.minimum_balance(conditions_info.data_len());
     ClobCrankConditionsV0::pay_keeper_lamports(
@@ -305,74 +291,69 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
 /// the economics: the improvement between the two prices belongs to the order
 /// that came to trade, so it is handed over before the protocol middles the
 /// same crossed book as arbitrage.
-pub fn handle_resolve_crank_cross_match(ctx: Context<ResolveClobCrank>) -> Result<()> {
-    validate_linkage(&ctx)?;
-    resolve_into(&ctx.accounts.scratch, || {
-        let clock = Clock::get()?;
-        if let Some(call) = stage_taker_origin_cross(&ctx, &clock)? {
-            return Ok(Some(call));
-        }
-        let cross = {
-            let data = ctx.accounts.clob_market.try_borrow_data()?;
-            find_clob_cross(&data, clock.slot, clock.unix_timestamp)?
-        };
-        if cross.size == 0 {
-            return Ok(None);
-        }
+/// The cross and activation slots' answer: a crossed taker remainder if
+/// there is one, otherwise a maker-against-maker cross worth taking.
+pub(super) fn stage_cross(ctx: &Context<ResolveClobCrank>) -> Result<Option<StagedCall>> {
+    if let Some(call) = stage_taker_origin_cross(ctx)? {
+        return Ok(Some(call));
+    }
+    let cross = find_clob_cross(ctx)?;
+    if cross.size == 0 {
+        return Ok(None);
+    }
 
-        // Conservative estimate: tier-0 taker fee on both legs. The executor
-        // measures the real thing; this only avoids staging obvious losers.
-        let (fee_numerator, fee_denominator) = {
-            let state = ctx.accounts.state.load()?;
-            let tier = state.perp_fee_structure.fee_tiers[0];
-            (
-                tier.fee_numerator as u128,
-                (tier.fee_denominator as u128).max(1),
-            )
-        };
-        let fees = (cross.buy_quote * fee_numerator).div_ceil(fee_denominator)
-            + (cross.sell_quote * fee_numerator).div_ceil(fee_denominator);
-        if cross.sell_quote <= cross.buy_quote.saturating_add(fees) {
-            return Ok(None);
-        }
+    // Conservative estimate: tier-0 taker fee on both legs. The executor
+    // measures the real thing; this only avoids staging obvious losers.
+    let (fee_numerator, fee_denominator) = {
+        let state = ctx.accounts.state.load()?;
+        let tier = state.perp_fee_structure.fee_tiers[0];
+        (
+            tier.fee_numerator as u128,
+            (tier.fee_denominator as u128).max(1),
+        )
+    };
+    let fees = (cross.buy_quote * fee_numerator).div_ceil(fee_denominator)
+        + (cross.sell_quote * fee_numerator).div_ceil(fee_denominator);
+    if cross.sell_quote <= cross.buy_quote.saturating_add(fees) {
+        return Ok(None);
+    }
 
-        let (market_index, oracle, quote_spot_market_index) = {
-            let conditions = ctx.accounts.crank_conditions.load()?;
-            (
-                conditions.market_index,
-                conditions.oracle,
-                conditions.quote_spot_market_index,
-            )
-        };
-        // The CLOB's execute leg is signed by the quoter CPI signer, not the
-        // vault authority — stage the one the executor will actually sign as.
-        let (quoter_signer, _) = crate::signer::find_quoter_signer();
-        let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
+    let (market_index, oracle, quote_spot_market_index) = {
+        let conditions = ctx.accounts.crank_conditions.load()?;
+        (
+            conditions.market_index,
+            conditions.oracle,
+            conditions.quote_spot_market_index,
+        )
+    };
+    // The CLOB's execute leg is signed by the quoter CPI signer, not the
+    // vault authority — stage the one the executor will actually sign as.
+    let (quoter_signer, _) = crate::signer::find_quoter_signer();
+    let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
 
-        // Named accounts through the executor's own client struct (compile-time
-        // shape check), then the remaining sections: maps, maker
-        // `(User, UserStats)` pairs, the quoter section. Both legs are the CLOB:
-        // entry index 0.
-        let call = crate::staged_call!(CrankCrossMatch {
-            state: ctx.accounts.state.key(),
-            authority: pdas::keeper_placeholder(),
-            taker: protocol_user,
-            taker_stats: protocol_user_stats,
-            crank_conditions: ctx.accounts.crank_conditions.key(),
-        })
-        .map_section(oracle, quote_spot_market_index, market_index)
-        .maker_refs(cross.makers.iter().copied());
-        Ok(Some(
-            call.account(ctx.accounts.quoter.key(), false)
-                .account(ctx.accounts.clob_market.key(), true)
-                .account(quoter_signer, false)
-                .account(ctx.accounts.quoter.load()?.program_id, false)
-                .arg(market_index)?
-                .arg(cross.size)?
-                .arg(0u8)? // buy leg: the CLOB entry
-                .arg(0u8)?, // sell leg: the CLOB entry
-        ))
+    // Named accounts through the executor's own client struct (compile-time
+    // shape check), then the remaining sections: maps, maker
+    // `(User, UserStats)` pairs, the quoter section. Both legs are the CLOB:
+    // entry index 0.
+    let call = crate::staged_call!(CrankCrossMatch {
+        state: ctx.accounts.state.key(),
+        authority: pdas::keeper_placeholder(),
+        taker: protocol_user,
+        taker_stats: protocol_user_stats,
+        crank_conditions: ctx.accounts.crank_conditions.key(),
     })
+    .map_section(oracle, quote_spot_market_index, market_index)
+    .maker_refs(cross.makers.iter().copied());
+    Ok(Some(
+        call.account(ctx.accounts.quoter.key(), false)
+            .account(ctx.accounts.clob_market.key(), true)
+            .account(quoter_signer, false)
+            .account(ctx.accounts.quoter.load()?.program_id, false)
+            .arg(market_index)?
+            .arg(cross.size)?
+            .arg(0u8)? // buy leg: the CLOB entry
+            .arg(0u8)?, // sell leg: the CLOB entry
+    ))
 }
 
 /// The crossing prefix of the book: total matchable size, the gross quote
@@ -384,40 +365,76 @@ struct ClobCross {
     makers: Vec<crate::state::prop_amm::ClobUserRefV0>,
 }
 
-/// Advance to the next node a cross leg may consume: a taker-origin order is
-/// never one, and neither its base nor its owner belongs in a staged cross.
+/// How deep either side of the crossing prefix is read.
 ///
-/// Every taker-origin order this walk reaches is crossed, since the walk only
-/// visits the prefix where the two sides cross, and admitting one is wrong in
-/// two separate ways. Usually the book withholds it from `execute_v0`, so a leg
-/// sized to include its base comes back short, the two legs imbalance, and the
-/// ordinary cross resting in *front* of the remainder cannot clear either for as
-/// long as it is there. And admitting it also stages its owner's
-/// `(User, UserStats)` pair, which is what would let the book hand the remainder
-/// over at its own resting price: once the first leg has consumed the whole
-/// opposite side nothing crosses the remainder any more, so the gate protecting
-/// it stops firing, and the improvement lands in the protocol `User` instead of
-/// the taker's. Leaving its owner unloaded means the book passes over the order
-/// as unsettleable even then.
+/// The walk ends on [`MAX_CROSS_MAKERS`] distinct makers anyway, so this only
+/// has to be past the point where a crossing prefix could still be one
+/// maker's ladder. A prefix longer than this stages a smaller cross, which the
+/// next wake continues.
+const CROSS_ROWS_PER_SIDE: u16 = 32;
+
+/// One side of a book, best price first, through the same `quote_l3_v0` every
+/// source answers on.
 ///
-/// A crossed remainder is [`stage_taker_origin_cross`]'s to resolve, at the
-/// counterparty's price. Whatever rests behind it is an ordinary cross and stays
-/// in.
-fn next_crossable(data: &[u8], cursor: u32, slot: u64, now: i64) -> Option<(u32, ClobNodeView)> {
-    let mut cursor = cursor;
-    loop {
-        let (index, node) = next_matchable(data, cursor, slot, now)?;
-        if !node.is_taker_origin() {
-            return Some((index, node));
-        }
-        cursor = node.next;
-    }
+/// The book has already applied its own rules about which of its orders are
+/// matchable right now, so a caller never reads the market account and never
+/// re-derives an activation slot or an expiry.
+fn clob_rows<'info>(
+    quoter: &QuoterV0,
+    market_index: u16,
+    direction: crate::state::prop_amm::Direction,
+    quoter_signer: &Pubkey,
+    quoter_signer_nonce: u8,
+    accounts: &[AccountInfo<'info>],
+) -> Result<Vec<crate::state::prop_amm::L3RowV0>> {
+    let located = quoter.quote_l3(
+        market_index,
+        crate::state::prop_amm::L3ArgsV0 {
+            direction,
+            // Zero describes the side up to `max_rows`: a cross is found by
+            // comparing the two sides, so neither has a size to stop at until
+            // the other has been read.
+            size: 0,
+            max_rows: CROSS_ROWS_PER_SIDE,
+        },
+        quoter_signer,
+        quoter_signer_nonce,
+        accounts,
+    )?;
+    let Some(located) = located else {
+        return Ok(Vec::new());
+    };
+    let data = located.borrow()?;
+    Ok(located.l3_response(&data)?.rows.to_vec())
 }
 
-/// Two-pointer walk over the crossing prefix (bid price >= ask price),
-/// best-first on both sides — exactly the orders the executor's two legs
-/// will consume.
-fn find_clob_cross(data: &[u8], slot: u64, now: i64) -> Result<ClobCross> {
+/// The crossing prefix of a book against itself: total matchable size, the
+/// gross quote of each leg, and the (deduped, capped) makers it touches.
+///
+/// Two-pointer walk over the two sides, best-first — exactly the orders the
+/// executor's two legs will consume. Both sides come from the book's own
+/// `quote_l3_v0`, which has already applied its rules about which of its
+/// orders are matchable right now, so nothing here reads the market account.
+///
+/// Taker-origin rows are dropped rather than stopping the walk, and admitting
+/// one is wrong in two separate ways. Usually the book withholds it from
+/// `execute_v0`, so a leg sized to include its base comes back short, the two
+/// legs imbalance, and the ordinary cross resting in *front* of the remainder
+/// cannot clear either for as long as it is there. And admitting it also
+/// stages its owner's `(User, UserStats)` pair, which is what would let the
+/// book hand the remainder over at its own resting price: once the first leg
+/// has consumed the whole opposite side nothing crosses the remainder any
+/// more, so the gate protecting it stops firing, and the improvement lands in
+/// the protocol `User` instead of the taker's. Leaving its owner unloaded
+/// means the book passes over the order as unsettleable even then.
+///
+/// A crossed remainder is [`stage_taker_origin_cross`]'s to resolve, at the
+/// counterparty's price. Whatever rests behind it is an ordinary cross and
+/// stays in.
+fn cross_prefix(
+    bid_rows: &[crate::state::prop_amm::L3RowV0],
+    ask_rows: &[crate::state::prop_amm::L3RowV0],
+) -> ClobCross {
     let base_precision = crate::math::constants::BASE_PRECISION_U64 as u128;
     let mut cross = ClobCross {
         size: 0,
@@ -425,27 +442,19 @@ fn find_clob_cross(data: &[u8], slot: u64, now: i64) -> Result<ClobCross> {
         sell_quote: 0,
         makers: Vec::new(),
     };
-    let read = |offset: usize| {
-        crate::state::prop_amm::read_clob_u32(data, offset)
-            .ok_or_else(|| error!(ErrorCode::DefaultError))
+    let crossable = |rows: &[crate::state::prop_amm::L3RowV0]| -> Vec<_> {
+        rows.iter()
+            .copied()
+            .filter(|row| row.flags & crate::state::prop_amm::L3_ROW_FLAG_TAKER_ORIGIN == 0)
+            .collect()
     };
-    let mut bid = next_crossable(
-        data,
-        read(crate::state::prop_amm::CLOB_BEST_BID_OFFSET)?,
-        slot,
-        now,
-    );
-    let mut ask = next_crossable(
-        data,
-        read(crate::state::prop_amm::CLOB_BEST_ASK_OFFSET)?,
-        slot,
-        now,
-    );
-    let mut bid_remaining = bid.map(|(_, node)| node.base_asset_amount).unwrap_or(0);
-    let mut ask_remaining = ask.map(|(_, node)| node.base_asset_amount).unwrap_or(0);
+    let (bids, asks) = (crossable(bid_rows), crossable(ask_rows));
 
-    while let (Some((_, bid_node)), Some((_, ask_node))) = (bid, ask) {
-        if bid_node.price < ask_node.price {
+    let (mut bid_index, mut ask_index) = (0usize, 0usize);
+    let mut bid_remaining = bids.first().map(|row| row.size).unwrap_or(0);
+    let mut ask_remaining = asks.first().map(|row| row.size).unwrap_or(0);
+    while let (Some(bid_row), Some(ask_row)) = (bids.get(bid_index), asks.get(ask_index)) {
+        if bid_row.price < ask_row.price {
             break;
         }
         // Admit both makers before taking; stop at the cap instead of
@@ -461,9 +470,7 @@ fn find_clob_cross(data: &[u8], slot: u64, now: i64) -> Result<ClobCross> {
                 false
             }
         };
-        if !admit(bid_node.user_ref(), &mut cross.makers)
-            || !admit(ask_node.user_ref(), &mut cross.makers)
-        {
+        if !admit(bid_row.user, &mut cross.makers) || !admit(ask_row.user, &mut cross.makers) {
             break;
         }
 
@@ -471,23 +478,59 @@ fn find_clob_cross(data: &[u8], slot: u64, now: i64) -> Result<ClobCross> {
         cross.size = cross.size.saturating_add(take);
         cross.buy_quote = cross
             .buy_quote
-            .saturating_add(ask_node.price as u128 * take as u128 / base_precision);
+            .saturating_add(ask_row.price as u128 * take as u128 / base_precision);
         cross.sell_quote = cross
             .sell_quote
-            .saturating_add(bid_node.price as u128 * take as u128 / base_precision);
+            .saturating_add(bid_row.price as u128 * take as u128 / base_precision);
 
         bid_remaining -= take;
         ask_remaining -= take;
         if bid_remaining == 0 {
-            bid = next_crossable(data, bid_node.next, slot, now);
-            bid_remaining = bid.map(|(_, node)| node.base_asset_amount).unwrap_or(0);
+            bid_index += 1;
+            bid_remaining = bids.get(bid_index).map(|row| row.size).unwrap_or(0);
         }
         if ask_remaining == 0 {
-            ask = next_crossable(data, ask_node.next, slot, now);
-            ask_remaining = ask.map(|(_, node)| node.base_asset_amount).unwrap_or(0);
+            ask_index += 1;
+            ask_remaining = asks.get(ask_index).map(|row| row.size).unwrap_or(0);
         }
     }
-    Ok(cross)
+    cross
+}
+
+/// Quote both sides of the market's book and cross them against each other.
+fn find_clob_cross(ctx: &Context<ResolveClobCrank>) -> Result<ClobCross> {
+    let quoter = ctx.accounts.quoter.load()?;
+    if !quoter.is_active || !quoter.is_approved {
+        // A killed or unvetted book has no cross to stage; the conditions go
+        // quiet rather than erroring forever.
+        return Ok(cross_prefix(&[], &[]));
+    }
+    let market_index = ctx.accounts.crank_conditions.load()?.market_index;
+    let (quoter_signer, quoter_signer_nonce) = crate::signer::find_quoter_signer();
+    let accounts = [
+        ctx.accounts.clob_market.to_account_info(),
+        ctx.accounts.clob_program.to_account_info(),
+    ];
+    // One side at a time: both responses land in the same region of the book's
+    // response tail, so the first is copied out before the second CPI
+    // overwrites it. A buyer consumes the asks.
+    let asks = clob_rows(
+        &quoter,
+        market_index,
+        crate::state::prop_amm::Direction::Long,
+        &quoter_signer,
+        quoter_signer_nonce,
+        &accounts,
+    )?;
+    let bids = clob_rows(
+        &quoter,
+        market_index,
+        crate::state::prop_amm::Direction::Short,
+        &quoter_signer,
+        quoter_signer_nonce,
+        &accounts,
+    )?;
+    Ok(cross_prefix(&bids, &asks))
 }
 
 /// The generic quoter-cross resolver's accounts. The entry's registered
@@ -504,8 +547,10 @@ pub struct ResolveCrankCrossMatchQuoter<'info> {
     /// Read-only: resolvers stage into the shared scratch account.
     #[account(has_one = quoter)]
     pub cross_conditions: AccountLoader<'info, crate::state::quoter_cross::QuoterCrossConditionsV0>,
-    /// CHECK: locked to the CLOB book captured at attach.
-    #[account(address = cross_conditions.load()?.clob_market)]
+    /// CHECK: locked to the CLOB book captured at attach. Writable for the
+    /// book's response tail, which is where `quote_l3_v0` streams the resting
+    /// orders this resolver crosses the entry against.
+    #[account(mut, address = cross_conditions.load()?.clob_market)]
     pub clob_market: UncheckedAccount<'info>,
     pub state: AccountLoader<'info, State>,
     pub quoter: AccountLoader<'info, QuoterV0>,
@@ -513,6 +558,14 @@ pub struct ResolveCrankCrossMatchQuoter<'info> {
     /// lands on; its identity derives the staged `(User, UserStats)` pair.
     #[account(address = quoter.load()?.user)]
     pub user: AccountLoader<'info, User>,
+    /// The market's CLOB registry entry: the other leg is quoted through the
+    /// same registered interface as this one, so neither side is read out of
+    /// an account.
+    #[account(address = cross_conditions.load()?.clob_quoter)]
+    pub clob_quoter: AccountLoader<'info, QuoterV0>,
+    /// CHECK: locked to the program the CLOB entry was registered with.
+    #[account(address = cross_conditions.load()?.clob_program)]
+    pub clob_program: UncheckedAccount<'info>,
 }
 
 /// Discover a cross between a Custom quoter and the CLOB *generically*: CPI
@@ -525,7 +578,6 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
     ctx: Context<'info, ResolveCrankCrossMatchQuoter<'info>>,
 ) -> Result<()> {
     resolve_into(&ctx.accounts.scratch, || {
-        let clock = Clock::get()?;
         let quoter = ctx.accounts.quoter.load()?;
         if !quoter.is_active || !quoter.is_approved {
             // A killed or unvetted quoter has no discoverable work; the
@@ -559,6 +611,10 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
                         size: u64::MAX / 2,
                         users: &[],
                         taker: None,
+                        // A cross is found by comparing the two sides, so
+                        // neither side has a price to stop at until the other
+                        // has been read.
+                        limit_price: 0,
                     },
                     &quoter_signer,
                     quoter_signer_nonce,
@@ -579,24 +635,40 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             }
         };
 
-        // Both cross directions against the CLOB's bytes; keep the better one.
-        // buy leg = the entry whose ask is consumed.
-        let clob_data = ctx.accounts.clob_market.try_borrow_data()?;
+        // Both cross directions against the book, quoted the same way the
+        // entry was; keep the better one. buy leg = the entry whose ask is
+        // consumed.
+        //
+        // One side at a time: both responses land in the same region of the
+        // book's response tail, so the first is copied out before the second
+        // CPI overwrites it.
+        let clob_accounts = [
+            ctx.accounts.clob_market.to_account_info(),
+            ctx.accounts.clob_program.to_account_info(),
+        ];
+        let clob_book = |direction: crate::state::prop_amm::Direction| -> Result<Vec<_>> {
+            let clob_entry = ctx.accounts.clob_quoter.load()?;
+            clob_rows(
+                &clob_entry,
+                market_index,
+                direction,
+                &quoter_signer,
+                quoter_signer_nonce,
+                &clob_accounts,
+            )
+        };
+        // The entry's asks cross the book's bids, which is what a seller
+        // consumes.
         let a = find_quoter_clob_cross(
-            &clob_data,
+            &clob_book(crate::state::prop_amm::Direction::Short)?,
             &quoter_asks,
             true,
-            clock.slot,
-            clock.unix_timestamp,
         )?;
         let b = find_quoter_clob_cross(
-            &clob_data,
+            &clob_book(crate::state::prop_amm::Direction::Long)?,
             &quoter_bids,
             false,
-            clock.slot,
-            clock.unix_timestamp,
         )?;
-        drop(clob_data);
         // (cross, buy_index, sell_index): entry 0 = the CLOB, entry 1 = the quoter.
         let (cross, buy_index, sell_index) =
             if a.surplus(&ctx.accounts.state)? >= b.surplus(&ctx.accounts.state)? {
@@ -719,15 +791,13 @@ fn sanitize_levels(levels: Vec<PriceLevel>, ascending: bool) -> Vec<PriceLevel> 
     out
 }
 
-/// Walk the quoter's (sanitized) levels against the CLOB's matchable side:
+/// Walk the quoter's (sanitized) levels against the CLOB's resting rows:
 /// `quoter_is_ask_side` crosses quoter asks with CLOB bids (CLOB bid price
 /// >= quoter ask price), else CLOB asks with quoter bids.
 fn find_quoter_clob_cross(
-    clob_data: &[u8],
+    clob_rows: &[crate::state::prop_amm::L3RowV0],
     quoter_levels: &[PriceLevel],
     quoter_is_ask_side: bool,
-    slot: u64,
-    now: i64,
 ) -> Result<QuoterCross> {
     let base_precision = crate::math::constants::BASE_PRECISION_U64 as u128;
     let mut cross = QuoterCross {
@@ -736,40 +806,34 @@ fn find_quoter_clob_cross(
         sell_quote: 0,
         makers: Vec::new(),
     };
-    let head = if quoter_is_ask_side {
-        crate::state::prop_amm::CLOB_BEST_BID_OFFSET
-    } else {
-        crate::state::prop_amm::CLOB_BEST_ASK_OFFSET
-    };
-    let cursor = crate::state::prop_amm::read_clob_u32(clob_data, head)
-        .ok_or_else(|| error!(ErrorCode::DefaultError))?;
-    let mut clob = next_matchable(clob_data, cursor, slot, now);
-    let mut clob_remaining = clob.map(|(_, node)| node.base_asset_amount).unwrap_or(0);
+    let mut rows = clob_rows.iter();
+    let mut row = rows.next();
+    let mut clob_remaining = row.map(|row| row.size).unwrap_or(0);
     let mut levels = quoter_levels.iter();
     let mut level = levels.next();
     let mut level_remaining = level.map(|l| l.size).unwrap_or(0);
 
-    while let (Some((_, node)), Some(l)) = (clob, level) {
+    while let (Some(r), Some(l)) = (row, level) {
         let crossed = if quoter_is_ask_side {
-            node.price >= l.price
+            r.price >= l.price
         } else {
-            l.price >= node.price
+            l.price >= r.price
         };
         if !crossed {
             break;
         }
         // Reserve one maker slot for the quoter's user (staged first).
-        if !cross.makers.contains(&node.user_ref()) {
+        if !cross.makers.contains(&r.user) {
             if cross.makers.len() + 1 >= MAX_CROSS_MAKERS {
                 break;
             }
-            cross.makers.push(node.user_ref());
+            cross.makers.push(r.user);
         }
         let take = clob_remaining.min(level_remaining);
         let (ask_price, bid_price) = if quoter_is_ask_side {
-            (l.price, node.price)
+            (l.price, r.price)
         } else {
-            (node.price, l.price)
+            (r.price, l.price)
         };
         cross.size = cross.size.saturating_add(take);
         cross.buy_quote = cross
@@ -781,8 +845,8 @@ fn find_quoter_clob_cross(
         clob_remaining -= take;
         level_remaining -= take;
         if clob_remaining == 0 {
-            clob = next_matchable(clob_data, node.next, slot, now);
-            clob_remaining = clob.map(|(_, n)| n.base_asset_amount).unwrap_or(0);
+            row = rows.next();
+            clob_remaining = row.map(|row| row.size).unwrap_or(0);
         }
         if level_remaining == 0 {
             level = levels.next();

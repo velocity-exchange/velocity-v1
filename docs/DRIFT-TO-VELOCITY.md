@@ -242,6 +242,27 @@ Jupiter Swap API v2 opt-in (jupiter-swap-api-v2): the former v1-only
   `getUserFeeTier` no longer applies a stake-based discount. New `delegatePermissions: number`
   field (#45) — set/cleared by `update_user_allow_delegate_transfer`, gates whether a delegate
   may call `transfer_deposit_by_delegate`.
+- **The SDK sizes the compute limit by simulating, and caps loaded-accounts data size.**
+  `VelocityClient`'s default `txParams` now sets `useSimulatedComputeUnits: true`, so every
+  transaction it builds asks for what the simulation burned rather than a flat 600,000.
+  `txParams.computeUnits` (still 600,000) became the ceiling that clamps the simulated figure
+  and the fallback when simulation fails, so the worst case is what the static limit gave.
+  This costs one extra RPC round trip per transaction; pass
+  `useSimulatedComputeUnits: false` to opt out. `BaseTxParams` also gained
+  `loadedAccountsDataSize`, defaulted to `LOADED_ACCOUNTS_DATA_SIZE_DEFAULT` (12 MiB) and
+  emitted as a `SetLoadedAccountsDataSizeLimit` instruction; 0 omits it and takes the
+  network's 64 MiB default. Both limits are billed on the figure a transaction *requests*, so
+  a transaction that asks for nothing in particular pays for room it never uses. A transaction
+  that genuinely loads more than the default must raise it — the velocity program and its
+  program data count toward the limit, because the transaction names the program. The same
+  default applies in `velocity-rs`: `TransactionBuilder::build` adds the limit when the caller
+  set none (`constants::LOADED_ACCOUNTS_DATA_SIZE_DEFAULT`, override with
+  `with_loaded_accounts_data_size`). **The instruction is appended, not prepended**, and a client
+  adding its own must do the same: the runtime finds compute-budget instructions by program id
+  wherever they sit, but an instruction added at the front shifts every index behind it — and the
+  signed-message flows encode absolute instruction indices, because an ed25519 verify instruction
+  points at the instruction holding the message it verifies (`createMinimalEd25519VerifyIx` /
+  `new_ed25519_ix_ptr`). Only the tail is free.
 - **`SwapInfo.feeAmount` / `SwapInfo.feeMint` are now optional** (`jupiter/jupiterClient`).
   Jupiter's v2 API omits per-hop fees from `routePlan[].swapInfo`; the v1 path and
   `TitanClient` still populate both, so this only widens what a consumer must handle when
@@ -470,6 +491,23 @@ These public exports were **added** (or restored) relative to the fork point:
   a midpoint instance's `execute_authority` must be set to. Deliberately **not**
   `getVelocitySignerPublicKey` / `getSignerPublicKey`, which is the token authority on the spot and
   insurance-fund vaults; see §6 (feat/propamm).
+- `AdminClient.updateTransactionFeeRails(rails)` / `getUpdateTransactionFeeRailsIx(rails)`
+  and the `TransactionFeeRails` type — see §5. Admin CLI:
+  `velocity-admin fees set-transaction-rails <inclusionLamports> <signatureLamports>
+  <resourceFeeNum> <resourceFeeDenom>`.
+- `CrankPaymentsV0` / `CrankCostUnitsV0` types, and `math/crankFee`:
+  `requestedCostUnits`, `transactionCost`, `deriveCrankPayments`, plus the runtime's cost-model
+  constants (`SIGNATURE_COST_UNITS`, `WRITE_LOCK_COST_UNITS`,
+  `INSTRUCTION_DATA_BYTES_PER_COST_UNIT`, `LOADED_ACCOUNTS_PAGE_BYTES`,
+  `LOADED_ACCOUNTS_PAGE_COST_UNITS`). Mirrors `CrankPaymentsV0::derive`, so it predicts the
+  payments an attach will write.
+- `LOADED_ACCOUNTS_DATA_SIZE_DEFAULT` and `setLoadedAccountsDataSizeLimitIx(bytes)` /
+  `isSetLoadedAccountsDataSizeIx(ix)` (`util/computeUnits`) — see §4.4.
+- `getRouteDigest(route)` (`math/orders`) — the four bytes `Order.routeDigest` holds, mirroring
+  the program's `state::order_params::route_digest`: the route sorted, deduped and hashed, with an
+  empty route digesting to zero and a real one never doing so. A filler needs it, because
+  `fillPerpOrder` claims a route and the program rejects the fill unless the claim digests to what
+  the order carries.
 - Several types were added by the `types.ts` ↔ IDL reconciliation — see §4.7.
 
 ### 4.7 SDK type reconciliation (`types.ts` ↔ IDL)
@@ -745,6 +783,44 @@ accounts/events with the previous TS shapes should note:
   `InvalidQuoterResponse` (6376 / `0x18E8`), `QuoterOverfilled` (6377 / `0x18E9`),
   `QuoterFillOffQuote` (6378 / `0x18EA`), `QuoterSubjectNotPermitted` (6379 / `0x18EB`) and
   `TooManyQuoterWireUsers` (6380 / `0x18EC`). No account layout change.
+- **Quote price bound (feat/propamm)**: `QuoteArgsV0` gained a trailing `limit_price: u64`
+  — the worst price the caller will fill at, in `PRICE_PRECISION`, with **zero meaning no
+  bound**. The widest quote argument is therefore **8 bytes longer** than the widest execute
+  argument; a quoter that decodes `QuoteArgsV0` positionally must read the field or it will
+  read the next call's bytes at the wrong offset. `ExecuteArgsV0` is unchanged: execute is
+  handed a size already cut off the ladder, so its walk visits no level a bound would remove.
+  Honouring the bound is **advisory**, like the per-user caps: a ladder is walked best price
+  first, so a quoter may stop as soon as a level is worse than the limit, and the caller
+  discards those levels either way. What it saves is compute — a transaction is billed for
+  the limit it requests, so a level the fill would never take is paid for twice. Velocity
+  passes the taker's own limit price, resolved without the oracle: the oracle-relative
+  branches (an oracle-offset limit, an oracle-offset auction) pass zero rather than a guess,
+  so the bound is either exactly the fill's own or absent. Discovery callers
+  (`quote_router`, the cross-match resolvers) pass zero. No account layout change.
+- **Transaction fee rails (feat/propamm)**: `State` gained
+  `transaction_fee_rails: TransactionFeeRails` — `{ inclusion_lamports: u32,
+  signature_lamports: u32, resource_fee_numerator: u32, resource_fee_denominator: u32 }`, 16
+  bytes plus 2 bytes of alignment slack, both taken out of `padding` (206 → 188). **`State`
+  stays 1752 bytes.** `initialize` writes a flat 5,000 lamports per signature and nothing
+  else, which is what the network charges today; a zero denominator prices cost units at
+  nothing. New warm/cold-admin instruction `update_transaction_fee_rails(rails)` over
+  `AdminUpdateState`. Every relay crank payment is derived from it, so a change to the
+  network's fee model is one write here rather than a re-price of every market.
+- **Per-crank keeper payments (feat/propamm)**: `ClobCrankConditionsV0.keeper_payment_lamports`
+  (`u64`) became `crank_payments: CrankPaymentsV0` — six `u32` lamport figures, one per crank
+  (`removal`, `cross`, `taker_origin_cross`, `trigger`, `liquidation`, `force_cancel`), taken
+  from the padding tail (68 → 52). **The account stays 1576 bytes**, so no conditions PDA
+  needs a resize. A book removal and a two-legged cross differ by an order of magnitude in
+  what they request and the network charges a transaction for what it requests, so one figure
+  for the market either underpays the cross or overpays every removal. The figures are derived
+  at attach time from the rails above and the cost units an admin measured; they are stored
+  rather than recomputed so a crank costs no compute to price itself and a staged executor
+  cannot re-price its own work. `update_perp_market_clob_quoter`'s first argument changed from
+  `keeper_payment_lamports: u64` to `crank_cost_units: CrankCostUnitsV0` (the same six fields).
+  `SyncLiqConditionsArgs.sync_payment_lamports: u64` became `sync_cost_units: u32` for the same
+  reason, and `sync_liq_conditions` / `sync_user_conditions` gained a read-only `state` account
+  (position 2, after `payer`) to price it. `UserConditionsV0` is unchanged — it still stores the
+  derived lamport figure, which is what keeps a staged resync from re-pricing itself.
 - **Who a quoter may settle for (feat/propamm)**: a `Custom` entry is still held to the one
   account its registration consented for. A `Clob` entry may now name **any user the
   transaction already carries, except the taker**. Velocity used to read the book's arena and
@@ -816,7 +892,7 @@ accounts/events with the previous TS shapes should note:
 
 | PR        | Change                                                                                                                                                                                                                                                                                                                                                                       |
 | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| feat/propamm | **PropAMM order flow: perps fill through a router across the vAMM, resting DLOB orders and external quoter programs.** One branch, and the largest ABI change since the fork; §2, §3 and §5 carry the feature and layout detail and §4 the SDK surface. What an integrator has to absorb: **(1) Fills.** Every perp fill goes through one router pass. Each source publishes discrete price levels and the split walks priority tiers ascending — vAMM, then a book, then customs — pro rata within a tier. AMM JIT is gone along with `PerpFulfillmentMethod`, so off-chain fill prediction must model the vAMM as a level ladder rather than a curve swap (`splitAcrossQuoters` / `vammQuoteLevels` mirror the program). `place_and_take`, `place_and_make` and `fill_perp_order` gain `_v1` forms that rest a restable remainder on the market's book; the v0 instructions keep their pre-CLOB account lists. Signed-msg orders carry a `network` tag and an optional signed route that binds the filler. A quoter reports depth it could not reach and the router reserves it, so a worse price cannot take what a book was standing on — IOC is exempt. **(2) The book.** A standalone CLOB program holds plain limit orders, reached only through velocity adapters that gate margin and unwind aggregates; trigger orders migrate onto it and leave a shadow in `User.orders`; an activation-slot speed bump replaces JIT, and `jit-proxy` is deleted. Order identity is stored derivable (`authority`, `sub_account_id`), so a reader reaches every user-derived account from a node. **(3) Quoters.** `QuoterV0` registers an external quoter per (market, program, user) with its CPI surface, its admin-assigned tier and a reprice watch; entries are born unapproved, the maker keeps a kill switch, and velocity signs those CPIs as a dedicated `["quoter_signer"]` PDA rather than the vault authority. The wire is `quote_v0`, `execute_v0` and the optional `quote_l3_v0`; responses are validated rather than trusted, and a `Custom` entry may only move the account its registration consented for. **(4) Cranking.** Expiry, eviction, crossed books, crossed taker remainders, trigger arming and liquidations land with nobody submitting them, out of per-market and per-user relay condition accounts with a keeper-payment reservoir. **(5) Books off-chain.** `quote_router` answers what a taker of a direction and size can get, per source, in fill order, by simulating the real fill — including the orders behind each ladder and the users a fill has to carry — into `RouterQuoteBufferV0`, read out of post-simulation state. |
+| feat/propamm | **PropAMM order flow: perps fill through a router across the vAMM, resting DLOB orders and external quoter programs.** One branch, and the largest ABI change since the fork; §2, §3 and §5 carry the feature and layout detail and §4 the SDK surface. What an integrator has to absorb: **(1) Fills.** Every perp fill goes through one router pass. Each source publishes discrete price levels and the split walks priority tiers ascending — vAMM, then a book, then customs — pro rata within a tier. AMM JIT is gone along with `PerpFulfillmentMethod`, so off-chain fill prediction must model the vAMM as a level ladder rather than a curve swap (`splitAcrossQuoters` / `vammQuoteLevels` mirror the program). `place_and_take`, `place_and_make` and `fill_perp_order` gain `_v1` forms that rest a restable remainder on the market's book; the v0 instructions keep their pre-CLOB account lists. Signed-msg orders carry a `network` tag and an optional signed route that binds the filler. A quoter reports depth it could not reach and the router reserves it, so a worse price cannot take what a book was standing on — IOC is exempt. **(2) The book.** A standalone CLOB program holds plain limit orders, reached only through velocity adapters that gate margin and unwind aggregates; trigger orders migrate onto it and leave a shadow in `User.orders`; an activation-slot speed bump replaces JIT, and `jit-proxy` is deleted. Order identity is stored derivable (`authority`, `sub_account_id`), so a reader reaches every user-derived account from a node. Velocity never reads the book's arena: what to remove, what crosses and what a set of refs still names come back from the book's own read-only `next_removal_v0`, `next_cross_v0` and `orders_v0` (all three describing an order in one shape, `OrderViewV0`), and depth comes from `quote_v0` / `quote_l3_v0` — the same interface every other source answers on, so the CLOB gets no special reader. The book's rules an order has to satisfy come from `order_rules_v0`, and where a relay watch on its top of book registers is reported by `set_crank_conditions_v0`. Velocity therefore knows the CLOB's instruction wire and nothing about its account layout: the `clob-spec` crate is deleted, and the market's layout is the book's own. The book also hosts the relay conditions for its own state — an expired order, a side at its eviction threshold, a crossed book, an order reaching its activation slot — and keeps their wakes current as it places and removes; `set_crank_conditions_v0` is where velocity registers which of its resolvers answers each — one resolver, `resolve_clob_crank`, for all of them: relay hands a resolver the condition that fired, so `resolve_crank_clob_evict`, `resolve_crank_clob_remove_expired` and `resolve_crank_cross_match` collapse into it and each condition keeps its own payment floor. Placement and modify therefore take no conditions account. **(3) Quoters.** `QuoterV0` registers an external quoter per (market, program, user) with its CPI surface, its admin-assigned tier and a reprice watch; entries are born unapproved, the maker keeps a kill switch, and velocity signs those CPIs as a dedicated `["quoter_signer"]` PDA rather than the vault authority. The wire is `quote_v0`, `execute_v0` and the optional `quote_l3_v0`; responses are validated rather than trusted, and a `Custom` entry may only move the account its registration consented for. **(4) Cranking.** Expiry, eviction, crossed books, crossed taker remainders, trigger arming and liquidations land with nobody submitting them, out of relay conditions with a keeper-payment reservoir. A condition's wake lives on the account whose state it describes and its resolver is registered by the program that owns the flow, so the book's four sit on the book and velocity's per-market and per-user accounts hold the rest. Each crank's payment is derived, not set: `State.transaction_fee_rails` says what a transaction costs to land and a market's attach prices every crank from it and the cost units the admin measured, so a two-legged cross and a book removal are not paid the same. Two cranks then price themselves above that base, because a flat figure covers a quiet market and nothing more — a keeper paying any priority fee is out of pocket, and declines exactly when congestion is what stopped the crank. An expiry's offer climbs linearly with how long it went unclaimed, to 5,000 lamports over five minutes. A liquidation repays the priority fee its keeper paid — read back from the transaction's own compute-budget instructions, and priced on the lesser of the limit the transaction asked for and the crank's measured cost units, so a keeper is made whole without profiting either by inflating its limit or by requesting less than it is repaid for — capped at `State.liquidation_crank_reimbursement_bps` of what the liquidation recovered, converted through the SOL market named by `State.sol_spot_market_index`. Reimbursing a keeper-chosen cost is safe because the keeper does not keep it: a priority fee goes to the validator. A liquidation that fills nothing pays nothing, so an account that cannot be liquidated cannot be cranked for its reservoir. New `update_liquidation_crank_reimbursement` sets both fields; both default to zero, which leaves the flat payment. **(5) Books off-chain.** `quote_router` answers what a taker of a direction and size can get, per source, in fill order, by simulating the real fill — including the orders behind each ladder and the users a fill has to carry — into `RouterQuoteBufferV0`, read out of post-simulation state. |
 | #1        | `transfer_fee_and_pnl_pool` instruction (warm-admin); rebalance AMM fee pool ↔ PnL pool. SDK `AdminClient.transferFeeAndPnlPool` / `getTransferFeeAndPnlPoolIx`; new `TransferFeeAndPnlPoolDirection` export; emits `TransferFeeAndPnlPoolRecord` event                                                                                                                       |
 | #185 deposit-caps | Per-market configurable withdraw circuit breaker + daily deposit rate cap. The hardcoded 25% daily withdraw breaker becomes `SpotMarket.withdraw_circuit_breaker_bps` (basis points; `0` = default 2500 bps = 25%, so pre-existing markets keep prior behavior). New daily deposit cap mirrors the withdraw side: `deposit_guard_threshold` (u64 token amount, no cap below it) + `max_deposit_bps_per_day` (basis points, `0` disables) bound how far resulting deposits may exceed the 24h deposit TWAP; enforced on the direct `deposit` **and** on the shared spot-credit path (`transfer_pools`, `end_swap` credits), reverting with new `DailyDepositLimit` (6364). New warm/cold admin ixs `update_spot_market_withdraw_circuit_breaker` (warm may only tighten toward the 25% default; loosening past it needs cold admin) / `update_spot_market_deposit_cap`. All three fields are carved from the existing 13-byte alignment gap before `protocol_fee_pool`, so `SpotMarket` stays **808 bytes** with every other offset unchanged and no migration (existing accounts read 0). SDK `SpotMarketAccount.withdrawCircuitBreakerBps` / `maxDepositBpsPerDay` (basis points) / `depositGuardThreshold`; `AdminClient.updateSpotMarketWithdrawCircuitBreaker` / `updateSpotMarketDepositCap` + ix builders; math `calculateMaxDepositTokenAmount` / `checkDepositLimits` and configurable breaker in `calculateWithdrawLimit`; admin CLI `spot-market set-withdraw-breaker` / `set-deposit-cap` (§5) |
 | #2, #47   | Remove high leverage mode: instructions, `User.margin_mode`/`MarginMode`, `PerpMarket` HLM fields, HLM config subscribers, `HIGH_LEVERAGE_MIN_MARGIN_RATIO` (#47); error variants → `Deprecated*` stubs                                                                                                                                                                       |

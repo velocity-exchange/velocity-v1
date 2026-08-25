@@ -20,7 +20,17 @@ use {
 /// The levels a quote published, decoded from the response region.
 fn quoted(book: &mut ClobMarketV0, direction: Direction, size: u64, slot: u64) -> Vec<u8> {
     let pointer = book
-        .quote(direction, size, &[], &UserCapsV0::EMPTY, 0, None, slot, 0)
+        .quote(
+            direction,
+            size,
+            &[],
+            &UserCapsV0::EMPTY,
+            0,
+            None,
+            0,
+            slot,
+            0,
+        )
         .unwrap();
     streamed(book, pointer)
 }

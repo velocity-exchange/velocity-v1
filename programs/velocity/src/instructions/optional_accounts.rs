@@ -487,6 +487,51 @@ pub fn add_builder_order<'a, 'b>(
 /// by itself — it is a marker other checks introspect (the flow-authority
 /// attestation): the signature proves the transaction passed through the
 /// key's holder, and instruction data can't forge a signer flag.
+/// The compute budget this transaction asked for: the price it set per
+/// compute unit, in micro-lamports, and the unit limit it requested.
+///
+/// Both are ordinary instructions to the compute-budget program, so the
+/// transaction states them and this reads them back. A crank that reimburses
+/// what a turner spent needs the price, because the priority fee is
+/// `price × units` and nothing else on chain records it.
+///
+/// Absent instructions read as zero. For the price that matches the runtime —
+/// no price set is no priority fee. For the limit it does not: the runtime
+/// applies a default. A caller reimbursed against this therefore gets nothing
+/// rather than something, which is the safe direction, and every caller that
+/// wants reimbursing states its limit.
+pub fn tx_compute_budget(instructions_sysvar: &AccountInfo) -> VelocityResult<(u64, u32)> {
+    use {
+        solana_program::sysvar::instructions::load_instruction_at_checked, std::convert::TryInto,
+    };
+    /// `ComputeBudget111111111111111111111111111111`.
+    const COMPUTE_BUDGET_ID: Pubkey =
+        solana_program::pubkey!("ComputeBudget111111111111111111111111111111");
+    /// `SetComputeUnitLimit(u32)`.
+    const SET_UNIT_LIMIT: u8 = 2;
+    /// `SetComputeUnitPrice(u64)` — micro-lamports per compute unit.
+    const SET_UNIT_PRICE: u8 = 3;
+
+    let (mut price, mut limit) = (0u64, 0u32);
+    let mut index = 0usize;
+    while let Ok(instruction) = load_instruction_at_checked(index, instructions_sysvar) {
+        index += 1;
+        if instruction.program_id != COMPUTE_BUDGET_ID {
+            continue;
+        }
+        match instruction.data.split_first() {
+            Some((&SET_UNIT_PRICE, rest)) if rest.len() >= 8 => {
+                price = u64::from_le_bytes(rest[..8].try_into().unwrap());
+            }
+            Some((&SET_UNIT_LIMIT, rest)) if rest.len() >= 4 => {
+                limit = u32::from_le_bytes(rest[..4].try_into().unwrap());
+            }
+            _ => {}
+        }
+    }
+    Ok((price, limit))
+}
+
 pub fn tx_co_signed_by(instructions_sysvar: &AccountInfo, signer: &Pubkey) -> VelocityResult<bool> {
     use solana_program::sysvar::instructions::load_instruction_at_checked;
     let mut index = 0usize;

@@ -15,10 +15,9 @@ use {
     anchor_lang::prelude::*,
     solana_program::{
         instruction::{AccountMeta, Instruction},
-        program::{get_return_data, invoke_signed},
+        program::{get_return_data, invoke, invoke_signed},
     },
     static_assertions::const_assert_eq,
-    std::convert::TryInto,
 };
 
 #[cfg(test)]
@@ -280,9 +279,9 @@ pub use quoter_spec::{
 /// busier of the two.
 pub const CLOB_CPI_DATA_CAPACITY: usize = 8 + 1 + 8 + 8 + 5 + 8 + CLOB_USER_REF_BYTES + 1;
 
-/// Bytes a quote or execute CPI's instruction data takes: discriminator,
-/// direction, size, the user set, the caps, the reference price, and the
-/// taker behind its option tag.
+/// Bytes an execute CPI's instruction data takes: discriminator, direction,
+/// size, the user set, the caps, the reference price, and the taker behind
+/// its option tag.
 ///
 /// A size rather than a constant, because the user set is length-prefixed.
 /// The caller reserves exactly this much in one shot. Every field the args
@@ -299,8 +298,15 @@ pub const fn quoter_cpi_data_len(users: usize, taker: bool) -> usize {
         + if taker { CLOB_USER_REF_BYTES } else { 0 }
 }
 
-/// Widest one quote or execute CPI can be: a full user set and a taker.
-pub const QUOTER_CPI_DATA_MAX: usize = quoter_cpi_data_len(MAX_QUOTER_WIRE_USERS, true);
+/// The same for a quote, which also carries the caller's worst acceptable
+/// price. Execute is handed a size cut off the ladder rather than a bound, so
+/// the two legs are eight bytes apart.
+pub const fn quote_cpi_data_len(users: usize, taker: bool) -> usize {
+    quoter_cpi_data_len(users, taker) + 8
+}
+
+/// Widest either leg can be: a quote with a full user set and a taker.
+pub const QUOTER_CPI_DATA_MAX: usize = quote_cpi_data_len(MAX_QUOTER_WIRE_USERS, true);
 
 /// The loaded-user set as velocity holds it: a heap slice, capped at the
 /// wire's capacity, written to the wire by [`QuoterUserSetRef`].
@@ -361,6 +367,32 @@ pub struct QuotedLadderV0 {
     pub withheld: PriceLevel,
 }
 
+/// `cancel_order_v0` args on the CLOB wire.
+pub use clob_wire::CancelOrderArgsV0 as ClobCancelOrderArgsV0;
+/// Order handle on the CLOB: an O(1) node hint verified against the order id
+/// there, so a stale hint fails closed on the CLOB side.
+pub use clob_wire::ClobOrderRefV0;
+/// `place_order_v0` args on the CLOB wire.
+///
+/// `taker_origin` marks the order as an unfilled taker remainder velocity
+/// migrated onto the book rather than a quote its owner chose to post. Only
+/// velocity knows that, which is why the CLOB takes it as an argument. It
+/// changes two things on the book — the order cannot be taken while a live
+/// counterparty crosses it, and a cross involving it settles at the
+/// counterparty's price.
+pub use clob_wire::PlaceOrderArgsV0 as ClobPlaceOrderArgsV0;
+/// Wire form of an order the CLOB removed — return data of its
+/// cancel/evict/expire ixs, so velocity can decrement the maker's
+/// open-order aggregates by the remaining size on the right side.
+///
+/// Its `taker_origin` flag is the only place the CLOB reports that a removed
+/// order was a migrated taker remainder, which is what tells velocity which
+/// side of a cross was demanding liquidity — hence which side's price the
+/// match settles at.
+pub use clob_wire::RemovedOrderV0 as ClobRemovedOrderV0;
+/// Which sides a `cancel_all_v0` withdraws, on the CLOB wire. Declared by
+/// `quoter-spec`; the alias keeps velocity's name for it.
+pub use quoter_spec::CancelSidesV0 as ClobCancelSides;
 /// One order a CLOB removed as a sub-min remainder of a fill.
 ///
 /// **`base_asset_amount` and the completed-order ids beside it are taken on
@@ -385,8 +417,8 @@ pub struct QuotedLadderV0 {
 /// Nothing in the program enforces that — `is_approved` is admin vetting of a
 /// CPI surface, not a program-id allowlist — so approving a third-party CLOB
 /// is what would turn this into a real exposure. At that point these amounts
-/// must be checked against `clob_resting_prefix`, read before execute
-/// consumes the nodes, and the same check owed to the removal cranks.
+/// must be checked against the book's own `quote_l3_v0`, asked before execute
+/// consumes the orders, and the same check owed to the removal cranks.
 pub use quoter_spec::CancelledRemainderV0;
 pub use quoter_spec::CompletedOrderV0;
 /// The execute response, read in place out of the quoter's account.
@@ -400,68 +432,6 @@ pub use quoter_spec::ExecuteResponseV0;
 /// `response_account` the borsh response was written. Declared by
 /// `quoter-spec`, which owns every shape on this wire.
 pub use quoter_spec::ResponsePointerV0;
-
-/// Order handle on the CLOB: an O(1) node hint verified against the order id
-/// there, so a stale hint fails closed on the CLOB side.
-#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
-pub struct ClobOrderRefV0 {
-    pub node_index: u32,
-    pub order_id: u64,
-}
-
-/// Wire form of an order the CLOB removed — return data of its
-/// cancel/evict/expire ixs, so velocity can decrement the maker's
-/// open-order aggregates by the remaining size on the right side.
-#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
-pub struct ClobRemovedOrderV0 {
-    pub user: ClobUserRefV0,
-    pub order_id: u64,
-    pub price: u64,
-    pub base_asset_amount: u64,
-    pub side: ClobSide,
-    /// The removed order was taker-origin — a migrated taker remainder.
-    ///
-    /// The only place the CLOB reports the flag, and what tells velocity
-    /// which side of a cross it is resolving was demanding liquidity, hence
-    /// which side's price the match settles at. Trailing, so every offset
-    /// before it is unchanged.
-    pub taker_origin: bool,
-}
-
-/// `place_order_v0` args on the CLOB wire.
-#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
-pub struct ClobPlaceOrderArgsV0 {
-    pub side: ClobSide,
-    pub price: u64,
-    pub base_asset_amount: u64,
-    /// None = the CLOB market's default activation delay. Zero is allowed —
-    /// velocity owns attestation policy.
-    pub activation_delay_slots: Option<u32>,
-    pub max_ts: i64,
-    /// The user the order settles against, in derivable form (velocity
-    /// verified control before the CPI).
-    pub user: ClobUserRefV0,
-    /// Mark the order taker-origin on the book: it is an unfilled taker
-    /// remainder velocity migrated there, not a quote its owner chose to
-    /// post. Only velocity knows that, which is why the CLOB takes it as an
-    /// argument. It changes two things on the book — the order cannot be
-    /// taken while a live counterparty crosses it (so the improvement cannot
-    /// be won by landing a transaction at the activation slot), and a cross
-    /// involving it settles at the counterparty's price.
-    pub taker_origin: bool,
-}
-
-/// `cancel_order_v0` args on the CLOB wire.
-#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
-pub struct ClobCancelOrderArgsV0 {
-    pub order_ref: ClobOrderRefV0,
-    /// Owner of the order (verified against the node on the CLOB side).
-    pub user: ClobUserRefV0,
-}
-
-/// Which sides a `cancel_all_v0` withdraws, on the CLOB wire. Declared by
-/// `quoter-spec`; the alias keeps velocity's name for it.
-pub use quoter_spec::CancelSidesV0 as ClobCancelSides;
 
 /// What the wire's named sides mean to velocity: the maker positions they
 /// unwind.
@@ -494,38 +464,31 @@ impl ClobCancelSidesExt for ClobCancelSides {
 }
 
 /// `cancel_all_v0` args on the CLOB wire.
-#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
-pub struct ClobCancelAllArgsV0 {
-    /// Whose orders to withdraw (verified against each node on the CLOB side).
-    pub user: ClobUserRefV0,
-    pub sides: ClobCancelSides,
-}
-
+pub use clob_wire::CancelAllArgsV0 as ClobCancelAllArgsV0;
 /// What the CLOB's `cancel_all_v0` withdrew: per-side totals rather than a list
 /// of removals, which is exactly the shape the open-order aggregates consume —
 /// one `decrease_open_bids_and_asks` per side and one count, however many
 /// orders the sweep took.
-#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
-pub struct ClobCancelAllOutcomeV0 {
-    pub user: ClobUserRefV0,
-    pub bid_base_asset_amount: u64,
-    pub ask_base_asset_amount: u64,
-    pub bid_orders: u32,
-    pub ask_orders: u32,
-    /// Whether the CLOB finished the requested sides rather than stopping at
-    /// its per-call cap. False means this user still has resting orders and the
-    /// caller should repeat the instruction.
-    pub exhaustive: bool,
+pub use clob_wire::CancelAllOutcomeV0 as ClobCancelAllOutcomeV0;
+
+/// What velocity reads into the sweep outcome beyond its shape: which side a
+/// maker's position rests on. An inherent impl is not available on a type the
+/// wire crate owns, and the direction is velocity's own type — the same reason
+/// [`ClobCancelSidesExt`] is a trait.
+pub trait ClobCancelAllOutcomeExt {
+    fn orders(&self) -> u32;
+    fn base_for(&self, direction: crate::controller::position::PositionDirection) -> u64;
+    fn orders_for(&self, direction: crate::controller::position::PositionDirection) -> u32;
 }
 
-impl ClobCancelAllOutcomeV0 {
-    pub fn orders(&self) -> u32 {
+impl ClobCancelAllOutcomeExt for ClobCancelAllOutcomeV0 {
+    fn orders(&self) -> u32 {
         self.bid_orders.saturating_add(self.ask_orders)
     }
 
     /// Base amount withdrawn on the side a maker position of `direction` rests
     /// on — a bid is a long, an ask a short.
-    pub fn base_for(&self, direction: crate::controller::position::PositionDirection) -> u64 {
+    fn base_for(&self, direction: crate::controller::position::PositionDirection) -> u64 {
         match direction {
             crate::controller::position::PositionDirection::Long => self.bid_base_asset_amount,
             crate::controller::position::PositionDirection::Short => self.ask_base_asset_amount,
@@ -533,7 +496,7 @@ impl ClobCancelAllOutcomeV0 {
     }
 
     /// Orders withdrawn on that same side.
-    pub fn orders_for(&self, direction: crate::controller::position::PositionDirection) -> u32 {
+    fn orders_for(&self, direction: crate::controller::position::PositionDirection) -> u32 {
         match direction {
             crate::controller::position::PositionDirection::Long => self.bid_orders,
             crate::controller::position::PositionDirection::Short => self.ask_orders,
@@ -542,16 +505,39 @@ impl ClobCancelAllOutcomeV0 {
 }
 
 /// `evict_worst_v0` args on the CLOB wire.
-#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
-pub struct ClobEvictWorstArgsV0 {
-    pub side: ClobSide,
-}
-
+pub use clob_wire::EvictWorstArgsV0 as ClobEvictWorstArgsV0;
+/// `order_rules_v0`'s answer: what the book requires of an order before it
+/// will hold one. Asked rather than read, so a rule the book moves is a rule
+/// velocity still gets right.
+pub use clob_wire::OrderRulesV0 as ClobOrderRulesV0;
 /// `remove_expired_v0` args on the CLOB wire.
-#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
-pub struct ClobRemoveExpiredArgsV0 {
-    pub order_ref: ClobOrderRefV0,
-}
+pub use clob_wire::RemoveExpiredArgsV0 as ClobRemoveExpiredArgsV0;
+/// `next_removal_v0` args and answer: which order the book would let a caller
+/// reclaim, and why. The book decides both — velocity supplies the removal's
+/// consequences, not the search.
+pub use clob_wire::{ClobRemovalKindV0, NextRemovalArgsV0 as ClobNextRemovalArgsV0};
+/// `set_crank_conditions_v0`: who resolves each of the book's own conditions.
+/// The book owns the wakes; velocity registers the answers.
+pub use clob_wire::{
+    CrankAccountV0 as ClobCrankAccountV0, CrankBlockV0 as ClobCrankBlockV0,
+    CrankConditionsArgsV0 as ClobCrankConditionsArgsV0, CrankResolverV0 as ClobCrankResolverV0,
+};
+/// The one shape every read-only CLOB answer describes an order in, and the
+/// two answers built from it: the best matchable order on each side, and one
+/// view per requested ref.
+pub use clob_wire::{
+    NextCrossV0 as ClobNextCrossV0, OrderViewV0 as ClobOrderViewV0,
+    OrdersArgsV0 as ClobOrdersArgsV0, OrdersV0 as ClobOrdersV0,
+    ORDER_VIEW_CEILING as CLOB_ORDER_VIEW_CEILING,
+};
+/// Which slot of the book's block each registered resolver lands in. Relay
+/// names the fired condition by slot, so one resolver serving several of them
+/// reads the mapping from here rather than from the book's own numbering.
+pub use clob_wire::{
+    CRANK_SLOT_ACTIVATION as CLOB_CRANK_SLOT_ACTIVATION,
+    CRANK_SLOT_CAPACITY as CLOB_CRANK_SLOT_CAPACITY, CRANK_SLOT_CROSS as CLOB_CRANK_SLOT_CROSS,
+    CRANK_SLOT_EXPIRY as CLOB_CRANK_SLOT_EXPIRY,
+};
 
 /// Anchor-default discriminators (`sha256("global:<name>")[..8]`) of the CLOB
 /// ixs velocity CPIs directly (place/cancel are velocity-mediated and not part
@@ -563,22 +549,35 @@ pub const CLOB_CANCEL_ORDER_V0_DISCRIMINATOR: [u8; 8] = [70, 91, 225, 16, 228, 2
 pub const CLOB_CANCEL_ALL_V0_DISCRIMINATOR: [u8; 8] = [212, 11, 203, 11, 184, 40, 88, 95];
 pub const CLOB_EVICT_WORST_V0_DISCRIMINATOR: [u8; 8] = [106, 60, 27, 129, 80, 27, 37, 73];
 pub const CLOB_REMOVE_EXPIRED_V0_DISCRIMINATOR: [u8; 8] = [241, 135, 215, 18, 254, 107, 179, 119];
+pub const CLOB_NEXT_REMOVAL_V0_DISCRIMINATOR: [u8; 8] = [132, 65, 9, 126, 135, 115, 177, 92];
+pub const CLOB_NEXT_CROSS_V0_DISCRIMINATOR: [u8; 8] = [234, 191, 102, 36, 183, 233, 127, 48];
+pub const CLOB_SET_CRANK_CONDITIONS_V0_DISCRIMINATOR: [u8; 8] = [34, 160, 120, 93, 84, 133, 8, 95];
+pub const CLOB_ORDERS_V0_DISCRIMINATOR: [u8; 8] = [124, 117, 208, 33, 202, 209, 58, 199];
+pub const CLOB_ORDER_RULES_V0_DISCRIMINATOR: [u8; 8] = [201, 129, 212, 105, 18, 69, 149, 252];
 
 /// The velocity-mediated CLOB CPI surface, bound to one book: the three
 /// accounts every call takes plus the signer nonce that lets velocity sign as
 /// the book's `place_authority`.
 ///
-/// This is the *only* place in the program that speaks the CLOB's wire — the
-/// discriminators above, the borsh arg encoding, `invoke_signed` with the
-/// fixed `[market (w), quoter_signer (s)]` account pair, and the
-/// return-data decode (writer-checked, so a program the CLOB CPI'd into
-/// can't spoof the response). Every caller — placement, cancel, the
-/// evict/expire cranks, force-cancel — goes through a method here.
+/// This and [`ClobReader`] are the only places in the program that speak the
+/// CLOB's wire — the discriminators above, the borsh arg encoding, the
+/// `invoke_signed` with the fixed `[market (w), quoter_signer (s)]` account
+/// pair, and the return-data decode (writer-checked, so a program the CLOB
+/// CPI'd into can't spoof the response). Every caller — placement, cancel,
+/// the evict/expire cranks, force-cancel — goes through a method here. The
+/// split is signing: this half changes the book and signs as its
+/// `place_authority`; the reader only asks, and signs nothing.
+///
+/// Velocity speaks *only* this wire. It holds no copy of the market account's
+/// layout, so what the book has to answer is what these methods ask for, and
+/// where a field sits inside its account is the book's own business.
 ///
 /// `execute_v0` is deliberately absent: that leg is the *registry* wire every
 /// quoter type shares ([`QuoterV0::execute`] → `invoke_quoter`), whose
 /// account list is per-entry registered rather than this fixed pair, and it
-/// already has exactly one implementation.
+/// already has exactly one implementation. `quote_v0` and `quote_l3_v0` are
+/// absent for the same reason — the book answers for its depth on the
+/// interface every source shares.
 pub struct ClobMarket<'a, 'info> {
     /// The book account, passed writable.
     pub market: &'a AccountInfo<'info>,
@@ -649,41 +648,34 @@ impl<'a, 'info> ClobMarket<'a, 'info> {
         )
     }
 
+    /// Register who resolves the book's own crank conditions. Returns the
+    /// account offset the block sits at, which is what a relay watch
+    /// registration points at — asked for rather than derived, so velocity
+    /// never has to know the market account's layout.
+    pub fn set_crank_conditions(
+        &self,
+        args: ClobCrankConditionsArgsV0,
+    ) -> Result<ClobCrankBlockV0> {
+        self.invoke(
+            &CLOB_SET_CRANK_CONDITIONS_V0_DISCRIMINATOR,
+            &args,
+            "set crank conditions",
+        )
+    }
+
     /// Reclaim the worst order on a side past its soft cap (the CLOB
     /// re-checks the threshold).
     pub fn evict(&self, args: ClobEvictWorstArgsV0) -> Result<ClobRemovedOrderV0> {
         self.invoke(&CLOB_EVICT_WORST_V0_DISCRIMINATOR, &args, "evict")
     }
 
-    /// The book's default activation delay, read straight off its header —
-    /// what a placement's `activation_slot` becomes when the caller doesn't
-    /// choose a delay. Callers mirror the CLOB's `slot + delay` to maintain
-    /// the crank wake hints, and compare a requested delay against it to
-    /// decide whether the fast-activation attestation is required.
-    pub fn default_activation_delay_slots(&self) -> Result<u32> {
-        read_clob_u32(
-            &self.market.try_borrow_data()?,
-            CLOB_DEFAULT_ACTIVATION_DELAY_OFFSET,
-        )
-        .ok_or_else(|| {
-            msg!("clob market account is too short to hold its header");
-            ErrorCode::DefaultError.into()
-        })
-    }
-
-    /// The book's floor on a resting order's size, read off its header bytes.
-    /// A remainder below it cannot rest — the book culls one on its own fills
-    /// — so a caller re-placing a partially-crossed remainder has to drop it
-    /// instead of offering the book a placement it will reject.
-    pub fn min_order_size(&self) -> Result<u64> {
-        let data = self.market.try_borrow_data()?;
-        let bytes = data
-            .get(CLOB_MIN_ORDER_SIZE_OFFSET..CLOB_MIN_ORDER_SIZE_OFFSET + 8)
-            .ok_or_else(|| -> Error {
-                msg!("clob market account is too short to hold its header");
-                ErrorCode::DefaultError.into()
-            })?;
-        Ok(u64::from_le_bytes(bytes.try_into().unwrap()))
+    /// The read-only half of the same wire, for the questions this call site
+    /// asks the book about its own memory rather than telling it to change.
+    pub fn reader(&self) -> ClobReader<'a, 'info> {
+        ClobReader {
+            market: self.market,
+            program: self.program,
+        }
     }
 
     /// One CPI: `discriminator ++ borsh(args)` to the book as its
@@ -718,250 +710,102 @@ impl<'a, 'info> ClobMarket<'a, 'info> {
             &[&get_quoter_signer_seeds(&self.quoter_signer_nonce)],
         )?;
 
-        // Return data is last-writer-wins within the transaction, so require
-        // the writer to be the book's own program: otherwise a program the
-        // CLOB CPI'd into could dictate the response velocity settles on.
-        let (writer, response) = get_return_data().ok_or_else(|| -> Error {
-            msg!("clob {} returned no response", what);
-            ErrorCode::DefaultError.into()
-        })?;
-        validate!(
-            writer == self.program.key(),
-            ErrorCode::DefaultError,
-            "clob {} return data written by {} instead of the book's program",
-            what,
-            writer
-        )?;
-        R::deserialize(&mut response.as_slice()).map_err(|_| {
-            msg!("clob {} returned an undecodable response", what);
-            ErrorCode::DefaultError.into()
-        })
+        clob_response(&self.program.key(), what)
     }
 }
 
-// --- CLOB account byte layout ---
-//
-// The crank resolvers (and the executor's expiry-hint repair) read the CLOB
-// market account's bytes directly: there is no CLOB instruction that answers
-// "which order is the tail" or "which order is expired", and the removal ixs
-// take the answer as a hint.
-//
-// The layout is `clob-spec`'s, not this file's. The book asserts its own
-// header and node against that crate, so a field that moves there fails to
-// compile rather than misparsing here — which would read as an empty or
-// nonsense book rather than as an error. The aliases below keep velocity's
-// names for what the crate declares. Every offset is an *account-data* offset
-// (anchor's 8-byte discriminator included).
-pub use clob_spec::{
-    node as read_clob_node, u16_at as read_clob_u16, u32_at as read_clob_u32,
-    u64_at as read_clob_u64, ASK_COUNT_OFFSET as CLOB_ASK_COUNT_OFFSET,
-    BEST_ASK_OFFSET as CLOB_BEST_ASK_OFFSET, BEST_BID_OFFSET as CLOB_BEST_BID_OFFSET,
-    BID_COUNT_OFFSET as CLOB_BID_COUNT_OFFSET,
-    DEFAULT_ACTIVATION_DELAY_OFFSET as CLOB_DEFAULT_ACTIVATION_DELAY_OFFSET,
-    EVICT_THRESHOLD_OFFSET as CLOB_EVICT_THRESHOLD_OFFSET,
-    MARKET_INDEX_OFFSET as CLOB_MARKET_INDEX_OFFSET,
-    MIN_ORDER_SIZE_OFFSET as CLOB_MIN_ORDER_SIZE_OFFSET, NIL as CLOB_NIL,
-    NODE_BYTES as CLOB_NODE_LEN, ORDERS_OFFSET as CLOB_ORDERS_OFFSET,
-    WORST_ASK_OFFSET as CLOB_WORST_ASK_OFFSET, WORST_BID_OFFSET as CLOB_WORST_BID_OFFSET,
-};
-/// One arena slot, as the book declares it. The cranks read whole nodes now
-/// rather than a hand-decoded subset of one.
-pub use clob_spec::{OrderBitFlag as ClobOrderBitFlag, OrderNodeV0 as ClobNodeView};
-
-/// `OrderBitFlag::Open` — set on a live order, clear on a free node.
-pub const CLOB_ORDER_BIT_FLAG_OPEN: u8 = ClobOrderBitFlag::Open as u8;
-/// `OrderBitFlag::TakerOrigin` — the order is a migrated taker remainder, so
-/// in a cross it is the aggressor and the match settles at the counterparty's
-/// price. Velocity sets it at migration and reads it back here to *find* a
-/// cross to resolve; the authoritative report is `ClobRemovedOrderV0`, which
-/// is what the resolution checks before settling.
-pub const CLOB_ORDER_BIT_FLAG_TAKER_ORIGIN: u8 = ClobOrderBitFlag::TakerOrigin as u8;
-
-/// Node-arena capacity implied by the account's length.
-pub fn clob_node_capacity(data_len: usize) -> usize {
-    clob_spec::capacity(data_len)
-}
-
-/// One pass over the arena for both wake hints: the minimum expiry over
-/// live orders (`i64::MAX` when none expires) and the minimum *future*
-/// activation slot (`u64::MAX` when nothing is pending) — what a landing
-/// crank repairs the expire and cross-activation conditions to.
-pub fn clob_hint_scan(data: &[u8], current_slot: u64) -> (i64, u64) {
-    (0..clob_node_capacity(data.len()) as u32)
-        .filter_map(|i| read_clob_node(data, i))
-        .filter(|node| node.is_open())
-        .fold((i64::MAX, u64::MAX), |(min_ts, min_slot), node| {
-            (
-                if node.max_ts != 0 {
-                    min_ts.min(node.max_ts)
-                } else {
-                    min_ts
-                },
-                if node.activation_slot > current_slot {
-                    min_slot.min(node.activation_slot)
-                } else {
-                    min_slot
-                },
-            )
-        })
-}
-
-/// The first live order expired at `now`, with its node index — the expire
-/// resolver's work discovery.
-pub fn clob_find_expired(data: &[u8], now: i64) -> Option<(u32, ClobNodeView)> {
-    (0..clob_node_capacity(data.len()) as u32).find_map(|i| {
-        read_clob_node(data, i)
-            .filter(|node| node.is_open() && node.max_ts != 0 && node.max_ts <= now)
-            .map(|node| (i, node))
+/// Decode what a CLOB call left as return data.
+///
+/// Return data is last-writer-wins within the transaction, so the writer must
+/// be the book's own program: otherwise a program the CLOB CPI'd into could
+/// dictate the response velocity settles on. `what` only names the call in
+/// error messages.
+fn clob_response<R: AnchorDeserialize>(program: &Pubkey, what: &str) -> Result<R> {
+    let (writer, response) = get_return_data().ok_or_else(|| -> Error {
+        msg!("clob {} returned no response", what);
+        ErrorCode::DefaultError.into()
+    })?;
+    validate!(
+        writer == *program,
+        ErrorCode::DefaultError,
+        "clob {} return data written by {} instead of the book's program",
+        what,
+        writer
+    )?;
+    R::deserialize(&mut response.as_slice()).map_err(|_| {
+        msg!("clob {} returned an undecodable response", what);
+        ErrorCode::DefaultError.into()
     })
 }
 
-/// One resting order a CLOB execute could sweep: whose it is, and the price
-/// it rests at.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ClobRestingOrderV0 {
-    pub user: ClobUserRefV0,
-    pub price: u64,
-    pub base_asset_amount: u64,
-    /// A migrated taker remainder, which the CLOB passes over while a
-    /// counterparty crosses it. Its base is therefore not depth a caller can
-    /// count on execute consuming — see the sweep accounting in
-    /// [`clob_resting_prefix`].
-    pub is_taker_origin: bool,
+/// The read-only leg of the CLOB wire: ask the book what removal work it has.
+///
+/// Separate from [`ClobMarket`] because it signs nothing. A crank resolver
+/// runs under simulation and holds no quoter signer, and the question it asks
+/// — which order is expired, which order is past the eviction threshold — is
+/// one the book answers about its own memory. Velocity supplies a removal's
+/// consequences, not the search for it.
+pub struct ClobReader<'a, 'info> {
+    pub market: &'a AccountInfo<'info>,
+    pub program: &'a AccountInfo<'info>,
 }
 
-/// The resting run as price levels, for a caller that has no quote to bind
-/// against and must take the book itself as the quote.
-///
-/// That caller is a cross crank: its account list carries only the execute
-/// leg, so there is no `quote_v0` response to hold the fill to, and the run
-/// velocity reads off the book stands in as one. It is not a check of the
-/// book against velocity — the arena is the book's own state — but of the
-/// executed notional against the prices those orders rest at, which is what
-/// makes "the counterparty's price" a fact the crank can be held to.
-#[allow(clippy::too_many_arguments)]
-pub fn clob_resting_levels(
-    data: &[u8],
-    side: ClobSide,
-    size: u64,
-    users: &[ClobUserRefV0],
-    caps: &QuoterUserCapsV0,
-    taker: &ClobUserRefV0,
-    slot: u64,
-    now: i64,
-) -> Vec<PriceLevel> {
-    clob_resting_prefix(data, side, size, users, caps, taker, slot, now)
-        .into_iter()
-        .map(|order| PriceLevel {
-            price: order.price,
-            size: order.base_asset_amount,
-        })
-        .collect()
-}
-
-/// First-allocation size for a resting-prefix read. Not a cap — a deeper sweep
-/// still grows past it.
-const CLOB_RESTING_PREFIX_RESERVE: usize = 16;
-
-/// The best-first run of orders on `side` that a taker of `size` would sweep,
-/// read straight off the book's bytes.
-///
-/// This is velocity's own answer to "whose liquidity is on this book, at what
-/// price" — the thing a CLOB entry's response must stay inside, and the only
-/// way to get it that doesn't take the quoter's word for it. It must be read
-/// *before* execute runs: execute removes the nodes it fills.
-///
-/// The skip rules mirror the ones the CLOB applies inside its own sweep
-/// (`is_matchable` there): unactivated, expired, unsettleable and self-trade
-/// orders are passed over rather than counted, because execute passes over
-/// them too and keeps going — counting them would end this walk early and
-/// leave a maker execute really does fill outside the permitted set. The walk
-/// is bounded by the arena's capacity, so a corrupted link list terminates.
-#[allow(clippy::too_many_arguments)]
-pub fn clob_resting_prefix(
-    data: &[u8],
-    side: ClobSide,
-    size: u64,
-    // The set forwarded to the quoter; empty = unrestricted.
-    users: &[ClobUserRefV0],
-    // The caps forwarded with it. Only the exclusions are applied here, and
-    // that is what makes an exclusion enforced rather than requested: an
-    // excluded user is absent from the permitted-subject set, so a book that
-    // filled them anyway returns a change for a user velocity refuses. The
-    // budgets are advisory and the post-fill checks answer for them.
-    caps: &QuoterUserCapsV0,
-    taker: &ClobUserRefV0,
-    slot: u64,
-    now: i64,
-) -> Vec<ClobRestingOrderV0> {
-    let head_offset = match side {
-        ClobSide::Bid => CLOB_BEST_BID_OFFSET,
-        ClobSide::Ask => CLOB_BEST_ASK_OFFSET,
-    };
-    // Reserved for a typical sweep rather than the deepest one. Starting empty
-    // means a deep prefix doubles its way up and leaks every intermediate on a
-    // heap that never reclaims; reserving the fill ceiling instead would spend
-    // ~6 KB of a 32 KB heap per quoter for a case that rarely happens. A
-    // handful of orders is the common sweep, and this covers it in one
-    // allocation.
-    let mut prefix = Vec::with_capacity(CLOB_RESTING_PREFIX_RESERVE);
-    // Exclusions only. A partial budget is left to the book: this walk has to
-    // stay a *superset* of what execute fills, and spending a budget here
-    // could retire a user's room before the book retires it, which would stop
-    // the walk short of a maker execute really fills. Ignoring one only makes
-    // the walk go deeper.
-    let any_excluded = caps.any_excluded();
-    let mut index = match read_clob_u32(data, head_offset) {
-        Some(index) => index,
-        None => return prefix,
-    };
-    let mut swept = 0u64;
-    for _ in 0..clob_node_capacity(data.len()) {
-        if index == CLOB_NIL || swept >= size {
-            break;
-        }
-        let Some(node) = read_clob_node(data, index) else {
-            break;
-        };
-        let user = node.user_ref();
-        let settleable = users.is_empty() || users.contains(&user);
-        // An excluded user is passed over here exactly as the book passes it
-        // over, so it never reaches the permitted set.
-        let excluded = any_excluded
-            && users
-                .iter()
-                .position(|named| *named == user)
-                .is_some_and(|index| caps.is_excluded(index));
-        if node.is_matchable(slot, now) && settleable && user != *taker && !excluded {
-            prefix.push(ClobRestingOrderV0 {
-                user,
-                price: node.price,
-                base_asset_amount: node.base_asset_amount,
-                is_taker_origin: node.is_taker_origin(),
-            });
-            // A taker-origin order's base does not count toward the sweep.
-            //
-            // The CLOB skips one whose counterparty crosses it — that is the
-            // protection that keeps a migrated taker remainder from being
-            // taken at its own limit — so an execute sized against this walk
-            // reaches *past* it into deeper depth. If its base were counted,
-            // the walk would stop at it and the maker actually filled would
-            // be absent from the permitted-subject set, and the response
-            // would be refused as `QuoterSubjectNotPermitted`.
-            //
-            // Its user stays in the set, and the walk deliberately does not
-            // re-derive whether the CLOB would gate this particular order:
-            // not counting the base makes this a superset of what execute can
-            // fill under either outcome, which is all the subject check needs,
-            // and it keeps the gate's rule in one program instead of two that
-            // can drift apart.
-            if !node.is_taker_origin() {
-                swept = swept.saturating_add(node.base_asset_amount);
-            }
-        }
-        index = node.next;
+impl ClobReader<'_, '_> {
+    /// The next order of `args.kind` the book would let a caller reclaim, or
+    /// [`ClobOrderViewV0::NONE`] when it has none.
+    pub fn next_removal(&self, args: ClobNextRemovalArgsV0) -> Result<ClobOrderViewV0> {
+        let mut data = Vec::with_capacity(CLOB_CPI_DATA_CAPACITY);
+        data.extend_from_slice(&CLOB_NEXT_REMOVAL_V0_DISCRIMINATOR);
+        args.serialize(&mut data).map_err(|_| {
+            msg!("failed to serialize clob next removal args");
+            ErrorCode::DefaultError
+        })?;
+        self.ask(data, "next removal")
     }
-    prefix
+
+    /// The best matchable order on each side — what a cross would settle
+    /// between. Both heads are [`ClobOrderViewV0::NONE`] on an empty book.
+    pub fn next_cross(&self) -> Result<ClobNextCrossV0> {
+        self.ask(CLOB_NEXT_CROSS_V0_DISCRIMINATOR.to_vec(), "next cross")
+    }
+
+    /// What the book requires of an order before it will hold one. Asked
+    /// rather than read off the market account, so a rule the book moves is a
+    /// rule velocity still gets right.
+    pub fn order_rules(&self) -> Result<ClobOrderRulesV0> {
+        self.ask(CLOB_ORDER_RULES_V0_DISCRIMINATOR.to_vec(), "order rules")
+    }
+
+    /// What the book holds for each of `refs`, in the order given. A ref that
+    /// no longer names a live order comes back as [`ClobOrderViewV0::NONE`] —
+    /// a fill or a crank got there first, which is the expected outcome of
+    /// the race rather than an error.
+    pub fn orders(&self, refs: Vec<ClobOrderRefV0>) -> Result<Vec<ClobOrderViewV0>> {
+        let mut data = Vec::with_capacity(CLOB_CPI_DATA_CAPACITY);
+        data.extend_from_slice(&CLOB_ORDERS_V0_DISCRIMINATOR);
+        ClobOrdersArgsV0 { refs }
+            .serialize(&mut data)
+            .map_err(|_| {
+                msg!("failed to serialize clob orders args");
+                ErrorCode::DefaultError
+            })?;
+        self.ask::<ClobOrdersV0>(data, "orders")
+            .map(|answer| answer.orders)
+    }
+
+    /// One read-only CPI, unsigned: the book answers about its own memory, so
+    /// nothing here needs the quoter signer.
+    fn ask<R: AnchorDeserialize>(&self, data: Vec<u8>, what: &str) -> Result<R> {
+        invoke(
+            &Instruction {
+                program_id: self.program.key(),
+                accounts: vec![AccountMeta::new_readonly(self.market.key(), false)],
+                data,
+            },
+            &[self.market.clone(), self.program.clone()],
+        )?;
+        clob_response(&self.program.key(), what)
+    }
 }
 
 /// Unwind one user's reserve for everything a bulk sweep took, and report how
@@ -975,11 +819,11 @@ pub fn clob_resting_prefix(
 /// book rather than by what the caller intended to take.
 pub fn unwind_swept_orders(
     user: &mut crate::state::user::User,
-    book: &[u8],
+    clob: &ClobReader,
     market_index: u16,
     sides: ClobCancelSides,
     swept: &ClobCancelAllOutcomeV0,
-) -> crate::error::VelocityResult<u32> {
+) -> Result<u32> {
     use crate::controller::position::{
         decrease_open_bids_and_asks, get_position_index, PositionDirection,
     };
@@ -997,27 +841,31 @@ pub fn unwind_swept_orders(
         .open_orders
         .saturating_sub(orders.min(u8::MAX as u32) as u8);
     (0..orders).for_each(|_| user.decrement_open_orders(false));
-    release_swept_trigger_shadows(user, book, market_index, sides);
+    release_swept_trigger_shadows(user, clob, market_index, sides)?;
     Ok(orders)
 }
 
 /// Free the placed-trigger shadows on `sides` whose live orders a bulk sweep
 /// took, and report how many were freed.
 ///
-/// Driven off the *book* rather than off a list of removed ids: a shadow is
-/// released exactly when the node it points at no longer holds its order,
+/// Driven off what the *book* still holds rather than off a list of removed
+/// ids: a shadow is released exactly when its ref no longer names its order,
 /// which is true whether the sweep was capped or not, and is strictly more
 /// robust than matching ids — a shadow whose order left the book by any route
 /// reads as released here. The scan is over `User.orders`, so it is bounded by
 /// that array, not by the book.
+///
+/// Asked in chunks because the book answers about
+/// [`CLOB_ORDER_VIEW_CEILING`] refs per call, and a user may hold more
+/// shadows than that.
 pub fn release_swept_trigger_shadows(
     user: &mut crate::state::user::User,
-    book: &[u8],
+    clob: &ClobReader,
     market_index: u16,
     sides: ClobCancelSides,
-) -> usize {
+) -> Result<usize> {
     use crate::state::user::{MarketType, OrderStatus};
-    let stale: Vec<usize> = user
+    let candidates: Vec<(usize, ClobOrderRefV0)> = user
         .orders
         .iter()
         .enumerate()
@@ -1028,20 +876,31 @@ pub fn release_swept_trigger_shadows(
                 && order.market_index == market_index
                 && sides.includes(order.direction)
         })
-        .filter(|(_, order)| {
-            let (node_index, clob_order_id) = order.clob_order_ref();
-            // No live node with this id: the sweep took it. An unreadable node
-            // index counts as gone for the same reason the CLOB treats an
-            // out-of-range hint as stale rather than as corruption.
-            !read_clob_node(book, node_index)
-                .is_some_and(|node| node.is_open() && node.order_id == clob_order_id)
+        .map(|(index, order)| {
+            let (node_index, order_id) = order.clob_order_ref();
+            (
+                index,
+                ClobOrderRefV0 {
+                    node_index,
+                    order_id,
+                },
+            )
         })
-        .map(|(index, _)| index)
         .collect();
-    stale
-        .iter()
-        .for_each(|index| user.orders[*index].status = OrderStatus::Canceled);
-    stale.len()
+
+    let mut freed = 0usize;
+    for chunk in candidates.chunks(CLOB_ORDER_VIEW_CEILING) {
+        let views = clob.orders(chunk.iter().map(|(_, r)| *r).collect())?;
+        chunk
+            .iter()
+            .zip(views.iter())
+            .filter(|(_, view)| !view.found())
+            .for_each(|((index, _), _)| {
+                user.orders[*index].status = OrderStatus::Canceled;
+                freed += 1;
+            });
+    }
+    Ok(freed)
 }
 
 /// Who a quoter's `execute_v0` response is allowed to move balances for.
@@ -1239,18 +1098,6 @@ pub trait ExternalQuoterExecutor<'info> {
         direction: Direction,
         size: u64,
     ) -> crate::error::VelocityResult<QuoterSubjects>;
-
-    /// Lend quoter `index`'s book bytes to `f`, answering whether there was a
-    /// book to lend. The borrow cannot outlive the call, so the caller gets a
-    /// closure rather than a guard — the same reason a quoter's response is
-    /// read in place.
-    fn with_book(
-        &self,
-        _index: usize,
-        _f: &mut dyn FnMut(&[u8]),
-    ) -> crate::error::VelocityResult<bool> {
-        Ok(false)
-    }
 
     /// CPI a whole-side cancel on quoter `index` for one of its makers.
     ///

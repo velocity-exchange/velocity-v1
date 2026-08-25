@@ -40,10 +40,11 @@ borsh = "1"
 # Declares the quoter wire types this program decodes. `borsh-derive` gives
 # them the same derives velocity's own accounts use.
 quoter-spec = { path = "../../crates/quoter-spec", features = ["anchor-derive"] }
-# The CLOB market account's layout. The cranks and the router read that
-# account's bytes, and the book lives in another cargo workspace, so the shape
-# is declared in one crate both compile against rather than restated here.
-clob-spec = { path = "../../crates/clob-spec" }
+# The CLOB's instruction arguments and return data — the whole of what
+# velocity knows about the book. Its account layout is deliberately absent:
+# everything velocity used to decode out of the market account, the book now
+# answers about its own memory.
+clob-wire = { path = "../../crates/clob-wire", features = ["anchor-derive"] }
 pyth-client = "0.2.2"
 pyth_lazer = { path = "../pyth-lazer", features = ["no-entrypoint"] }
 bytemuck = { version = "1.4.0", features = ["min_const_generics"] }

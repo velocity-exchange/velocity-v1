@@ -5,7 +5,7 @@
 
 use {
     super::market::{
-        assert_consistent, assert_err, place, place_raw, test_config, user, TestMarket,
+        assert_consistent, assert_err, params, place, place_raw, test_config, user, TestMarket,
     },
     crate::{
         book::{walk_side, BookHeader, ClobBook, NodeArena, Walk, NIL},
@@ -158,6 +158,247 @@ fn levels(book: &ClobMarketV0, pointer: crate::state::ResponsePointerV0) -> Vec<
         .collect()
 }
 
+/// What the hints would be if recomputed from scratch: the earliest expiry
+/// over live orders, and the earliest activation still ahead of `slot`.
+fn true_hints(book: &ClobMarketV0, slot: u64) -> (i64, u64) {
+    (0..book.len() as u32)
+        .filter_map(|i| book.read_node(i).ok())
+        .filter(|node| node.is_bit_flag_set(OrderBitFlag::Open))
+        .fold((i64::MAX, u64::MAX), |(ts, activation), node| {
+            (
+                if node.max_ts != 0 {
+                    ts.min(node.max_ts)
+                } else {
+                    ts
+                },
+                if node.activation_slot > slot {
+                    activation.min(node.activation_slot)
+                } else {
+                    activation
+                },
+            )
+        })
+}
+
+/// The book's own wake hints are never *later* than the truth.
+///
+/// A caller reads these instead of walking the arena to find out when its next
+/// crank is due, so the direction of the error is what has to hold. A hint
+/// earlier than the truth costs that caller a simulation that finds nothing. A
+/// hint later than the truth is work nobody is woken for, which is a liveness
+/// bug rather than a cost.
+#[track_caller]
+fn assert_hints_are_not_late(book: &ClobMarketV0, slot: u64) {
+    let (expiry, activation) = true_hints(book, slot);
+    assert!(
+        book.next_expiry_ts <= expiry,
+        "expiry hint {} is later than the earliest live expiry {expiry}",
+        book.next_expiry_ts
+    );
+    assert!(
+        book.next_activation_slot <= activation,
+        "activation hint {} is later than the earliest pending activation {activation}",
+        book.next_activation_slot
+    );
+}
+
+#[test]
+fn the_wake_hints_are_never_later_than_the_book() {
+    let market = TestMarket::new(16);
+    let mut book = market.book();
+    let maker = user(1);
+
+    // An empty book has nothing pending either way.
+    assert_eq!(book.next_expiry_ts, i64::MAX);
+    assert_eq!(book.next_activation_slot, u64::MAX);
+
+    let mut expiring = |book: &mut ClobMarketV0, price, max_ts, activation_slot| {
+        book.place(PlaceOrderParams {
+            max_ts,
+            activation_slot,
+            ..params(Side::Ask, price, 10, maker)
+        })
+        .expect("placement succeeds")
+    };
+
+    // Placement folds each order in, and only ever earlier.
+    let late = expiring(&mut book, 100, 900, 50);
+    assert_eq!((book.next_expiry_ts, book.next_activation_slot), (900, 50));
+    let early = expiring(&mut book, 101, 300, 20);
+    assert_eq!((book.next_expiry_ts, book.next_activation_slot), (300, 20));
+    // A later order moves neither.
+    let latest = expiring(&mut book, 102, 1_200, 80);
+    assert_eq!((book.next_expiry_ts, book.next_activation_slot), (300, 20));
+    assert_hints_are_not_late(&book, 0);
+
+    // Removing an order that held neither minimum moves nothing.
+    book.cancel(maker, latest).expect("cancel succeeds");
+    assert_eq!((book.next_expiry_ts, book.next_activation_slot), (300, 20));
+
+    // Removing the expiry's holder repairs it to the next live order. The
+    // activation hint is left where it is — safe, because early — until a
+    // write that knows the slot moves it on.
+    book.cancel(maker, early).expect("cancel succeeds");
+    assert_eq!(book.next_expiry_ts, 900);
+    assert_hints_are_not_late(&book, 0);
+
+    // An empty book goes back to nothing expiring.
+    book.cancel(maker, late).expect("cancel succeeds");
+    assert_eq!(book.next_expiry_ts, i64::MAX);
+    assert_hints_are_not_late(&book, 0);
+}
+
+/// An order with no expiry never becomes one.
+///
+/// `max_ts == 0` is good-till-cancelled, not "expires at the epoch". Folding
+/// it in as a timestamp would peg the hint to zero and leave the expiry wake
+/// due forever.
+#[test]
+fn a_good_till_cancelled_order_is_not_an_expiry() {
+    let market = TestMarket::new(8);
+    let mut book = market.book();
+    let maker = user(1);
+
+    place(&mut book, Side::Bid, 100, 10, maker);
+    assert_eq!(book.next_expiry_ts, i64::MAX);
+
+    let expiring = book
+        .place(PlaceOrderParams {
+            max_ts: 500,
+            ..params(Side::Bid, 99, 10, maker)
+        })
+        .expect("placement succeeds");
+    assert_eq!(book.next_expiry_ts, 500);
+
+    // Removing the only order that expires leaves the book with none again,
+    // rather than with the good-till-cancelled order's zero.
+    book.cancel(maker, expiring).expect("cancel succeeds");
+    assert_eq!(book.next_expiry_ts, i64::MAX);
+}
+
+/// An activation the chain has passed stops being pending.
+///
+/// It is the one hint that goes stale with nothing writing to the book, so a
+/// stored slot at or behind the current one would leave its wake permanently
+/// due. A zero-delay placement must not set it at all, for the same reason.
+#[test]
+fn a_passed_activation_stops_being_pending() {
+    let market = TestMarket::new(8);
+    let mut book = market.book();
+    let maker = user(1);
+
+    // Activating on the slot it was placed on is not pending.
+    place(&mut book, Side::Bid, 100, 10, maker);
+    assert_eq!(book.next_activation_slot, u64::MAX);
+
+    book.place(PlaceOrderParams {
+        activation_slot: 10,
+        placed_slot: 5,
+        ..params(Side::Ask, 100, 10, maker)
+    })
+    .expect("placement succeeds");
+    assert_eq!(book.next_activation_slot, 10);
+
+    // A later placement, once slot 10 has gone by, carries the hint forward to
+    // the only activation still ahead.
+    book.place(PlaceOrderParams {
+        activation_slot: 40,
+        placed_slot: 20,
+        ..params(Side::Ask, 101, 10, maker)
+    })
+    .expect("placement succeeds");
+    assert_eq!(book.next_activation_slot, 40);
+    assert_hints_are_not_late(&book, 20);
+
+    // And once that one has gone by too, nothing is pending. This placement
+    // takes no delay at all — `activation_slot == placed_slot`, which the book
+    // requires to be the earliest it can be — so it adds nothing to wake for.
+    book.place(PlaceOrderParams {
+        activation_slot: 50,
+        placed_slot: 50,
+        ..params(Side::Ask, 102, 10, maker)
+    })
+    .expect("placement succeeds");
+    assert_eq!(book.next_activation_slot, u64::MAX);
+    assert_hints_are_not_late(&book, 50);
+}
+
+/// The price bound stops the walk, and stops it in the right place: at the
+/// limit, not before it.
+///
+/// The bound exists to keep a quoter from aggregating levels the caller then
+/// discards. Whoever sent the transaction pays for the compute limit it
+/// requests, so a hop past the taker's worst acceptable price is billed twice
+/// — once to walk it, once to throw it away.
+#[test]
+fn the_price_bound_stops_the_walk_at_the_limit() {
+    let market = TestMarket::new(8);
+    let mut book = market.book();
+    let maker = user(1);
+    for (price, size) in [(100, 2), (101, 2), (102, 2), (103, 2)] {
+        place(&mut book, Side::Ask, price, size, maker);
+    }
+    let users = [maker];
+
+    // A long taker will not pay above 101. The level at 101 is acceptable;
+    // 102 and 103 are not.
+    let pointer = book
+        .quote(
+            Direction::Long,
+            u64::MAX,
+            &users,
+            &UserCapsV0::EMPTY,
+            0,
+            None,
+            101,
+            0,
+            0,
+        )
+        .unwrap();
+    assert_eq!(levels(&mut book, pointer), vec![(100, 2), (101, 2)]);
+
+    // Zero is no bound: the same walk reaches the whole side.
+    let pointer = book
+        .quote(
+            Direction::Long,
+            u64::MAX,
+            &users,
+            &UserCapsV0::EMPTY,
+            0,
+            None,
+            0,
+            0,
+            0,
+        )
+        .unwrap();
+    assert_eq!(
+        levels(&mut book, pointer),
+        vec![(100, 2), (101, 2), (102, 2), (103, 2)]
+    );
+
+    // The bid side ranks the other way, so a short taker's bound cuts the
+    // low prices rather than the high ones.
+    let market = TestMarket::new(8);
+    let mut book = market.book();
+    for (price, size) in [(103, 2), (102, 2), (101, 2), (100, 2)] {
+        place(&mut book, Side::Bid, price, size, maker);
+    }
+    let pointer = book
+        .quote(
+            Direction::Short,
+            u64::MAX,
+            &users,
+            &UserCapsV0::EMPTY,
+            0,
+            None,
+            102,
+            0,
+            0,
+        )
+        .unwrap();
+    assert_eq!(levels(&mut book, pointer), vec![(103, 2), (102, 2)]);
+}
+
 /// A capped user is passed over where they rest, and the depth behind them
 /// is still quoted and still filled.
 ///
@@ -191,6 +432,7 @@ fn a_user_with_no_room_is_skipped_mid_book() {
             None,
             0,
             0,
+            0,
         )
         .unwrap();
     assert_eq!(levels(&mut book, pointer), vec![(100, 5), (101, 7)]);
@@ -198,7 +440,7 @@ fn a_user_with_no_room_is_skipped_mid_book() {
     // Capped: the front order is gone and the one behind it survives — not
     // truncated away with it.
     let pointer = book
-        .quote(Direction::Long, 12, &users, &caps, 0, None, 0, 0)
+        .quote(Direction::Long, 12, &users, &caps, 0, None, 0, 0, 0)
         .unwrap();
     assert_eq!(
         levels(&mut book, pointer),
@@ -244,7 +486,17 @@ fn a_user_with_some_room_is_filled_only_that_far() {
     };
 
     let pointer = book
-        .quote(Direction::Long, 12 * UNIT, &users, &caps, 102, None, 0, 0)
+        .quote(
+            Direction::Long,
+            12 * UNIT,
+            &users,
+            &caps,
+            102,
+            None,
+            0,
+            0,
+            0,
+        )
         .unwrap();
     assert_eq!(
         levels(&mut book, pointer),
@@ -323,6 +575,7 @@ fn a_set_wider_than_the_user_cap_still_quotes() {
             None,
             0,
             0,
+            0,
         )
         .unwrap();
     assert_eq!(
@@ -369,7 +622,17 @@ fn a_link_out_of_the_arena_fails_every_walk() {
             .unwrap();
 
         assert_err(
-            book.quote(Direction::Long, 10, &[], &UserCapsV0::EMPTY, 0, None, 0, 0),
+            book.quote(
+                Direction::Long,
+                10,
+                &[],
+                &UserCapsV0::EMPTY,
+                0,
+                None,
+                0,
+                0,
+                0,
+            ),
             ClobError::NodeIndexOutOfRange,
         );
         assert_err(
@@ -402,6 +665,7 @@ fn a_cycled_link_cannot_spin_the_walk() {
             &UserCapsV0::EMPTY,
             0,
             None,
+            0,
             0,
             0,
         ),
@@ -733,7 +997,11 @@ fn initialize_threads_the_whole_arena() {
     let book = market.book();
     assert_eq!(book.free_count, 4);
     assert_eq!(book.next_order_id, 1);
-    assert_eq!(book.padding, [0u8; 128]);
+    assert_eq!(book.padding, [0u8; 112]);
+    // The wake hints start at "nothing pending" rather than at zero, which
+    // would read as an expiry at the epoch and an activation already passed.
+    assert_eq!(book.next_expiry_ts, i64::MAX);
+    assert_eq!(book.next_activation_slot, u64::MAX);
     assert_consistent(&book);
     drop(book);
 

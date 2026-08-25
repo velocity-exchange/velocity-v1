@@ -13,9 +13,10 @@ use {
     futures_util::StreamExt,
     pyth_lazer_protocol::router::TimestampUs,
     solana_account_decoder_client_types::UiAccountEncoding,
-    solana_compute_budget_interface::ComputeBudgetInstruction,
-    solana_rpc_client_api::config::{
-        RpcAccountInfoConfig, RpcProgramAccountsConfig, RpcTransactionConfig,
+    solana_compute_budget_interface::{id as compute_budget_id, ComputeBudgetInstruction},
+    solana_rpc_client_api::{
+        config::{RpcAccountInfoConfig, RpcProgramAccountsConfig, RpcTransactionConfig},
+        response::RpcSimulateTransactionResult,
     },
     solana_sdk::{
         instruction::{AccountMeta, InstructionError},
@@ -55,7 +56,8 @@ use {
             accounts::{PerpMarket, User, UserStats},
             CommitmentConfig, FeeTier, MarketId, MarketPrecision, MarketStatus, MarketType, Order,
             OrderParamsExt, OrderTriggerCondition, OrderType, PositionDirection, PostOnlyParam,
-            RpcSendTransactionConfig, StateExt, VersionedMessage, VersionedTransaction, AMM,
+            RpcSendTransactionConfig, SdkResult, StateExt, VersionedMessage, VersionedTransaction,
+            AMM,
         },
         ClobFillAccounts, GrpcSubscribeOpts, Pubkey, TransactionBuilder, VelocityClient, Wallet,
     },
@@ -1258,17 +1260,16 @@ async fn try_swift_fill(
             tx_builder = tx_builder.set_ix(last, fill_ix);
         }
 
-        // large accounts list, bump CU limit to compensate
-        let mut effective_cu_limit = cu_limit;
-        if let Some(ix) = tx_builder.ixs().last() {
-            if ix.accounts.len() >= 30 {
-                effective_cu_limit = cu_limit * 2;
-                tx_builder = tx_builder.set_ix(
-                    1,
-                    ComputeBudgetInstruction::set_compute_unit_limit(effective_cu_limit),
-                );
-            }
-        }
+        // Ask for the ceiling here and let the send path size it down. It
+        // simulates before it signs, so the limit that gets signed comes from
+        // what the transaction burned rather than from a guess about the shape
+        // of its account list — and the limit that gets signed is the one the
+        // network bills.
+        let effective_cu_limit = MAX_COMPUTE_UNITS as u32;
+        tx_builder = tx_builder.set_ix(
+            1,
+            ComputeBudgetInstruction::set_compute_unit_limit(effective_cu_limit),
+        );
         if let Some(flow) = co_signer {
             let mut price_ix = tx_builder.ixs()[0].clone();
             price_ix
@@ -1290,9 +1291,9 @@ async fn try_swift_fill(
 
     if let Some(client) = attest {
         match attested_swift_fill(velocity, client, &swift_order, &assemble).await {
-            Ok((tx, effective_cu_limit)) => {
+            Ok((tx, effective_cu_limit, simulation)) => {
                 tx_worker_ref
-                    .send_signed_tx(tx, intent(), effective_cu_limit)
+                    .send_signed_tx(tx, simulation, intent(), effective_cu_limit)
                     .await;
                 return;
             }
@@ -1452,13 +1453,41 @@ async fn route_quoter_metas(
 /// Build, self-sign, and get the flow-authority co-signature for a swift
 /// fill. Both signatures cover one fixed message, so the blockhash is set
 /// here and nothing may re-sign the result.
+///
+/// Which is why the compute limit is sized *here*. Every other path leaves it
+/// to the send path, which simulates before it signs; this one cannot, because
+/// by the time it is signed a second party has signed the same bytes. The
+/// simulation runs against the unattested assembly — the flow authority rides
+/// a compute-budget instruction as a read-only co-signer and executes nothing,
+/// so it costs no compute — and its verdict is handed on so the worker does
+/// not ask again.
 async fn attested_swift_fill(
     velocity: &'static VelocityClient,
     client: &crate::attest::AttestClient,
     swift_order: &SignedOrderInfo,
     assemble: &dyn Fn(Option<Pubkey>) -> (VersionedMessage, u64),
-) -> Result<(VersionedTransaction, u64), String> {
-    let (mut message, effective_cu_limit) = assemble(Some(client.flow_authority()));
+) -> Result<
+    (
+        VersionedTransaction,
+        u64,
+        Option<SdkResult<RpcSimulateTransactionResult>>,
+    ),
+    String,
+> {
+    let (mut message, mut effective_cu_limit) = assemble(Some(client.flow_authority()));
+    let (probe, _) = assemble(None);
+    let simulation = velocity
+        .simulate_tx_with_commitment(probe, Some(CommitmentConfig::processed()))
+        .await;
+    if let Ok(result) = &simulation {
+        if result.err.is_none() {
+            if let Some(units) = result.units_consumed {
+                let sized = size_compute_limit(units);
+                set_compute_unit_limit(&mut message, sized);
+                effective_cu_limit = u64::from(sized);
+            }
+        }
+    }
     let blockhash = velocity
         .get_latest_blockhash()
         .await
@@ -1484,7 +1513,7 @@ async fn attested_swift_fill(
     };
 
     let attested = client.attest(swift_order.order_uuid_str(), &tx).await?;
-    Ok((attested, effective_cu_limit))
+    Ok((attested, effective_cu_limit, Some(simulation)))
 }
 
 /// Place a swift order on-chain without filling it.
@@ -1878,17 +1907,16 @@ async fn try_auction_fill(
                     None,
                 );
 
-        // large accounts list, bump CU limit to compensate
-        let mut effective_cu_limit = cu_limit;
-        if let Some(ix) = tx_builder.ixs().last() {
-            if ix.accounts.len() >= 20 {
-                effective_cu_limit = cu_limit * 2;
-                tx_builder = tx_builder.set_ix(
-                    1,
-                    ComputeBudgetInstruction::set_compute_unit_limit(effective_cu_limit),
-                );
-            }
-        }
+        // Ask for the ceiling here and let the send path size it down. It
+        // simulates before it signs, so the limit that gets signed comes from
+        // what the transaction burned rather than from a guess about the shape
+        // of its account list — and the limit that gets signed is the one the
+        // network bills.
+        let effective_cu_limit = MAX_COMPUTE_UNITS as u32;
+        tx_builder = tx_builder.set_ix(
+            1,
+            ComputeBudgetInstruction::set_compute_unit_limit(effective_cu_limit),
+        );
 
         let (tx, simulation_tx) = build_fill_tx(tx_builder, includes_oracle_update);
 
@@ -2046,17 +2074,16 @@ async fn try_uncross(
                 None,
             );
 
-        // large accounts list, bump CU limit to compensate
-        let mut effective_cu_limit = cu_limit;
-        if let Some(ix) = tx_builder.ixs().last() {
-            if ix.accounts.len() >= 40 {
-                effective_cu_limit = (cu_limit * 25) / 10;
-                tx_builder = tx_builder.set_ix(
-                    1,
-                    ComputeBudgetInstruction::set_compute_unit_limit(effective_cu_limit),
-                );
-            }
-        }
+        // Ask for the ceiling here and let the send path size it down. It
+        // simulates before it signs, so the limit that gets signed comes from
+        // what the transaction burned rather than from a guess about the shape
+        // of its account list — and the limit that gets signed is the one the
+        // network bills.
+        let effective_cu_limit = MAX_COMPUTE_UNITS as u32;
+        tx_builder = tx_builder.set_ix(
+            1,
+            ComputeBudgetInstruction::set_compute_unit_limit(effective_cu_limit),
+        );
         let (tx, simulation_tx) = build_fill_tx(tx_builder, false);
 
         emit_uncross_attempt_event(
@@ -2280,17 +2307,16 @@ async fn try_vamm_taker_fill(
                     None,
                 );
 
-        // large accounts list, bump CU limit to compensate
-        let mut effective_cu_limit = cu_limit;
-        if let Some(ix) = tx_builder.ixs().last() {
-            if ix.accounts.len() >= 20 {
-                effective_cu_limit = cu_limit * 2;
-                tx_builder = tx_builder.set_ix(
-                    1,
-                    ComputeBudgetInstruction::set_compute_unit_limit(effective_cu_limit),
-                );
-            }
-        }
+        // Ask for the ceiling here and let the send path size it down. It
+        // simulates before it signs, so the limit that gets signed comes from
+        // what the transaction burned rather than from a guess about the shape
+        // of its account list — and the limit that gets signed is the one the
+        // network bills.
+        let effective_cu_limit = MAX_COMPUTE_UNITS as u32;
+        tx_builder = tx_builder.set_ix(
+            1,
+            ComputeBudgetInstruction::set_compute_unit_limit(effective_cu_limit),
+        );
         let (tx, simulation_tx) = build_fill_tx(tx_builder, false);
 
         tx_worker_ref
@@ -2605,6 +2631,10 @@ async fn subscribe_grpc(
 pub enum TxWork {
     Send {
         tx: VersionedTransaction,
+        /// The verdict `queue_tx` already got, so the worker does not ask
+        /// twice. It simulates to size the compute limit, and the answer to
+        /// "is this transaction good" comes back in the same reply.
+        presimulated: Option<SdkResult<RpcSimulateTransactionResult>>,
         simulation_tx: Option<VersionedMessage>,
         require_fill_event: bool,
         ts: u64,
@@ -2656,6 +2686,7 @@ impl TxWorker {
                 match work {
                     TxWork::Send {
                         tx,
+                        presimulated,
                         simulation_tx,
                         require_fill_event,
                         ts: _,
@@ -2666,7 +2697,15 @@ impl TxWorker {
                             log::debug!(target: TARGET, "skip tx dry run: {intent:?}");
                             continue;
                         }
-                        self.send_tx(&rt, tx, simulation_tx, require_fill_event, intent, cu_limit);
+                        self.send_tx(
+                            &rt,
+                            tx,
+                            presimulated,
+                            simulation_tx,
+                            require_fill_event,
+                            intent,
+                            cu_limit,
+                        );
                     }
                     TxWork::Confirm { tx, ts: _ } => {
                         self.confirm_tx(&rt, tx);
@@ -2677,10 +2716,12 @@ impl TxWorker {
         TxSender { tx, velocity }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn send_tx(
         &self,
         rt: &Handle,
         signed_tx: VersionedTransaction,
+        presimulated: Option<SdkResult<RpcSimulateTransactionResult>>,
         simulation_tx: Option<VersionedMessage>,
         require_fill_event: bool,
         intent: TxIntent,
@@ -2708,13 +2749,18 @@ impl TxWorker {
             // preflight lags ~32 slots and rejects valid fills for the whole
             // finalization window (e.g. `OrderMustBeTriggeredFirst` on fills of a
             // just-triggered order)
-            match velocity
-                .simulate_tx_with_commitment(
-                    simulation_tx,
-                    Some(CommitmentConfig::processed()),
-                )
-                .await
-            {
+            let simulation = match presimulated {
+                Some(result) => result,
+                None => {
+                    velocity
+                        .simulate_tx_with_commitment(
+                            simulation_tx,
+                            Some(CommitmentConfig::processed()),
+                        )
+                        .await
+                }
+            };
+            match simulation {
                 Ok(sim_result) => {
                     if let Some(err) = sim_result.err {
                         if is_revert_fill_error(&err) {
@@ -3435,6 +3481,7 @@ impl TxSender {
     pub async fn send_signed_tx(
         &self,
         tx: VersionedTransaction,
+        presimulated: Option<SdkResult<RpcSimulateTransactionResult>>,
         intent: TxIntent,
         cu_limit: u64,
     ) -> Option<Signature> {
@@ -3442,6 +3489,10 @@ impl TxSender {
         self.tx
             .send(TxWork::Send {
                 tx,
+                // Two signatures cover these exact bytes, so the limit inside
+                // them is fixed. It was sized before the co-signature, off the
+                // simulation handed in here.
+                presimulated,
                 simulation_tx: None,
                 require_fill_event: false,
                 ts: SystemTime::now()
@@ -3474,6 +3525,40 @@ impl TxSender {
         intent: TxIntent,
         cu_limit: u64,
     ) -> Option<Signature> {
+        // The compute limit is what the network bills, so it is set from what
+        // the transaction burns rather than from a guess with headroom on top.
+        // Simulating here rather than in the worker keeps it to one call: the
+        // same reply sizes the limit and answers whether the transaction is
+        // worth sending, and the worker takes that answer as an input.
+        //
+        // Sized before signing, because the limit is inside the message the
+        // signature covers.
+        //
+        // A fill path hands its own message to simulate — the same fill with
+        // `revert_fill` appended, so a fill that produces nothing fails the
+        // simulation instead of landing empty. That variant is what the worker
+        // judges by, and its compute is this fill's plus one marker
+        // instruction, so it sizes the real transaction as well.
+        let mut tx = tx;
+        let probe = simulation_tx.clone().unwrap_or_else(|| tx.clone());
+        let simulation = self
+            .velocity
+            .simulate_tx_with_commitment(probe, Some(CommitmentConfig::processed()))
+            .await;
+        let cu_limit = match &simulation {
+            Ok(result) if result.err.is_none() => match result.units_consumed {
+                Some(units) => {
+                    let sized = size_compute_limit(units);
+                    set_compute_unit_limit(&mut tx, sized);
+                    u64::from(sized)
+                }
+                None => cu_limit,
+            },
+            // A transaction the simulation rejected is not sent, so what it
+            // would have asked for never matters. The worker reports it.
+            _ => cu_limit,
+        };
+
         // no blockhash = subscription dead AND rpc fallback failed; silently dropping
         // every tx from here would be worse than a restart
         let blockhash = self
@@ -3487,6 +3572,7 @@ impl TxSender {
         self.tx
             .send(TxWork::Send {
                 tx: signed_tx,
+                presimulated: Some(simulation),
                 simulation_tx,
                 require_fill_event,
                 ts: SystemTime::now()
@@ -3499,6 +3585,45 @@ impl TxSender {
             .ok()?;
 
         Some(sig)
+    }
+}
+
+/// The most one transaction may request.
+pub const MAX_COMPUTE_UNITS: u64 = 1_400_000;
+
+/// The compute limit to request for a transaction that burned `units`.
+///
+/// Twenty percent over, which is what covers a fill whose on-chain path
+/// diverges slightly from the simulated one — a maker account that moved, an
+/// extra oracle branch. The floor keeps a trivial transaction from asking for
+/// less than it takes to start.
+fn size_compute_limit(units: u64) -> u32 {
+    let sized = units.saturating_mul(12) / 10;
+    sized.clamp(1_000, MAX_COMPUTE_UNITS) as u32
+}
+
+/// Rewrite the `SetComputeUnitLimit` instruction in place.
+///
+/// The limit is four bytes of instruction data, so the message keeps its
+/// shape: no account moves, nothing is re-indexed, and the transaction that
+/// gets signed is the one that was simulated except for the number it asks
+/// for. Does nothing when the message carries no such instruction.
+fn set_compute_unit_limit(message: &mut VersionedMessage, units: u32) {
+    let compute_budget = compute_budget_id();
+    let keys = message.static_account_keys().to_vec();
+    let instructions = match message {
+        VersionedMessage::Legacy(legacy) => &mut legacy.instructions,
+        VersionedMessage::V0(v0) => &mut v0.instructions,
+    };
+    for ix in instructions.iter_mut() {
+        let is_compute_budget = keys
+            .get(ix.program_id_index as usize)
+            .is_some_and(|key| *key == compute_budget);
+        // 2: set compute unit limit.
+        if is_compute_budget && ix.data.first() == Some(&2) && ix.data.len() == 5 {
+            ix.data[1..].copy_from_slice(&units.to_le_bytes());
+            return;
+        }
     }
 }
 
@@ -3581,14 +3706,17 @@ mod tests {
             Cow::Owned(User::default()),
             false,
         );
+        // Both messages carry the loaded-accounts data size limit the builder
+        // adds, so the counts are compared to each other rather than to zero:
+        // what this pins is where `revert_fill` ends up.
         let (send_tx, simulation_tx) = build_fill_tx(builder, false);
-        assert_eq!(send_tx.instructions().len(), 0);
+        let baseline = send_tx.instructions().len();
         assert_eq!(
             simulation_tx
                 .expect("ordinary fills simulate with RevertFill")
                 .instructions()
                 .len(),
-            1
+            baseline + 1
         );
 
         let builder = TransactionBuilder::new(
@@ -3598,7 +3726,7 @@ mod tests {
             false,
         );
         let (send_tx, simulation_tx) = build_fill_tx(builder, true);
-        assert_eq!(send_tx.instructions().len(), 1);
+        assert_eq!(send_tx.instructions().len(), baseline + 1);
         assert!(
             simulation_tx.is_none(),
             "Pyth-update fills must retain RevertFill when sent"

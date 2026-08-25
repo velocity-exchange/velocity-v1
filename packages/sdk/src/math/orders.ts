@@ -17,6 +17,8 @@ import {
 	MARGIN_PRECISION,
 } from '../constants/numericConstants';
 import { BN } from '../isomorphic/anchor';
+import { PublicKey } from '@solana/web3.js';
+import { sha256 } from '@noble/hashes/sha256';
 import { MMOraclePriceData, OraclePriceData } from '../oracles/types';
 import {
 	getAuctionPrice,
@@ -497,4 +499,37 @@ export function maxSizeForTargetLiabilityWeightBN(
 	}
 
 	return lo;
+}
+
+/**
+ * Digest of a signed route: the `QuoterV0` entries a taker chose, reduced to the four bytes an
+ * `Order` can hold. Mirrors the program's `state::order_params::route_digest`.
+ *
+ * Canonicalised first (sorted, deduped) so the same choice always digests the same way regardless
+ * of the order a client listed it in. An empty route digests to all-zero, which is what makes one
+ * equality check cover both "no route was signed" and "this is the route that was signed" — and a
+ * real route never digests to zero, so the two stay distinguishable.
+ *
+ * A filler needs this: `fillPerpOrder` claims a route, and the program rejects the fill unless the
+ * claim digests to what the order carries.
+ * @param route - The quoter entries the taker signed; empty or absent for an unrouted order.
+ * @returns The four digest bytes, as the `number[]` `Order.routeDigest` holds.
+ */
+export function getRouteDigest(route?: PublicKey[] | null): number[] {
+	if (!route || route.length === 0) {
+		return [0, 0, 0, 0];
+	}
+	const keys = route
+		.map((key) => key.toBytes())
+		.sort(Buffer.compare as (a: Uint8Array, b: Uint8Array) => number);
+	const deduped = keys.filter(
+		(key, index) => index === 0 || Buffer.compare(keys[index - 1], key) !== 0
+	);
+	const digest = Array.from(sha256(Buffer.concat(deduped)).slice(0, 4));
+	// Never collide with "no route": a real route must be distinguishable from
+	// an absent one.
+	if (digest.every((byte) => byte === 0)) {
+		digest[0] = 1;
+	}
+	return digest;
 }

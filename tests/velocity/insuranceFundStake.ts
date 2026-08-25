@@ -29,10 +29,6 @@ import {
 	unstakeSharesToAmount,
 	MarketStatus,
 	LIQUIDATION_PCT_PRECISION,
-	ExchangeStatus,
-	SpotOperation,
-	getInsuranceFundNav,
-	getInsuranceFundRevenueReceivableTokenAmount,
 } from '../../packages/sdk/src';
 
 import {
@@ -662,7 +658,6 @@ describe('insurance fund stake', () => {
 
 	it('no user -> user stake when there is a vault balance', async () => {
 		const marketIndex = 0;
-		await velocityClient.fetchAccounts();
 		const spotMarket0Before = velocityClient.getSpotMarketAccount(marketIndex);
 		const insuranceVaultAmountBefore = asBN(
 			(
@@ -671,6 +666,8 @@ describe('insurance fund stake', () => {
 				)
 			).amount
 		);
+		assert(spotMarket0Before.revenuePool.scaledBalance.eq(ZERO));
+
 		assert(spotMarket0Before.insuranceFund.userShares.eq(ZERO));
 		// no-staker bootstrap: settling fees with zero shares seeds total_shares
 		// 1:1 with the vault (permanent, non-withdrawable protocol ballast) so
@@ -705,6 +702,7 @@ describe('insurance fund stake', () => {
 		}
 
 		const spotMarket0 = velocityClient.getSpotMarketAccount(marketIndex);
+		assert(spotMarket0.revenuePool.scaledBalance.eq(ZERO));
 		const insuranceVaultAmountAfter = asBN(
 			(
 				await bankrunContextWrapper.connection.getTokenAccount(
@@ -757,6 +755,8 @@ describe('insurance fund stake', () => {
 				)
 			).amount
 		);
+		assert(spotMarket0Before.revenuePool.scaledBalance.eq(ZERO));
+
 		console.log(
 			'cumulativeBorrowInterest:',
 			spotMarket0Before.cumulativeBorrowInterest.toString()
@@ -859,191 +859,6 @@ describe('insurance fund stake', () => {
 				.sub(userStats.ifStakedQuoteAssetAmount)
 				.lt(QUOTE_PRECISION)
 		);
-	});
-
-	it('books due revenue before cancel while withdrawals are paused', async () => {
-		const marketIndex = 0;
-		const ifStakePublicKey = getInsuranceFundStakeAccountPublicKey(
-			velocityClient.program.programId,
-			bankrunContextWrapper.provider.wallet.publicKey,
-			marketIndex
-		);
-
-		const runPausedCancel = async (pause: 'global' | 'market') => {
-			await velocityClient.updateSpotMarketRevenueSettlePeriod(
-				marketIndex,
-				ONE
-			);
-			await velocityClient.fetchAccounts();
-			const spotMarketBeforeRequest =
-				velocityClient.getSpotMarketAccount(marketIndex);
-			const insuranceVaultBeforeRequest = asBN(
-				(
-					await bankrunContextWrapper.connection.getTokenAccount(
-						spotMarketBeforeRequest.insuranceFund.vault
-					)
-				).amount
-			);
-			const ifStakeBeforeRequest =
-				(await velocityClient.program.account.insuranceFundStake.fetch(
-					ifStakePublicKey
-				)) as InsuranceFundStake;
-			const insuranceFundNavBeforeRequest = getInsuranceFundNav(
-				spotMarketBeforeRequest,
-				insuranceVaultBeforeRequest
-			);
-			const requestAmount = unstakeSharesToAmount(
-				ifStakeBeforeRequest.ifShares.divn(20),
-				spotMarketBeforeRequest.insuranceFund.totalShares,
-				insuranceFundNavBeforeRequest
-			);
-
-			assert(requestAmount.gt(ZERO));
-			await velocityClient.requestRemoveInsuranceFundStake(
-				marketIndex,
-				requestAmount
-			);
-
-			await bankrunContextWrapper.moveTimeForward(200);
-			await velocityClient.updateSpotMarketCumulativeInterest(marketIndex);
-			await velocityClient.fetchAccounts();
-
-			const spotMarketBeforeCancel =
-				velocityClient.getSpotMarketAccount(marketIndex);
-			const revenueBeforeCancel = getTokenAmount(
-				spotMarketBeforeCancel.revenuePool.scaledBalance,
-				spotMarketBeforeCancel,
-				SpotBalanceType.DEPOSIT
-			);
-			assert(revenueBeforeCancel.gt(ZERO));
-			assert(
-				spotMarketBeforeCancel.insuranceFundRevenueReceivableScaled.eq(ZERO)
-			);
-
-			if (pause === 'global') {
-				await velocityClient.updateExchangeStatus(
-					ExchangeStatus.WITHDRAW_PAUSED
-				);
-			} else {
-				await velocityClient.updateSpotMarketPausedOperations(
-					marketIndex,
-					SpotOperation.WITHDRAW
-				);
-			}
-
-			const spotVaultBeforeCancel = asBN(
-				(
-					await bankrunContextWrapper.connection.getTokenAccount(
-						spotMarketBeforeCancel.vault
-					)
-				).amount
-			);
-			const insuranceVaultBeforeCancel = asBN(
-				(
-					await bankrunContextWrapper.connection.getTokenAccount(
-						spotMarketBeforeCancel.insuranceFund.vault
-					)
-				).amount
-			);
-			const ifStakeBeforeCancel =
-				(await velocityClient.program.account.insuranceFundStake.fetch(
-					ifStakePublicKey
-				)) as InsuranceFundStake;
-
-			await velocityClient.cancelRequestRemoveInsuranceFundStake(marketIndex);
-			await velocityClient.fetchAccounts();
-
-			const spotMarketAfterCancel =
-				velocityClient.getSpotMarketAccount(marketIndex);
-			const revenueAfterCancel = getTokenAmount(
-				spotMarketAfterCancel.revenuePool.scaledBalance,
-				spotMarketAfterCancel,
-				SpotBalanceType.DEPOSIT
-			);
-			// The claim is a scaled balance, so read its token value.
-			const receivableAfterCancel =
-				getInsuranceFundRevenueReceivableTokenAmount(spotMarketAfterCancel);
-			const ifStakeAfterCancel =
-				(await velocityClient.program.account.insuranceFundStake.fetch(
-					ifStakePublicKey
-				)) as InsuranceFundStake;
-			const spotVaultAfterCancel = asBN(
-				(
-					await bankrunContextWrapper.connection.getTokenAccount(
-						spotMarketAfterCancel.vault
-					)
-				).amount
-			);
-			const insuranceVaultAfterCancel = asBN(
-				(
-					await bankrunContextWrapper.connection.getTokenAccount(
-						spotMarketAfterCancel.insuranceFund.vault
-					)
-				).amount
-			);
-
-			assert(revenueAfterCancel.lt(revenueBeforeCancel));
-			assert(receivableAfterCancel.gt(ZERO));
-			assert(ifStakeAfterCancel.ifShares.lt(ifStakeBeforeCancel.ifShares));
-			assert(ifStakeAfterCancel.lastWithdrawRequestShares.eq(ZERO));
-			assert(ifStakeAfterCancel.lastWithdrawRequestValue.eq(ZERO));
-			assert(spotVaultAfterCancel.eq(spotVaultBeforeCancel));
-			assert(insuranceVaultAfterCancel.eq(insuranceVaultBeforeCancel));
-
-			const navBeforeTransfer = getInsuranceFundNav(
-				spotMarketAfterCancel,
-				insuranceVaultAfterCancel
-			);
-			await velocityClient.updateSpotMarketRevenueSettlePeriod(
-				marketIndex,
-				new BN(3600)
-			);
-
-			if (pause === 'global') {
-				await velocityClient.updateExchangeStatus(ExchangeStatus.ACTIVE);
-			} else {
-				await velocityClient.updateSpotMarketPausedOperations(marketIndex, 0);
-			}
-
-			await velocityClient.settleRevenueToInsuranceFund(marketIndex);
-			await velocityClient.fetchAccounts();
-
-			const spotMarketAfterTransfer =
-				velocityClient.getSpotMarketAccount(marketIndex);
-			const spotVaultAfterTransfer = asBN(
-				(
-					await bankrunContextWrapper.connection.getTokenAccount(
-						spotMarketAfterTransfer.vault
-					)
-				).amount
-			);
-			const insuranceVaultAfterTransfer = asBN(
-				(
-					await bankrunContextWrapper.connection.getTokenAccount(
-						spotMarketAfterTransfer.insuranceFund.vault
-					)
-				).amount
-			);
-			const navAfterTransfer = getInsuranceFundNav(
-				spotMarketAfterTransfer,
-				insuranceVaultAfterTransfer
-			);
-
-			assert(
-				spotMarketAfterTransfer.insuranceFundRevenueReceivableScaled.eq(ZERO)
-			);
-			// The claim keeps earning deposit interest until the transfer runs, so
-			// the amount that moves is at least its value at cancel time.
-			const transferred = insuranceVaultAfterTransfer.sub(
-				insuranceVaultAfterCancel
-			);
-			assert(transferred.gte(receivableAfterCancel));
-			assert(spotVaultAfterCancel.sub(spotVaultAfterTransfer).eq(transferred));
-			assert(navAfterTransfer.gte(navBeforeTransfer));
-		};
-
-		await runPausedCancel('global');
-		await runPausedCancel('market');
 	});
 
 	it('liquidate borrow (w/ IF revenue)', async () => {

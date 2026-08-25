@@ -1069,16 +1069,6 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for SettleMultiplePnls {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
-    pub struct SettlePerpMarketIfRevenueToInsuranceFund {
-        pub perp_market_index: u16,
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for SettlePerpMarketIfRevenueToInsuranceFund {
-        const DISCRIMINATOR: &[u8] = &[109, 79, 105, 71, 84, 112, 50, 93];
-    }
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for SettlePerpMarketIfRevenueToInsuranceFund {}
-    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct SettlePerpToLpPool {}
     #[automatically_derived]
     impl anchor_lang::Discriminator for SettlePerpToLpPool {
@@ -4447,9 +4437,8 @@ pub mod types {
         pub pending_revenue_share: u64,
         pub amm: AMM,
         pub hedge_config: HedgeConfig,
-        pub insurance_fund_revenue_receivable: u64,
         #[serde(skip)]
-        pub _padding_future: Padding<248>,
+        pub _padding_future: Padding<256>,
     }
     #[repr(C)]
     #[derive(
@@ -5068,8 +5057,7 @@ pub mod types {
         pub total_quote_social_loss: u128,
         pub revenue_pool: PoolBalance,
         #[serde(skip)]
-        pub padding_former_spot_fee_pool: Padding<16>,
-        pub insurance_fund_revenue_receivable_scaled: u128,
+        pub padding_former_spot_fee_pool: Padding<32>,
         pub historical_oracle_data: HistoricalOracleData,
         pub historical_index_data: HistoricalIndexData,
         pub withdraw_guard_threshold: u64,
@@ -5121,10 +5109,8 @@ pub mod types {
         pub protocol_liquidation_fee: u32,
         pub protocol_fee_factor: u32,
         pub if_last_settle_vault_amount: u64,
-        pub perp_market_if_revenue_receivable: u64,
-        pub revenue_settle_allowance: u64,
         #[serde(skip)]
-        pub _padding_future: Padding<240>,
+        pub _padding_future: Padding<256>,
     }
     #[repr(C)]
     #[derive(
@@ -6013,9 +5999,8 @@ pub mod accounts {
         pub pending_revenue_share: u64,
         pub amm: AMM,
         pub hedge_config: HedgeConfig,
-        pub insurance_fund_revenue_receivable: u64,
         #[serde(skip)]
-        pub _padding_future: Padding<248>,
+        pub _padding_future: Padding<256>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for PerpMarket {
@@ -6453,8 +6438,7 @@ pub mod accounts {
         pub total_quote_social_loss: u128,
         pub revenue_pool: PoolBalance,
         #[serde(skip)]
-        pub padding_former_spot_fee_pool: Padding<16>,
-        pub insurance_fund_revenue_receivable_scaled: u128,
+        pub padding_former_spot_fee_pool: Padding<32>,
         pub historical_oracle_data: HistoricalOracleData,
         pub historical_index_data: HistoricalIndexData,
         pub withdraw_guard_threshold: u64,
@@ -6506,10 +6490,8 @@ pub mod accounts {
         pub protocol_liquidation_fee: u32,
         pub protocol_fee_factor: u32,
         pub if_last_settle_vault_amount: u64,
-        pub perp_market_if_revenue_receivable: u64,
-        pub revenue_settle_allowance: u64,
         #[serde(skip)]
-        pub _padding_future: Padding<240>,
+        pub _padding_future: Padding<256>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for SpotMarket {
@@ -13896,7 +13878,6 @@ pub mod accounts {
         pub insurance_fund_stake: Pubkey,
         pub user_stats: Pubkey,
         pub authority: Pubkey,
-        pub spot_market_vault: Pubkey,
         pub insurance_fund_vault: Pubkey,
         pub velocity_signer: Pubkey,
         pub user_token_account: Pubkey,
@@ -13942,11 +13923,6 @@ pub mod accounts {
                     pubkey: self.authority,
                     is_signer: true,
                     is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.spot_market_vault,
-                    is_signer: false,
-                    is_writable: true,
                 },
                 AccountMeta {
                     pubkey: self.insurance_fund_vault,
@@ -15209,103 +15185,6 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for SettleMultiplePnls {
-        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let given_disc = &buf[..8];
-            if Self::DISCRIMINATOR != given_disc {
-                return Err(anchor_lang::error!(
-                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
-                ));
-            }
-            Self::try_deserialize_unchecked(buf)
-        }
-        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let mut data: &[u8] = &buf[8..];
-            AnchorDeserialize::deserialize(&mut data)
-                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
-        }
-    }
-    #[repr(C)]
-    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
-    pub struct SettlePerpMarketIfRevenueToInsuranceFund {
-        pub state: Pubkey,
-        pub perp_market: Pubkey,
-        pub spot_market: Pubkey,
-        pub spot_market_vault: Pubkey,
-        pub velocity_signer: Pubkey,
-        pub insurance_fund_vault: Pubkey,
-        pub token_program: Pubkey,
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for SettlePerpMarketIfRevenueToInsuranceFund {
-        const DISCRIMINATOR: &[u8] = &[31, 154, 218, 82, 47, 67, 250, 25];
-    }
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Pod for SettlePerpMarketIfRevenueToInsuranceFund {}
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Zeroable
-        for SettlePerpMarketIfRevenueToInsuranceFund
-    {
-    }
-    #[automatically_derived]
-    impl anchor_lang::ZeroCopy for SettlePerpMarketIfRevenueToInsuranceFund {}
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for SettlePerpMarketIfRevenueToInsuranceFund {}
-    #[automatically_derived]
-    impl ToAccountMetas for SettlePerpMarketIfRevenueToInsuranceFund {
-        fn to_account_metas(&self) -> Vec<AccountMeta> {
-            vec![
-                AccountMeta {
-                    pubkey: self.state,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.perp_market,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.spot_market,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.spot_market_vault,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.velocity_signer,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.insurance_fund_vault,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.token_program,
-                    is_signer: false,
-                    is_writable: false,
-                },
-            ]
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountSerialize for SettlePerpMarketIfRevenueToInsuranceFund {
-        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
-            if writer.write_all(Self::DISCRIMINATOR).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            if AnchorSerialize::serialize(self, writer).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            Ok(())
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountDeserialize for SettlePerpMarketIfRevenueToInsuranceFund {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {

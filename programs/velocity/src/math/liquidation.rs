@@ -399,41 +399,21 @@ pub fn calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy(
     borrow: u128,
     spot_market: &SpotMarket,
 ) -> VelocityResult<u128> {
-    calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy_with_reserve(
-        borrow,
-        0,
-        spot_market,
-    )
-}
-
-pub fn calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy_with_reserve(
-    borrow: u128,
-    reserved_deposits: u128,
-    spot_market: &SpotMarket,
-) -> VelocityResult<u128> {
     let total_deposits = get_token_amount(
         spot_market.deposit_balance,
         spot_market,
         &SpotBalanceType::Deposit,
     )?;
-    let socializable_deposits = total_deposits.safe_sub(reserved_deposits)?;
 
-    // No deposits means there is no balance to haircut. If every remaining
-    // deposit is reserved, the loss cannot be charged without consuming that
-    // reserve.
-    if socializable_deposits == 0 {
-        validate!(
-            total_deposits == 0 || borrow == 0,
-            ErrorCode::InvalidSpotMarketState,
-            "spot bankruptcy has no unreserved deposits to socialize"
-        )?;
+    // No depositors to haircut: nothing to socialize against.
+    if total_deposits == 0 {
         return Ok(0);
     }
 
     let delta = spot_market
         .cumulative_deposit_interest
         .safe_mul(borrow)?
-        .safe_div_ceil(socializable_deposits)?;
+        .safe_div_ceil(total_deposits)?;
 
     // When the loss meets or exceeds total deposits, cap the haircut so
     // cumulative_deposit_interest stays >= 1: depositors are wiped out

@@ -532,20 +532,13 @@ pub struct PerpMarket {
     /// This market's hedge (LP pool) configuration. Sits immediately after `amm`
     /// so the trailing `[amm, hedge_config]` span is the contiguous VLP region.
     pub hedge_config: HedgeConfig,
-    /// This market's insurance fees that were swept from its pnl pool into the
-    /// quote spot market revenue pool but have not yet reached the insurance
-    /// fund vault. Bankruptcy for this market can reclaim the amount before
-    /// drawing shared insurance capital. Other markets cannot consume it.
-    /// precision: QUOTE_PRECISION
-    pub insurance_fund_revenue_receivable: u64,
-    /// Reserved tail space for future fields. Account extension is expensive
-    /// operationally, so this upgrade allocates enough room for later additions.
-    pub _padding_future: [u8; 248],
+    /// Reserved for future fields. Existing accounts must be extended before
+    /// the program loads them with this layout.
+    pub _padding_future: [u8; 256],
 }
 
 const _: () = assert!(std::mem::size_of::<PerpMarket>() == 1552);
-const _: () = assert!(std::mem::offset_of!(PerpMarket, insurance_fund_revenue_receivable) == 1296);
-const _: () = assert!(std::mem::offset_of!(PerpMarket, _padding_future) == 1304);
+const _: () = assert!(std::mem::offset_of!(PerpMarket, _padding_future) == 1296);
 
 impl Default for PerpMarket {
     fn default() -> Self {
@@ -613,8 +606,7 @@ impl Default for PerpMarket {
             pending_revenue_share: 0,
             amm: AMM::default(),
             hedge_config: HedgeConfig::default(),
-            insurance_fund_revenue_receivable: 0,
-            _padding_future: [0; 248],
+            _padding_future: [0; 256],
             protocol_fee_pool: PoolBalance::default(),
             protocol_liquidation_fee: 0,
             taker_fee_addon_tenth_bps: 0,
@@ -625,7 +617,7 @@ impl Default for PerpMarket {
 }
 
 impl Size for PerpMarket {
-    // 1200-byte struct + 8-byte discriminator. The cached spread state
+    // 1552-byte struct + 8-byte discriminator. The cached spread state
     // (4×u128 spread reserves, i64 last_oracle_reserve_price_spread_pct,
     // 2×u32 long/short_spread, i32 reference_price_offset) plus a dedicated
     // u64 last_spread_update_slot live back on AMM — refreshed by

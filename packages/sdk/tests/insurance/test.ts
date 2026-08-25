@@ -2,14 +2,8 @@ import {
 	BN,
 	ZERO,
 	depositAmountAndSharesForIfStake,
-	getInsuranceFundNav,
-	getInsuranceFundRevenueReceivableTokenAmount,
 	timeRemainingUntilUpdate,
 	ONE,
-	SpotMarketAccount,
-	SPOT_MARKET_BALANCE_PRECISION,
-	SPOT_MARKET_CUMULATIVE_INTEREST_PRECISION,
-	QUOTE_PRECISION,
 } from '../../src';
 // import { mockPerpMarkets } from '../dlob/helpers';
 
@@ -119,34 +113,5 @@ describe('Insurance Tests', () => {
 			threw = true;
 		}
 		assert(threw);
-	});
-
-	it('includes booked revenue in insurance fund nav', () => {
-		const spotMarket = {
-			decimals: 6,
-			insuranceFundRevenueReceivableScaled: new BN(50)
-				.mul(SPOT_MARKET_BALANCE_PRECISION)
-				.div(QUOTE_PRECISION),
-			cumulativeDepositInterest: SPOT_MARKET_CUMULATIVE_INTEREST_PRECISION,
-		} as SpotMarketAccount;
-
-		assert(getInsuranceFundNav(spotMarket, new BN(1_000)).eq(new BN(1_050)));
-	});
-
-	it('grows the receivable with deposit interest', () => {
-		// The claim is a scaled balance, so its token value rises with the
-		// deposit index while the transfer cannot complete.
-		const spotMarket = {
-			decimals: 6,
-			insuranceFundRevenueReceivableScaled: new BN(50)
-				.mul(SPOT_MARKET_BALANCE_PRECISION)
-				.div(QUOTE_PRECISION),
-			cumulativeDepositInterest:
-				SPOT_MARKET_CUMULATIVE_INTEREST_PRECISION.muln(11).divn(10),
-		} as SpotMarketAccount;
-
-		assert(
-			getInsuranceFundRevenueReceivableTokenAmount(spotMarket).eq(new BN(55))
-		);
 	});
 });

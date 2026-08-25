@@ -2334,16 +2334,13 @@ pub fn handle_resolve_perp_pnl_deficit<'c: 'info, 'info>(
             ErrorCode::InvalidIFDetected,
             "insurance_fund_vault.amount must remain > 0"
         )?;
-    }
 
-    // The controller may satisfy the deficit from the receivable without a
-    // token transfer. Record the resulting NAV in both cases.
-    let spot_market = &mut spot_market_map.get_ref_mut(&spot_market_index)?;
-    controller::insurance::record_insurance_fund_outflow(
-        spot_market,
-        insurance_vault_amount,
-        pay_from_insurance,
-    )?;
+        controller::insurance::record_insurance_fund_outflow(
+            spot_market,
+            insurance_vault_amount,
+            pay_from_insurance,
+        );
+    }
 
     // todo: validate amounts transfered and spot_market before and after are zero-sum
 
@@ -2487,7 +2484,7 @@ pub fn handle_resolve_perp_bankruptcy<'c: 'info, 'info>(
             spot_market,
             insurance_vault_amount,
             pay_from_insurance,
-        )?;
+        );
         // reload the spot market vault balance so it's up-to-date
         ctx.accounts.spot_market_vault.reload()?;
         math::spot_withdraw::validate_spot_market_vault_amount(
@@ -2620,7 +2617,7 @@ pub fn handle_resolve_spot_bankruptcy<'c: 'info, 'info>(
             spot_market,
             insurance_vault_amount,
             pay_from_insurance,
-        )?;
+        );
         // reload the spot market vault balance so it's up-to-date
         ctx.accounts.spot_market_vault.reload()?;
         math::spot_withdraw::validate_spot_market_vault_amount(
@@ -2973,49 +2970,24 @@ pub fn handle_settle_revenue_to_insurance_fund<'c: 'info, 'info>(
         spot_market.insurance_fund.revenue_settle_period,
     )?;
 
-    let has_receivable = spot_market.insurance_fund_revenue_receivable_scaled > 0;
-    let has_settle_allowance = spot_market.revenue_settle_allowance > 0;
     validate!(
-        time_until_next_update == 0 || has_receivable || has_settle_allowance,
+        time_until_next_update == 0,
         ErrorCode::RevenueSettingsCannotSettleToIF,
         "Must wait {} seconds until next available settlement time",
         time_until_next_update
     )?;
 
-    let token_amount = if time_until_next_update == 0 {
-        controller::insurance::settle_revenue_to_insurance_fund(
-            spot_vault_amount,
-            insurance_vault_amount,
-            spot_market,
-            now,
-            true,
-            state.funding_paused()?,
-        )?
-    } else if has_settle_allowance {
-        controller::insurance::continue_revenue_settle_to_insurance_fund(
-            spot_vault_amount,
-            insurance_vault_amount,
-            spot_market,
-            now,
-            true,
-            state.funding_paused()?,
-        )?
-    } else {
-        controller::spot_balance::update_spot_market_cumulative_interest(
-            spot_market,
-            None,
-            now,
-            state.funding_paused()?,
-        )?;
-        let token_amount =
-            controller::insurance::settle_insurance_fund_revenue_receivable(spot_market)?;
-        validate!(
-            token_amount > 0,
-            ErrorCode::NoRevenueToSettleToIF,
-            "no insurance fund revenue receivable to transfer"
-        )?;
-        token_amount
-    };
+    // uses proportion of revenue pool allocated to insurance fund
+    let token_amount = controller::insurance::settle_revenue_to_insurance_fund(
+        spot_vault_amount,
+        insurance_vault_amount,
+        spot_market,
+        now,
+        true,
+        state.funding_paused()?,
+    )?;
+
+    spot_market.insurance_fund.last_revenue_settle_ts = now;
 
     controller::token::send_from_program_vault(
         &ctx.accounts.token_program,
@@ -3038,101 +3010,6 @@ pub fn handle_settle_revenue_to_insurance_fund<'c: 'info, 'info>(
         spot_market,
         ctx.accounts.spot_market_vault.amount,
     )?;
-
-    Ok(())
-}
-
-#[access_control(withdraw_not_paused(&ctx.accounts.state))]
-pub fn handle_settle_perp_market_if_revenue_to_insurance_fund<'c: 'info, 'info>(
-    ctx: Context<'info, SettlePerpMarketIfRevenueToInsuranceFund<'info>>,
-    perp_market_index: u16,
-) -> Result<()> {
-    // Delisted markets remain valid here. Their final fee sweep can create a
-    // receivable immediately before the market status becomes Delisted. This
-    // instruction is the only way that receivable ever clears, because
-    // `resolve_perp_bankruptcy` cannot run on a delisted market. A delist
-    // therefore gives up the market's claw-back right and keeps the settle
-    // right, which is why the delist path needs no zero-guard on the field.
-    let state = ctx.accounts.state.load()?;
-    let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
-    let spot_market = &mut load_mut!(ctx.accounts.spot_market)?;
-    let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
-    let mint = get_token_mint(remaining_accounts_iter)?;
-
-    validate!(
-        perp_market.market_index == perp_market_index,
-        ErrorCode::InvalidMarketAccount,
-        "invalid perp market passed"
-    )?;
-    validate!(
-        !spot_market.is_operation_paused(SpotOperation::Withdraw),
-        ErrorCode::MarketWithdrawPaused,
-        "spot market {} withdraws paused",
-        spot_market.market_index
-    )?;
-    validate!(
-        spot_market.insurance_fund.revenue_settle_period > 0,
-        ErrorCode::RevenueSettingsCannotSettleToIF,
-        "invalid revenue_settle_period settings on spot market"
-    )?;
-
-    let clock = Clock::get()?;
-    let time_until_next_update = math::helpers::on_the_hour_update(
-        clock.unix_timestamp,
-        spot_market.insurance_fund.last_revenue_settle_ts,
-        spot_market.insurance_fund.revenue_settle_period,
-    )?;
-    validate!(
-        time_until_next_update == 0 || spot_market.revenue_settle_allowance > 0,
-        ErrorCode::RevenueSettingsCannotSettleToIF,
-        "Must wait {} seconds until next available settlement time",
-        time_until_next_update
-    )?;
-
-    controller::spot_balance::update_spot_market_cumulative_interest(
-        spot_market,
-        None,
-        clock.unix_timestamp,
-        state.funding_paused()?,
-    )?;
-
-    let token_amount = controller::insurance::settle_perp_market_if_revenue_to_insurance_fund(
-        ctx.accounts.spot_market_vault.amount,
-        ctx.accounts.insurance_fund_vault.amount,
-        spot_market,
-        perp_market,
-        clock.unix_timestamp,
-        time_until_next_update == 0,
-    )?;
-
-    if token_amount > 0 {
-        controller::token::send_from_program_vault(
-            &ctx.accounts.token_program,
-            &ctx.accounts.spot_market_vault,
-            &ctx.accounts.insurance_fund_vault,
-            &ctx.accounts.velocity_signer,
-            state.signer_nonce,
-            token_amount,
-            &mint,
-            if spot_market.has_transfer_hook() {
-                Some(remaining_accounts_iter)
-            } else {
-                None
-            },
-        )?;
-    }
-
-    ctx.accounts.spot_market_vault.reload()?;
-    math::spot_withdraw::validate_spot_market_vault_amount(
-        spot_market,
-        ctx.accounts.spot_market_vault.amount,
-    )?;
-
-    msg!(
-        "settled perp market {} IF revenue receivable: {}",
-        perp_market_index,
-        token_amount
-    );
 
     Ok(())
 }
@@ -4427,42 +4304,6 @@ pub struct SettleRevenueToInsuranceFund<'info> {
     #[account(
         mut,
         seeds = [b"insurance_fund_vault".as_ref(), market_index.to_le_bytes().as_ref()],
-        bump,
-    )]
-    pub insurance_fund_vault: Box<InterfaceAccount<'info, TokenAccount>>,
-    pub token_program: Interface<'info, TokenInterface>,
-}
-
-#[derive(Accounts)]
-#[instruction(perp_market_index: u16,)]
-pub struct SettlePerpMarketIfRevenueToInsuranceFund<'info> {
-    pub state: AccountLoader<'info, State>,
-    #[account(
-        mut,
-        seeds = [b"perp_market", perp_market_index.to_le_bytes().as_ref()],
-        bump
-    )]
-    pub perp_market: AccountLoader<'info, PerpMarket>,
-    #[account(
-        mut,
-        seeds = [b"spot_market", perp_market.load()?.quote_spot_market_index.to_le_bytes().as_ref()],
-        bump
-    )]
-    pub spot_market: AccountLoader<'info, SpotMarket>,
-    #[account(
-        mut,
-        seeds = [b"spot_market_vault".as_ref(), perp_market.load()?.quote_spot_market_index.to_le_bytes().as_ref()],
-        bump,
-    )]
-    pub spot_market_vault: Box<InterfaceAccount<'info, TokenAccount>>,
-    #[account(
-        constraint = state.load()?.signer.eq(&velocity_signer.key())
-    )]
-    /// CHECK: forced velocity_signer
-    pub velocity_signer: UncheckedAccount<'info>,
-    #[account(
-        mut,
-        seeds = [b"insurance_fund_vault".as_ref(), perp_market.load()?.quote_spot_market_index.to_le_bytes().as_ref()],
         bump,
     )]
     pub insurance_fund_vault: Box<InterfaceAccount<'info, TokenAccount>>,

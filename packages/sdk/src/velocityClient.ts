@@ -12792,7 +12792,6 @@ export class VelocityClient {
 						this.wallet.publicKey // only allow payer to request remove own insurance fund stake account
 					),
 					authority: this.wallet.publicKey,
-					spotMarketVault: spotMarketAccount.vault,
 					insuranceFundVault: spotMarketAccount.insuranceFund.vault,
 					velocitySigner: this.getSignerPublicKey(),
 					userTokenAccount: tokenAccount,
@@ -12939,57 +12938,6 @@ export class VelocityClient {
 			}
 		);
 		return ix;
-	}
-
-	/**
-	 * Moves one perp market's swept IF fees from its quote spot revenue pool into the shared IF vault.
-	 * The transfer consumes the normal quote market revenue settlement period and applies the same
-	 * utilization, ten percent, and APR caps. It clears the settled amount from the source market
-	 * receivable and quote market aggregate atomically.
-	 */
-	public async settlePerpMarketIfRevenueToInsuranceFund(
-		perpMarketIndex: number,
-		txParams?: TxParams
-	): Promise<TransactionSignature> {
-		const tx = await this.buildTransaction(
-			await this.getSettlePerpMarketIfRevenueToInsuranceFundIx(perpMarketIndex),
-			txParams
-		);
-		const { txSig } = await this.sendTransaction(tx, [], this.opts);
-		return txSig;
-	}
-
-	public async getSettlePerpMarketIfRevenueToInsuranceFundIx(
-		perpMarketIndex: number
-	): Promise<TransactionInstruction> {
-		const perpMarketAccount = this.getPerpMarketAccountOrThrow(perpMarketIndex);
-		const spotMarketAccount = this.getSpotMarketAccountOrThrow(
-			perpMarketAccount.quoteSpotMarketIndex
-		);
-		const remainingAccounts: AccountMeta[] = [];
-		this.addTokenMintToRemainingAccounts(spotMarketAccount, remainingAccounts);
-		if (this.isTransferHook(spotMarketAccount)) {
-			await this.addExtraAccountMetasToRemainingAccounts(
-				spotMarketAccount.mint,
-				remainingAccounts
-			);
-		}
-
-		return this.program.instruction.settlePerpMarketIfRevenueToInsuranceFund(
-			perpMarketIndex,
-			{
-				accounts: {
-					state: await this.getStatePublicKey(),
-					perpMarket: perpMarketAccount.pubkey,
-					spotMarket: spotMarketAccount.pubkey,
-					spotMarketVault: spotMarketAccount.vault,
-					velocitySigner: this.getSignerPublicKey(),
-					insuranceFundVault: spotMarketAccount.insuranceFund.vault,
-					tokenProgram: this.getTokenProgramForSpotMarket(spotMarketAccount),
-				},
-				remainingAccounts,
-			}
-		);
 	}
 
 	/**

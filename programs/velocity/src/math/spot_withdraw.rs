@@ -404,24 +404,6 @@ pub fn get_max_withdraw_for_market_with_token_amount(
         spot_market,
         &SpotBalanceType::Borrow,
     )?;
-    let reserved_insurance_fund_revenue =
-        get_reserved_insurance_fund_revenue_token_amount(spot_market)?;
-
-    // Revenue already allocated to the insurance fund still sits in this vault.
-    // Tokens that leave the protocol must leave that claim behind, so every
-    // egress limit is capped by the free liquidity that remains after it. A
-    // market with no receivable keeps the limit it had before the reservation.
-    let reserve_receivable = |limit: u128| {
-        if !is_leaving_velocity || reserved_insurance_fund_revenue == 0 {
-            return limit;
-        }
-
-        let unreserved_liquidity = deposit_token_amount
-            .saturating_sub(borrow_token_amount)
-            .saturating_sub(reserved_insurance_fund_revenue);
-
-        limit.min(unreserved_liquidity)
-    };
 
     // if leaving velocity, need to consider utilization limits
     let (min_deposit_token_for_utilization, max_borrow_token_for_utilization) =
@@ -447,7 +429,7 @@ pub fn get_max_withdraw_for_market_with_token_amount(
 
         let token_amount = token_amount.unsigned_abs();
         if withdraw_limit <= token_amount && is_leaving_velocity {
-            return Ok(reserve_receivable(withdraw_limit));
+            return Ok(withdraw_limit);
         }
 
         max_withdraw_amount = token_amount;
@@ -489,17 +471,7 @@ pub fn get_max_withdraw_for_market_with_token_amount(
         borrow_limit = borrow_limit.min(max_token_borrows.saturating_sub(borrows));
     }
 
-    let max_withdraw_and_borrow = max_withdraw_amount.safe_add(borrow_limit)?;
-
-    Ok(reserve_receivable(max_withdraw_and_borrow))
-}
-
-pub fn get_reserved_insurance_fund_revenue_token_amount(
-    spot_market: &SpotMarket,
-) -> VelocityResult<u128> {
-    spot_market
-        .get_insurance_fund_revenue_receivable()?
-        .safe_add(spot_market.perp_market_if_revenue_receivable.cast()?)
+    max_withdraw_amount.safe_add(borrow_limit)
 }
 
 pub fn validate_spot_balances(spot_market: &SpotMarket) -> VelocityResult<i64> {
@@ -530,16 +502,11 @@ pub fn validate_spot_balances(spot_market: &SpotMarket) -> VelocityResult<i64> {
     )?
     .cast()?;
 
-    let insurance_fund_revenue_receivable: u64 = spot_market
-        .get_insurance_fund_revenue_receivable()?
-        .cast()?;
-    let perp_market_if_revenue_receivable = spot_market.perp_market_if_revenue_receivable;
-
     let depositors_claim = depositors_amount
         .cast::<i64>()?
         .safe_sub(borrowers_amount.cast()?)?;
 
-    // These pools are Deposit-type balances counted
+    // revenue_pool and protocol_fee_pool are Deposit-type balances counted
     // INSIDE deposit_balance (crediting a pool also credits the market
     // total), so these disjoint subsets summed can never exceed the total.
     // This is a corruption tripwire (a pool credited without the total, or
@@ -549,37 +516,14 @@ pub fn validate_spot_balances(spot_market: &SpotMarket) -> VelocityResult<i64> {
     // deposit_balance but are not visible from the spot account alone, so
     // this check is necessarily partial.
     validate!(
-        revenue_amount
-            .safe_add(protocol_fee_amount)?
-            .safe_add(insurance_fund_revenue_receivable)?
-            <= depositors_amount,
+        revenue_amount.safe_add(protocol_fee_amount)? <= depositors_amount,
         ErrorCode::SpotMarketVaultInvariantViolated,
-        "revenue_amount={} + protocol_fee_amount={} + insurance_fund_revenue_receivable={} greater than depositors_amount={} (depositors_claim={}, spot_market.deposit_balance={})",
+        "revenue_amount={} + protocol_fee_amount={} greater than depositors_amount={} (depositors_claim={}, spot_market.deposit_balance={})",
         revenue_amount,
         protocol_fee_amount,
-        insurance_fund_revenue_receivable,
         depositors_amount,
         depositors_claim,
         spot_market.deposit_balance
-    )?;
-
-    validate!(
-        perp_market_if_revenue_receivable <= revenue_amount,
-        ErrorCode::SpotMarketVaultInvariantViolated,
-        "perp market IF revenue receivable={} exceeds revenue pool={}",
-        perp_market_if_revenue_receivable,
-        revenue_amount
-    )?;
-
-    let reserved_insurance_fund_revenue =
-        insurance_fund_revenue_receivable.safe_add(perp_market_if_revenue_receivable)?;
-
-    validate!(
-        depositors_claim >= reserved_insurance_fund_revenue.cast::<i64>()?,
-        ErrorCode::SpotMarketVaultInvariantViolated,
-        "depositors_claim={} lower than reserved insurance fund revenue={}",
-        depositors_claim,
-        reserved_insurance_fund_revenue
     )?;
 
     Ok(depositors_claim)
@@ -599,16 +543,6 @@ pub fn validate_spot_market_vault_amount(
         depositors_claim
     )?;
 
-    let reserved_insurance_fund_revenue =
-        get_reserved_insurance_fund_revenue_token_amount(spot_market)?.cast::<u64>()?;
-    validate!(
-        vault_amount >= reserved_insurance_fund_revenue,
-        ErrorCode::SpotMarketVaultInvariantViolated,
-        "spot market vault={} lower than reserved insurance fund revenue={}",
-        vault_amount,
-        reserved_insurance_fund_revenue
-    )?;
-
     Ok(depositors_claim)
 }
 
@@ -621,7 +555,7 @@ mod tests {
                 MAX_WITHDRAW_GUARD_THRESHOLD_NOTIONAL, QUOTE_PRECISION, QUOTE_PRECISION_U64,
                 SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
             },
-            state::{perp_market::PoolBalance, user::SpotPosition},
+            state::user::SpotPosition,
         },
     };
 
@@ -675,108 +609,6 @@ mod tests {
         let pct = (BPS_PRECISION / 5) as u16; // 2000 bps = 20%
         let max = calculate_max_deposit_token_amount(twap, guard, pct).unwrap();
         assert_eq!(max, guard);
-    }
-
-    #[test]
-    fn insurance_fund_revenue_is_reserved_from_withdrawals_and_borrows() {
-        let mut market = SpotMarket {
-            market_index: 0,
-            decimals: 6,
-            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
-            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
-            deposit_balance: scaled(1_000 * QUOTE_PRECISION),
-            borrow_balance: scaled(100 * QUOTE_PRECISION),
-            revenue_pool: PoolBalance {
-                market_index: 0,
-                scaled_balance: scaled(75 * QUOTE_PRECISION),
-                ..PoolBalance::default()
-            },
-            insurance_fund_revenue_receivable_scaled: scaled(125 * QUOTE_PRECISION),
-            perp_market_if_revenue_receivable: (75 * QUOTE_PRECISION) as u64,
-            ..SpotMarket::default()
-        };
-
-        let max_withdraw = get_max_withdraw_for_market_with_token_amount(
-            &market,
-            (900 * QUOTE_PRECISION) as i128,
-            true,
-        )
-        .unwrap();
-        let deposits =
-            get_token_amount(market.deposit_balance, &market, &SpotBalanceType::Deposit).unwrap();
-        let borrows =
-            get_token_amount(market.borrow_balance, &market, &SpotBalanceType::Borrow).unwrap();
-        let receivable = get_reserved_insurance_fund_revenue_token_amount(&market).unwrap();
-        assert_eq!(
-            max_withdraw,
-            deposits.saturating_sub(borrows).saturating_sub(receivable)
-        );
-
-        market.borrow_balance = scaled(801 * QUOTE_PRECISION);
-        assert!(validate_spot_balances(&market).is_err());
-
-        market.borrow_balance = scaled(800 * QUOTE_PRECISION);
-        assert!(validate_spot_balances(&market).is_ok());
-        assert!(validate_spot_market_vault_amount(&market, (200 * QUOTE_PRECISION) as u64).is_ok());
-        assert!(
-            validate_spot_market_vault_amount(&market, (200 * QUOTE_PRECISION - 1) as u64).is_err()
-        );
-    }
-
-    #[test]
-    fn zero_receivable_market_keeps_its_withdraw_limit() {
-        // A market that holds no receivable must price egress exactly as it did
-        // before the reservation existed. The guard threshold puts the withdraw
-        // limit above the market's free liquidity, which is the shape that tells
-        // the two reservation sites apart.
-        let market = SpotMarket {
-            market_index: 0,
-            decimals: 6,
-            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
-            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
-            deposit_balance: scaled(1_000 * QUOTE_PRECISION),
-            borrow_balance: scaled(900 * QUOTE_PRECISION),
-            withdraw_guard_threshold: (500 * QUOTE_PRECISION) as u64,
-            insurance_fund_revenue_receivable_scaled: 0,
-            ..SpotMarket::default()
-        };
-
-        // deposits - guard = 500 sets the utilization floor, so the limit is 500.
-        // Free liquidity is deposits - borrows = 100. The limit must win.
-        let max_withdraw = get_max_withdraw_for_market_with_token_amount(
-            &market,
-            (600 * QUOTE_PRECISION) as i128,
-            true,
-        )
-        .unwrap();
-        assert_eq!(max_withdraw, 500 * QUOTE_PRECISION);
-    }
-
-    #[test]
-    fn receivable_reserves_the_same_amount_from_both_limit_paths() {
-        // The early return and the withdraw-plus-borrow tail must reserve the
-        // receivable identically. `token_amount` is the only difference between
-        // the two calls: above the limit it returns early, below it falls through.
-        let market = SpotMarket {
-            market_index: 0,
-            decimals: 6,
-            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
-            cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
-            deposit_balance: scaled(1_000 * QUOTE_PRECISION),
-            borrow_balance: scaled(700 * QUOTE_PRECISION),
-            withdraw_guard_threshold: (500 * QUOTE_PRECISION) as u64,
-            insurance_fund_revenue_receivable_scaled: scaled(250 * QUOTE_PRECISION),
-            ..SpotMarket::default()
-        };
-
-        // Free liquidity after the reservation is 1000 - 700 - 250 = 50.
-        let early_return = get_max_withdraw_for_market_with_token_amount(
-            &market,
-            (600 * QUOTE_PRECISION) as i128,
-            true,
-        )
-        .unwrap();
-        assert_eq!(early_return, 50 * QUOTE_PRECISION);
     }
 
     // Fixture for the withdraw-limit exception budget.

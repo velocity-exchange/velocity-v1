@@ -7,9 +7,13 @@ use {
         math::{self, safe_math::SafeMath},
         optional_accounts::get_token_mint,
         state::{
-            insurance_fund_stake::InsuranceFundStake, market_status::MarketStatus,
-            paused_operations::InsuranceFundOperation, spot_market::SpotMarket, state::State,
-            traits::Size, user::UserStats,
+            insurance_fund_stake::InsuranceFundStake,
+            market_status::MarketStatus,
+            paused_operations::{InsuranceFundOperation, SpotOperation},
+            spot_market::SpotMarket,
+            state::State,
+            traits::Size,
+            user::UserStats,
         },
         validate,
     },
@@ -184,6 +188,28 @@ pub fn handle_request_remove_insurance_fund_stake<'c: 'info, 'info>(
         "if staking request remove disabled",
     )?;
 
+    // The pre-freeze revenue settle below goes through
+    // `attempt_settle_revenue_to_insurance_fund`, which silently SKIPS while the
+    // global withdraw status or this market's `SpotOperation::Withdraw` bit is
+    // paused (so a pause never bricks the liquidation/IF-add paths that share
+    // it). A request accepted during such a pause would therefore freeze a
+    // pre-settle exit value and reintroduce the already-due-revenue leak this
+    // instruction exists to close. Reject the request instead: the frozen value
+    // of any accepted request is always post-settle, and gating the request
+    // mirrors how every other vault-egress path treats the withdraw pauses.
+    validate!(
+        !state.withdraw_paused()?,
+        ErrorCode::ExchangePaused,
+        "withdraws paused exchange-wide; cannot freeze unstake exit value"
+    )?;
+
+    validate!(
+        !spot_market.is_operation_paused(SpotOperation::Withdraw),
+        ErrorCode::MarketWithdrawPaused,
+        "spot market {} withdraws paused; cannot freeze unstake exit value",
+        spot_market.market_index
+    )?;
+
     validate!(
         insurance_fund_stake.market_index == market_index,
         ErrorCode::IncorrectSpotMarketAccountPassed,
@@ -196,9 +222,12 @@ pub fn handle_request_remove_insurance_fund_stake<'c: 'info, 'info>(
         "Withdraw request is already in progress"
     )?;
 
-    // Allocate any revenue already due to the insurance fund before freezing
-    // the exit value. When transfers are paused the allocation remains as an
-    // internal receivable and is still included in the share price.
+    // Settle any already-due revenue into the IF vault before freezing the exit
+    // value, mirroring the add path. Otherwise the frozen `last_withdraw_request_value`
+    // would exclude revenue the staker was already entitled to at request time, and a
+    // later public settle between request and remove would shift that share to the
+    // remaining stakers. Revenue accruing *after* this point is still (intentionally)
+    // excluded by the freeze — that is the escrow tradeoff, not this bug.
     {
         if spot_market.has_transfer_hook() {
             controller::insurance::attempt_settle_revenue_to_insurance_fund(
@@ -235,14 +264,10 @@ pub fn handle_request_remove_insurance_fund_stake<'c: 'info, 'info>(
         )?;
     }
 
-    let insurance_fund_nav = controller::insurance::get_insurance_fund_nav(
-        ctx.accounts.insurance_fund_vault.amount,
-        spot_market,
-    )?;
     let n_shares = math::insurance::vault_amount_to_if_shares(
         amount,
         spot_market.insurance_fund.total_shares,
-        insurance_fund_nav,
+        ctx.accounts.insurance_fund_vault.amount,
     )?;
 
     validate!(
@@ -292,9 +317,8 @@ pub fn handle_cancel_request_remove_insurance_fund_stake<'c: 'info, 'info>(
         "No withdraw request in progress"
     )?;
 
-    // Allocate any revenue already due before the cancel prices the forfeiture.
-    // If transfers are paused the allocation remains in the spot vault as an
-    // insurance fund receivable and still contributes to the share price.
+    // Settle any already-due revenue into the IF vault BEFORE the cancel prices the
+    // forfeiture, mirroring the add and request-remove paths (OtterSec #141).
     //
     // `cancel_request_remove_insurance_fund_stake` implements the anti-free-option rule:
     // it withdraws at the frozen `last_withdraw_request_value` and restakes at the live
@@ -391,49 +415,6 @@ pub fn handle_remove_insurance_fund_stake<'c: 'info, 'info>(
         ErrorCode::SpotMarketInsufficientDeposits,
         "spot market utilization above health threshold"
     )?;
-
-    // Move any revenue already allocated to the fund into the vault before the
-    // unstake prices its payout. An unstake can only be paid in vault cash, so a
-    // claim left in the spot vault holds back part of the exit until someone
-    // else settles it. Settling here lets the staker complete the exit alone.
-    // While transfers are paused the settle skips. The unstake then succeeds
-    // only when the vault cash covers the full payout.
-    {
-        if spot_market.has_transfer_hook() {
-            controller::insurance::attempt_settle_revenue_to_insurance_fund(
-                &ctx.accounts.spot_market_vault,
-                &ctx.accounts.insurance_fund_vault,
-                spot_market,
-                now,
-                &ctx.accounts.token_program,
-                &ctx.accounts.velocity_signer,
-                &state,
-                &mint,
-                Some(&mut remaining_accounts_iter.clone()),
-            )?;
-        } else {
-            controller::insurance::attempt_settle_revenue_to_insurance_fund(
-                &ctx.accounts.spot_market_vault,
-                &ctx.accounts.insurance_fund_vault,
-                spot_market,
-                now,
-                &ctx.accounts.token_program,
-                &ctx.accounts.velocity_signer,
-                &state,
-                &mint,
-                None,
-            )?;
-        };
-
-        // reload the vault balances so they're up-to-date
-        ctx.accounts.spot_market_vault.reload()?;
-        ctx.accounts.insurance_fund_vault.reload()?;
-
-        math::spot_withdraw::validate_spot_market_vault_amount(
-            spot_market,
-            ctx.accounts.spot_market_vault.amount,
-        )?;
-    }
 
     let amount = controller::insurance::remove_insurance_fund_stake(
         ctx.accounts.insurance_fund_vault.amount,
@@ -655,12 +636,6 @@ pub struct RemoveInsuranceFundStake<'info> {
     )]
     pub user_stats: AccountLoader<'info, UserStats>,
     pub authority: Signer<'info>,
-    #[account(
-        mut,
-        seeds = [b"spot_market_vault".as_ref(), market_index.to_le_bytes().as_ref()],
-        bump,
-    )]
-    pub spot_market_vault: Box<InterfaceAccount<'info, TokenAccount>>,
     #[account(
         mut,
         seeds = [b"insurance_fund_vault".as_ref(), market_index.to_le_bytes().as_ref()],

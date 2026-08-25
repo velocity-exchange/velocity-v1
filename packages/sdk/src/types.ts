@@ -1202,10 +1202,6 @@ export type PerpMarketAccount = {
 	pendingBankruptcyClaims: number;
 	/** QUOTE_PRECISION (1e6); aggregate builder/referrer revenue share accrued but not yet paid out of this market's pnl pool. The fee sweep reserves it (like `max(net_user_pnl, 0)` and the floored IF tranche) so a protocol-fee drain can't leave accrued revenue-share claims temporarily unpayable */
 	pendingRevenueShare: BN;
-	/** QUOTE_PRECISION (1e6); this market's IF fees swept into the quote revenue pool but not yet settled into the IF vault. Only this market can reclaim the amount during bankruptcy */
-	insuranceFundRevenueReceivable: BN;
-	/** reserved tail space (248 bytes); account extension is expensive, so this upgrade allocates room for later fields */
-	paddingFuture: number[];
 	/** MARGIN_PRECISION (1e4); scales margin ratio up for large positions */
 	imfFactor: number;
 	/** MARGIN_PRECISION (1e4); discounts positive-unrealized-pnl asset weight for large positions */
@@ -1251,6 +1247,8 @@ export type PerpMarketAccount = {
 		/** scalar for the share of fees transferred to the hedge pool */
 		feeTransferScalar: number;
 	};
+	/** reserved for future market fields */
+	paddingFuture: number[];
 	/** bitmask, see `MarketConfigFlag` */
 	marketConfig: number;
 
@@ -1368,28 +1366,14 @@ export type SpotMarketAccount = {
 	protocolLiquidationFee: number;
 	/** IF_FACTOR_PRECISION (1e6); protocol's carveout of lending deposit-interest gains */
 	protocolFeeFactor: number;
-	/** token mint precision; lowest IF NAV since the end of the last revenue settle.
-	 * NAV includes the live vault and allocated revenue still held as a receivable. Revenue
-	 * allocation writes the NAV it leaves behind, and every IF outflow lowers it again. The
-	 * per-period revenue-settle APR cap is sized off `min(current IF NAV, this)`, so it counts only
+	/** token mint precision; lowest IF vault balance since the end of the last revenue settle.
+	 * The settle writes the balance it leaves behind, and every IF outflow lowers it again. The
+	 * per-period revenue-settle APR cap is sized off `min(live IF vault, this)`, so it counts only
 	 * capital the fund held for the whole period and neither a pre-settle donation nor one that
 	 * refills a mid-period dip can lift it (see `settle_revenue_to_insurance_fund`);
 	 * `0` = the market never settled revenue */
 	ifLastSettleVaultAmount: BN;
-	/** Free bytes from the retired spot fee pool, reserve for a future field */
-	paddingFormerSpotFeePool: number[];
-	/** SPOT_BALANCE_PRECISION; revenue allocated to the insurance fund but still held inside the
-	 * spot vault, which happens while a withdraw pause holds back the transfer. A third claim
-	 * inside `depositBalance` beside `revenuePool` and `protocolFeePool`, and held the same way:
-	 * a scaled balance that earns deposit interest until the transfer completes, which the fund
-	 * then collects. Read the token value with
-	 * `getInsuranceFundRevenueReceivableTokenAmount` */
-	insuranceFundRevenueReceivableScaled: BN;
-	/** token mint precision; aggregate of source-market IF revenue receivables still held in this spot market's revenue pool. Reserved and source owned, but excluded from IF NAV until settled */
-	perpMarketIfRevenueReceivable: BN;
-	/** token mint precision; shared generic and source revenue admission capacity left in the current settlement period */
-	revenueSettleAllowance: BN;
-	/** reserved tail space (240 bytes); account extension is expensive, so this upgrade allocates room for later fields */
+	/** reserved for future market fields */
 	paddingFuture: number[];
 
 	/** token mint decimals; token-mint precision throughout this account is 10^decimals */
@@ -1453,6 +1437,8 @@ export type SpotMarketAccount = {
 	/** token mint precision; 0 = no limit */
 	maxPositionSize: BN;
 	nextFillRecordId: BN;
+	/** reserved bytes from the retired spot fee pool */
+	paddingFormerSpotFeePool: number[];
 	/** QUOTE_PRECISION (1e6) */
 	totalSpotFee: BN;
 	/** token mint precision; total fees received from swaps */
@@ -1495,7 +1481,7 @@ export type SpotMarketAccount = {
 	maxDepositBpsPerDay: number;
 };
 
-/** A scaled token balance inside a market's internal pools (pnl pool, protocol fee pool, revenue pool, AMM fee pool). Multiply `scaledBalance` (SPOT_BALANCE_PRECISION, 1e9) by the referenced spot market's `cumulativeDepositInterest`/`cumulativeBorrowInterest` to get the token amount. */
+/** A scaled token balance inside a market's internal pools (pnl pool, protocol fee pool, revenue pool, spot fee pool, AMM fee pool). Multiply `scaledBalance` (SPOT_BALANCE_PRECISION, 1e9) by the referenced spot market's `cumulativeDepositInterest`/`cumulativeBorrowInterest` to get the token amount. */
 export type PoolBalance = {
 	scaledBalance: BN;
 	/** the spot market this balance's token amount is denominated in */

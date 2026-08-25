@@ -9,7 +9,6 @@ use {
                 PRICE_PRECISION_I64, QUOTE_PRECISION, QUOTE_SPOT_MARKET_INDEX,
                 SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
             },
-            spot_balance::get_spot_balance,
         },
         state::{
             events::TransferFeeAndPnlPoolDirection,
@@ -1103,14 +1102,6 @@ fn sweep_market_fees_leaves_bankruptcy_if_floor() {
     assert_eq!(protocol_swept, 4 * QUOTE_PRECISION);
     assert_eq!(provision_tokenized, QUOTE_PRECISION);
     assert_eq!(market.fee_ledger.pending_if_fee, 5 * QUOTE_PRECISION);
-    assert_eq!(
-        market.insurance_fund_revenue_receivable,
-        3 * QUOTE_PRECISION as u64
-    );
-    assert_eq!(
-        spot_market.perp_market_if_revenue_receivable,
-        3 * QUOTE_PRECISION as u64
-    );
 
     // at (or below) the floor nothing more leaves, however often it's swept
     let (if_swept, _, _) = sweep_market_fees(&mut market, &mut spot_market, 0, 0, false).unwrap();
@@ -1142,83 +1133,6 @@ fn sweep_market_fees_leaves_bankruptcy_if_floor() {
     let (if_swept, _, _) = sweep_market_fees(&mut market, &mut spot_market, 0, 0, false).unwrap();
     assert_eq!(if_swept, QUOTE_PRECISION / 2);
     assert_eq!(market.fee_ledger.pending_if_fee, 0);
-}
-
-#[test]
-fn swept_if_fee_stays_claimable_only_by_its_source_perp_market() {
-    let mut spot_market = SpotMarket {
-        market_index: QUOTE_SPOT_MARKET_INDEX,
-        cumulative_deposit_interest: 1111 * SPOT_CUMULATIVE_INTEREST_PRECISION / 1000,
-        cumulative_borrow_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
-        ..SpotMarket::default()
-    };
-    let pnl_pool_balance = get_spot_balance(
-        100 * QUOTE_PRECISION,
-        &spot_market,
-        &SpotBalanceType::Deposit,
-        true,
-    )
-    .unwrap();
-    spot_market.deposit_balance = pnl_pool_balance;
-    let mut market_a = PerpMarket {
-        market_index: 1,
-        quote_spot_market_index: QUOTE_SPOT_MARKET_INDEX,
-        bankruptcy_if_floor_pct: BANKRUPTCY_IF_FLOOR_DISABLED,
-        pnl_pool: PoolBalance {
-            scaled_balance: pnl_pool_balance,
-            market_index: QUOTE_SPOT_MARKET_INDEX,
-            ..PoolBalance::default()
-        },
-        fee_ledger: FeeLedger {
-            pending_if_fee: 40 * QUOTE_PRECISION,
-            ..FeeLedger::default()
-        },
-        ..PerpMarket::default()
-    };
-
-    let (if_swept, _, _) = sweep_market_fees(&mut market_a, &mut spot_market, 0, 0, false).unwrap();
-    assert_eq!(if_swept, 40 * QUOTE_PRECISION);
-    assert_eq!(market_a.fee_ledger.pending_if_fee, 0);
-    let swept_receivable = get_token_amount(
-        spot_market.revenue_pool.scaled_balance,
-        &spot_market,
-        &SpotBalanceType::Deposit,
-    )
-    .unwrap();
-    assert!(swept_receivable <= 40 * QUOTE_PRECISION);
-    assert!(swept_receivable >= 40 * QUOTE_PRECISION - 1);
-    assert_eq!(
-        market_a.insurance_fund_revenue_receivable as u128,
-        swept_receivable
-    );
-    assert_eq!(
-        spot_market.perp_market_if_revenue_receivable as u128,
-        swept_receivable
-    );
-
-    let mut market_b = PerpMarket {
-        market_index: 2,
-        quote_spot_market_index: QUOTE_SPOT_MARKET_INDEX,
-        ..PerpMarket::default()
-    };
-    let market_b_payment =
-        crate::controller::insurance::transfer_perp_market_if_revenue_receivable_to_pool(
-            &mut spot_market,
-            &mut market_b,
-            40 * QUOTE_PRECISION,
-        )
-        .unwrap();
-
-    assert_eq!(market_b_payment, 0);
-    assert_eq!(market_b.pnl_pool.scaled_balance, 0);
-    assert_eq!(
-        market_a.insurance_fund_revenue_receivable as u128,
-        swept_receivable
-    );
-    assert_eq!(
-        spot_market.perp_market_if_revenue_receivable as u128,
-        swept_receivable
-    );
 }
 
 #[test]

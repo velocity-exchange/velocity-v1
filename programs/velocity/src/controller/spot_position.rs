@@ -5,9 +5,7 @@ use crate::{
         casting::Cast,
         safe_math::SafeMath,
         spot_balance::get_token_amount,
-        spot_withdraw::{
-            check_withdraw_limits, validate_deposit_cap_after_increase, validate_spot_balances,
-        },
+        spot_withdraw::{check_withdraw_limits, validate_deposit_cap_after_increase},
     },
     math_error, msg, safe_decrement, safe_increment,
     state::{
@@ -180,8 +178,6 @@ pub fn update_spot_balances_and_cumulative_deposits_with_limits(
         "Spot Market {} has Protected status and cannot be borrowed",
         spot_market.market_index
     )?;
-
-    validate_spot_balances(spot_market)?;
 
     Ok(())
 }

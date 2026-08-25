@@ -2348,44 +2348,6 @@ export type Vaults = {
 					};
 				},
 				{
-					name: 'velocitySpotMarketVault';
-					writable: true;
-					pda: {
-						seeds: [
-							{
-								kind: 'const';
-								value: [
-									115,
-									112,
-									111,
-									116,
-									95,
-									109,
-									97,
-									114,
-									107,
-									101,
-									116,
-									95,
-									118,
-									97,
-									117,
-									108,
-									116,
-								];
-							},
-							{
-								kind: 'arg';
-								path: 'marketIndex';
-							},
-						];
-						program: {
-							kind: 'account';
-							path: 'velocityProgram';
-						};
-					};
-				},
-				{
 					name: 'insuranceFundVault';
 					writable: true;
 					pda: {
@@ -4246,7 +4208,7 @@ export type Vaults = {
 					{
 						name: 'postedSlotTail';
 						docs: [
-							'Last 8 bits of the slot the order was posted onchain (not order slot for signed msg orders)',
+							'Last 8 bits of the slot the order was posted on-chain (not order slot for signed msg orders)',
 						];
 						type: 'u8';
 					},
@@ -4737,39 +4699,12 @@ export type Vaults = {
 					{
 						name: 'paddingFormerSpotFeePool';
 						docs: [
-							'Free bytes from the retired spot fee pool. The pool was 32 bytes and the',
-							'receivable below takes 16 of them, so these 16 are reserve for the next',
-							'field. They start at a multiple of 16, so they hold one u128 or two u64.',
-							'The whole slot was always zero on chain, so nothing has to be migrated.',
+							'Reserved bytes from the retired spot fee pool. Spot swaps do not charge',
+							'a fee and the pool has never been used.',
 						];
 						type: {
-							array: ['u8', 16];
+							array: ['u8', 32];
 						};
-					},
-					{
-						name: 'insuranceFundRevenueReceivableScaled';
-						docs: [
-							'Revenue allocated to the insurance fund that still sits in the spot',
-							'vault, which happens while a withdraw pause holds back the transfer.',
-							'',
-							'This is a third claim inside `deposit_balance`, beside `revenue_pool` and',
-							'`protocol_fee_pool`, and it is held the same way they are. A scaled',
-							'balance earns deposit interest for as long as the tokens stay here, and',
-							'the fund collects that interest when the transfer completes. A token',
-							'amount could not do this: the claim grows with',
-							'`cumulative_deposit_interest`, and a fixed integer would leave the',
-							'difference inside `deposit_balance` owned by nobody.',
-							'',
-							'This is a u128 that follows a `PoolBalance`, which the field ordering',
-							'rule in `docs/alignment-and-native-offsets.md` otherwise forbids. It is',
-							'safe here for the two reasons that rule exists to guarantee, and both are',
-							'pinned by asserts: `PoolBalance` is 32 bytes on the host and on SBF, so',
-							'`revenue_pool` ends at 416 on both, and this field starts at 432, which',
-							'is a multiple of 16. No architecture specific gap can open. Do not copy',
-							'the pattern to a field whose offset is not asserted.',
-							'precision: SPOT_BALANCE_PRECISION',
-						];
-						type: 'u128';
 					},
 					{
 						name: 'historicalOracleData';
@@ -5174,19 +5109,18 @@ export type Vaults = {
 					{
 						name: 'ifLastSettleVaultAmount';
 						docs: [
-							'Lowest insurance fund NAV since the end of the last revenue settle.',
-							'NAV includes the live vault balance and allocated revenue that remains',
-							'in the spot vault as a receivable. Revenue allocation starts each period',
-							'by writing the resulting NAV, and `record_insurance_fund_outflow` lowers',
-							'it on every path that moves value out of the fund:',
-							'`remove_insurance_fund_stake`,',
+							'Lowest insurance-fund vault balance since the end of the last revenue',
+							'settle. `settle_revenue_to_insurance_fund` starts each period by writing',
+							'the live vault balance plus the amount that settle transfers in, and',
+							'`record_insurance_fund_outflow` lowers it on every path that moves tokens',
+							'out of the vault: `remove_insurance_fund_stake`,',
 							'`resolve_perp_pnl_deficit`, `resolve_perp_bankruptcy`, and',
 							'`resolve_spot_bankruptcy`. A transfer into the vault never raises it, so',
 							'it lags the live vault by up to one `revenue_settle_period`.',
 							'',
 							'The per-period revenue-settle APR cap is sized off',
-							'`min(current_if_nav, this)`, so it counts only capital the fund held for',
-							'the whole period. A donation sent into the live vault right before a',
+							'`min(live_if_vault, this)`, so it counts only capital the fund held for',
+							'the whole period. A donation spiked into the live vault right before a',
 							'settle is absent from this field and cannot lift the cap. Tracking the',
 							'running minimum is what closes the same trick after a dip: a loss draw',
 							'takes the vault to 100, a donation puts it back to 1000, and a plain',
@@ -5198,45 +5132,20 @@ export type Vaults = {
 							'was empty. Both give a cap base of `0` for one period and then self-heal,',
 							"because the settle that reads `0` still writes the new period's balance.",
 							'',
-							'The unstake cancel share forfeiture is protected from donations by',
-							'withdrawing and restaking at the active share price. It does not read',
-							'this field.',
-						];
-						type: 'u64';
-					},
-					{
-						name: 'perpMarketIfRevenueReceivable';
-						docs: [
-							"Insurance fee revenue swept from perp markets into this market's",
-							'revenue pool but not yet settled into the insurance fund vault or',
-							'reclaimed by its source perp market during bankruptcy.',
-							'',
-							'This is the aggregate backing all perp market',
-							'`insurance_fund_revenue_receivable` fields that settle in this spot',
-							'market. It reserves those tokens from generic revenue settlement and',
-							'spot bankruptcy. Individual ownership remains on each perp market, and',
-							'this aggregate is not part of insurance fund NAV until settled.',
-							'precision: token mint precision',
-						];
-						type: 'u64';
-					},
-					{
-						name: 'revenueSettleAllowance';
-						docs: [
-							'Revenue admission capacity left in the current settlement period.',
-							'Generic revenue and source market receivables consume the same allowance.',
-							'precision: token mint precision',
+							'(The unstake-cancel share forfeiture is donation-proofed differently — by',
+							'withdraw-and-restake at the active share price — and does *not* read this',
+							'field.) Repurposed from trailing padding — layout and size are unchanged.',
 						];
 						type: 'u64';
 					},
 					{
 						name: 'paddingFuture';
 						docs: [
-							'Reserved tail space for future fields. Account extension is expensive',
-							'operationally, so this upgrade allocates enough room for later additions.',
+							'Reserved for future fields. Existing accounts must be extended before',
+							'the program loads them with this layout.',
 						];
 						type: {
-							array: ['u8', 240];
+							array: ['u8', 256];
 						};
 					},
 				];
@@ -5903,19 +5812,9 @@ export type Vaults = {
 						type: 'u8';
 					},
 					{
-						name: 'acceleratedReferralStatus';
-						docs: [
-							'Persistent referral reward status. See [`AcceleratedReferralStatus`]. Kept',
-							'separate from `referrer_status`, which describes whether this authority',
-							'refers or was referred by somebody else. Carved out of former padding so',
-							'preupgrade accounts read `0` (standard, automatic enrollment allowed).',
-						];
-						type: 'u8';
-					},
-					{
 						name: 'padding';
 						type: {
-							array: ['u8', 61];
+							array: ['u8', 62];
 						};
 					},
 				];

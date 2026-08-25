@@ -119,7 +119,8 @@ export function activeSlotDurationFromState(
 
 /**
  * Resolve the slot clock an off-chain client should convert with: the live
- * duration from `source`'s subscribed `State` at `currentSlot`, or `fallback`.
+ * duration from `source`'s subscribed `State` at `currentSlot`, or the 400ms
+ * {@link SLOT_DURATION_BASELINE} when state/slot is unavailable.
  *
  * `currentSlot` must be the live chain slot (e.g. `slotSubscriber.getSlot()`),
  * NOT the slot `State` was last written at. `State` does not change at the gate
@@ -128,18 +129,17 @@ export function activeSlotDurationFromState(
  * failed slot subscription reports `0`, and slot zero precedes every effective
  * slot, so it would resolve to the pre-flip base while looking live.
  *
- * `fallback` is required and has no default: the safe direction differs per
- * call site. User-protection windows (signing budgets, expiry countdowns) pass
- * the shortest scheduled slot so they under-promise; risk ceilings (staleness,
- * rate limits) pass the longest so they tighten.
+ * The fallback is the longest scheduled slot (400ms) so risk ceilings
+ * (staleness, rate limits) tighten rather than widen when the feed is dead.
+ * Callers that need a user-protection under-promise should not use this helper
+ * while the feed is down — pass a shorter duration of their own instead.
  */
 export function currentSlotClock(
 	source: SlotDurationSource,
-	currentSlot: number | undefined,
-	fallback: SlotDurationMs
+	currentSlot: number | undefined
 ): SlotClock {
 	if (!currentSlot) {
-		return { slotDurationMs: fallback, isLive: false };
+		return { slotDurationMs: SLOT_DURATION_BASELINE, isLive: false };
 	}
 
 	let state: SlotDurationState | undefined;
@@ -147,7 +147,7 @@ export function currentSlotClock(
 		state = source.getStateAccount();
 	} catch {
 		// Not subscribed yet: the client throws rather than returning undefined.
-		return { slotDurationMs: fallback, isLive: false };
+		return { slotDurationMs: SLOT_DURATION_BASELINE, isLive: false };
 	}
 
 	if (
@@ -156,7 +156,7 @@ export function currentSlotClock(
 		state.pendingSlotDurationMs === undefined ||
 		state.slotDurationEffectiveSlot === undefined
 	) {
-		return { slotDurationMs: fallback, isLive: false };
+		return { slotDurationMs: SLOT_DURATION_BASELINE, isLive: false };
 	}
 
 	return {
@@ -167,15 +167,13 @@ export function currentSlotClock(
 
 /**
  * The slot duration half of {@link currentSlotClock}, for call sites that do
- * not branch on liveness. See that function for the `currentSlot` and
- * `fallback` rules.
+ * not branch on liveness. See that function for the `currentSlot` rules.
  */
 export function currentSlotDuration(
 	source: SlotDurationSource,
-	currentSlot: number | undefined,
-	fallback: SlotDurationMs
+	currentSlot: number | undefined
 ): SlotDurationMs {
-	return currentSlotClock(source, currentSlot, fallback).slotDurationMs;
+	return currentSlotClock(source, currentSlot).slotDurationMs;
 }
 
 export function millis(ms: number): Millis {

@@ -22,7 +22,6 @@ import {
 	ClockSubscriber,
 	msToSlotsNum,
 	currentSlotDuration,
-	SLOT_DURATION_BASELINE,
 } from '@velocity-exchange/sdk';
 import { Mutex, tryAcquire, E_ALREADY_LOCKED } from 'async-mutex';
 
@@ -1486,8 +1485,7 @@ export class SpotFillerBot implements Bot {
 					// the pre-switch value and shortens the lead window.
 					currentSlotDuration(
 						this.velocityClient,
-						this.getMaxSlot(),
-						SLOT_DURATION_BASELINE
+						this.getMaxSlot()
 					)
 				)
 			);

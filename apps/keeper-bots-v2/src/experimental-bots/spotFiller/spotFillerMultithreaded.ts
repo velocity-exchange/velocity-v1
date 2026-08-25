@@ -19,7 +19,6 @@ import {
 	PriorityFeeSubscriberMap,
 	msToSlotsNum,
 	currentSlotDuration,
-	SLOT_DURATION_BASELINE,
 } from '@velocity-exchange/sdk';
 import {
 	Connection,
@@ -1618,8 +1617,7 @@ export class SpotFillerMultithreaded {
 					JITO_LEADER_LEAD_MS,
 					currentSlotDuration(
 						this.velocityClient,
-						this.slotSubscriber.getSlot(),
-						SLOT_DURATION_BASELINE
+						this.slotSubscriber.getSlot()
 					)
 				)
 			);

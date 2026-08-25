@@ -33,7 +33,6 @@ import {
 	UserMap,
 	msToSlotsNum,
 	currentSlotDuration,
-	SLOT_DURATION_BASELINE,
 } from '@velocity-exchange/sdk';
 import { FillerMultiThreadedConfig, GlobalConfig } from '../../config';
 import { JITO_METRIC_TYPES, BundleSender } from '../../bundleSender';
@@ -1584,8 +1583,7 @@ export class FillerMultithreaded {
 					JITO_LEADER_LEAD_MS,
 					currentSlotDuration(
 						this.velocityClient,
-						this.slotSubscriber.getSlot(),
-						SLOT_DURATION_BASELINE
+						this.slotSubscriber.getSlot()
 					)
 				)
 			);
@@ -1726,8 +1724,7 @@ export class FillerMultithreaded {
 									NO_CROSS_RESAMPLE_MS,
 									currentSlotDuration(
 										this.velocityClient,
-										this.slotSubscriber.getSlot(),
-										SLOT_DURATION_BASELINE
+										this.slotSubscriber.getSlot()
 									)
 								)
 					  )}`
@@ -1995,8 +1992,7 @@ export class FillerMultithreaded {
 						this.fillAttemptIntervalMs,
 						currentSlotDuration(
 							this.velocityClient,
-							this.slotSubscriber.getSlot(),
-							SLOT_DURATION_BASELINE
+							this.slotSubscriber.getSlot()
 						)
 					)
 			) {

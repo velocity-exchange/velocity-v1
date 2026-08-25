@@ -13,7 +13,6 @@ import {
 	PerpPosition,
 	msToSlotsNum,
 	currentSlotDuration,
-	SLOT_DURATION_BASELINE,
 } from '@velocity-exchange/sdk';
 import { Mutex, tryAcquire, E_ALREADY_LOCKED } from 'async-mutex';
 
@@ -257,8 +256,7 @@ export class FloatingPerpMakerBot implements Bot {
 				MARKET_UPDATE_COOLDOWN_MS,
 				currentSlotDuration(
 					this.velocityClient,
-					this.slotSubscriber.getSlot(),
-					SLOT_DURATION_BASELINE
+					this.slotSubscriber.getSlot()
 				)
 			);
 
@@ -273,8 +271,7 @@ export class FloatingPerpMakerBot implements Bot {
 		);
 		const slotDuration = currentSlotDuration(
 			this.velocityClient,
-			currSlot,
-			SLOT_DURATION_BASELINE
+			currSlot
 		);
 		const vAsk = calculateAskPrice(
 			marketAccount,

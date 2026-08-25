@@ -38,7 +38,6 @@ import {
 	MMOraclePriceData,
 	msToSlotsNum,
 	currentSlotDuration,
-	SLOT_DURATION_BASELINE,
 } from '@velocity-exchange/sdk';
 import { Mutex, tryAcquire, E_ALREADY_LOCKED } from 'async-mutex';
 
@@ -795,8 +794,7 @@ export class FillerBot extends TxThreaded implements Bot {
 		const slot = new BN(this.slotSubscriber.getSlot());
 		const slotDuration = currentSlotDuration(
 			this.velocityClient,
-			this.slotSubscriber.getSlot(),
-			SLOT_DURATION_BASELINE
+			this.slotSubscriber.getSlot()
 		);
 		const vAsk = calculateAskPrice(
 			market,
@@ -2496,8 +2494,7 @@ export class FillerBot extends TxThreaded implements Bot {
 					JITO_LEADER_LEAD_MS,
 					currentSlotDuration(
 						this.velocityClient,
-						this.slotSubscriber.getSlot(),
-						SLOT_DURATION_BASELINE
+						this.slotSubscriber.getSlot()
 					)
 				)
 			);

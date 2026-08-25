@@ -15,7 +15,6 @@ import {
 	getUserAccountPublicKeySync,
 	getUserStatsAccountPublicKey,
 	currentSlotDuration,
-	SLOT_DURATION_BASELINE,
 } from '@velocity-exchange/sdk';
 import { Mutex, tryAcquire, E_ALREADY_LOCKED } from 'async-mutex';
 import { logger } from '../logger';
@@ -379,7 +378,7 @@ export class JitMaker implements Bot {
 			this.velocityClient.getMMOracleDataForPerpMarket(perpIdx, slot),
 			true,
 			new BN(slot),
-			currentSlotDuration(this.velocityClient, slot, SLOT_DURATION_BASELINE)
+			currentSlotDuration(this.velocityClient, slot)
 		);
 
 		let bestBidPrice;

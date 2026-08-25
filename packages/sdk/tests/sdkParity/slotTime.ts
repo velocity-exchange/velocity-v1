@@ -18,7 +18,6 @@ import {
 	slotsToMsNum,
 	currentSlotDuration,
 	currentSlotClock,
-	SlotDurationMs,
 	SlotDurationState,
 } from '../../src/math/time';
 
@@ -126,13 +125,11 @@ describe('slot-time helpers (program parity)', () => {
 	});
 });
 
-// The off-chain resolver every TypeScript client converts through. The two
-// rules it exists to enforce: a dead slot feed must not read as slot zero, and
-// the fallback direction belongs to the call site.
+// The off-chain resolver every TypeScript client converts through. A dead slot
+// feed must not read as slot zero, and an unavailable State falls back to the
+// hardcoded 400ms baseline.
 describe('currentSlotDuration (off-chain resolver)', () => {
 	const GATES = [400, 350, 300, 250, 200];
-	const PROTECTION_FALLBACK = 200 as SlotDurationMs;
-	const CEILING_FALLBACK = 400 as SlotDurationMs;
 
 	const source = (state?: SlotDurationState) => ({
 		getStateAccount: () => {
@@ -151,22 +148,15 @@ describe('currentSlotDuration (off-chain resolver)', () => {
 
 	it('resolves the live duration at every gate', () => {
 		for (const ms of GATES) {
-			assert.equal(
-				currentSlotDuration(source(stateAt(ms)), 5_000, CEILING_FALLBACK),
-				ms
-			);
-			assert.isTrue(
-				currentSlotClock(source(stateAt(ms)), 5_000, CEILING_FALLBACK).isLive
-			);
+			assert.equal(currentSlotDuration(source(stateAt(ms)), 5_000), ms);
+			assert.isTrue(currentSlotClock(source(stateAt(ms)), 5_000).isLive);
 		}
 	});
 
 	it('an unset (0) slotDurationMs resolves to the 400ms baseline', () => {
-		for (const fallback of [PROTECTION_FALLBACK, CEILING_FALLBACK]) {
-			const clock = currentSlotClock(source(stateAt(0)), 5_000, fallback);
-			assert.equal(clock.slotDurationMs, SLOT_DURATION_BASELINE);
-			assert.isTrue(clock.isLive);
-		}
+		const clock = currentSlotClock(source(stateAt(0)), 5_000);
+		assert.equal(clock.slotDurationMs, SLOT_DURATION_BASELINE);
+		assert.isTrue(clock.isLive);
 	});
 
 	it('a missing or 0 slot is a dead feed, not slot zero', () => {
@@ -178,29 +168,19 @@ describe('currentSlotDuration (off-chain resolver)', () => {
 			slotDurationEffectiveSlot: new BN(1_000),
 		};
 		for (const slot of [0, undefined]) {
-			for (const fallback of [PROTECTION_FALLBACK, CEILING_FALLBACK]) {
-				const clock = currentSlotClock(source(state), slot, fallback);
-				assert.equal(clock.slotDurationMs, fallback);
-				assert.isFalse(clock.isLive);
-			}
+			const clock = currentSlotClock(source(state), slot);
+			assert.equal(clock.slotDurationMs, SLOT_DURATION_BASELINE);
+			assert.isFalse(clock.isLive);
 		}
 	});
 
-	it('falls back per call site when state is not subscribed', () => {
-		assert.equal(
-			currentSlotDuration(source(), 5_000, PROTECTION_FALLBACK),
-			200
-		);
-		assert.equal(currentSlotDuration(source(), 5_000, CEILING_FALLBACK), 400);
+	it('falls back to the baseline when state is not subscribed', () => {
+		assert.equal(currentSlotDuration(source(), 5_000), SLOT_DURATION_BASELINE);
 	});
 
 	it('falls back when State predates the staging fields', () => {
-		const clock = currentSlotClock(
-			source({ slotDurationMs: 350 }),
-			5_000,
-			CEILING_FALLBACK
-		);
-		assert.equal(clock.slotDurationMs, CEILING_FALLBACK);
+		const clock = currentSlotClock(source({ slotDurationMs: 350 }), 5_000);
+		assert.equal(clock.slotDurationMs, SLOT_DURATION_BASELINE);
 		assert.isFalse(clock.isLive);
 	});
 
@@ -217,29 +197,16 @@ describe('currentSlotDuration (off-chain resolver)', () => {
 				pendingSlotDurationMs: pending,
 				slotDurationEffectiveSlot: new BN(1_000),
 			};
-			assert.equal(
-				currentSlotDuration(source(state), 999, CEILING_FALLBACK),
-				base
-			);
-			assert.equal(
-				currentSlotDuration(source(state), 1_000, CEILING_FALLBACK),
-				pending
-			);
-			assert.equal(
-				currentSlotDuration(source(state), 1_001, CEILING_FALLBACK),
-				pending
-			);
+			assert.equal(currentSlotDuration(source(state), 999), base);
+			assert.equal(currentSlotDuration(source(state), 1_000), pending);
+			assert.equal(currentSlotDuration(source(state), 1_001), pending);
 		}
 	});
 
 	it('holds a wall-clock rule across every gate', () => {
 		// 4s of grace stays ~4s in actual slots at every slot duration
 		for (const ms of GATES) {
-			const d = currentSlotDuration(
-				source(stateAt(ms)),
-				5_000,
-				CEILING_FALLBACK
-			);
+			const d = currentSlotDuration(source(stateAt(ms)), 5_000);
 			const slots = msToSlotsCeilNum(4_000, d);
 			assert.isAtLeast(slotsToMsNum(slots, d), 4_000);
 			assert.isBelow(slotsToMsNum(slots, d), 4_000 + ms);

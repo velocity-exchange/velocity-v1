@@ -7,7 +7,6 @@ import {
 	TxSigAndSlot,
 	BlockhashSubscriber,
 	currentSlotDuration,
-	SLOT_DURATION_BASELINE,
 } from '@velocity-exchange/sdk';
 import { Mutex } from 'async-mutex';
 
@@ -119,8 +118,7 @@ export class UserIdleFlipperBot implements Bot {
 						new BN(currentSlot),
 						currentSlotDuration(
 							this.velocityClient,
-							currentSlot,
-							SLOT_DURATION_BASELINE
+							currentSlot
 						)
 					)
 				) {

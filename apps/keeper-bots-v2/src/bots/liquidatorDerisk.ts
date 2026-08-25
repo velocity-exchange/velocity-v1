@@ -34,7 +34,6 @@ import {
 	RECOMMENDED_JUPITER_API,
 	msToSlotsCeilNum,
 	currentSlotDuration,
-	SLOT_DURATION_BASELINE,
 } from '@velocity-exchange/sdk';
 import {
 	ComputeBudgetProgram,
@@ -245,8 +244,7 @@ export class LiquidatorDerisk {
 						this.config.deriskAuctionDurationMs!,
 						currentSlotDuration(
 							this.velocityClient,
-							this.userMap.getSlot(),
-							SLOT_DURATION_BASELINE
+							this.userMap.getSlot()
 						)
 					)
 				),
@@ -609,8 +607,7 @@ export class LiquidatorDerisk {
 				undefined,
 				currentSlotDuration(
 					this.velocityClient,
-					this.userMap.getSlot(),
-					SLOT_DURATION_BASELINE
+					this.userMap.getSlot()
 				)
 			));
 		} catch (e) {
@@ -646,8 +643,7 @@ export class LiquidatorDerisk {
 					this.config.deriskAuctionDurationMs!,
 					currentSlotDuration(
 						this.velocityClient,
-						this.userMap.getSlot(),
-						SLOT_DURATION_BASELINE
+						this.userMap.getSlot()
 					)
 				)
 			),

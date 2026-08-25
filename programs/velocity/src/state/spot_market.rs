@@ -297,6 +297,14 @@ pub struct SpotMarket {
     /// market. It reserves those tokens from generic revenue settlement and
     /// spot bankruptcy. Individual ownership remains on each perp market, and
     /// this aggregate is not part of insurance fund NAV until settled.
+    ///
+    /// This is a token figure, not a scaled balance, and no path re-indexes it.
+    /// The revenue pool earns deposit interest, so the pool grows while this
+    /// reserve holds still. The growth falls outside the reserve and generic
+    /// settlement may spend it. That is correct: a source market is owed the
+    /// fees it swept, not a yield on them, and the reserve can then only
+    /// under-claim the pool. `resolve_spot_bankruptcy` handles the opposite
+    /// case, where a haircut lowers the index and the flat figure over-claims.
     /// precision: token mint precision
     pub perp_market_if_revenue_receivable: u64,
     /// Revenue admission capacity left in the current settlement period.

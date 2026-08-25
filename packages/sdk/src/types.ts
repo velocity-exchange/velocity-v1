@@ -1204,6 +1204,8 @@ export type PerpMarketAccount = {
 	pendingRevenueShare: BN;
 	/** QUOTE_PRECISION (1e6); this market's IF fees swept into the quote revenue pool but not yet settled into the IF vault. Only this market can reclaim the amount during bankruptcy */
 	insuranceFundRevenueReceivable: BN;
+	/** reserved tail space (248 bytes); account extension is expensive, so this upgrade allocates room for later fields */
+	paddingFuture: number[];
 	/** MARGIN_PRECISION (1e4); scales margin ratio up for large positions */
 	imfFactor: number;
 	/** MARGIN_PRECISION (1e4); discounts positive-unrealized-pnl asset weight for large positions */
@@ -1387,6 +1389,8 @@ export type SpotMarketAccount = {
 	perpMarketIfRevenueReceivable: BN;
 	/** token mint precision; shared generic and source revenue admission capacity left in the current settlement period */
 	revenueSettleAllowance: BN;
+	/** reserved tail space (240 bytes); account extension is expensive, so this upgrade allocates room for later fields */
+	paddingFuture: number[];
 
 	/** token mint decimals; token-mint precision throughout this account is 10^decimals */
 	decimals: number;

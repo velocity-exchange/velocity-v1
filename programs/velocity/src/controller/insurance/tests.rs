@@ -2699,3 +2699,54 @@ pub fn zero_settlement_snapshot_is_seeded_without_consuming_source_revenue() {
     assert_eq!(perp_market.insurance_fund_revenue_receivable, claim);
     validate_spot_balances(&spot_market).unwrap();
 }
+
+#[test]
+pub fn revenue_settle_survives_round_up_on_a_nine_decimal_market() {
+    // At 9 decimals `10^(19 - decimals)` equals SPOT_CUMULATIVE_INTEREST_PRECISION,
+    // so one scaled unit is worth one token unit. The round-up debit then reads
+    // back one token above the amount that sized it. The allowance must absorb
+    // that, or every settle on the market reverts.
+    let mut spot_market = SpotMarket {
+        decimals: 9,
+        deposit_balance: 10_000 * SPOT_BALANCE_PRECISION,
+        cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+        revenue_pool: PoolBalance {
+            market_index: 0,
+            scaled_balance: 1_000 * SPOT_BALANCE_PRECISION,
+            ..PoolBalance::default()
+        },
+        insurance_fund: InsuranceFund {
+            revenue_settle_period: (ONE_YEAR / 1_000) as i64,
+            total_shares: 1_000,
+            user_shares: 1_000,
+            ..InsuranceFund::default()
+        },
+        ..SpotMarket::default()
+    };
+
+    let insurance_vault_amount = 10_000_000 * SPOT_BALANCE_PRECISION as u64;
+    spot_market.if_last_settle_vault_amount = insurance_vault_amount;
+    let spot_market_vault_amount = 10_000 * SPOT_BALANCE_PRECISION as u64;
+
+    // The allowance caps at a tenth of the revenue pool, below the pool itself,
+    // so the round-up path runs.
+    let allowance = 100 * SPOT_BALANCE_PRECISION as u64;
+
+    let flow = settle_revenue_to_insurance_fund(
+        spot_market_vault_amount,
+        insurance_vault_amount,
+        &mut spot_market,
+        1,
+        true,
+        false,
+    )
+    .unwrap();
+
+    assert_eq!(flow, allowance + 1);
+    assert_eq!(spot_market.revenue_settle_allowance, 0);
+    assert_eq!(
+        spot_market.revenue_pool.scaled_balance,
+        1_000 * SPOT_BALANCE_PRECISION - (allowance as u128 + 1)
+    );
+    assert_eq!(spot_market.insurance_fund_revenue_receivable_scaled, 0);
+}

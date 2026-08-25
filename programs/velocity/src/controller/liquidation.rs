@@ -4368,6 +4368,20 @@ pub fn resolve_perp_bankruptcy(
 
     let loss_after_pending = loss.safe_add(pending_if_payment.cast::<i128>()?)?;
 
+    // Both receivable tranches below read a scaled claim out of the quote
+    // market, so accrue its interest first. Two paths that value one claim must
+    // agree, and `resolve_perp_pnl_deficit` reads it in this order.
+    {
+        let spot_market = &mut spot_market_map.get_ref_mut(&QUOTE_SPOT_MARKET_INDEX)?;
+        let oracle_price_data = oracle_map.get_price_data(&spot_market.oracle_id())?;
+        update_spot_market_cumulative_interest(
+            spot_market,
+            Some(oracle_price_data),
+            now,
+            funding_paused,
+        )?;
+    }
+
     // Tranche 2: this market's IF fees already swept into the quote revenue
     // pool. The market receivable preserves their source, so another perp
     // market cannot consume them before this market's bankruptcy resolves.
@@ -4403,17 +4417,9 @@ pub fn resolve_perp_bankruptcy(
 
         // move if payment to pnl pool
         let spot_market = &mut spot_market_map.get_ref_mut(&QUOTE_SPOT_MARKET_INDEX)?;
-        let oracle_price_data = oracle_map.get_price_data(&spot_market.oracle_id())?;
-        update_spot_market_cumulative_interest(
-            spot_market,
-            Some(oracle_price_data),
-            now,
-            funding_paused,
-        )?;
 
-        // The receivable is a scaled claim, so read its token value after the
-        // interest accrual above. `resolve_perp_pnl_deficit` reads it in the
-        // same order, and two paths that value one claim must agree.
+        // The receivable is a scaled claim, and the accrual above this tranche
+        // already advanced its index, so this reads its settled token value.
         let available_if_capital = spot_market
             .get_insurance_fund_revenue_receivable()?
             .safe_add(insurance_fund_vault_balance.saturating_sub(1).cast()?)?;

@@ -715,6 +715,11 @@ fn open_revenue_settle_period(
 ) -> VelocityResult<bool> {
     let depositors_claim =
         validate_spot_market_vault_amount(spot_market, spot_market_vault_amount)?;
+    // The scaled receivable already left the revenue pool, so the claim must
+    // cover it on top of `token_amount`. `perp_market_if_revenue_receivable` is
+    // still inside the revenue pool, so `token_amount` already counts it.
+    // Subtracting it here would charge the same tokens twice and starve the
+    // settle that clears it.
     let reserved_if_revenue = spot_market.get_insurance_fund_revenue_receivable()?;
     let unreserved_depositors_claim = depositors_claim
         .max(0)
@@ -837,8 +842,20 @@ fn book_revenue_to_insurance_fund(
             .insurance_fund_revenue_receivable_scaled
             .safe_add(balance_delta)?;
 
+        // A round-up debit can convert back to more tokens than the amount that
+        // sized it. The value read back then exceeds the allowance that capped
+        // it, and the subtraction below underflows and reverts the settle. This
+        // happens whenever one scaled unit is worth a whole token unit, which
+        // holds on any market with 9 or more decimals.
+        //
+        // Clamp the reported value at the allowance. The clamp lowers only the
+        // report, so the receivable still carries every unit the pool gave up.
+        // A settle can therefore pass one unit more than the allowance, which
+        // is the round-up itself and cannot compound across periods.
         insurance_fund_token_amount =
-            get_token_amount(balance_delta, spot_market, &SpotBalanceType::Deposit)?.cast()?;
+            get_token_amount(balance_delta, spot_market, &SpotBalanceType::Deposit)?
+                .cast::<u64>()?
+                .min(spot_market.revenue_settle_allowance);
         spot_market.revenue_settle_allowance = spot_market
             .revenue_settle_allowance
             .safe_sub(insurance_fund_token_amount)?;
@@ -876,6 +893,10 @@ fn book_revenue_to_insurance_fund(
             .cast()?;
     }
 
+    // Only a period-open settle rewrites the cap base. A later settle inside the
+    // same period adds to the fund without raising the snapshot, so the next
+    // period's cap counts less capital than the fund holds. That direction is
+    // safe, and the snapshot must stay a running minimum over the period.
     if open_period {
         spot_market.if_last_settle_vault_amount =
             insurance_fund_nav_before.safe_add(insurance_fund_token_amount)?;
@@ -1096,6 +1117,13 @@ fn transfer_perp_market_if_revenue_receivable_to_insurance_fund(
     perp_market: &mut PerpMarket,
     max_amount: u64,
 ) -> VelocityResult<u64> {
+    // Nothing to settle. Return before the reserve tripwire below, which rounds
+    // the remaining aggregate up and reads one scaled unit above the pool when
+    // this market holds no claim. That is an empty call, not a corrupt market.
+    if perp_market.insurance_fund_revenue_receivable == 0 || max_amount == 0 {
+        return Ok(0);
+    }
+
     let remaining_aggregate = spot_market
         .perp_market_if_revenue_receivable
         .safe_sub(perp_market.insurance_fund_revenue_receivable)?;

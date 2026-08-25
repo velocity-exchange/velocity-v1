@@ -3048,7 +3048,11 @@ pub fn handle_settle_perp_market_if_revenue_to_insurance_fund<'c: 'info, 'info>(
     perp_market_index: u16,
 ) -> Result<()> {
     // Delisted markets remain valid here. Their final fee sweep can create a
-    // receivable immediately before the market status becomes Delisted.
+    // receivable immediately before the market status becomes Delisted. This
+    // instruction is the only way that receivable ever clears, because
+    // `resolve_perp_bankruptcy` cannot run on a delisted market. A delist
+    // therefore gives up the market's claw-back right and keeps the settle
+    // right, which is why the delist path needs no zero-guard on the field.
     let state = ctx.accounts.state.load()?;
     let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
     let spot_market = &mut load_mut!(ctx.accounts.spot_market)?;

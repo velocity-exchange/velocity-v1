@@ -32,3 +32,6 @@ without consuming its source claims, matching the generic revenue bootstrap beha
 248 bytes of reserved tail space on `PerpMarket`. `SpotMarket` uses a second `u64` for the shared
 settlement allowance and retains 240 bytes of reserved tail space. Existing accounts must be
 extended with the account extension crank immediately after the program upgrade.
+
+`PerpMarketAccount` and `SpotMarketAccount` also mirror the reserved `paddingFuture` tail that the
+IDL declares, so the remaining space in each struct is visible to consumers.

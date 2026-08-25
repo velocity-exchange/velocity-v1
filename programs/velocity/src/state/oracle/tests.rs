@@ -4,7 +4,10 @@ use {
         error::ErrorCode,
         math::constants::{AMM_RESERVE_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64},
         state::{
-            oracle::{get_oracle_price, HistoricalOracleData, OraclePriceData, OracleSource},
+            oracle::{
+                get_oracle_price, HistoricalOracleData, OraclePriceData, OracleSource,
+                PYTH_PUSH_ACCOUNT_TYPE_PRICE, PYTH_PUSH_MAGIC, PYTH_PUSH_VERSION,
+            },
             perp_market::{MarketStats, PerpMarket, AMM},
             state::State,
         },
@@ -422,11 +425,15 @@ fn unaligned_pyth_account_data_is_rejected() {
     );
 }
 
-/// The SDK's `PythClient` repeats this length as a literal, because it cannot
-/// read `size_of` across languages. A change in the pyth-client dependency
-/// must fail here rather than let the two checks disagree.
+/// `packages/sdk/src/oracles/pythClient.ts` repeats these four values as
+/// literals, because it cannot read them across languages. A change here must
+/// fail rather than let the program and the SDK disagree about which accounts
+/// are price accounts. Rust fixtures import the constants instead.
 #[test]
-fn a_pyth_price_account_is_3312_bytes() {
+fn the_pyth_header_values_the_sdk_repeats() {
     assert_eq!(std::mem::size_of::<pyth_client::Price>(), 3312);
     assert_eq!(std::mem::align_of::<pyth_client::Price>(), 8);
+    assert_eq!(PYTH_PUSH_MAGIC, 0xa1b2_c3d4);
+    assert_eq!(PYTH_PUSH_VERSION, 2);
+    assert_eq!(PYTH_PUSH_ACCOUNT_TYPE_PRICE, 3);
 }

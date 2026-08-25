@@ -493,9 +493,12 @@ pub fn get_oracle_price(
 /// owns: `magic`, `ver`, `atype`, `size`. The first three identify the
 /// account; `PYTH_PUSH_ACCOUNT_TYPE_PRICE` is the `AccountType::Price`
 /// discriminant.
-const PYTH_PUSH_MAGIC: u32 = 0xa1b2_c3d4;
-const PYTH_PUSH_VERSION: u32 = 2;
-const PYTH_PUSH_ACCOUNT_TYPE_PRICE: u32 = 3;
+///
+/// These are public so that a test fixture builds its header from the same
+/// values the check reads, and cannot drift from them.
+pub const PYTH_PUSH_MAGIC: u32 = 0xa1b2_c3d4;
+pub const PYTH_PUSH_VERSION: u32 = 2;
+pub const PYTH_PUSH_ACCOUNT_TYPE_PRICE: u32 = 3;
 
 /// Reads the pyth push price account in `data`, or fails if `data` is not one.
 ///

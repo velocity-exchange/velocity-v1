@@ -14,6 +14,7 @@ import {
 	isVariant,
 	getUserAccountPublicKeySync,
 	getUserStatsAccountPublicKey,
+	currentSlotDuration,
 } from '@velocity-exchange/sdk';
 import { Mutex, tryAcquire, E_ALREADY_LOCKED } from 'async-mutex';
 import { logger } from '../logger';
@@ -22,7 +23,6 @@ import {
 	calculateBaseAmountToMarketMakePerp,
 	calculateBaseAmountToMarketMakeSpot,
 	convertToMarketType,
-	currentSlotDuration,
 	getBestLimitAskExcludePubKey,
 	getBestLimitBidExcludePubKey,
 	isMarketVolatile,

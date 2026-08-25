@@ -62,6 +62,8 @@ import {
 	TWO,
 	ZERO,
 	ACCOUNT_AGE_DELETION_CUTOFF_SECONDS,
+	VIP_FEE_TIER_ONE_VOLUME_QUOTE,
+	VIP_FEE_TIER_TWO_VOLUME_QUOTE,
 } from './constants/numericConstants';
 import {
 	DataAndSlot,
@@ -4553,8 +4555,8 @@ export class User {
 			);
 
 			const volumeThresholds = [
-				new BN(5_000_000).mul(QUOTE_PRECISION),
-				new BN(80_000_000).mul(QUOTE_PRECISION),
+				VIP_FEE_TIER_ONE_VOLUME_QUOTE,
+				VIP_FEE_TIER_TWO_VOLUME_QUOTE,
 			];
 
 			let feeTierIndex = volumeThresholds.length;

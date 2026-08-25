@@ -6,6 +6,7 @@ import {
 	UserMap,
 	TxSigAndSlot,
 	BlockhashSubscriber,
+	currentSlotDuration,
 } from '@velocity-exchange/sdk';
 import { Mutex } from 'async-mutex';
 
@@ -16,11 +17,7 @@ import {
 	AddressLookupTableAccount,
 	ComputeBudgetProgram,
 } from '@solana/web3.js';
-import {
-	currentSlotDuration,
-	simulateAndGetTxWithCUs,
-	sleepMs,
-} from '../utils';
+import { simulateAndGetTxWithCUs, sleepMs } from '../utils';
 
 const USER_IDLE_CHUNKS = 9;
 const SLEEP_MS = 1000;

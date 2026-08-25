@@ -84,6 +84,7 @@ impl FillerBot {
             None,
             None,
             None,
+            None,
         );
         let rt = tokio::runtime::Handle::current();
         let tx_worker_ref = tx_worker.run(rt);
@@ -2262,6 +2263,7 @@ pub struct TxWorker {
     txs_in_flight: Option<Arc<DashMap<Pubkey, HashSet<Signature>>>>,
     tx_sig_to_collateral: Option<Arc<DashMap<Signature, (u128, u64)>>>,
     free_collateral_per_subaccount: Option<Arc<DashMap<Pubkey, u128>>>,
+    perp_fill_fallbacks: Option<Arc<DashMap<(Pubkey, u16), ()>>>,
 }
 
 impl TxWorker {
@@ -2272,6 +2274,7 @@ impl TxWorker {
         txs_in_flight: Option<Arc<DashMap<Pubkey, HashSet<Signature>>>>,
         tx_sig_to_collateral: Option<Arc<DashMap<Signature, (u128, u64)>>>,
         free_collateral_per_subaccount: Option<Arc<DashMap<Pubkey, u128>>>,
+        perp_fill_fallbacks: Option<Arc<DashMap<(Pubkey, u16), ()>>>,
     ) -> Self {
         Self {
             velocity: Box::leak(Box::new(velocity)),
@@ -2281,6 +2284,7 @@ impl TxWorker {
             txs_in_flight,
             tx_sig_to_collateral,
             free_collateral_per_subaccount,
+            perp_fill_fallbacks,
         }
     }
 
@@ -2327,6 +2331,7 @@ impl TxWorker {
         let velocity = self.velocity;
         let pending_txs = Arc::clone(&self.pending_txs);
         let metrics = self.metrics.clone();
+        let perp_fill_fallbacks = self.perp_fill_fallbacks.clone();
         let intent_label = intent.label();
 
         metrics.tx_sent.with_label_values(&[intent_label]).inc();
@@ -2354,6 +2359,11 @@ impl TxWorker {
             {
                 Ok(sim_result) => {
                     if let Some(err) = sim_result.err {
+                        record_perp_fill_fallback(
+                            &intent,
+                            &TransactionError::from(err.clone()),
+                            perp_fill_fallbacks.as_ref(),
+                        );
                         if is_revert_fill_error(&err) {
                             log::debug!(
                                 target: TARGET,
@@ -2524,6 +2534,7 @@ impl TxWorker {
         let txs_in_flight = self.txs_in_flight.clone();
         let tx_sig_to_collateral = self.tx_sig_to_collateral.clone();
         let free_collateral = self.free_collateral_per_subaccount.clone();
+        let perp_fill_fallbacks = self.perp_fill_fallbacks.clone();
 
         rt.spawn(async move {
             let pending_tx_meta = {
@@ -2699,6 +2710,11 @@ impl TxWorker {
                                 );
                             }
                             Some(err) => {
+                                record_perp_fill_fallback(
+                                    &intent,
+                                    &err,
+                                    perp_fill_fallbacks.as_ref(),
+                                );
                                 log::warn!(
                                     target: TARGET,
                                     "tx failed: {err:?}, intent: {intent_label}, liquidatee: {:?}, sig: {signature}",
@@ -3003,6 +3019,36 @@ fn is_revert_fill_error(error: &UiTransactionError) -> bool {
     )
 }
 
+fn record_perp_fill_fallback(
+    intent: &TxIntent,
+    error: &TransactionError,
+    fallbacks: Option<&Arc<DashMap<(Pubkey, u16), ()>>>,
+) {
+    let TransactionError::InstructionError(_, InstructionError::Custom(code)) = error else {
+        return;
+    };
+    let expected = velocity_rs::program::error::ErrorCode::LiquidationOrderFailedToFill as u32
+        + anchor_lang::error::ERROR_CODE_OFFSET;
+    if *code != expected {
+        return;
+    }
+    let TxIntent::LiquidateWithFill {
+        market_index,
+        liquidatee,
+        ..
+    } = intent
+    else {
+        return;
+    };
+    if let Some(fallbacks) = fallbacks {
+        fallbacks.insert((*liquidatee, *market_index), ());
+        log::info!(
+            target: TARGET,
+            "recorded perp takeover fallback: liquidatee={liquidatee:?} market={market_index}"
+        );
+    }
+}
+
 fn is_expected_fill_event(event: &VelocityEvent, intent: &TxIntent) -> bool {
     matches!(
         event,
@@ -3106,8 +3152,8 @@ mod tests {
     use {
         super::{
             build_fill_tx, classify_cross, is_expected_fill_event, is_revert_fill_error,
-            mm_oracle_stale_for_amm_immediate, order_dedup_key, vamm_can_fill_taker, CrossAction,
-            Pubkey, TxIntent, VelocityEvent,
+            mm_oracle_stale_for_amm_immediate, order_dedup_key, record_perp_fill_fallback,
+            vamm_can_fill_taker, CrossAction, Pubkey, TxIntent, VelocityEvent,
         },
         solana_sdk::{instruction::InstructionError, transaction::TransactionError},
         std::borrow::Cow,
@@ -3240,6 +3286,47 @@ mod tests {
         assert!(!is_revert_fill_error(
             &TransactionError::InstructionError(3, InstructionError::Custom(6240)).into()
         ));
+    }
+
+    #[test]
+    fn failed_liquidation_fill_records_takeover_fallback() {
+        let liquidatee = Pubkey::new_unique();
+        let intent = TxIntent::LiquidateWithFill {
+            market_index: 7,
+            liquidatee,
+            slot: 42,
+        };
+        let fallbacks = std::sync::Arc::new(dashmap::DashMap::new());
+        let error_code = velocity_rs::program::error::ErrorCode::LiquidationOrderFailedToFill
+            as u32
+            + anchor_lang::error::ERROR_CODE_OFFSET;
+
+        record_perp_fill_fallback(
+            &intent,
+            &TransactionError::InstructionError(2, InstructionError::Custom(error_code)),
+            Some(&fallbacks),
+        );
+
+        assert!(fallbacks.contains_key(&(liquidatee, 7)));
+    }
+
+    #[test]
+    fn unrelated_failure_does_not_record_takeover_fallback() {
+        let liquidatee = Pubkey::new_unique();
+        let intent = TxIntent::LiquidateWithFill {
+            market_index: 7,
+            liquidatee,
+            slot: 42,
+        };
+        let fallbacks = std::sync::Arc::new(dashmap::DashMap::new());
+
+        record_perp_fill_fallback(
+            &intent,
+            &TransactionError::InstructionError(2, InstructionError::Custom(6239)),
+            Some(&fallbacks),
+        );
+
+        assert!(fallbacks.is_empty());
     }
 
     #[test]

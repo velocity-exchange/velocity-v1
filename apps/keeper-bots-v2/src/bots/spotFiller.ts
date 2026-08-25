@@ -21,6 +21,7 @@ import {
 	JupiterClient,
 	ClockSubscriber,
 	msToSlotsNum,
+	currentSlotDuration,
 } from '@velocity-exchange/sdk';
 import { Mutex, tryAcquire, E_ALREADY_LOCKED } from 'async-mutex';
 
@@ -77,7 +78,6 @@ import {
 	swapFillerHardEarnedUSDCForSOL,
 	validMinimumGasAmount,
 	validRebalanceSettledPnlThreshold,
-	currentSlotDuration,
 } from '../utils';
 import { JITO_METRIC_TYPES, BundleSender } from '../bundleSender';
 import {

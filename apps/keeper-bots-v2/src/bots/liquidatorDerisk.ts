@@ -33,6 +33,8 @@ import {
 	calculateMarketAvailablePNL,
 	RECOMMENDED_JUPITER_API,
 	msToSlotsCeilNum,
+	currentSlotDuration,
+	SLOT_DURATION_BASELINE,
 } from '@velocity-exchange/sdk';
 import {
 	ComputeBudgetProgram,
@@ -52,7 +54,6 @@ import {
 	simulateAndGetTxWithCUs,
 	SimulateAndGetTxWithCUsResponse,
 	isSolLstToken,
-	currentSlotDuration,
 } from '../utils';
 
 const BPS_PRECISION = 10000;
@@ -242,7 +243,11 @@ export class LiquidatorDerisk {
 					255,
 					msToSlotsCeilNum(
 						this.config.deriskAuctionDurationMs!,
-						currentSlotDuration(this.velocityClient, this.userMap.getSlot())
+						currentSlotDuration(
+							this.velocityClient,
+							this.userMap.getSlot(),
+							SLOT_DURATION_BASELINE
+						)
 					)
 				),
 				auctionStartPrice,
@@ -602,7 +607,11 @@ export class LiquidatorDerisk {
 				dlob,
 				this.userMap.getSlot(),
 				undefined,
-				currentSlotDuration(this.velocityClient, this.userMap.getSlot())
+				currentSlotDuration(
+					this.velocityClient,
+					this.userMap.getSlot(),
+					SLOT_DURATION_BASELINE
+				)
 			));
 		} catch (e) {
 			const err = e as Error;
@@ -635,7 +644,11 @@ export class LiquidatorDerisk {
 				255,
 				msToSlotsCeilNum(
 					this.config.deriskAuctionDurationMs!,
-					currentSlotDuration(this.velocityClient, this.userMap.getSlot())
+					currentSlotDuration(
+						this.velocityClient,
+						this.userMap.getSlot(),
+						SLOT_DURATION_BASELINE
+					)
 				)
 			),
 			auctionStartPrice,

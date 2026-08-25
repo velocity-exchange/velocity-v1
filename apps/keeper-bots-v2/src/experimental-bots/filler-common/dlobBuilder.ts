@@ -30,6 +30,8 @@ import {
 	OrderParamsBitFlag,
 	PerpMarketAccount,
 	SpotMarketAccount,
+	currentSlotDuration,
+	SLOT_DURATION_BASELINE,
 } from '@velocity-exchange/sdk';
 import { Connection, PublicKey } from '@solana/web3.js';
 import dotenv from 'dotenv';
@@ -41,7 +43,7 @@ import {
 	NodeToFillWithContext,
 } from './types';
 import { getVelocityClientFromArgs, serializeNodeToFill } from './utils';
-import { currentSlotDuration, sleepMs } from '../../utils';
+import { sleepMs } from '../../utils';
 import { LRUCache } from 'lru-cache';
 import { sha256 } from '@noble/hashes/sha256';
 
@@ -284,7 +286,8 @@ class DLOBBuilder {
 			(maxSlot.toNumber() - this.slotSubscriber.getSlot()) *
 				currentSlotDuration(
 					this.velocityClient,
-					this.slotSubscriber.getSlot()
+					this.slotSubscriber.getSlot(),
+					SLOT_DURATION_BASELINE
 				) *
 				1.25
 		);
@@ -318,7 +321,8 @@ class DLOBBuilder {
 					new BN(this.slotSubscriber.getSlot()),
 					currentSlotDuration(
 						this.velocityClient,
-						this.slotSubscriber.getSlot()
+						this.slotSubscriber.getSlot(),
+						SLOT_DURATION_BASELINE
 					)
 				);
 				fallbackAsk = calculateAskPrice(
@@ -327,7 +331,8 @@ class DLOBBuilder {
 					new BN(this.slotSubscriber.getSlot()),
 					currentSlotDuration(
 						this.velocityClient,
-						this.slotSubscriber.getSlot()
+						this.slotSubscriber.getSlot(),
+						SLOT_DURATION_BASELINE
 					)
 				);
 			} else {

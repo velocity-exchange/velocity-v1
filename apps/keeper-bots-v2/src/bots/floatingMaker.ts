@@ -12,8 +12,9 @@ import {
 	Order,
 	PerpPosition,
 	msToSlotsNum,
+	currentSlotDuration,
+	SLOT_DURATION_BASELINE,
 } from '@velocity-exchange/sdk';
-import { currentSlotDuration } from '../utils';
 import { Mutex, tryAcquire, E_ALREADY_LOCKED } from 'async-mutex';
 
 import { logger } from '../logger';
@@ -254,7 +255,11 @@ export class FloatingPerpMakerBot implements Bot {
 			(this.lastSlotMarketUpdated.get(marketIndex) ?? 0) +
 			msToSlotsNum(
 				MARKET_UPDATE_COOLDOWN_MS,
-				currentSlotDuration(this.velocityClient, this.slotSubscriber.getSlot())
+				currentSlotDuration(
+					this.velocityClient,
+					this.slotSubscriber.getSlot(),
+					SLOT_DURATION_BASELINE
+				)
 			);
 
 		if (nextUpdateSlot > currSlot) {
@@ -266,7 +271,11 @@ export class FloatingPerpMakerBot implements Bot {
 			marketIndex,
 			currSlot
 		);
-		const slotDuration = currentSlotDuration(this.velocityClient, currSlot);
+		const slotDuration = currentSlotDuration(
+			this.velocityClient,
+			currSlot,
+			SLOT_DURATION_BASELINE
+		);
 		const vAsk = calculateAskPrice(
 			marketAccount,
 			oracle,

@@ -16,6 +16,10 @@ import {
 	msToSlotsNum,
 	msToSlotsCeilNum,
 	slotsToMsNum,
+	currentSlotDuration,
+	currentSlotClock,
+	SlotDurationMs,
+	SlotDurationState,
 } from '../../src/math/time';
 
 // Pins the TypeScript time helpers against the Rust `math/time.rs` unit tests
@@ -119,5 +123,126 @@ describe('slot-time helpers (program parity)', () => {
 		assert.equal(millis(800).toNumber(), 800);
 		assert.equal(millisFromSecs(2).toNumber(), 2000);
 		assert.equal(millisFromStoredUnits(10).toNumber(), 4000);
+	});
+});
+
+// The off-chain resolver every TypeScript client converts through. The two
+// rules it exists to enforce: a dead slot feed must not read as slot zero, and
+// the fallback direction belongs to the call site.
+describe('currentSlotDuration (off-chain resolver)', () => {
+	const GATES = [400, 350, 300, 250, 200];
+	const PROTECTION_FALLBACK = 200 as SlotDurationMs;
+	const CEILING_FALLBACK = 400 as SlotDurationMs;
+
+	const source = (state?: SlotDurationState) => ({
+		getStateAccount: () => {
+			if (!state) {
+				throw new Error('state not subscribed');
+			}
+			return state;
+		},
+	});
+
+	const stateAt = (ms: number): SlotDurationState => ({
+		slotDurationMs: ms,
+		pendingSlotDurationMs: 0,
+		slotDurationEffectiveSlot: new BN(0),
+	});
+
+	it('resolves the live duration at every gate', () => {
+		for (const ms of GATES) {
+			assert.equal(
+				currentSlotDuration(source(stateAt(ms)), 5_000, CEILING_FALLBACK),
+				ms
+			);
+			assert.isTrue(
+				currentSlotClock(source(stateAt(ms)), 5_000, CEILING_FALLBACK).isLive
+			);
+		}
+	});
+
+	it('an unset (0) slotDurationMs resolves to the 400ms baseline', () => {
+		for (const fallback of [PROTECTION_FALLBACK, CEILING_FALLBACK]) {
+			const clock = currentSlotClock(source(stateAt(0)), 5_000, fallback);
+			assert.equal(clock.slotDurationMs, SLOT_DURATION_BASELINE);
+			assert.isTrue(clock.isLive);
+		}
+	});
+
+	it('a missing or 0 slot is a dead feed, not slot zero', () => {
+		// A failed slot subscription reports 0, and slot 0 precedes every
+		// effective slot, so it would otherwise resolve to the pre-flip base.
+		const state: SlotDurationState = {
+			slotDurationMs: 400,
+			pendingSlotDurationMs: 200,
+			slotDurationEffectiveSlot: new BN(1_000),
+		};
+		for (const slot of [0, undefined]) {
+			for (const fallback of [PROTECTION_FALLBACK, CEILING_FALLBACK]) {
+				const clock = currentSlotClock(source(state), slot, fallback);
+				assert.equal(clock.slotDurationMs, fallback);
+				assert.isFalse(clock.isLive);
+			}
+		}
+	});
+
+	it('falls back per call site when state is not subscribed', () => {
+		assert.equal(
+			currentSlotDuration(source(), 5_000, PROTECTION_FALLBACK),
+			200
+		);
+		assert.equal(currentSlotDuration(source(), 5_000, CEILING_FALLBACK), 400);
+	});
+
+	it('falls back when State predates the staging fields', () => {
+		const clock = currentSlotClock(
+			source({ slotDurationMs: 350 }),
+			5_000,
+			CEILING_FALLBACK
+		);
+		assert.equal(clock.slotDurationMs, CEILING_FALLBACK);
+		assert.isFalse(clock.isLive);
+	});
+
+	it('applies a staged flip on the effective slot, at every gate step', () => {
+		const steps: Array<[number, number]> = [
+			[400, 350],
+			[350, 300],
+			[300, 250],
+			[250, 200],
+		];
+		for (const [base, pending] of steps) {
+			const state: SlotDurationState = {
+				slotDurationMs: base,
+				pendingSlotDurationMs: pending,
+				slotDurationEffectiveSlot: new BN(1_000),
+			};
+			assert.equal(
+				currentSlotDuration(source(state), 999, CEILING_FALLBACK),
+				base
+			);
+			assert.equal(
+				currentSlotDuration(source(state), 1_000, CEILING_FALLBACK),
+				pending
+			);
+			assert.equal(
+				currentSlotDuration(source(state), 1_001, CEILING_FALLBACK),
+				pending
+			);
+		}
+	});
+
+	it('holds a wall-clock rule across every gate', () => {
+		// 4s of grace stays ~4s in actual slots at every slot duration
+		for (const ms of GATES) {
+			const d = currentSlotDuration(
+				source(stateAt(ms)),
+				5_000,
+				CEILING_FALLBACK
+			);
+			const slots = msToSlotsCeilNum(4_000, d);
+			assert.isAtLeast(slotsToMsNum(slots, d), 4_000);
+			assert.isBelow(slotsToMsNum(slots, d), 4_000 + ms);
+		}
 	});
 });

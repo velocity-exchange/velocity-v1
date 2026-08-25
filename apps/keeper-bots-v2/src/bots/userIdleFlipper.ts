@@ -6,6 +6,8 @@ import {
 	UserMap,
 	TxSigAndSlot,
 	BlockhashSubscriber,
+	currentSlotDuration,
+	SLOT_DURATION_BASELINE,
 } from '@velocity-exchange/sdk';
 import { Mutex } from 'async-mutex';
 
@@ -16,11 +18,7 @@ import {
 	AddressLookupTableAccount,
 	ComputeBudgetProgram,
 } from '@solana/web3.js';
-import {
-	currentSlotDuration,
-	simulateAndGetTxWithCUs,
-	sleepMs,
-} from '../utils';
+import { simulateAndGetTxWithCUs, sleepMs } from '../utils';
 
 const USER_IDLE_CHUNKS = 9;
 const SLEEP_MS = 1000;
@@ -119,7 +117,11 @@ export class UserIdleFlipperBot implements Bot {
 				if (
 					user.canMakeIdle(
 						new BN(currentSlot),
-						currentSlotDuration(this.velocityClient, currentSlot)
+						currentSlotDuration(
+							this.velocityClient,
+							currentSlot,
+							SLOT_DURATION_BASELINE
+						)
 					)
 				) {
 					usersToIdle.push([

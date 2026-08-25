@@ -362,17 +362,57 @@ subscription; no service needs a restart at a gate flip.
   (defaulting to the baseline, so existing callers stay correct until the first gate);
   `calculateMaxPctToLiquidate` takes its ramp as `Millis` (`millisFromStoredUnits(state.liquidationDuration)`).
   `SLOT_TIME_ESTIMATE_MS` is deprecated; there is no correct constant to replace it with, only the
-  live field.
+  live field. `currentSlotDuration` / `currentSlotClock` resolve that field for any client holding a
+  subscribed `State` (see [Off-chain clients](#off-chain-clients-sdk-common-ts-ui-bots)).
 - **Bots** (`apps/dlob-server`, `apps/keeper-bots-v2`): all pacing and threshold constants are
   wall-clock ms (`JITO_LEADER_LEAD_MS`, `MARKET_UPDATE_COOLDOWN_MS`, auction duration defaults,
-  the vAMM stale-removal threshold), expressed in slots via `msToSlotsNum` and the shared
-  `currentSlotDuration(velocityClient, currentSlot)` helper (pass a live chain slot so a staged
+  the vAMM stale-removal threshold), expressed in slots via `msToSlotsNum` and the SDK's
+  `currentSlotDuration(client, currentSlot, fallback)` helper (pass a live chain slot so a staged
   switch is applied). Operator config knobs are ms
   (`fillAttemptIntervalMs`, `deriskAuctionDurationMs`).
 - **Rust bots** (`rust/keep-rs`, `rust/swift`, `rust/velocity-rs`): mirror the program types
   through `velocity_rs::program::math::time`; the swift server's signed-msg staleness gate and
   auction-band staleness knob, keep-rs's oracle-age and liquidation rate limits, and the AMM
   quoting projection all take the live `SlotDuration`.
+
+### Off-chain clients (SDK, common-ts, UI, bots)
+
+Every TypeScript client converts through the same live field, and **no client holds a slot
+length**: not a constant, not a config value, not a default parameter. `SLOT_TIME_ESTIMATE_MS`
+stays exported and deprecated for one minor series only so consumers can bump without a flag day;
+there is no correct constant to replace it with.
+
+The single entry point is `currentSlotDuration(source, currentSlot, fallback)` in
+[`math/time.ts`](../packages/sdk/src/math/time.ts) (`currentSlotClock` returns the same value plus
+an `isLive` flag). `source` is duck-typed on `{ getStateAccount() }`, so anything holding a
+subscribed `State` works, and `math/time` stays free of client imports. Two rules the resolver
+enforces so callers cannot get them wrong:
+
+- **`currentSlot` must be the live chain slot**, not the slot `State` was last written at. `State`
+  does not change at the gate boundary, so a cached State slot would never trigger the staged
+  switch.
+- **A missing or `0` slot is a dead feed, not slot zero.** A failed slot subscription reports `0`,
+  and slot `0` precedes every effective slot, so treating it as live would return the pre-flip base
+  while looking correct. The resolver returns the fallback and `isLive: false` instead.
+
+**The fallback direction is per call site, never global.** There is no universally safe value (the
+same argument as the lockstep section above, seen from the client side), so `fallback` is a required
+parameter with no default:
+
+| Site class | Fallback | Why |
+| --- | --- | --- |
+| User-protection windows (signing budgets, expiry countdowns, grace periods) | 200ms | the shortest scheduled slot under-promises: the user is told less time than they have |
+| Risk ceilings (staleness cutoffs, rate limits, health thresholds) | 400ms | the longest slot tightens the window rather than widening it |
+
+Picking one number for both classes is wrong for one of them at every gate, which is why the
+baseline must not be a default argument on new API surface: that is a lint-clean 400.
+
+**Program mirrors convert exactly as the program does.** Where a client reproduces an on-chain
+computation (auction durations above all), mirror the program's arithmetic step for step: the same
+`Millis` intent, the same clamps, the same rounding direction, and the same `min(255)` cap that
+`Order.auction_duration`'s `u8` imposes. The reference implementation is the auction-param builder
+in `apps/dlob-server/src/utils/utils.ts`. A mirror that floors where the program ceils, or that
+skips the cap, makes the client predict a different fill than the chain grants.
 
 ## Quick reference
 

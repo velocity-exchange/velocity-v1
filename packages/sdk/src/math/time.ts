@@ -66,6 +66,36 @@ export function slotDurationFromState(raw?: number): SlotDurationMs {
 }
 
 /**
+ * The three `State` staging fields the live slot duration is resolved from.
+ * Declared structurally so the conversion helpers never depend on the decoded
+ * account type.
+ */
+export type SlotDurationState = {
+	slotDurationMs?: number;
+	pendingSlotDurationMs?: number;
+	slotDurationEffectiveSlot?: BN;
+};
+
+/**
+ * Anything holding a subscribed `State` account, e.g. `VelocityClient`. Kept
+ * duck-typed so `math/time` stays free of client/type imports.
+ */
+export type SlotDurationSource = {
+	getStateAccount(): SlotDurationState;
+};
+
+/**
+ * The slot length a client should convert with right now, plus whether it came
+ * from live chain data. `isLive` is false whenever the fallback was used, so a
+ * caller can degrade its UI or logging instead of presenting an assumption as
+ * a measurement.
+ */
+export type SlotClock = {
+	slotDurationMs: SlotDurationMs;
+	isLive: boolean;
+};
+
+/**
  * The live slot duration at `currentSlot`, mirroring
  * `State::active_slot_duration_ms`: the staged `pendingSlotDurationMs` once
  * `currentSlot` reaches `slotDurationEffectiveSlot`, otherwise the base
@@ -74,11 +104,7 @@ export function slotDurationFromState(raw?: number): SlotDurationMs {
  * pre-switch value.
  */
 export function activeSlotDurationFromState(
-	state: {
-		slotDurationMs?: number;
-		pendingSlotDurationMs?: number;
-		slotDurationEffectiveSlot?: BN;
-	},
+	state: SlotDurationState,
 	currentSlot: BN
 ): SlotDurationMs {
 	// Tolerate hand-built / older State objects that omit the staging fields:
@@ -89,6 +115,67 @@ export function activeSlotDurationFromState(
 		return slotDurationFromState(pending);
 	}
 	return slotDurationFromState(state.slotDurationMs);
+}
+
+/**
+ * Resolve the slot clock an off-chain client should convert with: the live
+ * duration from `source`'s subscribed `State` at `currentSlot`, or `fallback`.
+ *
+ * `currentSlot` must be the live chain slot (e.g. `slotSubscriber.getSlot()`),
+ * NOT the slot `State` was last written at. `State` does not change at the gate
+ * boundary, so a cached State slot would never trigger the staged switch.
+ * A missing or `0` slot is treated as a dead feed rather than as slot zero: a
+ * failed slot subscription reports `0`, and slot zero precedes every effective
+ * slot, so it would resolve to the pre-flip base while looking live.
+ *
+ * `fallback` is required and has no default: the safe direction differs per
+ * call site. User-protection windows (signing budgets, expiry countdowns) pass
+ * the shortest scheduled slot so they under-promise; risk ceilings (staleness,
+ * rate limits) pass the longest so they tighten.
+ */
+export function currentSlotClock(
+	source: SlotDurationSource,
+	currentSlot: number | undefined,
+	fallback: SlotDurationMs
+): SlotClock {
+	if (!currentSlot) {
+		return { slotDurationMs: fallback, isLive: false };
+	}
+
+	let state: SlotDurationState | undefined;
+	try {
+		state = source.getStateAccount();
+	} catch {
+		// Not subscribed yet: the client throws rather than returning undefined.
+		return { slotDurationMs: fallback, isLive: false };
+	}
+
+	if (
+		!state ||
+		state.slotDurationMs === undefined ||
+		state.pendingSlotDurationMs === undefined ||
+		state.slotDurationEffectiveSlot === undefined
+	) {
+		return { slotDurationMs: fallback, isLive: false };
+	}
+
+	return {
+		slotDurationMs: activeSlotDurationFromState(state, new BN(currentSlot)),
+		isLive: true,
+	};
+}
+
+/**
+ * The slot duration half of {@link currentSlotClock}, for call sites that do
+ * not branch on liveness. See that function for the `currentSlot` and
+ * `fallback` rules.
+ */
+export function currentSlotDuration(
+	source: SlotDurationSource,
+	currentSlot: number | undefined,
+	fallback: SlotDurationMs
+): SlotDurationMs {
+	return currentSlotClock(source, currentSlot, fallback).slotDurationMs;
 }
 
 export function millis(ms: number): Millis {

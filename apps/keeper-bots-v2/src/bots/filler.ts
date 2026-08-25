@@ -37,6 +37,8 @@ import {
 	PerpMarkets,
 	MMOraclePriceData,
 	msToSlotsNum,
+	currentSlotDuration,
+	SLOT_DURATION_BASELINE,
 } from '@velocity-exchange/sdk';
 import { Mutex, tryAcquire, E_ALREADY_LOCKED } from 'async-mutex';
 
@@ -94,7 +96,6 @@ import {
 	validMinimumGasAmount,
 	validRebalanceSettledPnlThreshold,
 	isFillableByVAMMDetails,
-	currentSlotDuration,
 } from '../utils';
 import { selectMakers } from '../makerSelection';
 import { BundleSender, JITO_METRIC_TYPES } from '../bundleSender';
@@ -794,7 +795,8 @@ export class FillerBot extends TxThreaded implements Bot {
 		const slot = new BN(this.slotSubscriber.getSlot());
 		const slotDuration = currentSlotDuration(
 			this.velocityClient,
-			this.slotSubscriber.getSlot()
+			this.slotSubscriber.getSlot(),
+			SLOT_DURATION_BASELINE
 		);
 		const vAsk = calculateAskPrice(
 			market,
@@ -2494,7 +2496,8 @@ export class FillerBot extends TxThreaded implements Bot {
 					JITO_LEADER_LEAD_MS,
 					currentSlotDuration(
 						this.velocityClient,
-						this.slotSubscriber.getSlot()
+						this.slotSubscriber.getSlot(),
+						SLOT_DURATION_BASELINE
 					)
 				)
 			);

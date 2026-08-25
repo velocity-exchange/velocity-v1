@@ -43,9 +43,6 @@ import {
 	MMOraclePriceData,
 	StateAccount,
 	PythLazerSubscriber,
-	SlotDurationMs,
-	SLOT_DURATION_BASELINE,
-	activeSlotDurationFromState,
 } from '@velocity-exchange/sdk';
 import {
 	NATIVE_MINT,
@@ -115,30 +112,6 @@ export async function getOrCreateAssociatedTokenAccount(
 	}
 
 	return associatedTokenAccount;
-}
-
-/**
- * Current Solana slot duration from the subscribed `State` account, applying a
- * staged switch once `currentSlot` has reached its effective slot
- * (`activeSlotDurationFromState`; the 0-unset sentinel resolves to the 400ms
- * baseline). Falls back to the baseline when state is not yet subscribed.
- *
- * `currentSlot` must be the live chain slot (e.g. `slotSubscriber.getSlot()`),
- * NOT the slot State was last written at — State does not change at the gate
- * boundary, so a cached State slot would never trigger the switch.
- */
-export function currentSlotDuration(
-	velocityClient: VelocityClient,
-	currentSlot: number
-): SlotDurationMs {
-	try {
-		return activeSlotDurationFromState(
-			velocityClient.getStateAccount(),
-			new BN(currentSlot)
-		);
-	} catch {
-		return SLOT_DURATION_BASELINE;
-	}
 }
 
 export function loadCommaDelimitToArray(str: string): number[] {

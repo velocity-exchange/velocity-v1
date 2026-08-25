@@ -18,6 +18,8 @@ import {
 	decodeUser,
 	PriorityFeeSubscriberMap,
 	msToSlotsNum,
+	currentSlotDuration,
+	SLOT_DURATION_BASELINE,
 } from '@velocity-exchange/sdk';
 import {
 	Connection,
@@ -55,7 +57,6 @@ import {
 	sleepMs,
 	swapFillerHardEarnedUSDCForSOL,
 	validMinimumGasAmount,
-	currentSlotDuration,
 } from '../../utils';
 import {
 	ExplicitBucketHistogramAggregation,
@@ -1617,7 +1618,8 @@ export class SpotFillerMultithreaded {
 					JITO_LEADER_LEAD_MS,
 					currentSlotDuration(
 						this.velocityClient,
-						this.slotSubscriber.getSlot()
+						this.slotSubscriber.getSlot(),
+						SLOT_DURATION_BASELINE
 					)
 				)
 			);

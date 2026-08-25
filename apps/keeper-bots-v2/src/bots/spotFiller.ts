@@ -21,6 +21,8 @@ import {
 	JupiterClient,
 	ClockSubscriber,
 	msToSlotsNum,
+	currentSlotDuration,
+	SLOT_DURATION_BASELINE,
 } from '@velocity-exchange/sdk';
 import { Mutex, tryAcquire, E_ALREADY_LOCKED } from 'async-mutex';
 
@@ -77,7 +79,6 @@ import {
 	swapFillerHardEarnedUSDCForSOL,
 	validMinimumGasAmount,
 	validRebalanceSettledPnlThreshold,
-	currentSlotDuration,
 } from '../utils';
 import { JITO_METRIC_TYPES, BundleSender } from '../bundleSender';
 import {
@@ -1483,7 +1484,11 @@ export class SpotFillerBot implements Bot {
 					// getMaxSlot, not the dlob slot source alone: a 0 here resolves a
 					// staged slot-duration switch against slot 0, which always yields
 					// the pre-switch value and shortens the lead window.
-					currentSlotDuration(this.velocityClient, this.getMaxSlot())
+					currentSlotDuration(
+						this.velocityClient,
+						this.getMaxSlot(),
+						SLOT_DURATION_BASELINE
+					)
 				)
 			);
 		}

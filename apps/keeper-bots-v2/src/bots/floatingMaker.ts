@@ -254,10 +254,7 @@ export class FloatingPerpMakerBot implements Bot {
 			(this.lastSlotMarketUpdated.get(marketIndex) ?? 0) +
 			msToSlotsNum(
 				MARKET_UPDATE_COOLDOWN_MS,
-				currentSlotDuration(
-					this.velocityClient,
-					this.slotSubscriber.getSlot()
-				)
+				currentSlotDuration(this.velocityClient, this.slotSubscriber.getSlot())
 			);
 
 		if (nextUpdateSlot > currSlot) {
@@ -269,10 +266,7 @@ export class FloatingPerpMakerBot implements Bot {
 			marketIndex,
 			currSlot
 		);
-		const slotDuration = currentSlotDuration(
-			this.velocityClient,
-			currSlot
-		);
+		const slotDuration = currentSlotDuration(this.velocityClient, currSlot);
 		const vAsk = calculateAskPrice(
 			marketAccount,
 			oracle,

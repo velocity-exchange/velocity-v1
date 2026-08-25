@@ -1,4 +1,5 @@
 import { BN } from '../isomorphic/anchor';
+import { StateAccount } from '../types';
 
 /**
  * Wall-clock durations and the live slot length — the TypeScript mirror of the
@@ -67,14 +68,13 @@ export function slotDurationFromState(raw?: number): SlotDurationMs {
 
 /**
  * The three `State` staging fields the live slot duration is resolved from.
- * Declared structurally so the conversion helpers never depend on the decoded
- * account type.
  */
-export type SlotDurationState = {
-	slotDurationMs?: number;
-	pendingSlotDurationMs?: number;
-	slotDurationEffectiveSlot?: BN;
-};
+export type SlotDurationState = Partial<
+	Pick<
+		StateAccount,
+		'slotDurationMs' | 'pendingSlotDurationMs' | 'slotDurationEffectiveSlot'
+	>
+>;
 
 /**
  * Anything holding a subscribed `State` account, e.g. `VelocityClient`. Kept

@@ -242,10 +242,7 @@ export class LiquidatorDerisk {
 					255,
 					msToSlotsCeilNum(
 						this.config.deriskAuctionDurationMs!,
-						currentSlotDuration(
-							this.velocityClient,
-							this.userMap.getSlot()
-						)
+						currentSlotDuration(this.velocityClient, this.userMap.getSlot())
 					)
 				),
 				auctionStartPrice,
@@ -605,10 +602,7 @@ export class LiquidatorDerisk {
 				dlob,
 				this.userMap.getSlot(),
 				undefined,
-				currentSlotDuration(
-					this.velocityClient,
-					this.userMap.getSlot()
-				)
+				currentSlotDuration(this.velocityClient, this.userMap.getSlot())
 			));
 		} catch (e) {
 			const err = e as Error;
@@ -641,10 +635,7 @@ export class LiquidatorDerisk {
 				255,
 				msToSlotsCeilNum(
 					this.config.deriskAuctionDurationMs!,
-					currentSlotDuration(
-						this.velocityClient,
-						this.userMap.getSlot()
-					)
+					currentSlotDuration(this.velocityClient, this.userMap.getSlot())
 				)
 			),
 			auctionStartPrice,

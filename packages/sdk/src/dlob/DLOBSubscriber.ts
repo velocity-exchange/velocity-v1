@@ -8,7 +8,7 @@ import {
 	SlotSource,
 } from './types';
 import { VelocityClient } from '../velocityClient';
-import { activeSlotDurationFromState } from '../math/time';
+import { currentSlotDuration } from '../math/time';
 import { isVariant, MarketType } from '../types';
 import {
 	DEFAULT_TOP_OF_BOOK_QUOTE_AMOUNTS,
@@ -166,9 +166,9 @@ export class DLOBSubscriber {
 								? MAJORS_TOP_OF_BOOK_QUOTE_AMOUNTS
 								: DEFAULT_TOP_OF_BOOK_QUOTE_AMOUNTS,
 						latestSlot,
-						slotDuration: activeSlotDurationFromState(
-							this.velocityClient.getStateAccount(),
-							new BN(this.slotSource.getSlot())
+						slotDuration: currentSlotDuration(
+							this.velocityClient,
+							this.slotSource.getSlot()
 						),
 					}),
 				];

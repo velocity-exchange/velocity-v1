@@ -1483,10 +1483,7 @@ export class SpotFillerBot implements Bot {
 					// getMaxSlot, not the dlob slot source alone: a 0 here resolves a
 					// staged slot-duration switch against slot 0, which always yields
 					// the pre-switch value and shortens the lead window.
-					currentSlotDuration(
-						this.velocityClient,
-						this.getMaxSlot()
-					)
+					currentSlotDuration(this.velocityClient, this.getMaxSlot())
 				)
 			);
 		}

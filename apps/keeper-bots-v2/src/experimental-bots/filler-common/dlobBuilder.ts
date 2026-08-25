@@ -31,6 +31,8 @@ import {
 	PerpMarketAccount,
 	SpotMarketAccount,
 	currentSlotDuration,
+	currentSlotClock,
+	SLOT_DURATION_FLOOR,
 } from '@velocity-exchange/sdk';
 import { Connection, PublicKey } from '@solana/web3.js';
 import dotenv from 'dotenv';
@@ -280,13 +282,17 @@ class DLOBBuilder {
 		);
 
 		// cache TTL = remaining validity in real slots x live slot duration,
-		// with the same 25% pad the old hardcoded 500ms/slot figure carried
+		// with the same 25% pad the old hardcoded 500ms/slot figure carried.
+		// This converts slots into ms, so the 400ms fallback would *widen* the
+		// TTL (up to 2x at 200ms) and keep expired orders in the cache. Use the
+		// shortest scheduled slot when the feed is dead so it under-promises.
+		const clock = currentSlotClock(
+			this.velocityClient,
+			this.slotSubscriber.getSlot()
+		);
 		const ttl = Math.ceil(
 			(maxSlot.toNumber() - this.slotSubscriber.getSlot()) *
-				currentSlotDuration(
-					this.velocityClient,
-					this.slotSubscriber.getSlot()
-				) *
+				(clock.isLive ? clock.slotDurationMs : SLOT_DURATION_FLOOR) *
 				1.25
 		);
 		this.signedMsgOrders.set(uuid, signedMsgOrderNode, {

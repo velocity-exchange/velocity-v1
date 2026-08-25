@@ -3,6 +3,8 @@ import { BN } from '../../src';
 import {
 	STORED_UNIT_MS,
 	SLOT_DURATION_BASELINE,
+	SLOT_DURATION_SCHEDULE_MS,
+	SLOT_DURATION_FLOOR,
 	MILLIS_UNIT,
 	slotDurationFromState,
 	activeSlotDurationFromState,
@@ -129,7 +131,8 @@ describe('slot-time helpers (program parity)', () => {
 // feed must not read as slot zero, and an unavailable State falls back to the
 // hardcoded 400ms baseline.
 describe('currentSlotDuration (off-chain resolver)', () => {
-	const GATES = [400, 350, 300, 250, 200];
+	// The mirrored program schedule, not a local copy of it.
+	const GATES = SLOT_DURATION_SCHEDULE_MS;
 
 	const source = (state?: SlotDurationState) => ({
 		getStateAccount: () => {
@@ -175,7 +178,9 @@ describe('currentSlotDuration (off-chain resolver)', () => {
 	});
 
 	it('falls back to the baseline when state is not subscribed', () => {
-		assert.equal(currentSlotDuration(source(), 5_000), SLOT_DURATION_BASELINE);
+		const clock = currentSlotClock(source(), 5_000);
+		assert.equal(clock.slotDurationMs, SLOT_DURATION_BASELINE);
+		assert.isFalse(clock.isLive);
 	});
 
 	it('falls back when State predates the staging fields', () => {
@@ -201,6 +206,61 @@ describe('currentSlotDuration (off-chain resolver)', () => {
 			assert.equal(currentSlotDuration(source(state), 1_000), pending);
 			assert.equal(currentSlotDuration(source(state), 1_001), pending);
 		}
+	});
+
+	it('never reports a malformed duration as a measurement', () => {
+		// A NaN duration would propagate silently through msToSlotsNum and make
+		// every threshold comparison false, so it must not come back isLive.
+		const malformed: Array<Partial<SlotDurationState>> = [
+			{ slotDurationMs: NaN },
+			{ pendingSlotDurationMs: NaN },
+			{ slotDurationMs: -200 },
+			{ pendingSlotDurationMs: -200 },
+			{ slotDurationMs: 250.5 },
+			{ slotDurationEffectiveSlot: undefined },
+			{ slotDurationEffectiveSlot: null as unknown as BN },
+			{ slotDurationEffectiveSlot: 1_000 as unknown as BN },
+		];
+		for (const override of malformed) {
+			const clock = currentSlotClock(
+				source({ ...stateAt(250), ...override }),
+				5_000
+			);
+			assert.equal(clock.slotDurationMs, SLOT_DURATION_BASELINE);
+			assert.isFalse(clock.isLive, JSON.stringify(override));
+		}
+	});
+
+	it('does not throw on a staged flip with a garbage effective slot', () => {
+		// pending != 0 reaches the BN comparison, where a non-BN used to throw
+		// straight out of the resolver and into the caller's loop.
+		const state = {
+			slotDurationMs: 250,
+			pendingSlotDurationMs: 200,
+			slotDurationEffectiveSlot: null as unknown as BN,
+		};
+		assert.equal(
+			currentSlotDuration(source(state), 5_000),
+			SLOT_DURATION_BASELINE
+		);
+		// The underlying primitive reads it as "nothing staged", not an error.
+		assert.equal(activeSlotDurationFromState(state, new BN(5_000)), 250);
+	});
+
+	it('treats a negative or non-finite slot as a dead feed', () => {
+		for (const slot of [-5, NaN, Infinity]) {
+			const clock = currentSlotClock(source(stateAt(200)), slot);
+			assert.equal(clock.slotDurationMs, SLOT_DURATION_BASELINE);
+			assert.isFalse(clock.isLive, String(slot));
+		}
+	});
+
+	it('the floor is the shortest scheduled slot', () => {
+		// What a user-protection window substitutes when isLive is false: the
+		// baseline would promise up to 2x the wall clock actually available.
+		assert.equal(SLOT_DURATION_FLOOR, Math.min(...GATES));
+		assert.equal(SLOT_DURATION_FLOOR, 200);
+		assert.equal(GATES[0], SLOT_DURATION_BASELINE);
 	});
 
 	it('holds a wall-clock rule across every gate', () => {

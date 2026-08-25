@@ -1,5 +1,4 @@
 import { BN } from '../isomorphic/anchor';
-import { StateAccount } from '../types';
 
 /**
  * Wall-clock durations and the live slot length — the TypeScript mirror of the
@@ -50,6 +49,26 @@ export type SlotDurationMs = number & {
 export const SLOT_DURATION_BASELINE = STORED_UNIT_MS as SlotDurationMs;
 
 /**
+ * Every slot length the gate rollout schedules, longest first — the mirror of
+ * the program's `SLOT_DURATION_SCHEDULE_MS`. The setter is monotonic-decreasing
+ * and rejects gate skips, so the live duration is always one of these.
+ */
+export const SLOT_DURATION_SCHEDULE_MS: readonly SlotDurationMs[] = [
+	400, 350, 300, 250, 200,
+] as SlotDurationMs[];
+
+/**
+ * The shortest scheduled slot length (200ms, fully rolled out). The safe
+ * assumption for a **user-protection window** (swift signing budgets, blockhash
+ * and auction countdowns) when the slot feed is dead: it under-promises the
+ * wall clock the user has instead of doubling it. The opposite direction from
+ * {@link SLOT_DURATION_BASELINE} — see `docs/SLOT-DURATION.md`.
+ */
+export const SLOT_DURATION_FLOOR = SLOT_DURATION_SCHEDULE_MS[
+	SLOT_DURATION_SCHEDULE_MS.length - 1
+] as SlotDurationMs;
+
+/**
  * The historical 400ms calibration period of the legacy per-slot rates
  * (mirrors `Millis::UNIT`).
  */
@@ -68,17 +87,20 @@ export function slotDurationFromState(raw?: number): SlotDurationMs {
 
 /**
  * The three `State` staging fields the live slot duration is resolved from.
+ * Declared structurally rather than as `Pick<StateAccount, ...>`: importing
+ * `StateAccount` closes the cycle `types.ts -> constants/numericConstants.ts ->
+ * math/time.ts`, and `numericConstants` calls into this module at load time.
+ * `StateAccount` satisfies this shape.
  */
-export type SlotDurationState = Partial<
-	Pick<
-		StateAccount,
-		'slotDurationMs' | 'pendingSlotDurationMs' | 'slotDurationEffectiveSlot'
-	>
->;
+export type SlotDurationState = {
+	slotDurationMs?: number;
+	pendingSlotDurationMs?: number;
+	slotDurationEffectiveSlot?: BN;
+};
 
 /**
  * Anything holding a subscribed `State` account, e.g. `VelocityClient`. Kept
- * duck-typed so `math/time` stays free of client/type imports.
+ * duck-typed so `math/time` keeps importing only `BN`.
  */
 export type SlotDurationSource = {
 	getStateAccount(): SlotDurationState;
@@ -109,9 +131,11 @@ export function activeSlotDurationFromState(
 ): SlotDurationMs {
 	// Tolerate hand-built / older State objects that omit the staging fields:
 	// an absent pending field means nothing is staged, not `undefined !== 0`.
+	// `isBN` rather than `!== undefined` so a null/garbage effective slot reads
+	// as "nothing staged" instead of throwing out of `gte`.
 	const pending = state.pendingSlotDurationMs ?? 0;
 	const effective = state.slotDurationEffectiveSlot;
-	if (pending !== 0 && effective !== undefined && currentSlot.gte(effective)) {
+	if (pending !== 0 && BN.isBN(effective) && currentSlot.gte(effective)) {
 		return slotDurationFromState(pending);
 	}
 	return slotDurationFromState(state.slotDurationMs);
@@ -129,40 +153,61 @@ export function activeSlotDurationFromState(
  * failed slot subscription reports `0`, and slot zero precedes every effective
  * slot, so it would resolve to the pre-flip base while looking live.
  *
- * The fallback is the longest scheduled slot (400ms) so risk ceilings
- * (staleness, rate limits) tighten rather than widen when the feed is dead.
- * Callers that need a user-protection under-promise should not use this helper
- * while the feed is down — pass a shorter duration of their own instead.
+ * The fallback is the longest scheduled slot (400ms). Which direction that is
+ * safe in depends on the conversion, not on the caller: converting **ms into
+ * slots** (a staleness threshold, a rate limit, an auction duration) tightens,
+ * converting **slots into ms** (a countdown, a cache TTL, a signing budget)
+ * widens — up to 2x once the chain reaches 200ms. Callers in the widening
+ * direction, and user-protection windows generally, should branch on `isLive`
+ * and substitute {@link SLOT_DURATION_FLOOR} rather than consume
+ * `slotDurationMs` blindly.
  */
 export function currentSlotClock(
 	source: SlotDurationSource,
 	currentSlot: number | undefined
 ): SlotClock {
-	if (!currentSlot) {
-		return { slotDurationMs: SLOT_DURATION_BASELINE, isLive: false };
+	const dead: SlotClock = {
+		slotDurationMs: SLOT_DURATION_BASELINE,
+		isLive: false,
+	};
+
+	// `0`, NaN, undefined and negatives are all dead feeds, not slot numbers.
+	if (!currentSlot || !Number.isFinite(currentSlot) || currentSlot < 0) {
+		return dead;
 	}
 
 	let state: SlotDurationState | undefined;
 	try {
-		state = source.getStateAccount();
+		state = source?.getStateAccount();
 	} catch {
 		// Not subscribed yet: the client throws rather than returning undefined.
-		return { slotDurationMs: SLOT_DURATION_BASELINE, isLive: false };
+		return dead;
 	}
 
+	// Validate, don't just test for presence. A duration only ever reaches this
+	// module through Anchor decoding, but the staging fields are optional and
+	// hand-built State is a supported input, so a partial object must not be
+	// reported as a measurement: a NaN duration propagates silently through
+	// every threshold comparison, and a non-BN effective slot throws out of
+	// `BN.gte`. Both would surface deep in a filler loop instead of here.
 	if (
 		!state ||
-		state.slotDurationMs === undefined ||
-		state.pendingSlotDurationMs === undefined ||
-		state.slotDurationEffectiveSlot === undefined
+		!isPlainSlotDuration(state.slotDurationMs) ||
+		!isPlainSlotDuration(state.pendingSlotDurationMs) ||
+		!BN.isBN(state.slotDurationEffectiveSlot)
 	) {
-		return { slotDurationMs: SLOT_DURATION_BASELINE, isLive: false };
+		return dead;
 	}
 
 	return {
 		slotDurationMs: activeSlotDurationFromState(state, new BN(currentSlot)),
 		isLive: true,
 	};
+}
+
+/** A decoded `u16` duration field: a non-negative integer (`0` = unset). */
+function isPlainSlotDuration(raw: number | undefined): raw is number {
+	return raw !== undefined && Number.isInteger(raw) && raw >= 0;
 }
 
 /**

@@ -238,6 +238,8 @@ export class LiquidatorDerisk {
 				baseAssetAmount: standardizedTokenAmount,
 				reduceOnly: true,
 				price: limitPrice,
+				// See the note on the perp derisk order below: the 400ms
+				// fallback shortens the auction, which is the safe side here.
 				auctionDuration: Math.min(
 					255,
 					msToSlotsCeilNum(
@@ -631,6 +633,10 @@ export class LiquidatorDerisk {
 			baseAssetAmount,
 			reduceOnly: true,
 			marketIndex: position.marketIndex,
+			// A dead feed's 400ms fallback yields fewer slots, so the auction
+			// sweeps to the limit price sooner than configured. Deliberate: this
+			// is the bot's own derisk order, and derisking faster is the safe
+			// side for a liquidator.
 			auctionDuration: Math.min(
 				255,
 				msToSlotsCeilNum(

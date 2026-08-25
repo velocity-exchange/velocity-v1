@@ -166,9 +166,13 @@ export class DLOBSubscriber {
 								? MAJORS_TOP_OF_BOOK_QUOTE_AMOUNTS
 								: DEFAULT_TOP_OF_BOOK_QUOTE_AMOUNTS,
 						latestSlot,
+						// Resolve at the slot the quote is priced at: a staged
+						// flip between latestSlot and the slot source would
+						// otherwise measure elapsed slots in the new regime and
+						// convert them at the old duration.
 						slotDuration: currentSlotDuration(
 							this.velocityClient,
-							this.slotSource.getSlot()
+							latestSlot?.toNumber() ?? this.slotSource.getSlot()
 						),
 					}),
 				];

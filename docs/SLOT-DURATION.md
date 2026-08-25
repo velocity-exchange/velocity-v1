@@ -366,10 +366,12 @@ subscription; no service needs a restart at a gate flip.
   subscribed `State` (see [Off-chain clients](#off-chain-clients-sdk-common-ts-ui-bots)).
 - **Bots** (`apps/dlob-server`, `apps/keeper-bots-v2`): all pacing and threshold constants are
   wall-clock ms (`JITO_LEADER_LEAD_MS`, `MARKET_UPDATE_COOLDOWN_MS`, auction duration defaults,
-  the vAMM stale-removal threshold), expressed in slots via `msToSlotsNum` and the SDK's
-  `currentSlotDuration(client, currentSlot)` helper (pass a live chain slot so a staged
-  switch is applied; unavailable state/slot falls back to the 400ms baseline). Operator config
-  knobs are ms (`fillAttemptIntervalMs`, `deriskAuctionDurationMs`).
+  the vAMM stale-removal threshold), expressed in slots via `msToSlotsNum`. `keeper-bots-v2`
+  resolves the duration through the SDK's `currentSlotDuration(client, currentSlot)` helper
+  (pass a live chain slot so a staged switch is applied; unavailable state/slot falls back to
+  the 400ms baseline). `dlob-server` still calls `activeSlotDurationFromState` directly and so
+  has no dead-feed fallback — migrating it is follow-up work. Operator config knobs are ms
+  (`fillAttemptIntervalMs`, `deriskAuctionDurationMs`).
 - **Rust bots** (`rust/keep-rs`, `rust/swift`, `rust/velocity-rs`): mirror the program types
   through `velocity_rs::program::math::time`; the swift server's signed-msg staleness gate and
   auction-band staleness knob, keep-rs's oracle-age and liquidation rate limits, and the AMM
@@ -377,16 +379,25 @@ subscription; no service needs a restart at a gate flip.
 
 ### Off-chain clients (SDK, common-ts, UI, bots)
 
-Every TypeScript client converts through the same live field, and **no client holds a slot
-length**: not a constant, not a config value, not a default parameter. `SLOT_TIME_ESTIMATE_MS`
-stays exported and deprecated for one minor series only so consumers can bump without a flag day;
-there is no correct constant to replace it with.
+Every TypeScript client converts through the same live field: **no client holds a slot length of
+its own**, not a constant and not a config value. (The math helpers listed above still default a
+trailing `slotDuration` to the baseline so existing callers keep compiling; a client that has a
+subscribed `State` should always pass the resolved value rather than take the default.)
+`SLOT_TIME_ESTIMATE_MS` stays exported and deprecated for one minor series only so consumers can
+bump without a flag day; there is no correct constant to replace it with.
 
-The single entry point is `currentSlotDuration(source, currentSlot)` in
+The entry point for any client holding a subscribed `State` is
+`currentSlotDuration(source, currentSlot)` in
 [`math/time.ts`](../packages/sdk/src/math/time.ts) (`currentSlotClock` returns the same value plus
 an `isLive` flag). `source` is duck-typed on `{ getStateAccount() }`, so anything holding a
-subscribed `State` works, and `math/time` stays free of client imports. Two rules the resolver
-enforces so callers cannot get them wrong:
+subscribed `State` works, and `math/time` keeps importing only `BN`.
+
+Code that already has a decoded `State` and a slot in hand — `velocityClient`, `user.ts`,
+`math/auction.ts`, `adminClient`, `cli-admin`, `dlob-server` — calls the underlying
+`activeSlotDurationFromState(state, slot)` instead. That is the same staged-flip resolution
+without the subscription lookup or the fallback, so those sites must handle an absent `State`
+themselves. Reach for the resolver whenever the state comes from a subscription that may not be
+ready. Two rules the resolver enforces so callers cannot get them wrong:
 
 - **`currentSlot` must be the live chain slot**, not the slot `State` was last written at. `State`
   does not change at the gate boundary, so a cached State slot would never trigger the staged
@@ -396,10 +407,27 @@ enforces so callers cannot get them wrong:
   while looking correct. The resolver returns the hardcoded 400ms `SLOT_DURATION_BASELINE` and
   `isLive: false` instead.
 
-**The fallback is the baseline, not per call site.** Unavailable state/slot falls back to 400ms
-(the longest scheduled slot) so risk ceilings tighten. Callers never pass a fallback; user-
-protection windows that need a shorter under-promise while the feed is down should not rely on
-this helper's dead-feed path.
+**The fallback is the baseline, not per call site.** Unavailable state/slot falls back to 400ms,
+the longest scheduled slot. Callers never pass a fallback. Which direction that errs in is set by
+the conversion, not by the kind of caller:
+
+| Conversion | Effect of the 400ms fallback on a 200ms chain | Typical call site |
+| --- | --- | --- |
+| ms -> slots (`msToSlotsNum`, `msToSlotsCeilNum`) | **fewer slots** — the window closes sooner | staleness gates, rate limits, auction durations |
+| slots -> ms (`millisFromSlots`, a bare multiply) | **up to 2x more ms** — the window stays open longer | countdowns, cache TTLs, signing budgets |
+
+"Fewer slots" is the safe side for a threshold you want to be conservative under, and the wrong
+side for a countdown you are showing a user. "More ms" is always the wrong side for anything the
+user relies on to still be valid: at a real 200ms, telling someone they have 400ms per slot
+promises twice the wall clock they have, and they keep signing an already-expired transaction.
+
+So a call site in the slots -> ms direction, and any user-protection window in either direction,
+must branch on `isLive` and substitute `SLOT_DURATION_FLOOR` (200ms, the shortest scheduled slot)
+rather than consume `slotDurationMs` blindly. `SLOT_DURATION_SCHEDULE_MS` mirrors the program's
+full schedule for callers that need the whole ladder. Worked examples in the tree:
+`dlobBuilder`'s signed-message cache TTL (slots -> ms, so it uses the floor when the feed is
+dead) and the UI's `useSlotClock` hook, which exposes `useUserProtectionSlotClock` and
+`useRiskCeilingSlotClock` over this API.
 
 **Program mirrors convert exactly as the program does.** Where a client reproduces an on-chain
 computation (auction durations above all), mirror the program's arithmetic step for step: the same

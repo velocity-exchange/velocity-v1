@@ -4437,6 +4437,8 @@ pub mod types {
         pub pending_revenue_share: u64,
         pub amm: AMM,
         pub hedge_config: HedgeConfig,
+        #[serde(skip)]
+        pub _padding_future: Padding<256>,
     }
     #[repr(C)]
     #[derive(
@@ -5054,7 +5056,8 @@ pub mod types {
         pub total_social_loss: u128,
         pub total_quote_social_loss: u128,
         pub revenue_pool: PoolBalance,
-        pub spot_fee_pool: PoolBalance,
+        #[serde(skip)]
+        pub padding_former_spot_fee_pool: Padding<32>,
         pub historical_oracle_data: HistoricalOracleData,
         pub historical_index_data: HistoricalIndexData,
         pub withdraw_guard_threshold: u64,
@@ -5106,6 +5109,8 @@ pub mod types {
         pub protocol_liquidation_fee: u32,
         pub protocol_fee_factor: u32,
         pub if_last_settle_vault_amount: u64,
+        #[serde(skip)]
+        pub _padding_future: Padding<256>,
     }
     #[repr(C)]
     #[derive(
@@ -5994,6 +5999,8 @@ pub mod accounts {
         pub pending_revenue_share: u64,
         pub amm: AMM,
         pub hedge_config: HedgeConfig,
+        #[serde(skip)]
+        pub _padding_future: Padding<256>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for PerpMarket {
@@ -6430,7 +6437,8 @@ pub mod accounts {
         pub total_social_loss: u128,
         pub total_quote_social_loss: u128,
         pub revenue_pool: PoolBalance,
-        pub spot_fee_pool: PoolBalance,
+        #[serde(skip)]
+        pub padding_former_spot_fee_pool: Padding<32>,
         pub historical_oracle_data: HistoricalOracleData,
         pub historical_index_data: HistoricalIndexData,
         pub withdraw_guard_threshold: u64,
@@ -6482,6 +6490,8 @@ pub mod accounts {
         pub protocol_liquidation_fee: u32,
         pub protocol_fee_factor: u32,
         pub if_last_settle_vault_amount: u64,
+        #[serde(skip)]
+        pub _padding_future: Padding<256>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for SpotMarket {

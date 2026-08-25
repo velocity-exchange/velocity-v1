@@ -532,7 +532,13 @@ pub struct PerpMarket {
     /// This market's hedge (LP pool) configuration. Sits immediately after `amm`
     /// so the trailing `[amm, hedge_config]` span is the contiguous VLP region.
     pub hedge_config: HedgeConfig,
+    /// Reserved for future fields. Existing accounts must be extended before
+    /// the program loads them with this layout.
+    pub _padding_future: [u8; 256],
 }
+
+const _: () = assert!(std::mem::size_of::<PerpMarket>() == 1552);
+const _: () = assert!(std::mem::offset_of!(PerpMarket, _padding_future) == 1296);
 
 impl Default for PerpMarket {
     fn default() -> Self {
@@ -600,6 +606,7 @@ impl Default for PerpMarket {
             pending_revenue_share: 0,
             amm: AMM::default(),
             hedge_config: HedgeConfig::default(),
+            _padding_future: [0; 256],
             protocol_fee_pool: PoolBalance::default(),
             protocol_liquidation_fee: 0,
             taker_fee_addon_tenth_bps: 0,
@@ -610,13 +617,13 @@ impl Default for PerpMarket {
 }
 
 impl Size for PerpMarket {
-    // 1200-byte struct + 8-byte discriminator. The cached spread state
+    // 1552-byte struct + 8-byte discriminator. The cached spread state
     // (4×u128 spread reserves, i64 last_oracle_reserve_price_spread_pct,
     // 2×u32 long/short_spread, i32 reference_price_offset) plus a dedicated
     // u64 last_spread_update_slot live back on AMM — refreshed by
     // `math::spread::update_amm_quote_state` on each crank/fill `setup` and
     // read directly by quote/fill paths and dashboards.
-    const SIZE: usize = 1304;
+    const SIZE: usize = 1560;
 }
 
 impl MarketIndexOffset for PerpMarket {

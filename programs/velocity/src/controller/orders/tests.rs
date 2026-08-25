@@ -8197,6 +8197,7 @@ pub mod get_maker_orders_info {
             &filler_key,
             0,
             oracle_price,
+            true,
             None,
             clock.unix_timestamp,
             clock.slot,
@@ -8395,6 +8396,7 @@ pub mod get_maker_orders_info {
             &filler_key,
             0,
             oracle_price,
+            true,
             None,
             clock.unix_timestamp,
             clock.slot,
@@ -8582,6 +8584,7 @@ pub mod get_maker_orders_info {
             &filler_key,
             0,
             oracle_price,
+            true,
             None,
             clock.unix_timestamp,
             clock.slot,
@@ -8832,6 +8835,7 @@ pub mod get_maker_orders_info {
             &filler_key,
             0,
             oracle_price,
+            true,
             None,
             clock.unix_timestamp,
             clock.slot,
@@ -9037,6 +9041,7 @@ pub mod get_maker_orders_info {
             &filler_key,
             0,
             oracle_price,
+            true,
             Some(2),
             clock.unix_timestamp,
             clock.slot,
@@ -9264,6 +9269,7 @@ pub mod get_maker_orders_info {
             &filler_key,
             0,
             oracle_price,
+            true,
             None,
             clock.unix_timestamp,
             clock.slot,
@@ -9731,15 +9737,21 @@ pub mod maker_floor_prune {
         super::*,
         crate::{
             controller::{
-                orders::{admit_reducing_maker_orders, get_maker_orders_info},
+                orders::{
+                    admit_reducing_maker_orders, can_floored_user_match_with_exchange_oracle,
+                    get_maker_orders_info,
+                },
                 position::PositionDirection,
             },
             create_anchor_account_info,
-            math::constants::{
-                AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64, PEG_PRECISION,
-                PRICE_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64, QUOTE_PRECISION_I64,
-                SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
-                SPOT_WEIGHT_PRECISION,
+            math::{
+                constants::{
+                    AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64, PEG_PRECISION,
+                    PRICE_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64, QUOTE_PRECISION_I64,
+                    SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
+                    SPOT_WEIGHT_PRECISION,
+                },
+                oracle::{is_oracle_valid_for_action, LogMode, VelocityAction},
             },
             state::{
                 oracle::{HistoricalOracleData, OracleSource},
@@ -9771,6 +9783,15 @@ pub mod maker_floor_prune {
         orders: [(u64, u64); 2],
         maker_position_base: i64,
         floor: u64,
+    ) -> Vec<(Pubkey, usize, u64)> {
+        run_with_exchange_match_policy(orders, maker_position_base, floor, true)
+    }
+
+    fn run_with_exchange_match_policy(
+        orders: [(u64, u64); 2],
+        maker_position_base: i64,
+        floor: u64,
+        exchange_match_fills_allowed: bool,
     ) -> Vec<(Pubkey, usize, u64)> {
         let now = 0_i64;
         // far past the oracle's posted slot, so the maker's floor is
@@ -9906,6 +9927,7 @@ pub mod maker_floor_prune {
             &filler_key,
             0,
             100 * PRICE_PRECISION_I64,
+            exchange_match_fills_allowed,
             None,
             now,
             slot,
@@ -9988,6 +10010,200 @@ pub mod maker_floor_prune {
             2,
             "prune must not touch a maker with no floor"
         );
+    }
+
+    #[test]
+    fn invalid_exchange_oracle_prunes_every_order_of_a_floored_maker() {
+        // The selected MM oracle may still be valid, but a floored maker cannot
+        // use it to authorize a DLOB leg when the raw exchange oracle used by
+        // the equity floor is invalid. Even reducing orders are withheld.
+        let admitted = run_with_exchange_match_policy(
+            [
+                (BASE_PRECISION_U64 / 4, 100 * PRICE_PRECISION_U64),
+                (BASE_PRECISION_U64 / 4, 100 * PRICE_PRECISION_U64),
+            ],
+            BASE_PRECISION_I64,
+            100 * QUOTE_PRECISION_I64 as u64,
+            false,
+        );
+        assert!(admitted.is_empty());
+    }
+
+    #[test]
+    fn fresh_mm_oracle_cannot_authorize_a_floored_dlob_maker() {
+        let slot = 100_000_u64;
+        let mut oracle_price = get_pyth_price(100, 6);
+        let oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            oracle_price,
+            &oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map = OracleMap::load_one(
+            &oracle_account_info,
+            slot,
+            crate::math::time::SlotDuration::BASELINE,
+            None,
+        )
+        .unwrap();
+
+        let mut market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                max_slippage_ratio: 50,
+                max_fill_reserve_fraction: 100,
+                ..AMM::default()
+            },
+            status: MarketStatus::Active,
+            order_step_size: 1000,
+            order_tick_size: 1,
+            oracle: oracle_price_key,
+            oracle_source: OracleSource::PythLazer,
+            market_stats: MarketStats {
+                mm_oracle_price: 100 * PRICE_PRECISION_I64,
+                mm_oracle_slot: slot,
+                historical_oracle_data: HistoricalOracleData {
+                    last_oracle_price: 100 * PRICE_PRECISION_I64,
+                    last_oracle_price_twap: 100 * PRICE_PRECISION_I64,
+                    last_oracle_price_twap_5min: 100 * PRICE_PRECISION_I64,
+                    ..HistoricalOracleData::default()
+                },
+                ..MarketStats::default()
+            },
+            ..PerpMarket::default_test()
+        };
+        market.amm.max_base_asset_reserve = u128::MAX;
+        market.amm.min_base_asset_reserve = 0;
+
+        let state = State::default();
+        let exchange_oracle_price_data = *oracle_map.get_price_data(&market.oracle_id()).unwrap();
+        let exchange_oracle_validity = oracle_validity(
+            MarketType::Perp,
+            market.market_index,
+            market
+                .market_stats
+                .historical_oracle_data
+                .last_oracle_price_twap,
+            &exchange_oracle_price_data,
+            &state.oracle_guard_rails.validity,
+            market.get_max_confidence_interval_multiplier().unwrap(),
+            &market.oracle_source,
+            LogMode::ExchangeOracle,
+            market.oracle_slot_delay_override,
+            false,
+            market.oracle_low_risk_slot_delay_override,
+            state.slot_duration(),
+        )
+        .unwrap();
+        let mm_oracle_price_data = market
+            .get_mm_oracle_price_data(
+                exchange_oracle_price_data,
+                slot,
+                &state.oracle_guard_rails.validity,
+                state.slot_duration(),
+            )
+            .unwrap();
+        let safe_oracle_price_data = mm_oracle_price_data.get_safe_oracle_price_data();
+        let safe_oracle_validity = oracle_validity(
+            MarketType::Perp,
+            market.market_index,
+            market
+                .market_stats
+                .historical_oracle_data
+                .last_oracle_price_twap,
+            &safe_oracle_price_data,
+            &state.oracle_guard_rails.validity,
+            market.get_max_confidence_interval_multiplier().unwrap(),
+            &market.oracle_source,
+            LogMode::SafeMMOracle,
+            market.oracle_slot_delay_override,
+            mm_oracle_price_data.is_safe_price_mm_sourced(),
+            market.oracle_low_risk_slot_delay_override,
+            state.slot_duration(),
+        )
+        .unwrap();
+
+        assert!(mm_oracle_price_data.is_safe_price_mm_sourced());
+        assert!(is_oracle_valid_for_action(
+            safe_oracle_validity,
+            Some(VelocityAction::FillOrderMatch),
+        )
+        .unwrap());
+        let exchange_match_fills_allowed = is_oracle_valid_for_action(
+            exchange_oracle_validity,
+            Some(VelocityAction::FillOrderMatch),
+        )
+        .unwrap();
+        assert!(!exchange_match_fills_allowed);
+        assert!(market
+            .amm_fill_gates_ok(safe_oracle_validity, &mm_oracle_price_data)
+            .unwrap());
+        let amm_order = Order {
+            market_index: 0,
+            status: OrderStatus::Open,
+            order_type: OrderType::Market,
+            direction: PositionDirection::Long,
+            base_asset_amount: BASE_PRECISION_U64 / 4,
+            slot: 0,
+            auction_duration: 0,
+            price: 150 * PRICE_PRECISION_U64,
+            ..Order::default()
+        };
+        assert!(get_amm_is_available(
+            &amm_order,
+            0,
+            &market,
+            &mut oracle_map,
+            slot,
+            true,
+        ));
+
+        let admitted = run_with_exchange_match_policy(
+            [
+                (BASE_PRECISION_U64 / 4, 100 * PRICE_PRECISION_U64),
+                (BASE_PRECISION_U64 / 4, 100 * PRICE_PRECISION_U64),
+            ],
+            BASE_PRECISION_I64,
+            100 * QUOTE_PRECISION_I64 as u64,
+            exchange_match_fills_allowed,
+        );
+        assert!(admitted.is_empty());
+    }
+
+    #[test]
+    fn invalid_exchange_oracle_does_not_prune_an_unfloored_maker() {
+        let admitted = run_with_exchange_match_policy(
+            [
+                (BASE_PRECISION_U64 / 4, 100 * PRICE_PRECISION_U64),
+                (BASE_PRECISION_U64 / 4, 100 * PRICE_PRECISION_U64),
+            ],
+            BASE_PRECISION_I64,
+            0,
+            false,
+        );
+        assert_eq!(admitted.len(), 2);
+    }
+
+    #[test]
+    fn invalid_exchange_oracle_blocks_only_a_floored_taker() {
+        let unfloored = User::default();
+        let floored = User {
+            equity_floor: QUOTE_PRECISION_I64 as u64,
+            ..User::default()
+        };
+
+        assert!(can_floored_user_match_with_exchange_oracle(
+            &unfloored, false
+        ));
+        assert!(!can_floored_user_match_with_exchange_oracle(
+            &floored, false
+        ));
+        assert!(can_floored_user_match_with_exchange_oracle(&floored, true));
     }
 
     #[test]

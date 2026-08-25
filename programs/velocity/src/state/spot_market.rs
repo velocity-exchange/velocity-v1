@@ -84,31 +84,9 @@ pub struct SpotMarket {
     /// Revenue the protocol has collected in this markets token
     /// e.g. for SOL-PERP, funds can be settled in usdc and will flow into the USDC revenue pool
     pub revenue_pool: PoolBalance, // in base asset
-    /// Free bytes from the retired spot fee pool. The pool was 32 bytes and the
-    /// receivable below takes 16 of them, so these 16 are reserve for the next
-    /// field. They start at a multiple of 16, so they hold one u128 or two u64.
-    /// The whole slot was always zero on chain, so nothing has to be migrated.
-    pub padding_former_spot_fee_pool: [u8; 16],
-    /// Revenue allocated to the insurance fund that still sits in the spot
-    /// vault, which happens while a withdraw pause holds back the transfer.
-    ///
-    /// This is a third claim inside `deposit_balance`, beside `revenue_pool` and
-    /// `protocol_fee_pool`, and it is held the same way they are. A scaled
-    /// balance earns deposit interest for as long as the tokens stay here, and
-    /// the fund collects that interest when the transfer completes. A token
-    /// amount could not do this: the claim grows with
-    /// `cumulative_deposit_interest`, and a fixed integer would leave the
-    /// difference inside `deposit_balance` owned by nobody.
-    ///
-    /// This is a u128 that follows a `PoolBalance`, which the field ordering
-    /// rule in `docs/alignment-and-native-offsets.md` otherwise forbids. It is
-    /// safe here for the two reasons that rule exists to guarantee, and both are
-    /// pinned by asserts: `PoolBalance` is 32 bytes on the host and on SBF, so
-    /// `revenue_pool` ends at 416 on both, and this field starts at 432, which
-    /// is a multiple of 16. No architecture specific gap can open. Do not copy
-    /// the pattern to a field whose offset is not asserted.
-    /// precision: SPOT_BALANCE_PRECISION
-    pub insurance_fund_revenue_receivable_scaled: u128,
+    /// The fees collected from swaps between this market and the quote market
+    /// Is settled to the quote markets revenue pool
+    pub spot_fee_pool: PoolBalance,
     pub historical_oracle_data: HistoricalOracleData,
     pub historical_index_data: HistoricalIndexData,
     /// no withdraw limits/guards when deposits below this threshold
@@ -260,19 +238,18 @@ pub struct SpotMarket {
     /// reach a whole unit is carried on the carveout pools, not floored away. See
     /// `split_deposit_interest`.
     pub protocol_fee_factor: u32,
-    /// Lowest insurance fund NAV since the end of the last revenue settle.
-    /// NAV includes the live vault balance and allocated revenue that remains
-    /// in the spot vault as a receivable. Revenue allocation starts each period
-    /// by writing the resulting NAV, and `record_insurance_fund_outflow` lowers
-    /// it on every path that moves value out of the fund:
-    /// `remove_insurance_fund_stake`,
+    /// Lowest insurance-fund vault balance since the end of the last revenue
+    /// settle. `settle_revenue_to_insurance_fund` starts each period by writing
+    /// the live vault balance plus the amount that settle transfers in, and
+    /// `record_insurance_fund_outflow` lowers it on every path that moves tokens
+    /// out of the vault: `remove_insurance_fund_stake`,
     /// `resolve_perp_pnl_deficit`, `resolve_perp_bankruptcy`, and
     /// `resolve_spot_bankruptcy`. A transfer into the vault never raises it, so
     /// it lags the live vault by up to one `revenue_settle_period`.
     ///
     /// The per-period revenue-settle APR cap is sized off
-    /// `min(current_if_nav, this)`, so it counts only capital the fund held for
-    /// the whole period. A donation sent into the live vault right before a
+    /// `min(live_if_vault, this)`, so it counts only capital the fund held for
+    /// the whole period. A donation spiked into the live vault right before a
     /// settle is absent from this field and cannot lift the cap. Tracking the
     /// running minimum is what closes the same trick after a dip: a loss draw
     /// takes the vault to 100, a donation puts it back to 1000, and a plain
@@ -284,36 +261,10 @@ pub struct SpotMarket {
     /// was empty. Both give a cap base of `0` for one period and then self-heal,
     /// because the settle that reads `0` still writes the new period's balance.
     ///
-    /// The unstake cancel share forfeiture is protected from donations by
-    /// withdrawing and restaking at the active share price. It does not read
-    /// this field.
+    /// (The unstake-cancel share forfeiture is donation-proofed differently — by
+    /// withdraw-and-restake at the active share price — and does *not* read this
+    /// field.) Repurposed from trailing padding — layout and size are unchanged.
     pub if_last_settle_vault_amount: u64,
-    /// Insurance fee revenue swept from perp markets into this market's
-    /// revenue pool but not yet settled into the insurance fund vault or
-    /// reclaimed by its source perp market during bankruptcy.
-    ///
-    /// This is the aggregate backing all perp market
-    /// `insurance_fund_revenue_receivable` fields that settle in this spot
-    /// market. It reserves those tokens from generic revenue settlement and
-    /// spot bankruptcy. Individual ownership remains on each perp market, and
-    /// this aggregate is not part of insurance fund NAV until settled.
-    ///
-    /// This is a token figure, not a scaled balance, and no path re-indexes it.
-    /// The revenue pool earns deposit interest, so the pool grows while this
-    /// reserve holds still. The growth falls outside the reserve and generic
-    /// settlement may spend it. That is correct: a source market is owed the
-    /// fees it swept, not a yield on them, and the reserve can then only
-    /// under-claim the pool. `resolve_spot_bankruptcy` handles the opposite
-    /// case, where a haircut lowers the index and the flat figure over-claims.
-    /// precision: token mint precision
-    pub perp_market_if_revenue_receivable: u64,
-    /// Revenue admission capacity left in the current settlement period.
-    /// Generic revenue and source market receivables consume the same allowance.
-    /// precision: token mint precision
-    pub revenue_settle_allowance: u64,
-    /// Reserved tail space for future fields. Account extension is expensive
-    /// operationally, so this upgrade allocates enough room for later additions.
-    pub _padding_future: [u8; 240],
 }
 
 // Layout guards: the deployed account layout is frozen, and the borsh/IDL
@@ -321,10 +272,7 @@ pub struct SpotMarket {
 // padding (off-chain decoders read the IDL's packed layout). If one of these
 // fires after a struct change, re-size the explicit padding fields — never
 // let the compiler insert implicit padding.
-const _: () = assert!(std::mem::size_of::<SpotMarket>() == 1056);
-const _: () = assert!(std::mem::offset_of!(SpotMarket, padding_former_spot_fee_pool) == 416);
-const _: () =
-    assert!(std::mem::offset_of!(SpotMarket, insurance_fund_revenue_receivable_scaled) == 432);
+const _: () = assert!(std::mem::size_of::<SpotMarket>() == 800);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, withdraw_circuit_breaker_bps) == 740);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, max_deposit_bps_per_day) == 742);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, deposit_guard_threshold) == 744);
@@ -332,9 +280,6 @@ const _: () = assert!(std::mem::offset_of!(SpotMarket, protocol_fee_pool) == 752
 const _: () = assert!(std::mem::offset_of!(SpotMarket, protocol_liquidation_fee) == 784);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, protocol_fee_factor) == 788);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, if_last_settle_vault_amount) == 792);
-const _: () = assert!(std::mem::offset_of!(SpotMarket, perp_market_if_revenue_receivable) == 800);
-const _: () = assert!(std::mem::offset_of!(SpotMarket, revenue_settle_allowance) == 808);
-const _: () = assert!(std::mem::offset_of!(SpotMarket, _padding_future) == 816);
 
 impl Default for SpotMarket {
     fn default() -> Self {
@@ -353,8 +298,7 @@ impl Default for SpotMarket {
             total_social_loss: 0,
             total_quote_social_loss: 0,
             revenue_pool: PoolBalance::default(),
-            padding_former_spot_fee_pool: [0; 16],
-            insurance_fund_revenue_receivable_scaled: 0,
+            spot_fee_pool: PoolBalance::default(),
             historical_oracle_data: HistoricalOracleData::default(),
             historical_index_data: HistoricalIndexData::default(),
             withdraw_guard_threshold: 0,
@@ -406,21 +350,17 @@ impl Default for SpotMarket {
             protocol_liquidation_fee: 0,
             protocol_fee_factor: 0,
             if_last_settle_vault_amount: 0,
-            perp_market_if_revenue_receivable: 0,
-            revenue_settle_allowance: 0,
-            _padding_future: [0; 240],
         }
     }
 }
 
 impl Size for SpotMarket {
-    const SIZE: usize = 1064;
+    const SIZE: usize = 808;
 }
 
 impl MarketIndexOffset for SpotMarket {
     // Fields were reordered so that all u128-containing types (insurance_fund and
-    // the seven direct u128 fields) appear before revenue_pool and
-    // insurance_fund_revenue_receivable.
+    // the seven direct u128 fields) appear before revenue_pool and spot_fee_pool.
     // This ensures revenue_pool is at a 16-byte-aligned offset (384), eliminating
     // the implicit 8-byte gap that #[repr(C)] inserted on x86_64.  Combined with
     // PoolBalance padding widened to [u8;14] (sizeof == 32 on both platforms),
@@ -598,18 +538,6 @@ impl SpotMarket {
 
     pub fn get_borrows(&self) -> VelocityResult<u128> {
         get_token_amount(self.borrow_balance, self, &SpotBalanceType::Borrow)
-    }
-
-    /// Token value of the revenue that is allocated to the insurance fund but
-    /// still sits in this vault. The claim is a scaled balance, so its token
-    /// value grows with deposit interest for as long as the transfer cannot
-    /// complete.
-    pub fn get_insurance_fund_revenue_receivable(&self) -> VelocityResult<u128> {
-        get_token_amount(
-            self.insurance_fund_revenue_receivable_scaled,
-            self,
-            &SpotBalanceType::Deposit,
-        )
     }
 
     pub fn get_tvl(&self) -> VelocityResult<u128> {

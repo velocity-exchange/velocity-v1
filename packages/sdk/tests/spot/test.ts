@@ -322,29 +322,6 @@ describe('Spot Tests', () => {
 		assert(result.borrowLimit.eq(new BN(18333)));
 	});
 
-	it('reserves the insurance fund receivable from the withdraw and borrow limits', () => {
-		// Free liquidity is deposits 100000 - borrows 10000 = 90000. A receivable
-		// of 85000 leaves 5000 that may leave the vault, which is below every
-		// other limit the market carries.
-		const mockSpot = buildWithdrawLimitMarket(0);
-		mockSpot.insuranceFundRevenueReceivableScaled = new BN(85000);
-		const now = new BN(43200);
-
-		const result = calculateWithdrawLimit(mockSpot, now);
-		assert(result.withdrawLimit.eq(new BN(5000)));
-		assert(result.exceptionWithdrawLimit.eq(new BN(5000)));
-		assert(result.borrowLimit.eq(new BN(5000)));
-	});
-
-	it('leaves the limits alone when the market holds no receivable', () => {
-		const mockSpot = buildWithdrawLimitMarket(0);
-		mockSpot.insuranceFundRevenueReceivableScaled = new BN(0);
-		const now = new BN(43200);
-
-		const result = calculateWithdrawLimit(mockSpot, now);
-		assert(result.borrowLimit.eq(new BN(18333)));
-	});
-
 	it('withdraw limit (isolated pool) uses lesserDepositAmount with /2, /3, /20', () => {
 		const mockSpot = buildWithdrawLimitMarket(1);
 		const now = new BN(43200);

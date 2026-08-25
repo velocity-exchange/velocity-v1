@@ -689,13 +689,6 @@ pub mod velocity {
         handle_settle_revenue_to_insurance_fund(ctx, spot_market_index)
     }
 
-    pub fn settle_perp_market_if_revenue_to_insurance_fund<'c: 'info, 'info>(
-        ctx: Context<'info, SettlePerpMarketIfRevenueToInsuranceFund<'info>>,
-        perp_market_index: u16,
-    ) -> Result<()> {
-        handle_settle_perp_market_if_revenue_to_insurance_fund(ctx, perp_market_index)
-    }
-
     pub fn sweep_perp_market_fees(
         ctx: Context<SweepPerpMarketFees>,
         perp_market_index: u16,

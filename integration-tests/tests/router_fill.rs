@@ -465,7 +465,7 @@ fn register_clob_quoter(
             state: state_pda(),
             quoter,
             quoter_program: clob_id(),
-            quoter_program_data: None,
+            quoter_program_data: Some(program_data_pda(&clob_id())),
         }
         .to_account_metas(None),
         data: velocity::instruction::UpdateQuoterApproved { approved: true }.data(),
@@ -4884,7 +4884,7 @@ fn setup_midpoint_maker(fixture: &mut Fixture, deposit: u64, side_size: u64) -> 
             state: state_pda(),
             quoter: entry,
             quoter_program: midpoint_id(),
-            quoter_program_data: None,
+            quoter_program_data: Some(program_data_pda(&midpoint_id())),
         }
         .to_account_metas(None),
         data: velocity::instruction::UpdateQuoterApproved { approved: true }.data(),
@@ -4973,6 +4973,13 @@ fn fill_long_through_midpoint(
     accounts.push(AccountMeta::new_readonly(clob_authority, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
     accounts.push(AccountMeta::new(maker.instance, false));
+    // The midpoint entry's own CPI signer, which its execute leg registered and
+    // its `execute_authority` is set to. Each entry has its own, so the fill has
+    // to carry the one belonging to the entry it routes through.
+    accounts.push(AccountMeta::new_readonly(
+        quoter_signer_pda(&maker.entry).0,
+        false,
+    ));
     accounts.push(AccountMeta::new_readonly(instructions_sysvar(), false));
     // Velocity resolves each quoter's CPI metas from this trailing map, and
     // the midpoint's quote/execute legs name velocity's State (they read the
@@ -5157,6 +5164,13 @@ fn router_fill_splits_across_clob_midpoint_and_vamm() {
     accounts.push(AccountMeta::new_readonly(clob_authority, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
     accounts.push(AccountMeta::new(maker.instance, false));
+    // The midpoint entry's own CPI signer, which its execute leg registered and
+    // its `execute_authority` is set to. Each entry has its own, so the fill has
+    // to carry the one belonging to the entry it routes through.
+    accounts.push(AccountMeta::new_readonly(
+        quoter_signer_pda(&maker.entry).0,
+        false,
+    ));
     accounts.push(AccountMeta::new_readonly(instructions_sysvar(), false));
     // Velocity resolves each quoter's CPI metas from this trailing map, and
     // the midpoint's quote/execute legs name velocity's State (they read the
@@ -5249,7 +5263,7 @@ fn declare_midpoint_watch(fixture: &mut Fixture, maker: &MidpointMaker) {
             state: state_pda(),
             quoter: maker.entry,
             quoter_program: midpoint_id(),
-            quoter_program_data: None,
+            quoter_program_data: Some(program_data_pda(&midpoint_id())),
         }
         .to_account_metas(None),
         data: velocity::instruction::UpdateQuoterApproved { approved: true }.data(),
@@ -5317,6 +5331,13 @@ fn run_quoter_cross_resolver(
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new(maker.instance, false));
+    // The midpoint entry's own CPI signer, which its execute leg registered and
+    // its `execute_authority` is set to. Each entry has its own, so the fill has
+    // to carry the one belonging to the entry it routes through.
+    accounts.push(AccountMeta::new_readonly(
+        quoter_signer_pda(&maker.entry).0,
+        false,
+    ));
     accounts.push(AccountMeta::new_readonly(instructions_sysvar(), false));
     // Velocity resolves each quoter's CPI metas from this trailing map, and
     // the midpoint's quote/execute legs name velocity's State (they read the

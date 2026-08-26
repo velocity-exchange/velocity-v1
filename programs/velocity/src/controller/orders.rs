@@ -4468,8 +4468,12 @@ fn fulfill_perp_order_router_pass(
                 // saturates, so an oversized figure here would collapse the
                 // maker's whole reservation for this market and free the margin
                 // backing orders that are still resting.
+                //
+                // A market with no minimum of its own bounds nothing, which is
+                // the same case the attach lets through.
                 validate!(
-                    cancelled.base_asset_amount < market.market_stats.min_order_size,
+                    market.market_stats.min_order_size == 0
+                        || cancelled.base_asset_amount < market.market_stats.min_order_size,
                     ErrorCode::QuoterFillOffQuote,
                     "quoter {} culled {} base, at or above the market minimum {}",
                     router.executor.quoter_key(i),
@@ -5034,8 +5038,12 @@ pub fn cross_match(
                 // saturates, so an oversized figure here would collapse the
                 // maker's whole reservation for this market and free the margin
                 // backing orders that are still resting.
+                //
+                // A market with no minimum of its own bounds nothing, which is
+                // the same case the attach lets through.
                 validate!(
-                    cancelled.base_asset_amount < market.market_stats.min_order_size,
+                    market.market_stats.min_order_size == 0
+                        || cancelled.base_asset_amount < market.market_stats.min_order_size,
                     ErrorCode::QuoterFillOffQuote,
                     "quoter {} culled {} base, at or above the market minimum {}",
                     executor.quoter_key(book_index),

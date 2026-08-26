@@ -742,6 +742,10 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             .account(ctx.accounts.quoter.key(), false);
         let mut union: std::collections::BTreeMap<Pubkey, bool> = Default::default();
         *union.entry(ctx.accounts.clob_market.key()).or_default() |= true;
+        // Both identities, because the two legs authenticate as different keys:
+        // the book's execute wants the place authority, and the quoter's wants
+        // the signer derived from its own entry.
+        union.entry(clob_authority.0).or_default();
         union.entry(quoter_signer).or_default();
         union.entry(clob_program).or_default();
         for meta in &quoter.execute_accounts[..quoter.execute_accounts_count as usize] {

@@ -2537,8 +2537,13 @@ pub fn handle_update_perp_market_clob_quoter(
         )?
         .reader()
         .order_rules()?;
+        // A market with no minimum of its own has nothing to bound against, and
+        // nothing to bound: the book's cull fires on a remainder under *its*
+        // minimum, and releasing that from an aggregate the market never
+        // reserved against is a no-op.
         validate!(
-            rules.min_order_size <= perp_market.market_stats.min_order_size,
+            perp_market.market_stats.min_order_size == 0
+                || rules.min_order_size <= perp_market.market_stats.min_order_size,
             ErrorCode::DefaultError,
             "book minimum order size {} is above the market's {}",
             rules.min_order_size,

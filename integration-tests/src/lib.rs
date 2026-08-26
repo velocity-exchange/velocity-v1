@@ -55,11 +55,55 @@ pub fn svm() -> LiteSVM {
         .expect("clob.so missing — run `bun run program:build:clob` first");
     svm.add_program_from_file(midpoint_id(), MIDPOINT_SO)
         .expect("midpoint.so missing — run `bun run program:build:midpoint` first");
+    // Approval requires the program behind a quoter entry to be frozen, and
+    // litesvm loads a program under the upgradeable loader without writing the
+    // program-data account that says so. Every fixture program gets one.
+    for program in [clob_id(), midpoint_id()] {
+        set_frozen_program_data(&mut svm, &program);
+    }
     // Every resolver names the program-wide staging account, so it exists
     // from the start rather than each fixture remembering to create it.
     set_relay_scratch(&mut svm);
     set_crank_treasury(&mut svm);
     svm
+}
+
+/// `BPFLoaderUpgradeab1e11111111111111111111111`, which owns a program's data
+/// account.
+pub fn bpf_loader_upgradeable_id() -> Pubkey {
+    "BPFLoaderUpgradeab1e11111111111111111111111"
+        .parse()
+        .unwrap()
+}
+
+/// The program-data account for `program`, where the upgradeable loader keeps
+/// the upgrade authority.
+pub fn program_data_pda(program: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[program.as_ref()], &bpf_loader_upgradeable_id()).0
+}
+
+/// Write a `ProgramData` account for `program` carrying no upgrade authority,
+/// which is what `update_quoter_approved` requires of a quoter program.
+///
+/// Layout: a four-byte enum tag (3 = `ProgramData`), the slot it was deployed
+/// at, then the authority behind an option tag — zero here, meaning nobody can
+/// redeploy it.
+pub fn set_frozen_program_data(svm: &mut LiteSVM, program: &Pubkey) -> Pubkey {
+    let address = program_data_pda(program);
+    let mut data = vec![0u8; 45];
+    data[0] = 3;
+    svm.set_account(
+        address,
+        Account {
+            lamports: 100_000_000_000,
+            data,
+            owner: bpf_loader_upgradeable_id(),
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .unwrap();
+    address
 }
 
 pub fn state_pda() -> Pubkey {

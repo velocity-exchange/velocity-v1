@@ -5598,6 +5598,7 @@ mod native_auth_tests {
         super::*,
         crate::{
             create_anchor_account_info,
+            math::time::SlotDuration,
             state::{
                 perp_market::PerpMarket,
                 state::{FeatureBitFlags, State},
@@ -5983,6 +5984,7 @@ mod native_batch_tests {
         super::*,
         crate::{
             create_anchor_account_info,
+            math::time::SlotDuration,
             state::{
                 perp_market::PerpMarket,
                 state::{FeatureBitFlags, State},

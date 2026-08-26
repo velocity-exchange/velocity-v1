@@ -33,7 +33,6 @@ import {
 	calculateMarketAvailablePNL,
 	RECOMMENDED_JUPITER_API,
 	msToSlotsCeilNum,
-	currentSlotDuration,
 	SLOT_DURATION_BASELINE,
 } from '@velocity-exchange/sdk';
 import {
@@ -605,7 +604,7 @@ export class LiquidatorDerisk {
 				dlob,
 				this.userMap.getSlot(),
 				undefined,
-				currentSlotDuration(this.velocityClient, this.userMap.getSlot())
+				this.velocityClient.getStateAccount()
 			));
 		} catch (e) {
 			const err = e as Error;

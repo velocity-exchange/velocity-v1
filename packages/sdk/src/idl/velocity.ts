@@ -20939,10 +20939,10 @@ export type Velocity = {
           {
             "name": "auctionDuration",
             "docs": [
-              "Auction length in wall-clock 400ms units (one slot at the 400ms",
+              "Auction length in wall clock 400ms units (one slot at the 400ms",
               "baseline, where the raw value is identical to the historical slot",
               "count). Progress compares `SlotClock::elapsed` against this value's",
-              "wall-clock length, so the ramp holds at every slot duration and the",
+              "wall clock length, so the ramp holds at every slot duration and the",
               "u8 keeps the full historical 72s range."
             ],
             "type": "u8"
@@ -24764,9 +24764,9 @@ export type Velocity = {
           {
             "name": "slotDurationMs",
             "docs": [
-              "Legacy current-slot-duration field in milliseconds, kept coherent by",
+              "Legacy current slot duration field in milliseconds, kept coherent by",
               "the permissionless sync as the IBRL feature gates activate",
-              "(400 -> 350 -> 300 -> 250 -> 200). `0` means unset (what pre-upgrade",
+              "(400 -> 350 -> 300 -> 250 -> 200). `0` means unset (what pre upgrade",
               "accounts read out of former padding) and is interpreted as the 400ms",
               "baseline. Never read this field directly, use [`State::slot_clock`] /",
               "[`State::slot_duration`]; once any `slot_duration_transition_slots`",
@@ -24810,9 +24810,9 @@ export type Velocity = {
           {
             "name": "slotDurationTransitionSlots",
             "docs": [
-              "First slot of each post-baseline IBRL regime, ordered as",
+              "First slot of each post baseline IBRL regime, ordered as",
               "`[350ms, 300ms, 250ms, 200ms]`. Zero means that transition has not been",
-              "synchronized yet. These anchors let elapsed-time math integrate an",
+              "synchronized yet. These anchors let elapsed time math integrate an",
               "interval piecewise instead of multiplying its whole slot delta by the",
               "duration at one endpoint."
             ],
@@ -24826,7 +24826,7 @@ export type Velocity = {
           {
             "name": "padding",
             "docs": [
-              "200 = the former 244-byte padding minus the 12 staging bytes and the 32",
+              "200 = the former 244 byte padding minus the 12 staging bytes and the 32",
               "bytes used by `slot_duration_transition_slots`.",
               "(`pending_slot_duration_ms` 2 + `slot_duration_pad` 2 + the 8-byte",
               "`slot_duration_effective_slot`). The padding still absorbs the 8 bytes that",

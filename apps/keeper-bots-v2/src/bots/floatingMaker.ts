@@ -266,18 +266,18 @@ export class FloatingPerpMakerBot implements Bot {
 			marketIndex,
 			currSlot
 		);
-		const slotDuration = currentSlotDuration(this.velocityClient, currSlot);
+		const slotDurationState = this.velocityClient.getStateAccount();
 		const vAsk = calculateAskPrice(
 			marketAccount,
 			oracle,
 			new BN(currSlot),
-			slotDuration
+			slotDurationState
 		);
 		const vBid = calculateBidPrice(
 			marketAccount,
 			oracle,
 			new BN(currSlot),
-			slotDuration
+			slotDurationState
 		);
 
 		// cancel orders if not quoting both sides of the market

@@ -297,6 +297,7 @@ pub mod amm_jit {
         let mut router_inputs = crate::math::router::RouterFillInputs {
             books: &[],
             executor: &mut no_externals,
+            protocol_authority: Pubkey::default(),
         };
         let (base_asset_amount, quote_asset_amount) = fulfill_perp_order(
             &mut taker,
@@ -609,6 +610,7 @@ pub mod amm_jit {
         let mut router_inputs = crate::math::router::RouterFillInputs {
             books: &external_books,
             executor: &mut executor,
+            protocol_authority: Pubkey::default(),
         };
 
         let (base_asset_amount, quote_asset_amount) = fulfill_perp_order(
@@ -946,6 +948,7 @@ pub mod amm_jit {
         let mut router_inputs = crate::math::router::RouterFillInputs {
             books: &external_books,
             executor: &mut executor,
+            protocol_authority: Pubkey::default(),
         };
 
         let result = fulfill_perp_order(
@@ -1184,6 +1187,7 @@ pub mod amm_jit {
         let mut router_inputs = crate::math::router::RouterFillInputs {
             books: &external_books,
             executor: &mut executor,
+            protocol_authority: Pubkey::default(),
         };
 
         let (base_asset_amount, _) = fulfill_perp_order(

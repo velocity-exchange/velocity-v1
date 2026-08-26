@@ -148,7 +148,7 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
                             quoter,
                             clob_market,
                             clob_program,
-                            quoter_signer: crate::signer::find_quoter_signer().0,
+                            quoter_signer: crate::signer::find_clob_authority().0,
                             crank_conditions: Some(crate::state::pdas::clob_crank_conditions(
                                 market_index,
                             )),

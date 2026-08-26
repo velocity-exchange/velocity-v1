@@ -5,7 +5,7 @@
 //! that back the DLOB margin model stay exact:
 //!
 //! - [`place_clob_order`]: margin gate + aggregate reserve, then a CPI to the
-//!   CLOB as its `place_authority` (the quoter CPI signer PDA).
+//!   CLOB as its `place_authority` (the CLOB place authority PDA).
 //! - [`cancel_clob_order`]: cancel CPI, then unwind the removed order's
 //!   remaining size from the aggregates.
 //! - [`cancel_all_clob_orders`]: the same thing for a maker's whole side (or

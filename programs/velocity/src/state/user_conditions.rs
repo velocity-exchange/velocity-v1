@@ -64,10 +64,33 @@ pub const LIQ_SYNC_MIN_FALLBACK_SLOTS: u64 = 150;
 ///
 /// The opt-in states what a resync costs and the protocol treasury pays that
 /// figure to whoever cranks it. Opting in is permissionless, so an unbounded
-/// figure would let anyone name their own price against protocol funds. This
-/// is a measured ceiling on what a resync really requests; a caller may state
-/// less, never more.
-pub const LIQ_SYNC_MAX_COST_UNITS: u32 = 200_000;
+/// figure would let anyone name their own price against protocol funds. A
+/// caller may state less, never more.
+///
+/// This is a bound on the work a resync does, not on what a transaction may
+/// request. A resync loads at most [`LIQ_SYNC_ACCOUNTS_MAX`] accounts, reads a
+/// few fields from each, and rewrites the block — nothing like a full
+/// transaction's budget. A ceiling set at that budget instead is the whole
+/// exploit: the caller names the price, the caller cranks it, and the treasury
+/// pays the difference between the honest cost and the stated one, once per
+/// interval per account, on as many accounts as the caller cares to opt in.
+///
+/// Erring low is the safe direction here, unlike the per-market crank figures
+/// an *admin* sets (see `crankCostUnits.ts`, which errs high for that reason).
+/// Too low and a turner declines the work, which costs this account its
+/// fallback poll while every other liquidation path keeps working. Too high and
+/// anyone can drain the treasury. Re-measure with `sol_log_compute_units`
+/// around a full-map resync if [`super::user_conditions`]'s rewrite changes.
+pub const LIQ_SYNC_MAX_COST_UNITS: u32 = 40_000;
+
+/// The longest fallback interval a paid self-sync may ask for.
+///
+/// The interval is how long the account may go without its thresholds being
+/// re-derived, and opting in is permissionless — so without an upper bound a
+/// third party could opt an account in with an interval long enough that the
+/// poll never meaningfully fires, and the block would read as covered while
+/// providing no safety net. Roughly a day of slots.
+pub const LIQ_SYNC_MAX_FALLBACK_SLOTS: u64 = 216_000;
 
 /// PDA seed: `["user_conditions", user key]`.
 pub const USER_CONDITIONS_PDA_SEED: &[u8] = b"user_conditions";
@@ -150,7 +173,17 @@ pub const USER_CONDITIONS_BLOCK_OFFSET: usize = relay_spec::block_offset!(UserCo
 /// indirect resolver account list*: a condition may only carry a pointer,
 /// and `ResolveLiquidatePerpWithFill` needs its named accounts plus the
 /// whole margin map — stored once, shared by every threshold slot.
-pub const LIQ_SYNC_ACCOUNTS_MAX: usize = 32;
+///
+/// Sized from what an account actually needs rather than from a round number.
+/// The list is four fixed resolver accounts plus roughly three per market the
+/// user is exposed in — an oracle, the market, and a crank-conditions or quoter
+/// tail entry. Thirty-two therefore ran out somewhere around six markets, and
+/// the sync *reverts* when the list does not fit (it is written, not
+/// truncated), so the opt-in was unavailable to exactly the accounts carrying
+/// the most risk. Forty-eight covers about fourteen markets and still leaves
+/// room under a transaction's account-lock budget for the staged crank's own
+/// accounts, which is the real ceiling on this number.
+pub const LIQ_SYNC_ACCOUNTS_MAX: usize = 48;
 
 /// The stored list's leading entries are the resolver's named accounts —
 /// `[scratch, conditions, user, state]`, deliberately nothing
@@ -244,21 +277,36 @@ impl UserConditionsV0 {
                 hash = hash.wrapping_mul(0x1000_0000_01b3);
             }
         };
+        // Skipped on the margin engine's own emptiness test, and folding every
+        // field that moves a threshold.
+        //
+        // `base_asset_amount == 0 && quote_asset_amount == 0` is not emptiness:
+        // a position holding only open orders, or only an isolated balance, is
+        // one `is_available` reports as live and the margin walk still visits.
+        // Reading a narrower test here left those positions out of the digest
+        // entirely, so the watch this digest drives never fired when their open
+        // orders changed — and open orders are exactly what the initial-margin
+        // stage of the ladder (the force-cancel threshold) is priced from.
         for position in user.perp_positions.iter() {
-            if position.base_asset_amount == 0 && position.quote_asset_amount == 0 {
+            if position.is_available() {
                 continue;
             }
             fold(position.market_index as u64);
             fold(position.base_asset_amount as u64);
             fold(position.quote_asset_amount as u64);
+            fold(position.open_bids as u64);
+            fold(position.open_asks as u64);
+            fold(position.isolated_position_scaled_balance as u64);
         }
         for position in user.spot_positions.iter() {
-            if position.scaled_balance == 0 {
+            if position.is_available() {
                 continue;
             }
             fold(position.market_index as u64);
             fold(position.scaled_balance);
             fold(position.balance_type as u64);
+            fold(position.open_bids as u64);
+            fold(position.open_asks as u64);
         }
         hash
     }

@@ -54,7 +54,7 @@ use {
             orders::{is_oracle_too_divergent_with_twap_5min, order_satisfies_trigger_condition},
         },
         msg,
-        signer::QUOTER_SIGNER_SEED,
+        signer::CLOB_AUTHORITY_SEED,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             events::OrderActionExplanation,
@@ -105,11 +105,11 @@ pub struct TriggerClobOrder<'info> {
     /// CHECK: locked to the registered quoter program.
     #[account(address = quoter.load()?.program_id)]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the quoter CPI signer PDA — what a book's `place_authority` is
-    /// set to. Deliberately not the vault authority: signer privilege is
-    /// inherited by a callee, so the key velocity hands an external program
-    /// must be the authority on nothing.
-    #[account(seeds = [QUOTER_SIGNER_SEED], bump)]
+    /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
+    /// is set to. Its own key, distinct from the per-entry signer a
+    /// third-party quoter is handed: signer privilege is inherited by a
+    /// callee, and this one may place and cancel on any book, for any user.
+    #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
     pub quoter_signer: UncheckedAccount<'info>,
     /// Expiry-hint host, same optional contract as `place_clob_order`.
     #[account(
@@ -551,7 +551,7 @@ pub fn handle_resolve_trigger_clob_order(ctx: Context<ResolveTriggerClobOrder>) 
                 quoter: meta.quoter,
                 clob_market: meta.clob_market,
                 clob_program: meta.clob_program,
-                quoter_signer: crate::state::pdas::quoter_signer(),
+                quoter_signer: crate::state::pdas::clob_authority(),
                 crank_conditions: Some(crate::state::pdas::clob_crank_conditions(
                     meta.market_index,
                 )),

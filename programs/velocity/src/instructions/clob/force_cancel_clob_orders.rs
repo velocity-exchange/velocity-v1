@@ -48,7 +48,7 @@ use {
             safe_math::SafeMath,
         },
         msg,
-        signer::QUOTER_SIGNER_SEED,
+        signer::CLOB_AUTHORITY_SEED,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             events::OrderActionExplanation,
@@ -125,11 +125,11 @@ pub struct ForceCancelClobOrders<'info> {
     /// CHECK: locked to the registered quoter program.
     #[account(address = quoter.load()?.program_id)]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the quoter CPI signer PDA — what a book's `place_authority` is
-    /// set to. Deliberately not the vault authority: signer privilege is
-    /// inherited by a callee, so the key velocity hands an external program
-    /// must be the authority on nothing.
-    #[account(seeds = [QUOTER_SIGNER_SEED], bump)]
+    /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
+    /// is set to. Its own key, distinct from the per-entry signer a
+    /// third-party quoter is handed: signer privilege is inherited by a
+    /// callee, and this one may place and cancel on any book, for any user.
+    #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
     pub quoter_signer: UncheckedAccount<'info>,
     /// Wake-hint host; optional like every other CLOB path.
     #[account(
@@ -372,6 +372,19 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
         oracle_map.get_price_data(&oracle_id)?.price
     };
 
+    // Orders this crank actually reclaimed. The reservoir pays for work, and
+    // reaching this point does not prove any was done: `cancellable` may be
+    // empty, and the sweep is decided from `open_bids`/`open_asks`, which count
+    // DLOB orders too. A user holding only DLOB orders therefore sweeps a book
+    // that holds nothing of theirs, and `cancel_all_v0` removes zero without
+    // erroring. Paying for that would let anyone with a failing account drain
+    // the market's reservoir in a loop, which stops every other crank on the
+    // market — liquidations included.
+    let reclaimed_orders = removed_orders.len() as u64
+        + swept.map_or(0, |outcome| {
+            u64::from(outcome.bid_orders) + u64::from(outcome.ask_orders)
+        });
+
     // ---- Unwind, skip-filter risk-reducing, fee. ----
     let mut total_fee = 0u64;
     {
@@ -474,13 +487,16 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
     }
 
     // Pay the relay turner out of the reservoir when it is the one that
-    // cranked.
+    // cranked, and only for a crank that reclaimed something. The same rule
+    // `liquidate_perp_with_fill` applies to its own reward: a crank that
+    // removed nothing is a correct outcome rather than an error, but it is not
+    // work, and paying for it empties the reservoir.
     if let Some(conditions_loader) = &ctx.accounts.crank_conditions {
         let payment = {
             let conditions = load_mut!(conditions_loader)?;
             u64::from(conditions.crank_payments.force_cancel)
         };
-        if program_keeper_mode {
+        if program_keeper_mode && reclaimed_orders > 0 {
             let conditions_info = conditions_loader.to_account_info();
             let rent_minimum = Rent::get()?.minimum_balance(conditions_info.data_len());
             ClobCrankConditionsV0::pay_keeper_lamports(

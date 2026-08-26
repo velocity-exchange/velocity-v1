@@ -119,6 +119,7 @@ macro_rules! no_router {
         let mut $name = crate::math::router::RouterFillInputs {
             books: &[],
             executor: &mut no_externals,
+            protocol_authority: Pubkey::default(),
         };
     };
 }
@@ -10312,6 +10313,7 @@ pub mod builder_fee_margin_gate {
         let mut router_inputs = crate::math::router::RouterFillInputs {
             books: &[],
             executor: &mut no_externals,
+            protocol_authority: Pubkey::default(),
         };
         let (base_filled, _) = fulfill_perp_order(
             &mut taker,
@@ -10665,6 +10667,7 @@ mod fill_gates_apply_to_a_reducing_fill {
         let mut router_inputs = crate::math::router::RouterFillInputs {
             books: &[],
             executor: &mut no_externals,
+            protocol_authority: Pubkey::default(),
         };
         fulfill_perp_order(
             &mut taker,

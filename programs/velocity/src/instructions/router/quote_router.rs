@@ -142,9 +142,9 @@ pub fn handle_quote_router<'c: 'info, 'info>(
     // A book is read straight out of the quoter's response account and copied
     // once, into the buffer. Nothing holds a second copy: velocity's heap is
     // 32 KB and never reclaims, and this runs once per quoter.
-    let (quoter_signer, quoter_signer_nonce) = crate::signer::find_quoter_signer();
+    let clob_authority = crate::signer::find_clob_authority();
     for loader in &quoters {
-        let (priority, quoter_type, quoter_user, located) = {
+        let (priority, quoter_type, quoter_user, entry_key, quoter_signer, quoter_signer_nonce, located) = {
             let quoter = loader.load()?;
             validate!(
                 quoter.market == market_index,
@@ -156,6 +156,9 @@ pub fn handle_quote_router<'c: 'info, 'info>(
             if !(quoter.is_active && quoter.is_approved) {
                 continue;
             }
+            let entry_key = loader.key();
+            let (quoter_signer, quoter_signer_nonce) =
+                quoter.cpi_signer(&entry_key, clob_authority);
             let located = quoter
                 .quote_in_place(
                     market_index,
@@ -176,6 +179,7 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                         // which needs the depth a bound would cut.
                         limit_price: 0,
                     },
+                    &entry_key,
                     &quoter_signer,
                     quoter_signer_nonce,
                     &accounts,
@@ -184,7 +188,15 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                     msg!("quoter {} quote failed: {}", loader.key(), e);
                     ErrorCode::DefaultError
                 })?;
-            (quoter.priority, quoter.quoter_type, quoter.user, located)
+            (
+                quoter.priority,
+                quoter.quoter_type,
+                quoter.user,
+                entry_key,
+                quoter_signer,
+                quoter_signer_nonce,
+                located,
+            )
         };
 
         // Verification: a Custom quoter's depth is never margin-reserved, so
@@ -254,6 +266,7 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                 args.direction,
                 admitted,
                 rows_wanted,
+                &entry_key,
                 &quoter_signer,
                 quoter_signer_nonce,
                 &accounts,
@@ -385,6 +398,7 @@ fn quoter_rows<'info>(
     direction: Direction,
     admitted: u64,
     rows_wanted: usize,
+    entry: &Pubkey,
     quoter_signer: &Pubkey,
     quoter_signer_nonce: u8,
     accounts: &[AccountInfo<'info>],
@@ -402,6 +416,7 @@ fn quoter_rows<'info>(
                 size: admitted,
                 max_rows: rows_wanted.min(u16::MAX as usize) as u16,
             },
+            entry,
             quoter_signer,
             quoter_signer_nonce,
             accounts,

@@ -1,6 +1,9 @@
 use {
     super::*,
-    crate::{signer::find_quoter_signer, state::pdas},
+    crate::{
+        signer::{find_clob_authority, find_quoter_signer},
+        state::pdas,
+    },
 };
 
 fn meta(pubkey: Pubkey, is_writable: bool) -> AmmAccountMeta {
@@ -16,8 +19,9 @@ fn meta(pubkey: Pubkey, is_writable: bool) -> AmmAccountMeta {
 /// vault authority could forward it to the token program.
 #[test]
 fn quoter_signer_is_not_the_vault_authority() {
-    let (quoter_signer, _) = find_quoter_signer();
-    assert_eq!(quoter_signer, pdas::quoter_signer());
+    let entry = Pubkey::new_unique();
+    let (quoter_signer, _) = find_quoter_signer(&entry);
+    assert_eq!(quoter_signer, pdas::quoter_signer(&entry));
     assert_ne!(quoter_signer, pdas::velocity_signer());
     // Nor is it the protocol account's authority, which is derived from the
     // vault authority.
@@ -26,13 +30,31 @@ fn quoter_signer_is_not_the_vault_authority() {
     assert_ne!(pdas::user_stats(&quoter_signer), protocol_user_stats);
 }
 
+/// A quoter's signature must authenticate velocity at that quoter and nowhere
+/// else. Two things follow, and both are what stop a quoter reaching past its
+/// own program: the key differs per registry entry, so forwarding it to a
+/// second quoter proves nothing there; and none of them is the books' place
+/// authority, which may place and cancel on any market for any user.
+#[test]
+fn every_entry_signs_as_its_own_key_and_none_of_them_is_the_book_authority() {
+    let (first, second) = (Pubkey::new_unique(), Pubkey::new_unique());
+    let (first_signer, _) = find_quoter_signer(&first);
+    let (second_signer, _) = find_quoter_signer(&second);
+    let (clob_authority, _) = find_clob_authority();
+
+    assert_ne!(first_signer, second_signer);
+    assert_ne!(first_signer, clob_authority);
+    assert_ne!(second_signer, clob_authority);
+    assert_eq!(clob_authority, pdas::clob_authority());
+}
+
 /// Only the quoter signer's slot is handed signer privilege. The vault
 /// authority is passed unprivileged even if it somehow reached a stored list
 /// (entries registered before the reserved-key check shipped).
 #[test]
 fn only_the_quoter_signer_slot_is_a_signer() {
     let vault_authority = pdas::velocity_signer();
-    let (quoter_signer, _) = find_quoter_signer();
+    let (quoter_signer, _) = find_quoter_signer(&Pubkey::new_unique());
     let book = Pubkey::new_unique();
     let taker_wallet = Pubkey::new_unique();
 
@@ -65,7 +87,7 @@ fn only_the_quoter_signer_slot_is_a_signer() {
 #[test]
 fn registration_rejects_the_vault_authority() {
     let vault_authority = pdas::velocity_signer();
-    let (quoter_signer, _) = find_quoter_signer();
+    let (quoter_signer, _) = find_quoter_signer(&Pubkey::new_unique());
     let book = Pubkey::new_unique();
 
     assert!(validate_quoter_accounts([book, quoter_signer].iter()).is_ok());
@@ -84,6 +106,12 @@ fn key(byte: u8) -> Pubkey {
     Pubkey::new_from_array([byte | 0x80; 32])
 }
 
+/// `State::signer` for the subject tests — a key none of the fixtures use, so
+/// it isolates the protocol-user rule from the rest.
+fn protocol() -> Pubkey {
+    Pubkey::new_from_array([0x5a; 32])
+}
+
 /// A Custom entry fills against exactly one margin account. Every other
 /// loaded user — the taker, a rival quoter's maker, another sub-account of
 /// the same authority — is off limits, however well-formed the response.
@@ -91,11 +119,11 @@ fn key(byte: u8) -> Pubkey {
 fn a_custom_quoter_may_only_move_its_registry_user() {
     let taker = user_ref(7, 0);
     let subjects = QuoterSubjects::Account(key(1));
-    assert!(subjects.permits(&user_ref(1, 0), &key(1), &taker));
-    assert!(!subjects.permits(&user_ref(2, 0), &key(2), &taker));
+    assert!(subjects.permits(&user_ref(1, 0), &key(1), &taker, &protocol()));
+    assert!(!subjects.permits(&user_ref(2, 0), &key(2), &taker, &protocol()));
     // Same authority, different sub-account: a different `User` account,
     // so a different subject.
-    assert!(!subjects.permits(&user_ref(1, 1), &key(9), &taker));
+    assert!(!subjects.permits(&user_ref(1, 1), &key(9), &taker, &protocol()));
 }
 
 /// Self-trade prevention is a rule, not a request on the wire: even an
@@ -104,8 +132,8 @@ fn a_custom_quoter_may_only_move_its_registry_user() {
 #[test]
 fn the_taker_is_never_a_subject() {
     let taker = user_ref(7, 0);
-    assert!(!QuoterSubjects::Account(key(7)).permits(&taker, &key(7), &taker));
-    assert!(!QuoterSubjects::Book.permits(&taker, &key(7), &taker));
+    assert!(!QuoterSubjects::Account(key(7)).permits(&taker, &key(7), &taker, &protocol()));
+    assert!(!QuoterSubjects::Book.permits(&taker, &key(7), &taker, &protocol()));
 }
 
 /// A book settles for whoever rests on it, and velocity cannot establish who
@@ -117,9 +145,32 @@ fn the_taker_is_never_a_subject() {
 #[test]
 fn a_book_may_move_any_loaded_user_but_the_taker() {
     let taker = user_ref(7, 0);
-    assert!(QuoterSubjects::Book.permits(&user_ref(1, 0), &key(1), &taker));
-    assert!(QuoterSubjects::Book.permits(&user_ref(2, 9), &key(2), &taker));
-    assert!(!QuoterSubjects::Book.permits(&taker, &key(7), &taker));
+    // ...nor the protocol `User`, which is the inventory-free taker the cross
+    // and liquidation cranks fill through. A book that could name it would
+    // move a position onto protocol funds at a price of its own choosing.
+    let protocol_user = ClobUserRefV0 {
+        authority: protocol(),
+        sub_account_id: 0,
+    };
+    assert!(!QuoterSubjects::Book.permits(
+        &protocol_user,
+        &key(3),
+        &taker,
+        &protocol()
+    ));
+    // A different sub-account of the protocol authority is an ordinary user.
+    assert!(QuoterSubjects::Book.permits(
+        &ClobUserRefV0 {
+            authority: protocol(),
+            sub_account_id: 1,
+        },
+        &key(4),
+        &taker,
+        &protocol()
+    ));
+    assert!(QuoterSubjects::Book.permits(&user_ref(1, 0), &key(1), &taker, &protocol()));
+    assert!(QuoterSubjects::Book.permits(&user_ref(2, 9), &key(2), &taker, &protocol()));
+    assert!(!QuoterSubjects::Book.permits(&taker, &key(7), &taker, &protocol()));
 }
 
 /// A Custom entry stays bound to the one account its registration consented
@@ -128,8 +179,8 @@ fn a_book_may_move_any_loaded_user_but_the_taker() {
 fn a_custom_quoter_still_moves_only_its_registered_user() {
     let taker = user_ref(7, 0);
     let subjects = QuoterSubjects::Account(key(1));
-    assert!(subjects.permits(&user_ref(1, 0), &key(1), &taker));
-    assert!(!subjects.permits(&user_ref(2, 0), &key(2), &taker));
+    assert!(subjects.permits(&user_ref(1, 0), &key(1), &taker, &protocol()));
+    assert!(!subjects.permits(&user_ref(2, 0), &key(2), &taker, &protocol()));
 }
 
 /// Fixed width, and the same width the CLOB's `UserSetV0` pins on its own

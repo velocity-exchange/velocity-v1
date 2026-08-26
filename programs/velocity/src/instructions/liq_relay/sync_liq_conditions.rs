@@ -243,6 +243,40 @@ pub fn rewrite_liq_conditions<'info>(
         oracle_infos.insert(*info.key, info);
     }
 
+    // Every market the user is actually exposed in has to be present.
+    //
+    // The map above is built from whatever accounts the caller passed, and both
+    // entry points are permissionless — the resync names no signer at all. A
+    // caller that passes fewer markets than the user holds would otherwise
+    // write a block whose thresholds were derived from part of the account, and
+    // one that passes none writes an empty map. The staged resolvers read their
+    // account list back out of that map, so an emptied map means the
+    // liquidation resolver loads no markets and fails, and the staged repair
+    // inherits the same empty list and cannot recover it.
+    //
+    // The emptiness test is the margin engine's own `is_available`, not "holds
+    // a base amount": a position carrying only open orders, unsettled PnL or an
+    // isolated balance is one the margin walk still visits.
+    {
+        let user = crate::load!(user_loader)?;
+        for position in user.perp_positions.iter() {
+            validate!(
+                position.is_available() || perps.contains_key(&position.market_index),
+                ErrorCode::InvalidUserConditionsSync,
+                "sync is missing perp market {}, which the user has exposure in",
+                position.market_index
+            )?;
+        }
+        for position in user.spot_positions.iter() {
+            validate!(
+                position.is_available() || spots.contains_key(&position.market_index),
+                ErrorCode::InvalidUserConditionsSync,
+                "sync is missing spot market {}, which the user has exposure in",
+                position.market_index
+            )?;
+        }
+    }
+
     // Oracle prices (readonly, first in map order). The watch layout is
     // resolved off each oracle's bytes once, here, and carries both the
     // current price and where a threshold condition should read it.
@@ -423,6 +457,16 @@ pub fn validate_sync_args(args: &SyncLiqConditionsArgs) -> Result<()> {
         "a paid self-sync needs an interval of at least {} slots, not {}",
         crate::state::user_conditions::LIQ_SYNC_MIN_FALLBACK_SLOTS,
         args.sync_fallback_slots
+    )?;
+    // And not one so long that the poll stops being a safety net. Opting in is
+    // permissionless, so this bounds what a third party can do to an account it
+    // does not control.
+    validate!(
+        args.sync_fallback_slots <= crate::state::user_conditions::LIQ_SYNC_MAX_FALLBACK_SLOTS,
+        ErrorCode::DefaultError,
+        "a self-sync interval of {} slots is above the {} ceiling",
+        args.sync_fallback_slots,
+        crate::state::user_conditions::LIQ_SYNC_MAX_FALLBACK_SLOTS
     )?;
     Ok(())
 }

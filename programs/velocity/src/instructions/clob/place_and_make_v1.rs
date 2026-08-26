@@ -25,7 +25,7 @@
 use {
     crate::{
         instructions::{constraints::*, place_and_make_perp_order, ClobRemainderRoute},
-        signer::QUOTER_SIGNER_SEED,
+        signer::CLOB_AUTHORITY_SEED,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             order_params::OrderParams,
@@ -70,9 +70,9 @@ pub struct PlaceAndMakeV1<'info> {
     /// CHECK: locked to the registered quoter program.
     #[account(address = quoter.load()?.program_id)]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the quoter CPI signer PDA — what a book's `place_authority` is
-    /// set to, and the authority on nothing else.
-    #[account(seeds = [QUOTER_SIGNER_SEED], bump)]
+    /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
+    /// is set to, and nothing a third-party quoter is ever handed.
+    #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
     pub quoter_signer: UncheckedAccount<'info>,
     /// Wake-hint host for the rested remainder. Optional like every other CLOB
     /// placement path: a market whose conditions were never initialized must

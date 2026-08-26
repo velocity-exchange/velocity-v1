@@ -3383,7 +3383,7 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
                 ),
             )
         };
-        let (quoter_signer, quoter_signer_nonce) = crate::signer::find_quoter_signer();
+        let (clob_authority, clob_authority_nonce) = crate::signer::find_clob_authority();
         let route_reference_price = {
             let oracle_id = perp_market_map.get_ref(&params.market_index)?.oracle_id();
             oracle_map.get_price_data(&oracle_id)?.price
@@ -3405,8 +3405,8 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
             reference_price: route_reference_price,
             taker: taker_ref,
             limit_price: quote_limit_price,
-            quoter_signer,
-            quoter_signer_nonce,
+            clob_authority,
+            clob_authority_nonce,
         };
         // Before the quote: see `build_user_caps`.
         let inputs = crate::instructions::QuoteInputs {
@@ -3435,6 +3435,7 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
         let mut router_inputs = crate::math::router::RouterFillInputs {
             books: &book_refs,
             executor: &mut executor,
+            protocol_authority: state.signer,
         };
         controller::orders::fill_perp_order_with_router(
             order_id,

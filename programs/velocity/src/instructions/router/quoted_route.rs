@@ -102,8 +102,14 @@ pub struct QuoteInputs<'a> {
     /// that honours it stops its walk where the router would have discarded
     /// the rest. Advisory: see [`QuoteArgsV0::limit_price`].
     pub limit_price: u64,
-    pub quoter_signer: Pubkey,
-    pub quoter_signer_nonce: u8,
+    /// The CLOB place authority and its bump — the identity a `Clob` entry's
+    /// CPI legs are signed as. Passed in rather than derived because the
+    /// entrypoint's named account already carries it, bump included. Every
+    /// other entry signs as a key derived from its own registry entry
+    /// (`QuoterV0::cpi_signer`), so no quoter ever holds a signature that
+    /// authenticates at a book or at another quoter.
+    pub clob_authority: Pubkey,
+    pub clob_authority_nonce: u8,
 }
 
 impl<'info> QuotedRoute<'info> {
@@ -168,6 +174,11 @@ impl<'info> QuotedRoute<'info> {
                 if !(quoter.is_active && quoter.is_approved) {
                     continue;
                 }
+                let entry_key = loader.key();
+                let (cpi_signer, cpi_signer_nonce) = quoter.cpi_signer(
+                    &entry_key,
+                    (inputs.clob_authority, inputs.clob_authority_nonce),
+                );
                 let levels = quoter.quote(
                     inputs.market_index,
                     QuoteArgsV0 {
@@ -179,8 +190,9 @@ impl<'info> QuotedRoute<'info> {
                         taker: Some(inputs.taker),
                         limit_price: inputs.limit_price,
                     },
-                    &inputs.quoter_signer,
-                    inputs.quoter_signer_nonce,
+                    &entry_key,
+                    &cpi_signer,
+                    cpi_signer_nonce,
                     route.accounts,
                 )?;
                 (
@@ -288,8 +300,8 @@ impl<'info> QuotedRoute<'info> {
             quoted: &self.quoted,
             market_index: inputs.market_index,
             accounts: self.accounts,
-            quoter_signer: inputs.quoter_signer,
-            quoter_signer_nonce: inputs.quoter_signer_nonce,
+            clob_authority: inputs.clob_authority,
+            clob_authority_nonce: inputs.clob_authority_nonce,
             users: inputs.users,
             taker: inputs.taker,
             slot,

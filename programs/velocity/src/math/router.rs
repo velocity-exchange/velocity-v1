@@ -51,6 +51,68 @@ pub struct QuoterBook<'a> {
 /// for allocations that land on them. Books and executor share indexing.
 /// `'info` is the account lifetime the executor's responses are read out of —
 /// distinct from the books' `'b`, which borrows from the quoting section.
+/// Account locks a transaction may hold, less headroom for the compute-budget
+/// program. The runtime cap is 64.
+pub const TX_ACCOUNT_LOCK_CEILING: usize = 62;
+/// Accounts one more CLOB maker costs: its `User` and its `UserStats`.
+pub const MAKER_ACCOUNT_COST: usize = 2;
+
+/// What the fill knows about the party that built the transaction.
+///
+/// A book stops its walk at an order whose owner the transaction does not
+/// carry, and reports the depth behind it as withheld. Who pays for that
+/// depends on who chose the account list.
+///
+/// A taker that signed the transaction chose it. A taker that did not is
+/// trusting a filler, and the filler owes the taker every maker it had room
+/// for. [`withheld_obligation`] states the rule.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FillerObligation {
+    /// The taker's own authority or delegate signs this transaction.
+    pub taker_signed: bool,
+    /// Distinct accounts the transaction locks. `None` when the caller passed
+    /// no instructions sysvar, so the fill cannot count them.
+    pub tx_accounts: Option<usize>,
+}
+
+/// Whether a filler that left a book short of an owner met its obligation.
+///
+/// Three outcomes, and only the last one is a fill:
+///
+/// - The transaction had room for another maker. The filler owed that maker.
+/// - The transaction is full, but it carries a loaded user that filled nothing
+///   and holds no role in the fill. Those accounts crowded out the maker the
+///   book wanted. A filler can force a withhold this way and then take the
+///   fill on a worse-priced source of its own.
+/// - The transaction is full and every loaded user did something. The filler
+///   could not carry the maker, so the walk stops and the fill is short.
+pub fn withheld_obligation(
+    obligation: &FillerObligation,
+    idle_loaded_users: usize,
+) -> VelocityResult<()> {
+    if obligation.taker_signed {
+        return Ok(());
+    }
+    let Some(accounts) = obligation.tx_accounts else {
+        msg!("a fill that withholds depth must pass the instructions sysvar");
+        return Err(ErrorCode::FillerObligationUncountable);
+    };
+    validate!(
+        accounts > TX_ACCOUNT_LOCK_CEILING.saturating_sub(MAKER_ACCOUNT_COST),
+        ErrorCode::FillerOmittedReachableMaker,
+        "transaction holds {} of {} account locks, so it had room for a maker the book wanted",
+        accounts,
+        TX_ACCOUNT_LOCK_CEILING
+    )?;
+    validate!(
+        idle_loaded_users == 0,
+        ErrorCode::FillerPaddedTheUserSet,
+        "{} loaded users filled nothing while a book withheld depth",
+        idle_loaded_users
+    )?;
+    Ok(())
+}
+
 pub struct RouterFillInputs<'a, 'b, 'info> {
     pub books: &'a [QuoterBook<'b>],
     pub executor: &'a mut dyn crate::state::prop_amm::ExternalQuoterExecutor<'info>,
@@ -58,6 +120,9 @@ pub struct RouterFillInputs<'a, 'b, 'info> {
     /// may name as a fill subject. Carried here because the router pass works
     /// over account maps and does not hold `State`.
     pub protocol_authority: Pubkey,
+    /// What the fill knows about the party that built the transaction. The
+    /// entrypoint holds the signer and the sysvar; the router pass does not.
+    pub obligation: FillerObligation,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -181,21 +246,15 @@ fn available_at(top: Option<(u64, u64)>, priority: u8, tier: u8, price: u64) -> 
 /// allocation is a step multiple by construction, so execution never drops
 /// dust the taker was promised.
 ///
-/// `reserve` is depth a book says it holds but cannot fill in this
-/// transaction, because the accounts of the user who owns it are not here. It
-/// competes for the taker's size like any other level and is then thrown
-/// away, so nothing worse-priced takes what it was holding. The taker keeps
-/// that base unfilled, which is the better outcome whenever the order can
-/// rest: resting leaves it where the book's own price can reach it next
-/// block, while filling it here locks in a price the book was beating. A
-/// caller that must fill now — immediate-or-cancel — passes `None` and takes
-/// the worse price, which is what immediacy costs.
+/// Depth a book withheld — liquidity whose owner this transaction does not
+/// carry — takes no part of the size. The taker asked to trade, so the size
+/// goes to the sources that can fill it. Whether the caller should have carried
+/// that owner is a separate question, and [`withheld_obligation`] answers it.
 pub fn split_across_quoters(
     direction: Direction,
     taker_size: u64,
     books: &[QuoterBook],
     step_size: u64,
-    reserve: Option<(u8, &[PriceLevel])>,
 ) -> VelocityResult<Vec<QuoterAllocation>> {
     validate!(
         !books.is_empty(),
@@ -213,15 +272,6 @@ pub fn split_across_quoters(
             step,
         })
         .collect();
-    if let Some((priority, levels)) = reserve {
-        cursors.push(Cursor {
-            priority,
-            levels,
-            index: 0,
-            consumed: 0,
-            step,
-        });
-    }
     let mut allocations = vec![QuoterAllocation::default(); cursors.len()];
     let mut remaining = taker_size;
 
@@ -338,10 +388,6 @@ pub fn split_across_quoters(
         }
     }
 
-    // The reserve's own allocation goes nowhere: it stood in for liquidity
-    // this transaction cannot settle against, and holding it back is the
-    // point.
-    allocations.truncate(books.len());
     Ok(allocations)
 }
 
@@ -562,107 +608,114 @@ mod tests {
                 withheld: PriceLevel::default(),
             })
             .collect();
-        split_across_quoters(direction, size, &books, 1, None).unwrap()
-    }
-
-    fn split_reserving(
-        direction: Direction,
-        size: u64,
-        books: &[(u8, Vec<PriceLevel>)],
-        reserve: (u8, PriceLevel),
-    ) -> Vec<QuoterAllocation> {
-        let quoter_books: Vec<QuoterBook> = books
-            .iter()
-            .map(|(priority, levels)| QuoterBook {
-                priority: *priority,
-                levels,
-                withheld: PriceLevel::default(),
-            })
-            .collect();
-        let held = [reserve.1];
-        split_across_quoters(direction, size, &quoter_books, 1, Some((reserve.0, &held))).unwrap()
+        split_across_quoters(direction, size, &books, 1).unwrap()
     }
 
     const B: u64 = 1_000_000_000; // one base unit
 
-    /// A book that could not reach its own liquidity keeps a worse-priced
-    /// source off it. The taker takes the depth it can and leaves the rest
-    /// unfilled, which is the outcome worth having when the order can rest:
-    /// the price the book was holding is still there next block.
+    /// Withheld depth takes no part of the size.
+    ///
+    /// A book reports depth it holds for an owner the transaction does not
+    /// carry. That report drives [`withheld_obligation`], not the division: the
+    /// taker asked to trade, so the size goes to the sources that can fill it.
+    /// Holding size back for an unreachable price left the taker short of a
+    /// fill it could have had.
     #[test]
-    fn withheld_depth_is_reserved_from_worse_quoters() {
-        // The book quotes 1 @ 100 and says it is holding 2 more @ 101. The
-        // vAMM is offering 5 @ 102 — worse than what the book was holding.
+    fn withheld_depth_takes_no_size() {
+        // The book quotes 1 @ 100 and reports 2 more @ 101 that it cannot
+        // reach. The vAMM offers 5 @ 102, worse than the report.
+        let quoted = vec![PriceLevel {
+            price: 100,
+            size: B,
+        }];
+        let amm = vec![PriceLevel {
+            price: 102,
+            size: 5 * B,
+        }];
         let books = vec![
-            (
-                CLOB,
-                vec![PriceLevel {
-                    price: 100,
-                    size: B,
-                }],
-            ),
-            (
-                VAMM,
-                vec![PriceLevel {
-                    price: 102,
-                    size: 5 * B,
-                }],
-            ),
-        ];
-        let reserve = (
-            CLOB,
-            PriceLevel {
-                price: 101,
-                size: 2 * B,
+            QuoterBook {
+                priority: CLOB,
+                levels: &quoted,
+                withheld: PriceLevel {
+                    price: 101,
+                    size: 2 * B,
+                },
             },
-        );
+            QuoterBook {
+                priority: VAMM,
+                levels: &amm,
+                withheld: PriceLevel::default(),
+            },
+        ];
 
-        let open = split(Direction::Long, 5 * B, &books);
-        assert_eq!(open[0].base, B, "the book fills what it quoted");
-        assert_eq!(open[1].base, 4 * B, "and the vAMM takes the whole rest");
-
-        let held = split_reserving(Direction::Long, 5 * B, &books, reserve);
-        assert_eq!(held[0].base, B, "the book still fills what it quoted");
+        let out = split_across_quoters(Direction::Long, 5 * B, &books, 1).unwrap();
+        assert_eq!(out[0].base, B, "the book fills what it quoted");
+        assert_eq!(out[1].base, 4 * B, "the vAMM fills the rest");
         assert_eq!(
-            held[1].base,
-            2 * B,
-            "the vAMM only gets what is left once the book's own depth is kept back"
+            out[0].base + out[1].base,
+            5 * B,
+            "the taker is filled in full despite the withheld report"
         );
-        // The two reserved units are simply not filled. They are the taker's
-        // remainder, and where that goes is the order's own business.
-        assert_eq!(held.len(), books.len(), "the reserve is not a quoter");
     }
 
-    /// The reserve only holds back what is worse than it. Depth that beats
-    /// the price the book was holding is still the taker's best fill.
+    /// A taker that signed the transaction chose its own account list, so no
+    /// filler owes it anything.
     #[test]
-    fn a_reserve_does_not_hold_back_a_better_price() {
-        let books = vec![
-            (
-                CLOB,
-                vec![PriceLevel {
-                    price: 100,
-                    size: B,
-                }],
-            ),
-            (
-                VAMM,
-                vec![PriceLevel {
-                    price: 100,
-                    size: 5 * B,
-                }],
-            ),
-        ];
-        let reserve = (
-            CLOB,
-            PriceLevel {
-                price: 101,
-                size: 2 * B,
-            },
-        );
+    fn a_taker_that_signed_is_owed_nothing() {
+        let signed = FillerObligation {
+            taker_signed: true,
+            tx_accounts: None,
+        };
+        assert!(withheld_obligation(&signed, 7).is_ok());
+    }
 
-        let held = split_reserving(Direction::Long, 5 * B, &books, reserve);
-        assert_eq!(held[0].base + held[1].base, 5 * B, "nothing is held back");
+    /// A fill that withholds and cannot count the transaction fails closed.
+    /// Otherwise a filler would omit the sysvar to skip the check.
+    #[test]
+    fn an_uncountable_transaction_is_refused() {
+        let blind = FillerObligation {
+            taker_signed: false,
+            tx_accounts: None,
+        };
+        assert_eq!(
+            withheld_obligation(&blind, 0),
+            Err(ErrorCode::FillerObligationUncountable)
+        );
+    }
+
+    /// Room for one more maker means the filler owed that maker.
+    #[test]
+    fn room_for_another_maker_is_an_omission() {
+        let ceiling = TX_ACCOUNT_LOCK_CEILING - MAKER_ACCOUNT_COST;
+        for accounts in [0, ceiling - 1, ceiling] {
+            let roomy = FillerObligation {
+                taker_signed: false,
+                tx_accounts: Some(accounts),
+            };
+            assert_eq!(
+                withheld_obligation(&roomy, 0),
+                Err(ErrorCode::FillerOmittedReachableMaker),
+                "{accounts} accounts leaves room for a maker"
+            );
+        }
+    }
+
+    /// A full transaction still fails when it carries a user that did nothing:
+    /// those locks are what the missing maker needed.
+    #[test]
+    fn a_padded_user_set_is_refused() {
+        let full = FillerObligation {
+            taker_signed: false,
+            tx_accounts: Some(TX_ACCOUNT_LOCK_CEILING),
+        };
+        assert_eq!(
+            withheld_obligation(&full, 1),
+            Err(ErrorCode::FillerPaddedTheUserSet)
+        );
+        assert!(
+            withheld_obligation(&full, 0).is_ok(),
+            "a full transaction whose every user filled has met the obligation"
+        );
     }
 
     #[test]

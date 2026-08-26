@@ -3441,6 +3441,12 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
             books: &book_refs,
             executor: &mut executor,
             protocol_authority: state.signer,
+            // The taker signs a place-and-take, so the taker chose the
+            // account list and no filler obligation applies.
+            obligation: crate::math::router::FillerObligation {
+                taker_signed: true,
+                tx_accounts: None,
+            },
         };
         controller::orders::fill_perp_order_with_router(
             order_id,

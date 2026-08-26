@@ -563,6 +563,49 @@ pub fn tx_reimbursement_claimants(
     Ok(claimants.max(1))
 }
 
+/// Distinct accounts this transaction locks.
+///
+/// The runtime caps a transaction at 64 account locks, and that cap is the
+/// scarce resource on a router fill: a CLOB maker costs two accounts and a
+/// custom quoter costs five. A caller that omits a maker therefore has to be
+/// held to whether it had room for one, and this is the count that answers it.
+///
+/// The count is over the whole transaction rather than one instruction. A fill
+/// often travels with a force-cancel ahead of it, and those accounts hold locks
+/// too. Counting one instruction would report room that the transaction does
+/// not have.
+///
+/// Bounded work: the cap is 64, so the scan stops there and reports 64.
+pub fn tx_distinct_account_count(instructions_sysvar: &AccountInfo) -> VelocityResult<usize> {
+    use solana_program::sysvar::instructions::load_instruction_at_checked;
+    const CAP: usize = 64;
+    let mut seen = [Pubkey::default(); CAP];
+    let mut count = 0usize;
+    let mut index = 0usize;
+    while let Ok(instruction) = load_instruction_at_checked(index, instructions_sysvar) {
+        index += 1;
+        for meta in instruction.accounts.iter() {
+            if seen[..count].contains(&meta.pubkey) {
+                continue;
+            }
+            if count == CAP {
+                return Ok(CAP);
+            }
+            seen[count] = meta.pubkey;
+            count += 1;
+        }
+        // The program id of each instruction holds a lock as well.
+        if !seen[..count].contains(&instruction.program_id) {
+            if count == CAP {
+                return Ok(CAP);
+            }
+            seen[count] = instruction.program_id;
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
 pub fn tx_co_signed_by(instructions_sysvar: &AccountInfo, signer: &Pubkey) -> VelocityResult<bool> {
     use solana_program::sysvar::instructions::load_instruction_at_checked;
     let mut index = 0usize;

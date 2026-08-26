@@ -38,22 +38,12 @@ export type RouterQuoterBook = {
 	 * the transaction. `quote_v0` returns it as `withheld`, one price level
 	 * behind the ladder.
 	 *
-	 * Not fillable, so it never belongs in `levels`. Pass it to
-	 * {@link splitAcrossQuoters} as the reserve — see there for what it does.
+	 * Not fillable, so it never belongs in `levels`, and it takes no part of the
+	 * split. It reports that the transaction omitted a maker the book wanted. On
+	 * a fill the taker did not sign, the program then checks whether the filler
+	 * had room to carry that maker.
 	 */
 	withheld?: RouterPriceLevel;
-};
-
-/**
- * Depth a book is holding at a better price than it quoted, priced into the
- * split and then discarded.
- *
- * `priority` is the withholding book's own tier, so it competes exactly where
- * that book's liquidity would have.
- */
-export type RouterReserve = {
-	priority: number;
-	level: RouterPriceLevel;
 };
 
 /** What the split routes to one quoter. */
@@ -156,28 +146,15 @@ class Cursor {
  * @param takerSize base the taker wants filled
  * @param books one per quoter, best price first
  * @param stepSize the market's `orderStepSize`
- * @param reserve depth a book holds at a better price than it quoted and
- *   cannot fill in this transaction, because the accounts of the user who
- *   owns it are not carried. It competes for the taker's size like any other
- *   level and is then thrown away, so nothing worse-priced takes what the
- *   book was standing on. The taker keeps that base unfilled, which is the
- *   better outcome whenever the order can rest — resting leaves it where the
- *   book's own price can reach it next block, while filling it here locks in
- *   a price the book was beating.
  *
- *   Omit it whenever the taker's remainder cannot wait: an immediate-or-cancel
- *   order, whose leftover cancels rather than rests; a liquidation, which
- *   covers a shortage that is already there; and any order with nowhere to
- *   rest — an oracle-floating price has nothing fixed to rest at, and the
- *   book has no meaning for reduce-only. Reserving for one of those holds
- *   depth back forever.
+ * A book's `withheld` report takes no part of the division. The taker asked to
+ * trade, so the size goes to the sources that can fill it.
  */
 export function splitAcrossQuoters(
 	direction: PositionDirection,
 	takerSize: BN,
 	books: RouterQuoterBook[],
-	stepSize: BN,
-	reserve?: RouterReserve
+	stepSize: BN
 ): RouterAllocation[] {
 	if (books.length === 0) {
 		throw new Error('router split needs at least one book');
@@ -186,9 +163,6 @@ export function splitAcrossQuoters(
 	const cursors = books.map(
 		(book) => new Cursor(book.priority, book.levels, step)
 	);
-	if (reserve) {
-		cursors.push(new Cursor(reserve.priority, [reserve.level], step));
-	}
 	const allocations: RouterAllocation[] = cursors.map(() => ({
 		base: ZERO,
 		quote: ZERO,
@@ -302,9 +276,7 @@ export function splitAcrossQuoters(
 		}
 	}
 
-	// The reserve's own allocation goes nowhere: it stood in for liquidity the
-	// transaction cannot settle against, and holding it back is the point.
-	return allocations.slice(0, books.length);
+	return allocations;
 }
 
 /**

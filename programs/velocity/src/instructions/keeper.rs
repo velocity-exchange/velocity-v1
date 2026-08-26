@@ -138,6 +138,22 @@ pub fn handle_fill_perp_order<'c: 'info, 'info>(
         (order_id, market_index)
     };
 
+    let obligation = {
+        let taker = load!(ctx.accounts.user)?;
+        crate::math::router::FillerObligation {
+            taker_signed: taker.authority == ctx.accounts.authority.key()
+                || (taker.delegate == ctx.accounts.authority.key()
+                    && taker.delegate != Pubkey::default()),
+            tx_accounts: ctx
+                .accounts
+                .instructions_sysvar
+                .as_ref()
+                .map(|sysvar| {
+                    crate::instructions::optional_accounts::tx_distinct_account_count(sysvar)
+                })
+                .transpose()?,
+        }
+    };
     let user_key = &ctx.accounts.user.key();
     fill_order(
         FillAccounts {
@@ -151,6 +167,7 @@ pub fn handle_fill_perp_order<'c: 'info, 'info>(
         order_id,
         market_index,
         signed_route,
+        obligation,
         None,
     )
     .inspect_err(|_e| {
@@ -183,6 +200,7 @@ pub fn fill_order_v1_entry<'c: 'info, 'info>(
     order_id: u32,
     market_index: u16,
     signed_route: Vec<Pubkey>,
+    obligation: crate::math::router::FillerObligation,
     clob: Option<crate::instructions::ClobRemainderRoute<'_, 'info>>,
 ) -> Result<()> {
     fill_order(
@@ -191,6 +209,7 @@ pub fn fill_order_v1_entry<'c: 'info, 'info>(
         order_id,
         market_index,
         signed_route,
+        obligation,
         clob,
     )
 }
@@ -202,6 +221,7 @@ fn fill_order<'c: 'info, 'info>(
     order_id: u32,
     market_index: u16,
     signed_route: Vec<Pubkey>,
+    obligation: crate::math::router::FillerObligation,
     clob: Option<crate::instructions::ClobRemainderRoute<'_, 'info>>,
 ) -> Result<()> {
     let clock = &Clock::get()?;
@@ -332,6 +352,7 @@ fn fill_order<'c: 'info, 'info>(
         books,
         executor: &mut executor,
         protocol_authority: state.signer,
+        obligation,
     };
 
     controller::orders::fill_perp_order_with_router(
@@ -4242,6 +4263,10 @@ pub struct FillOrder<'info> {
         constraint = is_stats_for_user(&user, &user_stats)?
     )]
     pub user_stats: AccountLoader<'info, UserStats>,
+    /// CHECK: address-locked to the instructions sysvar. See `FillOrderV1` for
+    /// what it is read for and why it is optional.
+    #[account(address = solana_program::sysvar::instructions::ID)]
+    pub instructions_sysvar: Option<UncheckedAccount<'info>>,
 }
 
 #[derive(Accounts)]

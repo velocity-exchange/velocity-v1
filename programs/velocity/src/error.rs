@@ -843,6 +843,12 @@ pub enum ErrorCode {
     CrankReservoirNotLow,
     #[msg("User conditions sync does not cover every market the user is exposed in")]
     InvalidUserConditionsSync,
+    #[msg("A book withheld depth and the transaction had room to carry its owner")]
+    FillerOmittedReachableMaker,
+    #[msg("A book withheld depth and the transaction carries a loaded user that filled nothing")]
+    FillerPaddedTheUserSet,
+    #[msg("A book withheld depth and the fill cannot count the transaction's accounts")]
+    FillerObligationUncountable,
 }
 
 #[macro_export]

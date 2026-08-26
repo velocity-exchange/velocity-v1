@@ -202,7 +202,7 @@ pub fn router_take(
                 }),
         )
         .collect();
-    let allocations = split_across_quoters(direction, target_size, &books, ctx.step_size, None)?;
+    let allocations = split_across_quoters(direction, target_size, &books, ctx.step_size)?;
     let (external_allocations, internal_allocations) = allocations.split_at(external_books.len());
 
     // Execute each internal allocation against its quoter — the in-program

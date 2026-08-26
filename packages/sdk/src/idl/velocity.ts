@@ -3192,6 +3192,14 @@ export type Velocity = {
         {
           "name": "userStats",
           "writable": true
+        },
+        {
+          "name": "instructionsSysvar",
+          "docs": [
+            "what it is read for and why it is optional."
+          ],
+          "optional": true,
+          "address": "Sysvar1nstructions1111111111111111111111111"
         }
       ],
       "args": [
@@ -3349,6 +3357,21 @@ export type Velocity = {
               }
             ]
           }
+        },
+        {
+          "name": "instructionsSysvar",
+          "docs": [
+            "fill cannot get anywhere else: whether the taker signed this",
+            "transaction, and how many accounts the transaction locks.",
+            "",
+            "Optional, and it costs one of those locks. A fill needs it only when a",
+            "book withholds depth for an owner the transaction does not carry, and",
+            "only when the taker did not sign. A fill that meets neither condition",
+            "passes `None` and spends nothing. A fill that meets both and passes",
+            "`None` is refused, because the obligation cannot be checked."
+          ],
+          "optional": true,
+          "address": "Sysvar1nstructions1111111111111111111111111"
         }
       ],
       "args": [
@@ -21436,6 +21459,21 @@ export type Velocity = {
       "code": 6394,
       "name": "invalidUserConditionsSync",
       "msg": "User conditions sync does not cover every market the user is exposed in"
+    },
+    {
+      "code": 6395,
+      "name": "fillerOmittedReachableMaker",
+      "msg": "A book withheld depth and the transaction had room to carry its owner"
+    },
+    {
+      "code": 6396,
+      "name": "fillerPaddedTheUserSet",
+      "msg": "A book withheld depth and the transaction carries a loaded user that filled nothing"
+    },
+    {
+      "code": 6397,
+      "name": "fillerObligationUncountable",
+      "msg": "A book withheld depth and the fill cannot count the transaction's accounts"
     }
   ],
   "types": [

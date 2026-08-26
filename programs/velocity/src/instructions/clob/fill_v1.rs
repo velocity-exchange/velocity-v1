@@ -95,6 +95,17 @@ pub struct FillOrderV1<'info> {
         bump
     )]
     pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
+    /// CHECK: address-locked to the instructions sysvar. Read for two facts a
+    /// fill cannot get anywhere else: whether the taker signed this
+    /// transaction, and how many accounts the transaction locks.
+    ///
+    /// Optional, and it costs one of those locks. A fill needs it only when a
+    /// book withholds depth for an owner the transaction does not carry, and
+    /// only when the taker did not sign. A fill that meets neither condition
+    /// passes `None` and spends nothing. A fill that meets both and passes
+    /// `None` is refused, because the obligation cannot be checked.
+    #[account(address = ::solana_program::sysvar::instructions::ID)]
+    pub instructions_sysvar: Option<UncheckedAccount<'info>>,
 }
 
 /// `market_index` is an argument rather than being read off the order because
@@ -129,6 +140,25 @@ pub fn handle_fill_perp_order_v1<'c: 'info, 'info>(
         order_market_index
     )?;
 
+    // Who built this transaction, and what room it had. A taker that signs
+    // chose its own account list; a taker that does not is trusting the filler.
+    let obligation = {
+        let taker = load!(ctx.accounts.user)?;
+        crate::math::router::FillerObligation {
+            taker_signed: taker.authority == ctx.accounts.authority.key()
+                || (taker.delegate == ctx.accounts.authority.key()
+                    && taker.delegate != Pubkey::default()),
+            tx_accounts: ctx
+                .accounts
+                .instructions_sysvar
+                .as_ref()
+                .map(|sysvar| {
+                    crate::instructions::optional_accounts::tx_distinct_account_count(sysvar)
+                })
+                .transpose()?,
+        }
+    };
+
     let user_key = &ctx.accounts.user.key();
     crate::instructions::keeper::fill_order_v1_entry(
         FillAccounts {
@@ -142,6 +172,7 @@ pub fn handle_fill_perp_order_v1<'c: 'info, 'info>(
         order_id,
         market_index,
         signed_route,
+        obligation,
         Some(ClobRemainderRoute {
             quoter: &ctx.accounts.quoter,
             clob_market: &ctx.accounts.clob_market,

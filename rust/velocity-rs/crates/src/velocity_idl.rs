@@ -11798,6 +11798,7 @@ pub mod accounts {
         pub filler_stats: Pubkey,
         pub user: Pubkey,
         pub user_stats: Pubkey,
+        pub instructions_sysvar: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for FillPerpOrder {
@@ -11845,6 +11846,11 @@ pub mod accounts {
                     is_signer: false,
                     is_writable: true,
                 },
+                AccountMeta {
+                    pubkey: self.instructions_sysvar,
+                    is_signer: false,
+                    is_writable: false,
+                },
             ]
         }
     }
@@ -11891,6 +11897,7 @@ pub mod accounts {
         pub clob_program: Pubkey,
         pub clob_authority: Pubkey,
         pub crank_conditions: Pubkey,
+        pub instructions_sysvar: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for FillPerpOrderV1 {
@@ -11962,6 +11969,11 @@ pub mod accounts {
                     pubkey: self.crank_conditions,
                     is_signer: false,
                     is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.instructions_sysvar,
+                    is_signer: false,
+                    is_writable: false,
                 },
             ]
         }
@@ -32403,6 +32415,14 @@ pub mod errors {
         CrankReservoirNotLow,
         #[msg("User conditions sync does not cover every market the user is exposed in")]
         InvalidUserConditionsSync,
+        #[msg("A book withheld depth and the transaction had room to carry its owner")]
+        FillerOmittedReachableMaker,
+        #[msg(
+            "A book withheld depth and the transaction carries a loaded user that filled nothing"
+        )]
+        FillerPaddedTheUserSet,
+        #[msg("A book withheld depth and the fill cannot count the transaction's accounts")]
+        FillerObligationUncountable,
     }
 }
 pub mod events {

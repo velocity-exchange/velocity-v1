@@ -3534,6 +3534,10 @@ impl<'a> TransactionBuilder<'a> {
                     clob_program: clob.clob_program,
                     clob_authority: clob.clob_authority,
                     crank_conditions: clob.crank_conditions,
+                    // Always named. A fill that leaves a book short of an
+                    // owner is refused unless velocity can count the
+                    // transaction's accounts, and only this sysvar tells it.
+                    instructions_sysvar: Some(SYSVAR_INSTRUCTIONS_PUBKEY),
                 },
                 makers.iter().chain(std::iter::once(taker_account)),
                 std::iter::empty(),
@@ -3548,6 +3552,7 @@ impl<'a> TransactionBuilder<'a> {
                     user_stats,
                     filler: self.sub_account,
                     filler_stats,
+                    instructions_sysvar: Some(SYSVAR_INSTRUCTIONS_PUBKEY),
                 },
                 makers.iter().chain(std::iter::once(taker_account)),
                 std::iter::empty(),

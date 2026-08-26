@@ -1071,6 +1071,9 @@ pub fn fill_perp_order(
         books: &[],
         executor: &mut no_externals,
         protocol_authority: state.signer,
+        // This path carries no external book, so nothing can withhold depth
+        // and the obligation is never reached.
+        obligation: crate::math::router::FillerObligation::default(),
     };
     fill_perp_order_with_router(
         order_id,
@@ -3741,6 +3744,18 @@ fn fulfill_perp_order_router_pass(
         sub_account_id: taker.sub_account_id.into(),
     };
     let protocol_authority = router.protocol_authority;
+    // One bit per loaded user, in the order the map holds them. Set as each
+    // balance change settles, so the obligation check at the end of the pass
+    // can name a loaded user that did nothing. The wire carries at most
+    // `MAX_QUOTER_WIRE_USERS` users, which is inside a `u64`.
+    let mut settled_users: u64 = 0;
+    let mut mark_settled = |key: &Pubkey| {
+        if let Some(index) = makers_and_referrer.0.keys().position(|held| held == key) {
+            if index < u64::BITS as usize {
+                settled_users |= 1u64 << index;
+            }
+        }
+    };
     let resolve_user = |user: &crate::state::prop_amm::ClobUserRefV0| -> VelocityResult<Pubkey> {
         user_ref_index
             .get(&(user.authority, user.sub_account_id))
@@ -4004,56 +4019,17 @@ fn fulfill_perp_order_router_pass(
             withheld: PriceLevel::default(),
         }))
         .collect();
-    // Depth a book is holding at a better price than it could quote, because
-    // the accounts of the user who owns it are not in this transaction. Held
-    // back from the worse-priced sources rather than handed to them: the
-    // taker's leftover rests where that price can still reach it, and filling
-    // it here would lock in a price the book was beating.
-    //
-    // Only for an order whose remainder can actually wait, which is three
-    // separate questions.
-    //
-    // It has to have somewhere to wait: `restable_remainder_price` answers
-    // that, and an order it turns down — an oracle-floating price with
-    // nothing fixed to rest at, a reduce-only that the book has no meaning
-    // for — leaves its remainder in `User.orders`, which is not a place a
-    // fill comes looking any more.
-    //
-    // It has to be allowed to wait: immediate-or-cancel bought immediacy, and
-    // its leftover cancels rather than rests, so a worse fill now beats no
-    // fill at all.
-    //
-    // And it has to be able to afford to: a liquidation covers a shortage
-    // that is already there. Its order is reduce-only so the first test
-    // already excludes it, but the reason is its own and does not depend on
-    // that staying true.
-    let reserve_level = (!taker.orders[taker_order_index].immediate_or_cancel
-        && !is_liquidation
-        && crate::instructions::restable_remainder_price(&taker.orders[taker_order_index])
-            .is_some())
-    .then(|| {
-        books
-            .iter()
-            .map(|book| book.withheld)
-            .filter(|withheld| withheld.price != 0 && withheld.size != 0)
-            .max_by_key(|withheld| match direction {
-                // Best for the taker is what the book would have beaten
-                // the rest of the route with.
-                Direction::Long => u64::MAX - withheld.price,
-                Direction::Short => withheld.price,
-            })
-    })
-    .flatten();
-    let reserve_slice = reserve_level.map(|level| [level]);
-    let allocations = split_across_quoters(
-        direction,
-        target_size,
-        &books,
-        order_step_size,
-        reserve_slice
-            .as_ref()
-            .map(|level| (clob_tier, level.as_slice())),
-    )?;
+    // A book that stops its walk at an order whose owner this transaction does
+    // not carry reports the depth behind it as withheld. Velocity holds back no
+    // taker size for it: the taker asked to trade, the rest of the route can
+    // fill, and the aged order keeps its place in the queue because the book
+    // stopped its own walk. What the withheld report drives instead is the
+    // obligation check at the end of this pass, which asks whether the party
+    // that built the transaction could have carried that owner.
+    let withheld_depth = external_books
+        .iter()
+        .any(|book| book.withheld.price != 0 && book.withheld.size != 0);
+    let allocations = split_across_quoters(direction, target_size, &books, order_step_size)?;
     let externals_end = external_books.len();
     let makers_end = externals_end + maker_levels.len();
 
@@ -4142,6 +4118,7 @@ fn fulfill_perp_order_router_pass(
         if fill.base_filled == 0 {
             continue;
         }
+        mark_settled(&router_maker.key);
         validate!(
             fill.base_filled <= allocation.base,
             ErrorCode::DefaultError,
@@ -4359,6 +4336,7 @@ fn fulfill_perp_order_router_pass(
                 continue;
             }
             let maker_key = resolve_user(&change.user)?;
+            mark_settled(&maker_key);
             validate!(
                 subjects.permits(&change.user, &maker_key, &taker_ref, &protocol_authority),
                 ErrorCode::QuoterSubjectNotPermitted,
@@ -4558,7 +4536,63 @@ fn fulfill_perp_order_router_pass(
         taker.perp_positions[taker_position_index].open_orders -= 1;
     }
 
+    // A book asked for an owner this transaction does not carry. Whoever built
+    // the transaction owes the taker every maker it had room for, so count the
+    // loaded users that filled nothing and hold no role in the fill. Those
+    // accounts spent locks the missing maker needed.
+    //
+    // Only reached when a book withheld depth, which is what keeps the cost of
+    // this off every ordinary fill.
+    if withheld_depth {
+        let idle = idle_loaded_users(
+            makers_and_referrer,
+            settled_users,
+            taker_key,
+            filler_key,
+            taker_stats.referrer,
+            router.executor,
+        )?;
+        crate::math::router::withheld_obligation(&router.obligation, idle)?;
+    }
+
     Ok((total_base, total_quote))
+}
+
+/// Loaded users that the fill did not move and that hold no role in it.
+///
+/// A role is one of four: the taker, the filler, the taker's referrer, or the
+/// account a registered quoter fills for. Each of those has to be loaded whether
+/// or not it receives a balance change. Everything else in the map is there to
+/// be filled, and one that filled nothing spent two account locks for nothing.
+fn idle_loaded_users<'info>(
+    makers_and_referrer: &UserMap,
+    settled_users: u64,
+    taker_key: &Pubkey,
+    filler_key: &Pubkey,
+    referrer_authority: Pubkey,
+    executor: &dyn crate::state::prop_amm::ExternalQuoterExecutor<'info>,
+) -> VelocityResult<usize> {
+    let mut idle = 0usize;
+    for (index, (key, loader)) in makers_and_referrer.0.iter().enumerate() {
+        if index < u64::BITS as usize && settled_users & (1u64 << index) != 0 {
+            continue;
+        }
+        if key == taker_key || key == filler_key {
+            continue;
+        }
+        let authority = loader
+            .load()
+            .map_err(|_| ErrorCode::UnableToLoadAccountLoader)?
+            .authority;
+        if authority == referrer_authority && referrer_authority != Pubkey::default() {
+            continue;
+        }
+        if (0..crate::instructions::MAX_ROUTE_QUOTERS).any(|i| executor.quoter_user(i) == *key) {
+            continue;
+        }
+        idle = idle.saturating_add(1);
+    }
+    Ok(idle)
 }
 
 /// How many of a quoter's own orders one balance change merges, as the

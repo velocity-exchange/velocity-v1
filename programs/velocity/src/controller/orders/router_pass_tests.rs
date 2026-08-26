@@ -298,6 +298,12 @@ pub mod amm_jit {
             books: &[],
             executor: &mut no_externals,
             protocol_authority: Pubkey::default(),
+            // Test fixtures stand in for a taker-signed fill: no filler
+            // obligation, so a withheld book does not end the pass.
+            obligation: crate::math::router::FillerObligation {
+                taker_signed: true,
+                tx_accounts: None,
+            },
         };
         let (base_asset_amount, quote_asset_amount) = fulfill_perp_order(
             &mut taker,
@@ -611,6 +617,12 @@ pub mod amm_jit {
             books: &external_books,
             executor: &mut executor,
             protocol_authority: Pubkey::default(),
+            // Test fixtures stand in for a taker-signed fill: no filler
+            // obligation, so a withheld book does not end the pass.
+            obligation: crate::math::router::FillerObligation {
+                taker_signed: true,
+                tx_accounts: None,
+            },
         };
 
         let (base_asset_amount, quote_asset_amount) = fulfill_perp_order(
@@ -949,6 +961,12 @@ pub mod amm_jit {
             books: &external_books,
             executor: &mut executor,
             protocol_authority: Pubkey::default(),
+            // Test fixtures stand in for a taker-signed fill: no filler
+            // obligation, so a withheld book does not end the pass.
+            obligation: crate::math::router::FillerObligation {
+                taker_signed: true,
+                tx_accounts: None,
+            },
         };
 
         let result = fulfill_perp_order(
@@ -1188,6 +1206,12 @@ pub mod amm_jit {
             books: &external_books,
             executor: &mut executor,
             protocol_authority: Pubkey::default(),
+            // Test fixtures stand in for a taker-signed fill: no filler
+            // obligation, so a withheld book does not end the pass.
+            obligation: crate::math::router::FillerObligation {
+                taker_signed: true,
+                tx_accounts: None,
+            },
         };
 
         let (base_asset_amount, _) = fulfill_perp_order(

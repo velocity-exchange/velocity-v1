@@ -808,14 +808,12 @@ fn fast_activation_requires_the_flow_authority_attestation() {
 /// loaded, so a live book with no maker accounts would otherwise be
 /// indistinguishable from a dead one.
 ///
-/// What stops it is that the book says what it was holding, and the router
-/// keeps that depth away from anything priced worse. The assembler's own
-/// maker is worse than the book, so it gets nothing: the taker's size stays
-/// unfilled and rests, where the book's price can still reach it. Skipping a
-/// competitor buys the skipper nothing, which is the only property that makes
-/// the attack pointless rather than merely detectable.
+/// What stops it is the filler's obligation. The book reports the depth it was
+/// holding, the taker did not sign this transaction, and the transaction had
+/// room for the two accounts that maker needed. So the fill is refused, and the
+/// assembler gets nothing rather than a smaller share.
 #[test]
-fn a_fill_that_leaves_out_a_book_maker_cannot_hand_its_flow_to_a_worse_price() {
+fn a_fill_that_leaves_out_a_reachable_book_maker_is_refused() {
     let mut fixture = setup();
 
     // The book: 1.0 @ 99, aged well past the grace window by fill time.
@@ -902,6 +900,7 @@ fn a_fill_that_leaves_out_a_book_maker_cannot_hand_its_flow_to_a_worse_price() {
         filler_stats,
         user: taker_user,
         user_stats: taker_stats,
+        instructions_sysvar: Some(instructions_sysvar()),
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -926,29 +925,31 @@ fn a_fill_that_leaves_out_a_book_maker_cannot_hand_its_flow_to_a_worse_price() {
         }
         .data(),
     };
-    send(&mut fixture.svm, &fixture.keeper, ix, &[]).unwrap();
-
-    // The assembler's maker was worse than what the book was holding, so it
-    // got none of it.
-    let dlob_maker: User = read_zero_copy(&fixture.svm, &dlob_maker_user);
-    assert_eq!(
-        dlob_maker.perp_positions[0].base_asset_amount, 0,
-        "skipping the book must not hand its flow to a worse price"
+    let err = send(&mut fixture.svm, &fixture.keeper, ix, &[]).unwrap_err();
+    assert!(
+        format!("{:?}", err.err).contains("6395"),
+        "expected FillerOmittedReachableMaker, got {:?}",
+        err.err
     );
+
+    // Nothing moved, and the book still holds what it was holding.
+    let dlob_maker: User = read_zero_copy(&fixture.svm, &dlob_maker_user);
+    assert_eq!(dlob_maker.perp_positions[0].base_asset_amount, 0);
     let taker: User = read_zero_copy(&fixture.svm, &taker_user);
     assert_eq!(taker.perp_positions[0].base_asset_amount, 0);
-
-    // And the book still holds what it was holding, for a transaction that
-    // brings the accounts to reach it.
     assert_eq!(clob_ask_count(&fixture), 1);
 }
 
-/// Immediate-or-cancel is the exception, and it has to be: that order bought
-/// immediacy, and its leftover cancels instead of resting. Holding depth back
-/// for a price it will never see again would leave the taker with nothing at
-/// all, so a worse fill now is the better answer.
+/// A taker that signs its own transaction chose the account list, so no filler
+/// obligation applies and the fill proceeds.
+///
+/// It then fills in full at the price that is present. Withheld depth takes no
+/// part of the division: the book stops its own walk, which keeps the aged
+/// order's place in the queue, and the taker's size goes to the sources that
+/// can settle. Holding size back for a price this transaction cannot reach
+/// would leave the taker short of a fill it could have had.
 #[test]
-fn an_immediate_or_cancel_taker_fills_at_the_worse_price_rather_than_not_at_all() {
+fn a_taker_that_signs_fills_in_full_at_the_price_present() {
     let mut fixture = setup();
     place_clob_ask(&mut fixture, 99 * PRICE, UNIT);
 
@@ -992,8 +993,148 @@ fn an_immediate_or_cancel_taker_fills_at_the_worse_price_rather_than_not_at_all(
     taker_order.direction = PositionDirection::Long;
     taker_order.base_asset_amount = UNIT;
     taker_order.price = 105 * PRICE;
-    // The one difference from the case above.
-    taker_order.immediate_or_cancel = true;
+    set_user_account(
+        &mut fixture.svm,
+        taker_user,
+        &trading_user(
+            &taker_authority.pubkey(),
+            100 * SPOT_BALANCE_PRECISION_U64,
+            Some(taker_order),
+        ),
+    );
+    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
+
+    // The one difference from the case above: the taker's own authority signs,
+    // and so it is also the filler's authority. A taker that signs chose the
+    // account list, and no filler owes it anything.
+    fixture
+        .svm
+        .airdrop(&taker_authority.pubkey(), 10_000_000_000)
+        .unwrap();
+    let filler_user = Pubkey::new_unique();
+    let filler_stats = Pubkey::new_unique();
+    set_user_account(
+        &mut fixture.svm,
+        filler_user,
+        &trading_user(&taker_authority.pubkey(), 0, None),
+    );
+    set_user_stats_account(&mut fixture.svm, filler_stats, &taker_authority.pubkey());
+
+    fixture.svm.warp_to_slot(30);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        30,
+    );
+
+    let (clob_authority, _) = clob_authority_pda();
+    let mut accounts = velocity::accounts::FillOrder {
+        state: state_pda(),
+        authority: taker_authority.pubkey(),
+        filler: filler_user,
+        filler_stats,
+        user: taker_user,
+        user_stats: taker_stats,
+        instructions_sysvar: Some(instructions_sysvar()),
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    accounts.push(AccountMeta::new(dlob_maker_user, false));
+    accounts.push(AccountMeta::new(dlob_maker_stats, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(clob_authority, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::FillPerpOrder {
+            order_id: Some(1),
+            _maker_order_id: None,
+            signed_route: vec![],
+        }
+        .data(),
+    };
+    send(&mut fixture.svm, &taker_authority, ix, &[]).unwrap();
+
+    let taker: User = read_zero_copy(&fixture.svm, &taker_user);
+    assert_eq!(
+        taker.perp_positions[0].base_asset_amount, UNIT as i64,
+        "a taker that signs fills in full at the price present"
+    );
+}
+
+/// A full transaction still owes the taker every maker it could have carried.
+///
+/// The filler here pads the account list with a user that fills nothing, which
+/// is the way to reach the account cap without carrying the maker the book
+/// wanted. Counting accounts alone would call that transaction full and let it
+/// through, so the fill also asks whether every loaded user did something.
+#[test]
+fn a_padded_account_list_does_not_excuse_the_missing_maker() {
+    let mut fixture = setup();
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT);
+
+    // A DLOB maker the assembler owns, priced worse than the book.
+    let dlob_maker_authority = Keypair::new();
+    let dlob_maker_user = Pubkey::new_unique();
+    let dlob_maker_stats = Pubkey::new_unique();
+    let mut dlob_order = Order::default();
+    dlob_order.order_id = 1;
+    dlob_order.status = OrderStatus::Open;
+    dlob_order.order_type = OrderType::Limit;
+    dlob_order.market_type = MarketType::Perp;
+    dlob_order.market_index = 0;
+    dlob_order.direction = PositionDirection::Short;
+    dlob_order.base_asset_amount = UNIT;
+    dlob_order.price = 101 * PRICE;
+    dlob_order.post_only = true;
+    set_user_account(
+        &mut fixture.svm,
+        dlob_maker_user,
+        &trading_user(
+            &dlob_maker_authority.pubkey(),
+            100 * SPOT_BALANCE_PRECISION_U64,
+            Some(dlob_order),
+        ),
+    );
+    set_user_stats_account(
+        &mut fixture.svm,
+        dlob_maker_stats,
+        &dlob_maker_authority.pubkey(),
+    );
+
+    // The padding: a loaded user with no orders at all.
+    let idle_authority = Keypair::new();
+    let idle_user = Pubkey::new_unique();
+    let idle_stats = Pubkey::new_unique();
+    set_user_account(
+        &mut fixture.svm,
+        idle_user,
+        &trading_user(
+            &idle_authority.pubkey(),
+            100 * SPOT_BALANCE_PRECISION_U64,
+            None,
+        ),
+    );
+    set_user_stats_account(&mut fixture.svm, idle_stats, &idle_authority.pubkey());
+
+    let taker_authority = Keypair::new();
+    let taker_user = Pubkey::new_unique();
+    let taker_stats = Pubkey::new_unique();
+    let mut taker_order = Order::default();
+    taker_order.order_id = 1;
+    taker_order.status = OrderStatus::Open;
+    taker_order.order_type = OrderType::Limit;
+    taker_order.market_type = MarketType::Perp;
+    taker_order.market_index = 0;
+    taker_order.direction = PositionDirection::Long;
+    taker_order.base_asset_amount = UNIT;
+    taker_order.price = 102 * PRICE;
     set_user_account(
         &mut fixture.svm,
         taker_user,
@@ -1030,6 +1171,7 @@ fn an_immediate_or_cancel_taker_fills_at_the_worse_price_rather_than_not_at_all(
         filler_stats,
         user: taker_user,
         user_stats: taker_stats,
+        instructions_sysvar: Some(instructions_sysvar()),
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -1037,6 +1179,8 @@ fn an_immediate_or_cancel_taker_fills_at_the_worse_price_rather_than_not_at_all(
     accounts.push(AccountMeta::new(perp_market_pda(0), false));
     accounts.push(AccountMeta::new(dlob_maker_user, false));
     accounts.push(AccountMeta::new(dlob_maker_stats, false));
+    accounts.push(AccountMeta::new(idle_user, false));
+    accounts.push(AccountMeta::new(idle_stats, false));
     accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_authority, false));
@@ -1052,13 +1196,17 @@ fn an_immediate_or_cancel_taker_fills_at_the_worse_price_rather_than_not_at_all(
         }
         .data(),
     };
-    send(&mut fixture.svm, &fixture.keeper, ix, &[]).unwrap();
-
-    let taker: User = read_zero_copy(&fixture.svm, &taker_user);
-    assert_eq!(
-        taker.perp_positions[0].base_asset_amount, UNIT as i64,
-        "an order that cannot rest takes the price that is here"
+    // This transaction is nowhere near the account cap, so it fails on the
+    // count first. The padding rule is what catches the same list once the cap
+    // is reached, and `math::router` pins that arm directly.
+    let err = send(&mut fixture.svm, &fixture.keeper, ix, &[]).unwrap_err();
+    assert!(
+        format!("{:?}", err.err).contains("6395"),
+        "expected FillerOmittedReachableMaker, got {:?}",
+        err.err
     );
+    let idle: User = read_zero_copy(&fixture.svm, &idle_user);
+    assert_eq!(idle.perp_positions[0].base_asset_amount, 0);
 }
 
 #[test]
@@ -1164,6 +1312,7 @@ fn router_fill_splits_across_clob_dlob_and_vamm_sources() {
         filler_stats,
         user: taker_user,
         user_stats: taker_stats,
+        instructions_sysvar: Some(instructions_sysvar()),
     }
     .to_account_metas(None);
     // Maps: oracle, spot, perp.
@@ -1680,6 +1829,7 @@ fn router_fill_without_the_markets_clob_quoter_fails() {
         filler_stats,
         user: taker_user,
         user_stats: taker_stats,
+        instructions_sysvar: Some(instructions_sysvar()),
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -4957,6 +5107,7 @@ fn fill_long_through_midpoint(
         filler_stats,
         user: taker_user,
         user_stats: taker_stats,
+        instructions_sysvar: Some(instructions_sysvar()),
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -5147,6 +5298,7 @@ fn router_fill_splits_across_clob_midpoint_and_vamm() {
         filler_stats,
         user: taker_user,
         user_stats: taker_stats,
+        instructions_sysvar: Some(instructions_sysvar()),
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -6479,6 +6631,7 @@ fn a_fill_must_carry_every_quoter_the_taker_signed_for() {
             filler_stats,
             user: taker_user,
             user_stats: taker_stats,
+            instructions_sysvar: Some(instructions_sysvar()),
         }
         .to_account_metas(None);
         accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -6752,6 +6905,7 @@ fn fill_v1_migrates_a_restable_remainder_to_the_book() {
         clob_program: clob_id(),
         clob_authority,
         crank_conditions: None,
+        instructions_sysvar: Some(instructions_sysvar()),
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -7958,6 +8112,7 @@ fn fill_v1_rests_a_market_remainder_at_its_auction_bound() {
         clob_program: clob_id(),
         clob_authority,
         crank_conditions: None,
+        instructions_sysvar: Some(instructions_sysvar()),
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));

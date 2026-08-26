@@ -31,3 +31,21 @@ needs it.
 Also: `min_cross_surplus` must be above zero when attaching a CLOB to a market (the admin CLI's
 `--min-cross-surplus` no longer defaults to `0`), and `splitAcrossQuoters` now reports `scaledQuote`
 per allocation.
+
+**Withheld depth no longer holds back taker size.** A book that stops its walk at
+an order whose owner the transaction omits used to reserve taker size equal to
+that depth, and then discard it, so the taker underfilled. The size now goes to
+the sources that can fill it. `splitAcrossQuoters` loses its `reserve`
+parameter, and `RouterReserve` is removed.
+
+What replaces it is an obligation on whoever built the transaction. When a book
+withholds depth and the taker did not sign, `fill_perp_order` and
+`fill_perp_order_v1` require that the transaction was full and that every loaded
+user did something. Three new errors say which rule failed:
+`FillerOmittedReachableMaker` (6395), `FillerPaddedTheUserSet` (6396), and
+`FillerObligationUncountable` (6397).
+
+Both fill instructions gain an optional `instructions_sysvar` account. A fill
+needs it only to be counted, so a taker filling its own order can omit it — but
+a filler that omits it is refused whenever a book withholds. The SDK and
+`velocity-rs` builders always pass it.

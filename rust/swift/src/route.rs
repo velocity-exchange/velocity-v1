@@ -419,7 +419,7 @@ pub async fn route_quote(
             withheld: Default::default(),
         })
         .collect();
-    let allocations = split_across_quoters(direction, query.size, &books, route.step_size, None)
+    let allocations = split_across_quoters(direction, query.size, &books, route.step_size)
         .map_err(|err| RouteError::Simulation(format!("split failed: {err:?}")))?;
 
     let filled_base: u64 = allocations.iter().map(|a| a.base).sum();

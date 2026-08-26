@@ -120,6 +120,12 @@ macro_rules! no_router {
             books: &[],
             executor: &mut no_externals,
             protocol_authority: Pubkey::default(),
+            // Test fixtures stand in for a taker-signed fill: no filler
+            // obligation, so a withheld book does not end the pass.
+            obligation: crate::math::router::FillerObligation {
+                taker_signed: true,
+                tx_accounts: None,
+            },
         };
     };
 }
@@ -10314,6 +10320,12 @@ pub mod builder_fee_margin_gate {
             books: &[],
             executor: &mut no_externals,
             protocol_authority: Pubkey::default(),
+            // Test fixtures stand in for a taker-signed fill: no filler
+            // obligation, so a withheld book does not end the pass.
+            obligation: crate::math::router::FillerObligation {
+                taker_signed: true,
+                tx_accounts: None,
+            },
         };
         let (base_filled, _) = fulfill_perp_order(
             &mut taker,
@@ -10668,6 +10680,12 @@ mod fill_gates_apply_to_a_reducing_fill {
             books: &[],
             executor: &mut no_externals,
             protocol_authority: Pubkey::default(),
+            // Test fixtures stand in for a taker-signed fill: no filler
+            // obligation, so a withheld book does not end the pass.
+            obligation: crate::math::router::FillerObligation {
+                taker_signed: true,
+                tx_accounts: None,
+            },
         };
         fulfill_perp_order(
             &mut taker,

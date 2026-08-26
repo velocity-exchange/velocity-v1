@@ -2508,6 +2508,32 @@ pub fn handle_update_perp_market_clob_quoter(
         &crank_cost_units,
     )?;
 
+    // The book's own floor on a resting order has to sit at or under the
+    // market's. A fill unwinds a culled remainder by releasing its base from
+    // the maker's open-order aggregate, and the size of that release is the
+    // book's word — bounded on the fill path by the market's minimum, which is
+    // only a bound at all while the book cannot cull something larger.
+    {
+        let quoter = ctx.accounts.quoter.load()?;
+        let rules = crate::state::prop_amm::ClobMarket::from_quoter(
+            &quoter,
+            perp_market.market_index,
+            &ctx.accounts.clob_market,
+            &ctx.accounts.clob_program,
+            &ctx.accounts.clob_authority,
+            ctx.bumps.clob_authority,
+        )?
+        .reader()
+        .order_rules()?;
+        validate!(
+            rules.min_order_size <= perp_market.market_stats.min_order_size,
+            ErrorCode::DefaultError,
+            "book minimum order size {} is above the market's {}",
+            rules.min_order_size,
+            perp_market.market_stats.min_order_size
+        )?;
+    }
+
     // The book's own conditions first: velocity registers which resolver
     // answers each one and what it pays, and the book keeps their wakes
     // current. What comes back — where its condition block sits, and which of

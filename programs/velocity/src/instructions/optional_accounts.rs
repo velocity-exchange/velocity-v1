@@ -532,6 +532,37 @@ pub fn tx_compute_budget(instructions_sysvar: &AccountInfo) -> VelocityResult<(u
     Ok((price, limit))
 }
 
+/// How many instructions in this transaction will claim the same
+/// whole-transaction reimbursement as the one running now.
+///
+/// [`tx_compute_budget`] reports a figure the transaction paid *once*: the
+/// priority fee covers the transaction, not each instruction in it. A crank that
+/// reimburses against it therefore has to divide by the number of peers that
+/// will do the same, or a transaction batching N of them collects N times one
+/// fee. Counted by discriminator so an unrelated velocity instruction sharing
+/// the transaction does not dilute the share.
+///
+/// Never zero: the instruction asking is itself one of the claimants, and a
+/// sysvar that cannot be read at all answers one rather than dividing by zero.
+pub fn tx_reimbursement_claimants(
+    instructions_sysvar: &AccountInfo,
+    discriminator: &[u8],
+) -> VelocityResult<u32> {
+    use solana_program::sysvar::instructions::load_instruction_at_checked;
+    let mut claimants = 0u32;
+    let mut index = 0usize;
+    while let Ok(instruction) = load_instruction_at_checked(index, instructions_sysvar) {
+        index += 1;
+        if instruction.program_id == crate::ID
+            && instruction.data.len() >= discriminator.len()
+            && &instruction.data[..discriminator.len()] == discriminator
+        {
+            claimants = claimants.saturating_add(1);
+        }
+    }
+    Ok(claimants.max(1))
+}
+
 pub fn tx_co_signed_by(instructions_sysvar: &AccountInfo, signer: &Pubkey) -> VelocityResult<bool> {
     use solana_program::sysvar::instructions::load_instruction_at_checked;
     let mut index = 0usize;

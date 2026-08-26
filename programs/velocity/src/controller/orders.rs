@@ -4462,6 +4462,20 @@ fn fulfill_perp_order_router_pass(
                     router.executor.quoter_key(i),
                     maker_key
                 )?;
+                // A cull is a remainder the book refused to let rest, so it is
+                // below the book's own minimum — and the attach requires that
+                // minimum to be at or under the market's. The release below
+                // saturates, so an oversized figure here would collapse the
+                // maker's whole reservation for this market and free the margin
+                // backing orders that are still resting.
+                validate!(
+                    cancelled.base_asset_amount < market.market_stats.min_order_size,
+                    ErrorCode::QuoterFillOffQuote,
+                    "quoter {} culled {} base, at or above the market minimum {}",
+                    router.executor.quoter_key(i),
+                    cancelled.base_asset_amount,
+                    market.market_stats.min_order_size
+                )?;
                 let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
                 let maker_position_index = get_position_index(&maker.perp_positions, market_index)?;
                 decrease_open_bids_and_asks(
@@ -5013,6 +5027,20 @@ pub fn cross_match(
                     "quoter {} may not cancel for user {}",
                     executor.quoter_key(book_index),
                     maker_key
+                )?;
+                // A cull is a remainder the book refused to let rest, so it is
+                // below the book's own minimum — and the attach requires that
+                // minimum to be at or under the market's. The release below
+                // saturates, so an oversized figure here would collapse the
+                // maker's whole reservation for this market and free the margin
+                // backing orders that are still resting.
+                validate!(
+                    cancelled.base_asset_amount < market.market_stats.min_order_size,
+                    ErrorCode::QuoterFillOffQuote,
+                    "quoter {} culled {} base, at or above the market minimum {}",
+                    executor.quoter_key(book_index),
+                    cancelled.base_asset_amount,
+                    market.market_stats.min_order_size
                 )?;
                 let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
                 let maker_position_index = get_position_index(&maker.perp_positions, market_index)?;

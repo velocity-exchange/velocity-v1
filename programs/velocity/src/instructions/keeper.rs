@@ -1631,8 +1631,16 @@ fn liquidation_reimbursement<'info>(
     let sol_price = oracle_data.price;
     drop(sol_market);
 
+    // The priority fee is a whole-transaction cost, so it is shared between the
+    // liquidations batched into that transaction. Reimbursing each one the full
+    // figure would pay the same fee over again per victim.
+    let claimants = crate::instructions::optional_accounts::tx_reimbursement_claimants(
+        sysvar,
+        crate::instruction::LiquidatePerpWithFill::DISCRIMINATOR,
+    )?;
     let priority_lamports =
-        CrankPaymentsV0::crank_priority_lamports(price_per_unit, requested_units)?;
+        CrankPaymentsV0::crank_priority_lamports(price_per_unit, requested_units)?
+            .safe_div(u64::from(claimants))?;
     CrankPaymentsV0::liquidation_reimbursement(
         filled_quote,
         sol_price,

@@ -2077,6 +2077,42 @@ fn fulfill_perp_order(
         determine_if_user_order_is_position_decreasing(user, market_index, user_order_index)?;
     let user_is_isolated_position = user.get_perp_position(market_index)?.is_isolated();
 
+    // A risk-increasing taker whose floor cannot be verified would execute
+    // its fulfillment legs and then revert at the buffered-floor gate below:
+    // `validate_clears_buffered_floor` fails closed on any invalid oracle in
+    // the taker's portfolio, related to this market or not, and by then the
+    // legs have executed. A floored maker with the same defect is pruned in
+    // `get_maker_orders_info`; the taker had no counterpart, so its visible
+    // order made every fill attempt revert deterministically for the length
+    // of the outage. Withhold the whole fill instead (the match and AMM
+    // legs both end at that gate) and leave the order resting until its
+    // oracles recover. Runs after the caller's expired/reduce-only cleanup,
+    // which is unaffected. Reducing orders are exempt at the gate and stay
+    // fillable; `user_order_position_decreasing` decides both. A liquidation
+    // fill skips the gate, so it must skip this precheck too.
+    if user.equity_floor > 0 && !fill_mode.is_liquidation() && !user_order_position_decreasing {
+        let taker_floor_unverifiable = match calculate_net_equity_for_floor(
+            user,
+            perp_market_map,
+            spot_market_map,
+            oracle_map,
+        )? {
+            Some(net_equity) => !net_equity.all_oracles_valid,
+            None => false,
+        };
+
+        if taker_floor_unverifiable {
+            msg!(
+                "taker {} equity floor unverifiable (invalid oracle in portfolio), withholding fill",
+                user_key
+            );
+            if let Some(filler) = filler.as_deref_mut() {
+                filler.update_last_active_slot(slot);
+            }
+            return Ok((0, 0));
+        }
+    }
+
     // A builder fee is an additive debit on the taker (the fill debits
     // `user_fee + builder_fee`) that the builder later claims into its own
     // account. The taker approves the builder, so the taker can approve

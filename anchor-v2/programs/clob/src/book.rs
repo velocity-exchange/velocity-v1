@@ -266,20 +266,35 @@ impl BookHeader for ClobMarketV0 {
     /// node keeps its expiry, which is the coupling these hints exist to
     /// remove.
     fn recompute_wake_hints(&mut self, expiry: bool, activation: Option<u64>) -> Result<()> {
-        let capacity = self.len() as u32;
         let (mut min_ts, mut min_slot) = (i64::MAX, u64::MAX);
-        for index in 0..capacity {
-            let node = self.read_node(index)?;
-            if !node.is_bit_flag_set(OrderBitFlag::Open) {
-                continue;
-            }
-            if node.max_ts != 0 && node.max_ts < min_ts {
-                min_ts = node.max_ts;
-            }
-            if activation.is_some_and(|slot| node.activation_slot > slot)
-                && node.activation_slot < min_slot
-            {
-                min_slot = node.activation_slot;
+        // The two side lists rather than the arena: they hold exactly the live
+        // orders, so the walk is `bid_count + ask_count` hops instead of the
+        // arena's capacity, and a mostly-empty book costs almost nothing.
+        //
+        // That gap is the whole cost of this function on the paths that reach
+        // it repeatedly. `cancel_all` removes up to `CANCEL_ALL_ORDERS_CEILING`
+        // orders and a deep `execute` up to `EXECUTE_FILLS_CEILING`, each
+        // removal repairing the hint if it held the minimum — and makers quote
+        // whole ladders under one `max_ts`, so "held the minimum" is the common
+        // case rather than the rare one. Walking a full arena per removal put
+        // both instructions over the compute budget on a large market, which
+        // takes a maker's own bulk unwind out of reach.
+        for side in [Side::Bid, Side::Ask] {
+            let mut cursor = self.best(side);
+            let mut hops = 0usize;
+            while cursor != NIL {
+                let node = self.read_node(cursor)?;
+                hops += 1;
+                require!(hops <= self.capacity(), ClobError::BookInvariantViolated);
+                if node.max_ts != 0 && node.max_ts < min_ts {
+                    min_ts = node.max_ts;
+                }
+                if activation.is_some_and(|slot| node.activation_slot > slot)
+                    && node.activation_slot < min_slot
+                {
+                    min_slot = node.activation_slot;
+                }
+                cursor = node.next;
             }
         }
         if expiry {
@@ -711,6 +726,11 @@ impl ClobBook for ClobMarketV0 {
         // Running across both sides, so the cap bounds the call rather than
         // each side of it.
         let mut total_removed = 0u32;
+        // One repair for the whole call. Each removal would otherwise walk the
+        // live orders to re-derive the minimum, and a maker's ladder shares one
+        // `max_ts` often enough that every removal in it holds the minimum —
+        // which made a full sweep quadratic and put it over the compute budget.
+        let mut owes_expiry_repair = false;
         for side in sides.sides().iter().copied() {
             if !outcome.exhaustive {
                 break;
@@ -732,7 +752,8 @@ impl ClobBook for ClobMarketV0 {
                 orders_removed += 1;
                 total_removed += 1;
                 removed_ids(node.client_order_id)?;
-                remove_order(book, index)?;
+                owes_expiry_repair |= holds_expiry_hint(book, node);
+                unlink_order(book, index)?;
                 Ok(Walk::Continue)
             })?;
 
@@ -754,6 +775,9 @@ impl ClobBook for ClobMarketV0 {
                     outcome.ask_orders = orders_removed;
                 }
             }
+        }
+        if owes_expiry_repair {
+            self.recompute_wake_hints(true, None)?;
         }
         self.validate_book()?;
         Ok(outcome)
@@ -857,6 +881,11 @@ impl ClobBook for ClobMarketV0 {
         // in `write_level`.
         let mut written: Option<u64> = None;
         let mut remaining = size;
+        // `execute` reports a truncated order in one of two single-slot
+        // sections, so it stops at the second of either. Mirrored here in the
+        // same place, or the ladder would promise depth the fill declines.
+        let min_order_size = self.min_order_size;
+        let (mut culled, mut partialed) = (false, false);
         let mut gate = TakerOriginGate::new(side, slot, now);
         // Spent by this walk exactly as `execute` spends it, so the ladder
         // stands only on orders the fill can settle.
@@ -920,6 +949,18 @@ impl ClobBook for ClobMarketV0 {
                 // Out of room: this owner's remaining orders cannot settle,
                 // and the depth behind them still can.
                 return Ok(Walk::Continue);
+            }
+            if take < node.base_asset_amount {
+                let remainder = node.base_asset_amount - take;
+                let culls = remainder < min_order_size;
+                if if culls { culled } else { partialed } {
+                    return Ok(Walk::Stop);
+                }
+                if culls {
+                    culled = true;
+                } else {
+                    partialed = true;
+                }
             }
             if let Some(index) = owner.filter(|index| *index < USER_SET_CAPACITY) {
                 let (byte, bit) = (index / 8, 1u8 << (index % 8));
@@ -1098,6 +1139,10 @@ impl ClobBook for ClobMarketV0 {
         let mut paid = 0u128;
         let mut gate = TakerOriginGate::new(side, slot, now);
         let mut budget = UserBudget::new(caps, side, reference_price);
+        // One expiry repair for the whole sweep, for the reason `cancel_all`
+        // batches its own: the repair walks the live orders, and a sweep can
+        // free as many orders as `max_execute_fills` allows.
+        let mut owes_expiry_repair = false;
 
         walk_side(self, side, |book, index, node| {
             if remaining == 0 || fills.len() == max_fills {
@@ -1118,6 +1163,27 @@ impl ClobBook for ClobMarketV0 {
             let take = budget.allow(owner, remaining.min(node.base_asset_amount), node.price);
             if take == 0 {
                 return Ok(Walk::Continue);
+            }
+            // A truncated order leaves either a partial or a culled remainder,
+            // and the response carries one slot for each. Taker exhaustion
+            // produces at most one because it ends the walk on the same pass,
+            // but a per-owner budget truncates whichever order it reaches, and
+            // a sweep crossing two capped makers would need a second slot.
+            //
+            // So the walk ends where the response runs out of room. Ending
+            // short is a smaller fill, which the caller reads off the response;
+            // the alternative was `BookInvariantViolated` taking the whole
+            // transaction down on a request the caps make ordinary.
+            if take < node.base_asset_amount {
+                let remainder = node.base_asset_amount - take;
+                let slot_taken = if remainder < min_order_size {
+                    cancelled.is_some()
+                } else {
+                    partial.is_some()
+                };
+                if slot_taken {
+                    return Ok(Walk::Stop);
+                }
             }
             // The records already written are the accumulator, so a repeat
             // maker is a scan of them rather than a table this frame has no
@@ -1196,7 +1262,8 @@ impl ClobBook for ClobMarketV0 {
                     change_index,
                     client_order_id: node.client_order_id,
                 });
-                remove_order(book, index)?;
+                owes_expiry_repair |= holds_expiry_hint(book, node);
+                unlink_order(book, index)?;
                 removals += 1;
             } else {
                 let remainder = node.base_asset_amount - take;
@@ -1215,7 +1282,8 @@ impl ClobBook for ClobMarketV0 {
                         user: node.user_ref(),
                         _pad: [0; 2],
                     });
-                    remove_order(book, index)?;
+                    owes_expiry_repair |= holds_expiry_hint(book, node);
+                    unlink_order(book, index)?;
                     removals += 1;
                 } else {
                     // The order stays on the book smaller than the walk found
@@ -1262,6 +1330,11 @@ impl ClobBook for ClobMarketV0 {
             self.node_count(side) == expected_count,
             ClobError::BookInvariantViolated
         );
+        // The sweep's one expiry repair, owed only if something it freed was
+        // holding the hint.
+        if owes_expiry_repair {
+            self.recompute_wake_hints(true, None)?;
+        }
         // A fill is a removal path too: it consumes orders whole and culls a
         // sub-minimum remainder, either of which can retire the activation the
         // hint was pointing at. It is the one such path that knows the slot
@@ -1845,7 +1918,28 @@ fn insert_order(
 /// execute removes up to `max_execute_fills` nodes in one call: its free-head
 /// check lands on this node (removal makes it the head), so "the slot really
 /// was freed" is covered there.
+/// Unlink one node from its side and return it to the free list, and repair the
+/// expiry hint if that order was holding it.
+///
+/// The bulk paths use [`unlink_order`] and repair once at the end instead: the
+/// repair walks the live orders, and doing that per removal is quadratic in a
+/// call that can free a hundred of them.
 fn remove_order(book: &mut ClobMarketV0, index: u32) -> Result<()> {
+    let node = unlink_order(book, index)?;
+    // The order that just left may have been the one holding the expiry hint.
+    // Only then is a walk owed — an ordinary removal costs one comparison.
+    book.repair_expiry_hint_for(&node)?;
+    Ok(())
+}
+
+/// Whether `node` is holding the expiry hint, so a caller batching removals
+/// knows whether it owes a repair once it is done.
+fn holds_expiry_hint(book: &ClobMarketV0, node: &OrderNodeV0) -> bool {
+    node.max_ts != 0 && node.max_ts <= book.next_expiry_ts
+}
+
+/// [`remove_order`] without the hint repair. Returns the node it freed.
+fn unlink_order(book: &mut ClobMarketV0, index: u32) -> Result<OrderNodeV0> {
     let node = book.read_node(index)?;
     require!(
         node.is_bit_flag_set(OrderBitFlag::Open),
@@ -1875,8 +1969,5 @@ fn remove_order(book: &mut ClobMarketV0, index: u32) -> Result<()> {
         .free_count
         .checked_add(1)
         .ok_or(ClobError::BookInvariantViolated)?;
-    // The order that just left may have been the one holding the expiry hint.
-    // Only then is a walk owed — an ordinary removal costs one comparison.
-    book.repair_expiry_hint_for(&node)?;
-    Ok(())
+    Ok(node)
 }

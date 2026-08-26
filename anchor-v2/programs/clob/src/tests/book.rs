@@ -562,6 +562,66 @@ fn a_user_with_some_room_is_filled_only_that_far() {
     assert_eq!(filled, 9 * UNIT);
 }
 
+/// Two capped makers in one sweep end the walk instead of failing it.
+///
+/// A truncated order leaves a remainder, and the response has one slot to
+/// report it in — so the second truncation has nowhere to go. `execute` used to
+/// assert its way out of that with `BookInvariantViolated`, which took the whole
+/// transaction down; `UserCapsV0` carries eight budgets and the router fills
+/// them, so two capped makers in reach is an ordinary request rather than a
+/// corrupt book. The fill stops short instead, and the quote stops in the same
+/// place so the ladder never promises the second maker's depth.
+#[test]
+fn a_second_capped_maker_ends_the_sweep_rather_than_failing_it() {
+    const UNIT: u64 = BASE_PRECISION;
+    let market = TestMarket::new(8);
+    let mut book = market.book();
+    let (first, second) = (user(1), user(2));
+    place(&mut book, Side::Ask, 100, 5 * UNIT, first);
+    place(&mut book, Side::Ask, 101, 5 * UNIT, second);
+
+    // Against a reference of 102 the first order costs 2 per base and the
+    // second costs 1, so these budgets buy 2 and 3 units of 5 — both truncate.
+    let users = [first, second];
+    let mut caps = UserCapsV0::EMPTY;
+    caps.len = 2;
+    caps.caps[0] = crate::state::UserCapV0 {
+        index: 0,
+        budget: 4,
+    };
+    caps.caps[1] = crate::state::UserCapV0 {
+        index: 1,
+        budget: 3,
+    };
+
+    let pointer = book
+        .quote(
+            Direction::Long,
+            12 * UNIT,
+            &users,
+            &caps,
+            102,
+            None,
+            0,
+            0,
+            0,
+        )
+        .unwrap();
+    assert_eq!(
+        levels(&mut book, pointer),
+        vec![(100, 2 * UNIT)],
+        "the ladder ends where the fill will, not one maker further"
+    );
+
+    let outcome = book
+        .execute(Direction::Long, 12 * UNIT, &users, &caps, 102, None, 0, 0)
+        .unwrap();
+    let filled: u64 = outcome.fills.iter().map(|fill| fill.base_size).sum();
+    assert_eq!(filled, 2 * UNIT);
+    // Both orders are still on the book: the first smaller, the second whole.
+    assert_eq!(book.node_count(Side::Ask), 2);
+}
+
 /// An order priced in its owner's favour draws on nothing, so a budget never
 /// truncates it however small the budget is.
 #[test]

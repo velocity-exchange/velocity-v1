@@ -326,18 +326,44 @@ export function getVelocitySignerPublicKey(programId: PublicKey): PublicKey {
 }
 
 /**
- * Derives the singleton `quoter_signer` PDA — the key velocity signs every CPI into an external
- * quoter program with (a registered PropAMM's `quote_v0`/`execute_v0`, and the CLOB's
- * place/cancel/evict/expire, which is why a book's `place_authority` is set to it). Deliberately a
- * different key from {@link getVelocitySignerPublicKey}: signer privilege is inherited by a callee,
- * so the key handed to an external program is the authority on nothing — not a token vault, not a
- * mint, not any `User`.
+ * Derives the `clob_authority` PDA — every book's `place_authority`, and the key velocity signs its
+ * own CLOB CPIs with (place/cancel/modify/evict/expire, plus a CLOB registry entry's
+ * `quote_v0`/`execute_v0`). This is the account a book is initialized with.
+ *
+ * Deliberately a different key from both {@link getVelocitySignerPublicKey} and
+ * {@link getQuoterSignerPublicKey}. Signer privilege is inherited by a callee, and this key may
+ * place and cancel on any market for any user, so it is never handed to a third-party program.
  * @param programId - Deployed velocity program id.
- * @returns The quoter CPI signer PDA's public key.
+ * @returns The CLOB place authority PDA's public key.
  */
-export function getQuoterSignerPublicKey(programId: PublicKey): PublicKey {
+export function getClobAuthorityPublicKey(programId: PublicKey): PublicKey {
 	return PublicKey.findProgramAddressSync(
-		[Buffer.from(anchor.utils.bytes.utf8.encode('quoter_signer'))],
+		[Buffer.from(anchor.utils.bytes.utf8.encode('clob_authority'))],
+		programId
+	)[0];
+}
+
+/**
+ * Derives one registry entry's `quoter_signer` PDA — the key velocity signs that entry's
+ * `quote_v0`/`execute_v0` CPI with, from seeds `["quoter_signer", entry]`.
+ *
+ * Keyed by the entry rather than global so the signature a quoter receives authenticates velocity at
+ * that quoter and nowhere else: forwarded to a second quoter the same maker controls it proves
+ * nothing, and it is not any book's `place_authority` (see {@link getClobAuthorityPublicKey}). The
+ * key is the authority on nothing — not a token vault, not a mint, not any `User`.
+ * @param programId - Deployed velocity program id.
+ * @param quoterEntry - The `QuoterV0` registry entry this signer belongs to.
+ * @returns The entry's quoter CPI signer PDA's public key.
+ */
+export function getQuoterSignerPublicKey(
+	programId: PublicKey,
+	quoterEntry: PublicKey
+): PublicKey {
+	return PublicKey.findProgramAddressSync(
+		[
+			Buffer.from(anchor.utils.bytes.utf8.encode('quoter_signer')),
+			quoterEntry.toBuffer(),
+		],
 		programId
 	)[0];
 }

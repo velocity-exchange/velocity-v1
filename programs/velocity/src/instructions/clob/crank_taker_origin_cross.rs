@@ -116,7 +116,7 @@ pub struct CrankTakerOriginCross<'info> {
     /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
     /// is set to, and nothing a third-party quoter is ever handed.
     #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
-    pub quoter_signer: UncheckedAccount<'info>,
+    pub clob_authority: UncheckedAccount<'info>,
     /// The market's relay conditions account: the wake-hint host and the
     /// lamport reservoir. Optional so a signed keeper can crank a market whose
     /// conditions were never initialized; required in program-keeper mode.
@@ -345,8 +345,8 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         market_index,
         &ctx.accounts.clob_market,
         &ctx.accounts.clob_program,
-        &ctx.accounts.quoter_signer,
-        ctx.bumps.quoter_signer,
+        &ctx.accounts.clob_authority,
+        ctx.bumps.clob_authority,
     )?;
 
     // ---- Discovery and pricing: everything that can refuse the cross runs
@@ -428,7 +428,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
             // signer, and the program.
             let accounts = [
                 ctx.accounts.clob_market.to_account_info(),
-                ctx.accounts.quoter_signer.to_account_info(),
+                ctx.accounts.clob_authority.to_account_info(),
                 ctx.accounts.clob_program.to_account_info(),
             ];
             // Quote before executing: execute consumes the orders the ladder
@@ -454,8 +454,8 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
                         limit_price: 0,
                     },
                     &ctx.accounts.quoter.key(),
-                    &ctx.accounts.quoter_signer.key(),
-                    ctx.bumps.quoter_signer,
+                    &ctx.accounts.clob_authority.key(),
+                    ctx.bumps.clob_authority,
                     &accounts,
                 )?
                 .levels;
@@ -471,8 +471,8 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
                     taker: Some(taker_ref),
                 },
                 &ctx.accounts.quoter.key(),
-                &ctx.accounts.quoter_signer.key(),
-                ctx.bumps.quoter_signer,
+                &ctx.accounts.clob_authority.key(),
+                ctx.bumps.clob_authority,
                 &accounts,
             )?;
             // The guard ends with this arm: what the cross needs is copied
@@ -740,7 +740,7 @@ pub(super) fn stage_taker_origin_cross(
             quoter: ctx.accounts.quoter.key(),
             clob_market: ctx.accounts.clob_market.key(),
             clob_program: quoter.program_id,
-            quoter_signer: pdas::clob_authority(),
+            clob_authority: pdas::clob_authority(),
             crank_conditions: Some(ctx.accounts.crank_conditions.key()),
         })
         // Both `(User, UserStats)` pairs derive from the nodes' own

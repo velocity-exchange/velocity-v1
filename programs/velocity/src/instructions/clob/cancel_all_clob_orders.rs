@@ -64,7 +64,7 @@ pub struct CancelAllClobOrders<'info> {
     /// third-party quoter is handed: signer privilege is inherited by a
     /// callee, and this one may place and cancel on any book, for any user.
     #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
-    pub quoter_signer: UncheckedAccount<'info>,
+    pub clob_authority: UncheckedAccount<'info>,
     /// Wake-hint host; optional like every other CLOB path. Pulling orders can
     /// only *relax* the expiry and activation hints, so a caller that omits it
     /// leaves the cranks waking earlier than they need to — latency, not
@@ -97,8 +97,8 @@ pub fn handle_cancel_all_clob_orders(
         params.market_index,
         &ctx.accounts.clob_market,
         &ctx.accounts.clob_program,
-        &ctx.accounts.quoter_signer,
-        ctx.bumps.quoter_signer,
+        &ctx.accounts.clob_authority,
+        ctx.bumps.clob_authority,
     )?;
 
     // CPI the sweep with no user borrow held; ownership travels in the args in

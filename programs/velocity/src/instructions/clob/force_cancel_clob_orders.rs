@@ -130,7 +130,7 @@ pub struct ForceCancelClobOrders<'info> {
     /// third-party quoter is handed: signer privilege is inherited by a
     /// callee, and this one may place and cancel on any book, for any user.
     #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
-    pub quoter_signer: UncheckedAccount<'info>,
+    pub clob_authority: UncheckedAccount<'info>,
     /// Wake-hint host; optional like every other CLOB path.
     #[account(
         mut,
@@ -182,8 +182,8 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
         market_index,
         &ctx.accounts.clob_market,
         &ctx.accounts.clob_program,
-        &ctx.accounts.quoter_signer,
-        ctx.bumps.quoter_signer,
+        &ctx.accounts.clob_authority,
+        ctx.bumps.clob_authority,
     )?;
 
     // ---- Gate: the account must actually be failing, same as the DLOB

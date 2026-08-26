@@ -2520,8 +2520,8 @@ pub fn handle_update_perp_market_clob_quoter(
             perp_market.market_index,
             &ctx.accounts.clob_market,
             &ctx.accounts.clob_program,
-            &ctx.accounts.quoter_signer,
-            ctx.bumps.quoter_signer,
+            &ctx.accounts.clob_authority,
+            ctx.bumps.clob_authority,
         )?
         .set_crank_conditions(crate::instructions::clob_crank_registration(
             &keys, payments,
@@ -4948,7 +4948,7 @@ pub struct AdminUpdatePerpMarketClobQuoter<'info> {
     /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
     /// is set to, and therefore the only key that may register its cranks.
     #[account(seeds = [crate::signer::CLOB_AUTHORITY_SEED], bump)]
-    pub quoter_signer: UncheckedAccount<'info>,
+    pub clob_authority: UncheckedAccount<'info>,
     /// The market's relay conditions + keeper reservoir, stood up (or
     /// re-priced) as part of the attach so a new market needs no separate
     /// crank ceremony.

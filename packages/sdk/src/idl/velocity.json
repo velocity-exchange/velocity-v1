@@ -759,30 +759,31 @@
           "name": "clob_program"
         },
         {
-          "name": "quoter_signer",
+          "name": "clob_authority",
           "docs": [
-            "set to. Deliberately not the vault authority: signer privilege is",
-            "inherited by a callee, so the key velocity hands an external program",
-            "must be the authority on nothing."
+            "is set to. Its own key, distinct from the per-entry signer a",
+            "third-party quoter is handed: signer privilege is inherited by a",
+            "callee, and this one may place and cancel on any book, for any user."
           ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
+                  99,
+                  108,
                   111,
-                  116,
-                  101,
-                  114,
+                  98,
                   95,
-                  115,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
                   105,
-                  103,
-                  110,
-                  101,
-                  114
+                  116,
+                  121
                 ]
               }
             ]
@@ -891,30 +892,31 @@
           "name": "clob_program"
         },
         {
-          "name": "quoter_signer",
+          "name": "clob_authority",
           "docs": [
-            "set to. Deliberately not the vault authority: signer privilege is",
-            "inherited by a callee, so the key velocity hands an external program",
-            "must be the authority on nothing."
+            "is set to. Its own key, distinct from the per-entry signer a",
+            "third-party quoter is handed: signer privilege is inherited by a",
+            "callee, and this one may place and cancel on any book, for any user."
           ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
+                  99,
+                  108,
                   111,
-                  116,
-                  101,
-                  114,
+                  98,
                   95,
-                  115,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
                   105,
-                  103,
-                  110,
-                  101,
-                  114
+                  116,
+                  121
                 ]
               }
             ]
@@ -1431,30 +1433,31 @@
           "name": "clob_program"
         },
         {
-          "name": "quoter_signer",
+          "name": "clob_authority",
           "docs": [
-            "set to. Deliberately not the vault authority: signer privilege is",
-            "inherited by a callee, so the key velocity hands an external program",
-            "must be the authority on nothing."
+            "is set to. Its own key, distinct from the per-entry signer a",
+            "third-party quoter is handed: signer privilege is inherited by a",
+            "callee, and this one may place and cancel on any book, for any user."
           ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
+                  99,
+                  108,
                   111,
-                  116,
-                  101,
-                  114,
+                  98,
                   95,
-                  115,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
                   105,
-                  103,
-                  110,
-                  101,
-                  114
+                  116,
+                  121
                 ]
               }
             ]
@@ -1584,30 +1587,31 @@
           "name": "clob_program"
         },
         {
-          "name": "quoter_signer",
+          "name": "clob_authority",
           "docs": [
-            "set to. Deliberately not the vault authority: signer privilege is",
-            "inherited by a callee, so the key velocity hands an external program",
-            "must be the authority on nothing."
+            "is set to. Its own key, distinct from the per-entry signer a",
+            "third-party quoter is handed: signer privilege is inherited by a",
+            "callee, and this one may place and cancel on any book, for any user."
           ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
+                  99,
+                  108,
                   111,
-                  116,
-                  101,
-                  114,
+                  98,
                   95,
-                  115,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
                   105,
-                  103,
-                  110,
-                  101,
-                  114
+                  116,
+                  121
                 ]
               }
             ]
@@ -1851,28 +1855,29 @@
           "name": "clob_program"
         },
         {
-          "name": "quoter_signer",
+          "name": "clob_authority",
           "docs": [
-            "set to, and the authority on nothing else."
+            "is set to, and nothing a third-party quoter is ever handed."
           ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
+                  99,
+                  108,
                   111,
-                  116,
-                  101,
-                  114,
+                  98,
                   95,
-                  115,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
                   105,
-                  103,
-                  110,
-                  101,
-                  114
+                  116,
+                  121
                 ]
               }
             ]
@@ -3267,28 +3272,29 @@
           "name": "clob_program"
         },
         {
-          "name": "quoter_signer",
+          "name": "clob_authority",
           "docs": [
-            "and the authority on nothing else."
+            "is, and nothing a third-party quoter is ever handed."
           ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
+                  99,
+                  108,
                   111,
-                  116,
-                  101,
-                  114,
+                  98,
                   95,
-                  115,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
                   105,
-                  103,
-                  110,
-                  101,
-                  114
+                  116,
+                  121
                 ]
               }
             ]
@@ -3431,30 +3437,31 @@
           "name": "clob_program"
         },
         {
-          "name": "quoter_signer",
+          "name": "clob_authority",
           "docs": [
-            "set to. Deliberately not the vault authority: signer privilege is",
-            "inherited by a callee, so the key velocity hands an external program",
-            "must be the authority on nothing."
+            "is set to. Its own key, distinct from the per-entry signer a",
+            "third-party quoter is handed: signer privilege is inherited by a",
+            "callee, and this one may place and cancel on any book, for any user."
           ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
+                  99,
+                  108,
                   111,
-                  116,
-                  101,
-                  114,
+                  98,
                   95,
-                  115,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
                   105,
-                  103,
-                  110,
-                  101,
-                  114
+                  116,
+                  121
                 ]
               }
             ]
@@ -7334,30 +7341,31 @@
           "name": "clob_program"
         },
         {
-          "name": "quoter_signer",
+          "name": "clob_authority",
           "docs": [
-            "set to. Deliberately not the vault authority: signer privilege is",
-            "inherited by a callee, so the key velocity hands an external program",
-            "must be the authority on nothing."
+            "is set to. Its own key, distinct from the per-entry signer a",
+            "third-party quoter is handed: signer privilege is inherited by a",
+            "callee, and this one may place and cancel on any book, for any user."
           ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
+                  99,
+                  108,
                   111,
-                  116,
-                  101,
-                  114,
+                  98,
                   95,
-                  115,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
                   105,
-                  103,
-                  110,
-                  101,
-                  114
+                  116,
+                  121
                 ]
               }
             ]
@@ -7742,28 +7750,29 @@
           "name": "clob_program"
         },
         {
-          "name": "quoter_signer",
+          "name": "clob_authority",
           "docs": [
-            "set to, and the authority on nothing else."
+            "is set to, and nothing a third-party quoter is ever handed."
           ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
+                  99,
+                  108,
                   111,
-                  116,
-                  101,
-                  114,
+                  98,
                   95,
-                  115,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
                   105,
-                  103,
-                  110,
-                  101,
-                  114
+                  116,
+                  121
                 ]
               }
             ]
@@ -8011,30 +8020,31 @@
           "name": "clob_program"
         },
         {
-          "name": "quoter_signer",
+          "name": "clob_authority",
           "docs": [
-            "set to. Deliberately not the vault authority: signer privilege is",
-            "inherited by a callee, so the key velocity hands an external program",
-            "must be the authority on nothing."
+            "is set to. Its own key, distinct from the per-entry signer a",
+            "third-party quoter is handed: signer privilege is inherited by a",
+            "callee, and this one may place and cancel on any book, for any user."
           ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
+                  99,
+                  108,
                   111,
-                  116,
-                  101,
-                  114,
+                  98,
                   95,
-                  115,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
                   105,
-                  103,
-                  110,
-                  101,
-                  114
+                  116,
+                  121
                 ]
               }
             ]
@@ -8145,30 +8155,31 @@
           "name": "clob_program"
         },
         {
-          "name": "quoter_signer",
+          "name": "clob_authority",
           "docs": [
-            "set to. Deliberately not the vault authority: signer privilege is",
-            "inherited by a callee, so the key velocity hands an external program",
-            "must be the authority on nothing."
+            "is set to. Its own key, distinct from the per-entry signer a",
+            "third-party quoter is handed: signer privilege is inherited by a",
+            "callee, and this one may place and cancel on any book, for any user."
           ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
+                  99,
+                  108,
                   111,
-                  116,
-                  101,
-                  114,
+                  98,
                   95,
-                  115,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
                   105,
-                  103,
-                  110,
-                  101,
-                  114
+                  116,
+                  121
                 ]
               }
             ]
@@ -12014,30 +12025,31 @@
           "name": "clob_program"
         },
         {
-          "name": "quoter_signer",
+          "name": "clob_authority",
           "docs": [
-            "set to. Deliberately not the vault authority: signer privilege is",
-            "inherited by a callee, so the key velocity hands an external program",
-            "must be the authority on nothing."
+            "is set to. Its own key, distinct from the per-entry signer a",
+            "third-party quoter is handed: signer privilege is inherited by a",
+            "callee, and this one may place and cancel on any book, for any user."
           ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
+                  99,
+                  108,
                   111,
-                  116,
-                  101,
-                  114,
+                  98,
                   95,
-                  115,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
                   105,
-                  103,
-                  110,
-                  101,
-                  114
+                  116,
+                  121
                 ]
               }
             ]
@@ -13891,28 +13903,29 @@
           "name": "clob_program"
         },
         {
-          "name": "quoter_signer",
+          "name": "clob_authority",
           "docs": [
-            "set to, and therefore the only key that may register its cranks."
+            "is set to, and therefore the only key that may register its cranks."
           ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
+                  99,
+                  108,
                   111,
-                  116,
-                  101,
-                  114,
+                  98,
                   95,
-                  115,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
                   105,
-                  103,
-                  110,
-                  101,
-                  114
+                  116,
+                  121
                 ]
               }
             ]
@@ -21398,6 +21411,11 @@
       "code": 6393,
       "name": "CrankReservoirNotLow",
       "msg": "Crank reservoir is above its refill watermark"
+    },
+    {
+      "code": 6394,
+      "name": "InvalidUserConditionsSync",
+      "msg": "User conditions sync does not cover every market the user is exposed in"
     }
   ],
   "types": [
@@ -28584,7 +28602,7 @@
       }
     },
     {
-      "name": "RelayBlock11x32",
+      "name": "RelayBlock11x48",
       "docs": [
         "relay condition block (spec v0), 11 conditions, as one opaque wire region"
       ],
@@ -28600,7 +28618,7 @@
             "type": {
               "array": [
                 "u8",
-                3200
+                3728
               ]
             }
           }
@@ -31610,7 +31628,7 @@
             ],
             "type": {
               "defined": {
-                "name": "RelayBlock11x32",
+                "name": "RelayBlock11x48",
                 "generics": [
                   {
                     "kind": "const",
@@ -31618,7 +31636,7 @@
                   },
                   {
                     "kind": "const",
-                    "value": "32"
+                    "value": "48"
                   }
                 ]
               }

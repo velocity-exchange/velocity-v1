@@ -101,7 +101,7 @@ pub struct CrankClobOrderRemoval<'info> {
     /// third-party quoter is handed: signer privilege is inherited by a
     /// callee, and this one may place and cancel on any book, for any user.
     #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
-    pub quoter_signer: UncheckedAccount<'info>,
+    pub clob_authority: UncheckedAccount<'info>,
     /// The market's relay conditions account: the expiry-hint host and the
     /// lamport reservoir. Optional so signed keepers can crank markets whose
     /// conditions were never initialized; required in program-keeper mode.
@@ -159,8 +159,8 @@ pub fn crank_clob_removal(
         market_index,
         &ctx.accounts.clob_market,
         &ctx.accounts.clob_program,
-        &ctx.accounts.quoter_signer,
-        ctx.bumps.quoter_signer,
+        &ctx.accounts.clob_authority,
+        ctx.bumps.clob_authority,
     )?;
 
     // CPI while no user borrows are held.
@@ -389,7 +389,7 @@ pub fn removal_call<I: anchor_lang::Discriminator>(
             quoter: ctx.accounts.quoter.key(),
             clob_market: ctx.accounts.clob_market.key(),
             clob_program: ctx.accounts.quoter.load()?.program_id,
-            quoter_signer: pdas::clob_authority(),
+            clob_authority: pdas::clob_authority(),
             crank_conditions: Some(ctx.accounts.crank_conditions.key()),
         },
     ))

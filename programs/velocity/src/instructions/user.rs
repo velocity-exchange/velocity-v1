@@ -3239,9 +3239,9 @@ pub struct ClobRemainderRoute<'a, 'info> {
     pub quoter: &'a AccountLoader<'info, crate::state::prop_amm::QuoterV0>,
     pub clob_market: &'a AccountInfo<'info>,
     pub clob_program: &'a AccountInfo<'info>,
-    /// The quoter CPI signer (the book's `place_authority`) and its bump.
-    pub quoter_signer: &'a AccountInfo<'info>,
-    pub quoter_signer_nonce: u8,
+    /// The book's `place_authority` (the CLOB place authority PDA) and its bump.
+    pub clob_authority: &'a AccountInfo<'info>,
+    pub clob_authority_nonce: u8,
     pub crank_conditions:
         Option<&'a AccountLoader<'info, crate::state::clob_crank::ClobCrankConditionsV0>>,
 }
@@ -3537,8 +3537,8 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
                         clob.quoter,
                         clob.clob_market,
                         clob.clob_program,
-                        clob.quoter_signer,
-                        clob.quoter_signer_nonce,
+                        clob.clob_authority,
+                        clob.clob_authority_nonce,
                         &perp_market_map,
                         &spot_market_map,
                         &mut oracle_map,
@@ -3738,8 +3738,8 @@ pub fn place_and_make_perp_order<'c: 'info, 'info>(
                     clob.quoter,
                     clob.clob_market,
                     clob.clob_program,
-                    clob.quoter_signer,
-                    clob.quoter_signer_nonce,
+                    clob.clob_authority,
+                    clob.clob_authority_nonce,
                     &perp_market_map,
                     &spot_market_map,
                     &mut oracle_map,

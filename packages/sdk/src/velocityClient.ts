@@ -191,6 +191,7 @@ import { TokenFaucet } from './tokenFaucet';
 import { EventEmitter } from 'events';
 import StrictEventEmitter from 'strict-event-emitter-types';
 import {
+	getClobAuthorityPublicKey,
 	getQuoterSignerPublicKey,
 	getClobCrankConditionsPublicKey,
 	getVelocitySignerPublicKey,
@@ -800,7 +801,8 @@ export class VelocityClient {
 	/**
 	 * Returns the program's PDA signer (used as the authority for vault CPIs), computing and caching
 	 * it on first call. Synchronous — the signer PDA has no seeds that require an on-chain lookup.
-	 * Not the key external-program CPIs sign as; see {@link getQuoterSignerPublicKey}.
+	 * Not the key external-program CPIs sign as; see {@link getClobAuthorityPublicKey} and
+	 * {@link getQuoterSignerPublicKey}.
 	 * @returns The velocity signer public key.
 	 */
 	public getSignerPublicKey(): PublicKey {
@@ -811,22 +813,34 @@ export class VelocityClient {
 		return this.signerPublicKey;
 	}
 
-	quoterSignerPublicKey?: PublicKey;
+	clobAuthorityPublicKey?: PublicKey;
 	/**
-	 * Returns the PDA velocity signs external-quoter CPIs as — the CLOB's `place_authority` and the
-	 * signer slot a registered quoter authenticates velocity by. A different key from
-	 * {@link getSignerPublicKey}: it is the authority on nothing, so a callee that forwards the
-	 * signature onward gains nothing. Synchronous and cached.
-	 * @returns The quoter CPI signer public key.
+	 * Returns every book's `place_authority` — the PDA velocity signs its own CLOB CPIs as, and what
+	 * a market's book is initialized with. A different key from {@link getSignerPublicKey} and from
+	 * {@link getQuoterSignerPublicKey}: it may place and cancel on any market for any user, so it is
+	 * never handed to a third-party program. Synchronous and cached.
+	 * @returns The CLOB place authority public key.
 	 */
-	public getQuoterSignerPublicKey(): PublicKey {
-		if (this.quoterSignerPublicKey) {
-			return this.quoterSignerPublicKey;
+	public getClobAuthorityPublicKey(): PublicKey {
+		if (this.clobAuthorityPublicKey) {
+			return this.clobAuthorityPublicKey;
 		}
-		this.quoterSignerPublicKey = getQuoterSignerPublicKey(
+		this.clobAuthorityPublicKey = getClobAuthorityPublicKey(
 			this.program.programId
 		);
-		return this.quoterSignerPublicKey;
+		return this.clobAuthorityPublicKey;
+	}
+
+	/**
+	 * Returns the PDA velocity signs one registry entry's `quote_v0`/`execute_v0` CPI as. Derived
+	 * from the entry, so the signature authenticates velocity at that quoter and nowhere else — it is
+	 * not any book's `place_authority`, and forwarding it to another quoter proves nothing there. The
+	 * key is the authority on nothing. Not cached: it varies per entry.
+	 * @param quoterEntry - The `QuoterV0` registry entry.
+	 * @returns That entry's quoter CPI signer public key.
+	 */
+	public getQuoterSignerPublicKey(quoterEntry: PublicKey): PublicKey {
+		return getQuoterSignerPublicKey(this.program.programId, quoterEntry);
 	}
 
 	/**
@@ -8589,7 +8603,7 @@ export class VelocityClient {
 					quoter: clobAccounts.quoter,
 					clobMarket: clobAccounts.clobMarket,
 					clobProgram: clobAccounts.clobProgram,
-					quoterSigner: this.getQuoterSignerPublicKey(),
+					clobAuthority: this.getClobAuthorityPublicKey(),
 					crankConditions: getClobCrankConditionsPublicKey(
 						this.program.programId,
 						marketIndex
@@ -9265,7 +9279,7 @@ export class VelocityClient {
 			quoter: PublicKey;
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
-			quoterSigner: PublicKey;
+			clobAuthority: PublicKey;
 			crankConditions?: PublicKey;
 		},
 		// Additional quoter entries and their registered CPI accounts, for a
@@ -9325,7 +9339,7 @@ export class VelocityClient {
 				{ pubkey: clobAccounts.quoter, isWritable: false, isSigner: false },
 				{ pubkey: clobAccounts.clobMarket, isWritable: true, isSigner: false },
 				{
-					pubkey: clobAccounts.quoterSigner,
+					pubkey: clobAccounts.clobAuthority,
 					isWritable: false,
 					isSigner: false,
 				},
@@ -14132,7 +14146,7 @@ export class VelocityClient {
 		quoter: PublicKey;
 		clobMarket: PublicKey;
 		clobProgram: PublicKey;
-		quoterSigner: PublicKey;
+		clobAuthority: PublicKey;
 		crankConditions: PublicKey;
 	}> {
 		const perpMarket = this.getPerpMarketAccount(marketIndex);
@@ -14150,7 +14164,7 @@ export class VelocityClient {
 			// The book is the account the entry's responses are written into.
 			clobMarket: entry.responseAccount,
 			clobProgram: entry.programId,
-			quoterSigner: this.getQuoterSignerPublicKey(),
+			clobAuthority: this.getClobAuthorityPublicKey(),
 			crankConditions: getClobCrankConditionsPublicKey(
 				this.program.programId,
 				marketIndex
@@ -14244,7 +14258,7 @@ export class VelocityClient {
 				quoter: clob.quoter,
 				clobMarket: clob.clobMarket,
 				clobProgram: clob.clobProgram,
-				quoterSigner: clob.quoterSigner,
+				clobAuthority: clob.clobAuthority,
 			},
 		});
 	}
@@ -14297,7 +14311,7 @@ export class VelocityClient {
 				quoter: clob.quoter,
 				clobMarket: clob.clobMarket,
 				clobProgram: clob.clobProgram,
-				quoterSigner: clob.quoterSigner,
+				clobAuthority: clob.clobAuthority,
 				instructionsSysvar: instructionsSysvar ?? null,
 			},
 		});
@@ -14348,7 +14362,7 @@ export class VelocityClient {
 				quoter: clob.quoter,
 				clobMarket: clob.clobMarket,
 				clobProgram: clob.clobProgram,
-				quoterSigner: clob.quoterSigner,
+				clobAuthority: clob.clobAuthority,
 				crankConditions: clob.crankConditions,
 			},
 		});

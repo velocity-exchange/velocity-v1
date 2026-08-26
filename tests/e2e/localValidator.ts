@@ -67,6 +67,7 @@ import {
 	getUserStatsAccountPublicKey,
 	getRelayScratchPublicKey,
 	getUserConditionsPublicKey,
+	getClobAuthorityPublicKey,
 	getQuoterSignerPublicKey,
 	getVelocitySignerPublicKey,
 	OracleSource,
@@ -414,8 +415,11 @@ describe('e2e localnet: programs + publisher + redis', function () {
 	let midInstance: PublicKey;
 	let midEntry: PublicKey;
 	let velocitySigner: PublicKey;
-	/** The signer for quoter CPIs and CLOB calls — never the vault authority. */
-	let quoterSigner: PublicKey;
+	/** Every book's `place_authority` — never the vault authority, and never
+	 * handed to a third-party quoter. */
+	let clobAuthority: PublicKey;
+	/** The midpoint entry's own quoter CPI signer, derived from that entry. */
+	let midQuoterSigner: PublicKey;
 	/** Resolved during bring-up: `routerTail` is synchronous. */
 	let statePdaCache: PublicKey;
 	let protocolUser: PublicKey;
@@ -754,7 +758,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				await createAccount(clobBook.publicKey, space, CLOB_ID),
 				clobIx.initializeMarket(
 					payer.publicKey,
-					quoterSigner,
+					clobAuthority,
 					clobBook.publicKey
 				),
 			],
@@ -772,7 +776,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			quoteLeg: [{ pubkey: clobBook.publicKey, isWritable: true }],
 			executeLeg: [
 				{ pubkey: clobBook.publicKey, isWritable: true },
-				{ pubkey: quoterSigner, isWritable: false },
+				{ pubkey: clobAuthority, isWritable: false },
 			],
 		});
 		clobEntry = registration.quoter;
@@ -810,7 +814,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 						quoter: clobEntry,
 						clobMarket: clobBook.publicKey,
 						clobProgram: CLOB_ID,
-						quoterSigner,
+						clobAuthority,
 						crankConditions: conditions,
 						treasury: getCrankTreasuryPublicKey(VELOCITY_ID),
 						rent: SYSVAR_RENT_PUBKEY,
@@ -825,13 +829,18 @@ describe('e2e localnet: programs + publisher + redis', function () {
 	const midpointBringUp = async () => {
 		const statePda = await admin.getStatePublicKey();
 		midInstance = midpointIx.instance(midMakerKp.publicKey);
+		// The instance's execute authority is the signer velocity CPIs *this
+		// entry* as, so the entry has to be derived before the instance is
+		// created. It is a PDA, so that is just arithmetic.
+		midEntry = quoterKey(MIDPOINT_ID, userOf(midMakerKp.publicKey));
+		midQuoterSigner = getQuoterSignerPublicKey(VELOCITY_ID, midEntry);
 		await send(
 			[
 				midpointIx.initializeQuoter({
 					payer: payer.publicKey,
 					config: midConfigKp.publicKey,
 					maker: midMakerKp.publicKey,
-					executeAuthority: quoterSigner,
+					executeAuthority: midQuoterSigner,
 					hot: midHotKp.publicKey,
 					instance: midInstance,
 				}),
@@ -860,12 +869,11 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			],
 			executeLeg: [
 				{ pubkey: midInstance, isWritable: true },
-				{ pubkey: quoterSigner, isWritable: false },
+				{ pubkey: midQuoterSigner, isWritable: false },
 				{ pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isWritable: false },
 				{ pubkey: statePda, isWritable: false },
 			],
 		});
-		midEntry = registration.quoter;
 		await send(registration.ixs, [midMakerKp]);
 	};
 
@@ -935,7 +943,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					quoter: clobEntry,
 					clobMarket: clobBook.publicKey,
 					clobProgram: CLOB_ID,
-					quoterSigner,
+					clobAuthority,
 					// No fast activation here: absent, encoded as the
 					// program id (anchor's `None`).
 					instructionsSysvar: VELOCITY_ID,
@@ -1157,7 +1165,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		ro(clobEntry),
 		ro(midEntry),
 		rw(clobBook.publicKey),
-		ro(quoterSigner),
+		ro(clobAuthority),
 		ro(CLOB_ID),
 		rw(midInstance),
 		ro(SYSVAR_INSTRUCTIONS_PUBKEY),
@@ -1201,7 +1209,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					quoter: clobEntry,
 					clobMarket: clobBook.publicKey,
 					clobProgram: CLOB_ID,
-					quoterSigner,
+					clobAuthority,
 					crankConditions: conditions,
 				},
 				remainingAccounts: routerTail(makerKps),
@@ -1273,7 +1281,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		await airdrop(relayPayout.publicKey, 1);
 
 		velocitySigner = getVelocitySignerPublicKey(VELOCITY_ID);
-		quoterSigner = getQuoterSignerPublicKey(VELOCITY_ID);
+		clobAuthority = getClobAuthorityPublicKey(VELOCITY_ID);
 		usdcMint = await createUsdcMint();
 
 		// $100 oracle through the pyth stub program (drivable on a real
@@ -1722,7 +1730,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				quoter: clobEntry,
 				clobMarket: clobBook.publicKey,
 				clobProgram: CLOB_ID,
-				quoterSigner,
+				clobAuthority,
 				crankConditions: conditions,
 			}
 		);
@@ -1857,7 +1865,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					quoter: clobEntry,
 					clobMarket: clobBook.publicKey,
 					clobProgram: CLOB_ID,
-					quoterSigner,
+					clobAuthority,
 					crankConditions: conditions,
 				}
 			);

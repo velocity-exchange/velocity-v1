@@ -5,7 +5,9 @@
 //! legs the router fill uses. Registration ixs live in
 //! `instructions::quoter_registry`.
 //!
-//! Every CPI out of this module signs as `quoter_signer` (see
+//! Every CPI out of this module signs as one of velocity's two external-CPI
+//! identities — the book's `clob_authority`, or the entry's own
+//! `quoter_signer` (see
 //! `crate::signer`), never as the vault authority.
 
 use {
@@ -565,7 +567,7 @@ pub const CLOB_ORDER_RULES_V0_DISCRIMINATOR: [u8; 8] = [201, 129, 212, 105, 18, 
 ///
 /// This and [`ClobReader`] are the only places in the program that speak the
 /// CLOB's wire — the discriminators above, the borsh arg encoding, the
-/// `invoke_signed` with the fixed `[market (w), quoter_signer (s)]` account
+/// `invoke_signed` with the fixed `[market (w), clob_authority (s)]` account
 /// pair, and the return-data decode (writer-checked, so a program the CLOB
 /// CPI'd into can't spoof the response). Every caller — placement, cancel,
 /// the evict/expire cranks, force-cancel — goes through a method here. The
@@ -597,8 +599,8 @@ pub struct ClobMarket<'a, 'info> {
     /// cancel on any book for *any* user (`place_order_v0` takes the user as an
     /// argument), so a quoter that received it and also held a book in its
     /// account list could rest unreserved orders on that book or wipe it.
-    pub quoter_signer: &'a AccountInfo<'info>,
-    pub quoter_signer_nonce: u8,
+    pub clob_authority: &'a AccountInfo<'info>,
+    pub clob_authority_nonce: u8,
 }
 
 impl<'a, 'info> ClobMarket<'a, 'info> {
@@ -615,15 +617,15 @@ impl<'a, 'info> ClobMarket<'a, 'info> {
         market_index: u16,
         market: &'a AccountInfo<'info>,
         program: &'a AccountInfo<'info>,
-        quoter_signer: &'a AccountInfo<'info>,
-        quoter_signer_nonce: u8,
+        clob_authority: &'a AccountInfo<'info>,
+        clob_authority_nonce: u8,
     ) -> Result<Self> {
         quoter.validate_clob_book(market_index, &market.key())?;
         Ok(Self {
             market,
             program,
-            quoter_signer,
-            quoter_signer_nonce,
+            clob_authority,
+            clob_authority_nonce,
         })
     }
 
@@ -706,16 +708,16 @@ impl<'a, 'info> ClobMarket<'a, 'info> {
                 program_id: self.program.key(),
                 accounts: vec![
                     AccountMeta::new(self.market.key(), false),
-                    AccountMeta::new_readonly(self.quoter_signer.key(), true),
+                    AccountMeta::new_readonly(self.clob_authority.key(), true),
                 ],
                 data,
             },
             &[
                 self.market.clone(),
-                self.quoter_signer.clone(),
+                self.clob_authority.clone(),
                 self.program.clone(),
             ],
-            &[&get_clob_authority_seeds(&self.quoter_signer_nonce)],
+            &[&get_clob_authority_seeds(&self.clob_authority_nonce)],
         )?;
 
         clob_response(&self.program.key(), what)

@@ -55,7 +55,7 @@ pub struct CancelClobOrder<'info> {
     /// third-party quoter is handed: signer privilege is inherited by a
     /// callee, and this one may place and cancel on any book, for any user.
     #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
-    pub quoter_signer: UncheckedAccount<'info>,
+    pub clob_authority: UncheckedAccount<'info>,
 }
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
@@ -76,8 +76,8 @@ pub fn handle_cancel_clob_order(
         params.market_index,
         &ctx.accounts.clob_market,
         &ctx.accounts.clob_program,
-        &ctx.accounts.quoter_signer,
-        ctx.bumps.quoter_signer,
+        &ctx.accounts.clob_authority,
+        ctx.bumps.clob_authority,
     )?;
 
     // CPI cancel; ownership travels in the args in derivable form and the

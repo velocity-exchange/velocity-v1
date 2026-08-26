@@ -40,7 +40,7 @@ export async function buildFillPerpOrderInstruction(args: {
 		quoter: PublicKey;
 		clobMarket: PublicKey;
 		clobProgram: PublicKey;
-		quoterSigner: PublicKey;
+		clobAuthority: PublicKey;
 		crankConditions?: PublicKey;
 	};
 }): Promise<TransactionInstruction> {
@@ -64,7 +64,7 @@ export async function buildFillPerpOrderInstruction(args: {
 					quoter: args.clobAccounts.quoter,
 					clobMarket: args.clobAccounts.clobMarket,
 					clobProgram: args.clobAccounts.clobProgram,
-					quoterSigner: args.clobAccounts.quoterSigner,
+					clobAuthority: args.clobAccounts.clobAuthority,
 					crankConditions: args.clobAccounts.crankConditions ?? omitted,
 				},
 				remainingAccounts: args.remainingAccounts,

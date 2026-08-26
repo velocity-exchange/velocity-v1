@@ -55,7 +55,7 @@ pub struct PlaceClobOrder<'info> {
     /// third-party quoter is handed: signer privilege is inherited by a
     /// callee, and this one may place and cancel on any book, for any user.
     #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
-    pub quoter_signer: UncheckedAccount<'info>,
+    pub clob_authority: UncheckedAccount<'info>,
     /// CHECK: the instructions sysvar, locked by address. Required only for
     /// a faster-than-default activation delay: the handler introspects it
     /// for the flow-authority co-signer (the attestation).
@@ -124,8 +124,8 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
             params.market_index,
             &ctx.accounts.clob_market,
             &ctx.accounts.clob_program,
-            &ctx.accounts.quoter_signer,
-            ctx.bumps.quoter_signer,
+            &ctx.accounts.clob_authority,
+            ctx.bumps.clob_authority,
         )?
     };
     {
@@ -321,8 +321,8 @@ pub fn try_place_remainder_on_clob<'info>(
     quoter_loader: &AccountLoader<'info, QuoterV0>,
     clob_market: &AccountInfo<'info>,
     clob_program: &AccountInfo<'info>,
-    quoter_signer: &AccountInfo<'info>,
-    quoter_signer_nonce: u8,
+    clob_authority: &AccountInfo<'info>,
+    clob_authority_nonce: u8,
     perp_market_map: &crate::state::perp_market_map::PerpMarketMap,
     spot_market_map: &crate::state::spot_market_map::SpotMarketMap,
     oracle_map: &mut crate::state::oracle_map::OracleMap,
@@ -344,8 +344,8 @@ pub fn try_place_remainder_on_clob<'info>(
             market_index,
             clob_market,
             clob_program,
-            quoter_signer,
-            quoter_signer_nonce,
+            clob_authority,
+            clob_authority_nonce,
         )?;
         if !(quoter.is_active && quoter.is_approved) {
             msg!("clob quoter inactive; remainder stays cancelled");

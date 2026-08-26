@@ -110,7 +110,7 @@ pub struct TriggerClobOrder<'info> {
     /// third-party quoter is handed: signer privilege is inherited by a
     /// callee, and this one may place and cancel on any book, for any user.
     #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
-    pub quoter_signer: UncheckedAccount<'info>,
+    pub clob_authority: UncheckedAccount<'info>,
     /// Expiry-hint host, same optional contract as `place_clob_order`.
     #[account(
         mut,
@@ -176,8 +176,8 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
             market_index,
             &ctx.accounts.clob_market,
             &ctx.accounts.clob_program,
-            &ctx.accounts.quoter_signer,
-            ctx.bumps.quoter_signer,
+            &ctx.accounts.clob_authority,
+            ctx.bumps.clob_authority,
         )?
     };
 
@@ -551,7 +551,7 @@ pub fn handle_resolve_trigger_clob_order(ctx: Context<ResolveTriggerClobOrder>) 
                 quoter: meta.quoter,
                 clob_market: meta.clob_market,
                 clob_program: meta.clob_program,
-                quoter_signer: crate::state::pdas::clob_authority(),
+                clob_authority: crate::state::pdas::clob_authority(),
                 crank_conditions: Some(crate::state::pdas::clob_crank_conditions(
                     meta.market_index,
                 )),

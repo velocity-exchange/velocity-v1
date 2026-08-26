@@ -56,7 +56,7 @@ export async function buildPlacePerpOrderInstruction(args: {
  * @param args.authority - signer that must own or be a registered delegate of `user`.
  * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`, followed by maker/referrer `(User, UserStats)` pairs, followed by the taker's `RevenueShareEscrow` account if builder codes are enabled.
  * @param args.clobAccounts - pass the market's CLOB accounts (`quoter` registry entry,
- * writable `clobMarket`, `clobProgram`, `quoterSigner`, and optionally the writable
+ * writable `clobMarket`, `clobProgram`, `clobAuthority`, and optionally the writable
  * `crankConditions` wake-hint account) to have an unfilled limit remainder rest on the
  * CLOB instead of being cancelled. Doing so builds `placeAndTakePerpOrderV1` instead —
  * `placeAndTakePerpOrder`'s account list is frozen for ABI compatibility, so the CLOB
@@ -77,7 +77,7 @@ export async function buildPlaceAndTakePerpOrderInstruction(args: {
 		quoter: PublicKey;
 		clobMarket: PublicKey;
 		clobProgram: PublicKey;
-		quoterSigner: PublicKey;
+		clobAuthority: PublicKey;
 		crankConditions?: PublicKey;
 	};
 }): Promise<TransactionInstruction> {
@@ -98,7 +98,7 @@ export async function buildPlaceAndTakePerpOrderInstruction(args: {
 					quoter: args.clobAccounts.quoter,
 					clobMarket: args.clobAccounts.clobMarket,
 					clobProgram: args.clobAccounts.clobProgram,
-					quoterSigner: args.clobAccounts.quoterSigner,
+					clobAuthority: args.clobAccounts.clobAuthority,
 					crankConditions: args.clobAccounts.crankConditions ?? omitted,
 				},
 				remainingAccounts: args.remainingAccounts,
@@ -155,7 +155,7 @@ export async function buildPlaceAndMakePerpOrderInstruction(args: {
 		quoter: PublicKey;
 		clobMarket: PublicKey;
 		clobProgram: PublicKey;
-		quoterSigner: PublicKey;
+		clobAuthority: PublicKey;
 		crankConditions?: PublicKey;
 	};
 }): Promise<TransactionInstruction> {
@@ -177,7 +177,7 @@ export async function buildPlaceAndMakePerpOrderInstruction(args: {
 					quoter: args.clobAccounts.quoter,
 					clobMarket: args.clobAccounts.clobMarket,
 					clobProgram: args.clobAccounts.clobProgram,
-					quoterSigner: args.clobAccounts.quoterSigner,
+					clobAuthority: args.clobAccounts.clobAuthority,
 					crankConditions: args.clobAccounts.crankConditions ?? omitted,
 				},
 				remainingAccounts: args.remainingAccounts,

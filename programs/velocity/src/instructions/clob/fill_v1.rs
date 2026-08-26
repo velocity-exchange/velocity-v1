@@ -82,7 +82,7 @@ pub struct FillOrderV1<'info> {
     /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
     /// is, and nothing a third-party quoter is ever handed.
     #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
-    pub quoter_signer: UncheckedAccount<'info>,
+    pub clob_authority: UncheckedAccount<'info>,
     /// Wake-hint host for the rested remainder. Optional as on every CLOB
     /// placement path: a market whose conditions were never initialized must
     /// still be fillable, and a missed hint costs crank latency, not liveness.
@@ -146,8 +146,8 @@ pub fn handle_fill_perp_order_v1<'c: 'info, 'info>(
             quoter: &ctx.accounts.quoter,
             clob_market: &ctx.accounts.clob_market,
             clob_program: &ctx.accounts.clob_program,
-            quoter_signer: &ctx.accounts.quoter_signer,
-            quoter_signer_nonce: ctx.bumps.quoter_signer,
+            clob_authority: &ctx.accounts.clob_authority,
+            clob_authority_nonce: ctx.bumps.clob_authority,
             crank_conditions: ctx.accounts.crank_conditions.as_ref(),
         }),
     )

@@ -568,7 +568,7 @@ export function registerQuoter(parent: Command): void {
 							quoter: new PublicKey(quoterArg),
 							clobMarket: new PublicKey(clobMarket),
 							clobProgram: clobProgramId,
-							quoterSigner: client.getQuoterSignerPublicKey(),
+							clobAuthority: client.getClobAuthorityPublicKey(),
 							crankConditions: getClobCrankConditionsPublicKey(
 								client.program.programId,
 								marketIndex

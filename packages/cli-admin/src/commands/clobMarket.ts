@@ -13,7 +13,7 @@ import {
 	getCrankTreasuryPublicKey,
 	getClobCrankConditionsPublicKey,
 	getPerpMarketPublicKeySync,
-	getQuoterSignerPublicKey,
+	getClobAuthorityPublicKey,
 	QuoterCpiLeg,
 	QuoterType,
 } from '@velocity-exchange/sdk';
@@ -313,7 +313,9 @@ export function registerClobMarket(parent: Command): void {
 			try {
 				const clobProgram = new PublicKey(flags.clobProgram);
 				const quoterUser = new PublicKey(flags.quoterUser);
-				const quoterSigner = getQuoterSignerPublicKey(client.program.programId);
+				const clobAuthority = getClobAuthorityPublicKey(
+					client.program.programId
+				);
 				const perpMarket = getPerpMarketPublicKeySync(
 					client.program.programId,
 					marketIndex
@@ -325,9 +327,11 @@ export function registerClobMarket(parent: Command): void {
 				const wallet = provider.wallet.publicKey;
 
 				// 1. The book: a fresh account on the CLOB program, initialized
-				// with velocity's quoter CPI signer as its place_authority. Not the
-				// vault authority: signer privilege is inherited by a callee, so the
-				// key the CLOB receives must be the authority on nothing.
+				// with velocity's CLOB place authority. Deliberately its own key —
+				// not the vault authority, and not the per-entry signer a
+				// third-party quoter is handed. Signer privilege is inherited by a
+				// callee, and this key may place and cancel on any book for any
+				// user, so nothing outside velocity ever receives it.
 				const book = Keypair.generate();
 				const space = clobMarketSpace(Number.parseInt(flags.capacity, 10));
 				const bookRent =
@@ -343,7 +347,7 @@ export function registerClobMarket(parent: Command): void {
 					programId: clobProgram,
 					keys: [
 						{ pubkey: wallet, isSigner: true, isWritable: false },
-						{ pubkey: quoterSigner, isSigner: false, isWritable: false },
+						{ pubkey: clobAuthority, isSigner: false, isWritable: false },
 						{ pubkey: book.publicKey, isSigner: false, isWritable: true },
 					],
 					data: Buffer.concat([
@@ -417,7 +421,7 @@ export function registerClobMarket(parent: Command): void {
 						]),
 						legAccounts(QuoterCpiLeg.EXECUTE, [
 							{ pubkey: book.publicKey, isWritable: true },
-							{ pubkey: quoterSigner, isWritable: false },
+							{ pubkey: clobAuthority, isWritable: false },
 						]),
 						approve
 					)
@@ -438,7 +442,7 @@ export function registerClobMarket(parent: Command): void {
 							quoter: quoterPda,
 							clobMarket: book.publicKey,
 							clobProgram,
-							quoterSigner: client.getQuoterSignerPublicKey(),
+							clobAuthority: client.getClobAuthorityPublicKey(),
 							crankConditions: conditions,
 							treasury: getCrankTreasuryPublicKey(client.program.programId),
 							rent: SYSVAR_RENT_PUBKEY,

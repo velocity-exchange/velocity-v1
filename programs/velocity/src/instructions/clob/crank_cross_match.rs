@@ -328,7 +328,7 @@ pub(super) fn stage_cross(ctx: &Context<ResolveClobCrank>) -> Result<Option<Stag
     };
     // The CLOB's execute leg is signed by the book's place authority, not the
     // vault authority — stage the one the executor will actually sign as.
-    let (quoter_signer, _) = crate::signer::find_clob_authority();
+    let (clob_authority, _) = crate::signer::find_clob_authority();
     let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
 
     // Named accounts through the executor's own client struct (compile-time
@@ -347,7 +347,7 @@ pub(super) fn stage_cross(ctx: &Context<ResolveClobCrank>) -> Result<Option<Stag
     Ok(Some(
         call.account(ctx.accounts.quoter.key(), false)
             .account(ctx.accounts.clob_market.key(), true)
-            .account(quoter_signer, false)
+            .account(clob_authority, false)
             .account(ctx.accounts.quoter.load()?.program_id, false)
             .arg(market_index)?
             .arg(cross.size)?
@@ -384,8 +384,8 @@ fn clob_rows<'info>(
     entry: &Pubkey,
     market_index: u16,
     direction: crate::state::prop_amm::Direction,
-    quoter_signer: &Pubkey,
-    quoter_signer_nonce: u8,
+    clob_authority: &Pubkey,
+    clob_authority_nonce: u8,
     accounts: &[AccountInfo<'info>],
 ) -> Result<Vec<crate::state::prop_amm::L3RowV0>> {
     let located = quoter.quote_l3(
@@ -399,8 +399,8 @@ fn clob_rows<'info>(
             max_rows: CROSS_ROWS_PER_SIDE,
         },
         entry,
-        quoter_signer,
-        quoter_signer_nonce,
+        clob_authority,
+        clob_authority_nonce,
         accounts,
     )?;
     let Some(located) = located else {
@@ -508,7 +508,7 @@ fn find_clob_cross(ctx: &Context<ResolveClobCrank>) -> Result<ClobCross> {
         return Ok(cross_prefix(&[], &[]));
     }
     let market_index = ctx.accounts.crank_conditions.load()?.market_index;
-    let (quoter_signer, quoter_signer_nonce) = crate::signer::find_clob_authority();
+    let (clob_authority, clob_authority_nonce) = crate::signer::find_clob_authority();
     let clob_entry_key = ctx.accounts.quoter.key();
     let accounts = [
         ctx.accounts.clob_market.to_account_info(),
@@ -522,8 +522,8 @@ fn find_clob_cross(ctx: &Context<ResolveClobCrank>) -> Result<ClobCross> {
         &clob_entry_key,
         market_index,
         crate::state::prop_amm::Direction::Long,
-        &quoter_signer,
-        quoter_signer_nonce,
+        &clob_authority,
+        clob_authority_nonce,
         &accounts,
     )?;
     let bids = clob_rows(
@@ -531,8 +531,8 @@ fn find_clob_cross(ctx: &Context<ResolveClobCrank>) -> Result<ClobCross> {
         &clob_entry_key,
         market_index,
         crate::state::prop_amm::Direction::Short,
-        &quoter_signer,
-        quoter_signer_nonce,
+        &clob_authority,
+        clob_authority_nonce,
         &accounts,
     )?;
     Ok(cross_prefix(&bids, &asks))

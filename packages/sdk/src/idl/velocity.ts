@@ -765,30 +765,31 @@ export type Velocity = {
           "name": "clobProgram"
         },
         {
-          "name": "quoterSigner",
+          "name": "clobAuthority",
           "docs": [
-            "set to. Deliberately not the vault authority: signer privilege is",
-            "inherited by a callee, so the key velocity hands an external program",
-            "must be the authority on nothing."
+            "is set to. Its own key, distinct from the per-entry signer a",
+            "third-party quoter is handed: signer privilege is inherited by a",
+            "callee, and this one may place and cancel on any book, for any user."
           ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
+                  99,
+                  108,
                   111,
-                  116,
-                  101,
-                  114,
+                  98,
                   95,
-                  115,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
                   105,
-                  103,
-                  110,
-                  101,
-                  114
+                  116,
+                  121
                 ]
               }
             ]
@@ -897,30 +898,31 @@ export type Velocity = {
           "name": "clobProgram"
         },
         {
-          "name": "quoterSigner",
+          "name": "clobAuthority",
           "docs": [
-            "set to. Deliberately not the vault authority: signer privilege is",
-            "inherited by a callee, so the key velocity hands an external program",
-            "must be the authority on nothing."
+            "is set to. Its own key, distinct from the per-entry signer a",
+            "third-party quoter is handed: signer privilege is inherited by a",
+            "callee, and this one may place and cancel on any book, for any user."
           ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
+                  99,
+                  108,
                   111,
-                  116,
-                  101,
-                  114,
+                  98,
                   95,
-                  115,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
                   105,
-                  103,
-                  110,
-                  101,
-                  114
+                  116,
+                  121
                 ]
               }
             ]
@@ -1437,30 +1439,31 @@ export type Velocity = {
           "name": "clobProgram"
         },
         {
-          "name": "quoterSigner",
+          "name": "clobAuthority",
           "docs": [
-            "set to. Deliberately not the vault authority: signer privilege is",
-            "inherited by a callee, so the key velocity hands an external program",
-            "must be the authority on nothing."
+            "is set to. Its own key, distinct from the per-entry signer a",
+            "third-party quoter is handed: signer privilege is inherited by a",
+            "callee, and this one may place and cancel on any book, for any user."
           ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
+                  99,
+                  108,
                   111,
-                  116,
-                  101,
-                  114,
+                  98,
                   95,
-                  115,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
                   105,
-                  103,
-                  110,
-                  101,
-                  114
+                  116,
+                  121
                 ]
               }
             ]
@@ -1590,30 +1593,31 @@ export type Velocity = {
           "name": "clobProgram"
         },
         {
-          "name": "quoterSigner",
+          "name": "clobAuthority",
           "docs": [
-            "set to. Deliberately not the vault authority: signer privilege is",
-            "inherited by a callee, so the key velocity hands an external program",
-            "must be the authority on nothing."
+            "is set to. Its own key, distinct from the per-entry signer a",
+            "third-party quoter is handed: signer privilege is inherited by a",
+            "callee, and this one may place and cancel on any book, for any user."
           ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
+                  99,
+                  108,
                   111,
-                  116,
-                  101,
-                  114,
+                  98,
                   95,
-                  115,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
                   105,
-                  103,
-                  110,
-                  101,
-                  114
+                  116,
+                  121
                 ]
               }
             ]
@@ -1857,28 +1861,29 @@ export type Velocity = {
           "name": "clobProgram"
         },
         {
-          "name": "quoterSigner",
+          "name": "clobAuthority",
           "docs": [
-            "set to, and the authority on nothing else."
+            "is set to, and nothing a third-party quoter is ever handed."
           ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
+                  99,
+                  108,
                   111,
-                  116,
-                  101,
-                  114,
+                  98,
                   95,
-                  115,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
                   105,
-                  103,
-                  110,
-                  101,
-                  114
+                  116,
+                  121
                 ]
               }
             ]
@@ -3273,28 +3278,29 @@ export type Velocity = {
           "name": "clobProgram"
         },
         {
-          "name": "quoterSigner",
+          "name": "clobAuthority",
           "docs": [
-            "and the authority on nothing else."
+            "is, and nothing a third-party quoter is ever handed."
           ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
+                  99,
+                  108,
                   111,
-                  116,
-                  101,
-                  114,
+                  98,
                   95,
-                  115,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
                   105,
-                  103,
-                  110,
-                  101,
-                  114
+                  116,
+                  121
                 ]
               }
             ]
@@ -3437,30 +3443,31 @@ export type Velocity = {
           "name": "clobProgram"
         },
         {
-          "name": "quoterSigner",
+          "name": "clobAuthority",
           "docs": [
-            "set to. Deliberately not the vault authority: signer privilege is",
-            "inherited by a callee, so the key velocity hands an external program",
-            "must be the authority on nothing."
+            "is set to. Its own key, distinct from the per-entry signer a",
+            "third-party quoter is handed: signer privilege is inherited by a",
+            "callee, and this one may place and cancel on any book, for any user."
           ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
+                  99,
+                  108,
                   111,
-                  116,
-                  101,
-                  114,
+                  98,
                   95,
-                  115,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
                   105,
-                  103,
-                  110,
-                  101,
-                  114
+                  116,
+                  121
                 ]
               }
             ]
@@ -7340,30 +7347,31 @@ export type Velocity = {
           "name": "clobProgram"
         },
         {
-          "name": "quoterSigner",
+          "name": "clobAuthority",
           "docs": [
-            "set to. Deliberately not the vault authority: signer privilege is",
-            "inherited by a callee, so the key velocity hands an external program",
-            "must be the authority on nothing."
+            "is set to. Its own key, distinct from the per-entry signer a",
+            "third-party quoter is handed: signer privilege is inherited by a",
+            "callee, and this one may place and cancel on any book, for any user."
           ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
+                  99,
+                  108,
                   111,
-                  116,
-                  101,
-                  114,
+                  98,
                   95,
-                  115,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
                   105,
-                  103,
-                  110,
-                  101,
-                  114
+                  116,
+                  121
                 ]
               }
             ]
@@ -7748,28 +7756,29 @@ export type Velocity = {
           "name": "clobProgram"
         },
         {
-          "name": "quoterSigner",
+          "name": "clobAuthority",
           "docs": [
-            "set to, and the authority on nothing else."
+            "is set to, and nothing a third-party quoter is ever handed."
           ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
+                  99,
+                  108,
                   111,
-                  116,
-                  101,
-                  114,
+                  98,
                   95,
-                  115,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
                   105,
-                  103,
-                  110,
-                  101,
-                  114
+                  116,
+                  121
                 ]
               }
             ]
@@ -8017,30 +8026,31 @@ export type Velocity = {
           "name": "clobProgram"
         },
         {
-          "name": "quoterSigner",
+          "name": "clobAuthority",
           "docs": [
-            "set to. Deliberately not the vault authority: signer privilege is",
-            "inherited by a callee, so the key velocity hands an external program",
-            "must be the authority on nothing."
+            "is set to. Its own key, distinct from the per-entry signer a",
+            "third-party quoter is handed: signer privilege is inherited by a",
+            "callee, and this one may place and cancel on any book, for any user."
           ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
+                  99,
+                  108,
                   111,
-                  116,
-                  101,
-                  114,
+                  98,
                   95,
-                  115,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
                   105,
-                  103,
-                  110,
-                  101,
-                  114
+                  116,
+                  121
                 ]
               }
             ]
@@ -8151,30 +8161,31 @@ export type Velocity = {
           "name": "clobProgram"
         },
         {
-          "name": "quoterSigner",
+          "name": "clobAuthority",
           "docs": [
-            "set to. Deliberately not the vault authority: signer privilege is",
-            "inherited by a callee, so the key velocity hands an external program",
-            "must be the authority on nothing."
+            "is set to. Its own key, distinct from the per-entry signer a",
+            "third-party quoter is handed: signer privilege is inherited by a",
+            "callee, and this one may place and cancel on any book, for any user."
           ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
+                  99,
+                  108,
                   111,
-                  116,
-                  101,
-                  114,
+                  98,
                   95,
-                  115,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
                   105,
-                  103,
-                  110,
-                  101,
-                  114
+                  116,
+                  121
                 ]
               }
             ]
@@ -12020,30 +12031,31 @@ export type Velocity = {
           "name": "clobProgram"
         },
         {
-          "name": "quoterSigner",
+          "name": "clobAuthority",
           "docs": [
-            "set to. Deliberately not the vault authority: signer privilege is",
-            "inherited by a callee, so the key velocity hands an external program",
-            "must be the authority on nothing."
+            "is set to. Its own key, distinct from the per-entry signer a",
+            "third-party quoter is handed: signer privilege is inherited by a",
+            "callee, and this one may place and cancel on any book, for any user."
           ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
+                  99,
+                  108,
                   111,
-                  116,
-                  101,
-                  114,
+                  98,
                   95,
-                  115,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
                   105,
-                  103,
-                  110,
-                  101,
-                  114
+                  116,
+                  121
                 ]
               }
             ]
@@ -13897,28 +13909,29 @@ export type Velocity = {
           "name": "clobProgram"
         },
         {
-          "name": "quoterSigner",
+          "name": "clobAuthority",
           "docs": [
-            "set to, and therefore the only key that may register its cranks."
+            "is set to, and therefore the only key that may register its cranks."
           ],
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  113,
-                  117,
+                  99,
+                  108,
                   111,
-                  116,
-                  101,
-                  114,
+                  98,
                   95,
-                  115,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
                   105,
-                  103,
-                  110,
-                  101,
-                  114
+                  116,
+                  121
                 ]
               }
             ]
@@ -21404,6 +21417,11 @@ export type Velocity = {
       "code": 6393,
       "name": "crankReservoirNotLow",
       "msg": "Crank reservoir is above its refill watermark"
+    },
+    {
+      "code": 6394,
+      "name": "invalidUserConditionsSync",
+      "msg": "User conditions sync does not cover every market the user is exposed in"
     }
   ],
   "types": [
@@ -28590,7 +28608,7 @@ export type Velocity = {
       }
     },
     {
-      "name": "relayBlock11x32",
+      "name": "relayBlock11x48",
       "docs": [
         "relay condition block (spec v0), 11 conditions, as one opaque wire region"
       ],
@@ -28606,7 +28624,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                3200
+                3728
               ]
             }
           }
@@ -31616,7 +31634,7 @@ export type Velocity = {
             ],
             "type": {
               "defined": {
-                "name": "relayBlock11x32",
+                "name": "relayBlock11x48",
                 "generics": [
                   {
                     "kind": "const",
@@ -31624,7 +31642,7 @@ export type Velocity = {
                   },
                   {
                     "kind": "const",
-                    "value": "32"
+                    "value": "48"
                   }
                 ]
               }

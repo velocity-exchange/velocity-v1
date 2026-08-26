@@ -70,11 +70,19 @@ pub fn velocity_signer_pda() -> (Pubkey, u8) {
     Pubkey::find_program_address(&[b"velocity_signer"], &velocity_id())
 }
 
-/// The signer velocity uses for quoter CPIs and its CLOB calls — deliberately
-/// a different PDA from [`velocity_signer_pda`], which is the token authority
-/// on every vault and must never reach an external program.
-pub fn quoter_signer_pda() -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[b"quoter_signer"], &velocity_id())
+/// Every book's `place_authority` — what velocity signs its own CLOB calls as.
+/// Deliberately a different PDA from [`velocity_signer_pda`], which is the token
+/// authority on every vault, and from [`quoter_signer_pda`], which is what a
+/// third-party quoter is handed.
+pub fn clob_authority_pda() -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[b"clob_authority"], &velocity_id())
+}
+
+/// The signer velocity CPIs one registry entry's quoter as. Keyed by the entry,
+/// so a quoter's signature authenticates velocity at that quoter and nowhere
+/// else.
+pub fn quoter_signer_pda(entry: &Pubkey) -> (Pubkey, u8) {
+    Pubkey::find_program_address(&[b"quoter_signer", entry.as_ref()], &velocity_id())
 }
 
 /// Anchor default instruction discriminator: sha256("global:<name>")[..8].

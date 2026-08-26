@@ -108,6 +108,35 @@ mod test {
     }
 
     #[test]
+    fn spread_reserve_delta_uses_exact_composite_spread() {
+        let amm = AMM {
+            quote_asset_reserve: 2_000_000_000,
+            sqrt_k: 2_000_000_000,
+            ..AMM::default()
+        };
+
+        let (_, quote_long_one) =
+            compute_spread_reserves_for_direction(&amm, 1, 0, PositionDirection::Long).unwrap();
+        let (_, quote_short_one) =
+            compute_spread_reserves_for_direction(&amm, 1, 0, PositionDirection::Short).unwrap();
+        assert_eq!(quote_long_one, 2_000_001_000);
+        assert_eq!(quote_short_one, 1_999_999_000);
+
+        let (_, quote_long_odd) =
+            compute_spread_reserves_for_direction(&amm, 3, 0, PositionDirection::Long).unwrap();
+        assert_eq!(quote_long_odd, 2_000_003_000);
+
+        let (_, quote_long_wide) =
+            compute_spread_reserves_for_direction(&amm, 600_000, 0, PositionDirection::Long)
+                .unwrap();
+        let (_, quote_short_wide) =
+            compute_spread_reserves_for_direction(&amm, 600_000, 0, PositionDirection::Short)
+                .unwrap();
+        assert_eq!(quote_long_wide, 2_600_000_000);
+        assert_eq!(quote_short_wide, 1_400_000_000);
+    }
+
+    #[test]
     fn ordered_cap_preserves_priority() {
         // raw = divergence (20, 0) + floor (10, 10) + steering (80, 0)
         //     + padding (50, 50)
@@ -635,8 +664,8 @@ mod test {
         .unwrap();
 
         assert_eq!(bar_s, 2000500125);
-        assert_eq!(bar_l, 1972972973);
-        assert_eq!(qar_l, 2027397260);
+        assert_eq!(bar_l, 1973096824);
+        assert_eq!(qar_l, 2027270000);
         assert_eq!(qar_s, 1999500000);
 
         assert!(qar_l > amm.quote_asset_reserve);
@@ -646,7 +675,7 @@ mod test {
 
         let l_price = calculate_price(qar_l, bar_l, amm.peg_multiplier).unwrap();
         let s_price = calculate_price(qar_s, bar_s, amm.peg_multiplier).unwrap();
-        assert_eq!(l_price, 1027584);
+        assert_eq!(l_price, 1027455);
         assert_eq!(s_price, 999500);
         assert!(l_price > s_price);
 
@@ -675,12 +704,12 @@ mod test {
         assert!(qar_s > amm.quote_asset_reserve);
         assert!(bar_s < amm.base_asset_reserve);
         assert_eq!(bar_s, 1999500124); // up
-        assert_eq!(bar_l, 1971830986); // down
-        assert_eq!(qar_l, 2028571428); // up
+        assert_eq!(bar_l, 1972124026); // down
+        assert_eq!(qar_l, 2028270000); // up
 
         let l_price = calculate_price(qar_l, bar_l, amm.peg_multiplier).unwrap();
         let s_price = calculate_price(qar_s, bar_s, amm.peg_multiplier).unwrap();
-        assert_eq!(l_price, 1028775);
+        assert_eq!(l_price, 1028469);
         assert_eq!(s_price, 1000500);
         assert!(l_price > s_price);
 
@@ -704,14 +733,14 @@ mod test {
         assert!(bar_l < amm.base_asset_reserve);
         assert!(qar_s < amm.quote_asset_reserve);
         assert!(bar_s > amm.base_asset_reserve);
-        assert_eq!(bar_s, 2001501501); // up
-        assert_eq!(bar_l, 1974025974); // up
-        assert_eq!(qar_l, 2026315789); // down
-        assert_eq!(qar_s, 1998499625); // down
+        assert_eq!(bar_s, 2001501125); // up
+        assert_eq!(bar_l, 1974070582); // up
+        assert_eq!(qar_l, 2026270000); // down
+        assert_eq!(qar_s, 1998500000); // down
 
         let l_price = calculate_price(qar_l, bar_l, amm.peg_multiplier).unwrap();
         let s_price = calculate_price(qar_s, bar_s, amm.peg_multiplier).unwrap();
-        assert_eq!(l_price, 1026488);
+        assert_eq!(l_price, 1026442);
         assert_eq!(s_price, 998500);
         assert!(l_price > s_price);
 
@@ -2153,10 +2182,10 @@ mod test {
                     125,
                     0,
                     0,
-                    99988800538,
-                    100011200716,
-                    100006200396,
-                    99993799988
+                    99988801254,
+                    100011200000,
+                    100006250390,
+                    99993750000
                 )
             );
         }
@@ -2178,12 +2207,63 @@ mod test {
                     5000,
                     0,
                     -50000,
-                    97297297298,
-                    102777777777,
+                    97323600973,
+                    102750000000,
                     100250626566,
                     99750000000
                 )
             );
+        }
+
+        #[test]
+        fn extreme_divergence_is_clipped_for_quote_math() {
+            let amm = base_amm();
+            let inputs = SpreadInputs::from_stats(&base_stats());
+            let reserve_price = amm.reserve_price().unwrap();
+
+            for (raw, clipped) in [
+                (
+                    -2 * BID_ASK_SPREAD_PRECISION_I64,
+                    -BID_ASK_SPREAD_PRECISION_I64,
+                ),
+                (
+                    2 * BID_ASK_SPREAD_PRECISION_I64,
+                    BID_ASK_SPREAD_PRECISION_I64,
+                ),
+            ] {
+                assert_eq!(
+                    crate::vlp::amm::math::spread::calculate_spread(
+                        &amm,
+                        &inputs,
+                        reserve_price,
+                        raw,
+                    )
+                    .unwrap(),
+                    crate::vlp::amm::math::spread::calculate_spread(
+                        &amm,
+                        &inputs,
+                        reserve_price,
+                        clipped,
+                    )
+                    .unwrap(),
+                );
+            }
+        }
+
+        #[test]
+        fn extreme_divergence_refresh_preserves_raw_value() {
+            let mut amm = base_amm();
+            let reserve_price = amm.reserve_price().unwrap();
+
+            let out = refresh(
+                &mut amm,
+                &base_stats(),
+                reserve_price.safe_mul(2).unwrap().cast().unwrap(),
+                100,
+            );
+
+            assert_eq!(out.3, -2 * BID_ASK_SPREAD_PRECISION_I64);
+            assert_eq!(out.0 as u64 + out.1 as u64, BID_ASK_SPREAD_PRECISION);
         }
 
         #[test]
@@ -2200,8 +2280,8 @@ mod test {
                     1250,
                     0,
                     0,
-                    99889012208,
-                    100111111111,
+                    99889123073,
+                    100111000000,
                     100062539086,
                     99937500000
                 )
@@ -2233,10 +2313,10 @@ mod test {
                     275,
                     0,
                     0,
-                    99978800085,
-                    100021204410,
-                    100013702383,
-                    99986299494
+                    99978754514,
+                    100021250000,
+                    100013751890,
+                    99986250000
                 )
             );
 
@@ -2253,10 +2333,10 @@ mod test {
                     425,
                     0,
                     0,
-                    99986301370,
-                    100013700506,
-                    100021208907,
-                    99978795590
+                    99986251890,
+                    100013750000,
+                    100021254516,
+                    99978750000
                 )
             );
 
@@ -2273,10 +2353,10 @@ mod test {
                     275,
                     0,
                     0,
-                    99986301370,
-                    100013700506,
-                    100013702383,
-                    99986299494
+                    99986251890,
+                    100013750000,
+                    100013751890,
+                    99986250000
                 )
             );
         }
@@ -2297,8 +2377,8 @@ mod test {
                     2500,
                     0,
                     0,
-                    99861303745,
-                    100138888888,
+                    99861342525,
+                    100138850000,
                     100125156445,
                     99875000000
                 )
@@ -2319,10 +2399,10 @@ mod test {
                     2501,
                     0,
                     0,
-                    99861111111,
-                    100139082058,
-                    100125156445,
-                    99875000000
+                    99861292664,
+                    100138900000,
+                    100125206570,
+                    99874950000
                 )
             );
         }
@@ -2358,10 +2438,10 @@ mod test {
                     175,
                     -450,
                     0,
-                    99988800538,
-                    100011200716,
-                    100031210986,
-                    99968798752
+                    99988801254,
+                    100011200000,
+                    100031259768,
+                    99968750000
                 )
             );
         }
@@ -2383,10 +2463,10 @@ mod test {
                     188,
                     0,
                     0,
-                    99983201747,
-                    100016801075,
-                    100009401146,
-                    99990599737
+                    99983202821,
+                    100016800000,
+                    100009400883,
+                    99990600000
                 )
             );
 
@@ -2402,8 +2482,8 @@ mod test {
                     250,
                     0,
                     0,
-                    99977603584,
-                    100022401433,
+                    99977605016,
+                    100022400000,
                     100012501562,
                     99987500000
                 )
@@ -2487,10 +2567,10 @@ mod test {
                     157,
                     0,
                     0,
-                    99979000420,
-                    100021003990,
-                    100007800920,
-                    99992199688
+                    99979004409,
+                    100021000000,
+                    100007850616,
+                    99992150000
                 )
             );
 
@@ -2508,10 +2588,10 @@ mod test {
                     125,
                     0,
                     0,
-                    99993800372,
-                    100006200012,
-                    100006200396,
-                    99993799988
+                    99993750390,
+                    100006250000,
+                    100006250390,
+                    99993750000
                 )
             );
         }
@@ -2530,10 +2610,10 @@ mod test {
                     63,
                     0,
                     0,
-                    99994400269,
-                    100005600044,
-                    100003100102,
-                    99996899994
+                    99994400313,
+                    100005600000,
+                    100003150099,
+                    99996850000
                 )
             );
 
@@ -2549,10 +2629,10 @@ mod test {
                     188,
                     0,
                     0,
-                    99983201747,
-                    100016801075,
-                    100009401146,
-                    99990599737
+                    99983202821,
+                    100016800000,
+                    100009400883,
+                    99990600000
                 )
             );
 
@@ -2568,10 +2648,10 @@ mod test {
                     125,
                     0,
                     0,
-                    99993800372,
-                    100006200012,
-                    100006200396,
-                    99993799988
+                    99993750390,
+                    100006250000,
+                    100006250390,
+                    99993750000
                 )
             );
         }

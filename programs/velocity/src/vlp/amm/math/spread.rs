@@ -34,11 +34,12 @@ use {
             constants::{
                 AMM_TIMES_PEG_TO_QUOTE_PRECISION_RATIO_I128, AMM_TO_QUOTE_PRECISION_RATIO_I128,
                 BID_ASK_SPREAD_PRECISION, BID_ASK_SPREAD_PRECISION_I128,
-                DEFAULT_LARGE_BID_ASK_FACTOR, DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT,
-                FUNDING_RATE_BUFFER, FUNDING_RATE_OFFSET_DENOMINATOR,
-                FUNDING_RATE_OFFSET_PERCENTAGE, MAX_BID_ASK_INVENTORY_SKEW_FACTOR, PEG_PRECISION,
-                PERCENTAGE_PRECISION, PERCENTAGE_PRECISION_I128, PRICE_PRECISION,
-                PRICE_PRECISION_I128, PRICE_PRECISION_I64, REF_PRICE_OFFSET_SMOOTHING_MIN_STEP,
+                BID_ASK_SPREAD_PRECISION_I64, DEFAULT_LARGE_BID_ASK_FACTOR,
+                DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT, FUNDING_RATE_BUFFER,
+                FUNDING_RATE_OFFSET_DENOMINATOR, FUNDING_RATE_OFFSET_PERCENTAGE,
+                MAX_BID_ASK_INVENTORY_SKEW_FACTOR, PEG_PRECISION, PERCENTAGE_PRECISION,
+                PERCENTAGE_PRECISION_I128, PRICE_PRECISION, PRICE_PRECISION_I128,
+                PRICE_PRECISION_I64, REF_PRICE_OFFSET_SMOOTHING_MIN_STEP,
                 REF_PRICE_OFFSET_SMOOTHING_PER_PERIOD_BUDGET,
                 REF_PRICE_OFFSET_SMOOTHING_STEP_DIVISOR, SPREAD_CONF_DISCOUNT_DIVISOR,
                 SPREAD_CONF_FULL_WEIGHT_THRESHOLD, SPREAD_REVENUE_RETREAT_MAX_DIVISOR,
@@ -780,6 +781,12 @@ fn calculate_spread(
     reserve_price: u64,
     last_oracle_reserve_price_spread_pct: i64,
 ) -> VelocityResult<(u32, u32)> {
+    // Keep the raw divergence cached on the AMM for monitoring, but bound the
+    // value consumed by quote math so the dynamic ceiling and final spread can
+    // never exceed the protocol's legal 100% total solely due to divergence.
+    let quote_oracle_reserve_price_spread_pct = last_oracle_reserve_price_spread_pct
+        .clamp(-BID_ASK_SPREAD_PRECISION_I64, BID_ASK_SPREAD_PRECISION_I64);
+
     // 1: vol floor: per-side statistical padding v.
     let vol = calculate_long_short_vol_spread(
         inputs.last_oracle_conf_pct,
@@ -800,7 +807,7 @@ fn calculate_spread(
     // w_max for step 8: dynamic ceiling; divergence and vol can raise it
     // above the admin max_spread.
     let max_target_spread = calculate_max_target_spread(
-        last_oracle_reserve_price_spread_pct,
+        quote_oracle_reserve_price_spread_pct,
         reserve_price,
         inputs.last_oracle_conf_pct,
         inputs.mark_std,
@@ -810,7 +817,7 @@ fn calculate_spread(
 
     // 2: oracle retreat: the side facing the divergence floors at
     // |gap| + v.
-    spread.apply_oracle_retreat(last_oracle_reserve_price_spread_pct, vol)?;
+    spread.apply_oracle_retreat(quote_oracle_reserve_price_spread_pct, vol)?;
 
     // 3: x sigma(q): inventory scale, loaded side only.
     let side = inventory_increasing_side(amm.base_asset_amount_with_amm);
@@ -1260,9 +1267,9 @@ fn calculate_spread_revenue_retreat_amount(
 ///   w_max = max(max_spread, |divergence|, min(max(2*conf, std_pct), 100%))
 ///
 /// The admin `max_spread` is a floor of the ceiling, not a maximum: the
-/// oracle divergence and the vol baseline can raise it under stress. The
-/// vol/conf term is clipped at 100%; the divergence term is not (design
-/// issue 2).
+/// oracle divergence and the vol baseline can raise it under stress. Quote
+/// divergence and the vol/conf term are both clipped at 100% before this
+/// function is called.
 pub(crate) fn calculate_max_target_spread(
     last_oracle_reserve_price_spread_pct: i64,
     reserve_price: u64,
@@ -1429,10 +1436,9 @@ pub(crate) fn calculate_reference_price_offset(
 /// spread + reference offset directly instead of reading cached AMM fields
 /// (which were removed in the AMM-decoupling refactor).
 ///
-/// The signed half-spread `s = ±spread + offset` moves the quote reserve by
-/// `quote / floor(BID_ASK_SPREAD_PRECISION / (s / 2))` (the divisor
-/// quantization is the legacy behavior, see design issue 6) and the base
-/// reserve follows from the invariant `k = sqrt_k^2`.
+/// The signed composite spread `s = ±spread + offset` moves the quote reserve
+/// by exactly `quote * s / (2 * BID_ASK_SPREAD_PRECISION)` in reserve units;
+/// the base reserve follows from the invariant `k = sqrt_k^2`.
 pub(crate) fn compute_spread_reserves_for_direction(
     amm: &AMM,
     spread: u32,
@@ -1445,15 +1451,11 @@ pub(crate) fn compute_spread_reserves_for_direction(
         spread.cast::<i32>()?.safe_add(reference_price_offset)?
     };
 
-    let quote_asset_reserve_delta = if spread_with_offset.abs() > 1 {
-        let quote_reserve_divisor =
-            BID_ASK_SPREAD_PRECISION_I128 / (spread_with_offset / 2).cast::<i128>()?;
-        amm.quote_asset_reserve
-            .cast::<i128>()?
-            .safe_div(quote_reserve_divisor)?
-    } else {
-        0_i128
-    };
+    let quote_asset_reserve_delta = amm
+        .quote_asset_reserve
+        .cast::<i128>()?
+        .safe_mul(spread_with_offset.cast::<i128>()?)?
+        .safe_div(BID_ASK_SPREAD_PRECISION_I128.safe_mul(2)?)?;
 
     let quote_asset_reserve = if quote_asset_reserve_delta > 0 {
         amm.quote_asset_reserve

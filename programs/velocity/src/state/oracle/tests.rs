@@ -437,3 +437,36 @@ fn the_pyth_header_values_the_sdk_repeats() {
     assert_eq!(PYTH_PUSH_VERSION, 2);
     assert_eq!(PYTH_PUSH_ACCOUNT_TYPE_PRICE, 3);
 }
+
+/// A pyth mapping account carries the price account's magic and version, and
+/// it is larger than a price account. So magic and length alone do not prove
+/// an account is a price feed: only the account type separates the two, and
+/// the price offsets of a mapping account fall inside its `products` array.
+#[test]
+fn a_mapping_account_passes_the_magic_and_the_length() {
+    let mut mapping = vec![0u8; std::mem::size_of::<pyth_client::Mapping>()];
+    mapping[0..4].copy_from_slice(&PYTH_PUSH_MAGIC.to_le_bytes());
+    mapping[4..8].copy_from_slice(&PYTH_PUSH_VERSION.to_le_bytes());
+    mapping[8..12].copy_from_slice(&1u32.to_le_bytes()); // AccountType::Mapping
+
+    // The two checks a magic-only rule would keep both pass.
+    assert!(mapping.len() >= std::mem::size_of::<pyth_client::Price>());
+    assert_eq!(mapping.as_ptr().align_offset(8), 0);
+
+    let oracle_price_key =
+        Pubkey::from_str("8ihFLu5FimgTQ1Unh4dVyEHUGodJ5gJQCrQf4KUVB9bN").unwrap();
+    let pyth_program = crate::ids::pyth_program::id();
+    let mut lamports = 0;
+    let oracle_account_info = crate::test_utils::create_account_info(
+        &oracle_price_key,
+        true,
+        &mut lamports,
+        &mut mapping,
+        &pyth_program,
+    );
+
+    assert_eq!(
+        get_oracle_price(&OracleSource::Pyth, &oracle_account_info, 0).unwrap_err(),
+        ErrorCode::InvalidOracle
+    );
+}

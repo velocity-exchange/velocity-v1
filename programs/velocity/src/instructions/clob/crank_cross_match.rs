@@ -457,6 +457,8 @@ fn cross_prefix(
     };
     let (bids, asks) = (crossable(bid_rows), crossable(ask_rows));
 
+    // `Σ price·base` per leg, divided into quote units once at the end.
+    let (mut scaled_buy, mut scaled_sell) = (0u128, 0u128);
     let (mut bid_index, mut ask_index) = (0usize, 0usize);
     let mut bid_remaining = bids.first().map(|row| row.size).unwrap_or(0);
     let mut ask_remaining = asks.first().map(|row| row.size).unwrap_or(0);
@@ -483,12 +485,13 @@ fn cross_prefix(
 
         let take = bid_remaining.min(ask_remaining);
         cross.size = cross.size.saturating_add(take);
-        cross.buy_quote = cross
-            .buy_quote
-            .saturating_add(ask_row.price as u128 * take as u128 / base_precision);
-        cross.sell_quote = cross
-            .sell_quote
-            .saturating_add(bid_row.price as u128 * take as u128 / base_precision);
+        // The products accumulate and the division happens once, after the
+        // walk. `Σ(price·take)/precision` is the same number as the sum of the
+        // per-row quotients only up to rounding, and it is the cheaper one:
+        // u128 division is a helper call on this target, and this loop runs
+        // once per row on both sides.
+        scaled_buy = scaled_buy.saturating_add(ask_row.price as u128 * take as u128);
+        scaled_sell = scaled_sell.saturating_add(bid_row.price as u128 * take as u128);
 
         bid_remaining -= take;
         ask_remaining -= take;
@@ -501,6 +504,8 @@ fn cross_prefix(
             ask_remaining = asks.get(ask_index).map(|row| row.size).unwrap_or(0);
         }
     }
+    cross.buy_quote = scaled_buy / base_precision;
+    cross.sell_quote = scaled_sell / base_precision;
     cross
 }
 

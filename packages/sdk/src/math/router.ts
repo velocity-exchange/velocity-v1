@@ -60,8 +60,17 @@ export type RouterReserve = {
 export type RouterAllocation = {
 	/** Base routed to this quoter, a `stepSize` multiple. */
 	base: BN;
-	/** Quote notional at the quoted levels — the bound execution is held to. */
+	/** Quote notional at the quoted levels, rounded taker-conservatively per level. */
 	quote: BN;
+	/**
+	 * `Σ price · base` over the levels this allocation was cut from, before the single division into
+	 * quote units — mirroring `QuoterAllocation::scaled_quote`.
+	 *
+	 * This is the scalar the program holds the execute leg to (`validate_allocated_notional`), so a
+	 * client reproducing the route needs it to predict whether a fill will be accepted. Accrued while
+	 * the split already walks the ladder, so nothing downstream reads the levels again.
+	 */
+	scaledQuote: BN;
 };
 
 /** Default tiers by quoter type, mirroring `QuoterType::default_priority`. */
@@ -183,6 +192,7 @@ export function splitAcrossQuoters(
 	const allocations: RouterAllocation[] = cursors.map(() => ({
 		base: ZERO,
 		quote: ZERO,
+		scaledQuote: ZERO,
 	}));
 	let remaining = takerSize;
 
@@ -199,6 +209,9 @@ export function splitAcrossQuoters(
 		allocations[i].base = allocations[i].base.add(amount);
 		allocations[i].quote = allocations[i].quote.add(
 			quoteNotional(direction, price, amount)
+		);
+		allocations[i].scaledQuote = allocations[i].scaledQuote.add(
+			price.mul(amount)
 		);
 	};
 

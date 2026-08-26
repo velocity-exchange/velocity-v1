@@ -932,7 +932,11 @@ impl ClobBook for ClobMarketV0 {
             if !is_matchable(node, taker, slot, now) || gate.skips(book, node)? {
                 return Ok(Walk::Continue);
             }
-            let owner = users.iter().position(|u| *u == node.user_ref());
+            // Built once per order, not once per member of the set: the
+            // closure below runs for every entry the scan tests, and a
+            // `UserRefV0` is 34 bytes to assemble and 34 to compare.
+            let user = node.user_ref();
+            let owner = users.iter().position(|u| *u == user);
             match settleable(users, owner, node, grace_slots, slot) {
                 Settleable::Yes => {}
                 Settleable::TooFresh => return Ok(Walk::Continue),

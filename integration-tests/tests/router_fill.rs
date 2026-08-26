@@ -2071,7 +2071,7 @@ const ANY_CRANK_COST_UNITS: CrankCostUnitsV0 = CrankCostUnitsV0 {
 /// every crank is worth one signature, whatever it requests, which is what lets
 /// a test assert one number.
 fn init_crank_conditions(fixture: &mut Fixture, keeper_payment_lamports: u64) -> Pubkey {
-    init_crank_conditions_with_floor(fixture, keeper_payment_lamports, 0)
+    init_crank_conditions_with_floor(fixture, keeper_payment_lamports, 1)
 }
 
 /// Put the exchange on a flat fee of `lamports` per signature.
@@ -2091,7 +2091,8 @@ fn set_flat_transaction_fee(fixture: &mut Fixture, lamports: u32) {
 }
 
 /// `min_cross_surplus` is the floor on what the protocol must net from a
-/// cross-match crank; 0 is the bare "strictly profitable" rule.
+/// cross-match crank. The attach requires it above zero, so the scenarios that
+/// only care that a cross is profitable at all pass the smallest floor there is.
 fn init_crank_conditions_with_floor(
     fixture: &mut Fixture,
     keeper_payment_lamports: u64,
@@ -2363,7 +2364,7 @@ fn each_crank_is_priced_from_what_it_requests_and_the_condition_agrees() {
         force_cancel: 60_000,
         refill: 30_000,
     };
-    let conditions_key = attach_clob(&mut fixture, units, 0);
+    let conditions_key = attach_clob(&mut fixture, units, 1);
     let conditions: ClobCrankConditionsV0 = read_zero_copy(&fixture.svm, &conditions_key);
 
     // 2,500 to be included, plus half a lamport per unit requested.
@@ -3444,7 +3445,7 @@ fn a_cross_below_the_markets_surplus_floor_is_declined() {
 
     // Re-price the floor to zero — the same cross now lands, so it was the
     // floor that declined it and not the cross itself.
-    init_crank_conditions_with_floor(&mut fixture, PAYMENT, 0);
+    init_crank_conditions_with_floor(&mut fixture, PAYMENT, 1);
     send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
     let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert_eq!(maker.perp_positions[0].open_orders, 0);

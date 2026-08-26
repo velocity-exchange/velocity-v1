@@ -2508,6 +2508,18 @@ pub fn handle_update_perp_market_clob_quoter(
         &crank_cost_units,
     )?;
 
+    // A cross has to clear by more than nothing. Cranking one pays
+    // `crank_payments.cross` out of the reservoir, so a cross that clears by a
+    // cent is a cross the protocol pays to run — and anyone can manufacture one
+    // by resting two orders a tick apart. The figure has to be stated because
+    // this instruction cannot derive it: converting the lamport payout into
+    // quote needs a SOL price, and the cross crank carries no SOL oracle.
+    validate!(
+        min_cross_surplus > 0,
+        ErrorCode::DefaultError,
+        "min_cross_surplus must cover what the reservoir pays for a cross"
+    )?;
+
     // The book's own floor on a resting order has to sit at or under the
     // market's. A fill unwinds a culled remainder by releasing its base from
     // the maker's open-order aggregate, and the size of that release is the

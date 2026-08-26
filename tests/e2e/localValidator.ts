@@ -815,9 +815,10 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					refill: 30_000,
 				},
 				new BN(1500), // cross fallback poll interval
-				// min_cross_surplus: 0 keeps the bare strictly-profitable rule,
-				// which is what the cross-match scenario below asserts against.
-				new BN(0),
+				// The attach requires a floor above zero, so this is the smallest
+				// one there is — the cross-match scenario below only asserts that
+				// a cross has to be profitable at all.
+				new BN(1),
 				{
 					accounts: {
 						admin: payer.publicKey,

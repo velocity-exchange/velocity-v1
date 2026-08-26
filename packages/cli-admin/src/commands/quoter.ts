@@ -529,8 +529,8 @@ export function registerQuoter(parent: Command): void {
 		)
 			.option(
 				'--min-cross-surplus <quote>',
-				"floor on what the protocol must net from a cross-match crank, in QUOTE_PRECISION (1e6). Cranking a cross pays the reservoir's keeper fee, so a cross that clears by a cent is one worth declining. 0 keeps the bare strictly-profitable rule",
-				'0'
+				"floor on what the protocol must net from a cross-match crank, in QUOTE_PRECISION (1e6). Cranking a cross pays the reservoir's keeper fee, so a cross that clears by a cent is one the protocol pays to run — and one anyone can manufacture. Must be above zero; set it to cover the cross payout with margin",
+				'10000'
 			)
 			.option(
 				'--admin <pubkey>',

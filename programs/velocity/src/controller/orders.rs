@@ -348,8 +348,7 @@ pub fn place_perp_order(
         max_ts,
         posted_slot_tail: get_posted_slot_from_clock_slot(slot),
         bit_flags,
-        route_digest: [0; 4],
-        padding: [0; 1],
+        route_digest: crate::state::order_params::NO_ROUTE_DIGEST,
     };
 
     let valid_oracle_price = Some(oracle_price_data.price);

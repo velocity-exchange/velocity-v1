@@ -1625,10 +1625,15 @@ pub struct Order {
     /// pubkeys, and stored bytes here cost 32 slots each. The filler supplies
     /// the list and this pins which list it may supply — the check that the
     /// fill actually *carried* those entries is then a containment test
-    /// against the transaction. Bytes, not a `u32`, to stay alignment-free in
-    /// the middle of a byte run.
-    pub route_digest: [u8; 4],
-    pub padding: [u8; 1],
+    /// against the transaction. Bytes, not an integer, to stay alignment-free
+    /// in the middle of a byte run.
+    ///
+    /// Five bytes is every byte this struct has left. `Order` is 104 bytes
+    /// with no slack, and it is an array element in `User`, so one more byte
+    /// changes the stride of that array rather than appending to a tail.
+    /// Width is [`crate::state::order_params::ROUTE_DIGEST_LEN`], spelled out
+    /// because the IDL derive resolves no alias.
+    pub route_digest: [u8; 5],
 }
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
@@ -1943,8 +1948,7 @@ impl Default for Order {
             max_ts: 0,
             posted_slot_tail: 0,
             bit_flags: 0,
-            route_digest: [0; 4],
-            padding: [0; 1],
+            route_digest: crate::state::order_params::NO_ROUTE_DIGEST,
         }
     }
 }

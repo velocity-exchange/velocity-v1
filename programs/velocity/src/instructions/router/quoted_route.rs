@@ -19,13 +19,40 @@ use {
     crate::{
         error::ErrorCode,
         math::router::QuoterBook,
-        state::prop_amm::{
-            ClobUserRefV0, Direction, PriceLevel, QuoteArgsV0, QuoterType, QuoterV0,
+        state::{
+            order_params::{RouteDigest, NO_ROUTE_DIGEST},
+            prop_amm::{ClobUserRefV0, Direction, PriceLevel, QuoteArgsV0, QuoterType, QuoterV0},
         },
         validate,
     },
     anchor_lang::{prelude::*, Discriminator},
 };
+
+/// Whether this account is a `QuoterV0` this program owns.
+///
+/// One predicate for both passes: the second pass quotes what the first pass
+/// counted, and two spellings of "is an entry" would let one see a quoter the
+/// other missed.
+fn is_quoter_entry(info: &AccountInfo) -> bool {
+    info.owner == &crate::ID
+        && info
+            .try_borrow_data()
+            .is_ok_and(|data| data.get(..8) == Some(QuoterV0::DISCRIMINATOR))
+}
+
+/// Whether this entry's CPI account lists name another quoter in the
+/// transaction.
+///
+/// Its own three keys are not rivals: an entry legitimately carries its own
+/// entry account, its own program, and its own response account — that last one
+/// is where velocity reads the answer from, and approval requires it.
+fn quoter_reads_a_rival(quoter: &QuoterV0, entry_key: &Pubkey, rivals: &[Pubkey]) -> bool {
+    let own = [*entry_key, quoter.program_id, quoter.response_account];
+    quoter.quote_accounts[..quoter.quote_accounts_count as usize]
+        .iter()
+        .chain(quoter.execute_accounts[..quoter.execute_accounts_count as usize].iter())
+        .any(|meta| !own.contains(&meta.pubkey) && rivals.contains(&meta.pubkey))
+}
 
 /// Quoter entries one transaction may carry.
 ///
@@ -134,12 +161,32 @@ impl<'info> QuotedRoute<'info> {
             carried_len: 0,
         };
 
+        // Every quoter in this transaction, by the three keys that identify one:
+        // its entry, its program, and the account it writes its response into.
+        // Collected before any quoting so the check below can see entries that
+        // come later in the tail.
+        let mut rivals = [Pubkey::default(); MAX_ROUTE_QUOTERS * 3];
+        let mut rival_len = 0usize;
         for info in tail {
-            let is_entry = info.owner == &crate::ID
-                && info
-                    .try_borrow_data()
-                    .is_ok_and(|data| data.get(..8) == Some(QuoterV0::DISCRIMINATOR));
-            if !is_entry {
+            if !is_quoter_entry(info) {
+                continue;
+            }
+            let Ok(loader) = AccountLoader::<QuoterV0>::try_from(info) else {
+                continue;
+            };
+            let Ok(quoter) = loader.load() else {
+                continue;
+            };
+            for key in [loader.key(), quoter.program_id, quoter.response_account] {
+                if rival_len < rivals.len() {
+                    rivals[rival_len] = key;
+                    rival_len += 1;
+                }
+            }
+        }
+
+        for info in tail {
+            if !is_quoter_entry(info) {
                 continue;
             }
             let loader = AccountLoader::<QuoterV0>::try_from(info)?;
@@ -176,6 +223,28 @@ impl<'info> QuotedRoute<'info> {
                     continue;
                 }
                 let entry_key = loader.key();
+                // A quoter never sees another quoter in this transaction.
+                //
+                // Quote order is the order the caller passed the accounts, so
+                // a quoter placed last could otherwise read a rival's response
+                // account — already written, holding the ladder that rival is
+                // about to be held to — and quote one tick better. That is an
+                // unbounded last look. Velocity holds its own vAMM's last look
+                // to a band for the same reason (`LAST_LOOK_BAND`), and a
+                // third party must not get a wider one.
+                //
+                // Skipped, not filtered: a quoter reads its accounts by
+                // position, so removing one shifts every account after it and
+                // the quoter answers about the wrong thing. Skipping costs
+                // only this entry's turn, and it is the entry that asked for
+                // the account.
+                if quoter_reads_a_rival(&quoter, &entry_key, &rivals[..rival_len]) {
+                    msg!(
+                        "quoter {} names another carried quoter in its accounts; skipped",
+                        entry_key
+                    );
+                    continue;
+                }
                 let (cpi_signer, cpi_signer_nonce) = quoter.cpi_signer(
                     &entry_key,
                     (inputs.clob_authority, inputs.clob_authority_nonce),
@@ -213,7 +282,22 @@ impl<'info> QuotedRoute<'info> {
                 response_account,
                 priority,
                 levels: quoted.levels,
-                withheld: quoted.withheld,
+                // Only a book can withhold. A book walks the orders of many
+                // owners and stops at one this transaction cannot settle for.
+                // Every other quoter fills from the single `user` in its own
+                // registry entry, which a fill either carries or does not
+                // quote at all, so there is no owner for it to stop at.
+                //
+                // Dropped here rather than trusted and checked later: the
+                // report arms the filler obligation, so a quoter that set it
+                // would fail fills that carried it and the error would name
+                // the filler. Zeroing it at the source leaves nothing to
+                // report and no consumer to remember the rule.
+                withheld: if quoter_type == QuoterType::Clob {
+                    quoted.withheld
+                } else {
+                    PriceLevel::default()
+                },
             });
         }
         Ok(route)
@@ -239,6 +323,24 @@ impl<'info> QuotedRoute<'info> {
         Ok(())
     }
 
+    /// Carried entries the signed route did not name.
+    ///
+    /// Zero when no route was signed: the taker named nothing, so nothing is
+    /// uninvited. `require_signed_route` has already refused a claimed set
+    /// that does not digest to the order's, so `claimed` here is the taker's
+    /// own list.
+    ///
+    /// The count, not a boolean, so the error can say how many.
+    pub fn unrouted_quoters(&self, claimed: &[Pubkey], digest: RouteDigest) -> usize {
+        if digest == NO_ROUTE_DIGEST {
+            return 0;
+        }
+        self.carried()
+            .iter()
+            .filter(|entry| !claimed.contains(entry))
+            .count()
+    }
+
     /// Hold the transaction to the route the order's signer chose.
     ///
     /// `claimed` is what the filler says the signer picked; `digest` is what
@@ -253,7 +355,7 @@ impl<'info> QuotedRoute<'info> {
     /// Extra entries beyond the route are fine — the router allocates by price
     /// and an execute is bound to its own quote, so an uninvited quoter can
     /// only lose. Omitting one the taker asked for is the actual attack.
-    pub fn require_signed_route(&self, claimed: &[Pubkey], digest: [u8; 4]) -> Result<()> {
+    pub fn require_signed_route(&self, claimed: &[Pubkey], digest: RouteDigest) -> Result<()> {
         validate!(
             crate::state::order_params::route_digest(claimed) == digest,
             ErrorCode::SignedRouteMismatch,

@@ -1016,25 +1016,48 @@ pub const MAX_SIGNED_MSG_ROUTE_LEN: usize = 4;
 /// to zero — which is what makes one equality check cover both "no route was
 /// signed" and "this is the route that was signed".
 ///
-/// Four bytes is short for a hash, and adequate here: a filler cannot choose
-/// preimages freely, only sets of actually-registered approved entries, of
-/// which a market has a handful. Collision across every real candidate set is
-/// negligible, and the consequence of one would be routing to an approved
-/// quoter the taker did not pick — not a theft.
-pub fn route_digest(route: &[Pubkey]) -> [u8; 4] {
+/// A route digest: the bytes an order stores to pin which quoter entries a
+/// fill may claim its signer chose.
+pub type RouteDigest = [u8; ROUTE_DIGEST_LEN];
+
+/// Width of a [`RouteDigest`]. See [`route_digest`] for why it is this wide.
+pub const ROUTE_DIGEST_LEN: usize = 5;
+
+/// The digest of no route. A directly-placed order holds this, so one equality
+/// check covers both "no route was signed" and "this is the signed route".
+pub const NO_ROUTE_DIGEST: RouteDigest = [0; ROUTE_DIGEST_LEN];
+
+/// Five bytes, because a filler can enumerate candidates. It cannot choose
+/// preimages freely: a claimed route must consist of entries the transaction
+/// carries, and a fill carries at most `MAX_ROUTE_QUOTERS` of them. But it
+/// picks which ones to carry, so its candidate set is every subset of that
+/// size over the market's registered entries — public, stable, and worth
+/// precomputing once. That count grows fast in the number of entries, which is
+/// the number this design is trying to increase, so the width has to cover the
+/// market this becomes and not the market it starts as.
+///
+/// A collision routes to an entry the taker did not pick, which is bounded by
+/// the taker's own limit price rather than a theft. It still defeats the only
+/// thing the digest is for.
+///
+/// Five and not eight because `Order` has exactly this much room. Eight bytes
+/// would grow `Order` past an eight-byte boundary, and `Order` is an array
+/// element in `User`, so the stride of that array would change and every
+/// existing account would need its orders rewritten.
+pub fn route_digest(route: &[Pubkey]) -> RouteDigest {
     if route.is_empty() {
-        return [0; 4];
+        return [0; ROUTE_DIGEST_LEN];
     }
     let mut keys: Vec<[u8; 32]> = route.iter().map(|key| key.to_bytes()).collect();
     keys.sort_unstable();
     keys.dedup();
     let flat: Vec<u8> = keys.concat();
     let hash = solana_program::hash::hash(&flat);
-    let mut out = [0u8; 4];
-    out.copy_from_slice(&hash.to_bytes()[..4]);
+    let mut out = [0u8; ROUTE_DIGEST_LEN];
+    out.copy_from_slice(&hash.to_bytes()[..ROUTE_DIGEST_LEN]);
     // Never collide with "no route": a real route must be distinguishable
     // from an absent one.
-    if out == [0; 4] {
+    if out == [0; ROUTE_DIGEST_LEN] {
         out[0] = 1;
     }
     out

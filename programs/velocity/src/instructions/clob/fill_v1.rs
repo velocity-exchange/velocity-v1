@@ -156,6 +156,9 @@ pub fn handle_fill_perp_order_v1<'c: 'info, 'info>(
                     crate::instructions::optional_accounts::tx_distinct_account_count(sysvar)
                 })
                 .transpose()?,
+            // Set after the route is assembled: only then is it known which
+            // entries the transaction carried.
+            unrouted_quoters: 0,
         }
     };
 

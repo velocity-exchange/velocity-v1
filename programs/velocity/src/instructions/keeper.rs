@@ -152,6 +152,9 @@ pub fn handle_fill_perp_order<'c: 'info, 'info>(
                     crate::instructions::optional_accounts::tx_distinct_account_count(sysvar)
                 })
                 .transpose()?,
+            // Set after the route is assembled: only then is it known which
+            // entries the transaction carried.
+            unrouted_quoters: 0,
         }
     };
     let user_key = &ctx.accounts.user.key();
@@ -221,7 +224,7 @@ fn fill_order<'c: 'info, 'info>(
     order_id: u32,
     market_index: u16,
     signed_route: Vec<Pubkey>,
-    obligation: crate::math::router::FillerObligation,
+    mut obligation: crate::math::router::FillerObligation,
     clob: Option<crate::instructions::ClobRemainderRoute<'_, 'info>>,
 ) -> Result<()> {
     let clock = &Clock::get()?;
@@ -343,6 +346,9 @@ fn fill_order<'c: 'info, 'info>(
     let route = crate::instructions::QuotedRoute::assemble(tail, &inputs, &mut cpi_scratch)?;
     route.require_baseline(perp_market_map.get_ref(&market_index)?.clob_quoter)?;
     route.require_signed_route(&signed_route, route_digest)?;
+    // Countable only now: the route is what says which entries arrived, and
+    // the obligation is only consulted if a book later withholds.
+    obligation.unrouted_quoters = route.unrouted_quoters(&signed_route, route_digest);
 
     let mut book_storage =
         [crate::math::router::QuoterBook::default(); crate::instructions::MAX_ROUTE_QUOTERS];

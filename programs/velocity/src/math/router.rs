@@ -73,6 +73,13 @@ pub struct FillerObligation {
     /// Distinct accounts the transaction locks. `None` when the caller passed
     /// no instructions sysvar, so the fill cannot count them.
     pub tx_accounts: Option<usize>,
+    /// Quoter entries the transaction carried that the order's signed route
+    /// did not name.
+    ///
+    /// Zero when no route was signed, because then there is nothing to compare
+    /// against: the taker named no entries, so no carried entry is uninvited.
+    /// A taker that wants this test signs a route.
+    pub unrouted_quoters: usize,
 }
 
 /// Whether a filler that left a book short of an owner met its obligation.
@@ -84,6 +91,10 @@ pub struct FillerObligation {
 ///   and holds no role in the fill. Those accounts crowded out the maker the
 ///   book wanted. A filler can force a withhold this way and then take the
 ///   fill on a worse-priced source of its own.
+/// - The transaction is full, every loaded user did something, but it carries
+///   a quoter entry the signed route never named. Each entry costs locks that
+///   could have carried the maker instead, and the taker's route is the only
+///   statement of which entries it wanted.
 /// - The transaction is full and every loaded user did something. The filler
 ///   could not carry the maker, so the walk stops and the fill is short.
 pub fn withheld_obligation(
@@ -109,6 +120,17 @@ pub fn withheld_obligation(
         ErrorCode::FillerPaddedTheUserSet,
         "{} loaded users filled nothing while a book withheld depth",
         idle_loaded_users
+    )?;
+    // A full transaction whose every user worked can still be the wrong
+    // transaction. A quoter entry costs locks, so carrying one the taker did
+    // not ask for spends the room a maker needed, and the fill then prices
+    // against that entry instead of the book. Extra entries stay free while
+    // nothing is withheld: they can only lose at their own quoted prices.
+    validate!(
+        obligation.unrouted_quoters == 0,
+        ErrorCode::FillerCarriedUnroutedQuoter,
+        "{} carried quoter entries are outside the signed route while a book withheld depth",
+        obligation.unrouted_quoters
     )?;
     Ok(())
 }
@@ -665,6 +687,7 @@ mod tests {
         let signed = FillerObligation {
             taker_signed: true,
             tx_accounts: None,
+            unrouted_quoters: 0,
         };
         assert!(withheld_obligation(&signed, 7).is_ok());
     }
@@ -676,6 +699,7 @@ mod tests {
         let blind = FillerObligation {
             taker_signed: false,
             tx_accounts: None,
+            unrouted_quoters: 0,
         };
         assert_eq!(
             withheld_obligation(&blind, 0),
@@ -691,6 +715,7 @@ mod tests {
             let roomy = FillerObligation {
                 taker_signed: false,
                 tx_accounts: Some(accounts),
+                unrouted_quoters: 0,
             };
             assert_eq!(
                 withheld_obligation(&roomy, 0),
@@ -700,6 +725,33 @@ mod tests {
         }
     }
 
+    /// A quoter entry the taker never named costs the locks the withheld maker
+    /// needed, and the fill then prices against that entry instead of the book.
+    #[test]
+    fn a_quoter_outside_the_signed_route_is_refused() {
+        let full = FillerObligation {
+            taker_signed: false,
+            tx_accounts: Some(TX_ACCOUNT_LOCK_CEILING),
+            unrouted_quoters: 1,
+        };
+        assert_eq!(
+            withheld_obligation(&full, 0),
+            Err(ErrorCode::FillerCarriedUnroutedQuoter)
+        );
+    }
+
+    /// The three tests are independent, so a transaction that passes all of
+    /// them is the only one that fills.
+    #[test]
+    fn a_full_honest_transaction_may_withhold() {
+        let honest = FillerObligation {
+            taker_signed: false,
+            tx_accounts: Some(TX_ACCOUNT_LOCK_CEILING),
+            unrouted_quoters: 0,
+        };
+        assert!(withheld_obligation(&honest, 0).is_ok());
+    }
+
     /// A full transaction still fails when it carries a user that did nothing:
     /// those locks are what the missing maker needed.
     #[test]
@@ -707,6 +759,7 @@ mod tests {
         let full = FillerObligation {
             taker_signed: false,
             tx_accounts: Some(TX_ACCOUNT_LOCK_CEILING),
+            unrouted_quoters: 0,
         };
         assert_eq!(
             withheld_obligation(&full, 1),

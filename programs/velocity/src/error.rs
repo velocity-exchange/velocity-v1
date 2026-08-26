@@ -851,6 +851,8 @@ pub enum ErrorCode {
     FillerObligationUncountable,
     #[msg("A quoter filled less base than the allocation it won from its own quote")]
     QuoterFilledShort,
+    #[msg("A book withheld depth and the transaction carries a quoter outside the signed route")]
+    FillerCarriedUnroutedQuoter,
 }
 
 #[macro_export]

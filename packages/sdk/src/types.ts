@@ -2164,6 +2164,7 @@ export type Order = {
 	/** low 8 bits of the slot the order was posted on-chain (not the order's `slot` field for signed-msg orders) */
 	postedSlotTail: number;
 	/** 4-byte digest of the `QuoterV0` route this order's signer chose, stamped from a signed message's `route`. All-zero when no route was signed (every directly-placed order). A `fillPerpOrder` must claim a route digesting to this and must carry every entry in it. */
+	/** Five bytes; see `getRouteDigest`. */
 	routeDigest: number[];
 };
 

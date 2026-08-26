@@ -21475,6 +21475,16 @@ export type Velocity = {
       "code": 6397,
       "name": "fillerObligationUncountable",
       "msg": "A book withheld depth and the fill cannot count the transaction's accounts"
+    },
+    {
+      "code": 6398,
+      "name": "quoterFilledShort",
+      "msg": "A quoter filled less base than the allocation it won from its own quote"
+    },
+    {
+      "code": 6399,
+      "name": "fillerCarriedUnroutedQuoter",
+      "msg": "A book withheld depth and the transaction carries a quoter outside the signed route"
     }
   ],
   "types": [
@@ -25983,22 +25993,19 @@ export type Velocity = {
               "pubkeys, and stored bytes here cost 32 slots each. The filler supplies",
               "the list and this pins which list it may supply — the check that the",
               "fill actually *carried* those entries is then a containment test",
-              "against the transaction. Bytes, not a `u32`, to stay alignment-free in",
-              "the middle of a byte run."
+              "against the transaction. Bytes, not an integer, to stay alignment-free",
+              "in the middle of a byte run.",
+              "",
+              "Five bytes is every byte this struct has left. `Order` is 104 bytes",
+              "with no slack, and it is an array element in `User`, so one more byte",
+              "changes the stride of that array rather than appending to a tail.",
+              "Width is [`crate::state::order_params::ROUTE_DIGEST_LEN`], spelled out",
+              "because the IDL derive resolves no alias."
             ],
             "type": {
               "array": [
                 "u8",
-                4
-              ]
-            }
-          },
-          {
-            "name": "padding",
-            "type": {
-              "array": [
-                "u8",
-                1
+                5
               ]
             }
           }

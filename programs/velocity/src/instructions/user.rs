@@ -3446,6 +3446,7 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
             obligation: crate::math::router::FillerObligation {
                 taker_signed: true,
                 tx_accounts: None,
+                unrouted_quoters: 0,
             },
         };
         controller::orders::fill_perp_order_with_router(

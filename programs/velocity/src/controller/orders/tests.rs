@@ -125,6 +125,7 @@ macro_rules! no_router {
             obligation: crate::math::router::FillerObligation {
                 taker_signed: true,
                 tx_accounts: None,
+                unrouted_quoters: 0,
             },
         };
     };
@@ -10325,6 +10326,7 @@ pub mod builder_fee_margin_gate {
             obligation: crate::math::router::FillerObligation {
                 taker_signed: true,
                 tx_accounts: None,
+                unrouted_quoters: 0,
             },
         };
         let (base_filled, _) = fulfill_perp_order(
@@ -10685,6 +10687,7 @@ mod fill_gates_apply_to_a_reducing_fill {
             obligation: crate::math::router::FillerObligation {
                 taker_signed: true,
                 tx_accounts: None,
+                unrouted_quoters: 0,
             },
         };
         fulfill_perp_order(

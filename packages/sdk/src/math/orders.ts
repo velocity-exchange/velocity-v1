@@ -502,7 +502,7 @@ export function maxSizeForTargetLiabilityWeightBN(
 }
 
 /**
- * Digest of a signed route: the `QuoterV0` entries a taker chose, reduced to the four bytes an
+ * Digest of a signed route: the `QuoterV0` entries a taker chose, reduced to the five bytes an
  * `Order` can hold. Mirrors the program's `state::order_params::route_digest`.
  *
  * Canonicalised first (sorted, deduped) so the same choice always digests the same way regardless
@@ -512,12 +512,18 @@ export function maxSizeForTargetLiabilityWeightBN(
  *
  * A filler needs this: `fillPerpOrder` claims a route, and the program rejects the fill unless the
  * claim digests to what the order carries.
+ *
+ * Five bytes, not four. A filler picks which entries to carry, so its candidate routes are every
+ * subset of the carry limit over a market's registered entries — a set it can precompute. Four
+ * bytes stop covering that as the number of registered entries grows.
  * @param route - The quoter entries the taker signed; empty or absent for an unrouted order.
- * @returns The four digest bytes, as the `number[]` `Order.routeDigest` holds.
+ * @returns The five digest bytes, as the `number[]` `Order.routeDigest` holds.
  */
+export const ROUTE_DIGEST_LEN = 5;
+
 export function getRouteDigest(route?: PublicKey[] | null): number[] {
 	if (!route || route.length === 0) {
-		return [0, 0, 0, 0];
+		return [0, 0, 0, 0, 0];
 	}
 	const keys = route
 		.map((key) => key.toBytes())
@@ -525,7 +531,9 @@ export function getRouteDigest(route?: PublicKey[] | null): number[] {
 	const deduped = keys.filter(
 		(key, index) => index === 0 || Buffer.compare(keys[index - 1], key) !== 0
 	);
-	const digest = Array.from(sha256(Buffer.concat(deduped)).slice(0, 4));
+	const digest = Array.from(
+		sha256(Buffer.concat(deduped)).slice(0, ROUTE_DIGEST_LEN)
+	);
 	// Never collide with "no route": a real route must be distinguishable from
 	// an absent one.
 	if (digest.every((byte) => byte === 0)) {

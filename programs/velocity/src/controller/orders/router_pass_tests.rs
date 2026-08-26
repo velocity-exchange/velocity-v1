@@ -303,6 +303,7 @@ pub mod amm_jit {
             obligation: crate::math::router::FillerObligation {
                 taker_signed: true,
                 tx_accounts: None,
+                unrouted_quoters: 0,
             },
         };
         let (base_asset_amount, quote_asset_amount) = fulfill_perp_order(
@@ -622,6 +623,7 @@ pub mod amm_jit {
             obligation: crate::math::router::FillerObligation {
                 taker_signed: true,
                 tx_accounts: None,
+                unrouted_quoters: 0,
             },
         };
 
@@ -966,6 +968,7 @@ pub mod amm_jit {
             obligation: crate::math::router::FillerObligation {
                 taker_signed: true,
                 tx_accounts: None,
+                unrouted_quoters: 0,
             },
         };
 
@@ -1211,6 +1214,7 @@ pub mod amm_jit {
             obligation: crate::math::router::FillerObligation {
                 taker_signed: true,
                 tx_accounts: None,
+                unrouted_quoters: 0,
             },
         };
 

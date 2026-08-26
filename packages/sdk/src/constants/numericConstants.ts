@@ -240,10 +240,12 @@ export const ACCOUNT_AGE_DELETION_CUTOFF_SECONDS = 60 * 60 * 24 * 13; // 13 days
 export const IDLE_TIME = millisFromSecs(3_600);
 /**
  * @deprecated Solana slot time is no longer a constant (400 -> 350 -> 300 ->
- * 250 -> 200ms via feature gates). Read the live value from
- * `State.slotDurationMs` (0 means unset = 400) via
- * `slotDurationFromState(state.slotDurationMs)` in `math/time.ts`, and use
- * its `millisToSlots`/`millisFromSlots` helpers for conversions.
+ * 250 -> 200ms via feature gates). Resolve the live value with
+ * `currentSlotDuration(client, currentSlot)` from `math/time.ts` (or
+ * `currentSlotClock` when you need to know whether it came from live data),
+ * and convert with its `millisToSlots`/`millisFromSlots` helpers. Given a
+ * decoded `State` and a slot already in hand, call
+ * `activeSlotDurationFromState(state, slot)` directly.
  */
 export const SLOT_TIME_ESTIMATE_MS = 400;
 
@@ -286,3 +288,17 @@ export const BANKRUPTCY_IF_FLOOR_DISABLED = 4294967295; // u32::MAX
 export const MAX_I64 = new BN('9223372036854775807');
 /** `i64::MIN` (-9223372036854775808). */
 export const MIN_I64 = new BN('-9223372036854775808');
+
+/**
+ * Fee tier VIP 1 volume threshold
+ */
+export const VIP_FEE_TIER_ONE_VOLUME_QUOTE = new BN(5_000_000).mul(
+	QUOTE_PRECISION
+);
+
+/**
+ * Fee tier VIP 2 volume threshold
+ */
+export const VIP_FEE_TIER_TWO_VOLUME_QUOTE = new BN(80_000_000).mul(
+	QUOTE_PRECISION
+);

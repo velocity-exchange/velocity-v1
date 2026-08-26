@@ -43,7 +43,7 @@ velocity-admin spot-market set-withdraw-breaker <market> <pct>
 velocity-admin spot-market set-deposit-cap <market> <threshold> <pctPerDay>
 
 velocity-admin exchange set-status <bitfield>
-velocity-admin exchange set-slot-duration-ms <ms>      # warm admin; stage next gate value (400->350->300->250->200) during its warmup (previews the gate's activation/effective slots); State auto-switches at the boundary
+velocity-admin exchange sync-slot-duration <ms>        # permissionless; sync one IBRL transition (400->350->300->250->200) from its feature gate (previews the gate's activation/effective slots); effective slot derived onchain from the EpochSchedule
 velocity-admin exchange set-solvency-status <bitfield>  # cold admin; gates solvency-repair ixs (1=solvencyRepairPaused)
 
 velocity-admin feature-flags median-trigger-price <true|false>  # bit 2; enabling requires cold admin

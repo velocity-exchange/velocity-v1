@@ -69,11 +69,14 @@ mod tests {
         super::try_lazy_equity_breaker_trip,
         crate::{
             create_anchor_account_info,
-            math::constants::{
-                AMM_RESERVE_PRECISION, BASE_PRECISION_I64, PEG_PRECISION, PRICE_PRECISION,
-                PRICE_PRECISION_I64, QUOTE_PRECISION_I64, QUOTE_PRECISION_U64,
-                SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
-                SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+            math::{
+                constants::{
+                    AMM_RESERVE_PRECISION, BASE_PRECISION_I64, PEG_PRECISION, PRICE_PRECISION,
+                    PRICE_PRECISION_I64, QUOTE_PRECISION_I64, QUOTE_PRECISION_U64,
+                    SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
+                    SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+                },
+                time::SlotClock,
             },
             state::{
                 market_status::MarketStatus,
@@ -114,7 +117,7 @@ mod tests {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             oracle_map_slot,
-            crate::math::time::SlotDuration::BASELINE,
+            SlotClock::baseline(),
             None,
         )
         .unwrap();

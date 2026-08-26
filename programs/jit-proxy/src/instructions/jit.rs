@@ -7,7 +7,11 @@ use {
         cpi::accounts::{PlaceAndMake, PlaceAndMakeSignedMsg},
         error::VelocityResult,
         instructions::optional_accounts::{load_maps, AccountMaps},
-        math::{casting::Cast, safe_math::SafeMath},
+        math::{
+            casting::Cast,
+            safe_math::SafeMath,
+            time::{Millis, SlotClock},
+        },
         program::Velocity,
         state::{
             order_params::{OrderParams, OrderParamsBitFlag, PostOnlyParam},
@@ -42,7 +46,7 @@ pub fn jit<'c: 'info, 'info>(ctx: Context<'info, Jit<'info>>, params: JitParams)
         &BTreeSet::new(),
         &BTreeSet::new(),
         slot,
-        state.slot_duration(),
+        state.slot_clock(),
         None,
     )?;
 
@@ -59,7 +63,7 @@ pub fn jit<'c: 'info, 'info>(ctx: Context<'info, Jit<'info>>, params: JitParams)
                 *oracle_map.get_price_data(&perp_market.oracle_id())?,
                 clock.slot,
                 &state.oracle_guard_rails.validity,
-                state.slot_duration(),
+                state.slot_clock(),
             )?
             .get_price()
     } else {
@@ -78,6 +82,7 @@ pub fn jit<'c: 'info, 'info>(ctx: Context<'info, Jit<'info>>, params: JitParams)
         oracle_price,
         params.get_worst_price(oracle_price, taker_order.direction)?,
         params.post_only.unwrap_or(PostOnlyParam::MustPostOnly),
+        state.slot_clock(),
     )?;
 
     drop(taker);
@@ -154,7 +159,7 @@ pub fn jit_signed_msg<'c: 'info, 'info>(
         &BTreeSet::new(),
         &BTreeSet::new(),
         slot,
-        state.slot_duration(),
+        state.slot_clock(),
         None,
     )?;
 
@@ -164,7 +169,7 @@ pub fn jit_signed_msg<'c: 'info, 'info>(
             *oracle_map.get_price_data(&perp_market.oracle_id())?,
             clock.slot,
             &state.oracle_guard_rails.validity,
-            state.slot_duration(),
+            state.slot_clock(),
         )?
         .get_price();
     drop(perp_market);
@@ -180,6 +185,7 @@ pub fn jit_signed_msg<'c: 'info, 'info>(
         oracle_price,
         params.get_worst_price(oracle_price, taker_order.direction)?,
         params.post_only.unwrap_or(PostOnlyParam::MustPostOnly),
+        state.slot_clock(),
     )?;
 
     drop(taker);
@@ -237,21 +243,23 @@ fn process_order(
     oracle_price: i64,
     maker_worst_price: u64,
     post_only: PostOnlyParam,
+    slot_clock: SlotClock,
 ) -> Result<(OrderParams, u64, u64, u64)> {
     let market_type = taker_order.market_type;
     let market_index = taker_order.market_index;
     let taker_direction = taker_order.direction;
 
-    let slots_left = taker_order
-        .slot
-        .safe_add(taker_order.auction_duration.cast()?)?
+    // auction_duration is in wall clock 400ms units; remaining time is its
+    // wall clock length minus the elapsed time, integrated per regime
+    let ms_left = Millis::from_stored_units(taker_order.auction_duration as u64)
+        .as_ms()
         .cast::<i64>()?
-        .safe_sub(slot.cast()?)?;
+        .safe_sub(slot_clock.elapsed(taker_order.slot, slot).as_ms().cast()?)?;
     msg!(
-        "slot = {} auction duration = {} slots_left = {}",
+        "slot = {} auction duration = {} ms_left = {}",
         slot,
         taker_order.auction_duration,
-        slots_left
+        ms_left
     );
 
     msg!(
@@ -277,7 +285,7 @@ fn process_order(
     };
 
     let taker_price =
-        match taker_order.get_limit_price(Some(oracle_price), None, slot, tick_size)? {
+        match taker_order.get_limit_price(Some(oracle_price), None, slot, tick_size, slot_clock)? {
             Some(price) => price,
             None if market_type == VelocityMarketType::Perp => {
                 msg!("taker order didnt have price. deriving fallback");

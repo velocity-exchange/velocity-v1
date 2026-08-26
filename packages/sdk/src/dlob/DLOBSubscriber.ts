@@ -8,7 +8,6 @@ import {
 	SlotSource,
 } from './types';
 import { VelocityClient } from '../velocityClient';
-import { activeSlotDurationFromState } from '../math/time';
 import { isVariant, MarketType } from '../types';
 import {
 	DEFAULT_TOP_OF_BOOK_QUOTE_AMOUNTS,
@@ -80,6 +79,13 @@ export class DLOBSubscriber {
 	/** Fetches a new `DLOB` snapshot at the current slot (from `slotSource`) via `dlobSource.getDLOB` and replaces `this.dlob`. */
 	async updateDLOB(): Promise<void> {
 		this.dlob = await this.dlobSource.getDLOB(this.slotSource.getSlot());
+		try {
+			// auction wall clock math converts elapsed slots through the State
+			// slot clock; unsubscribed state falls back to the 400ms baseline
+			this.dlob.slotDurationState = this.velocityClient.getStateAccount();
+		} catch {
+			// not subscribed yet: keep the baseline
+		}
 	}
 
 	/** @returns the most recently fetched `DLOB` snapshot (empty until the first successful `subscribe()`/`updateDLOB()`). */
@@ -166,10 +172,7 @@ export class DLOBSubscriber {
 								? MAJORS_TOP_OF_BOOK_QUOTE_AMOUNTS
 								: DEFAULT_TOP_OF_BOOK_QUOTE_AMOUNTS,
 						latestSlot,
-						slotDuration: activeSlotDurationFromState(
-							this.velocityClient.getStateAccount(),
-							new BN(this.slotSource.getSlot())
-						),
+						slotDurationState: this.velocityClient.getStateAccount(),
 					}),
 				];
 			}

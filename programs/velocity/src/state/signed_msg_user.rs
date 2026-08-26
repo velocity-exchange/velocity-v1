@@ -3,7 +3,7 @@ use {
         error::{ErrorCode, VelocityResult},
         math::{
             safe_unwrap::SafeUnwrap,
-            time::{Millis, SlotDuration},
+            time::{Millis, SlotClock},
         },
         msg,
         state::traits::Size,
@@ -142,17 +142,16 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
         &mut self,
         signed_msg_order_id: SignedMsgOrderId,
         current_slot: u64,
-        slot_duration: SlotDuration,
+        slot_clock: SlotClock,
     ) -> bool {
-        let eviction_buffer = SIGNED_MSG_EVICTION_BUFFER.to_slots(slot_duration);
         let mut uuid_exists = false;
         for i in 0..self.len() {
             let existing_signed_msg_order_id = self.get_mut(i);
-            if existing_signed_msg_order_id.uuid == signed_msg_order_id.uuid
-                && existing_signed_msg_order_id.max_slot + eviction_buffer >= current_slot
-            {
+            let expired = slot_clock.elapsed(existing_signed_msg_order_id.max_slot, current_slot)
+                > SIGNED_MSG_EVICTION_BUFFER;
+            if existing_signed_msg_order_id.uuid == signed_msg_order_id.uuid && !expired {
                 uuid_exists = true;
-            } else if existing_signed_msg_order_id.max_slot + eviction_buffer < current_slot {
+            } else if expired {
                 existing_signed_msg_order_id.uuid = [0; 8];
                 existing_signed_msg_order_id.max_slot = 0;
                 existing_signed_msg_order_id.order_id = 0;

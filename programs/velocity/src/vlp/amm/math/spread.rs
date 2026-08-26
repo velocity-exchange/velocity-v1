@@ -46,7 +46,7 @@ use {
                 SPREAD_VOL_STD_DISCOUNT_DIVISOR,
             },
             safe_math::SafeMath,
-            time::{Millis, SlotDuration},
+            time::{Millis, SlotClock},
         },
         msg,
         state::{
@@ -89,7 +89,7 @@ pub fn update_amm_quote_state(
     mm_oracle_price_data: &MMOraclePriceData,
     reserve_price: u64,
     slot: u64,
-    slot_duration: SlotDuration,
+    slot_clock: SlotClock,
 ) -> VelocityResult<()> {
     let quote_state = compute_quote_state(
         amm,
@@ -97,7 +97,7 @@ pub fn update_amm_quote_state(
         mm_oracle_price_data,
         reserve_price,
         slot,
-        slot_duration,
+        slot_clock,
     )?;
     commit_quote_state(amm, &quote_state, slot)?;
     validate_amm_quote_state(amm)
@@ -131,7 +131,7 @@ fn compute_quote_state(
     mm_oracle_price_data: &MMOraclePriceData,
     reserve_price: u64,
     slot: u64,
-    slot_duration: SlotDuration,
+    slot_clock: SlotClock,
 ) -> VelocityResult<QuoteState> {
     // last_oracle_reserve_price_spread_pct
     let last_oracle_reserve_price_spread_pct =
@@ -243,10 +243,7 @@ fn compute_quote_state(
         // consecutive-slot crank becomes once slots are faster than that; the
         // step would then pin to the minimum and converge slower the more often
         // the market is cranked.
-        let elapsed_ms = Millis::from_slots(
-            slot.saturating_sub(amm.last_spread_update_slot),
-            slot_duration,
-        );
+        let elapsed_ms = slot_clock.elapsed(amm.last_spread_update_slot, slot);
         let reference_price_delta = {
             let full_offset_delta = reference_price_offset
                 .cast::<i128>()?
@@ -780,15 +777,15 @@ pub fn cap_to_max_spread(
 ///   s   = (oracle_std + mark_std) / (2 * reserve_price)   (PERCENTAGE_PRECISION)
 ///   b   = max(conf, s / 4)                                 (vol base)
 ///   g_i = clamp(intensity_i / volume_24h, 0.01, 1)         (per-side factor)
-///   c   = conf            when conf > 25 bp
-///       = conf / 20       otherwise
+///   c   = conf * (1/20 + 19/20 * conf/25bp)  when conf < 25 bp
+///       = conf                                  otherwise
 ///   v_i = max(c, b * g_i)
 ///
 /// `conf` is `last_oracle_conf_pct` (PERCENTAGE_PRECISION of price). The
 /// 25 bp threshold is `SPREAD_CONF_FULL_WEIGHT_THRESHOLD`; below it the
-/// confidence contribution is discounted 20x (a step, not a ramp; see
-/// design issue 5). `volume_24h` is floored at 1 so the factors are
-/// defined on a fresh market.
+/// confidence weight ramps continuously from 1/20 at zero to full weight at
+/// the threshold. `volume_24h` is floored at 1 so the factors are defined on
+/// a fresh market.
 fn calculate_long_short_vol_spread(
     last_oracle_conf_pct: u64,
     reserve_price: u64,
@@ -824,12 +821,7 @@ fn calculate_long_short_vol_spread(
     let long_vol_spread_factor = intensity_factor(long_intensity_volume)?;
     let short_vol_spread_factor = intensity_factor(short_intensity_volume)?;
 
-    // only consider confidence interval at full value when above 25 bps
-    let conf_component = if last_oracle_conf_pct > SPREAD_CONF_FULL_WEIGHT_THRESHOLD {
-        last_oracle_conf_pct
-    } else {
-        last_oracle_conf_pct.safe_div(SPREAD_CONF_DISCOUNT_DIVISOR)?
-    };
+    let conf_component = calculate_spread_conf_component(last_oracle_conf_pct)?;
 
     // v_i = max(c, b * g_i)
     let side_vol_spread = |factor: u128| -> VelocityResult<u64> {
@@ -846,6 +838,23 @@ fn calculate_long_short_vol_spread(
         side_vol_spread(long_vol_spread_factor)?,
         side_vol_spread(short_vol_spread_factor)?,
     ))
+}
+
+/// Confidence contribution to the per-side volatility spread. Below the
+/// full-weight threshold, linearly interpolate its weight from 1/D at zero to
+/// 1 at the threshold, where D is `SPREAD_CONF_DISCOUNT_DIVISOR`.
+fn calculate_spread_conf_component(confidence_pct: u64) -> VelocityResult<u64> {
+    if confidence_pct >= SPREAD_CONF_FULL_WEIGHT_THRESHOLD {
+        return Ok(confidence_pct);
+    }
+
+    let threshold = SPREAD_CONF_FULL_WEIGHT_THRESHOLD;
+    let divisor = SPREAD_CONF_DISCOUNT_DIVISOR;
+    let ramp_weight = threshold.safe_add(divisor.safe_sub(1)?.safe_mul(confidence_pct)?)?;
+
+    Ok(confidence_pct
+        .safe_mul(ramp_weight)?
+        .safe_div(divisor.safe_mul(threshold)?)?)
 }
 
 /// Which side of the AMM's open liquidity the inventory ratio is measured

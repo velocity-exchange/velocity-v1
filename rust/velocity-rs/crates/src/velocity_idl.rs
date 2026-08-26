@@ -1129,6 +1129,14 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for SweepPerpMarketFees {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct SyncStateSlotDuration {}
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for SyncStateSlotDuration {
+        const DISCRIMINATOR: &[u8] = &[144, 123, 176, 126, 81, 180, 87, 131];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for SyncStateSlotDuration {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct TransferDeposit {
         pub market_index: u16,
         pub amount: u64,
@@ -2324,16 +2332,6 @@ pub mod instructions {
     }
     #[automatically_derived]
     impl anchor_lang::InstructionData for UpdateStateSettlementDuration {}
-    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
-    pub struct UpdateStateSlotDurationMs {
-        pub slot_duration_ms: u16,
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for UpdateStateSlotDurationMs {
-        const DISCRIMINATOR: &[u8] = &[122, 155, 95, 123, 0, 221, 47, 218];
-    }
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for UpdateStateSlotDurationMs {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdateUserAcceleratedReferralStatus {
         pub accelerated: bool,
@@ -4437,6 +4435,8 @@ pub mod types {
         pub pending_revenue_share: u64,
         pub amm: AMM,
         pub hedge_config: HedgeConfig,
+        #[serde(skip)]
+        pub _padding_future: Padding<256>,
     }
     #[repr(C)]
     #[derive(
@@ -5054,7 +5054,8 @@ pub mod types {
         pub total_social_loss: u128,
         pub total_quote_social_loss: u128,
         pub revenue_pool: PoolBalance,
-        pub spot_fee_pool: PoolBalance,
+        #[serde(skip)]
+        pub padding_former_spot_fee_pool: Padding<32>,
         pub historical_oracle_data: HistoricalOracleData,
         pub historical_index_data: HistoricalIndexData,
         pub withdraw_guard_threshold: u64,
@@ -5106,6 +5107,8 @@ pub mod types {
         pub protocol_liquidation_fee: u32,
         pub protocol_fee_factor: u32,
         pub if_last_settle_vault_amount: u64,
+        #[serde(skip)]
+        pub _padding_future: Padding<256>,
     }
     #[repr(C)]
     #[derive(
@@ -5236,8 +5239,9 @@ pub mod types {
         pub pending_slot_duration_ms: u16,
         pub slot_duration_pad: [u8; 2],
         pub slot_duration_effective_slot: u64,
+        pub slot_duration_transition_slots: [u64; 4],
         #[serde(skip)]
-        pub padding: Padding<232>,
+        pub padding: Padding<200>,
     }
     #[repr(C)]
     #[derive(
@@ -5994,6 +5998,8 @@ pub mod accounts {
         pub pending_revenue_share: u64,
         pub amm: AMM,
         pub hedge_config: HedgeConfig,
+        #[serde(skip)]
+        pub _padding_future: Padding<256>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for PerpMarket {
@@ -6430,7 +6436,8 @@ pub mod accounts {
         pub total_social_loss: u128,
         pub total_quote_social_loss: u128,
         pub revenue_pool: PoolBalance,
-        pub spot_fee_pool: PoolBalance,
+        #[serde(skip)]
+        pub padding_former_spot_fee_pool: Padding<32>,
         pub historical_oracle_data: HistoricalOracleData,
         pub historical_index_data: HistoricalIndexData,
         pub withdraw_guard_threshold: u64,
@@ -6482,6 +6489,8 @@ pub mod accounts {
         pub protocol_liquidation_fee: u32,
         pub protocol_fee_factor: u32,
         pub if_last_settle_vault_amount: u64,
+        #[serde(skip)]
+        pub _padding_future: Padding<256>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for SpotMarket {
@@ -6583,8 +6592,9 @@ pub mod accounts {
         pub pending_slot_duration_ms: u16,
         pub slot_duration_pad: [u8; 2],
         pub slot_duration_effective_slot: u64,
+        pub slot_duration_transition_slots: [u64; 4],
         #[serde(skip)]
-        pub padding: Padding<232>,
+        pub padding: Padding<200>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for State {
@@ -15690,6 +15700,70 @@ pub mod accounts {
     }
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct SyncStateSlotDuration {
+        pub state: Pubkey,
+        pub feature_gate: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for SyncStateSlotDuration {
+        const DISCRIMINATOR: &[u8] = &[89, 141, 244, 205, 139, 224, 199, 97];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for SyncStateSlotDuration {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for SyncStateSlotDuration {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for SyncStateSlotDuration {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for SyncStateSlotDuration {}
+    #[automatically_derived]
+    impl ToAccountMetas for SyncStateSlotDuration {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.feature_gate,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for SyncStateSlotDuration {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for SyncStateSlotDuration {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct TransferDeposit {
         pub from_user: Pubkey,
         pub to_user: Pubkey,
@@ -24028,70 +24102,6 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for UpdateStateSettlementDuration {
-        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let given_disc = &buf[..8];
-            if Self::DISCRIMINATOR != given_disc {
-                return Err(anchor_lang::error!(
-                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
-                ));
-            }
-            Self::try_deserialize_unchecked(buf)
-        }
-        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let mut data: &[u8] = &buf[8..];
-            AnchorDeserialize::deserialize(&mut data)
-                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
-        }
-    }
-    #[repr(C)]
-    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
-    pub struct UpdateStateSlotDurationMs {
-        pub admin: Pubkey,
-        pub state: Pubkey,
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for UpdateStateSlotDurationMs {
-        const DISCRIMINATOR: &[u8] = &[240, 232, 19, 126, 166, 94, 17, 200];
-    }
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Pod for UpdateStateSlotDurationMs {}
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Zeroable for UpdateStateSlotDurationMs {}
-    #[automatically_derived]
-    impl anchor_lang::ZeroCopy for UpdateStateSlotDurationMs {}
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for UpdateStateSlotDurationMs {}
-    #[automatically_derived]
-    impl ToAccountMetas for UpdateStateSlotDurationMs {
-        fn to_account_metas(&self) -> Vec<AccountMeta> {
-            vec![
-                AccountMeta {
-                    pubkey: self.admin,
-                    is_signer: true,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.state,
-                    is_signer: false,
-                    is_writable: true,
-                },
-            ]
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountSerialize for UpdateStateSlotDurationMs {
-        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
-            if writer.write_all(Self::DISCRIMINATOR).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            if AnchorSerialize::serialize(self, writer).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            Ok(())
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountDeserialize for UpdateStateSlotDurationMs {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {

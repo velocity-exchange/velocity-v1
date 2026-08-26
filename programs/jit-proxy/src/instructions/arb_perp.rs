@@ -13,6 +13,7 @@ use {
             margin::MarginRequirementType,
             orders::find_bids_and_asks_from_users,
             safe_math::SafeMath,
+            time::Millis,
         },
         program::Velocity,
         state::{
@@ -49,7 +50,7 @@ pub fn arb_perp<'c: 'info, 'info>(
         &BTreeSet::new(),
         &BTreeSet::new(),
         slot,
-        ctx.accounts.state.load()?.slot_duration(),
+        ctx.accounts.state.load()?.slot_clock(),
         None,
     )?;
 
@@ -65,8 +66,15 @@ pub fn arb_perp<'c: 'info, 'info>(
     // `min_resting_slots = 0`: arbitrage acts on the true current book. The rest-age rule stops a
     // just-posted quote from moving the mark TWAP (OtterSec #146). Such a quote is still takeable,
     // which is what this instruction needs.
-    let (bids, asks) =
-        find_bids_and_asks_from_users(&perp_market, oracle_price_data, &makers, slot, now, 0)?;
+    let (bids, asks) = find_bids_and_asks_from_users(
+        &perp_market,
+        oracle_price_data,
+        &makers,
+        slot,
+        now,
+        Millis::ZERO,
+        ctx.accounts.state.load()?.slot_clock(),
+    )?;
 
     let best_bid = bids.first().ok_or(ErrorCode::NoBestBid)?;
     let best_ask = asks.first().ok_or(ErrorCode::NoBestAsk)?;

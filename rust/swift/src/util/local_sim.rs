@@ -74,7 +74,7 @@ pub fn simulate_place_perp_order(
     let mut oracle_map = OracleMap::load(
         &mut oracle_infos.iter().peekable(),
         accounts.latest_slot,
-        velocity_rs::program::math::time::SlotDuration::from_state_ms(accounts.slot_duration_ms),
+        accounts.slot_clock,
         accounts.oracle_guard_rails,
     )?;
 

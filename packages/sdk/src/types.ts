@@ -1130,30 +1130,39 @@ export type StateAccount = {
 	/** promotional fee-tier floor for every account: effective perp tier = max(volume tier, promoFeeTier); 0 = disabled */
 	promoFeeTier: number;
 	/**
-	 * current Solana slot duration in ms, admin-set as the IBRL feature gates
-	 * activate (400 -> 350 -> 300 -> 250 -> 200). 0 = unset (pre-upgrade
-	 * padding), meaning the 400ms baseline. Do not read directly: the live value
-	 * may be the staged `pendingSlotDurationMs` once the chain reaches
-	 * `slotDurationEffectiveSlot` — resolve with `activeSlotDurationFromState`
-	 * (or `slotDurationFromState` for the base) from `math/time.ts`. Wall-clock
-	 * durations (`Millis`) are expressed in actual slots through this value via
+	 * current Solana slot duration in ms, synchronized (permissionlessly) as the
+	 * IBRL feature gates activate (400 -> 350 -> 300 -> 250 -> 200). 0 = unset
+	 * (pre upgrade padding), meaning the 400ms baseline. Do not read directly:
+	 * resolve with `activeSlotDurationFromState` (or `slotDurationFromState` for
+	 * the base) from `math/time.ts`, which also consults the authoritative
+	 * `slotDurationTransitionSlots` archive. Wall-clock durations (`Millis`) are
+	 * expressed in actual slots through the resolved value via
 	 * `millisToSlots`/`millisFromSlots`.
 	 */
 	slotDurationMs: number;
 	/**
-	 * staged next slot duration in ms, set during the target gate's one-epoch
-	 * warmup. 0 = nothing staged. Once the chain slot reaches
-	 * `slotDurationEffectiveSlot`, this is the live value (see
-	 * `activeSlotDurationFromState`).
+	 * legacy staged next slot duration in ms. 0 = nothing staged. Once the chain
+	 * slot reaches `slotDurationEffectiveSlot`, this is the live value (see
+	 * `activeSlotDurationFromState`). Superseded by
+	 * `slotDurationTransitionSlots` once any archive entry is set.
 	 */
 	pendingSlotDurationMs: number;
 	/** explicit alignment padding (2 bytes) before `slotDurationEffectiveSlot` */
 	slotDurationPad: number[];
 	/**
-	 * slot at which `pendingSlotDurationMs` takes effect (target gate activation
-	 * slot + one-epoch warmup). 0 when nothing is staged.
+	 * slot at which `pendingSlotDurationMs` takes effect (first slot of the
+	 * epoch after the gate's activation epoch). 0 when nothing is staged.
 	 */
 	slotDurationEffectiveSlot: BN;
+	/**
+	 * first slot of each post baseline IBRL regime, ordered
+	 * `[350ms, 300ms, 250ms, 200ms]`; 0 = that transition not synchronized yet.
+	 * Written by the permissionless `syncStateSlotDuration` instruction. These
+	 * anchors let elapsed time math integrate an interval piecewise
+	 * (`elapsedMillis` in `math/time.ts`) instead of pricing the whole slot
+	 * delta at one endpoint duration.
+	 */
+	slotDurationTransitionSlots: BN[];
 };
 
 /** Decoded mirror of the on-chain `PerpMarket` zero-copy account. */
@@ -1247,6 +1256,8 @@ export type PerpMarketAccount = {
 		/** scalar for the share of fees transferred to the hedge pool */
 		feeTransferScalar: number;
 	};
+	/** reserved for future market fields */
+	paddingFuture: number[];
 	/** bitmask, see `MarketConfigFlag` */
 	marketConfig: number;
 
@@ -1371,6 +1382,8 @@ export type SpotMarketAccount = {
 	 * refills a mid-period dip can lift it (see `settle_revenue_to_insurance_fund`);
 	 * `0` = the market never settled revenue */
 	ifLastSettleVaultAmount: BN;
+	/** reserved for future market fields */
+	paddingFuture: number[];
 
 	/** token mint decimals; token-mint precision throughout this account is 10^decimals */
 	decimals: number;
@@ -1433,8 +1446,8 @@ export type SpotMarketAccount = {
 	/** token mint precision; 0 = no limit */
 	maxPositionSize: BN;
 	nextFillRecordId: BN;
-	/** fees collected from swaps between this market and the quote market, settled to the quote market's revenue pool; SPOT_BALANCE_PRECISION (1e9) scaled balance */
-	spotFeePool: PoolBalance;
+	/** reserved bytes from the retired spot fee pool */
+	paddingFormerSpotFeePool: number[];
 	/** QUOTE_PRECISION (1e6) */
 	totalSpotFee: BN;
 	/** token mint precision; total fees received from swaps */
@@ -1800,7 +1813,7 @@ export type Order = {
 	immediateOrCancel: boolean;
 	/** if set, the limit price is `oraclePrice + oraclePriceOffset`; PRICE_PRECISION (1e6), signed */
 	oraclePriceOffset: BN;
-	/** slots the auction lasts; only relevant for market/oracle orders */
+	/** auction length in wall clock 400ms units (one slot at the 400ms baseline); only relevant for market/oracle orders */
 	auctionDuration: number;
 	/** PRICE_PRECISION (1e6), signed; only relevant for market/oracle orders */
 	auctionStartPrice: BN;
@@ -1834,7 +1847,7 @@ export type OrderParams = {
 	triggerCondition: OrderTriggerCondition;
 	/** signed offset from the oracle price, PRICE_PRECISION (1e6); when set, the order's effective limit price tracks the oracle */
 	oraclePriceOffset: BN | null;
-	/** slots; only used for market/oracle orders */
+	/** wall clock 400ms units (one slot at the 400ms baseline); only used for market/oracle orders */
 	auctionDuration: number | null;
 	/** unix timestamp after which the order expires */
 	maxTs: BN | null;

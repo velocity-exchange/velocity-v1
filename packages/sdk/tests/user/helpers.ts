@@ -116,6 +116,7 @@ export async function makeMockUser(
 			slotDurationMs: 0,
 			pendingSlotDurationMs: 0,
 			slotDurationEffectiveSlot: ZERO,
+			slotDurationTransitionSlots: [ZERO, ZERO, ZERO, ZERO],
 			oracleGuardRails: {
 				priceDivergence: {
 					markOraclePercentDivergence: ZERO,

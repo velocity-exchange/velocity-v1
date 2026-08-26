@@ -10,7 +10,7 @@ use {
             },
             safe_math::SafeMath,
             safe_unwrap::SafeUnwrap,
-            time::{Millis, SlotDuration},
+            time::Millis,
         },
         state::{
             events::OrderActionExplanation,
@@ -44,7 +44,7 @@ pub struct OrderParams {
     pub trigger_price: Option<u64>,
     pub trigger_condition: OrderTriggerCondition,
     pub oracle_price_offset: Option<i64>, // price offset from oracle for order
-    pub auction_duration: Option<u8>,     // specified in slots
+    pub auction_duration: Option<u8>,     // wall clock 400ms units (one slot at the 400ms baseline)
     pub auction_start_price: Option<i64>, // specified in price or oracle_price_offset
     pub auction_end_price: Option<i64>,   // specified in price or oracle_price_offset
     /// the index into the placing user's RevenueShareEscrow.approved_builders list, if this order
@@ -90,7 +90,6 @@ impl OrderParams {
         perp_market: &PerpMarket,
         oracle_price: i64,
         is_signed_msg: bool,
-        slot_duration: SlotDuration,
     ) -> VelocityResult<bool> {
         if self.post_only != PostOnlyParam::None {
             return Ok(false);
@@ -309,11 +308,10 @@ impl OrderParams {
             self.get_duration_floor_price_diff(auction_start_price, auction_end_price)?,
             oracle_price.unsigned_abs(),
             perp_market.contract_tier,
-            slot_duration,
         )?;
-        // ~4s of slop before overwriting a signed-msg duration
+        // ~4s of slop (in 400ms units) before overwriting a signed-msg duration
         let duration_tolerance = Millis::from_secs(4)
-            .to_slots(slot_duration)
+            .div_periods(Millis::UNIT)
             .min(u8::MAX as u64) as u8;
         if auction_duration_before
             .unwrap_or(0)
@@ -392,7 +390,6 @@ impl OrderParams {
         oracle_price: i64,
         is_market_order: bool,
         is_signed_msg: bool,
-        slot_duration: SlotDuration,
     ) -> VelocityResult<bool> {
         let auction_duration = self.auction_duration;
         let auction_start_price = self.auction_start_price;
@@ -409,7 +406,6 @@ impl OrderParams {
                     oracle_price,
                     self.price,
                     PERCENTAGE_PRECISION_I64 / 400, // 25 bps
-                    slot_duration,
                 )?
             } else {
                 OrderParams::derive_oracle_order_auction_params(
@@ -418,7 +414,6 @@ impl OrderParams {
                     oracle_price,
                     self.oracle_price_offset,
                     PERCENTAGE_PRECISION_I64 / 400, // 25 bps
-                    slot_duration,
                 )?
             };
 
@@ -551,12 +546,11 @@ impl OrderParams {
             self.get_duration_floor_price_diff(auction_start_price, auction_end_price)?,
             oracle_price.unsigned_abs(),
             perp_market.contract_tier,
-            slot_duration,
         )?;
 
-        // ~4s of slop before overwriting a signed-msg duration
+        // ~4s of slop (in 400ms units) before overwriting a signed-msg duration
         let duration_tolerance = Millis::from_secs(4)
-            .to_slots(slot_duration)
+            .div_periods(Millis::UNIT)
             .min(u8::MAX as u64) as u8;
         if auction_duration_before
             .unwrap_or(0)
@@ -587,7 +581,6 @@ impl OrderParams {
         oracle_price: i64,
         limit_price: u64,
         start_buffer: i64,
-        slot_duration: SlotDuration,
     ) -> VelocityResult<(i64, i64, u8)> {
         let (mut auction_start_price, mut auction_end_price) = if limit_price != 0 {
             let (auction_start_price_offset, auction_end_price_offset) =
@@ -643,7 +636,6 @@ impl OrderParams {
                 .unsigned_abs(),
             oracle_price.unsigned_abs(),
             perp_market.contract_tier,
-            slot_duration,
         )?;
 
         Ok((auction_start_price, auction_end_price, auction_duration))
@@ -655,7 +647,6 @@ impl OrderParams {
         oracle_price: i64,
         oracle_price_offset: Option<i64>,
         start_buffer: i64,
-        slot_duration: SlotDuration,
     ) -> VelocityResult<(i64, i64, u8)> {
         let (mut auction_start_price, mut auction_end_price) = if let Some(oracle_price_offset) =
             oracle_price_offset
@@ -704,7 +695,6 @@ impl OrderParams {
                 .unsigned_abs(),
             oracle_price.unsigned_abs(),
             perp_market.contract_tier,
-            slot_duration,
         )?;
 
         Ok((auction_start_price, auction_end_price, auction_duration))
@@ -715,7 +705,6 @@ impl OrderParams {
         perp_market: &PerpMarket,
         oracle_price: i64,
         is_signed_msg: bool,
-        slot_duration: SlotDuration,
     ) -> VelocityResult<bool> {
         #[cfg(feature = "anchor-test")]
         return Ok(false);
@@ -725,7 +714,6 @@ impl OrderParams {
                 perp_market,
                 oracle_price,
                 is_signed_msg,
-                slot_duration,
             )?,
             OrderType::Market | OrderType::Oracle => self
                 .update_perp_auction_params_market_and_oracle_orders(
@@ -733,7 +721,6 @@ impl OrderParams {
                     oracle_price,
                     self.order_type == OrderType::Market,
                     is_signed_msg,
-                    slot_duration,
                 )?,
             _ => false,
         };
@@ -949,12 +936,12 @@ impl OrderParams {
         market: &PerpMarket,
         direction_to_close: PositionDirection,
         base_asset_amount: u64,
-        slot_duration: SlotDuration,
     ) -> VelocityResult<OrderParams> {
         let (auction_start_price, auction_end_price) =
             OrderParams::get_perp_baseline_start_end_price_offset(market, direction_to_close, 1)?;
+        // ~32s in wall clock 400ms units
         let auction_duration = Millis::from_secs(32)
-            .to_slots_ceil(slot_duration)
+            .div_periods(Millis::UNIT)
             .min(u8::MAX as u64)
             .cast::<u8>()?;
 
@@ -1026,7 +1013,6 @@ fn get_auction_duration(
     price_diff: u64,
     price: u64,
     contract_tier: ContractTier,
-    slot_duration: SlotDuration,
 ) -> VelocityResult<u8> {
     let percent_diff = price_diff.safe_mul(PERCENTAGE_PRECISION_U64)?.div(price);
 
@@ -1038,18 +1024,15 @@ fn get_auction_duration(
         60
     };
 
-    let duration = Millis::UNIT.saturating_mul(
-        percent_diff
-            .safe_mul(steps_per_pct)?
-            .safe_div_ceil(PERCENTAGE_PRECISION_U64 / 100)?
-            .clamp(1, 180), // ~72s max
-    );
-
-    // Express in actual slots so the auction's wall-clock ramp is independent
-    // of the slot duration. Ceil: makers never get less than the intended
-    // time. `Order.auction_duration` is a u8, so the max compresses to 255
-    // slots (~51s at 200ms) at the fastest gates.
-    Ok(duration.to_slots_ceil(slot_duration).min(u8::MAX as u64) as u8)
+    // `Order.auction_duration` stores wall clock 400ms units, not live slots,
+    // so the value is independent of the slot duration and the u8 keeps the
+    // full historical range (max 180 units = 72s; the ceiling is 255 = 102s).
+    // Auction progress converts elapsed slots to wall clock through the
+    // `SlotClock` at fill time.
+    Ok(percent_diff
+        .safe_mul(steps_per_pct)?
+        .safe_div_ceil(PERCENTAGE_PRECISION_U64 / 100)?
+        .clamp(1, 180) as u8) // ~72s max
 }
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Debug, Eq, Default)]

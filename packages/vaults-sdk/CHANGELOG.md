@@ -1,5 +1,21 @@
 # @velocity-exchange/vaults-sdk
 
+## 0.1.22
+
+### Patch Changes
+
+- [#446](https://github.com/velocity-exchange/velocity-v1/pull/446) [`823724e`](https://github.com/velocity-exchange/velocity-v1/commit/823724e4a8ea0d34b5a79883512eec9cb40b6123) Thanks [@0xahzam](https://github.com/0xahzam)! - Extend perp and spot market accounts with reserved padding and retire the unused spot fee pool field.
+
+- Updated dependencies [[`ce01885`](https://github.com/velocity-exchange/velocity-v1/commit/ce0188563670520bfcddb689866e37c1fa19ed00), [`823724e`](https://github.com/velocity-exchange/velocity-v1/commit/823724e4a8ea0d34b5a79883512eec9cb40b6123)]:
+  - @velocity-exchange/sdk@0.16.0
+
+## 0.1.21
+
+### Patch Changes
+
+- Updated dependencies [[`d3824be`](https://github.com/velocity-exchange/velocity-v1/commit/d3824be0f2261e709477e8a1aceedcd11da842c5), [`fe0adbd`](https://github.com/velocity-exchange/velocity-v1/commit/fe0adbd72d77eefaada569292bca2f5baf1e1e58)]:
+  - @velocity-exchange/sdk@0.15.0
+
 ## 0.1.20
 
 ### Patch Changes

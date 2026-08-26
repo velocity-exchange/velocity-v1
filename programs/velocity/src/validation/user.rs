@@ -2,7 +2,7 @@ use crate::{
     error::{ErrorCode, VelocityResult},
     math::{
         constants::THIRTEEN_DAY,
-        time::{Millis, SlotDuration},
+        time::{Millis, SlotClock},
     },
     msg,
     state::{
@@ -82,12 +82,11 @@ pub fn validate_user_is_idle(
     user: &User,
     slot: u64,
     accelerated: bool,
-    slot_duration: SlotDuration,
+    slot_clock: SlotClock,
 ) -> VelocityResult {
     // thresholds are wall-clock; convert the measured slot delta to ms so the
     // windows hold at any slot duration
-    let time_since_last_active =
-        Millis::from_slots(slot.saturating_sub(user.last_active_slot), slot_duration);
+    let time_since_last_active = slot_clock.elapsed(user.last_active_slot, slot);
 
     let idle_after = if accelerated {
         Millis::from_secs(3_600) // 1 hour

@@ -8,7 +8,6 @@ import {
 	calculateMaxPctToLiquidate,
 	getLiquidationFee,
 	millisFromStoredUnits,
-	slotDurationFromState,
 	calculatePerpIfFee,
 	calculateSpotIfFee,
 	calculateUserProtectiveAssetPrice,
@@ -56,24 +55,43 @@ describe('getLiquidationFee', () => {
 			maxFee,
 			new BN(0),
 			new BN(10_000),
-			slotDurationFromState(400)
+			{}
 		);
+		// a clock fully rolled out to 200ms since slot 1
+		const clock200 = {
+			slotDurationTransitionSlots: [new BN(1), new BN(1), new BN(1), new BN(1)],
+		};
 		const fast = getLiquidationFee(
 			baseFee,
 			maxFee,
-			new BN(0),
-			new BN(20_000),
-			slotDurationFromState(200)
+			new BN(1_000),
+			new BN(1_000 + 20_000),
+			clock200
 		);
 
 		assert.equal(baseline, 30_000);
 		assert.equal(fast, baseline);
 	});
 
-	it('rejects a current slot before the last-active slot like the program', () => {
-		assert.throws(
-			() => getLiquidationFee(20_000, 50_000, new BN(101), new BN(100)),
-			/currentSlot must not precede lastActiveUserSlot/
+	it('integrates an interval spanning a slot-duration transition piecewise', () => {
+		// 350ms regime starts at slot 3_000; the interval covers 3000 slots at
+		// 400ms + 3000 at 350ms = 2_250_000ms = 5625 whole 400ms periods
+		const clock = {
+			slotDurationTransitionSlots: [
+				new BN(3_000),
+				new BN(0),
+				new BN(0),
+				new BN(0),
+			],
+		};
+		const fee = getLiquidationFee(0, 100_000, new BN(0), new BN(6_000), clock);
+		assert.equal(fee, 5_625);
+	});
+
+	it('saturates a current slot before the last-active slot like the program', () => {
+		assert.equal(
+			getLiquidationFee(20_000, 50_000, new BN(101), new BN(100)),
+			20_000
 		);
 	});
 });

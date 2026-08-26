@@ -4,7 +4,7 @@ use {
             ErrorCode::{self, UnableToLoadOracle},
             VelocityResult,
         },
-        math::{safe_unwrap::SafeUnwrap, time::SlotDuration},
+        math::{safe_unwrap::SafeUnwrap, time::SlotClock},
         msg,
         state::{
             load_ref::load_ref_mut,
@@ -48,10 +48,10 @@ pub fn load_maps<'a, 'b>(
     writable_perp_markets: &'b MarketSet,
     writable_spot_markets: &'b MarketSet,
     slot: u64,
-    slot_duration: SlotDuration,
+    slot_clock: SlotClock,
     oracle_guard_rails: Option<OracleGuardRails>,
 ) -> VelocityResult<AccountMaps<'a>> {
-    let oracle_map = OracleMap::load(account_info_iter, slot, slot_duration, oracle_guard_rails)?;
+    let oracle_map = OracleMap::load(account_info_iter, slot, slot_clock, oracle_guard_rails)?;
     let spot_market_map = SpotMarketMap::load(writable_spot_markets, account_info_iter)?;
     let perp_market_map = PerpMarketMap::load(writable_perp_markets, account_info_iter)?;
 

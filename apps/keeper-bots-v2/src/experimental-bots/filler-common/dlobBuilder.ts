@@ -30,6 +30,9 @@ import {
 	OrderParamsBitFlag,
 	PerpMarketAccount,
 	SpotMarketAccount,
+	elapsedMillis,
+	millisFromStoredUnits,
+	slotAtOrAfterDuration,
 } from '@velocity-exchange/sdk';
 import { Connection, PublicKey } from '@solana/web3.js';
 import dotenv from 'dotenv';
@@ -41,7 +44,7 @@ import {
 	NodeToFillWithContext,
 } from './types';
 import { getVelocityClientFromArgs, serializeNodeToFill } from './utils';
-import { currentSlotDuration, sleepMs } from '../../utils';
+import { sleepMs } from '../../utils';
 import { LRUCache } from 'lru-cache';
 import { sha256 } from '@noble/hashes/sha256';
 
@@ -129,6 +132,13 @@ class DLOBBuilder {
 			`${logPrefix} Building DLOB with ${this.userAccountData.size} users`
 		);
 		const dlob = new DLOB();
+		try {
+			// auction wall clock math converts elapsed slots through the State
+			// slot clock; unsubscribed state falls back to the 400ms baseline
+			dlob.slotDurationState = this.velocityClient.getStateAccount();
+		} catch {
+			// not subscribed yet: keep the baseline
+		}
 		let counter = 0;
 		this.userAccountData.forEach((userAccount, pubkey) => {
 			userAccount.orders.forEach((order) => {
@@ -225,8 +235,12 @@ class DLOBBuilder {
 			orderData['signing_authority']
 		);
 
-		const maxSlot = signedMessage.slot.addn(
-			signedMsgOrderParams.auctionDuration ?? 0
+		const slotDurationState = this.velocityClient.getStateAccount();
+		// Mirrors the program's max_slot across every known future boundary.
+		const maxSlot = slotAtOrAfterDuration(
+			slotDurationState,
+			signedMessage.slot,
+			millisFromStoredUnits(signedMsgOrderParams.auctionDuration ?? 0)
 		);
 		if (maxSlot.toNumber() < this.slotSubscriber.getSlot()) {
 			logger.warn(
@@ -278,15 +292,13 @@ class DLOBBuilder {
 			takerUserPubkey.toString()
 		);
 
-		// cache TTL = remaining validity in real slots x live slot duration,
-		// with the same 25% pad the old hardcoded 500ms/slot figure carried
+		// Cache TTL uses the same piecewise interval, with the historical 25% pad.
 		const ttl = Math.ceil(
-			(maxSlot.toNumber() - this.slotSubscriber.getSlot()) *
-				currentSlotDuration(
-					this.velocityClient,
-					this.slotSubscriber.getSlot()
-				) *
-				1.25
+			elapsedMillis(
+				slotDurationState,
+				new BN(this.slotSubscriber.getSlot()),
+				maxSlot
+			).toNumber() * 1.25
 		);
 		this.signedMsgOrders.set(uuid, signedMsgOrderNode, {
 			ttl,
@@ -316,19 +328,13 @@ class DLOBBuilder {
 					market,
 					mmOraclePriceData,
 					new BN(this.slotSubscriber.getSlot()),
-					currentSlotDuration(
-						this.velocityClient,
-						this.slotSubscriber.getSlot()
-					)
+					this.velocityClient.getStateAccount()
 				);
 				fallbackAsk = calculateAskPrice(
 					market,
 					mmOraclePriceData,
 					new BN(this.slotSubscriber.getSlot()),
-					currentSlotDuration(
-						this.velocityClient,
-						this.slotSubscriber.getSlot()
-					)
+					this.velocityClient.getStateAccount()
 				);
 			} else {
 				market = this.velocityClient.getSpotMarketAccount(marketIndex);

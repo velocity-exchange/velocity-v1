@@ -18,6 +18,7 @@ import {
 	decodeUser,
 	PriorityFeeSubscriberMap,
 	msToSlotsNum,
+	currentSlotDuration,
 } from '@velocity-exchange/sdk';
 import {
 	Connection,
@@ -55,7 +56,6 @@ import {
 	sleepMs,
 	swapFillerHardEarnedUSDCForSOL,
 	validMinimumGasAmount,
-	currentSlotDuration,
 } from '../../utils';
 import {
 	ExplicitBucketHistogramAggregation,

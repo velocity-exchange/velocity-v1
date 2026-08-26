@@ -316,6 +316,15 @@ export class OrderSubscriber {
 	 */
 	public async getDLOB(slot: number): Promise<DLOB> {
 		const dlob = this.createDLOB();
+		// Classification during insertion already depends on auction progress.
+		// Seed the clock before the first order; assigning it afterward cannot
+		// undo a taking order incorrectly promoted into a resting node list.
+		try {
+			dlob.slotDurationState = this.velocityClient.getStateAccount();
+		} catch {
+			// A custom source may build before State subscribes. Baseline fallback
+			// remains compatible; DLOBSubscriber will attach State when available.
+		}
 		for (const [key, { userAccount }] of this.usersAccounts.entries()) {
 			for (const order of userAccount.orders) {
 				let baseAssetAmount = order.baseAssetAmount;

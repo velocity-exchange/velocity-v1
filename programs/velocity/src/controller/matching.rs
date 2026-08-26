@@ -400,10 +400,13 @@ pub fn fill_perp_market_against_amm(
 mod tests {
     use {
         super::*,
-        crate::state::{
-            oracle::OraclePriceData,
-            perp_market::MarketStats,
-            quoter::{FillFeePolicy, QuoteContext, Quoter},
+        crate::{
+            math::time::SlotClock,
+            state::{
+                oracle::OraclePriceData,
+                perp_market::MarketStats,
+                quoter::{FillFeePolicy, QuoteContext, Quoter},
+            },
         },
     };
 
@@ -507,7 +510,7 @@ mod tests {
             tick,
             step_size: 1,
             slot: 0,
-            slot_duration: crate::math::time::SlotDuration::BASELINE,
+            slot_clock: SlotClock::baseline(),
             base_precision: 1,
             market_status: crate::state::market_status::MarketStatus::default(),
             market_config: 0,

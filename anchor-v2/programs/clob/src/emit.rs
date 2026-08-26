@@ -25,8 +25,8 @@ use {
         error::ClobError,
         events::{ExecuteRecordV0, FillSlimV0, OrdersCancelRecordV0, FILL_SLIM_BYTES},
         state::{
-            CancelAllOutcome, CANCEL_ALL_ORDERS_CEILING, COUNT_BYTES, EXECUTE_FILLS_CEILING,
-            ORDER_ID_BYTES,
+            CancelAllOutcome, CANCEL_ALL_ORDERS_CEILING, CLIENT_ORDER_ID_BYTES, COUNT_BYTES,
+            EXECUTE_FILLS_CEILING, ORDER_ID_BYTES,
         },
     },
     anchor_lang_v2::prelude::*,
@@ -49,7 +49,7 @@ pub const EXECUTE_RECORD_LOG_BYTES: usize = DISCRIMINATOR_BYTES
     + COUNT_BYTES
     + EXECUTE_FILLS_CEILING as usize * FILL_SLIM_BYTES
     + COUNT_BYTES
-    + ORDER_ID_BYTES;
+    + CLIENT_ORDER_ID_BYTES;
 
 /// Widest [`OrdersCancelRecordV0`] log: the discriminator, the fixed prefix
 /// (user ref, ts, both base totals, market index, sides tag, exhaustive flag),
@@ -62,7 +62,7 @@ pub const CANCEL_ALL_RECORD_LOG_BYTES: usize = DISCRIMINATOR_BYTES
     + 2 * core::mem::size_of::<u16>()
     + 2 * core::mem::size_of::<u8>()
     + COUNT_BYTES
-    + CANCEL_ALL_ORDERS_CEILING as usize * ORDER_ID_BYTES;
+    + CANCEL_ALL_ORDERS_CEILING as usize * CLIENT_ORDER_ID_BYTES;
 
 /// `[discriminator][body]` for a fixed-size (`#[event(bytemuck)]`) record.
 ///
@@ -213,7 +213,7 @@ pub fn write_execute_record<const N: usize>(
     market_index: u16,
     direction: u8,
     fills: &[FillSlimV0],
-    cancelled_order_id: Option<u64>,
+    cancelled_client_order_id: Option<u32>,
 ) -> Result<()> {
     log.push(ExecuteRecordV0::DISCRIMINATOR)?;
     log.push(&ts.to_le_bytes())?;
@@ -226,11 +226,12 @@ pub fn write_execute_record<const N: usize>(
     fills.iter().try_for_each(|fill| {
         let mut entry = [0u8; FILL_SLIM_BYTES];
         entry[..ORDER_ID_BYTES].copy_from_slice(&fill.order_id.to_le_bytes());
-        entry[ORDER_ID_BYTES..].copy_from_slice(&fill.base_size.to_le_bytes());
+        entry[ORDER_ID_BYTES..2 * ORDER_ID_BYTES].copy_from_slice(&fill.base_size.to_le_bytes());
+        entry[2 * ORDER_ID_BYTES..].copy_from_slice(&fill.client_order_id.to_le_bytes());
         log.push(&entry)
     })?;
-    log.push(&(cancelled_order_id.iter().count() as u32).to_le_bytes())?;
-    cancelled_order_id
+    log.push(&(cancelled_client_order_id.iter().count() as u32).to_le_bytes())?;
+    cancelled_client_order_id
         .iter()
         .try_for_each(|order_id| log.push(&order_id.to_le_bytes()))
 }
@@ -286,11 +287,12 @@ impl CancelAllRecord {
         })
     }
 
-    /// Append one removed order id. The bounds check in [`LogBuf::push`] is
-    /// what makes the ceiling enforceable here too: a walk that somehow ran
-    /// past it fails the instruction instead of logging a truncated record.
-    pub fn push_id(&mut self, order_id: u64) -> Result<()> {
-        self.log.push(&order_id.to_le_bytes())?;
+    /// Append one removed order id — the placing caller's, which is what the
+    /// record lists. The bounds check in [`LogBuf::push`] is what makes the
+    /// ceiling enforceable here too: a walk that somehow ran past it fails the
+    /// instruction instead of logging a truncated record.
+    pub fn push_id(&mut self, client_order_id: u32) -> Result<()> {
+        self.log.push(&client_order_id.to_le_bytes())?;
         self.ids = self.ids.checked_add(1).ok_or(ClobError::EventTooLarge)?;
         Ok(())
     }
@@ -338,7 +340,7 @@ pub fn emit_execute_record(
     market_index: u16,
     direction: u8,
     fills: &[FillSlimV0],
-    cancelled_order_id: Option<u64>,
+    cancelled_client_order_id: Option<u32>,
 ) -> Result<()> {
     let mut log = LogBuf::<EXECUTE_RECORD_LOG_BYTES>::new();
     write_execute_record(
@@ -348,7 +350,7 @@ pub fn emit_execute_record(
         market_index,
         direction,
         fills,
-        cancelled_order_id,
+        cancelled_client_order_id,
     )?;
     log.emit();
     Ok(())

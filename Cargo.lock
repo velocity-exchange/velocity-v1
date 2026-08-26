@@ -593,6 +593,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "clob-state"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "quoter-spec",
+ "solana-address 2.6.0",
+]
+
+[[package]]
 name = "clob-wire"
 version = "0.1.0"
 dependencies = [

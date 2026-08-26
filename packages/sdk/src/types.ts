@@ -625,6 +625,93 @@ export class ClobSide {
 }
 
 /**
+ * A resting CLOB order's handle: the node hint the book verifies against the
+ * order id, so a stale hint (node freed or reused) fails closed rather than
+ * acting on whichever order took the slot.
+ *
+ * Returned by `placeClobOrder` and carried on every row of the user-orders
+ * feed, so a client cancelling or modifying an order never has to find one.
+ */
+export type ClobOrderRefV0 = {
+	nodeIndex: number;
+	orderId: BN;
+};
+
+/** Which sides a `cancelAllClobOrders` sweep withdraws. */
+export class CancelSidesV0 {
+	static readonly BIDS = { bids: {} };
+	static readonly ASKS = { asks: {} };
+	static readonly BOTH = { both: {} };
+}
+
+/** Args of `placeClobOrder`. */
+export type PlaceClobOrderParams = {
+	marketIndex: number;
+	/** Long rests as a bid, Short as an ask. */
+	direction: PositionDirection;
+	/** PRICE_PRECISION. */
+	price: BN;
+	/** BASE_PRECISION. */
+	baseAssetAmount: BN;
+	/** 0 = good-till-cancelled. */
+	maxTs: BN;
+	/** `null` takes the book's default speed bump; anything below it needs the flow-authority attestation on the transaction. */
+	activationDelaySlots: number | null;
+	/** Refuse the placement rather than rest crossed with the opposite side — what a post-only order asks for. It is not what makes the order a maker: a resting CLOB order settles at its own price on the maker fee schedule either way. */
+	rejectIfCrossed: boolean;
+};
+
+/** Args of `cancelClobOrder`. */
+export type CancelClobOrderParams = {
+	marketIndex: number;
+	orderRef: ClobOrderRefV0;
+};
+
+/** Args of `modifyClobOrder`. A modify keeps the order's id and loses its queue position. */
+export type ModifyClobOrderParams = {
+	marketIndex: number;
+	orderRef: ClobOrderRefV0;
+	/** `null` keeps the resting price. */
+	price: BN | null;
+	/** `null` keeps the *remaining* size, not the original. */
+	baseAssetAmount: BN | null;
+	/** `null` keeps the resting expiry; `0` makes the replacement good-till-cancelled. */
+	maxTs: BN | null;
+	activationDelaySlots: number | null;
+	rejectIfCrossed: boolean;
+};
+
+/** Args of `cancelAllClobOrders`. */
+export type CancelAllClobOrdersParams = {
+	marketIndex: number;
+	sides: CancelSidesV0;
+};
+
+/**
+ * One resting order on the user-orders feed.
+ *
+ * A CLOB order has no `User.orders` slot, so this is where a client learns
+ * what it is resting. `orderId` is velocity's — the same counter its DLOB
+ * orders draw from — and `nodeIndex`/`clobOrderId` are the book's handle for
+ * the same order, together forming the `ClobOrderRefV0` a cancel takes.
+ */
+export type UserClobOrder = {
+	orderId: number;
+	nodeIndex: number;
+	clobOrderId: BN;
+	marketIndex: number;
+	direction: PositionDirection;
+	price: BN;
+	baseAssetAmount: BN;
+	maxTs: BN;
+	activationSlot: BN;
+	placedSlot: BN;
+	/** A migrated taker remainder: it demands liquidity, and a cross settles at the other side's price. */
+	takerOrigin: boolean;
+	venue: 'clob';
+};
+
+/**
  * One order handed to `forceCancelClobOrders`.
  *
  * The side is declared by the caller because a book node carries none of its

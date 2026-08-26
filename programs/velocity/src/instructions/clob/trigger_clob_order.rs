@@ -61,7 +61,7 @@ use {
             margin_calculation::MarginContext,
             market_status::MarketStatus,
             perp_market_map::MarketSet,
-            prop_amm::{ClobMarket, ClobPlaceOrderArgsV0, ClobSide, QuoterV0},
+            prop_amm::{ClobMarket, ClobPlaceOrderArgsV0, ClobSide, QuoterV0, WireDirectionExt},
             state::State,
             user::{MarketType, OrderBitFlag, OrderType, User, UserStats},
         },
@@ -435,6 +435,13 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
         user: user_ref,
         // Not a migrated taker remainder: this price is its owner's choice.
         taker_origin: false,
+        // The slot the trigger armed keeps its id: to its owner this is the
+        // order they placed, now live, and the shadow slot holds the same id.
+        client_order_id: order_id,
+        // A triggered stop is meant to reach the market. Refusing it for
+        // crossing would leave the position unprotected, which is the one
+        // thing the trigger exists to prevent.
+        reject_if_crossed: false,
     })?;
 
     // ---- Mark the slot as the placed shadow. ----
@@ -451,6 +458,25 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
         user.orders[order_index].add_bit_flag(OrderBitFlag::PlacedOnClob);
         user.update_last_active_slot(slot);
     }
+
+    // A trigger that fired is an order that started resting, and it rests
+    // under the id it armed under. The slot it came from is now a shadow, so
+    // this record is the only statement that the order is live.
+    super::emit_clob_place_record(
+        now,
+        &user_key,
+        super::ClobOrderFacts {
+            order_id,
+            market_index,
+            direction: side.to_position_direction(),
+            price,
+            base_asset_amount,
+            base_asset_amount_filled: 0,
+            max_ts,
+            slot,
+            taker_origin: false,
+        },
+    )?;
 
     super::crank_common::finish_trigger_crank(
         &ctx.accounts.state,

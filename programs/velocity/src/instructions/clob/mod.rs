@@ -40,6 +40,15 @@
 //! Each crank instruction lives in its own file together with its
 //! simulation-only relay resolver (named `Resolve<EndpointName>`); the
 //! shared dual-mode plumbing is [`crank_common`].
+//!
+//! A book order has no `User.orders` slot, so nothing in the order-history
+//! stream would name it unless velocity says so. [`records`] emits the two
+//! records that stream already carries — `OrderRecord` when an order starts
+//! resting, `OrderActionRecord` when it stops — from every path here that
+//! places or removes one. `cancel_all_clob_orders` is the exception: a sweep
+//! takes up to 128 orders and a record is 480 bytes, which no transaction's
+//! log budget holds, so its per-order detail rides the book's own compact
+//! cancel record instead.
 //! - [`trigger_clob_order`]: crank an armed trigger-limit onto the CLOB; the
 //!   `User.orders` slot becomes a shadow keeping the trigger params + the
 //!   CLOB `OrderRef` (freed on fill/cancel/expiry, re-armed on eviction).
@@ -73,6 +82,7 @@ mod modify_clob_order;
 mod place_and_make_v1;
 mod place_and_take_v1;
 mod place_clob_order;
+mod records;
 pub mod refill_crank_reservoir;
 pub mod resolve_clob_crank;
 mod trigger_clob_order;
@@ -82,6 +92,6 @@ pub use {
     crank_clob_remove_expired::*, crank_common::*, crank_conditions_setup::*, crank_cross_match::*,
     crank_taker_origin_cross::*, fill_v1::*, force_cancel_clob_orders::*,
     initialize_quoter_cross_conditions::*, modify_clob_order::*, place_and_make_v1::*,
-    place_and_take_v1::*, place_clob_order::*, refill_crank_reservoir::*, resolve_clob_crank::*,
-    trigger_clob_order::*,
+    place_and_take_v1::*, place_clob_order::*, records::*, refill_crank_reservoir::*,
+    resolve_clob_crank::*, trigger_clob_order::*,
 };

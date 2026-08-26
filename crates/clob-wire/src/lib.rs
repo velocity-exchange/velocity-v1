@@ -78,6 +78,20 @@ pub struct PlaceOrderArgsV0 {
     /// counterparty crosses it, and a cross involving it settles at the
     /// counterparty's price.
     pub taker_origin: bool,
+    /// The caller's own id for this order. The book stores it and reports it
+    /// back on every answer that names the order, so the caller never holds a
+    /// map from the book's ids to its own. Opaque to the book: it neither
+    /// orders nor identifies an order here. Zero means the caller keeps no id.
+    pub client_order_id: u32,
+    /// Refuse the placement when the order would cross the opposite best
+    /// price, instead of resting it crossed.
+    ///
+    /// A crossed order still fills at its own price — the cross crank matches
+    /// it as a maker — so this is not about the fee it pays. It is about the
+    /// order resting at all: a maker that quotes through the other side has
+    /// mispriced, and would rather place nothing than hold a position it did
+    /// not intend to take.
+    pub reject_if_crossed: bool,
 }
 
 /// `cancel_order_v0` arguments.
@@ -137,6 +151,8 @@ pub struct CancelAllArgsV0 {
 pub struct RemovedOrderV0 {
     pub user: UserRefV0,
     pub order_id: u64,
+    /// The caller's own id for this order, as supplied at placement.
+    pub client_order_id: u32,
     pub price: u64,
     pub base_asset_amount: u64,
     pub side: SideV0,
@@ -322,6 +338,8 @@ pub struct OrderRulesV0 {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct OrderViewV0 {
     pub order_ref: ClobOrderRefV0,
+    /// The caller's own id for this order, as supplied at placement.
+    pub client_order_id: u32,
     pub user: UserRefV0,
     pub side: SideV0,
     pub price: u64,
@@ -344,6 +362,7 @@ impl OrderViewV0 {
             node_index: 0,
             order_id: 0,
         },
+        client_order_id: 0,
         user: UserRefV0::ZERO,
         side: SideV0::Bid,
         price: 0,

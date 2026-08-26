@@ -41,11 +41,12 @@ pub fn handle_cancel_order_v0(
         base_asset_amount: removed.base_asset_amount,
         market_index: market.market_index,
         sub_account_id: removed.user.sub_account_id,
-        _pad: [0; 4],
+        client_order_id: removed.client_order_id,
     });
     Ok(RemovedOrderV0 {
         user: removed.user,
         order_id: removed.order_id,
+        client_order_id: removed.client_order_id,
         price: removed.price,
         base_asset_amount: removed.base_asset_amount,
         side: removed.side,

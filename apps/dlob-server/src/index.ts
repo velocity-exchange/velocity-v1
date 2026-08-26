@@ -23,6 +23,7 @@ import {
 	MarketTypeStr,
 	AssetType,
 	MarketType,
+	PerpMarkets,
 } from '@velocity-exchange/sdk';
 import {
 	RedisClient,
@@ -815,6 +816,77 @@ const main = async (): Promise<void> => {
 				res.end('No L3 found');
 				return;
 			}
+		} catch (err) {
+			next(err);
+		}
+	});
+
+	/**
+	 * A user's resting CLOB orders, per market.
+	 *
+	 * These have no `User.orders` slot to read them out of — a book order
+	 * lives on the book — so this is the answer to "what am I resting". The
+	 * book-publisher writes one key per user per market and republishes only
+	 * when that user's set actually changes, so the cached document is
+	 * current without the fan-out of a per-tick rewrite.
+	 *
+	 * `marketIndexes` is optional; omitted, every perp market is read. Markets
+	 * the user rests nothing in have no key and are simply absent.
+	 */
+	app.get('/userOrders', async (req, res, next) => {
+		try {
+			const { userPubkey, marketIndexes } = req.query;
+			if (!userPubkey || typeof userPubkey !== 'string') {
+				res.status(400).send('userPubkey is required');
+				return;
+			}
+			try {
+				new PublicKey(userPubkey);
+			} catch {
+				res.status(400).send('userPubkey is not a public key');
+				return;
+			}
+
+			const requested = ((marketIndexes as string) ?? '')
+				.split(',')
+				.map((index) => index.trim())
+				.filter((index) => index.length > 0);
+			const indexes = requested.length
+				? requested.map((index) => Number(index))
+				: PerpMarkets[velocityEnv].map((market) => market.marketIndex);
+			if (indexes.some((index) => !Number.isInteger(index) || index < 0)) {
+				res.status(400).send('marketIndexes must be non-negative integers');
+				return;
+			}
+
+			const documents = await Promise.all(
+				indexes.map((marketIndex) =>
+					fetchFromRedis(
+						`last_update_user_orders_${userPubkey}_${marketIndex}`,
+						selectMostRecentBySlot
+					)
+				)
+			);
+			const orders = documents
+				.filter((document) => !!document)
+				.flatMap((document) => document.orders ?? []);
+			cacheHitCounter.add(1, {
+				miss: orders.length === 0,
+				path: req.baseUrl + req.path,
+			});
+			res.writeHead(200);
+			res.end(
+				JSON.stringify({
+					user: userPubkey,
+					orders,
+					slot: Math.max(
+						0,
+						...documents
+							.filter((document) => !!document)
+							.map((document) => document.slot ?? 0)
+					),
+				})
+			);
 		} catch (err) {
 			next(err);
 		}

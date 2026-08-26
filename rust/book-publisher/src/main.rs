@@ -20,6 +20,7 @@
 mod cross;
 mod metrics_server;
 mod payload;
+mod user_orders;
 
 use {
     anyhow::{anyhow, bail, Context, Result},
@@ -317,6 +318,9 @@ async fn main() -> Result<()> {
     // apart from the health layer because the layer holds no chain state.
     let carried: Arc<Mutex<Vec<EntryRef>>> = Arc::new(Mutex::new(Vec::new()));
     let mut deploy_watch = DEPLOY_WATCH_TICKS;
+    // What the per-user index published last, so a tick that changed no
+    // user's orders — which is most of them — writes nothing.
+    let mut user_orders = user_orders::UserOrdersIndex::default();
 
     let mut tick = tokio::time::interval(Duration::from_millis(config.tick_ms));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -337,6 +341,7 @@ async fn main() -> Result<()> {
                 config.cross_match,
                 health.as_ref(),
                 &carried,
+                &mut user_orders,
             )
             .await
             {
@@ -373,6 +378,7 @@ async fn publish_market(
     cross_match: bool,
     health: &Health,
     carried: &Mutex<Vec<EntryRef>>,
+    user_orders: &mut user_orders::UserOrdersIndex,
 ) -> Result<()> {
     let authority = &payer.pubkey();
     let perp_market_account = source
@@ -556,6 +562,32 @@ async fn publish_market(
             best_makers.to_string(),
         )
         .await?;
+
+    // Who is resting what, off the book's own account. Independent of the
+    // ladders above: a quoted book is what a taker of one size would reach,
+    // and a maker asking after their own orders wants all of them.
+    if let Some(book_key) = clob_book_key {
+        let book = source
+            .get_multiple_accounts(&[book_key])
+            .await?
+            .pop()
+            .flatten()
+            .ok_or_else(|| anyhow!("clob market {book_key} not found"))?;
+        let written = user_orders::publish(
+            user_orders,
+            redis,
+            prefix,
+            velocity,
+            market_index,
+            clock.slot,
+            ts_ms,
+            &book.data,
+        )
+        .await?;
+        if written > 0 {
+            info!(market_index, users = written, "user orders published");
+        }
+    }
 
     // Fast-path cross matching: books in hand, a cross is free to see.
     // Simulate before sending — the executor is its own predicate, so a

@@ -51,6 +51,7 @@ use {
         signer::QUOTER_SIGNER_SEED,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
+            events::OrderActionExplanation,
             margin_calculation::MarginContext,
             perp_market_map::MarketSet,
             prop_amm::{
@@ -364,6 +365,13 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
         })
         .transpose()?;
 
+    // Stamped on every cancel record below. Read once, before the user
+    // borrow, because the record is the only thing that wants it.
+    let oracle_price = {
+        let oracle_id = perp_market_map.get_ref(&market_index)?.oracle_id();
+        oracle_map.get_price_data(&oracle_id)?.price
+    };
+
     // ---- Unwind, skip-filter risk-reducing, fee. ----
     let mut total_fee = 0u64;
     {
@@ -402,6 +410,26 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
             // must not re-arm.
             user.release_placed_trigger_slot(market_index, removed.order_id, OrderStatus::Canceled);
             total_fee = total_fee.safe_add(state.perp_fee_structure.flat_filler_fee)?;
+            super::emit_clob_cancel_record(
+                clock.unix_timestamp,
+                oracle_price,
+                &ctx.accounts.user.key(),
+                super::ClobOrderFacts {
+                    order_id: removed.client_order_id,
+                    market_index,
+                    direction,
+                    price: removed.price,
+                    base_asset_amount: removed.base_asset_amount,
+                    base_asset_amount_filled: 0,
+                    max_ts: removed.max_ts,
+                    slot: clock.slot,
+                    taker_origin: removed.taker_origin,
+                },
+                OrderActionExplanation::InsufficientFreeCollateral,
+                Some(ctx.accounts.filler.key()),
+                Some(state.perp_fee_structure.flat_filler_fee),
+                user.perp_positions[position_index].is_isolated(),
+            )?;
         }
 
         // The sweep unwinds by its per-side totals: identical arithmetic to

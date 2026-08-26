@@ -876,6 +876,14 @@ export type Velocity = {
           "signer": true
         },
         {
+          "name": "perpMarket",
+          "docs": [
+            "Read-only, and read for one thing: the cached oracle price the cancel",
+            "record is stamped with. Deliberately not an oracle account — a maker",
+            "pulling orders off a book must not be able to fail on a stale feed."
+          ]
+        },
+        {
           "name": "quoter"
         },
         {
@@ -25431,6 +25439,16 @@ export type Velocity = {
             "type": {
               "option": "u32"
             }
+          },
+          {
+            "name": "rejectIfCrossed",
+            "docs": [
+              "Same rule as `place_clob_order`: refuse the replacement rather than",
+              "rest it crossed. The original is already off the book when this fires,",
+              "so a refused replacement leaves the maker with no order — which is what",
+              "a maker repricing into a crossed book is asking for."
+            ],
+            "type": "bool"
           }
         ]
       }
@@ -26009,6 +26027,12 @@ export type Velocity = {
           },
           {
             "name": "orderFilledWithExternalQuoter"
+          },
+          {
+            "name": "clobOrderEvicted"
+          },
+          {
+            "name": "clobRemainderCulled"
           }
         ]
       }
@@ -27565,6 +27589,21 @@ export type Velocity = {
             "type": {
               "option": "u32"
             }
+          },
+          {
+            "name": "rejectIfCrossed",
+            "docs": [
+              "Refuse the placement when the order would cross the opposite best",
+              "price, rather than resting it crossed. What a post-only order asks for.",
+              "",
+              "It is not what makes the order a maker. A CLOB order always fills at",
+              "its own price on the maker fee schedule — a router taker takes it",
+              "there, and a crossed pair settles through the cross crank, which runs",
+              "the protocol `User` as the taker on both legs. This is about the order",
+              "resting at all: a maker that quotes through the other side has",
+              "mispriced and would rather place nothing."
+            ],
+            "type": "bool"
           }
         ]
       }

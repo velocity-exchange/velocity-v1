@@ -925,6 +925,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				baseAssetAmount: size,
 				maxTs,
 				activationDelaySlots: 0,
+				rejectIfCrossed: false,
 			},
 			{
 				accounts: {

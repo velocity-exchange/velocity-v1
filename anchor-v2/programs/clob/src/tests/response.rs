@@ -13,15 +13,15 @@
 //! region shaped to hold them.
 
 use {
-    super::market::{assert_err, place, test_config, user, TestMarket},
+    super::market::{assert_err, client_id, place, test_config, user, TestMarket},
     crate::{
         book::{ClobBook, NodeArena},
         error::ClobError,
         state::{
             CancelledRemainderV0, ClobMarketV0, ClobSideExt, CompletedOrderV0, Direction,
-            ExecuteResponseV0, MarketConfigV0, PriceLevel, QuoteResponseV0, RemovedOrderV0,
-            ResponsePointerV0, Side, UserBalanceChangeV0, UserCapsV0, UserRefV0, CANCELLED_BYTES,
-            CHANGE_BYTES, COMPLETED_BYTES, COUNT_BYTES, EXECUTE_FILLS_CEILING,
+            ExecuteResponseV0, MarketConfigV0, PartiallyFilledOrderV0, PriceLevel, QuoteResponseV0,
+            RemovedOrderV0, ResponsePointerV0, Side, UserBalanceChangeV0, UserCapsV0, UserRefV0,
+            CANCELLED_BYTES, CHANGE_BYTES, COMPLETED_BYTES, COUNT_BYTES, EXECUTE_FILLS_CEILING,
             EXECUTE_USERS_CEILING, PRICE_LEVEL_BYTES, QUOTE_LEVELS_CEILING, REMOVED_ORDER_BYTES,
             RESPONSE_BUFFER_BYTES, RESPONSE_LEN_BYTES, RESPONSE_OFFSET, USER_CAPS_BYTES,
             USER_CAPS_CAPACITY, USER_REF_BYTES, USER_SET_CAPACITY, USER_SET_MAX_BYTES,
@@ -56,11 +56,13 @@ fn encode_execute(
     changes: &[UserBalanceChangeV0],
     cancelled: &[CancelledRemainderV0],
     completed: &[CompletedOrderV0],
+    partial: &[PartiallyFilledOrderV0],
 ) -> Vec<u8> {
     wincode::serialize(&ExecuteResponseV0 {
         changes,
         cancelled,
         completed,
+        partial,
     })
     .unwrap()
 }
@@ -76,12 +78,19 @@ fn change(user: UserRefV0, base_size: u64, quote_size: u64) -> UserBalanceChange
     }
 }
 
-fn cull(user: UserRefV0, order_id: u64, base_asset_amount: u64) -> CancelledRemainderV0 {
+fn cull(
+    user: UserRefV0,
+    order_id: u64,
+    base_asset_amount: u64,
+    price: u64,
+) -> CancelledRemainderV0 {
     CancelledRemainderV0 {
         order_id,
         base_asset_amount,
+        price,
+        client_order_id: client_id(order_id),
         user,
-        _pad: [0; 6],
+        _pad: [0; 2],
     }
 }
 
@@ -89,7 +98,16 @@ fn done(change_index: u32, order_id: u64) -> CompletedOrderV0 {
     CompletedOrderV0 {
         order_id,
         change_index,
-        _pad: 0,
+        client_order_id: client_id(order_id),
+    }
+}
+
+fn part(change_index: u32, order_id: u64, base_filled: u64) -> PartiallyFilledOrderV0 {
+    PartiallyFilledOrderV0 {
+        order_id,
+        base_filled,
+        client_order_id: client_id(order_id),
+        change_index,
     }
 }
 
@@ -243,6 +261,7 @@ fn execute_streams_balance_changes_merged_by_user() {
                 done(1, middle.order_id),
                 done(0, last.order_id),
             ],
+            &[],
         )
     );
     assert_eq!(book.node_count(Side::Ask), 0);
@@ -258,7 +277,7 @@ fn execute_streams_balance_changes_merged_by_user() {
             (last.order_id, 5)
         ]
     );
-    assert_eq!(outcome.cancelled_order_id, None);
+    assert_eq!(outcome.cancelled_client_order_id, None);
 }
 
 #[test]
@@ -281,12 +300,86 @@ fn execute_streams_a_sub_min_cull_alongside_the_fill() {
         streamed(&book, outcome.response),
         encode_execute(
             &[change(maker, 15, 1500)],
-            &[cull(maker, order.order_id, 5)],
+            &[cull(maker, order.order_id, 5, 100)],
+            &[],
             &[],
         )
     );
-    assert_eq!(outcome.cancelled_order_id, Some(order.order_id));
+    assert_eq!(
+        outcome.cancelled_client_order_id,
+        Some(client_id(order.order_id))
+    );
     assert_eq!(book.node_count(Side::Ask), 0);
+}
+
+/// A balance change merges every order of one maker, so the partial record is
+/// the only place a fill says which order it left resting smaller. Without it
+/// a maker whose order was half filled cannot be told from one whose order was
+/// untouched.
+#[test]
+fn execute_streams_the_one_order_it_left_resting_smaller() {
+    let market = TestMarket::new(16);
+    let mut book = market.book();
+    let maker = user(0xA);
+    let first = place(&mut book, Side::Ask, 100, 5, maker);
+    let second = place(&mut book, Side::Ask, 101, 20, maker);
+
+    // The first order goes whole; the second gives 10 of its 20 and stays.
+    let outcome = book
+        .execute(Direction::Long, 15, &[], &UserCapsV0::EMPTY, 0, None, 0, 0)
+        .unwrap();
+    assert_eq!(
+        streamed(&book, outcome.response),
+        encode_execute(
+            &[change(maker, 15, 100 * 5 + 101 * 10)],
+            &[],
+            &[done(0, first.order_id)],
+            &[part(0, second.order_id, 10)],
+        )
+    );
+    assert_eq!(book.node_count(Side::Ask), 1);
+}
+
+/// A walk that ran past an order it did not finish would report two partials,
+/// and a reader applying both would credit a fill to an order the book never
+/// reached. The reader refuses such a response, so the writer must never be
+/// able to produce one: only the last order a walk touches can be partial,
+/// because running out of taker size is what ends the walk.
+#[test]
+fn a_fill_reports_at_most_one_partial() {
+    let maker = user(0xA);
+    // Sizes that stop mid-order at every depth the book holds.
+    for size in [1, 9, 11, 19, 21, 29, 31, 39] {
+        let market = TestMarket::new(16);
+        let mut book = market.book();
+        for _ in 0..4 {
+            place(&mut book, Side::Ask, 100, 10, maker);
+        }
+        let outcome = book
+            .execute(
+                Direction::Long,
+                size,
+                &[],
+                &UserCapsV0::EMPTY,
+                0,
+                None,
+                0,
+                0,
+            )
+            .unwrap();
+        let bytes = streamed(&book, outcome.response);
+        let response = ExecuteResponseV0::parse(&bytes).expect("parses");
+        assert!(
+            response.partial.len() <= 1,
+            "size {size} produced {} partials",
+            response.partial.len()
+        );
+        assert_eq!(
+            response.partial.len(),
+            usize::from(size % 10 != 0),
+            "a size that lands on an order boundary leaves nothing partial"
+        );
+    }
 }
 
 #[test]
@@ -306,7 +399,12 @@ fn execute_stops_at_the_user_cap() {
         .unwrap();
     assert_eq!(
         streamed(&book, outcome.response),
-        encode_execute(&[change(maker_a, 5, 500)], &[], &[done(0, first.order_id)],)
+        encode_execute(
+            &[change(maker_a, 5, 500)],
+            &[],
+            &[done(0, first.order_id)],
+            &[]
+        )
     );
     // B's order is untouched — a second user would need a second record.
     assert_eq!(book.node_count(Side::Ask), 1);
@@ -323,12 +421,13 @@ fn wire_widths_match_the_response_types() {
         encode(&PriceLevel { price: 1, size: 2 }).len(),
         PRICE_LEVEL_BYTES
     );
-    assert_eq!(encode(&cull(user, 1, 2)).len(), CANCELLED_BYTES);
+    assert_eq!(encode(&cull(user, 1, 2, 3)).len(), CANCELLED_BYTES);
     // Return data rather than response bytes, but velocity reads it by offset,
     // so the width and the position of the trailing flag are both pinned.
     let removed = RemovedOrderV0 {
         user,
         order_id: 1,
+        client_order_id: 5,
         price: 2,
         base_asset_amount: 3,
         side: Side::Ask,
@@ -362,14 +461,17 @@ fn wire_widths_match_the_response_types() {
     ] {
         assert_eq!(width % RESPONSE_LEN_BYTES, 0, "{width}");
     }
-    assert_eq!(encode(&cull(user, 1, 2)).len(), CANCELLED_BYTES);
+    assert_eq!(encode(&cull(user, 1, 2, 3)).len(), CANCELLED_BYTES);
     // An empty quote is its length prefix and the withheld report behind it;
-    // an empty execute response is three prefixes.
+    // an empty execute response is one prefix per section.
     assert_eq!(
         encode_quote(&[]).len(),
         RESPONSE_LEN_BYTES + WITHHELD_REPORT_BYTES
     );
-    assert_eq!(encode_execute(&[], &[], &[]).len(), 3 * RESPONSE_LEN_BYTES);
+    assert_eq!(
+        encode_execute(&[], &[], &[], &[]).len(),
+        4 * RESPONSE_LEN_BYTES
+    );
 }
 
 /// A sweep's total quote must be the floor of the whole sweep's notional, not
@@ -407,6 +509,7 @@ fn execute_totals_the_floor_of_the_whole_sweeps_notional() {
             &[change(maker, 12, 3)],
             &[],
             &[done(0, 1), done(0, 2), done(0, 3)],
+            &[],
         )
     );
 
@@ -426,7 +529,7 @@ fn execute_totals_the_floor_of_the_whole_sweeps_notional() {
         .unwrap();
     assert_eq!(
         streamed(&book, outcome.response),
-        encode_execute(&[change(maker, 8, 5)], &[], &[done(0, 1), done(0, 2)],)
+        encode_execute(&[change(maker, 8, 5)], &[], &[done(0, 1), done(0, 2)], &[])
     );
 }
 
@@ -592,14 +695,14 @@ fn a_market_at_the_execute_ceilings_streams_a_full_width_response() {
         .enumerate()
         .map(|(i, order)| done(i as u32, order.order_id))
         .collect();
-    let expected = encode_execute(&changes, &[], &completed);
+    let expected = encode_execute(&changes, &[], &completed, &[]);
     assert_eq!(streamed(&book, outcome.response), expected);
     assert_eq!(outcome.fills.len(), fills);
     assert_eq!(book.node_count(Side::Ask), 0);
 
     // The widest response the encoder can produce, and it fits with room to
     // spare — `ResponseTooLarge` is unreachable at the configured ceilings.
-    let widest = 3 * RESPONSE_LEN_BYTES + fills * (CHANGE_BYTES + COMPLETED_BYTES);
+    let widest = 4 * RESPONSE_LEN_BYTES + fills * (CHANGE_BYTES + COMPLETED_BYTES);
     assert_eq!(outcome.response.len as usize, widest);
     assert!(
         widest <= RESPONSE_BUFFER_BYTES,

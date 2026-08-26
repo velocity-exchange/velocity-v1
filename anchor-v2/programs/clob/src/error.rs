@@ -69,6 +69,8 @@ pub enum ClobError {
     TakerOriginCrossPending,
     #[msg("User set holds more entries than USER_SET_CAPACITY")]
     OversizedUserSet,
+    #[msg("Order would rest crossed with the opposite side and asked not to")]
+    OrderWouldCross,
 }
 
 impl From<quoter_spec::SpecError> for ClobError {

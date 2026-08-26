@@ -303,3 +303,41 @@ pub fn read_zero_copy<T: bytemuck::Pod>(svm: &LiteSVM, address: &Pubkey) -> T {
     let account = svm.get_account(address).expect("account missing");
     bytemuck::pod_read_unaligned(&account.data[8..8 + core::mem::size_of::<T>()])
 }
+
+/// Decode every anchor event of one type out of a transaction's logs.
+///
+/// Velocity writes its records base64-encoded through `msg!`, which the
+/// runtime renders as a `Program log:` line, while anchor's own `emit!` uses
+/// `sol_log_data` and renders as `Program data:`. Both are read here, because
+/// this is meant to see what an off-chain subscriber sees rather than what the
+/// program happened to hand back.
+pub fn events<T: anchor_lang::Discriminator + anchor_lang::AnchorDeserialize>(
+    meta: &TransactionMetadata,
+) -> Vec<T> {
+    meta.logs
+        .iter()
+        .filter_map(|line| {
+            line.strip_prefix("Program data: ")
+                .or_else(|| line.strip_prefix("Program log: "))
+        })
+        .filter_map(|encoded| base64_decode(encoded))
+        .filter(|bytes| bytes.len() > 8 && bytes[..8] == T::DISCRIMINATOR[..])
+        .filter_map(|bytes| T::try_from_slice(&bytes[8..]).ok())
+        .collect()
+}
+
+/// Standard base64, enough for the fixed alphabet the runtime emits.
+fn base64_decode(input: &str) -> Option<Vec<u8>> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let (mut out, mut acc, mut bits) = (Vec::new(), 0u32, 0u32);
+    for byte in input.bytes().take_while(|byte| *byte != b'=') {
+        let value = ALPHABET.iter().position(|c| *c == byte)? as u32;
+        acc = (acc << 6) | value;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((acc >> bits) as u8);
+        }
+    }
+    Some(out)
+}

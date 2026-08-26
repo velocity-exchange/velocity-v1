@@ -722,10 +722,11 @@ impl MidpointQuoterV0 {
                 )
                 .map_err(MidpointError::from)?;
         }
-        // Never a cancelled remainder or a completed order: standing intent
-        // has no resting orders to consume or cull.
+        // Never a cancelled remainder, a completed order, or a partial fill:
+        // standing intent has no resting orders to consume, cull or leave
+        // smaller than they were.
         let len = writer
-            .finish(&mut self.response[..], &[], &[])
+            .finish(&mut self.response[..], &[], &[], &[])
             .map_err(MidpointError::from)?;
         Ok(response_pointer(len))
     }

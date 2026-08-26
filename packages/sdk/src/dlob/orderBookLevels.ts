@@ -26,7 +26,16 @@ import { MMOraclePriceData, OraclePriceData } from '../oracles/types';
 import { PublicKey } from '@solana/web3.js';
 import { standardizeBaseAssetAmount, standardizePrice } from '../math/orders';
 
-type liquiditySource = 'vamm' | 'dlob' | 'indicative';
+/**
+ * Where a level's depth came from.
+ *
+ * `clob` is a resting order on the market's book and `propamm` a quote a
+ * registered maker program answered with — the distinction matters to a
+ * reader, because only the first has a queue position and can be cancelled,
+ * and the second is a quote at the size it was asked for rather than standing
+ * depth.
+ */
+type liquiditySource = 'vamm' | 'dlob' | 'indicative' | 'clob' | 'propamm';
 
 /**
  * A single aggregated price level of an L2 order book: one price with the combined size of all

@@ -17,6 +17,11 @@ program = { package = "velocity", path = "../../programs/velocity", default-feat
   "vlp-hedge",
 ] }
 
+# The CLOB's node layout, so the per-user index decodes the same bytes the
+# book wrote. See `crates/clob-state` for why the account is the only place
+# the "which orders does this user hold" answer can come from.
+clob-state = { path = "../../crates/clob-state" }
+
 anchor-lang = "1.0.2"
 axum = "0.8"
 prometheus = { version = "0.13", default-features = false }

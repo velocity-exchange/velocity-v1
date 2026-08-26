@@ -29,6 +29,7 @@ fn response_account(
         changes,
         cancelled: &[],
         completed,
+        partial: &[],
     })
     .unwrap();
     let len = bytes.len();
@@ -404,7 +405,7 @@ pub mod amm_jit {
                     &[CompletedOrderV0 {
                         order_id: 1,
                         change_index: 0,
-                        _pad: 0,
+                        client_order_id: 0,
                     }],
                 ))
             }

@@ -63,11 +63,11 @@ use {
             response_pointer, user_set_within_capacity, CancelAllOutcome, CancelSidesExt,
             CancelSidesV0, CancelledRemainderV0, ClobDirectionExt, ClobHeaderV0, ClobMarketV0,
             ClobSideExt, CompletedOrderV0, Direction, ExecuteOutcome, L3RowV0, MarketConfigV0,
-            OrderBitFlag, OrderNodeV0, OrderRefV0, PlaceOrderParams, PriceLevel, RemovedOrder,
-            ResponsePointerV0, Side, UserBalanceChangeV0, UserCapsV0, UserRefV0, BASE_PRECISION,
-            CANCEL_ALL_ORDERS_CEILING, EXECUTE_FILLS_CEILING, EXECUTE_USERS_CEILING,
-            L3_ROWS_CEILING, QUOTE_LEVELS_CEILING, USER_CAPS_CAPACITY, USER_EXCLUSION_BITMAP_BYTES,
-            USER_SET_CAPACITY, ZERO_ADDRESS,
+            OrderBitFlag, OrderNodeV0, OrderRefV0, PartiallyFilledOrderV0, PlaceOrderParams,
+            PriceLevel, RemovedOrder, ResponsePointerV0, Side, UserBalanceChangeV0, UserCapsV0,
+            UserRefV0, BASE_PRECISION, CANCEL_ALL_ORDERS_CEILING, EXECUTE_FILLS_CEILING,
+            EXECUTE_USERS_CEILING, L3_ROWS_CEILING, QUOTE_LEVELS_CEILING, USER_CAPS_CAPACITY,
+            USER_EXCLUSION_BITMAP_BYTES, USER_SET_CAPACITY, ZERO_ADDRESS,
         },
     },
     anchor_lang_v2::{address_eq, prelude::*},
@@ -105,7 +105,7 @@ pub trait ClobBook {
         &mut self,
         user: UserRefV0,
         sides: CancelSidesV0,
-        removed_ids: &mut dyn FnMut(u64) -> Result<()>,
+        removed_ids: &mut dyn FnMut(u32) -> Result<()>,
     ) -> Result<CancelAllOutcome>;
     fn evict_worst(&mut self, side: Side) -> Result<RemovedOrder>;
     fn remove_expired(&mut self, order_ref: OrderRefV0, now: i64) -> Result<RemovedOrder>;
@@ -536,6 +536,8 @@ impl ClobBook for ClobMarketV0 {
             placed_slot,
             max_ts,
             taker_origin,
+            client_order_id,
+            reject_if_crossed,
         } = params;
         require!(
             price != 0 && base_asset_amount != 0 && !address_eq(&user.authority, &ZERO_ADDRESS),
@@ -557,6 +559,22 @@ impl ClobBook for ClobMarketV0 {
             base_asset_amount % self.order_step_size.max(1) == 0,
             ClobError::SizeNotStepAligned
         );
+
+        // A maker that quotes through the other side has mispriced, and would
+        // rather place nothing than rest crossed. Measured against the
+        // opposite best whatever its state: an order still inside its
+        // activation delay is resting liquidity a moment from now, and a
+        // caller asking not to cross does not want to cross that either.
+        if reject_if_crossed {
+            let opposite = self.best(side.opposite());
+            if opposite != NIL {
+                let resting = self.read_node(opposite)?;
+                require!(
+                    !side.is_crossed_by(price, resting.price),
+                    ClobError::OrderWouldCross
+                );
+            }
+        }
 
         let per_side = (self.capacity() / 2) as u32;
         let count_before = self.node_count(side);
@@ -595,7 +613,7 @@ impl ClobBook for ClobMarketV0 {
                     | OrderBitFlag::TakerOrigin.bit_if(taker_origin),
                 padding0: 0,
                 sub_account_id: user.sub_account_id,
-                padding: [0; 4],
+                client_order_id,
             },
         )?;
         insert_order(self, side, index, prev, next)?;
@@ -683,7 +701,7 @@ impl ClobBook for ClobMarketV0 {
         &mut self,
         user: UserRefV0,
         sides: CancelSidesV0,
-        removed_ids: &mut dyn FnMut(u64) -> Result<()>,
+        removed_ids: &mut dyn FnMut(u32) -> Result<()>,
     ) -> Result<CancelAllOutcome> {
         let ceiling = CANCEL_ALL_ORDERS_CEILING as u32;
         let mut outcome = CancelAllOutcome {
@@ -713,7 +731,7 @@ impl ClobBook for ClobMarketV0 {
                     .ok_or(ClobError::MathError)?;
                 orders_removed += 1;
                 total_removed += 1;
-                removed_ids(node.order_id)?;
+                removed_ids(node.client_order_id)?;
                 remove_order(book, index)?;
                 Ok(Walk::Continue)
             })?;
@@ -1064,6 +1082,7 @@ impl ClobBook for ClobMarketV0 {
         // user), so this is the one collection execute still builds.
         let mut fills: Vec<FillSlimV0> = Vec::with_capacity(max_fills);
         let mut cancelled: Option<CancelledRemainderV0> = None;
+        let mut partial: Option<PartiallyFilledOrderV0> = None;
         // Bounded by the same thing `fills` is — a fill consumes at most one
         // order — so it reserves the same, rather than doubling its way up
         // beside a sibling that does not.
@@ -1163,6 +1182,7 @@ impl ClobBook for ClobMarketV0 {
             };
             fills.push(FillSlimV0 {
                 order_id: node.order_id,
+                client_order_id: node.client_order_id,
                 base_size: take,
             });
 
@@ -1174,7 +1194,7 @@ impl ClobBook for ClobMarketV0 {
                 completed.push(CompletedOrderV0 {
                     order_id: node.order_id,
                     change_index,
-                    _pad: 0,
+                    client_order_id: node.client_order_id,
                 });
                 remove_order(book, index)?;
                 removals += 1;
@@ -1190,12 +1210,26 @@ impl ClobBook for ClobMarketV0 {
                     cancelled = Some(CancelledRemainderV0 {
                         order_id: node.order_id,
                         base_asset_amount: remainder,
+                        price: node.price,
+                        client_order_id: node.client_order_id,
                         user: node.user_ref(),
-                        _pad: [0; 6],
+                        _pad: [0; 2],
                     });
                     remove_order(book, index)?;
                     removals += 1;
                 } else {
+                    // The order stays on the book smaller than the walk found
+                    // it. A balance change merges every order of one maker, so
+                    // this is the only place the fill says which order moved.
+                    // At most one exists, for the same reason at most one cull
+                    // does.
+                    require!(partial.is_none(), ClobError::BookInvariantViolated);
+                    partial = Some(PartiallyFilledOrderV0 {
+                        order_id: node.order_id,
+                        base_filled: take,
+                        client_order_id: node.client_order_id,
+                        change_index,
+                    });
                     book.update_node(index, |n| n.base_asset_amount = remainder)?;
                 }
             }
@@ -1207,11 +1241,16 @@ impl ClobBook for ClobMarketV0 {
             })
         })?;
 
-        // `finish` backfills the change count and writes the two remaining
+        // `finish` backfills the change count and writes the remaining
         // sections in the order `ExecuteResponseV0` declares them.
         let response = response_pointer(
             writer
-                .finish(&mut self.response, cancelled.as_slice(), &completed)
+                .finish(
+                    &mut self.response,
+                    cancelled.as_slice(),
+                    &completed,
+                    partial.as_slice(),
+                )
                 .map_err(ClobError::from)?,
         );
 
@@ -1233,7 +1272,7 @@ impl ClobBook for ClobMarketV0 {
         Ok(ExecuteOutcome {
             response,
             fills,
-            cancelled_order_id: cancelled.map(|cull| cull.order_id),
+            cancelled_client_order_id: cancelled.map(|cull| cull.client_order_id),
         })
     }
 
@@ -1356,6 +1395,7 @@ fn removed_order(node: &OrderNodeV0) -> RemovedOrder {
     RemovedOrder {
         user: node.user_ref(),
         order_id: node.order_id,
+        client_order_id: node.client_order_id,
         price: node.price,
         base_asset_amount: node.base_asset_amount,
         side: node.side(),

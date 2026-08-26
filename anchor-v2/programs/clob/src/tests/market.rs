@@ -130,7 +130,20 @@ pub fn place_raw(
     size: u64,
     user: UserRefV0,
 ) -> Result<OrderRefV0> {
-    book.place(params(side, price, size, user))
+    book.place(PlaceOrderParams {
+        client_order_id: client_id(book.next_order_id),
+        ..params(side, price, size, user)
+    })
+}
+
+/// The client id every test placement carries, derived from the book id the
+/// order is about to get. Tests name an order once and both of its ids follow,
+/// which is what lets an assertion pin that the book reported the caller's id
+/// back rather than its own.
+pub fn client_id(order_id: u64) -> u32 {
+    // Wrapping because one test drives `next_order_id` to its ceiling, and a
+    // helper that only has to be deterministic should not panic there.
+    (order_id as u32).wrapping_add(1_000)
 }
 
 /// Place a migrated taker remainder — same order, [`OrderBitFlag::TakerOrigin`]
@@ -145,6 +158,7 @@ pub fn place_taker_origin(
     let order_ref = book
         .place(PlaceOrderParams {
             taker_origin: true,
+            client_order_id: client_id(book.next_order_id),
             ..params(side, price, size, user)
         })
         .expect("placement succeeds");
@@ -162,6 +176,8 @@ pub fn params(side: Side, price: u64, size: u64, user: UserRefV0) -> PlaceOrderP
         placed_slot: 0,
         max_ts: 0,
         taker_origin: false,
+        client_order_id: 0,
+        reject_if_crossed: false,
     }
 }
 

@@ -40,8 +40,9 @@
 
 use {
     crate::{
-        completed_orders_fit, len_prefix, CancelledRemainderV0, CompletedOrderV0, L3RowV0,
-        PriceLevelV0, SpecError, UserBalanceChangeV0, LEN_BYTES,
+        completed_orders_fit, len_prefix, partial_orders_fit, CancelledRemainderV0,
+        CompletedOrderV0, L3RowV0, PartiallyFilledOrderV0, PriceLevelV0, SpecError,
+        UserBalanceChangeV0, LEN_BYTES,
     },
     bytemuck::Pod,
     core::mem::size_of,
@@ -346,6 +347,7 @@ impl ExecuteWriter {
         region: &mut [u8],
         cancelled: &[CancelledRemainderV0],
         completed: &[CompletedOrderV0],
+        partial: &[PartiallyFilledOrderV0],
     ) -> Result<usize, SpecError> {
         let Self {
             mut cursor,
@@ -355,13 +357,15 @@ impl ExecuteWriter {
         // response does not hold, because it indexes with that number and a
         // dangling one unwinds some other user's live margin. Refuse to write
         // one too, so a quoter fails on its own bug rather than on the
-        // router's rejection of it.
-        if !completed_orders_fit(completed, changes) {
+        // router's rejection of it. The partial section is held to the same
+        // bound, and to the one record a fill can produce.
+        if !completed_orders_fit(completed, changes) || !partial_orders_fit(partial, changes) {
             return Err(SpecError::DanglingCompletedOrder);
         }
         cursor.patch_len(region, 0, changes)?;
         cursor.push_section(region, cancelled)?;
         cursor.push_section(region, completed)?;
+        cursor.push_section(region, partial)?;
         Ok(cursor.len)
     }
 }

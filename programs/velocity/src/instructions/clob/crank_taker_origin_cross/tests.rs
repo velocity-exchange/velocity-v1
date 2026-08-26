@@ -60,6 +60,7 @@ fn head(node: Option<Head>, node_index: u32) -> ClobOrderViewV0 {
             node_index,
             order_id: node.order_id,
         },
+        client_order_id: 0,
         user: ClobUserRefV0 {
             authority: Pubkey::new_from_array([node.authority; 32]),
             sub_account_id: 0,

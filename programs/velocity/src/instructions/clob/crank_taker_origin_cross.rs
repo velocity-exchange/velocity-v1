@@ -251,6 +251,12 @@ fn rest_leftover(
         max_ts,
         user: removed.user,
         taker_origin: true,
+        // The leftover is the order its owner placed, minus what the cross
+        // took, so it keeps the id every record of it is already filed under.
+        client_order_id: removed.client_order_id,
+        // A leftover goes back where it already rested. Refusing it for
+        // crossing would strand the order the cross was resolving.
+        reject_if_crossed: false,
     })
     .map(Some)
 }

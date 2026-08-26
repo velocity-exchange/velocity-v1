@@ -51,10 +51,11 @@ fn the_lifecycle_records_emit_the_bytes_the_event_impl_would() {
         price: 17,
         base_asset_amount: 19,
         node_index: 21,
+        client_order_id: 27,
         market_index: 23,
         sub_account_id: 25,
         side: 1,
-        _pad: [0; 7],
+        _pad: [0; 3],
     });
     assert_pod_matches_event!(OrderCancelRecordV0 {
         authority: authority(),
@@ -64,7 +65,7 @@ fn the_lifecycle_records_emit_the_bytes_the_event_impl_would() {
         base_asset_amount: 19,
         market_index: 23,
         sub_account_id: 25,
-        _pad: [0; 4],
+        client_order_id: 27,
     });
     assert_pod_matches_event!(OrderEvictRecordV0 {
         authority: authority(),
@@ -74,7 +75,7 @@ fn the_lifecycle_records_emit_the_bytes_the_event_impl_would() {
         base_asset_amount: 19,
         market_index: 23,
         sub_account_id: 25,
-        _pad: [0; 4],
+        client_order_id: 27,
     });
     assert_pod_matches_event!(OrderExpireRecordV0 {
         authority: authority(),
@@ -84,7 +85,7 @@ fn the_lifecycle_records_emit_the_bytes_the_event_impl_would() {
         base_asset_amount: 19,
         market_index: 23,
         sub_account_id: 25,
-        _pad: [0; 4],
+        client_order_id: 27,
     });
 }
 
@@ -133,14 +134,14 @@ fn the_cancel_all_record_emits_the_bytes_the_event_impl_would() {
         ),
     ];
     for (outcome, sides) in shapes {
-        let order_ids: Vec<u64> = (0..outcome.orders() as u64).map(|i| 1_000 + i).collect();
+        let client_order_ids: Vec<u32> = (0..outcome.orders()).map(|i| 1_000 + i).collect();
         // Boxed for the same reason as the execute record's buffer: the program
         // gives it its own frame, and the test needn't put ~1KB on the host
         // stack.
         let mut record = Box::new(CancelAllRecord::new(&authority(), -7, 23, 25, sides).unwrap());
-        order_ids
+        client_order_ids
             .iter()
-            .try_for_each(|order_id| record.push_id(*order_id))
+            .try_for_each(|client_order_id| record.push_id(*client_order_id))
             .unwrap();
         let expected = Event::data(&OrdersCancelRecordV0 {
             authority: authority(),
@@ -151,13 +152,13 @@ fn the_cancel_all_record_emits_the_bytes_the_event_impl_would() {
             sub_account_id: 25,
             sides,
             exhaustive: outcome.exhaustive,
-            order_ids: order_ids.clone(),
+            client_order_ids: client_order_ids.clone(),
         });
         assert_eq!(
             record.log_bytes(&outcome).unwrap(),
             expected.as_slice(),
             "cancel-all record with {} ids diverged from Event::data()",
-            order_ids.len()
+            client_order_ids.len()
         );
     }
 }
@@ -184,28 +185,29 @@ fn the_execute_record_emits_the_bytes_the_event_impl_would() {
     let fill = |i: u64| FillSlimV0 {
         order_id: i,
         base_size: 100 + i,
+        client_order_id: 1_000 + i as u32,
     };
-    let shapes: [(Vec<FillSlimV0>, Option<u64>); 4] = [
+    let shapes: [(Vec<FillSlimV0>, Option<u32>); 4] = [
         (vec![], None),
         (vec![], Some(77)),
         (vec![fill(1), fill(2), fill(3)], Some(77)),
         (
             (0..EXECUTE_FILLS_CEILING as u64).map(fill).collect(),
-            Some(u64::MAX),
+            Some(u32::MAX),
         ),
     ];
-    for (fills, cancelled_order_id) in shapes {
+    for (fills, cancelled_client_order_id) in shapes {
         // Boxed: the program keeps this buffer in its own stack frame, and the
         // test has no reason to put ~2KB on the host stack either.
         let mut log = Box::new(LogBuf::<EXECUTE_RECORD_LOG_BYTES>::new());
-        write_execute_record(&mut log, -7, 9, 23, 1, &fills, cancelled_order_id).unwrap();
+        write_execute_record(&mut log, -7, 9, 23, 1, &fills, cancelled_client_order_id).unwrap();
         let record = ExecuteRecordV0 {
             ts: -7,
             slot: 9,
             market_index: 23,
             direction: 1,
             fills: fills.clone(),
-            cancelled_order_ids: cancelled_order_id.into_iter().collect(),
+            cancelled_client_order_ids: cancelled_client_order_id.into_iter().collect(),
         };
         assert_eq!(
             log.as_slice(),

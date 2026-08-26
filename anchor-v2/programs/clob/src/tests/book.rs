@@ -124,6 +124,58 @@ fn alloc_node_guards_the_free_list() {
     assert_consistent(&book);
 }
 
+/// A maker that quotes through the other side has mispriced. The book rests
+/// such an order by default — a crossed pair is what the cross crank exists to
+/// resolve — so refusing it is something the caller asks for per placement.
+#[test]
+fn a_placement_can_refuse_to_rest_crossed() {
+    let market = TestMarket::new(16);
+    let mut book = market.book();
+    let (maker, taker) = (user(0xA), user(0xB));
+    place(&mut book, Side::Bid, 100, 5, maker);
+
+    let refusing = |side, price| PlaceOrderParams {
+        reject_if_crossed: true,
+        ..params(side, price, 5, taker)
+    };
+
+    // At the bid and through it are both crossed for an ask.
+    assert_err(
+        book.place(refusing(Side::Ask, 100)),
+        ClobError::OrderWouldCross,
+    );
+    assert_err(
+        book.place(refusing(Side::Ask, 99)),
+        ClobError::OrderWouldCross,
+    );
+
+    // A tick above rests, and so does a crossing order that did not ask.
+    book.place(refusing(Side::Ask, 101))
+        .expect("uncrossed rests");
+    book.place(params(Side::Ask, 100, 5, taker))
+        .expect("a crossing order still rests when it did not ask otherwise");
+    assert_consistent(&book);
+
+    // Same-side depth is not a cross: only the opposite best is measured.
+    book.place(refusing(Side::Bid, 90))
+        .expect("resting behind one's own side is not crossing");
+    assert_consistent(&book);
+}
+
+/// Nothing to cross means nothing to refuse.
+#[test]
+fn refusing_to_cross_an_empty_side_still_places() {
+    let market = TestMarket::new(16);
+    let mut book = market.book();
+    let maker = user(0xA);
+    book.place(PlaceOrderParams {
+        reject_if_crossed: true,
+        ..params(Side::Bid, 100, 5, maker)
+    })
+    .expect("an empty opposite side crosses nothing");
+    assert_consistent(&book);
+}
+
 #[test]
 fn arena_access_validates_every_index() {
     let market = TestMarket::new(8);
@@ -709,11 +761,11 @@ fn cancel_all(
     book: &mut ClobMarketV0,
     user: UserRefV0,
     sides: CancelSidesV0,
-) -> (CancelAllOutcome, Vec<u64>) {
+) -> (CancelAllOutcome, Vec<u32>) {
     let mut ids = Vec::new();
     let outcome = book
-        .cancel_all(user, sides, &mut |order_id| {
-            ids.push(order_id);
+        .cancel_all(user, sides, &mut |client_order_id| {
+            ids.push(client_order_id);
             Ok(())
         })
         .expect("cancel_all succeeds");

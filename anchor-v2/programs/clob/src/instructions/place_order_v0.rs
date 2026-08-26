@@ -58,6 +58,8 @@ pub fn handle_place_order_v0(
         placed_slot: clock.slot,
         max_ts: args.max_ts,
         taker_origin: args.taker_origin,
+        client_order_id: args.client_order_id,
+        reject_if_crossed: args.reject_if_crossed,
     })?;
 
     emit_pod!(OrderPlaceRecordV0 {
@@ -70,10 +72,11 @@ pub fn handle_place_order_v0(
         price: args.price,
         base_asset_amount: args.base_asset_amount,
         node_index: order_ref.node_index,
+        client_order_id: args.client_order_id,
         market_index: market.market_index,
         sub_account_id: user.sub_account_id,
         side: args.side.to_u8(),
-        _pad: [0; 7],
+        _pad: [0; 3],
     });
 
     Ok(order_ref)

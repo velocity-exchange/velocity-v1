@@ -128,6 +128,7 @@ export * from './util/digest';
 export * from './util/promiseTimeout';
 export * from './math/spotBalance';
 export * from './velocityClientConfig';
+export * from './clob/userOrdersClient';
 export * from './dlob/DLOB';
 export * from './dlob/DLOBNode';
 export * from './dlob/NodeList';

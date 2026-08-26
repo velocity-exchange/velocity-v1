@@ -28,10 +28,14 @@ pub struct OrderPlaceRecordV0 {
     pub price: u64,
     pub base_asset_amount: u64,
     pub node_index: u32,
+    /// The placing caller's own id for this order. Every later record names
+    /// the order by this, so a reader files it under the id its own records
+    /// use and never holds a map between the two id spaces.
+    pub client_order_id: u32,
     pub market_index: u16,
     pub sub_account_id: u16,
     pub side: u8,
-    pub _pad: [u8; 7],
+    pub _pad: [u8; 3],
 }
 
 #[event(bytemuck)]
@@ -44,7 +48,7 @@ pub struct OrderCancelRecordV0 {
     pub base_asset_amount: u64,
     pub market_index: u16,
     pub sub_account_id: u16,
-    pub _pad: [u8; 4],
+    pub client_order_id: u32,
 }
 
 /// One per `cancel_all_v0` — a maker withdrawing a whole side (or both) in one
@@ -71,7 +75,11 @@ pub struct OrdersCancelRecordV0 {
     /// (0 = bids, 1 = asks, 2 = both).
     pub sides: u8,
     pub exhaustive: bool,
-    pub order_ids: Vec<u64>,
+    /// The swept orders, named by the placing caller's ids rather than the
+    /// book's. A bulk list is read by whoever files orders under those ids,
+    /// and carrying both would double the log for an id nothing downstream
+    /// asks for.
+    pub client_order_ids: Vec<u32>,
 }
 
 /// Crank eviction at the soft cap. Distinct from cancel: the UI shows
@@ -86,7 +94,7 @@ pub struct OrderEvictRecordV0 {
     pub base_asset_amount: u64,
     pub market_index: u16,
     pub sub_account_id: u16,
-    pub _pad: [u8; 4],
+    pub client_order_id: u32,
 }
 
 /// Crank reclamation of an expired order (execute only skips expired).
@@ -100,7 +108,7 @@ pub struct OrderExpireRecordV0 {
     pub base_asset_amount: u64,
     pub market_index: u16,
     pub sub_account_id: u16,
-    pub _pad: [u8; 4],
+    pub client_order_id: u32,
 }
 
 /// One per execute — the hot path stays cheap by referencing orders by id
@@ -114,16 +122,22 @@ pub struct ExecuteRecordV0 {
     pub direction: u8,
     pub fills: Vec<FillSlimV0>,
     /// Orders culled because the post-fill remainder fell below
-    /// `min_order_size`.
-    pub cancelled_order_ids: Vec<u64>,
+    /// `min_order_size`, by the placing caller's ids. See
+    /// [`OrdersCancelRecordV0::client_order_ids`].
+    pub cancelled_client_order_ids: Vec<u32>,
 }
 
 #[derive(Clone, Copy, wincode::SchemaRead, wincode::SchemaWrite)]
 pub struct FillSlimV0 {
     pub order_id: u64,
     pub base_size: u64,
+    /// The placing caller's own id for this order. Carried so a reader that
+    /// files orders under the caller's ids — which every reader downstream of
+    /// velocity does — joins a fill to an order without holding a map between
+    /// the two id spaces.
+    pub client_order_id: u32,
 }
 
 /// Borsh width of a [`FillSlimV0`] — the per-fill stride of the execute
 /// record's payload, which [`crate::emit`] sizes its stack buffer from.
-pub const FILL_SLIM_BYTES: usize = 2 * core::mem::size_of::<u64>();
+pub const FILL_SLIM_BYTES: usize = 2 * core::mem::size_of::<u64>() + core::mem::size_of::<u32>();

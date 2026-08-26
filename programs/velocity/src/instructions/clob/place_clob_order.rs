@@ -77,6 +77,16 @@ pub struct PlaceClobOrderParams {
     /// co-signed by `State.hot_flow_authority`, introspected off the
     /// instructions sysvar); the CLOB clamps to its max.
     pub activation_delay_slots: Option<u32>,
+    /// Refuse the placement when the order would cross the opposite best
+    /// price, rather than resting it crossed. What a post-only order asks for.
+    ///
+    /// It is not what makes the order a maker. A CLOB order always fills at
+    /// its own price on the maker fee schedule — a router taker takes it
+    /// there, and a crossed pair settles through the cross crank, which runs
+    /// the protocol `User` as the taker on both legs. This is about the order
+    /// resting at all: a maker that quotes through the other side has
+    /// mispriced and would rather place nothing.
+    pub reject_if_crossed: bool,
 }
 
 #[access_control(
@@ -162,12 +172,21 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
         PositionDirection::Long => ClobSide::Bid,
         PositionDirection::Short => ClobSide::Ask,
     };
-    let user_ref = {
-        let user = crate::load!(ctx.accounts.user)?;
-        crate::state::prop_amm::ClobUserRefV0 {
-            authority: user.authority,
-            sub_account_id: user.sub_account_id.into(),
-        }
+    // The order's id comes from the `User`'s own counter, the one that numbers
+    // its DLOB orders, so a client names every order it owns the same way
+    // wherever the order rests. The book stores it and reports it back on
+    // every answer, which is what keeps the two id spaces from ever needing a
+    // map between them.
+    let (user_ref, client_order_id) = {
+        let mut user = load_mut!(ctx.accounts.user)?;
+        let client_order_id = crate::get_then_update_id!(user, next_order_id);
+        (
+            crate::state::prop_amm::ClobUserRefV0 {
+                authority: user.authority,
+                sub_account_id: user.sub_account_id.into(),
+            },
+            client_order_id,
+        )
     };
     // The CLOB returns the new order's ref; it stays the transaction's return
     // data (clients persist it as the cancel hint) and is decoded here so a
@@ -181,6 +200,8 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
         user: user_ref,
         // A placement whose price its owner chose, not a migrated remainder.
         taker_origin: false,
+        client_order_id,
+        reject_if_crossed: params.reject_if_crossed,
     })?;
 
     // Reserve the worst-case aggregates, then gate margin exactly like a
@@ -224,6 +245,23 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
         &mut oracle_map,
         risk_increasing,
         isolated_market_index,
+    )?;
+
+    drop(user);
+    super::emit_clob_place_record(
+        clock.unix_timestamp,
+        &ctx.accounts.user.key(),
+        super::ClobOrderFacts {
+            order_id: client_order_id,
+            market_index: params.market_index,
+            direction: params.direction,
+            price: params.price,
+            base_asset_amount: params.base_asset_amount,
+            base_asset_amount_filled: 0,
+            max_ts: params.max_ts,
+            slot: clock.slot,
+            taker_origin: false,
+        },
     )?;
 
     msg!(
@@ -293,6 +331,10 @@ pub fn try_place_remainder_on_clob<'info>(
     price: u64,
     base_asset_amount: u64,
     max_ts: i64,
+    // The id of the order this remainder came off. It carries across so the
+    // order keeps one identity through the migration: the same id names it in
+    // the records before and the records after.
+    client_order_id: u32,
     clock: &Clock,
 ) -> Result<bool> {
     let clob = {
@@ -391,7 +433,28 @@ pub fn try_place_remainder_on_clob<'info>(
         // counterparty crosses it and a cross settles at that
         // counterparty's price.
         taker_origin: true,
+        client_order_id,
+        // A remainder that refused to rest crossed would strand the taker
+        // that came to trade, which is the opposite of what migrating it is
+        // for.
+        reject_if_crossed: false,
     })?;
+
+    super::emit_clob_place_record(
+        clock.unix_timestamp,
+        &user_loader.key(),
+        super::ClobOrderFacts {
+            order_id: client_order_id,
+            market_index,
+            direction,
+            price,
+            base_asset_amount,
+            base_asset_amount_filled: 0,
+            max_ts,
+            slot: clock.slot,
+            taker_origin: true,
+        },
+    )?;
 
     msg!(
         "placed remainder as clob order {} (node {})",

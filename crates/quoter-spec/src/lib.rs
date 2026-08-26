@@ -48,7 +48,8 @@
 //! `finish`'s parameters, so a new one stops every quoter compiling.
 //!
 //! An execute response is [`ExecuteHeaderV0`], then [`UserBalanceChangeV0`],
-//! then [`CancelledRemainderV0`], then [`CompletedOrderV0`]. Completed order
+//! then [`CancelledRemainderV0`], then [`CompletedOrderV0`], then
+//! [`PartiallyFilledOrderV0`]. Completed order
 //! ids are their own section rather than a list inside each change: a quoter
 //! aggregates repeated fills into one record per user as it goes, so ids for a
 //! user arrive interleaved with other users' fills. Naming the change from the
@@ -144,8 +145,18 @@ pub struct UserBalanceChangeV0 {
 pub struct CancelledRemainderV0 {
     pub order_id: u64,
     pub base_asset_amount: u64,
+    /// The price the culled order was resting at.
+    ///
+    /// A cull is the one removal on the fill path the caller has to report
+    /// itself, and a removal record that could not state a price would carry a
+    /// zero into whatever reads it. There is at most one of these per execute,
+    /// so the width is paid once rather than per fill.
+    pub price: u64,
+    /// The caller's own id for this order, carried back so the removal lands
+    /// on the order the caller knows. See [`CompletedOrderV0::client_order_id`].
+    pub client_order_id: u32,
     pub user: UserRefV0,
-    pub _pad: [u8; 6],
+    pub _pad: [u8; 2],
 }
 
 /// One resting order a fill fully consumed, naming the balance change it
@@ -189,7 +200,42 @@ pub struct CompletedOrderV0 {
     /// unwinds whichever record happens to sit there, which is some other
     /// user's live margin.
     pub change_index: u32,
-    pub _pad: u32,
+    /// The caller's own id for this order.
+    ///
+    /// A quoter's order id is its own; the caller has one too, minted when it
+    /// asked for the placement, and every record it keeps is filed under that
+    /// one. Reporting it here is what lets the caller close its record without
+    /// holding a map from one id space to the other. Zero when the caller
+    /// supplied none.
+    pub client_order_id: u32,
+}
+
+/// The one order a fill left resting with less size than it found.
+///
+/// A completed order tells the caller an order is gone. This tells it an
+/// order moved. Both are per-order facts a balance change cannot express: the
+/// change merges every order of one maker into one record, so a caller
+/// holding per-order state has nothing to apply a partial fill to.
+///
+/// At most one exists per execute. A best-first walk consumes whole orders
+/// until the taker's size runs out, and running out is what ends the walk —
+/// so only the last order it reached can be partial, and a partial that fell
+/// under the market's minimum is a [`CancelledRemainderV0`] instead.
+///
+/// `base_filled` is what this order gave to this fill, not what it has given
+/// in its life. The caller accumulates.
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Pod, Zeroable, SchemaRead, SchemaWrite)]
+#[wincode(assert_zero_copy)]
+pub struct PartiallyFilledOrderV0 {
+    pub order_id: u64,
+    pub base_filled: u64,
+    /// See [`CompletedOrderV0::client_order_id`].
+    pub client_order_id: u32,
+    /// Which entry of [`ExecuteResponseV0::changes`] this fill is part of.
+    /// Bounded by [`ExecuteResponseV0::parse`] for the reason a completed
+    /// order's index is.
+    pub change_index: u32,
 }
 
 /// One rung of a quoted ladder: `size` available at `price`.
@@ -206,6 +252,7 @@ pub const USER_REF_BYTES: usize = UserRefV0::SIZE;
 pub const CHANGE_BYTES: usize = core::mem::size_of::<UserBalanceChangeV0>();
 pub const CANCELLED_BYTES: usize = core::mem::size_of::<CancelledRemainderV0>();
 pub const COMPLETED_BYTES: usize = core::mem::size_of::<CompletedOrderV0>();
+pub const PARTIAL_BYTES: usize = core::mem::size_of::<PartiallyFilledOrderV0>();
 pub const PRICE_LEVEL_BYTES: usize = core::mem::size_of::<PriceLevelV0>();
 
 /// Bytes wincode spends on a slice's length prefix.
@@ -228,8 +275,9 @@ const _: () = {
     // rather than change what the other program reads.
     assert!(USER_REF_BYTES == 34);
     assert!(CHANGE_BYTES == 56);
-    assert!(CANCELLED_BYTES == 56);
+    assert!(CANCELLED_BYTES == 64);
     assert!(COMPLETED_BYTES == 16);
+    assert!(PARTIAL_BYTES == 24);
     assert!(PRICE_LEVEL_BYTES == 16);
 };
 
@@ -243,6 +291,10 @@ pub struct ExecuteResponseV0<'a> {
     pub changes: &'a [UserBalanceChangeV0],
     pub cancelled: &'a [CancelledRemainderV0],
     pub completed: &'a [CompletedOrderV0],
+    /// The order the fill left resting smaller, at most one. A slice rather
+    /// than an option so every section of this response is framed the same
+    /// way and a writer lays them all down with one call.
+    pub partial: &'a [PartiallyFilledOrderV0],
 }
 
 impl<'a> ExecuteResponseV0<'a> {
@@ -256,7 +308,9 @@ impl<'a> ExecuteResponseV0<'a> {
     /// move the amounts it reported.
     pub fn parse(bytes: &'a [u8]) -> Result<Self, SpecError> {
         let response: Self = wincode::deserialize(bytes).map_err(|_| SpecError::Read)?;
-        if !completed_orders_fit(response.completed, response.changes.len()) {
+        if !completed_orders_fit(response.completed, response.changes.len())
+            || !partial_orders_fit(response.partial, response.changes.len())
+        {
             return Err(SpecError::DanglingCompletedOrder);
         }
         Ok(response)
@@ -273,6 +327,31 @@ impl<'a> ExecuteResponseV0<'a> {
     /// How many orders the fill consumed for `change_index`.
     pub fn completed_count(&self, change_index: usize) -> usize {
         self.completed_for(change_index).count()
+    }
+
+    /// The caller's id for the one order behind `change_index`, when there is
+    /// exactly one.
+    ///
+    /// A change merges every order of one maker, so most of the time it names
+    /// no single order and this is `None`. When it does name one — one order
+    /// consumed and nothing left resting, or one order left resting and none
+    /// consumed — the change and the order are the same event, and a reader
+    /// can file the fill under that order.
+    pub fn sole_client_order_id(&self, change_index: usize) -> Option<u32> {
+        let index = change_index as u32;
+        let mut ids = self
+            .completed
+            .iter()
+            .filter(|entry| entry.change_index == index)
+            .map(|entry| entry.client_order_id)
+            .chain(
+                self.partial
+                    .iter()
+                    .filter(|entry| entry.change_index == index)
+                    .map(|entry| entry.client_order_id),
+            );
+        let first = ids.next()?;
+        ids.next().is_none().then_some(first)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -344,6 +423,19 @@ pub(crate) fn completed_orders_fit(completed: &[CompletedOrderV0], changes: usiz
     completed
         .iter()
         .all(|entry| (entry.change_index as usize) < changes)
+}
+
+/// Whether the partial-fill section is one a fill could have produced: at most
+/// one record, naming a balance change that exists.
+///
+/// The count is part of the bound, not a separate check. A second partial
+/// would mean the walk continued past an order it did not finish, and a reader
+/// that accepted one would apply a fill to an order the quoter never touched.
+pub(crate) fn partial_orders_fit(partial: &[PartiallyFilledOrderV0], changes: usize) -> bool {
+    partial.len() <= 1
+        && partial
+            .iter()
+            .all(|entry| (entry.change_index as usize) < changes)
 }
 
 /// Users a quote or execute may fill, and how much room each has left.
@@ -890,8 +982,9 @@ mod tests {
         [CancelledRemainderV0 {
             order_id: 42,
             base_asset_amount: 17,
+            client_order_id: 420,
             user: user(9, 1),
-            _pad: [0; 6],
+            _pad: [0; 2],
         }]
     }
 
@@ -900,23 +993,33 @@ mod tests {
             CompletedOrderV0 {
                 order_id: 9,
                 change_index: 0,
-                _pad: 0,
+                client_order_id: 90,
             },
             CompletedOrderV0 {
                 order_id: 10,
                 change_index: 0,
-                _pad: 0,
+                client_order_id: 100,
             },
         ]
     }
 
+    fn partial() -> [PartiallyFilledOrderV0; 1] {
+        [PartiallyFilledOrderV0 {
+            order_id: 11,
+            base_filled: 3,
+            client_order_id: 110,
+            change_index: 0,
+        }]
+    }
+
     #[test]
     fn round_trips_without_copying() {
-        let (c, x, d) = (changes(), cancelled(), completed());
+        let (c, x, d, p) = (changes(), cancelled(), completed(), partial());
         let response = ExecuteResponseV0 {
             changes: &c,
             cancelled: &x,
             completed: &d,
+            partial: &p,
         };
         let bytes = wincode::serialize(&response).unwrap();
         let back = ExecuteResponseV0::parse(&bytes).unwrap();
@@ -933,11 +1036,12 @@ mod tests {
 
     #[test]
     fn completed_orders_attach_to_their_change() {
-        let (c, x, d) = (changes(), cancelled(), completed());
+        let (c, x, d, p) = (changes(), cancelled(), completed(), partial());
         let bytes = wincode::serialize(&ExecuteResponseV0 {
             changes: &c,
             cancelled: &x,
             completed: &d,
+            partial: &p,
         })
         .unwrap();
         let response = ExecuteResponseV0::parse(&bytes).unwrap();
@@ -956,8 +1060,9 @@ mod tests {
             completed: &[CompletedOrderV0 {
                 order_id: 1,
                 change_index: 9,
-                _pad: 0,
+                client_order_id: 0,
             }],
+            partial: &[],
         })
         .unwrap();
         assert_eq!(
@@ -968,11 +1073,12 @@ mod tests {
 
     #[test]
     fn truncation_is_an_error_not_a_panic() {
-        let (c, x, d) = (changes(), cancelled(), completed());
+        let (c, x, d, p) = (changes(), cancelled(), completed(), partial());
         let bytes = wincode::serialize(&ExecuteResponseV0 {
             changes: &c,
             cancelled: &x,
             completed: &d,
+            partial: &p,
         })
         .unwrap();
         for cut in 0..bytes.len() {
@@ -1009,7 +1115,7 @@ mod tests {
     /// encoding of the same response, and must parse back.
     #[test]
     fn the_execute_writer_writes_what_the_reader_reads() {
-        let (c, x, d) = (changes(), cancelled(), completed());
+        let (c, x, d, p) = (changes(), cancelled(), completed(), partial());
         let mut region = Region::new(512);
 
         let mut writer = ExecuteWriter::new();
@@ -1027,7 +1133,7 @@ mod tests {
         let record = writer.change_mut(region.bytes(), first).unwrap();
         record.base_size += 3;
         record.quote_size += 4;
-        let len = writer.finish(region.bytes(), &x, &d).unwrap();
+        let len = writer.finish(region.bytes(), &x, &d, &p).unwrap();
 
         let mut merged = c;
         merged[0].base_size += 3;
@@ -1036,6 +1142,7 @@ mod tests {
             changes: &merged,
             cancelled: &x,
             completed: &d,
+            partial: &p,
         };
         assert_eq!(
             &region.bytes()[..len],
@@ -1097,8 +1204,9 @@ mod tests {
                 &[CompletedOrderV0 {
                     order_id: 1,
                     change_index: 1,
-                    _pad: 0,
+                    client_order_id: 0,
                 }],
+                &[],
             ),
             Err(SpecError::DanglingCompletedOrder)
         );
@@ -1162,6 +1270,7 @@ mod tests {
             caps: UserCapsV0::EMPTY,
             reference_price: -5,
             taker: Some(user(3, 1)),
+            limit_price: 0,
         };
         let bytes = wincode::config::serialize(&args, ARGS_CONFIG).unwrap();
 
@@ -1177,7 +1286,7 @@ mod tests {
         assert_eq!(bytes.len(), args_size(&args).unwrap());
         assert_eq!(
             bytes.len(),
-            after_set + 1 + 8 + USER_CAPS_BYTES + 8 + 1 + UserRefV0::SIZE
+            after_set + 1 + 8 + USER_CAPS_BYTES + 8 + 1 + UserRefV0::SIZE + 8
         );
 
         // And it reads back as a slice into those bytes, not a copy of them.

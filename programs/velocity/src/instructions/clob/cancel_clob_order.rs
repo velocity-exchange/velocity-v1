@@ -13,6 +13,7 @@ use {
         load_mut, msg,
         signer::QUOTER_SIGNER_SEED,
         state::{
+            perp_market::PerpMarket,
             prop_amm::{
                 ClobCancelOrderArgsV0, ClobMarket, ClobOrderRefV0, QuoterV0, WireDirectionExt,
             },
@@ -25,6 +26,7 @@ use {
 };
 
 #[derive(Accounts)]
+#[instruction(params: CancelClobOrderParams)]
 pub struct CancelClobOrder<'info> {
     pub state: AccountLoader<'info, State>,
     #[account(
@@ -33,6 +35,13 @@ pub struct CancelClobOrder<'info> {
     )]
     pub user: AccountLoader<'info, User>,
     pub authority: Signer<'info>,
+    /// Read-only, and read for one thing: the cached oracle price the cancel
+    /// record is stamped with. Deliberately not an oracle account — a maker
+    /// pulling orders off a book must not be able to fail on a stale feed.
+    #[account(
+        constraint = perp_market.load()?.market_index == params.market_index
+    )]
+    pub perp_market: AccountLoader<'info, PerpMarket>,
     pub quoter: AccountLoader<'info, QuoterV0>,
     /// CHECK: validated against the quoter entry's registered execute
     /// accounts in the handler.
@@ -114,6 +123,34 @@ pub fn handle_cancel_clob_order(
         crate::state::user::OrderStatus::Canceled,
     );
     user.update_last_active_slot(clock.slot);
+    let is_isolated_position = user.perp_positions[position_index].is_isolated();
+    drop(user);
+
+    super::emit_clob_cancel_record(
+        clock.unix_timestamp,
+        ctx.accounts
+            .perp_market
+            .load()?
+            .market_stats
+            .historical_oracle_data
+            .last_oracle_price,
+        &ctx.accounts.user.key(),
+        super::ClobOrderFacts {
+            order_id: removed.client_order_id,
+            market_index: params.market_index,
+            direction: removed.side.to_position_direction(),
+            price: removed.price,
+            base_asset_amount: removed.base_asset_amount,
+            base_asset_amount_filled: 0,
+            max_ts: removed.max_ts,
+            slot: clock.slot,
+            taker_origin: removed.taker_origin,
+        },
+        crate::state::events::OrderActionExplanation::None,
+        None,
+        None,
+        is_isolated_position,
+    )?;
 
     msg!(
         "cancelled clob order {} for user {}",

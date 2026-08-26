@@ -68,6 +68,11 @@ import {
 	TxParams,
 	UserAccount,
 	ForceCancelClobRefV0,
+	QuoterV0Account,
+	PlaceClobOrderParams,
+	CancelClobOrderParams,
+	ModifyClobOrderParams,
+	CancelAllClobOrdersParams,
 	UserStatsAccount,
 	SignedMsgOrderParamsDelegateMessage,
 	TokenProgramFlag,
@@ -14113,6 +14118,260 @@ export class VelocityClient {
 				getLpPoolPublicKey(this.program.programId, lpPoolId)
 			)
 		)) as ConstituentTargetBaseAccount;
+	}
+
+	/**
+	 * The accounts every CLOB order instruction takes, resolved from the market.
+	 *
+	 * A caller names a market and nothing else. `PerpMarket.clobQuoter` names
+	 * the market's canonical registry entry, that entry names the book's
+	 * program and account, and the remaining two are PDAs — so there is no
+	 * configuration for a client to carry and get wrong.
+	 */
+	private async getClobAccounts(marketIndex: number): Promise<{
+		quoter: PublicKey;
+		clobMarket: PublicKey;
+		clobProgram: PublicKey;
+		quoterSigner: PublicKey;
+		crankConditions: PublicKey;
+	}> {
+		const perpMarket = this.getPerpMarketAccount(marketIndex);
+		if (!perpMarket) {
+			throw new Error(`perp market ${marketIndex} not found`);
+		}
+		if (perpMarket.clobQuoter.equals(PublicKey.default)) {
+			throw new Error(`perp market ${marketIndex} has no CLOB attached`);
+		}
+		const entry = (await (this.program.account as any).quoterV0.fetch(
+			perpMarket.clobQuoter
+		)) as QuoterV0Account;
+		return {
+			quoter: perpMarket.clobQuoter,
+			// The book is the account the entry's responses are written into.
+			clobMarket: entry.responseAccount,
+			clobProgram: entry.programId,
+			quoterSigner: this.getQuoterSignerPublicKey(),
+			crankConditions: getClobCrankConditionsPublicKey(
+				this.program.programId,
+				marketIndex
+			),
+		};
+	}
+
+	/**
+	 * Builds a `placeClobOrder` instruction: rest a limit order on the market's CLOB.
+	 *
+	 * Plain limits live on the book, not in `User.orders` — velocity reserves the worst-case
+	 * open-order aggregates and gates margin exactly as a DLOB placement does, then CPIs the
+	 * book. The order's id is minted from the `User`'s own counter, so a client names it the
+	 * same way it names a DLOB order.
+	 *
+	 * The order is not matchable until its activation slot (the speed bump). Asking for less
+	 * than the book's default delay requires the transaction to be co-signed by the flow
+	 * authority, which is what swift's `/attest` provides.
+	 *
+	 * @param params - Market, side, price, size, expiry, activation delay, post-only behaviour.
+	 * @param subAccountId - Sub-account to place from; defaults to the active one.
+	 * @param instructionsSysvar - Pass when asking for a below-default activation delay, so the
+	 * program can verify the flow authority co-signed.
+	 * @returns The instruction. Its return data is the order's `ClobOrderRefV0`.
+	 */
+	public async getPlaceClobOrderIx(
+		params: PlaceClobOrderParams,
+		subAccountId?: number,
+		instructionsSysvar?: PublicKey
+	): Promise<TransactionInstruction> {
+		const clob = await this.getClobAccounts(params.marketIndex);
+		return await this.program.instruction.placeClobOrder(params, {
+			accounts: {
+				state: await this.getStatePublicKey(),
+				user: await this.getUserAccountPublicKey(subAccountId),
+				authority: this.wallet.publicKey,
+				...clob,
+				instructionsSysvar: instructionsSysvar ?? null,
+			},
+		});
+	}
+
+	/**
+	 * Places a resting limit order on the market's CLOB. See `getPlaceClobOrderIx`.
+	 * @returns The transaction signature.
+	 */
+	public async placeClobOrder(
+		params: PlaceClobOrderParams,
+		txParams?: TxParams,
+		subAccountId?: number
+	): Promise<TransactionSignature> {
+		const { txSig } = await this.sendTransaction(
+			await this.buildTransaction(
+				await this.getPlaceClobOrderIx(params, subAccountId),
+				txParams
+			),
+			[],
+			this.opts
+		);
+		return txSig;
+	}
+
+	/**
+	 * Builds a `cancelClobOrder` instruction.
+	 *
+	 * The `orderRef` is the hint the placement returned, which the user-orders feed also carries
+	 * on every row — the book verifies it against the order id and fails closed on a stale one,
+	 * so a hint that a fill has since invalidated cannot cancel somebody else's order.
+	 *
+	 * Deliberately ungated on the quoter entry's active/approved flags: a maker must always be
+	 * able to pull orders off a killed or delisted book.
+	 *
+	 * @param params - Market and the order's handle.
+	 * @param subAccountId - Sub-account holding the order; defaults to the active one.
+	 * @returns The instruction.
+	 */
+	public async getCancelClobOrderIx(
+		params: CancelClobOrderParams,
+		subAccountId?: number
+	): Promise<TransactionInstruction> {
+		const clob = await this.getClobAccounts(params.marketIndex);
+		return await this.program.instruction.cancelClobOrder(params, {
+			accounts: {
+				state: await this.getStatePublicKey(),
+				perpMarket: await getPerpMarketPublicKey(
+					this.program.programId,
+					params.marketIndex
+				),
+				user: await this.getUserAccountPublicKey(subAccountId),
+				authority: this.wallet.publicKey,
+				quoter: clob.quoter,
+				clobMarket: clob.clobMarket,
+				clobProgram: clob.clobProgram,
+				quoterSigner: clob.quoterSigner,
+			},
+		});
+	}
+
+	/**
+	 * Cancels one resting CLOB order. See `getCancelClobOrderIx`.
+	 * @returns The transaction signature.
+	 */
+	public async cancelClobOrder(
+		params: CancelClobOrderParams,
+		txParams?: TxParams,
+		subAccountId?: number
+	): Promise<TransactionSignature> {
+		const { txSig } = await this.sendTransaction(
+			await this.buildTransaction(
+				await this.getCancelClobOrderIx(params, subAccountId),
+				txParams
+			),
+			[],
+			this.opts
+		);
+		return txSig;
+	}
+
+	/**
+	 * Builds a `modifyClobOrder` instruction: cancel and replace in one call, gated on the net
+	 * margin change.
+	 *
+	 * The order keeps its id — a reprice is one order that moved, not two orders — and loses its
+	 * queue position, since the book has no in-place mutation. A `null` field keeps what the
+	 * resting order carries, except `baseAssetAmount`, where `null` keeps the *remaining* size
+	 * rather than the original.
+	 *
+	 * @param params - Market, the order's handle, and the fields to change.
+	 * @param subAccountId - Sub-account holding the order; defaults to the active one.
+	 * @param instructionsSysvar - Pass when asking for a below-default activation delay.
+	 * @returns The instruction.
+	 */
+	public async getModifyClobOrderIx(
+		params: ModifyClobOrderParams,
+		subAccountId?: number,
+		instructionsSysvar?: PublicKey
+	): Promise<TransactionInstruction> {
+		const clob = await this.getClobAccounts(params.marketIndex);
+		return await this.program.instruction.modifyClobOrder(params, {
+			accounts: {
+				state: await this.getStatePublicKey(),
+				user: await this.getUserAccountPublicKey(subAccountId),
+				authority: this.wallet.publicKey,
+				quoter: clob.quoter,
+				clobMarket: clob.clobMarket,
+				clobProgram: clob.clobProgram,
+				quoterSigner: clob.quoterSigner,
+				instructionsSysvar: instructionsSysvar ?? null,
+			},
+		});
+	}
+
+	/**
+	 * Modifies one resting CLOB order. See `getModifyClobOrderIx`.
+	 * @returns The transaction signature.
+	 */
+	public async modifyClobOrder(
+		params: ModifyClobOrderParams,
+		txParams?: TxParams,
+		subAccountId?: number
+	): Promise<TransactionSignature> {
+		const { txSig } = await this.sendTransaction(
+			await this.buildTransaction(
+				await this.getModifyClobOrderIx(params, subAccountId),
+				txParams
+			),
+			[],
+			this.opts
+		);
+		return txSig;
+	}
+
+	/**
+	 * Builds a `cancelAllClobOrders` instruction: pull a whole side (or both) off the book in one
+	 * CPI, unwinding from per-side totals so the cost does not grow with the ladder.
+	 *
+	 * The book caps how many orders one sweep removes and reports whether it finished. When it did
+	 * not, the user still has resting orders and repeating the call is safe — the totals always
+	 * describe exactly what that call removed.
+	 *
+	 * @param params - Market and which sides to withdraw.
+	 * @param subAccountId - Sub-account holding the orders; defaults to the active one.
+	 * @returns The instruction.
+	 */
+	public async getCancelAllClobOrdersIx(
+		params: CancelAllClobOrdersParams,
+		subAccountId?: number
+	): Promise<TransactionInstruction> {
+		const clob = await this.getClobAccounts(params.marketIndex);
+		return await this.program.instruction.cancelAllClobOrders(params, {
+			accounts: {
+				state: await this.getStatePublicKey(),
+				user: await this.getUserAccountPublicKey(subAccountId),
+				authority: this.wallet.publicKey,
+				quoter: clob.quoter,
+				clobMarket: clob.clobMarket,
+				clobProgram: clob.clobProgram,
+				quoterSigner: clob.quoterSigner,
+				crankConditions: clob.crankConditions,
+			},
+		});
+	}
+
+	/**
+	 * Cancels every resting CLOB order on the named sides. See `getCancelAllClobOrdersIx`.
+	 * @returns The transaction signature.
+	 */
+	public async cancelAllClobOrders(
+		params: CancelAllClobOrdersParams,
+		txParams?: TxParams,
+		subAccountId?: number
+	): Promise<TransactionSignature> {
+		const { txSig } = await this.sendTransaction(
+			await this.buildTransaction(
+				await this.getCancelAllClobOrdersIx(params, subAccountId),
+				txParams
+			),
+			[],
+			this.opts
+		);
+		return txSig;
 	}
 
 	/**

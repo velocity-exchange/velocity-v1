@@ -408,6 +408,7 @@ fn fill_order<'c: 'info, 'info>(
                     price,
                     unfilled,
                     max_ts,
+                    order_id,
                     clock,
                 )?;
             }

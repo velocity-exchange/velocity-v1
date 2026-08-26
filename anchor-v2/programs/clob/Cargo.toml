@@ -29,6 +29,7 @@ wincode = { version = "0.5", features = ["derive"] }
 # framing that wincode's `BORSH_CONFIG` produces, never a dependency.
 quoter-spec = { path = "../../../crates/quoter-spec" }
 clob-wire = { path = "../../../crates/clob-wire" }
+clob-state = { path = "../../../crates/clob-state" }
 # The relay condition block this market hosts. Expiry, activation, capacity and
 # a crossed book are facts about this account, so the wakes that watch for them
 # live on it. bytemuck-only, so no framework reaches this binary; the resolver

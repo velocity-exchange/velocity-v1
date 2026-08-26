@@ -4688,6 +4688,7 @@ pub mod types {
         pub base_asset_amount: Option<u64>,
         pub max_ts: Option<i64>,
         pub activation_delay_slots: Option<u32>,
+        pub reject_if_crossed: bool,
     }
     #[repr(C)]
     #[derive(
@@ -4886,6 +4887,8 @@ pub mod types {
         OrderFilledWithOpenbookV2,
         TransferPerpPosition,
         OrderFilledWithExternalQuoter,
+        ClobOrderEvicted,
+        ClobRemainderCulled,
     }
     #[repr(C)]
     #[derive(
@@ -5268,6 +5271,7 @@ pub mod types {
         pub base_asset_amount: u64,
         pub max_ts: i64,
         pub activation_delay_slots: Option<u32>,
+        pub reject_if_crossed: bool,
     }
     #[repr(C)]
     #[derive(
@@ -9291,6 +9295,7 @@ pub mod accounts {
         pub state: Pubkey,
         pub user: Pubkey,
         pub authority: Pubkey,
+        pub perp_market: Pubkey,
         pub quoter: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
@@ -9325,6 +9330,11 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.authority,
                     is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.perp_market,
+                    is_signer: false,
                     is_writable: false,
                 },
                 AccountMeta {

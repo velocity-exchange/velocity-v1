@@ -295,22 +295,24 @@ fn the_reader_agrees_with_the_specs_writer() {
     let cancelled = [CancelledRemainderV0 {
         order_id: 42,
         base_asset_amount: 17,
+        price: 1_700,
+        client_order_id: 420,
         user: ClobUserRefV0 {
             authority,
             sub_account_id: 1,
         },
-        _pad: [0; 6],
+        _pad: [0; 2],
     }];
     let completed = [
         CompletedOrderV0 {
             order_id: 9,
             change_index: 0,
-            _pad: 0,
+            client_order_id: 0,
         },
         CompletedOrderV0 {
             order_id: 10,
             change_index: 1,
-            _pad: 0,
+            client_order_id: 0,
         },
     ];
 
@@ -318,6 +320,7 @@ fn the_reader_agrees_with_the_specs_writer() {
         changes: &changes,
         cancelled: &cancelled,
         completed: &completed,
+        partial: &[],
     })
     .unwrap();
 
@@ -433,6 +436,8 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
             max_ts: -0x0102_0304_0506_0708,
             user,
             taker_origin: true,
+            client_order_id: 0x0102_0304,
+            reject_if_crossed: true,
         },
     );
     // The absent-option arm encodes its tag differently; both are on the wire.
@@ -446,6 +451,8 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
             max_ts: 0,
             user,
             taker_origin: false,
+            client_order_id: 0,
+            reject_if_crossed: false,
         },
     );
     agree(
@@ -474,6 +481,7 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
         &ClobRemovedOrderV0 {
             user,
             order_id: 0x1111_2222_3333_4444,
+            client_order_id: 0x0A0B_0C0D,
             price: 0x5555_6666_7777_8888,
             base_asset_amount: 0x9999_AAAA_BBBB_CCCC,
             side: ClobSide::Ask,

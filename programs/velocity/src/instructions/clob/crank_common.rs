@@ -38,6 +38,7 @@ use {
         signer::QUOTER_SIGNER_SEED,
         state::{
             clob_crank::{ClobCrankConditionsV0, CrankPaymentsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
+            events::OrderActionExplanation,
             pdas,
             perp_market::PerpMarket,
             prop_amm::{
@@ -230,6 +231,34 @@ pub fn crank_clob_removal(
                 crate::state::user::OrderStatus::Canceled,
             );
         }
+
+        // An eviction is not a cancel to a reader: the order left the book
+        // because the book ran out of room, and a placed trigger re-arms
+        // rather than dying. It gets its own explanation for that reason.
+        super::emit_clob_cancel_record(
+            clock.unix_timestamp,
+            market.market_stats.historical_oracle_data.last_oracle_price,
+            &ctx.accounts.user.key(),
+            super::ClobOrderFacts {
+                order_id: removed.client_order_id,
+                market_index,
+                direction: removed.side.to_position_direction(),
+                price: removed.price,
+                base_asset_amount: removed.base_asset_amount,
+                base_asset_amount_filled: 0,
+                max_ts: removed.max_ts,
+                slot: clock.slot,
+                taker_origin: removed.taker_origin,
+            },
+            if is_evict {
+                OrderActionExplanation::ClobOrderEvicted
+            } else {
+                OrderActionExplanation::OrderExpired
+            },
+            Some(ctx.accounts.filler.key()),
+            Some(state.perp_fee_structure.flat_filler_fee),
+            user.perp_positions[position_index].is_isolated(),
+        )?;
     }
 
     if let Some(conditions_loader) = &ctx.accounts.crank_conditions {

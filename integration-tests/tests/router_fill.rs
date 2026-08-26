@@ -668,6 +668,7 @@ fn place_clob_ask(fixture: &mut Fixture, price: u64, size: u64) -> ClobOrderRefV
             base_asset_amount: size,
             max_ts: 0,
             activation_delay_slots: Some(0),
+            reject_if_crossed: false,
         },
     );
     let meta = send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[]).unwrap();
@@ -733,6 +734,7 @@ fn fast_activation_requires_the_flow_authority_attestation() {
                 base_asset_amount: UNIT,
                 max_ts: 0,
                 activation_delay_slots: delay,
+                reject_if_crossed: false,
             },
         );
         if with_sysvar {
@@ -1237,6 +1239,7 @@ fn place_clob_bid(fixture: &mut Fixture, price: u64, size: u64) -> ClobOrderRefV
             base_asset_amount: size,
             max_ts: 0,
             activation_delay_slots: Some(0),
+            reject_if_crossed: false,
         },
     );
     let meta = send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[]).unwrap();
@@ -1374,6 +1377,7 @@ fn cancel_all_clob_orders_only_takes_the_signing_users_orders() {
                 base_asset_amount: UNIT / 3,
                 max_ts: 0,
                 activation_delay_slots: Some(0),
+                reject_if_crossed: false,
             },
         );
         send(&mut fixture.svm, &other_authority, ix, &[]).unwrap();
@@ -1413,6 +1417,7 @@ fn cu_bench_cancel_all_beats_cancelling_order_by_order() {
                 program_id: velocity_id(),
                 accounts: velocity::accounts::CancelClobOrder {
                     state: state_pda(),
+                    perp_market: perp_market_pda(0),
                     user: fixture.clob_maker_user,
                     authority: fixture.clob_maker_authority.pubkey(),
                     quoter: fixture.quoter,
@@ -1480,6 +1485,7 @@ fn cancel_clob_order_unwinds_the_reserved_aggregates() {
         program_id: velocity_id(),
         accounts: velocity::accounts::CancelClobOrder {
             state: state_pda(),
+            perp_market: perp_market_pda(0),
             user: fixture.clob_maker_user,
             authority: fixture.clob_maker_authority.pubkey(),
             quoter: fixture.quoter,
@@ -1509,6 +1515,7 @@ fn cancel_clob_order_unwinds_the_reserved_aggregates() {
         program_id: velocity_id(),
         accounts: velocity::accounts::CancelClobOrder {
             state: state_pda(),
+            perp_market: perp_market_pda(0),
             user: fixture.clob_maker_user,
             authority: fixture.clob_maker_authority.pubkey(),
             quoter: fixture.quoter,
@@ -1526,6 +1533,94 @@ fn cancel_clob_order_unwinds_the_reserved_aggregates() {
         .data(),
     };
     assert!(send(&mut fixture.svm, &fixture.clob_maker_authority, ix2, &[]).is_err());
+}
+
+/// A book order has no `User.orders` slot, so these records are the only
+/// statement an order-history reader gets about it. The id in them is the one
+/// velocity minted from the `User`'s own counter — the same counter its DLOB
+/// orders draw from — which is what lets one reader file both without holding
+/// a map between two id spaces.
+#[test]
+fn a_clob_orders_records_name_it_by_the_users_own_order_id() {
+    use velocity::state::events::{OrderAction, OrderActionRecord, OrderRecord};
+
+    let mut fixture = setup();
+    let next_order_id = {
+        let user: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+        user.next_order_id
+    };
+
+    let ix = place_clob_order_ix(
+        fixture.clob_maker_user,
+        &fixture.clob_maker_authority,
+        fixture.quoter,
+        fixture.clob_market,
+        fixture.oracle,
+        PlaceClobOrderParams {
+            market_index: 0,
+            direction: PositionDirection::Short,
+            price: 99 * PRICE,
+            base_asset_amount: UNIT / 2,
+            max_ts: 0,
+            activation_delay_slots: Some(0),
+            reject_if_crossed: false,
+        },
+    );
+    let meta = send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[]).unwrap();
+    let data = &meta.return_data.data;
+    let order_ref = ClobOrderRefV0 {
+        node_index: u32::from_le_bytes(data[..4].try_into().unwrap()),
+        order_id: u64::from_le_bytes(data[4..12].try_into().unwrap()),
+    };
+
+    let placed: Vec<OrderRecord> = events(&meta);
+    assert_eq!(placed.len(), 1, "one placement, one record");
+    assert_eq!(placed[0].user, fixture.clob_maker_user);
+    assert_eq!(placed[0].order.order_id, next_order_id);
+    assert_eq!(placed[0].order.price, 99 * PRICE);
+    assert_eq!(placed[0].order.base_asset_amount, UNIT / 2);
+    assert_eq!(placed[0].order.status, OrderStatus::Open);
+    assert!(placed[0].order.is_placed_on_clob());
+    // A resting book order settles at its own price on the maker schedule, so
+    // it reports as one.
+    assert!(placed[0].order.post_only);
+    // The counter moved, so the next order gets its own id.
+    let user: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(user.next_order_id, next_order_id + 1);
+
+    let (quoter_signer, _) = quoter_signer_pda();
+    let cancel = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::CancelClobOrder {
+            state: state_pda(),
+            perp_market: perp_market_pda(0),
+            user: fixture.clob_maker_user,
+            authority: fixture.clob_maker_authority.pubkey(),
+            quoter: fixture.quoter,
+            clob_market: fixture.clob_market,
+            clob_program: clob_id(),
+            quoter_signer,
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::CancelClobOrder {
+            params: CancelClobOrderParams {
+                market_index: 0,
+                order_ref,
+            },
+        }
+        .data(),
+    };
+    let meta = send(&mut fixture.svm, &fixture.clob_maker_authority, cancel, &[]).unwrap();
+
+    let cancelled: Vec<OrderActionRecord> = events(&meta);
+    assert_eq!(cancelled.len(), 1, "one cancel, one record");
+    assert!(cancelled[0].action == OrderAction::Cancel);
+    // The book order is the maker half, and the id round-tripped through the
+    // book unchanged.
+    assert_eq!(cancelled[0].maker, Some(fixture.clob_maker_user));
+    assert_eq!(cancelled[0].maker_order_id, Some(next_order_id));
+    assert_eq!(cancelled[0].maker_order_base_asset_amount, Some(UNIT / 2));
+    assert_eq!(cancelled[0].taker, None);
 }
 
 /// The mandatory baseline: a router fill that omits the market's named CLOB
@@ -1628,6 +1723,7 @@ fn crank_remove_expired_unwinds_aggregates_and_pays_the_keeper() {
             base_asset_amount: UNIT / 2,
             max_ts: clock.unix_timestamp + 10,
             activation_delay_slots: Some(0),
+            reject_if_crossed: false,
         },
     );
     let meta = send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[]).unwrap();
@@ -2348,6 +2444,7 @@ fn the_fired_condition_picks_which_crank_the_resolver_stages() {
             base_asset_amount: UNIT / 4,
             max_ts: clock.unix_timestamp + 10,
             activation_delay_slots: Some(0),
+            reject_if_crossed: false,
         },
     );
     let maker = fixture.clob_maker_authority.insecure_clone();
@@ -2443,6 +2540,7 @@ fn a_placement_through_velocity_arms_the_books_expiry_wake() {
             base_asset_amount: UNIT / 2,
             max_ts,
             activation_delay_slots: Some(0),
+            reject_if_crossed: false,
         },
     );
     let maker = fixture.clob_maker_authority.insecure_clone();
@@ -2487,6 +2585,7 @@ fn the_books_expiry_wake_re_arms_after_a_reclaim() {
                 base_asset_amount: UNIT / 4,
                 max_ts,
                 activation_delay_slots: Some(0),
+                reject_if_crossed: false,
             },
         );
         let maker = fixture.clob_maker_authority.insecure_clone();
@@ -2646,6 +2745,7 @@ fn program_keeper_expire_crank_pays_reservoir_lamports_to_an_unsigned_keeper() {
             base_asset_amount: UNIT / 2,
             max_ts,
             activation_delay_slots: Some(0),
+            reject_if_crossed: false,
         },
     );
     let maker = fixture.clob_maker_authority.insecure_clone();
@@ -2747,6 +2847,7 @@ fn program_keeper_evict_crank_resolves_both_sides() {
                 base_asset_amount: UNIT / 2,
                 max_ts: 0,
                 activation_delay_slots: Some(0),
+                reject_if_crossed: false,
             },
         );
         let maker = fixture.clob_maker_authority.insecure_clone();
@@ -3207,6 +3308,7 @@ fn placed_trigger_cancels_through_the_clob_only() {
         program_id: velocity_id(),
         accounts: velocity::accounts::CancelClobOrder {
             state: state_pda(),
+            perp_market: perp_market_pda(0),
             user: fixture.clob_maker_user,
             authority: maker_authority.pubkey(),
             quoter: fixture.quoter,
@@ -3281,6 +3383,7 @@ fn a_cross_below_the_markets_surplus_floor_is_declined() {
             base_asset_amount: UNIT / 2,
             max_ts: 0,
             activation_delay_slots: Some(0),
+            reject_if_crossed: false,
         },
     );
     let maker_authority = fixture.clob_maker_authority.insecure_clone();
@@ -3393,6 +3496,7 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
             base_asset_amount: UNIT / 2,
             max_ts: 0,
             activation_delay_slots: Some(0),
+            reject_if_crossed: false,
         },
     );
     let maker_authority = fixture.clob_maker_authority.insecure_clone();
@@ -3519,6 +3623,7 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
             base_asset_amount: UNIT / 2,
             max_ts: 0,
             activation_delay_slots: Some(3),
+            reject_if_crossed: false,
         },
     );
     send(&mut fixture.svm, &maker_authority, ix, &[]).unwrap();
@@ -5309,6 +5414,7 @@ fn generic_quoter_cross_conditions_discover_and_fill_a_midpoint_clob_cross() {
             base_asset_amount: UNIT,
             max_ts: 0,
             activation_delay_slots: Some(0),
+            reject_if_crossed: false,
         },
     );
     let clob_maker_authority = fixture.clob_maker_authority.insecure_clone();
@@ -6748,6 +6854,7 @@ fn place_clob_order_for(
             base_asset_amount: size,
             max_ts: 0,
             activation_delay_slots: Some(0),
+            reject_if_crossed: false,
         },
     );
     let authority = party.authority.insecure_clone();
@@ -7118,6 +7225,7 @@ fn cancel_clob_order_for(fixture: &mut Fixture, party: &Party, order_ref: ClobOr
         program_id: velocity_id(),
         accounts: velocity::accounts::CancelClobOrder {
             state: state_pda(),
+            perp_market: perp_market_pda(0),
             user: party.user,
             authority: party.authority.pubkey(),
             quoter: fixture.quoter,

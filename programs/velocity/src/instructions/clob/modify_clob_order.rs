@@ -107,6 +107,11 @@ pub struct ModifyClobOrderParams {
     /// Same rule as `place_clob_order`: `None` takes the book's default speed
     /// bump, anything below it needs the flow-authority attestation.
     pub activation_delay_slots: Option<u32>,
+    /// Same rule as `place_clob_order`: refuse the replacement rather than
+    /// rest it crossed. The original is already off the book when this fires,
+    /// so a refused replacement leaves the maker with no order — which is what
+    /// a maker repricing into a crossed book is asking for.
+    pub reject_if_crossed: bool,
 }
 
 #[access_control(
@@ -284,6 +289,12 @@ pub fn handle_modify_clob_order<'c: 'info, 'info>(
         user: user_ref,
         // Not a migrated taker remainder: this price is its owner's choice.
         taker_origin: false,
+        // A modify keeps the order's identity: same id before and after, so a
+        // reprice is one order that moved rather than two orders. A placed
+        // trigger forces it — its shadow slot keeps the id it armed under, and
+        // a new one here would leave the slot naming an order nobody holds.
+        client_order_id: removed.client_order_id,
+        reject_if_crossed: params.reject_if_crossed,
     })?;
 
     // A placed trigger's shadow follows its live order to the new handle;
@@ -303,6 +314,24 @@ pub fn handle_modify_clob_order<'c: 'info, 'info>(
             order.max_ts = max_ts;
         }
     }
+
+    // One record, not a cancel and a place: the order kept its id, so to a
+    // reader it is the same order at new terms.
+    super::emit_clob_place_record(
+        clock.unix_timestamp,
+        &ctx.accounts.user.key(),
+        super::ClobOrderFacts {
+            order_id: removed.client_order_id,
+            market_index: params.market_index,
+            direction: removed.side.to_position_direction(),
+            price,
+            base_asset_amount,
+            base_asset_amount_filled: 0,
+            max_ts,
+            slot: clock.slot,
+            taker_origin: removed.taker_origin,
+        },
+    )?;
 
     msg!(
         "modified clob order {} into {} (node {}) for user {}",

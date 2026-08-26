@@ -707,6 +707,7 @@ dependencies = [
  "anchor-lang-v2",
  "anchor-v2-testing",
  "bytemuck",
+ "clob-state",
  "clob-wire",
  "litesvm",
  "quoter-spec",
@@ -716,6 +717,15 @@ dependencies = [
  "solana-pubkey 3.0.0",
  "static_assertions",
  "wincode",
+]
+
+[[package]]
+name = "clob-state"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "quoter-spec",
+ "solana-address 2.6.1",
 ]
 
 [[package]]

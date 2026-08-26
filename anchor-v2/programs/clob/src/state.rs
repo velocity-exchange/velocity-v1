@@ -9,10 +9,15 @@
 //! list, the two best-first sorted intrusive lists, and every arena access —
 //! lives in [`crate::book`]. The response framing is `quoter-spec`'s, and
 //! `quote_v0`/`execute_v0` stream into the region below through its writers.
+//!
+//! The header is declared here; the order node is declared in `clob-state`,
+//! because an off-chain indexer decodes the same nodes to answer which orders
+//! a user holds. That crate says why the account is the only place that answer
+//! can come from. The coupling it costs is one number — [`ORDERS_OFFSET`] —
+//! and the assertion below is what keeps the two honest.
 
 use {
     anchor_lang_v2::{accounts::Slab, prelude::*},
-    bytemuck::{Pod, Zeroable},
     relay_spec::RelayBlockV0,
     static_assertions::{const_assert, const_assert_eq},
 };
@@ -58,9 +63,10 @@ pub const ZERO_ADDRESS: Address = Address::new_from_array([0u8; 32]);
 /// return data carries only a [`ResponsePointerV0`]), so payload size is not
 /// bound by the 1024-byte return-data cap.
 pub const RESPONSE_BUFFER_BYTES: usize = {
-    let widest = 3 * RESPONSE_LEN_BYTES
+    let widest = 4 * RESPONSE_LEN_BYTES
         + EXECUTE_FILLS_CEILING as usize * (CHANGE_BYTES + COMPLETED_BYTES)
-        + CANCELLED_BYTES;
+        + CANCELLED_BYTES
+        + PARTIAL_BYTES;
     // The region must start on an 8-byte step for its records to be read in
     // place, and it sits at the end of the header, so its size carries that.
     widest.next_multiple_of(quoter_spec::LEN_BYTES)
@@ -91,6 +97,10 @@ pub const PRICE_LEVEL_BYTES: usize = quoter_spec::PRICE_LEVEL_BYTES;
 /// the response wire's — [`crate::emit`] sizes its buffers from this.
 pub const ORDER_ID_BYTES: usize = core::mem::size_of::<u64>();
 
+/// Width of the placing caller's own order id, which is what the bulk id
+/// lists in the events carry.
+pub const CLIENT_ORDER_ID_BYTES: usize = core::mem::size_of::<u32>();
+
 /// Width of a [`UserBalanceChangeV0`]. One fixed stride: the orders a change
 /// consumed ride their own section, so a change cannot grow.
 pub const CHANGE_BYTES: usize = quoter_spec::CHANGE_BYTES;
@@ -101,12 +111,19 @@ pub const CANCELLED_BYTES: usize = quoter_spec::CANCELLED_BYTES;
 /// Width of a [`CompletedOrderV0`].
 pub const COMPLETED_BYTES: usize = quoter_spec::COMPLETED_BYTES;
 
+/// Width of a [`PartiallyFilledOrderV0`]. One per execute at most, so it is a
+/// flat addition to the region rather than a per-fill stride.
+pub const PARTIAL_BYTES: usize = quoter_spec::PARTIAL_BYTES;
+
 /// Width of a [`RemovedOrderV0`] — the return data of
 /// `cancel_order_v0`/`evict_worst_v0`/`remove_expired_v0`. Not used to size
 /// anything here (anchor serializes the value), but velocity reads those bytes
 /// by offset, so the width is pinned rather than assumed.
-pub const REMOVED_ORDER_BYTES: usize =
-    USER_REF_BYTES + 3 * core::mem::size_of::<u64>() + 2 + core::mem::size_of::<i64>();
+pub const REMOVED_ORDER_BYTES: usize = USER_REF_BYTES
+    + 3 * core::mem::size_of::<u64>()
+    + core::mem::size_of::<u32>()
+    + 2
+    + core::mem::size_of::<i64>();
 
 // Hard ceilings on the per-market response/batch config — bound by the
 // response region and the 32KB program heap, which don't vary per market.
@@ -280,6 +297,7 @@ pub fn order_view(node: &OrderNodeV0, node_index: u32) -> OrderViewV0 {
             node_index,
             order_id: node.order_id,
         },
+        client_order_id: node.client_order_id,
         user: node.user_ref(),
         side: node.side(),
         price: node.price,
@@ -464,125 +482,17 @@ pub fn response_pointer(len: usize) -> ResponsePointerV0 {
 /// to the node's 8-byte alignment.
 pub const ORDERS_OFFSET: usize = (8 + core::mem::size_of::<ClobHeaderV0>() + 4).next_multiple_of(8);
 
-/// The list terminator: no next node, no head, no free slot.
-pub const NIL: u32 = u32::MAX;
+// An off-chain reader of this account has the arena's offset as a number, and
+// a number cannot follow a header that moves. This is the whole coupling: the
+// header stays free to change as long as it does not change size, and if it
+// ever does, this build fails rather than the reader.
+const_assert_eq!(ORDERS_OFFSET, clob_state::ORDERS_OFFSET);
 
-/// Flags on a node's `bit_flags` byte.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[repr(u8)]
-pub enum OrderBitFlag {
-    /// Node holds a live order (clear = node is on the free list).
-    Open = 1,
-    /// Order is an ask (clear = bid).
-    Ask = 2,
-    /// The order is an unfilled taker remainder migrated onto the book rather
-    /// than a quote someone chose to post: it demands liquidity, and in a
-    /// cross it is the aggressor, so the cross prices at the counterparty's
-    /// side.
-    TakerOrigin = 4,
-}
-
-impl OrderBitFlag {
-    /// This bit when `set`, nothing otherwise — for composing a node's
-    /// `bit_flags`.
-    pub fn bit_if(self, set: bool) -> u8 {
-        if set {
-            self as u8
-        } else {
-            0
-        }
-    }
-}
-
-/// One arena slot: a live order threaded into a side's price-time list, or a
-/// free node threaded into the free list via `next`. The velocity `User` is
-/// stored inline (no seat table): user capacity is order capacity, governed
-/// by the one eviction rule.
-///
-/// Deliberately kept at 96 bytes with only the five spare bytes below: the
-/// node is the per-order cost of a market (capacity × this size is the
-/// account's rent), so growth room lives on the header instead. A future
-/// field wider than those spare bytes needs an `OrderNodeV1` arena.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
-pub struct OrderNodeV0 {
-    /// Authority wallet of the velocity `User` fills settle against
-    /// (velocity verifies control before it CPIs place/cancel). Paired with
-    /// `sub_account_id` below — see [`UserRefV0`] for why identity is stored
-    /// in derivable form.
-    pub authority: Address,
-    /// PRICE_PRECISION.
-    pub price: u64,
-    /// Remaining unfilled size, base precision.
-    pub base_asset_amount: u64,
-    /// First slot at which this order may match, in either direction.
-    pub activation_slot: u64,
-    /// Timestamp after which the order is expired (0 = good-till-cancelled).
-    pub max_ts: i64,
-    pub order_id: u64,
-    /// Slot the order was placed — age input for the unknown-user grace check
-    /// and for the crank reward's time-based component.
-    pub placed_slot: u64,
-    /// Toward the best of book; [`NIL`] if head.
-    pub prev: u32,
-    /// Away from the best of book (or next free node); [`NIL`] if tail.
-    pub next: u32,
-    pub bit_flags: u8,
-    pub padding0: u8,
-    /// Sub-account half of the user identity (see `authority`).
-    pub sub_account_id: u16,
-    pub padding: [u8; 4],
-}
-
-/// Encoded width of one arena slot.
-pub const NODE_BYTES: usize = core::mem::size_of::<OrderNodeV0>();
-const_assert_eq!(NODE_BYTES, 96);
-
-impl OrderNodeV0 {
-    pub fn user_ref(&self) -> UserRefV0 {
-        UserRefV0 {
-            authority: self.authority,
-            sub_account_id: self.sub_account_id,
-        }
-    }
-
-    pub fn is_bit_flag_set(&self, flag: OrderBitFlag) -> bool {
-        self.bit_flags & flag as u8 != 0
-    }
-
-    /// Node holds a live order.
-    pub fn is_open(&self) -> bool {
-        self.is_bit_flag_set(OrderBitFlag::Open)
-    }
-
-    /// The order is a migrated taker remainder.
-    pub fn is_taker_origin(&self) -> bool {
-        self.is_bit_flag_set(OrderBitFlag::TakerOrigin)
-    }
-
-    pub fn side(&self) -> Side {
-        if self.is_bit_flag_set(OrderBitFlag::Ask) {
-            Side::Ask
-        } else {
-            Side::Bid
-        }
-    }
-
-    /// Past its `max_ts`. A zero `max_ts` is good-till-cancelled.
-    pub fn is_expired(&self, now: i64) -> bool {
-        self.max_ts != 0 && self.max_ts < now
-    }
-
-    /// Past its activation slot, so the speed bump no longer holds it.
-    pub fn is_active(&self, slot: u64) -> bool {
-        self.activation_slot <= slot
-    }
-
-    /// Live and matchable right now: open, activated, not expired.
-    pub fn is_matchable(&self, slot: u64, now: i64) -> bool {
-        self.is_open() && self.is_active(slot) && !self.is_expired(now)
-    }
-}
+/// The order-node layout, declared in `clob-state` because an off-chain
+/// indexer decodes the same bytes — see that crate for why it is the one part
+/// of this account a reader outside the program is allowed to know. Nothing on
+/// chain reads it but this program.
+pub use clob_state::{live_orders, OrderBitFlag, OrderNodeV0, NIL, NODE_BYTES};
 /// Order handle, declared by `clob-wire` — the crate that owns every shape
 /// on the instruction surface, so the bytes this program reads and the bytes
 /// its caller writes come from one declaration.
@@ -689,6 +599,7 @@ pub use clob_wire::CancelAllOutcomeV0;
 pub struct RemovedOrder {
     pub user: UserRefV0,
     pub order_id: u64,
+    pub client_order_id: u32,
     pub price: u64,
     pub base_asset_amount: u64,
     pub side: Side,
@@ -705,7 +616,7 @@ pub struct ExecuteOutcome {
     /// Order culled because its post-fill remainder fell below
     /// `min_order_size`. At most one per execute — a partial fill only
     /// happens when the taker's size runs out, which ends the walk.
-    pub cancelled_order_id: Option<u64>,
+    pub cancelled_client_order_id: Option<u32>,
 }
 
 /// Wire form of a removed order — return data of cancel/evict/expire.
@@ -726,6 +637,10 @@ pub use clob_wire::RemovedOrderV0;
 /// so their `User` is always in the loaded set).
 pub use quoter_spec::CancelledRemainderV0;
 pub use quoter_spec::CompletedOrderV0;
+/// The one order a fill left resting smaller than it found it — the per-order
+/// half of a fill a merged balance change cannot report. Declared by
+/// `quoter-spec`.
+pub use quoter_spec::PartiallyFilledOrderV0;
 
 /// `activation_slot` is computed by the instruction handler: placement slot
 /// plus the default delay, or a chosen delay clamped to
@@ -742,6 +657,12 @@ pub struct PlaceOrderParams {
     pub max_ts: i64,
     /// Marks the order [`OrderBitFlag::TakerOrigin`].
     pub taker_origin: bool,
+    /// Stored on the node and reported back, never read. See
+    /// [`OrderNodeV0::client_order_id`].
+    pub client_order_id: u32,
+    /// Refuse the placement when the order would cross the opposite best,
+    /// rather than resting it crossed.
+    pub reject_if_crossed: bool,
 }
 
 /// Per-market configuration, set at init (also the init wire args).

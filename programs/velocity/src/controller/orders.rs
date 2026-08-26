@@ -2627,7 +2627,7 @@ fn emit_perp_action_record(
 ) -> VelocityResult {
     let fill_record_id = get_then_update_id!(market, next_fill_record_id);
     let oracle_price = oracle_map.get_price_data(&market.oracle_id())?.price;
-    let record = get_order_action_record(
+    let mut record = get_order_action_record(
         now,
         OrderAction::Fill,
         action_explanation,
@@ -2656,6 +2656,17 @@ fn emit_perp_action_record(
         builder_idx,
         builder_fee_option,
     )?;
+    // A maker whose order rests on a book has no `Order` here to snapshot.
+    // What the fill knows of it is its id and its side, which is what a
+    // reader needs to attribute the fill; the order's size and its running
+    // totals live in the reader's own table, built from the place record.
+    // Reporting this fill's size as the order's size would be wrong, so the
+    // fields say nothing instead.
+    if maker_record_order.is_some_and(|order| order.is_placed_on_clob()) {
+        record.maker_order_base_asset_amount = None;
+        record.maker_order_cumulative_base_asset_amount_filled = None;
+        record.maker_order_cumulative_quote_asset_amount_filled = None;
+    }
     emit_stack::<_, { OrderActionRecord::SIZE }>(record)
 }
 
@@ -3341,6 +3352,10 @@ fn settle_external_match_fill(
     mut maker_stats: Option<&mut UserStats>,
     maker_key: &Pubkey,
     maker_aggregates_tracked: bool,
+    // The maker's own id for the order this fill came off, when the response
+    // named exactly one. It is what lets the fill record attribute to a book
+    // order; `None` when the change merged several and no single order owns it.
+    maker_order_id: Option<u32>,
     taker_limit_price: Option<u64>,
     oracle_price: i64,
     filler: &mut Option<&mut User>,
@@ -3602,7 +3617,17 @@ fn settle_external_match_fill(
         Some(*taker_key),
         Some(taker_order_for_record),
         Some(*maker_key),
-        None,
+        maker_order_id.map(|order_id| Order {
+            order_id,
+            market_index: market.market_index,
+            market_type: MarketType::Perp,
+            direction: maker_direction,
+            status: OrderStatus::Open,
+            order_type: OrderType::Limit,
+            post_only: true,
+            bit_flags: OrderBitFlag::PlacedOnClob as u8,
+            ..Order::default()
+        }),
         order_action_bit_flags,
         taker_existing_quote_entry_amount,
         taker_existing_base_asset_amount,
@@ -4368,6 +4393,7 @@ fn fulfill_perp_order_router_pass(
                 maker_stats.as_deref_mut(),
                 &maker_key,
                 maker_aggregates_tracked,
+                response.sole_client_order_id(change_index),
                 effective_taker_limit,
                 oracle_price,
                 filler,
@@ -4442,6 +4468,32 @@ fn fulfill_perp_order_router_pass(
                     cancelled.order_id,
                     OrderStatus::Canceled,
                 );
+                let is_isolated = maker.perp_positions[maker_position_index].is_isolated();
+                drop(maker);
+                // The cull is the only removal on this path velocity authors,
+                // and it is bounded at one per book, so the record is one
+                // record. Everything else the fill removed was consumed, and
+                // a consumed order is reported by the fill.
+                crate::instructions::emit_clob_cancel_record(
+                    now,
+                    market.market_stats.historical_oracle_data.last_oracle_price,
+                    &maker_key,
+                    crate::instructions::ClobOrderFacts {
+                        order_id: cancelled.client_order_id,
+                        market_index,
+                        direction: maker_direction,
+                        price: cancelled.price,
+                        base_asset_amount: cancelled.base_asset_amount,
+                        base_asset_amount_filled: 0,
+                        max_ts: 0,
+                        slot,
+                        taker_origin: false,
+                    },
+                    OrderActionExplanation::ClobRemainderCulled,
+                    None,
+                    None,
+                    is_isolated,
+                )?;
             }
         }
     }
@@ -4897,6 +4949,7 @@ pub fn cross_match(
                 maker_stats.as_deref_mut(),
                 &maker_key,
                 maker_aggregates_tracked,
+                response.sole_client_order_id(change_index),
                 None,
                 oracle_price,
                 &mut none_filler,
@@ -4966,6 +5019,28 @@ pub fn cross_match(
                     cancelled.order_id,
                     OrderStatus::Canceled,
                 );
+                let is_isolated = maker.perp_positions[maker_position_index].is_isolated();
+                drop(maker);
+                crate::instructions::emit_clob_cancel_record(
+                    now,
+                    oracle_price,
+                    &maker_key,
+                    crate::instructions::ClobOrderFacts {
+                        order_id: cancelled.client_order_id,
+                        market_index,
+                        direction: maker_direction,
+                        price: cancelled.price,
+                        base_asset_amount: cancelled.base_asset_amount,
+                        base_asset_amount_filled: 0,
+                        max_ts: 0,
+                        slot,
+                        taker_origin: false,
+                    },
+                    OrderActionExplanation::ClobRemainderCulled,
+                    None,
+                    None,
+                    is_isolated,
+                )?;
             }
         }
         validate!(
@@ -5202,8 +5277,9 @@ pub enum TakerOriginCounterparty {
         /// response naming anyone else — or splitting across orders — is not
         /// the cross that was priced.
         change: crate::state::prop_amm::UserBalanceChangeV0,
-        /// The counterparty's order, when the fill took it whole.
-        consumed: Option<u64>,
+        /// The counterparty's order, when the fill took it whole: the book's
+        /// id, and the maker's own id for the same order.
+        consumed: Option<(u64, u32)>,
         /// The sub-min remainder the book culled with it, if any.
         cancelled: Option<crate::state::prop_amm::CancelledRemainderV0>,
         subjects: crate::state::prop_amm::QuoterSubjects,
@@ -5227,6 +5303,10 @@ struct CounterpartyLeg<'a> {
     user: crate::state::prop_amm::ClobUserRefV0,
     base_asset_amount: u64,
     quote_asset_amount: u64,
+    /// The counterparty's own id for its order. Known either way: an executed
+    /// leg is one order by construction, and a cancelled one is the order the
+    /// removal named.
+    client_order_id: Option<u32>,
     /// The book's balance change, when the book is what filled it — whose
     /// retired order ids the settlement unwinds. `None` for a cancelled
     /// counterparty, which had no fill on the book to report.
@@ -5259,7 +5339,11 @@ impl TakerOriginCounterparty {
             ErrorCode::InvalidQuoterResponse,
             "taker-origin cross expects one counterparty fill, got several"
         )?;
-        let mut consumed = response.completed_for(0);
+        let mut consumed = response
+            .completed
+            .iter()
+            .filter(|entry| entry.change_index == 0)
+            .map(|entry| (entry.order_id, entry.client_order_id));
         let first = consumed.next();
         validate!(
             consumed.next().is_none(),
@@ -5286,10 +5370,18 @@ impl TakerOriginCounterparty {
             // at the counterparty's own remaining size, so a response naming
             // anyone else — or splitting across orders — is not the cross that
             // was priced.
-            Self::Executed { change, .. } => Ok(CounterpartyLeg {
+            Self::Executed {
+                change,
+                consumed,
+                cancelled,
+                ..
+            } => Ok(CounterpartyLeg {
                 user: change.user,
                 base_asset_amount: change.base_size,
                 quote_asset_amount: change.quote_size,
+                client_order_id: consumed
+                    .map(|(_, client_order_id)| client_order_id)
+                    .or_else(|| cancelled.map(|cull| cull.client_order_id)),
                 change: Some(change),
             }),
             Self::Cancelled {
@@ -5299,6 +5391,7 @@ impl TakerOriginCounterparty {
                 user: removed.user,
                 base_asset_amount: *base_asset_amount,
                 quote_asset_amount: clob_notional(removed.price, *base_asset_amount)?,
+                client_order_id: Some(removed.client_order_id),
                 change: None,
             }),
         }
@@ -5498,6 +5591,9 @@ pub fn settle_taker_origin_cross(
         maker_stats.as_deref_mut(),
         &maker_key,
         true,
+        // The counterparty is one order by construction: the crank sizes the
+        // match at that order's own remaining size.
+        leg.client_order_id,
         // The price the order was resting at is the taker's own limit, so the
         // fill has to be at-or-better than it — the cross is only allowed to
         // improve on the rest price, never to walk away from it.
@@ -5547,7 +5643,7 @@ pub fn settle_taker_origin_cross(
             [maker_position_index]
             .open_orders
             .saturating_sub(consumed.is_some().into());
-        if let Some(clob_order_id) = *consumed {
+        if let Some((clob_order_id, _)) = *consumed {
             maker.decrement_open_orders(false);
             maker.release_placed_trigger_slot(market_index, clob_order_id, OrderStatus::Filled);
         }

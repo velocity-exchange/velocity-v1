@@ -204,6 +204,8 @@ fn place_args(side: Side, price: u64, size: u64) -> PlaceOrderArgsV0 {
         max_ts: 0,
         user: uref(addr(Pubkey::default())),
         taker_origin: false,
+        client_order_id: 0,
+        reject_if_crossed: false,
     }
 }
 
@@ -441,18 +443,19 @@ fn remove_expired(
     send(ctx, ix)
 }
 
-/// RemovedOrderV0 return data:
-/// (user, order_id, price, base_asset_amount, side, taker_origin).
-fn parse_removed(b: &[u8]) -> ([u8; 32], u64, u64, u64, u8, bool) {
+/// RemovedOrderV0 return data: (user, order_id, client_order_id, price,
+/// base_asset_amount, side, taker_origin).
+fn parse_removed(b: &[u8]) -> ([u8; 32], u64, u32, u64, u64, u8, bool) {
     assert_eq!(u16::from_le_bytes(b[32..34].try_into().unwrap()), 0);
     assert_eq!(b.len(), REMOVED_ORDER_BYTES);
     (
         b[..32].try_into().unwrap(),
         parse_u64(&b[34..]),
-        parse_u64(&b[42..]),
-        parse_u64(&b[50..]),
-        b[58],
-        match b[59] {
+        parse_u32(&b[42..]),
+        parse_u64(&b[46..]),
+        parse_u64(&b[54..]),
+        b[62],
+        match b[63] {
             0 => false,
             1 => true,
             other => panic!("taker_origin is not a borsh bool: {other}"),
@@ -537,19 +540,19 @@ fn parse_cancel_all(b: &[u8]) -> (u64, u64, u32, u32, bool) {
 
 /// The `OrdersCancelRecordV0` payload: skips the fixed prefix and returns the
 /// logged id list.
-fn parse_cancel_all_record(bytes: &[u8]) -> (bool, Vec<u64>) {
+fn parse_cancel_all_record(bytes: &[u8]) -> (bool, Vec<u32>) {
     assert_eq!(
         &bytes[..8],
         OrdersCancelRecordV0::DISCRIMINATOR,
         "not a cancel-all record"
     );
     // [disc 8][authority 32][ts 8][bid base 8][ask base 8][market 2][sub 2]
-    // [sides 1][exhaustive 1][count 4][ids…]
+    // [sides 1][exhaustive 1][count 4][client ids…]
     const IDS: usize = 8 + 32 + 8 + 8 + 8 + 2 + 2 + 1 + 1 + 4;
     let exhaustive = bytes[IDS - 5] == 1;
     let count = parse_u32(&bytes[IDS - 4..]) as usize;
     let ids = (0..count)
-        .map(|i| parse_u64(&bytes[IDS + i * 8..]))
+        .map(|i| parse_u32(&bytes[IDS + i * 4..]))
         .collect();
     (exhaustive, ids)
 }
@@ -839,7 +842,8 @@ fn hard_cap_rejects_placement_and_crank_evicts_tail() {
 
     // The crank removes the tail (worst price) and reports it for velocity.
     let meta = evict_worst(&mut ctx, Side::Bid).unwrap();
-    let (evicted_user, _, price, base, side, taker_origin) = parse_removed(&meta.return_data.data);
+    let (evicted_user, _, _, price, base, side, taker_origin) =
+        parse_removed(&meta.return_data.data);
     assert_eq!(
         (evicted_user, price, base, side, taker_origin),
         (user.to_bytes(), 100, 1, Side::Bid.to_u8(), false)
@@ -1286,7 +1290,7 @@ fn expired_orders_are_skipped_and_cranked_off() {
     assert_eq!(state.free_count, CAPACITY as u32 - 1);
 
     let meta = remove_expired(&mut ctx, order_ref).unwrap();
-    let (removed_user, _, _, base, side, taker_origin) = parse_removed(&meta.return_data.data);
+    let (removed_user, _, _, _, base, side, taker_origin) = parse_removed(&meta.return_data.data);
     assert_eq!(
         (removed_user, base, side, taker_origin),
         (user.to_bytes(), 5, Side::Ask.to_u8(), false)
@@ -1476,12 +1480,37 @@ fn cancel_all_logs_every_removed_order_id_at_the_ceiling() {
     let mut expected = Vec::new();
     // Interleave a second maker through both sides, so the sweep is a filtered
     // walk rather than a truncation and the ids can't come out of order.
+    // Distinct client ids: the record lists the caller's ids, so an assertion
+    // against them is what pins that the book reported those and not its own.
+    let mut client_order_id = 0u32;
+    let mut next_id = || {
+        client_order_id += 1;
+        client_order_id
+    };
     for i in 0..per_side {
-        expected.push(place(&mut ctx, place_args(Side::Bid, 1_000 - i, 10), user).order_id);
+        let id = next_id();
+        expected.push(id);
+        place(
+            &mut ctx,
+            PlaceOrderArgsV0 {
+                client_order_id: id,
+                ..place_args(Side::Bid, 1_000 - i, 10)
+            },
+            user,
+        );
         place(&mut ctx, place_args(Side::Bid, 1_000 - i, 10), other);
     }
     for i in 0..per_side {
-        expected.push(place(&mut ctx, place_args(Side::Ask, 2_000 + i, 10), user).order_id);
+        let id = next_id();
+        expected.push(id);
+        place(
+            &mut ctx,
+            PlaceOrderArgsV0 {
+                client_order_id: id,
+                ..place_args(Side::Ask, 2_000 + i, 10)
+            },
+            user,
+        );
         place(&mut ctx, place_args(Side::Ask, 2_000 + i, 10), other);
     }
 
@@ -1754,7 +1783,10 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
         .map(|i| {
             place(
                 &mut ctx,
-                place_args(Side::Ask, 100 + i as u64, 1),
+                PlaceOrderArgsV0 {
+                    client_order_id: 1_000 + i as u32,
+                    ..place_args(Side::Ask, 100 + i as u64, 1)
+                },
                 addr(Pubkey::new_unique()),
             )
         })
@@ -1789,12 +1821,14 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
         direction: Direction::Long.to_u8(),
         fills: orders
             .iter()
-            .map(|order| FillSlimV0 {
+            .enumerate()
+            .map(|(i, order)| FillSlimV0 {
                 order_id: order.order_id,
                 base_size: 1,
+                client_order_id: 1_000 + i as u32,
             })
             .collect(),
-        cancelled_order_ids: vec![],
+        cancelled_client_order_ids: vec![],
     };
     assert_eq!(program_data(&meta), Event::data(&expected));
     println!(
@@ -1952,7 +1986,14 @@ fn the_taker_origin_flag_round_trips_through_place_and_removal() {
     let mut ctx = setup();
     let user = addr(Pubkey::new_unique());
 
-    let remainder = place(&mut ctx, taker_origin_args(Side::Bid, 101, 5), user);
+    let remainder = place(
+        &mut ctx,
+        PlaceOrderArgsV0 {
+            client_order_id: 7_777,
+            ..taker_origin_args(Side::Bid, 101, 5)
+        },
+        user,
+    );
     let ordinary = place(&mut ctx, place_args(Side::Bid, 90, 5), user);
     assert!(node(&ctx, remainder.node_index).is_taker_origin());
     assert!(
@@ -1962,14 +2003,15 @@ fn the_taker_origin_flag_round_trips_through_place_and_removal() {
     assert!(!node(&ctx, ordinary.node_index).is_taker_origin());
 
     let meta = cancel(&mut ctx, remainder, user).unwrap();
-    let (_, order_id, price, base, side, taker_origin) = parse_removed(&meta.return_data.data);
+    let (_, order_id, client_order_id, price, base, side, taker_origin) =
+        parse_removed(&meta.return_data.data);
     assert_eq!(
-        (order_id, price, base, side, taker_origin),
-        (remainder.order_id, 101, 5, Side::Bid.to_u8(), true)
+        (order_id, client_order_id, price, base, side, taker_origin),
+        (remainder.order_id, 7_777, 101, 5, Side::Bid.to_u8(), true)
     );
 
     let meta = cancel(&mut ctx, ordinary, user).unwrap();
-    assert!(!parse_removed(&meta.return_data.data).5);
+    assert!(!parse_removed(&meta.return_data.data).6);
 }
 
 /// The gate, on-chain, and velocity's whole cross-resolution path with it: a
@@ -2001,7 +2043,7 @@ fn a_crossed_taker_remainder_is_passed_over_and_its_counterparty_is_not() {
 
     // Then the remainder comes off, reporting which side was the aggressor.
     let meta = cancel(&mut ctx, remainder, taker).unwrap();
-    let (_, _, price, base, side, taker_origin) = parse_removed(&meta.return_data.data);
+    let (_, _, _, price, base, side, taker_origin) = parse_removed(&meta.return_data.data);
     assert_eq!(
         (price, base, side, taker_origin),
         (101, 5, Side::Bid.to_u8(), true)

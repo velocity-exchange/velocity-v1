@@ -391,6 +391,15 @@ pub enum OrderActionExplanation {
     OrderFilledWithOpenbookV2,
     TransferPerpPosition,
     OrderFilledWithExternalQuoter,
+    /// A resting CLOB order removed by the eviction crank: the side reached
+    /// its threshold and the worst-priced order came off. Distinct from a
+    /// cancel because nobody asked for it, and because a placed trigger
+    /// re-arms on one rather than dying.
+    ClobOrderEvicted,
+    /// A resting CLOB order removed because a fill left it under the market's
+    /// minimum order size. The maker was filled in the same transaction, so
+    /// this always accompanies a fill record.
+    ClobRemainderCulled,
 }
 
 #[event]

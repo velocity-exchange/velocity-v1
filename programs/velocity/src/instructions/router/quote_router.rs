@@ -146,7 +146,15 @@ pub fn handle_quote_router<'c: 'info, 'info>(
     // One set of CPI buffers for every entry this view quotes.
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
     for loader in &quoters {
-        let (priority, quoter_type, quoter_user, entry_key, quoter_signer, quoter_signer_nonce, located) = {
+        let (
+            priority,
+            quoter_type,
+            quoter_user,
+            entry_key,
+            quoter_signer,
+            quoter_signer_nonce,
+            located,
+        ) = {
             let quoter = loader.load()?;
             validate!(
                 quoter.market == market_index,

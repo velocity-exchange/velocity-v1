@@ -3435,7 +3435,8 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
         let mut book_storage =
             [crate::math::router::QuoterBook::default(); crate::instructions::MAX_ROUTE_QUOTERS];
         let book_refs = route.books(&mut book_storage);
-        let mut executor = route.executor(&inputs, clock.slot, clock.unix_timestamp, &mut cpi_scratch);
+        let mut executor =
+            route.executor(&inputs, clock.slot, clock.unix_timestamp, &mut cpi_scratch);
         let mut router_inputs = crate::math::router::RouterFillInputs {
             books: &book_refs,
             executor: &mut executor,

@@ -218,8 +218,8 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
             ErrorCode::DefaultError
         })?;
         let entry_key = loader.key();
-        let (cpi_signer, cpi_signer_nonce) = quoter
-            .cpi_signer(&entry_key, (self.clob_authority, self.clob_authority_nonce));
+        let (cpi_signer, cpi_signer_nonce) =
+            quoter.cpi_signer(&entry_key, (self.clob_authority, self.clob_authority_nonce));
         quoter
             .execute(
                 self.market_index,

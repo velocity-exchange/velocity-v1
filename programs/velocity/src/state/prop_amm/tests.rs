@@ -153,12 +153,7 @@ fn a_book_may_move_any_loaded_user_but_the_taker() {
         authority: protocol(),
         sub_account_id: 0,
     };
-    assert!(!QuoterSubjects::Book.permits(
-        &protocol_user,
-        &key(3),
-        &taker,
-        &protocol()
-    ));
+    assert!(!QuoterSubjects::Book.permits(&protocol_user, &key(3), &taker, &protocol()));
     // A different sub-account of the protocol authority is an ordinary user.
     assert!(QuoterSubjects::Book.permits(
         &ClobUserRefV0 {

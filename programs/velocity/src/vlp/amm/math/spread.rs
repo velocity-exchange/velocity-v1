@@ -604,20 +604,26 @@ impl SpreadPair {
 }
 
 /// The final raw spread split by safety priority. Components sum exactly to
-/// `raw`: the known oracle gap has first claim on the ceiling, directional
-/// inventory steering has second claim, and the residual base/vol/common
-/// padding yields first when the quote is over budget.
+/// `raw`: the known oracle gap has first claim on the ceiling, the minimum
+/// base/vol floor has second claim, directional inventory steering has third
+/// claim, and the residual common padding yields first when the quote is over
+/// budget.
 #[derive(Clone, Copy)]
 struct SpreadComponents {
     // Tier 1: known oracle/vAMM mispricing. This receives ceiling room first
     // and is compressed only when the divergence alone exceeds the ceiling.
     divergence: SpreadPair,
 
-    // Tier 2: directional widening that discourages inventory-growing flow.
+    // Tier 2: the minimum quote cushion, max(base / 2, volatility), per side.
+    // Keeping this ahead of steering prevents a saturated directional signal
+    // from quoting the healing side exactly at mid.
+    floor: SpreadPair,
+
+    // Tier 3: directional widening that discourages inventory-growing flow.
     // This receives whatever room remains after divergence protection.
     steering: SpreadPair,
 
-    // Tier 3: base spread, volatility padding, and other common protection.
+    // Tier 4: common protection above the minimum floor.
     // This is the first layer sacrificed when the total quote is over budget.
     padding: SpreadPair,
 }
@@ -626,19 +632,24 @@ impl SpreadComponents {
     /// Reconcile the recorded mechanism requirements against the final raw
     /// spread. This keeps every uncapped quote byte-identical even when a
     /// negative admin adjustment has already reduced the raw pair: divergence
-    /// claims what remains first, steering next, and padding is the residual.
+    /// claims what remains first, the minimum base/vol floor next, steering
+    /// after that, and padding is the residual.
     fn from_raw(
         raw: SpreadPair,
         divergence_required: SpreadPair,
+        floor_required: SpreadPair,
         steering_added: SpreadPair,
     ) -> VelocityResult<Self> {
         let divergence = raw.component_min(divergence_required);
         let after_divergence = raw.checked_sub(divergence)?;
-        let steering = after_divergence.component_min(steering_added);
-        let padding = after_divergence.checked_sub(steering)?;
+        let floor = after_divergence.component_min(floor_required);
+        let after_floor = after_divergence.checked_sub(floor)?;
+        let steering = after_floor.component_min(steering_added);
+        let padding = after_floor.checked_sub(steering)?;
 
         Ok(Self {
             divergence,
+            floor,
             steering,
             padding,
         })
@@ -646,6 +657,7 @@ impl SpreadComponents {
 
     fn raw(self) -> VelocityResult<SpreadPair> {
         let mut raw = self.divergence;
+        raw.add_pair(self.floor)?;
         raw.add_pair(self.steering)?;
         raw.add_pair(self.padding)?;
         Ok(raw)
@@ -665,11 +677,12 @@ impl SpreadComponents {
 
         // Safety order is intentional:
         //   1. Divergence protection keeps its room first.
-        //   2. Inventory steering keeps the remaining room next.
-        //   3. Statistical/common padding receives only leftover room.
+        //   2. The per-side base/vol floor keeps quotes away from mid.
+        //   3. Inventory steering keeps the remaining room next.
+        //   4. Common padding above the floor receives only leftover room.
         // If a tier only partly fits, it is compressed within that tier and
         // every lower-priority tier receives zero.
-        for layer in [self.divergence, self.steering, self.padding] {
+        for layer in [self.divergence, self.floor, self.steering, self.padding] {
             if remaining == 0 {
                 break;
             }
@@ -755,8 +768,8 @@ impl SpreadInputs {
 /// 5  + r              revenue retreat: full on loaded, half on other
 /// 6  x beta(f)        funding lean, loaded side, paying regime only
 /// 7  x tilt gain      amm_inventory_spread_adjustment (floored at base/vol)
-/// 8  CAP              total <= dynamic ceiling; divergence, then steering,
-///                     then base/vol/common padding
+/// 8  CAP              total <= dynamic ceiling; divergence, base/vol floor,
+///                     steering, then common padding
 /// -- caller (compute_quote_state), post-cap --
 /// 9  x bot knob       amm_spread_adjustment (crank's actuator)
 /// 10 offset           reference_price_offset shifts BOTH quotes
@@ -891,6 +904,7 @@ fn calculate_spread(
         SpreadComponents::from_raw(
             spread,
             divergence_requirement(last_oracle_reserve_price_spread_pct),
+            floors,
             steering_added,
         )?
         .cap_total_ordered(max_target_spread)?

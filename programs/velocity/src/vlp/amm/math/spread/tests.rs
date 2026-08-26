@@ -4,7 +4,8 @@ mod test {
         error::VelocityResult,
         math::constants::{
             AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BID_ASK_SPREAD_PRECISION,
-            BID_ASK_SPREAD_PRECISION_I64, QUOTE_PRECISION, QUOTE_PRECISION_I128,
+            BID_ASK_SPREAD_PRECISION_I64, PRICE_PRECISION_U64, QUOTE_PRECISION,
+            QUOTE_PRECISION_I128,
         },
         state::perp_market::{PerpMarket, AMM},
         vlp::amm::math::{amm::calculate_price, spread::*},
@@ -108,13 +109,18 @@ mod test {
 
     #[test]
     fn ordered_cap_preserves_priority() {
-        // raw = divergence (20, 0) + steering (80, 0) + padding (60, 60)
+        // raw = divergence (20, 0) + floor (10, 10) + steering (80, 0)
+        //     + padding (50, 50)
         let components = SpreadComponents::from_raw(
             SpreadPair {
                 long: 160,
                 short: 60,
             },
             SpreadPair { long: 20, short: 0 },
+            SpreadPair {
+                long: 10,
+                short: 10,
+            },
             SpreadPair { long: 80, short: 0 },
         )
         .unwrap();
@@ -128,14 +134,17 @@ mod test {
             }
         );
 
-        // Padding is gone before steering is touched.
+        // Padding is gone before steering is touched, but the floor remains.
         assert_eq!(
             components.cap_total_ordered(90).unwrap(),
-            SpreadPair { long: 90, short: 0 }
+            SpreadPair {
+                long: 80,
+                short: 10,
+            }
         );
 
-        // Divergence is the last layer compressed when the ceiling cannot
-        // hold even the known oracle gap.
+        // Divergence is still the last layer compressed when the ceiling
+        // cannot hold even the known oracle gap.
         assert_eq!(
             components.cap_total_ordered(10).unwrap(),
             SpreadPair { long: 10, short: 0 }
@@ -151,16 +160,39 @@ mod test {
                 short: 100,
             },
             SpreadPair { long: 60, short: 0 },
+            SpreadPair { long: 5, short: 5 },
             SpreadPair { long: 0, short: 50 },
         )
         .unwrap();
 
         let capped = components.cap_total_ordered(130).unwrap();
         assert_eq!(capped.total().unwrap(), 130);
-        assert_eq!(capped.long, 65);
-        assert_eq!(capped.short, 65);
+        assert_eq!(capped.long, 67);
+        assert_eq!(capped.short, 63);
         assert!(capped.long >= 60); // full divergence requirement survives
         assert!(capped.short >= 50); // full steering requirement survives
+    }
+
+    #[test]
+    fn calculate_spread_maps_negative_oracle_gap_to_long_side() {
+        let amm = AMM {
+            base_spread: 1_000,
+            max_spread: 10_000,
+            total_fee_minus_distributions: 1,
+            ..AMM::default()
+        };
+
+        let spread = crate::vlp::amm::math::spread::calculate_spread(
+            &amm,
+            &SpreadInputs::default(),
+            PRICE_PRECISION_U64,
+            -5_000,
+        )
+        .unwrap();
+
+        // Reserve below oracle retreats the long/ask side. The short side
+        // remains at its half-base floor.
+        assert_eq!(spread, (5_000, 500));
     }
 
     #[test]
@@ -174,6 +206,10 @@ mod test {
             SpreadPair {
                 long: 1_000,
                 short: 0,
+            },
+            SpreadPair {
+                long: 100,
+                short: 100,
             },
             SpreadPair {
                 long: 5_000,
@@ -736,9 +772,9 @@ mod test {
         )
         .unwrap();
 
-        // Steering alone consumes the ceiling, so the base/vol padding on
-        // the healing side yields completely.
-        assert_eq!(long_spread_btc1, 0);
+        // Steering consumes every byte above the explicit half-base floor on
+        // the healing side.
+        assert_eq!(long_spread_btc1, 250);
         assert_eq!(short_spread_btc1, 200000 - long_spread_btc1); // max spread
     }
 
@@ -877,8 +913,8 @@ mod test {
             0,
         )
         .unwrap();
-        assert_eq!(long_spread1, 0);
-        assert_eq!(short_spread1, 200000);
+        assert_eq!(long_spread1, 500);
+        assert_eq!(short_spread1, 199500);
 
         total_fee_minus_distributions = QUOTE_PRECISION_I128;
         let (long_spread1, short_spread1) = calculate_spread(
@@ -907,8 +943,8 @@ mod test {
             0,
         )
         .unwrap();
-        assert_eq!(long_spread1, 0);
-        assert_eq!(short_spread1, 200000);
+        assert_eq!(long_spread1, 500);
+        assert_eq!(short_spread1, 199500);
 
         // flip sign
         let (d1, _) = calculate_long_short_vol_spread(
@@ -960,7 +996,7 @@ mod test {
             0,
         )
         .unwrap();
-        assert_eq!(long_spread1, 200000);
+        assert_eq!(long_spread1, 199500);
         assert_eq!(short_spread1, max_spread - long_spread1);
 
         let (long_spread1, short_spread1) = calculate_spread(
@@ -989,7 +1025,7 @@ mod test {
             0,
         )
         .unwrap();
-        assert_eq!(long_spread1, 200000);
+        assert_eq!(long_spread1, 199500);
         assert_eq!(short_spread1, max_spread - long_spread1); // max on long
 
         let (long_spread1, short_spread1) = calculate_spread(
@@ -1018,8 +1054,8 @@ mod test {
             0,
         )
         .unwrap();
-        assert_eq!(long_spread1, 200000);
-        assert_eq!(short_spread1, 0);
+        assert_eq!(long_spread1, 199500);
+        assert_eq!(short_spread1, 500);
     }
 
     #[test]
@@ -1512,8 +1548,8 @@ mod test {
             0,
         )
         .unwrap();
-        assert_eq!(long_spread, 200000);
-        assert_eq!(short_spread, 0);
+        assert_eq!(long_spread, 197541);
+        assert_eq!(short_spread, 2459);
 
         let (long_spread, short_spread) = calculate_spread(
             base_spread,
@@ -1718,10 +1754,10 @@ mod test {
             0,
         )
         .unwrap();
-        // The 5bp divergence on short is protected before long-side
-        // steering; padding receives no room at this saturation point.
-        assert_eq!(long_spread, 195000);
-        assert_eq!(short_spread, 5000);
+        // The 5bp divergence on short is protected first, then its vol floor,
+        // before long-side steering receives the residual ceiling.
+        assert_eq!(long_spread, 192541);
+        assert_eq!(short_spread, 7459);
 
         let (long_spread, short_spread) = calculate_spread(
             base_spread,
@@ -1783,8 +1819,8 @@ mod test {
             0,
         )
         .unwrap();
-        assert_eq!(long_spread, 0);
-        assert_eq!(short_spread, 1000000);
+        assert_eq!(long_spread, 146096);
+        assert_eq!(short_spread, 853904);
 
         // terms 3
         let (long_spread, short_spread) = calculate_spread(
@@ -1813,8 +1849,8 @@ mod test {
             0,
         )
         .unwrap();
-        assert_eq!(long_spread, 0);
-        assert_eq!(short_spread, 1000000);
+        assert_eq!(long_spread, 146096);
+        assert_eq!(short_spread, 853904);
 
         // terms 4
         let (long_spread, short_spread) = calculate_spread(
@@ -1843,8 +1879,8 @@ mod test {
             0,
         )
         .unwrap();
-        assert_eq!(long_spread, 0);
-        assert_eq!(short_spread, 1000000);
+        assert_eq!(long_spread, 146096);
+        assert_eq!(short_spread, 853904);
 
         // extra one?
 
@@ -2117,14 +2153,14 @@ mod test {
             assert_eq!(
                 out,
                 (
-                    59440,
-                    560,
+                    55000,
+                    5000,
                     0,
                     -50000,
-                    97058823529,
-                    103030303030,
-                    100028011204,
-                    99971996640
+                    97297297298,
+                    102777777777,
+                    100250626566,
+                    99750000000
                 )
             );
         }

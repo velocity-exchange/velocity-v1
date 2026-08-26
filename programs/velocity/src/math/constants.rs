@@ -289,11 +289,11 @@ pub const MIN_MARGIN_RATIO: u32 = 125; // 80x leverage
 pub const MAX_BID_ASK_INVENTORY_SKEW_FACTOR: u64 = 10 * BID_ASK_SPREAD_PRECISION;
 
 // SPREAD (vlp/amm/math/spread.rs)
-/// Oracle confidence above this carries full weight in the vol spread;
-/// at or below it the contribution is divided by
-/// `SPREAD_CONF_DISCOUNT_DIVISOR` (PERCENTAGE_PRECISION, 25 bp).
+/// Oracle confidence at or above this carries full weight in the vol spread;
+/// below it the contribution weight ramps continuously from 1/20 to full
+/// weight (PERCENTAGE_PRECISION, 25 bp).
 pub const SPREAD_CONF_FULL_WEIGHT_THRESHOLD: u64 = PERCENTAGE_PRECISION_U64 / 400;
-/// Divisor applied to the confidence contribution at or below the
+/// Denominator of the confidence contribution's starting weight below the
 /// full-weight threshold.
 pub const SPREAD_CONF_DISCOUNT_DIVISOR: u64 = 20;
 /// Divisor applied to the market's average std pct when it competes with

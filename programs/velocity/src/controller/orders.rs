@@ -4304,16 +4304,29 @@ fn fulfill_perp_order_router_pass(
                 ))
             },
         )?;
-        if ext_base == 0 {
-            continue;
-        }
-        // A quote is what its quoter can deliver — the CLOB spends execute's
-        // own fill and user budget while it walks — so the allocation cut from
-        // that ladder is fillable in full. Anything else is the quoter
-        // contradicting its own quote.
+        // A quote is what its quoter can deliver. The CLOB spends execute's own
+        // fill and user budget while it walks, and a custom quoter's ladder was
+        // already cut to what its own margin supports — so the allocation is
+        // fillable in full. Anything else is the quoter contradicting its own
+        // quote.
+        //
+        // Delivering nothing is the same contradiction as delivering part, and
+        // is treated the same way. It used to be skipped, which let a quoter
+        // win base off a tight quote and hand the taker a hole: the size went
+        // nowhere, and a source that would have filled it never saw it. An
+        // allocation of zero is already skipped above, so reaching here with
+        // nothing means this quoter was given real size.
+        validate!(
+            ext_base <= allocation.base,
+            ErrorCode::QuoterOverfilled,
+            "quoter {} filled {} of the {} it quoted",
+            router.executor.quoter_key(i),
+            ext_base,
+            allocation.base
+        )?;
         validate!(
             ext_base == allocation.base,
-            ErrorCode::QuoterOverfilled,
+            ErrorCode::QuoterFilledShort,
             "quoter {} filled {} of the {} it quoted",
             router.executor.quoter_key(i),
             ext_base,

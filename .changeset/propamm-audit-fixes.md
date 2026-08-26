@@ -56,3 +56,8 @@ Both fill instructions gain an optional `instructions_sysvar` account. A fill
 needs it only to be counted, so a taker filling its own order can omit it — but
 a filler that omits it is refused whenever a book withholds. The SDK and
 `velocity-rs` builders always pass it.
+
+**A quoter must deliver every unit it won.** A quoter that returned nothing for an
+allocation it won was skipped, so the size went nowhere and a source that would
+have filled it never saw it. Returning less than the allocation already failed;
+returning nothing now fails the same way, with `QuoterFilledShort` (6398).

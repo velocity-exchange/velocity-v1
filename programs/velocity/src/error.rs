@@ -849,6 +849,8 @@ pub enum ErrorCode {
     FillerPaddedTheUserSet,
     #[msg("A book withheld depth and the fill cannot count the transaction's accounts")]
     FillerObligationUncountable,
+    #[msg("A quoter filled less base than the allocation it won from its own quote")]
+    QuoterFilledShort,
 }
 
 #[macro_export]

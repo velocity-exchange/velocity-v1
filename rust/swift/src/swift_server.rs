@@ -66,6 +66,7 @@ use {
             account_list_builder::AccountsListBuilder,
             constants::{BASE_PRECISION_U64, PRICE_PRECISION_I64},
         },
+        program::math::time::{Millis, SlotClock},
         swift_order_subscriber::{SignedMessageInfo, SignedOrderType},
         types::{
             accounts::User, errors::ErrorCode, CommitmentConfig, MarketId, MarketStatus,
@@ -1526,17 +1527,15 @@ impl ServerParams {
         // measurement — unreliable) or a stale oracle must never turn this guard
         // into a source of rejections for otherwise-valid orders.
         let slot_subscriber_stale = self.slot_subscriber.is_stale();
-        // configured in 400ms-unit encoding (env knob); the measured age is
-        // wall-clock, integrated per slot-duration regime
-        let max_staleness = velocity_rs::program::math::time::Millis::from_stored_units(
-            self.config.auction_oracle_max_staleness_slots,
-        );
+        // configured in 400ms unit encoding (env knob); the measured age is
+        // wall clock, integrated per slot duration regime
+        let max_staleness =
+            Millis::from_stored_units(self.config.auction_oracle_max_staleness_slots);
         let oracle_age = self
             .velocity
             .slot_clock()
             .elapsed(oracle_slot, current_slot);
-        let oracle_stale = max_staleness != velocity_rs::program::math::time::Millis::ZERO
-            && oracle_age > max_staleness;
+        let oracle_stale = max_staleness != Millis::ZERO && oracle_age > max_staleness;
         if slot_subscriber_stale || oracle_stale {
             record(if slot_subscriber_stale {
                 "skip_slot_subscriber_stale"
@@ -1794,7 +1793,7 @@ fn validate_order(
     take_profit: Option<&SignedMsgTriggerOrderParams>,
     taker_slot: Slot,
     current_slot: Slot,
-    slot_clock: velocity_rs::program::math::time::SlotClock,
+    slot_clock: SlotClock,
 ) -> Result<(), (axum::http::StatusCode, ProcessOrderResponse)> {
     // Validate order parameters
     if stop_loss.is_some_and(|x| x.base_asset_amount == 0 || x.trigger_price == 0)
@@ -1809,11 +1808,9 @@ fn validate_order(
         ));
     }
 
-    // Validate slot: ~200s of wall-clock age, integrated per slot-duration
+    // Validate slot: ~200s of wall clock age, integrated per slot duration
     // regime; mirrors the program's signed-msg staleness gate
-    if slot_clock.elapsed(taker_slot, current_slot)
-        > velocity_rs::program::math::time::Millis::from_secs(200)
-    {
+    if slot_clock.elapsed(taker_slot, current_slot) > Millis::from_secs(200) {
         return Err((
             axum::http::StatusCode::BAD_REQUEST,
             ProcessOrderResponse {
@@ -1830,7 +1827,7 @@ fn extract_signed_message_info(
     signed_msg: &SignedOrderType,
     taker_authority: &Pubkey,
     current_slot: Slot,
-    slot_clock: velocity_rs::program::math::time::SlotClock,
+    slot_clock: SlotClock,
 ) -> Result<
     (SignedMessageInfo, Option<u16>, Option<u64>),
     (axum::http::StatusCode, ProcessOrderResponse),
@@ -1994,9 +1991,12 @@ mod tests {
         ed25519_dalek::Signature as Ed25519Signature,
         solana_native_token::LAMPORTS_PER_SOL,
         std::collections::HashMap,
-        velocity_rs::types::{
-            accounts::User, SignedMsgOrderParamsDelegateMessage, SignedMsgOrderParamsMessage,
-            SignedMsgTriggerOrderParams,
+        velocity_rs::{
+            program::math::time::SlotDuration,
+            types::{
+                accounts::User, SignedMsgOrderParamsDelegateMessage, SignedMsgOrderParamsMessage,
+                SignedMsgTriggerOrderParams,
+            },
         },
     };
 
@@ -2337,7 +2337,7 @@ mod tests {
             &delegated_msg,
             &taker_authority,
             current_slot,
-            velocity_rs::program::math::time::SlotDuration::BASELINE,
+            SlotClock::baseline(),
         );
         assert!(result.is_ok_and(|(info, _, _)| {
             info.slot == current_slot
@@ -2374,7 +2374,7 @@ mod tests {
             &delegated_msg,
             &taker_authority,
             current_slot,
-            velocity_rs::program::math::time::SlotDuration::BASELINE,
+            SlotClock::baseline(),
         );
         assert!(result.is_err_and(|x| {
             x.0 == axum::http::StatusCode::BAD_REQUEST
@@ -2415,7 +2415,7 @@ mod tests {
             &authority_msg,
             &taker_authority,
             current_slot,
-            velocity_rs::program::math::time::SlotDuration::BASELINE,
+            SlotClock::baseline(),
         );
         assert!(result.is_ok_and(|(info, _margin_ratio, _is_isolated)| {
             info.slot == current_slot
@@ -2454,7 +2454,7 @@ mod tests {
             &authority_msg,
             &taker_authority,
             current_slot,
-            velocity_rs::program::math::time::SlotDuration::BASELINE,
+            SlotClock::baseline(),
         );
         assert!(result.is_err_and(|x| {
             x.0 == axum::http::StatusCode::BAD_REQUEST
@@ -2494,7 +2494,7 @@ mod tests {
             &delegated_msg,
             &taker_authority,
             current_slot,
-            velocity_rs::program::math::time::SlotDuration::BASELINE,
+            SlotClock::baseline(),
         );
         assert!(result.is_err_and(|x| x
             == (
@@ -2537,7 +2537,7 @@ mod tests {
             &delegated_msg,
             &taker_authority,
             current_slot,
-            velocity_rs::program::math::time::SlotDuration::BASELINE,
+            SlotClock::baseline(),
         );
         assert!(result.is_ok_and(|(_, _, is_isolated)| is_isolated.is_none()));
 
@@ -2567,7 +2567,7 @@ mod tests {
             &delegated_msg,
             &taker_authority,
             current_slot,
-            velocity_rs::program::math::time::SlotDuration::BASELINE,
+            SlotClock::baseline(),
         );
         // `extract_signed_message_info` returns the raw `isolated_position_deposit` field, so a
         // zero deposit comes back as `Some(0)` (not `None`). The "zero == not isolated" semantics
@@ -2600,7 +2600,7 @@ mod tests {
             &delegated_msg,
             &taker_authority,
             current_slot,
-            velocity_rs::program::math::time::SlotDuration::BASELINE,
+            SlotClock::baseline(),
         );
         assert!(result.is_ok_and(|(_, _, is_isolated)| is_isolated.is_some()));
 
@@ -2630,7 +2630,7 @@ mod tests {
             &authority_msg,
             &taker_authority,
             current_slot,
-            velocity_rs::program::math::time::SlotDuration::BASELINE,
+            SlotClock::baseline(),
         );
         assert!(result.is_ok_and(|(_, _, is_isolated)| is_isolated.is_none()));
 
@@ -2660,7 +2660,7 @@ mod tests {
             &authority_msg,
             &taker_authority,
             current_slot,
-            velocity_rs::program::math::time::SlotDuration::BASELINE,
+            SlotClock::baseline(),
         );
         assert!(result.is_ok_and(|(_, _, is_isolated)| is_isolated.is_some()));
     }

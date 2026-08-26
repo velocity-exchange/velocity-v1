@@ -1,4 +1,7 @@
-use program::error::ErrorCode;
+use program::{
+    error::ErrorCode,
+    math::time::{Millis, SlotClock},
+};
 
 use crate::{
     math::constants::{
@@ -184,19 +187,19 @@ pub fn get_liquidation_fee(
     max_liquidation_fee: u32,
     last_active_user_slot: u64,
     current_slot: u64,
-    slot_clock: program::math::time::SlotClock,
+    slot_clock: SlotClock,
 ) -> SdkResult<u32> {
     if current_slot < last_active_user_slot {
         return Err(SdkError::MathError("slot < user.last_active_slot"));
     }
     // grace period and per-period rate are in 400ms baseline units; count whole
-    // 400ms periods of elapsed wall-clock, integrated per slot-duration regime
+    // 400ms periods of elapsed wall clock, integrated per slot duration regime
     // (mirrors the program's get_liquidation_fee). Takes the full `SlotClock`
     // so an interval spanning an IBRL transition is priced exactly; resolve it
     // with `slot_clock_from_state`.
     let periods_elapsed = slot_clock
         .elapsed(last_active_user_slot, current_slot)
-        .div_periods(program::math::time::Millis::UNIT);
+        .div_periods(Millis::UNIT);
 
     if periods_elapsed < LIQUIDATION_FEE_ADJUST_GRACE_PERIOD_SLOTS {
         return Ok(base_liquidation_fee);

@@ -44,7 +44,7 @@ pub struct OrderParams {
     pub trigger_price: Option<u64>,
     pub trigger_condition: OrderTriggerCondition,
     pub oracle_price_offset: Option<i64>, // price offset from oracle for order
-    pub auction_duration: Option<u8>,     // wall-clock 400ms units (one slot at the 400ms baseline)
+    pub auction_duration: Option<u8>,     // wall clock 400ms units (one slot at the 400ms baseline)
     pub auction_start_price: Option<i64>, // specified in price or oracle_price_offset
     pub auction_end_price: Option<i64>,   // specified in price or oracle_price_offset
     /// the index into the placing user's RevenueShareEscrow.approved_builders list, if this order
@@ -939,7 +939,7 @@ impl OrderParams {
     ) -> VelocityResult<OrderParams> {
         let (auction_start_price, auction_end_price) =
             OrderParams::get_perp_baseline_start_end_price_offset(market, direction_to_close, 1)?;
-        // ~32s in wall-clock 400ms units
+        // ~32s in wall clock 400ms units
         let auction_duration = Millis::from_secs(32)
             .div_periods(Millis::UNIT)
             .min(u8::MAX as u64)
@@ -1024,10 +1024,10 @@ fn get_auction_duration(
         60
     };
 
-    // `Order.auction_duration` stores wall-clock 400ms units, not live slots,
+    // `Order.auction_duration` stores wall clock 400ms units, not live slots,
     // so the value is independent of the slot duration and the u8 keeps the
     // full historical range (max 180 units = 72s; the ceiling is 255 = 102s).
-    // Auction progress converts elapsed slots to wall-clock through the
+    // Auction progress converts elapsed slots to wall clock through the
     // `SlotClock` at fill time.
     Ok(percent_diff
         .safe_mul(steps_per_pct)?

@@ -2804,8 +2804,8 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Synchronizes one IBRL slot-duration transition (400 -> 350 -> 300 -> 250 ->
-	 * 200) from its feature-gate account. Permissionless: any signer may crank it;
+	 * Synchronizes one IBRL slot duration transition (400 -> 350 -> 300 -> 250 ->
+	 * 200) from its feature gate account. Permissionless: any signer may crank it;
 	 * the program validates the feature account (key, owner, activation) and
 	 * derives the effective slot from the cluster `EpochSchedule` itself, then
 	 * records it in `State.slotDurationTransitionSlots`. Idempotent per gate.
@@ -2828,7 +2828,7 @@ export class AdminClient extends VelocityClient {
 
 	/**
 	 * Builds the `syncStateSlotDuration` instruction without sending it. See
-	 * `syncStateSlotDuration`. Passes the IBRL feature-gate account for the
+	 * `syncStateSlotDuration`. Passes the IBRL feature gate account for the
 	 * target duration; the program verifies it is activated and derives the
 	 * effective slot from the `EpochSchedule` sysvar.
 	 * @returns The unsigned `syncStateSlotDuration` instruction.

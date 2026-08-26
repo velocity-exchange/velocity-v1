@@ -2,7 +2,7 @@ use crate::{
     math::{
         constants::{AMM_RESERVE_PRECISION, PEG_PRECISION, PRICE_PRECISION, PRICE_PRECISION_U64},
         oracle::*,
-        time::legacy_slot_duration_i64,
+        time::{legacy_slot_duration_i64, SlotDuration},
     },
     state::{
         oracle::HistoricalOracleData,
@@ -63,13 +63,13 @@ fn staleness_windows_scale_at_non_baseline_duration() {
 
     // 15 slots of delay: 6s at 400ms (stale beyond the 4s window), 3s at 200ms
     assert!(matches!(
-        validity(1_000_000, crate::math::time::SlotClock::baseline()),
+        validity(1_000_000, SlotClock::baseline()),
         OracleValidity::StaleForAMM { .. }
     ));
     assert_eq!(
         validity(
             1_000_000,
-            crate::math::time::SlotClock::from_state_fields([1, 1, 1, 1], 0, 0, 0)
+            SlotClock::from_state_fields([1, 1, 1, 1], 0, 0, 0)
         ),
         OracleValidity::Valid
     );
@@ -118,7 +118,7 @@ fn calculate_oracle_valid() {
             oracle_price_data,
             10000,
             &state.oracle_guard_rails.validity,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -144,7 +144,7 @@ fn calculate_oracle_valid() {
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
         1_000_000,
-        crate::math::time::SlotClock::baseline(),
+        SlotClock::baseline(),
     )
     .unwrap();
 
@@ -177,7 +177,7 @@ fn calculate_oracle_valid() {
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
         1_000_000,
-        crate::math::time::SlotClock::baseline(),
+        SlotClock::baseline(),
     )
     .unwrap();
     assert!(oracle_status.oracle_validity != OracleValidity::Valid);
@@ -197,7 +197,7 @@ fn calculate_oracle_valid() {
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
         1_000_000,
-        crate::math::time::SlotClock::baseline(),
+        SlotClock::baseline(),
     )
     .unwrap();
     assert!(oracle_status.oracle_validity == OracleValidity::Valid);
@@ -213,7 +213,7 @@ fn calculate_oracle_valid() {
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
         1_000_000,
-        crate::math::time::SlotClock::baseline(),
+        SlotClock::baseline(),
     )
     .unwrap();
     assert!(oracle_status.mark_too_divergent);
@@ -226,7 +226,7 @@ fn calculate_oracle_valid() {
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
         1_000_000,
-        crate::math::time::SlotClock::baseline(),
+        SlotClock::baseline(),
     )
     .unwrap();
     assert!(oracle_status.mark_too_divergent);
@@ -275,7 +275,7 @@ fn immediate_staleness_threshold_by_override() {
             mm_sourced,
             0,
             1_000_000,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
         matches!(validity, OracleValidity::Valid)
@@ -283,8 +283,8 @@ fn immediate_staleness_threshold_by_override() {
 
     // Unset + MM-sourced resolves to MM_ORACLE_MIN_WRITE_GAP, the tightest
     // window the crank can actually satisfy, rather than to zero.
-    let min_gap = crate::math::constants::MM_ORACLE_MIN_WRITE_GAP
-        .to_slots(crate::math::time::SlotDuration::BASELINE) as i64;
+    let min_gap =
+        crate::math::constants::MM_ORACLE_MIN_WRITE_GAP.to_slots(SlotDuration::BASELINE) as i64;
     for delay in 0..=min_gap {
         assert!(
             is_valid(delay, -1, true),

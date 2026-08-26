@@ -10,6 +10,7 @@ use {
             },
             position::{get_new_position_amounts, get_position_update_type, PositionUpdateType},
             safe_math::SafeMath,
+            time::SlotClock,
         },
         math_error, msg, safe_increment,
         state::{
@@ -405,7 +406,7 @@ pub fn update_position_with_base_asset_amount(
         tick: market.order_tick_size,
         step_size: market.order_step_size,
         slot: 0,
-        slot_clock: crate::math::time::SlotClock::baseline(),
+        slot_clock: SlotClock::baseline(),
         base_precision: BASE_PRECISION_U64,
         market_status: crate::state::market_status::MarketStatus::default(),
         market_config: 0,

@@ -35,7 +35,11 @@ use {
             spot_withdraw::{
                 validate_spot_market_vault_amount, DEFAULT_WITHDRAW_CIRCUIT_BREAKER_BPS,
             },
-            time::{legacy_slot_duration_i64_raw, legacy_slot_duration_u8, SlotDuration},
+            time::{
+                legacy_slot_duration_i64_raw, legacy_slot_duration_u8,
+                slot_duration_transition_index, SlotClock, SlotDuration,
+                SLOT_DURATION_TRANSITION_MS,
+            },
         },
         math_error, msg,
         optional_accounts::get_token_mint,
@@ -2733,7 +2737,7 @@ fn ibrl_feature_gate(slot_duration_ms: u16) -> Option<Pubkey> {
 
 /// Target slot duration selected by an IBRL feature account.
 fn ibrl_slot_duration_ms(feature_gate: &Pubkey) -> Option<u16> {
-    crate::math::time::SLOT_DURATION_TRANSITION_MS
+    SLOT_DURATION_TRANSITION_MS
         .iter()
         .find(|slot_duration_ms| {
             ibrl_feature_gate(**slot_duration_ms).as_ref() == Some(feature_gate)
@@ -2772,7 +2776,7 @@ fn feature_gate_effective_slot(
 }
 
 /// Synchronize one IBRL transition from its feature account. Permissionless:
-/// all accepted data is fixed by the feature key, feature-program ownership,
+/// all accepted data is fixed by the feature key, feature program ownership,
 /// serialized activation slot and the cluster EpochSchedule sysvar.
 pub fn handle_sync_state_slot_duration(ctx: Context<SyncStateSlotDuration>) -> Result<()> {
     let now_slot = Clock::get()?.slot;
@@ -2780,8 +2784,8 @@ pub fn handle_sync_state_slot_duration(ctx: Context<SyncStateSlotDuration>) -> R
     let feature_account = ctx.accounts.feature_gate.to_account_info();
     let slot_duration_ms =
         ibrl_slot_duration_ms(feature_account.key).ok_or(ErrorCode::DefaultError)?;
-    let transition_index = crate::math::time::slot_duration_transition_index(slot_duration_ms)
-        .ok_or(ErrorCode::DefaultError)?;
+    let transition_index =
+        slot_duration_transition_index(slot_duration_ms).ok_or(ErrorCode::DefaultError)?;
     let effective_slot = feature_gate_effective_slot(&feature_account, &epoch_schedule)?;
     let mut state = ctx.accounts.state.load_mut()?;
 
@@ -3852,13 +3856,10 @@ fn read_native_state_slot_duration(
             .map_err(|_| ErrorCode::InvalidNativeStateAccount)?;
         *transition_slot = u64::from_le_bytes(bytes);
     }
-    Ok(crate::math::time::SlotClock::from_state_fields(
-        transition_slots,
-        base,
-        pending,
-        effective_slot,
+    Ok(
+        SlotClock::from_state_fields(transition_slots, base, pending, effective_slot)
+            .slot_duration_at(current_slot),
     )
-    .slot_duration_at(current_slot))
 }
 
 pub fn handle_update_mm_oracle_native(accounts: &[AccountInfo], data: &[u8]) -> Result<()> {
@@ -5753,8 +5754,8 @@ mod native_auth_tests {
         let mut observed = Vec::with_capacity(writes);
         for i in 0..writes {
             // Advance the slot past the MM-oracle write gap for each write.
-            let gap = crate::math::constants::MM_ORACLE_MIN_WRITE_GAP
-                .to_slots(crate::math::time::SlotDuration::BASELINE);
+            let gap =
+                crate::math::constants::MM_ORACLE_MIN_WRITE_GAP.to_slots(SlotDuration::BASELINE);
             let slot = ((i as u64) + 1) * (gap + 1);
 
             let mut payload = [0u8; 24];
@@ -6800,8 +6801,8 @@ mod native_batch_tests {
     fn stale_source_slot_is_skipped_by_both_handlers() {
         let initial = (BASE_PRICE, SLOT - 10, 5);
         let written = (BASE_PRICE + 1_000, SLOT, 6);
-        let max_age = crate::math::constants::MM_ORACLE_MAX_SOURCE_AGE
-            .to_slots(crate::math::time::SlotDuration::BASELINE);
+        let max_age =
+            crate::math::constants::MM_ORACLE_MAX_SOURCE_AGE.to_slots(SlotDuration::BASELINE);
 
         // (label, source_slot, expected)
         let cases: [(&str, u64, MmStats); 5] = [
@@ -6920,7 +6921,7 @@ mod reserved_quote_name_tests {
 
 #[cfg(test)]
 mod feature_gate_tests {
-    //! The permissionless slot-duration sync reads the target IBRL gate's
+    //! The permissionless slot duration sync reads the target IBRL gate's
     //! activation slot from its feature account and derives the effective slot
     //! from the cluster `EpochSchedule` (first slot of the epoch after the
     //! activation epoch, mirroring Agave). These pin the account parse, the
@@ -6978,7 +6979,7 @@ mod feature_gate_tests {
         let schedule = EpochSchedule::without_warmup();
         let mut lamports = 1u64;
 
-        // mid-epoch activation rounds up to the next epoch boundary, never
+        // mid epoch activation rounds up to the next epoch boundary, never
         // accelerating accounting for the rest of the activation epoch
         let mut data = activated(500_000);
         let acct = account(&key, &owner, &mut lamports, &mut data);
@@ -6987,7 +6988,7 @@ mod feature_gate_tests {
             2 * 432_000
         );
 
-        // epoch-aligned activation still waits one full epoch
+        // epoch aligned activation still waits one full epoch
         let mut data = activated(432_000);
         let acct = account(&key, &owner, &mut lamports, &mut data);
         assert_eq!(
@@ -7155,7 +7156,7 @@ mod feature_gate_tests {
         );
     }
 
-    // Once any transition-archive entry exists it is authoritative for both
+    // Once any transition archive entry exists it is authoritative for both
     // validated readers: the legacy staging fields are ignored and the duration
     // switches exactly at each recorded transition slot.
     #[test]

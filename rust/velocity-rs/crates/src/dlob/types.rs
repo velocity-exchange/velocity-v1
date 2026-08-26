@@ -441,7 +441,7 @@ impl TriggerOrder {
                 order.bit_flags |= OrderBitFlag::OracleTriggerMarket as u8;
             }
 
-            // same-slot simulation: auction progress is zero, so the clock
+            // same slot simulation: auction progress is zero, so the clock
             // cannot influence the price
             return calculate_auction_price(
                 &order,
@@ -480,7 +480,7 @@ impl DynamicPrice for MarketOrder {
                 Some(self.price)
             };
         }
-        // elapsed wall-clock over the auction's wall-clock length (400ms units)
+        // elapsed wall clock over the auction's wall clock length (400ms units)
         let duration_ms = Millis::from_stored_units(self.duration as u64).as_ms() as i64;
         let elapsed_ms = slot_clock.elapsed(self.slot, slot).as_ms() as i64;
         let delta_denominator = duration_ms;
@@ -542,7 +542,7 @@ impl DynamicPrice for OracleOrder {
         tick_size: u64,
         slot_clock: SlotClock,
     ) -> Option<u64> {
-        // elapsed wall-clock over the auction's wall-clock length (400ms units)
+        // elapsed wall clock over the auction's wall clock length (400ms units)
         let duration_ms = Millis::from_stored_units(self.duration as u64).as_ms() as i64;
         let elapsed_ms = slot_clock.elapsed(self.slot, slot).as_ms() as i64;
         // limit price after auction end
@@ -876,8 +876,8 @@ impl TriggerL3Order {
 pub fn order_is_expired(max_ts: u64, now_unix_seconds: u64) -> bool {
     max_ts != 0 && max_ts < now_unix_seconds
 }
-/// Check if order's auction is complete. `auction_duration` is in wall-clock
-/// 400ms units; elapsed time integrates per slot-duration regime.
+/// Check if order's auction is complete. `auction_duration` is in wall clock
+/// 400ms units; elapsed time integrates per slot duration regime.
 pub fn order_is_auction_complete(
     current_slot: u64,
     order_slot: u64,

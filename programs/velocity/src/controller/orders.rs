@@ -36,7 +36,7 @@ use {
             orders::*,
             safe_math::SafeMath,
             safe_unwrap::SafeUnwrap,
-            time::{Millis, SlotClock},
+            time::{legacy_slot_duration_u8_raw, Millis, SlotClock},
         },
         msg, print_error,
         state::{
@@ -260,8 +260,8 @@ pub fn place_perp_order(
         &params,
         oracle_price_data,
         market.order_tick_size,
-        // the stored min is already in the auction's wall-clock 400ms units
-        crate::math::time::legacy_slot_duration_u8_raw(state.min_perp_auction_duration),
+        // the stored min is already in the auction's wall clock 400ms units
+        legacy_slot_duration_u8_raw(state.min_perp_auction_duration),
     )?;
 
     let max_ts = match params.max_ts {
@@ -4163,7 +4163,7 @@ pub fn trigger_order(
             &mut user.orders[order_index],
             oracle_price_data,
             slot,
-            // ~8s minimum, in wall-clock 400ms units
+            // ~8s minimum, in wall clock 400ms units
             Millis::from_secs(8)
                 .div_periods(Millis::UNIT)
                 .min(u8::MAX as u64) as u8,
@@ -4351,8 +4351,8 @@ fn update_trigger_order_params(
     };
 
     // ~60s: a reduce-only trigger left resting this long is flagged safe for
-    // the relaxed oracle-delay gate. Rest time is integrated per
-    // slot-duration regime.
+    // the relaxed oracle delay gate. Rest time is integrated per
+    // slot duration regime.
     if slot_clock.elapsed(order.slot, slot) > Millis::from_secs(60) && order.reduce_only {
         order.add_bit_flag(OrderBitFlag::SafeTriggerOrder);
     }

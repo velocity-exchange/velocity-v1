@@ -17,7 +17,7 @@ use {
             time::{
                 legacy_slot_duration_i64, legacy_slot_duration_i64_to_millis,
                 legacy_slot_duration_u8, legacy_slot_duration_u8_to_millis, LegacySlotDurationI64,
-                LegacySlotDurationU8, Millis, SlotDuration,
+                LegacySlotDurationU8, Millis, SlotClock, SlotDuration,
             },
         },
         state::traits::Size,
@@ -119,9 +119,9 @@ pub struct State {
     /// Reset to 0 and every account is back on its volume tier at its next
     /// fill; no per-user state.
     pub promo_fee_tier: u8,
-    /// Legacy current-slot-duration field in milliseconds, kept coherent by
+    /// Legacy current slot duration field in milliseconds, kept coherent by
     /// the permissionless sync as the IBRL feature gates activate
-    /// (400 -> 350 -> 300 -> 250 -> 200). `0` means unset (what pre-upgrade
+    /// (400 -> 350 -> 300 -> 250 -> 200). `0` means unset (what pre upgrade
     /// accounts read out of former padding) and is interpreted as the 400ms
     /// baseline. Never read this field directly, use [`State::slot_clock`] /
     /// [`State::slot_duration`]; once any `slot_duration_transition_slots`
@@ -140,13 +140,13 @@ pub struct State {
     /// the epoch after the target gate's activation epoch, derived from the
     /// `EpochSchedule` sysvar at sync time. `0` when nothing is staged.
     pub slot_duration_effective_slot: u64,
-    /// First slot of each post-baseline IBRL regime, ordered as
+    /// First slot of each post baseline IBRL regime, ordered as
     /// `[350ms, 300ms, 250ms, 200ms]`. Zero means that transition has not been
-    /// synchronized yet. These anchors let elapsed-time math integrate an
+    /// synchronized yet. These anchors let elapsed time math integrate an
     /// interval piecewise instead of multiplying its whole slot delta by the
     /// duration at one endpoint.
     pub slot_duration_transition_slots: [u64; 4],
-    /// 200 = the former 244-byte padding minus the 12 staging bytes and the 32
+    /// 200 = the former 244 byte padding minus the 12 staging bytes and the 32
     /// bytes used by `slot_duration_transition_slots`.
     /// (`pending_slot_duration_ms` 2 + `slot_duration_pad` 2 + the 8-byte
     /// `slot_duration_effective_slot`). The padding still absorbs the 8 bytes that
@@ -269,8 +269,8 @@ impl Default for State {
 
 impl State {
     /// Full slot clock, including every synchronized IBRL transition.
-    pub fn slot_clock(&self) -> crate::math::time::SlotClock {
-        crate::math::time::SlotClock::from_state_fields(
+    pub fn slot_clock(&self) -> SlotClock {
+        SlotClock::from_state_fields(
             self.slot_duration_transition_slots,
             self.slot_duration_ms,
             self.pending_slot_duration_ms,
@@ -314,9 +314,7 @@ impl State {
     /// to the singleton State), then reads the transition archive and the legacy
     /// staging fields by offset. Offsets come from `offset_of!` so they cannot
     /// drift from the layout.
-    pub fn slot_clock_from_account_info(
-        account: &AccountInfo,
-    ) -> Result<crate::math::time::SlotClock> {
+    pub fn slot_clock_from_account_info(account: &AccountInfo) -> Result<SlotClock> {
         // velocity's ErrorCode (the `validate!` macro binds `ErrorCode`
         // unqualified; the anchor prelude otherwise shadows it here)
         use crate::error::ErrorCode;
@@ -360,7 +358,7 @@ impl State {
             bytes.copy_from_slice(&data[off..off + 8]);
             *transition_slot = u64::from_le_bytes(bytes);
         }
-        Ok(crate::math::time::SlotClock::from_state_fields(
+        Ok(SlotClock::from_state_fields(
             transition_slots,
             base,
             pending,

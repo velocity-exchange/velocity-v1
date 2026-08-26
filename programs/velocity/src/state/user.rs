@@ -1510,10 +1510,10 @@ pub struct Order {
     pub immediate_or_cancel: bool,
     /// Whether the order is triggered above or below the trigger price. Only relevant for trigger orders
     pub trigger_condition: OrderTriggerCondition,
-    /// Auction length in wall-clock 400ms units (one slot at the 400ms
+    /// Auction length in wall clock 400ms units (one slot at the 400ms
     /// baseline, where the raw value is identical to the historical slot
     /// count). Progress compares `SlotClock::elapsed` against this value's
-    /// wall-clock length, so the ramp holds at every slot duration and the
+    /// wall clock length, so the ramp holds at every slot duration and the
     /// u8 keeps the full historical 72s range.
     pub auction_duration: u8,
     /// Last 8 bits of the slot the order was posted onchain (not order slot for signed msg orders)

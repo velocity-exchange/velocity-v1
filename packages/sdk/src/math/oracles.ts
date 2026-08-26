@@ -114,8 +114,8 @@ export function getMaxConfidenceIntervalMultiplier(
  * affects the unset (`oracleSlotDelayOverride < 0`) immediate-fill threshold, which resolves to
  * `MM_ORACLE_MIN_WRITE_GAP` for an MM-sourced price and to zero for an exchange-sourced one,
  * mirroring `oracle_validity`'s `immediate_price_is_mm_sourced`.
- * @param slotDurationState The `State` account (or its slot-duration fields). The oracle age
- * is integrated per slot-duration regime and compared against the wall-clock staleness
+ * @param slotDurationState The `State` account (or its slot duration fields). The oracle age
+ * is integrated per slot duration regime and compared against the wall clock staleness
  * thresholds, mirroring `oracle_validity`.
  * @returns The most severe `OracleValidity` classification that applies.
  */
@@ -159,7 +159,7 @@ export function getOracleValidity(
 		)
 	);
 
-	// The buffered oracle delay as wall-clock age, integrated per slot-duration
+	// The buffered oracle delay as wall clock age, integrated per slot duration
 	// regime (mirrors `oracle_validity`'s `oracle_age`).
 	const oracleAge = elapsedMillisFromSlotDelta(
 		slotDurationState,
@@ -629,7 +629,7 @@ export function getSpotMaxConfidenceIntervalMultiplier(
  * @param oracleGuardRails Protocol-wide validity thresholds (`state.oracleGuardRails`).
  * @param slot Current slot, used to compute oracle delay.
  * @param oracleStalenessBuffer Slots subtracted from the raw oracle delay. Omit for `ORACLE_STALENESS_BUFFER` (2s of wall clock) converted at the live slot duration.
- * @param slotDurationState The `State` account (or its slot-duration fields); the oracle age is integrated per slot-duration regime.
+ * @param slotDurationState The `State` account (or its slot duration fields); the oracle age is integrated per slot duration regime.
  * @returns The most severe `MarginCalc`-relevant `OracleValidity` that applies.
  */
 export function getSpotOracleValidity(

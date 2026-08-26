@@ -35,7 +35,7 @@ impl FillMode {
             FillMode::PlaceAndTake(_, auction_duration_percentage) => {
                 if order.has_auction() {
                     // price the auction at the requested fraction of its
-                    // wall-clock length, not at a synthetic chain slot
+                    // wall clock length, not at a synthetic chain slot
                     let progress = auction_progress_at_fraction(
                         order,
                         auction_duration_percentage.min(&100).cast()?,

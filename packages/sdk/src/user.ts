@@ -4903,7 +4903,7 @@ export class User {
 	 * liquidated; and
 	 * no open perp positions, borrows, spot open orders, or open orders of any kind.
 	 * @param slot Current slot to evaluate inactivity against.
-	 * @param slotDurationState The `State` account (or its slot-duration fields); inactivity is integrated per slot-duration regime.
+	 * @param slotDurationState The `State` account (or its slot duration fields); inactivity is integrated per slot duration regime.
 	 */
 	public canMakeIdle(
 		slot: BN,

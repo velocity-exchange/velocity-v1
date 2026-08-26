@@ -2,6 +2,7 @@
 //! liquidation and margin helpers
 //!
 
+use program::math::time::{Millis, SlotClock};
 use std::ops::Neg;
 
 use super::get_oracle_normalization_factor;
@@ -333,8 +334,8 @@ pub fn calculate_max_pct_to_liquidate(
     margin_shortage: u128,
     slot: u64,
     initial_pct_to_liquidate: u128,
-    liquidation_duration: program::math::time::Millis,
-    slot_clock: program::math::time::SlotClock,
+    liquidation_duration: Millis,
+    slot_clock: SlotClock,
 ) -> SdkResult<u128> {
     // if margin shortage is tiny, accelerate liquidation
     if margin_shortage < 50 * QUOTE_PRECISION {
@@ -344,8 +345,8 @@ pub fn calculate_max_pct_to_liquidate(
     if slot < user.last_active_slot {
         return Err(SdkError::MathError("slot < user.last_active_slot"));
     }
-    // ratio of elapsed wall-clock time to the liquidation window, integrated
-    // per slot-duration regime (mirrors the program's
+    // ratio of elapsed wall clock time to the liquidation window, integrated
+    // per slot duration regime (mirrors the program's
     // calculate_max_pct_to_liquidate); identity at 400ms. Taking `Millis`
     // keeps the legacy storage encoding at the account boundary instead of
     // making this arithmetic helper guess what a bare integer means.

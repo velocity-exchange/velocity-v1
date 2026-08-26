@@ -1025,7 +1025,10 @@ mod amm_maker_tests {
     use {
         super::*,
         crate::{
-            math::constants::{AMM_RESERVE_PRECISION, PEG_PRECISION},
+            math::{
+                constants::{AMM_RESERVE_PRECISION, PEG_PRECISION},
+                time::SlotClock,
+            },
             vlp::amm::AMM,
         },
     };
@@ -1052,7 +1055,7 @@ mod amm_maker_tests {
             tick: 1,
             step_size: 1,
             slot: 0,
-            slot_clock: crate::math::time::SlotClock::baseline(),
+            slot_clock: SlotClock::baseline(),
             base_precision: crate::math::constants::BASE_PRECISION as u64,
             market_status: crate::state::market_status::MarketStatus::default(),
             market_config: 0,
@@ -1342,7 +1345,10 @@ mod amm_jit_maker_tests {
     use {
         super::*,
         crate::{
-            math::constants::{AMM_RESERVE_PRECISION, BASE_PRECISION, PEG_PRECISION},
+            math::{
+                constants::{AMM_RESERVE_PRECISION, BASE_PRECISION, PEG_PRECISION},
+                time::SlotClock,
+            },
             vlp::amm::AMM,
         },
     };
@@ -1369,7 +1375,7 @@ mod amm_jit_maker_tests {
             tick: 1,
             step_size: 1,
             slot: 0,
-            slot_clock: crate::math::time::SlotClock::baseline(),
+            slot_clock: SlotClock::baseline(),
             base_precision: BASE_PRECISION as u64,
             market_status: crate::state::market_status::MarketStatus::default(),
             market_config: 0,

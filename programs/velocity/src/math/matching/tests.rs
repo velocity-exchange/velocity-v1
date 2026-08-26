@@ -8,7 +8,7 @@ use crate::{
 
 mod is_maker_for_taker {
     use crate::{
-        math::matching::is_maker_for_taker,
+        math::{matching::is_maker_for_taker, time::SlotClock},
         state::user::{Order, OrderType},
     };
 
@@ -23,8 +23,7 @@ mod is_maker_for_taker {
             ..Default::default()
         };
         assert_eq!(
-            is_maker_for_taker(&maker, &taker, 0, crate::math::time::SlotClock::baseline())
-                .unwrap(),
+            is_maker_for_taker(&maker, &taker, 0, SlotClock::baseline()).unwrap(),
             false
         );
     }
@@ -42,8 +41,7 @@ mod is_maker_for_taker {
             ..Default::default()
         };
         assert_eq!(
-            is_maker_for_taker(&maker, &taker, 0, crate::math::time::SlotClock::baseline())
-                .unwrap(),
+            is_maker_for_taker(&maker, &taker, 0, SlotClock::baseline()).unwrap(),
             false
         );
     }
@@ -64,8 +62,7 @@ mod is_maker_for_taker {
             ..Default::default()
         };
         assert_eq!(
-            is_maker_for_taker(&maker, &taker, 0, crate::math::time::SlotClock::baseline())
-                .unwrap(),
+            is_maker_for_taker(&maker, &taker, 0, SlotClock::baseline()).unwrap(),
             false
         );
 
@@ -77,8 +74,7 @@ mod is_maker_for_taker {
             ..Default::default()
         };
         assert_eq!(
-            is_maker_for_taker(&maker, &taker, 0, crate::math::time::SlotClock::baseline())
-                .unwrap(),
+            is_maker_for_taker(&maker, &taker, 0, SlotClock::baseline()).unwrap(),
             false
         );
     }
@@ -100,13 +96,7 @@ mod is_maker_for_taker {
             ..Default::default()
         };
         assert_eq!(
-            is_maker_for_taker(
-                &maker,
-                &taker,
-                slot,
-                crate::math::time::SlotClock::baseline()
-            )
-            .unwrap(),
+            is_maker_for_taker(&maker, &taker, slot, SlotClock::baseline()).unwrap(),
             true
         );
 
@@ -119,13 +109,7 @@ mod is_maker_for_taker {
             ..Default::default()
         };
         assert_eq!(
-            is_maker_for_taker(
-                &maker,
-                &taker,
-                slot,
-                crate::math::time::SlotClock::baseline()
-            )
-            .unwrap(),
+            is_maker_for_taker(&maker, &taker, slot, SlotClock::baseline()).unwrap(),
             true
         );
     }
@@ -147,18 +131,12 @@ mod is_maker_for_taker {
         let slot = 11;
         assert_eq!(
             maker
-                .is_resting_limit_order(slot, crate::math::time::SlotClock::baseline())
+                .is_resting_limit_order(slot, SlotClock::baseline())
                 .unwrap(),
             true
         );
         assert_eq!(
-            is_maker_for_taker(
-                &maker,
-                &taker,
-                slot,
-                crate::math::time::SlotClock::baseline()
-            )
-            .unwrap(),
+            is_maker_for_taker(&maker, &taker, slot, SlotClock::baseline()).unwrap(),
             true
         );
 
@@ -172,18 +150,12 @@ mod is_maker_for_taker {
         };
         assert_eq!(
             taker
-                .is_resting_limit_order(slot, crate::math::time::SlotClock::baseline())
+                .is_resting_limit_order(slot, SlotClock::baseline())
                 .unwrap(),
             false
         );
         assert_eq!(
-            is_maker_for_taker(
-                &maker,
-                &taker,
-                slot,
-                crate::math::time::SlotClock::baseline()
-            )
-            .unwrap(),
+            is_maker_for_taker(&maker, &taker, slot, SlotClock::baseline()).unwrap(),
             true
         );
     }
@@ -201,7 +173,7 @@ mod is_maker_for_taker {
         };
         assert_eq!(
             taker
-                .is_resting_limit_order(slot, crate::math::time::SlotClock::baseline())
+                .is_resting_limit_order(slot, SlotClock::baseline())
                 .unwrap(),
             true
         );
@@ -213,13 +185,7 @@ mod is_maker_for_taker {
             ..Default::default()
         };
         assert_eq!(
-            is_maker_for_taker(
-                &maker,
-                &taker,
-                slot,
-                crate::math::time::SlotClock::baseline()
-            )
-            .unwrap(),
+            is_maker_for_taker(&maker, &taker, slot, SlotClock::baseline()).unwrap(),
             true
         );
     }
@@ -237,7 +203,7 @@ mod is_maker_for_taker {
         };
         assert_eq!(
             taker
-                .is_resting_limit_order(slot, crate::math::time::SlotClock::baseline())
+                .is_resting_limit_order(slot, SlotClock::baseline())
                 .unwrap(),
             true
         );
@@ -251,19 +217,13 @@ mod is_maker_for_taker {
         };
         assert_eq!(
             taker
-                .is_resting_limit_order(slot, crate::math::time::SlotClock::baseline())
+                .is_resting_limit_order(slot, SlotClock::baseline())
                 .unwrap(),
             true
         );
 
         assert_eq!(
-            is_maker_for_taker(
-                &maker,
-                &taker,
-                slot,
-                crate::math::time::SlotClock::baseline()
-            )
-            .unwrap(),
+            is_maker_for_taker(&maker, &taker, slot, SlotClock::baseline()).unwrap(),
             false
         );
 
@@ -276,19 +236,13 @@ mod is_maker_for_taker {
         };
         assert_eq!(
             taker
-                .is_resting_limit_order(slot, crate::math::time::SlotClock::baseline())
+                .is_resting_limit_order(slot, SlotClock::baseline())
                 .unwrap(),
             true
         );
 
         assert_eq!(
-            is_maker_for_taker(
-                &maker,
-                &taker,
-                slot,
-                crate::math::time::SlotClock::baseline()
-            )
-            .unwrap(),
+            is_maker_for_taker(&maker, &taker, slot, SlotClock::baseline()).unwrap(),
             true
         );
     }
@@ -315,13 +269,7 @@ mod is_maker_for_taker {
         };
 
         assert_eq!(
-            is_maker_for_taker(
-                &maker,
-                &taker,
-                slot,
-                crate::math::time::SlotClock::baseline()
-            )
-            .unwrap(),
+            is_maker_for_taker(&maker, &taker, slot, SlotClock::baseline()).unwrap(),
             true
         );
     }
@@ -349,13 +297,7 @@ mod is_maker_for_taker {
         };
 
         assert_eq!(
-            is_maker_for_taker(
-                &maker,
-                &taker,
-                slot,
-                crate::math::time::SlotClock::baseline()
-            )
-            .unwrap(),
+            is_maker_for_taker(&maker, &taker, slot, SlotClock::baseline()).unwrap(),
             true
         );
     }

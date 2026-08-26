@@ -685,7 +685,7 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
 
     // Set max slot for the order early so we set correct signed msg order id
     let order_slot = verified_message_and_signature.slot;
-    // ~200s of wall-clock age, integrated per slot-duration regime
+    // ~200s of wall clock age, integrated per slot duration regime
     let max_order_age = Millis::from_secs(200);
     if state.slot_clock().elapsed(order_slot, clock.slot) > max_order_age {
         msg!(
@@ -697,9 +697,9 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
         return Err(print_error!(ErrorCode::InvalidSignedMsgOrderParam)().into());
     }
     let market_index = matching_taker_order_params.market_index;
-    // `auction_duration` is in wall-clock 400ms units; the slot bound converts
+    // `auction_duration` is in wall clock 400ms units; the slot bound converts
     // it at the live slot duration (ceil, so the order never expires before
-    // its auction's wall-clock length)
+    // its auction's wall clock length)
     let auction_duration_units = if matching_taker_order_params.order_type == OrderType::Limit {
         matching_taker_order_params.auction_duration.unwrap_or(0)
     } else {
@@ -3591,7 +3591,7 @@ pub fn handle_force_delete_user<'c: 'info, 'info>(
 
         validate!(
             // ~3 months (12 weeks)
-            time_since_last_active >= crate::math::time::Millis::from_secs(7_257_600),
+            time_since_last_active >= Millis::from_secs(7_257_600),
             ErrorCode::DefaultError,
             "user not inactive for long enough: {} ms",
             time_since_last_active.as_ms()

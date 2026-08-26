@@ -2,7 +2,10 @@ use {
     crate::{
         create_account_info,
         error::ErrorCode,
-        math::constants::{AMM_RESERVE_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64},
+        math::{
+            constants::{AMM_RESERVE_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64},
+            time::SlotClock,
+        },
         state::{
             oracle::{get_oracle_price, HistoricalOracleData, OraclePriceData, OracleSource},
             perp_market::{MarketStats, PerpMarket, AMM},
@@ -158,7 +161,7 @@ fn use_mm_oracle() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -179,7 +182,7 @@ fn use_mm_oracle() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
     assert_eq!(mm_oracle_price_data.get_price(), oracle_price_data.price);
@@ -195,7 +198,7 @@ fn use_mm_oracle() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
     assert_eq!(mm_oracle_price_data.get_price(), oracle_price_data.price);
@@ -208,7 +211,7 @@ fn use_mm_oracle() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
     assert_eq!(
@@ -228,7 +231,7 @@ fn use_mm_oracle() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
     assert_eq!(mm_oracle_price_data.get_price(), oracle_price_data.price);
@@ -281,7 +284,7 @@ fn mm_oracle_confidence() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 

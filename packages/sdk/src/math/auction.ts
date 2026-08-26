@@ -28,10 +28,10 @@ import {
 
 /**
  * Auction interpolation progress, mirroring the program's `auction_progress`:
- * elapsed wall-clock ms (integrated per slot-duration regime) capped at the
- * auction's wall-clock length, over that length. `order.auctionDuration` is
+ * elapsed wall clock ms (integrated per slot duration regime) capped at the
+ * auction's wall clock length, over that length. `order.auctionDuration` is
  * stored in 400ms units (one slot at the 400ms baseline, where this is
- * identical to the historical per-slot interpolation).
+ * identical to the historical per slot interpolation).
  */
 function auctionProgress(
 	order: Order,
@@ -46,7 +46,7 @@ function auctionProgress(
 	};
 }
 
-/** True if `order`'s auction has run its full `auctionDuration` (wall-clock 400ms units) as of `slot`, or the order has no auction (`auctionDuration === 0`). */
+/** True if `order`'s auction has run its full `auctionDuration` (wall clock 400ms units) as of `slot`, or the order has no auction (`auctionDuration === 0`). */
 export function isAuctionComplete(
 	order: Order,
 	slot: number,

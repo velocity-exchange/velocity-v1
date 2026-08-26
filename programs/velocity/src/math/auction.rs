@@ -88,11 +88,11 @@ pub fn calculate_auction_prices(
     Ok((oracle_price, auction_end_price))
 }
 
-/// Auction interpolation progress: elapsed wall-clock ms (integrated per
-/// slot-duration regime, saturating at zero for a same-slot read) capped at
-/// the auction's wall-clock length, over that length.
+/// Auction interpolation progress: elapsed wall clock ms (integrated per
+/// slot duration regime, saturating at zero for a same slot read) capped at
+/// the auction's wall clock length, over that length.
 /// `Order.auction_duration` stores 400ms units, so the ramp's endpoints and
-/// wall-clock shape are identical to the historical per-slot interpolation at
+/// wall clock shape are identical to the historical per slot interpolation at
 /// the 400ms baseline and hold at every gate.
 fn auction_progress(order: &Order, slot: u64, slot_clock: SlotClock) -> (u64, u64) {
     let duration_ms = Millis::from_stored_units(order.auction_duration as u64).as_ms();
@@ -100,7 +100,7 @@ fn auction_progress(order: &Order, slot: u64, slot_clock: SlotClock) -> (u64, u6
     (min(elapsed_ms, duration_ms), duration_ms)
 }
 
-/// The auction's wall-clock progress at `fraction_pct` percent of its length,
+/// The auction's wall clock progress at `fraction_pct` percent of its length,
 /// for callers that price a fixed fraction rather than a chain slot
 /// (place-and-take's `auction_duration_percentage`).
 pub fn auction_progress_at_fraction(
@@ -260,9 +260,9 @@ pub fn is_auction_complete(
         return Ok(true);
     }
 
-    // wall-clock elapsed (integrated per slot-duration regime) vs the
-    // auction's wall-clock length in 400ms units; identity with the
-    // historical per-slot comparison at the 400ms baseline
+    // wall clock elapsed (integrated per slot duration regime) vs the
+    // auction's wall clock length in 400ms units; identity with the
+    // historical per slot comparison at the 400ms baseline
     let elapsed = slot_clock.elapsed(order_slot, slot);
 
     Ok(elapsed > Millis::from_stored_units(auction_duration as u64))

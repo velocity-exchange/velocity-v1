@@ -171,6 +171,7 @@ mod calculate_auction_price {
         math::{
             auction::calculate_auction_price,
             constants::{PRICE_PRECISION_I64, PRICE_PRECISION_U64},
+            time::SlotClock,
         },
         state::user::{Order, OrderType},
         PositionDirection,
@@ -192,38 +193,23 @@ mod calculate_auction_price {
         let oracle_price = Some(PRICE_PRECISION_I64);
 
         let slot = 0;
-        let price = calculate_auction_price(
-            &order,
-            slot,
-            tick_size,
-            oracle_price,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, slot, tick_size, oracle_price, SlotClock::baseline())
+                .unwrap();
 
         assert_eq!(price, 9 * PRICE_PRECISION_U64 / 10);
 
         let slot = 5;
-        let price = calculate_auction_price(
-            &order,
-            slot,
-            tick_size,
-            oracle_price,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, slot, tick_size, oracle_price, SlotClock::baseline())
+                .unwrap();
 
         assert_eq!(price, PRICE_PRECISION_U64);
 
         let slot = 10;
-        let price = calculate_auction_price(
-            &order,
-            slot,
-            tick_size,
-            oracle_price,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, slot, tick_size, oracle_price, SlotClock::baseline())
+                .unwrap();
 
         assert_eq!(price, 11 * PRICE_PRECISION_U64 / 10);
 
@@ -238,38 +224,23 @@ mod calculate_auction_price {
         };
 
         let slot = 0;
-        let price = calculate_auction_price(
-            &order,
-            slot,
-            tick_size,
-            oracle_price,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, slot, tick_size, oracle_price, SlotClock::baseline())
+                .unwrap();
 
         assert_eq!(price, 8 * PRICE_PRECISION_U64 / 10);
 
         let slot = 5;
-        let price = calculate_auction_price(
-            &order,
-            slot,
-            tick_size,
-            oracle_price,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, slot, tick_size, oracle_price, SlotClock::baseline())
+                .unwrap();
 
         assert_eq!(price, 85 * PRICE_PRECISION_U64 / 100);
 
         let slot = 10;
-        let price = calculate_auction_price(
-            &order,
-            slot,
-            tick_size,
-            oracle_price,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, slot, tick_size, oracle_price, SlotClock::baseline())
+                .unwrap();
 
         assert_eq!(price, 9 * PRICE_PRECISION_U64 / 10);
 
@@ -284,38 +255,23 @@ mod calculate_auction_price {
         };
 
         let slot = 0;
-        let price = calculate_auction_price(
-            &order,
-            slot,
-            tick_size,
-            oracle_price,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, slot, tick_size, oracle_price, SlotClock::baseline())
+                .unwrap();
 
         assert_eq!(price, 11 * PRICE_PRECISION_U64 / 10);
 
         let slot = 5;
-        let price = calculate_auction_price(
-            &order,
-            slot,
-            tick_size,
-            oracle_price,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, slot, tick_size, oracle_price, SlotClock::baseline())
+                .unwrap();
 
         assert_eq!(price, 115 * PRICE_PRECISION_U64 / 100);
 
         let slot = 10;
-        let price = calculate_auction_price(
-            &order,
-            slot,
-            tick_size,
-            oracle_price,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, slot, tick_size, oracle_price, SlotClock::baseline())
+                .unwrap();
 
         assert_eq!(price, 12 * PRICE_PRECISION_U64 / 10);
     }
@@ -335,38 +291,23 @@ mod calculate_auction_price {
         let oracle_price = Some(PRICE_PRECISION_I64);
 
         let slot = 0;
-        let price = calculate_auction_price(
-            &order,
-            slot,
-            tick_size,
-            oracle_price,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, slot, tick_size, oracle_price, SlotClock::baseline())
+                .unwrap();
 
         assert_eq!(price, 11 * PRICE_PRECISION_U64 / 10);
 
         let slot = 5;
-        let price = calculate_auction_price(
-            &order,
-            slot,
-            tick_size,
-            oracle_price,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, slot, tick_size, oracle_price, SlotClock::baseline())
+                .unwrap();
 
         assert_eq!(price, PRICE_PRECISION_U64);
 
         let slot = 10;
-        let price = calculate_auction_price(
-            &order,
-            slot,
-            tick_size,
-            oracle_price,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, slot, tick_size, oracle_price, SlotClock::baseline())
+                .unwrap();
 
         assert_eq!(price, 9 * PRICE_PRECISION_U64 / 10);
 
@@ -381,38 +322,23 @@ mod calculate_auction_price {
         };
 
         let slot = 0;
-        let price = calculate_auction_price(
-            &order,
-            slot,
-            tick_size,
-            oracle_price,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, slot, tick_size, oracle_price, SlotClock::baseline())
+                .unwrap();
 
         assert_eq!(price, 12 * PRICE_PRECISION_U64 / 10);
 
         let slot = 5;
-        let price = calculate_auction_price(
-            &order,
-            slot,
-            tick_size,
-            oracle_price,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, slot, tick_size, oracle_price, SlotClock::baseline())
+                .unwrap();
 
         assert_eq!(price, 115 * PRICE_PRECISION_U64 / 100);
 
         let slot = 10;
-        let price = calculate_auction_price(
-            &order,
-            slot,
-            tick_size,
-            oracle_price,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, slot, tick_size, oracle_price, SlotClock::baseline())
+                .unwrap();
 
         assert_eq!(price, 11 * PRICE_PRECISION_U64 / 10);
 
@@ -427,38 +353,23 @@ mod calculate_auction_price {
         };
 
         let slot = 0;
-        let price = calculate_auction_price(
-            &order,
-            slot,
-            tick_size,
-            oracle_price,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, slot, tick_size, oracle_price, SlotClock::baseline())
+                .unwrap();
 
         assert_eq!(price, 9 * PRICE_PRECISION_U64 / 10);
 
         let slot = 5;
-        let price = calculate_auction_price(
-            &order,
-            slot,
-            tick_size,
-            oracle_price,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, slot, tick_size, oracle_price, SlotClock::baseline())
+                .unwrap();
 
         assert_eq!(price, 85 * PRICE_PRECISION_U64 / 100);
 
         let slot = 10;
-        let price = calculate_auction_price(
-            &order,
-            slot,
-            tick_size,
-            oracle_price,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, slot, tick_size, oracle_price, SlotClock::baseline())
+                .unwrap();
 
         assert_eq!(price, 8 * PRICE_PRECISION_U64 / 10);
     }
@@ -477,25 +388,13 @@ mod calculate_auction_price {
         };
 
         let slot = 5;
-        let price = calculate_auction_price(
-            &order,
-            slot,
-            tick_size,
-            None,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, slot, tick_size, None, SlotClock::baseline()).unwrap();
         assert_eq!(price, PRICE_PRECISION_U64);
 
         order.direction = PositionDirection::Short;
-        let price = calculate_auction_price(
-            &order,
-            slot,
-            tick_size,
-            None,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, slot, tick_size, None, SlotClock::baseline()).unwrap();
         assert_eq!(price, PRICE_PRECISION_U64);
 
         let mut order = Order {
@@ -508,25 +407,15 @@ mod calculate_auction_price {
             ..Order::default()
         };
         let oracle_price = Some(PRICE_PRECISION_I64);
-        let price = calculate_auction_price(
-            &order,
-            slot,
-            tick_size,
-            oracle_price,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, slot, tick_size, oracle_price, SlotClock::baseline())
+                .unwrap();
         assert_eq!(price, 3 * PRICE_PRECISION_U64 / 2);
 
         order.direction = PositionDirection::Short;
-        let price = calculate_auction_price(
-            &order,
-            slot,
-            tick_size,
-            oracle_price,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, slot, tick_size, oracle_price, SlotClock::baseline())
+                .unwrap();
         assert_eq!(price, 3 * PRICE_PRECISION_U64 / 2);
     }
 
@@ -547,36 +436,21 @@ mod calculate_auction_price {
         let oracle_price = Some(100 * PRICE_PRECISION_I64);
 
         // At start of auction
-        let price = calculate_auction_price(
-            &order,
-            0,
-            tick_size,
-            oracle_price,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, 0, tick_size, oracle_price, SlotClock::baseline())
+                .unwrap();
         assert_eq!(price, 105 * PRICE_PRECISION_U64);
 
         // Midway through auction
-        let price = calculate_auction_price(
-            &order,
-            5,
-            tick_size,
-            oracle_price,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, 5, tick_size, oracle_price, SlotClock::baseline())
+                .unwrap();
         assert_eq!(price, 107_5 * PRICE_PRECISION_U64 / 10);
 
         // End of auction
-        let price = calculate_auction_price(
-            &order,
-            10,
-            tick_size,
-            oracle_price,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, 10, tick_size, oracle_price, SlotClock::baseline())
+                .unwrap();
         assert_eq!(price, 110 * PRICE_PRECISION_U64);
     }
 
@@ -597,36 +471,21 @@ mod calculate_auction_price {
         let oracle_price = Some(100 * PRICE_PRECISION_I64);
 
         // At start of auction
-        let price = calculate_auction_price(
-            &order,
-            0,
-            tick_size,
-            oracle_price,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, 0, tick_size, oracle_price, SlotClock::baseline())
+                .unwrap();
         assert_eq!(price, 95 * PRICE_PRECISION_U64);
 
         // Midway through auction
-        let price = calculate_auction_price(
-            &order,
-            5,
-            tick_size,
-            oracle_price,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, 5, tick_size, oracle_price, SlotClock::baseline())
+                .unwrap();
         assert_eq!(price, 92_5 * PRICE_PRECISION_U64 / 10);
 
         // End of auction
-        let price = calculate_auction_price(
-            &order,
-            10,
-            tick_size,
-            oracle_price,
-            crate::math::time::SlotClock::baseline(),
-        )
-        .unwrap();
+        let price =
+            calculate_auction_price(&order, 10, tick_size, oracle_price, SlotClock::baseline())
+                .unwrap();
         assert_eq!(price, 90 * PRICE_PRECISION_U64);
     }
 }
@@ -743,7 +602,7 @@ mod auction_wall_clock_across_gates {
         state::user::{Order, OrderType},
     };
 
-    // a 10-unit (4s) auction on a fully-200ms chain: the wall-clock ramp is
+    // a 10 unit (4s) auction on a fully-200ms chain: the wall clock ramp is
     // unchanged, so it now spans 20 actual slots instead of 10
     fn order() -> Order {
         Order {

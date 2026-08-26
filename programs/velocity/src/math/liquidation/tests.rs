@@ -1182,8 +1182,8 @@ mod calculate_max_pct_to_liquidate {
             margin_shortage,
             1,
             LIQUIDATION_PCT_PRECISION / 10,
-            crate::math::time::Millis::from_stored_units(10),
-            crate::math::time::SlotClock::baseline(),
+            Millis::from_stored_units(10),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -1228,7 +1228,10 @@ mod calculate_max_pct_to_liquidate {
 }
 
 mod get_liquidation_fee {
-    use crate::{math::liquidation::get_liquidation_fee, LIQUIDATION_FEE_PRECISION};
+    use crate::{
+        math::{liquidation::get_liquidation_fee, time::SlotClock},
+        LIQUIDATION_FEE_PRECISION,
+    };
 
     #[test]
     fn test() {
@@ -1243,7 +1246,7 @@ mod get_liquidation_fee {
             max_liq_fee,
             user_slot,
             curr_slot,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
         assert_eq!(fee, max_liq_fee);
@@ -1255,7 +1258,7 @@ mod get_liquidation_fee {
             max_liq_fee,
             user_slot,
             curr_slot,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
         assert_eq!(fee, base_liq_fee);
@@ -1268,13 +1271,13 @@ mod get_liquidation_fee {
             max_liq_fee,
             user_slot,
             curr_slot,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
         assert_eq!(fee, target_liq_fee);
 
         // The same elapsed wall-clock time at 200ms produces the same fee.
-        let clock_200 = crate::math::time::SlotClock::from_state_fields([1, 1, 1, 1], 0, 0, 0);
+        let clock_200 = SlotClock::from_state_fields([1, 1, 1, 1], 0, 0, 0);
         let fast_fee = get_liquidation_fee(
             base_liq_fee,
             max_liq_fee,

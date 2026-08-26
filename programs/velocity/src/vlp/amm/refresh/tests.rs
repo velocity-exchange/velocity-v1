@@ -119,7 +119,7 @@ pub fn update_amm_test() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
     let cost_of_update =
@@ -144,7 +144,7 @@ pub fn update_amm_test() {
         legacy_slot_duration_i64_raw(state.oracle_guard_rails.validity.slots_before_stale_for_amm)
             as i8,
         slot,
-        crate::math::time::SlotClock::baseline(),
+        SlotClock::baseline(),
     )
     .unwrap()
         == OracleValidity::Valid;
@@ -208,7 +208,7 @@ pub fn update_amm_test() {
             &mm_oracle_price_data,
             reserve_price,
             slot,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -315,12 +315,7 @@ pub fn reference_price_offset_smoothing_uses_spread_update_slot() {
         sequence_id: None,
     };
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(
-            oracle_price_data,
-            slot,
-            &validity,
-            crate::math::time::SlotClock::baseline(),
-        )
+        .get_mm_oracle_price_data(oracle_price_data, slot, &validity, SlotClock::baseline())
         .unwrap();
 
     {
@@ -333,7 +328,7 @@ pub fn reference_price_offset_smoothing_uses_spread_update_slot() {
             &mm_oracle_price_data,
             reserve_price,
             slot,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -403,7 +398,7 @@ pub fn update_amm_test_bad_oracle() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -428,7 +423,7 @@ pub fn update_amm_test_bad_oracle() {
         false,
         0,
         slot,
-        crate::math::time::SlotClock::baseline(),
+        SlotClock::baseline(),
     )
     .unwrap()
         == OracleValidity::Valid;
@@ -474,7 +469,7 @@ pub fn update_amm_larg_conf_test() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
     assert_eq!(0u32, 0);
@@ -497,7 +492,7 @@ pub fn update_amm_larg_conf_test() {
             &mm_oracle_price_data,
             reserve_price_after,
             slot,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -520,7 +515,7 @@ pub fn update_amm_larg_conf_test() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -539,7 +534,7 @@ pub fn update_amm_larg_conf_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -591,7 +586,7 @@ pub fn update_amm_larg_conf_test() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
     let cost_of_update =
@@ -609,7 +604,7 @@ pub fn update_amm_larg_conf_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -645,7 +640,7 @@ pub fn update_amm_larg_conf_test() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -664,7 +659,7 @@ pub fn update_amm_larg_conf_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -729,7 +724,7 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
     assert_eq!(0u32, 0);
@@ -773,7 +768,7 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             &mm_oracle_price_data,
             reserve_price_after,
             slot,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -805,7 +800,7 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -824,7 +819,7 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -859,7 +854,7 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -912,7 +907,7 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -963,7 +958,7 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -982,7 +977,7 @@ pub fn update_amm_larg_conf_w_neg_tfmd_test() {
             &mm_oracle_price_data,
             mrk,
             slot,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
     }

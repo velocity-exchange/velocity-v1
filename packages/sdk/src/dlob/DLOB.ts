@@ -162,10 +162,10 @@ export class DLOB {
 	initialized = false;
 
 	/**
-	 * The `State` slot-duration fields (`SlotDurationState`) auction wall-clock
+	 * The `State` slot duration fields (`SlotDurationState`) auction wall clock
 	 * math converts elapsed slots through. Set it from a subscribed `State`
 	 * (e.g. `dlob.slotDurationState = velocityClient.getStateAccount()`) so
-	 * auction progress stays exact across IBRL slot-duration transitions;
+	 * auction progress stays exact across IBRL slot duration transitions;
 	 * unset, the 400ms baseline applies.
 	 */
 	slotDurationState: SlotDurationState = {};
@@ -1328,7 +1328,7 @@ export class DLOB {
 	 * @throws if a signed-message order is present and `slot` was not provided
 	 */
 	/**
-	 * The last slot a signed-message order can still be placed on-chain,
+	 * The last slot a signed message order can still be placed on-chain,
 	 * mirroring the program's `max_slot`: placement slot plus the auction
 	 * duration converted from 400ms units to actual slots (ceil) at the live
 	 * slot duration.
@@ -1339,7 +1339,7 @@ export class DLOB {
 				millisFromStoredUnits(order.auctionDuration),
 				activeSlotDurationFromState(
 					this.slotDurationState,
-					order.slot // best-effort: placement-time duration
+					order.slot // best effort: placement time duration
 				)
 			)
 		);
@@ -2046,7 +2046,7 @@ export class DLOB {
 	/**
 	 * Decides which of a crossing ask/bid pair is the maker and which is the taker: if both are
 	 * post-only, they can't be matched (`undefined`); if exactly one is post-only, it's the
-	 * maker; otherwise whichever order's auction ends later in wall-clock (placement time plus
+	 * maker; otherwise whichever order's auction ends later in wall clock (placement time plus
 	 * `auctionDuration` in 400ms units, measured through the slot clock) is treated as the taker
 	 * (it "arrived crossing" the earlier order).
 	 *
@@ -2060,8 +2060,8 @@ export class DLOB {
 	): { takerNode: DLOBNode; makerNode: DLOBNode } | undefined {
 		const askOrder = getOrderOrThrow(askNode);
 		const bidOrder = getOrderOrThrow(bidNode);
-		// auction-end instants in ms from a common anchor, so the ordering is
-		// exact even when the two auctions straddle a slot-duration transition
+		// auction end instants in ms from a common anchor, so the ordering is
+		// exact even when the two auctions straddle a slot duration transition
 		const anchorSlot = BN.min(askOrder.slot, bidOrder.slot);
 		const askSlot = elapsedMillis(
 			this.slotDurationState,

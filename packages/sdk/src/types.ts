@@ -1132,7 +1132,7 @@ export type StateAccount = {
 	/**
 	 * current Solana slot duration in ms, synchronized (permissionlessly) as the
 	 * IBRL feature gates activate (400 -> 350 -> 300 -> 250 -> 200). 0 = unset
-	 * (pre-upgrade padding), meaning the 400ms baseline. Do not read directly:
+	 * (pre upgrade padding), meaning the 400ms baseline. Do not read directly:
 	 * resolve with `activeSlotDurationFromState` (or `slotDurationFromState` for
 	 * the base) from `math/time.ts`, which also consults the authoritative
 	 * `slotDurationTransitionSlots` archive. Wall-clock durations (`Millis`) are
@@ -1155,10 +1155,10 @@ export type StateAccount = {
 	 */
 	slotDurationEffectiveSlot: BN;
 	/**
-	 * first slot of each post-baseline IBRL regime, ordered
+	 * first slot of each post baseline IBRL regime, ordered
 	 * `[350ms, 300ms, 250ms, 200ms]`; 0 = that transition not synchronized yet.
 	 * Written by the permissionless `syncStateSlotDuration` instruction. These
-	 * anchors let elapsed-time math integrate an interval piecewise
+	 * anchors let elapsed time math integrate an interval piecewise
 	 * (`elapsedMillis` in `math/time.ts`) instead of pricing the whole slot
 	 * delta at one endpoint duration.
 	 */
@@ -1813,7 +1813,7 @@ export type Order = {
 	immediateOrCancel: boolean;
 	/** if set, the limit price is `oraclePrice + oraclePriceOffset`; PRICE_PRECISION (1e6), signed */
 	oraclePriceOffset: BN;
-	/** auction length in wall-clock 400ms units (one slot at the 400ms baseline); only relevant for market/oracle orders */
+	/** auction length in wall clock 400ms units (one slot at the 400ms baseline); only relevant for market/oracle orders */
 	auctionDuration: number;
 	/** PRICE_PRECISION (1e6), signed; only relevant for market/oracle orders */
 	auctionStartPrice: BN;
@@ -1847,7 +1847,7 @@ export type OrderParams = {
 	triggerCondition: OrderTriggerCondition;
 	/** signed offset from the oracle price, PRICE_PRECISION (1e6); when set, the order's effective limit price tracks the oracle */
 	oraclePriceOffset: BN | null;
-	/** wall-clock 400ms units (one slot at the 400ms baseline); only used for market/oracle orders */
+	/** wall clock 400ms units (one slot at the 400ms baseline); only used for market/oracle orders */
 	auctionDuration: number | null;
 	/** unix timestamp after which the order expires */
 	maxTs: BN | null;

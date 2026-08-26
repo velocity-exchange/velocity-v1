@@ -239,8 +239,8 @@ export class LiquidatorDerisk {
 				baseAssetAmount: standardizedTokenAmount,
 				reduceOnly: true,
 				price: limitPrice,
-				// wall-clock ms in the onchain 400ms-unit encoding; the program
-				// converts elapsed slots to wall-clock at fill time
+				// wall clock ms in the onchain 400ms unit encoding; the program
+				// converts elapsed slots to wall clock at fill time
 				auctionDuration: Math.min(
 					255,
 					msToSlotsCeilNum(
@@ -634,8 +634,8 @@ export class LiquidatorDerisk {
 			baseAssetAmount,
 			reduceOnly: true,
 			marketIndex: position.marketIndex,
-			// wall-clock ms in the onchain 400ms-unit encoding; the program
-			// converts elapsed slots to wall-clock at fill time
+			// wall clock ms in the onchain 400ms unit encoding; the program
+			// converts elapsed slots to wall clock at fill time
 			auctionDuration: Math.min(
 				255,
 				msToSlotsCeilNum(

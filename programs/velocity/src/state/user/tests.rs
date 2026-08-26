@@ -1749,6 +1749,7 @@ mod update_user_status {
 
 mod resting_limit_order {
     use crate::{
+        math::time::SlotClock,
         state::user::{Order, OrderType},
         PositionDirection,
     };
@@ -1762,7 +1763,7 @@ mod resting_limit_order {
         let slot = 0;
 
         assert!(!order
-            .is_resting_limit_order(slot, crate::math::time::SlotClock::baseline())
+            .is_resting_limit_order(slot, SlotClock::baseline())
             .unwrap());
 
         let order = Order {
@@ -1771,7 +1772,7 @@ mod resting_limit_order {
         };
 
         assert!(!order
-            .is_resting_limit_order(slot, crate::math::time::SlotClock::baseline())
+            .is_resting_limit_order(slot, SlotClock::baseline())
             .unwrap());
 
         let order = Order {
@@ -1780,7 +1781,7 @@ mod resting_limit_order {
         };
 
         assert!(!order
-            .is_resting_limit_order(slot, crate::math::time::SlotClock::baseline())
+            .is_resting_limit_order(slot, SlotClock::baseline())
             .unwrap());
 
         // limit order before end of auction
@@ -1794,7 +1795,7 @@ mod resting_limit_order {
         let slot = 2;
 
         assert!(!order
-            .is_resting_limit_order(slot, crate::math::time::SlotClock::baseline())
+            .is_resting_limit_order(slot, SlotClock::baseline())
             .unwrap());
 
         // limit order after end of auction
@@ -1808,7 +1809,7 @@ mod resting_limit_order {
         let slot = 12;
 
         assert!(order
-            .is_resting_limit_order(slot, crate::math::time::SlotClock::baseline())
+            .is_resting_limit_order(slot, SlotClock::baseline())
             .unwrap());
 
         // limit order post only
@@ -1820,7 +1821,7 @@ mod resting_limit_order {
         let slot = 1;
 
         assert!(order
-            .is_resting_limit_order(slot, crate::math::time::SlotClock::baseline())
+            .is_resting_limit_order(slot, SlotClock::baseline())
             .unwrap());
 
         // trigger order long crosses trigger, auction complete
@@ -1837,7 +1838,7 @@ mod resting_limit_order {
         let slot = 12;
 
         assert!(order
-            .is_resting_limit_order(slot, crate::math::time::SlotClock::baseline())
+            .is_resting_limit_order(slot, SlotClock::baseline())
             .unwrap());
 
         // trigger order long doesnt cross trigger, auction complete
@@ -1854,7 +1855,7 @@ mod resting_limit_order {
         let slot = 12;
 
         assert!(order
-            .is_resting_limit_order(slot, crate::math::time::SlotClock::baseline())
+            .is_resting_limit_order(slot, SlotClock::baseline())
             .unwrap());
 
         // trigger order short crosses trigger, auction complete
@@ -1871,7 +1872,7 @@ mod resting_limit_order {
         let slot = 12;
 
         assert!(order
-            .is_resting_limit_order(slot, crate::math::time::SlotClock::baseline())
+            .is_resting_limit_order(slot, SlotClock::baseline())
             .unwrap());
 
         // trigger order long doesnt cross trigger, auction complete
@@ -1888,7 +1889,7 @@ mod resting_limit_order {
         let slot = 12;
 
         assert!(order
-            .is_resting_limit_order(slot, crate::math::time::SlotClock::baseline())
+            .is_resting_limit_order(slot, SlotClock::baseline())
             .unwrap());
     }
 }
@@ -2189,6 +2190,7 @@ pub mod meets_withdraw_margin_requirement {
                     SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
                 },
                 margin::MarginRequirementType,
+                time::SlotClock,
             },
             state::{
                 market_status::MarketStatus,
@@ -2223,13 +2225,8 @@ pub mod meets_withdraw_margin_requirement {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotClock::baseline(),
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {

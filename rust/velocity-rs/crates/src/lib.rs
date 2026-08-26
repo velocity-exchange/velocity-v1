@@ -1,5 +1,6 @@
 //! Velocity SDK
 
+use program::math::time::{SlotClock, SlotDuration};
 use std::{
     borrow::Cow,
     collections::BTreeSet,
@@ -106,12 +107,12 @@ pub mod usermap;
 
 pub mod dlob;
 
-/// Full slot clock from an already-read `State`, including every synchronized
+/// Full slot clock from an already read `State`, including every synchronized
 /// IBRL transition. Mirrors the program's `State::slot_clock`. Prefer this over
 /// the raw `State.slot_duration_ms` field, which lags the live duration until
 /// the matching transition is synchronized.
-pub fn slot_clock_from_state(state: &State) -> program::math::time::SlotClock {
-    program::math::time::SlotClock::from_state_fields(
+pub fn slot_clock_from_state(state: &State) -> SlotClock {
+    SlotClock::from_state_fields(
         state.slot_duration_transition_slots,
         state.slot_duration_ms,
         state.pending_slot_duration_ms,
@@ -119,12 +120,9 @@ pub fn slot_clock_from_state(state: &State) -> program::math::time::SlotClock {
     )
 }
 
-/// Live slot duration at `now_slot`, from an already-read `State`. Thin wrapper
+/// Live slot duration at `now_slot`, from an already read `State`. Thin wrapper
 /// over [`slot_clock_from_state`].
-pub fn slot_duration_from_state(
-    state: &State,
-    now_slot: Slot,
-) -> program::math::time::SlotDuration {
+pub fn slot_duration_from_state(state: &State, now_slot: Slot) -> SlotDuration {
     slot_clock_from_state(state).slot_duration_at(now_slot)
 }
 
@@ -1080,17 +1078,17 @@ impl VelocityClient {
     /// lags a staged switch for as long as the gate after it is unstaged, so
     /// resolve through here rather than reading that field. Falls back to the
     /// 400ms baseline when `State` is not cached.
-    pub fn slot_duration_at(&self, now_slot: Slot) -> program::math::time::SlotDuration {
+    pub fn slot_duration_at(&self, now_slot: Slot) -> SlotDuration {
         self.slot_clock().slot_duration_at(now_slot)
     }
 
     /// The full slot clock from the cached `State`, including every
     /// synchronized IBRL transition (see [`slot_clock_from_state`]). Falls back
     /// to the 400ms baseline when `State` is not cached.
-    pub fn slot_clock(&self) -> program::math::time::SlotClock {
+    pub fn slot_clock(&self) -> SlotClock {
         self.state_account()
             .map(|s| slot_clock_from_state(&s))
-            .unwrap_or(program::math::time::SlotClock::baseline())
+            .unwrap_or(SlotClock::baseline())
     }
 
     pub fn try_get_mmoracle_for_perp_market(

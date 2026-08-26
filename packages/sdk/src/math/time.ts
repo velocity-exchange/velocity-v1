@@ -86,7 +86,7 @@ export function slotDurationFromState(raw?: number): SlotDurationMs {
 }
 
 /**
- * The four post-baseline slot lengths in activation order, the mirror of the
+ * The four post baseline slot lengths in activation order, the mirror of the
  * program's `SLOT_DURATION_TRANSITION_MS`. `State.slotDurationTransitionSlots`
  * stores the first slot of each regime at the matching index.
  */
@@ -107,7 +107,7 @@ export type SlotDurationState = {
 	pendingSlotDurationMs?: number;
 	slotDurationEffectiveSlot?: BN;
 	/**
-	 * First slot of each post-baseline regime (`[350, 300, 250, 200]`ms). Zero
+	 * First slot of each post baseline regime (`[350, 300, 250, 200]`ms). Zero
 	 * means that transition has not been synchronized yet. Once any entry is
 	 * set the archive is authoritative over the legacy staging fields.
 	 */
@@ -145,7 +145,7 @@ export function activeSlotDurationFromState(
 	state: SlotDurationState,
 	currentSlot: BN
 ): SlotDurationMs {
-	// Once any transition-archive entry exists, the archive is authoritative
+	// Once any transition archive entry exists, the archive is authoritative
 	// (mirrors `SlotClock::slot_duration_at`).
 	const transitions = validTransitionSlots(state);
 	if (transitions) {
@@ -171,8 +171,8 @@ export function activeSlotDurationFromState(
 }
 
 /**
- * The transition archive when it is present, well-formed, and non-empty;
- * `undefined` otherwise (hand-built / pre-upgrade State objects, or no
+ * The transition archive when it is present, well formed, and non empty;
+ * `undefined` otherwise (hand built / pre upgrade State objects, or no
  * transition synchronized yet; the legacy staging fields then apply).
  */
 function validTransitionSlots(state: SlotDurationState): BN[] | undefined {
@@ -188,11 +188,11 @@ function validTransitionSlots(state: SlotDurationState): BN[] | undefined {
 }
 
 /**
- * Exact elapsed wall-clock time from the start of `startSlot` to the start of
- * `endSlot`, integrating every crossed slot-duration regime separately,
+ * Exact elapsed wall clock time from the start of `startSlot` to the start of
+ * `endSlot`, integrating every crossed slot duration regime separately,
  * the mirror of the program's `SlotClock::elapsed`. Without a synchronized
- * transition archive, the whole delta is priced at the end-slot duration
- * (the legacy-staging behavior).
+ * transition archive, the whole delta is priced at the end slot duration
+ * (the legacy staging behavior).
  */
 export function elapsedMillis(
 	state: SlotDurationState,
@@ -232,7 +232,7 @@ export function elapsedMillis(
 }
 
 /**
- * Elapsed wall-clock time represented by `slotDelta`, ending at `endSlot`,
+ * Elapsed wall clock time represented by `slotDelta`, ending at `endSlot`,
  * the mirror of `SlotClock::elapsed_slot_delta`.
  */
 export function elapsedMillisFromSlotDelta(

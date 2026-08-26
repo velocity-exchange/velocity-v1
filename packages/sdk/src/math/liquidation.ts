@@ -437,7 +437,7 @@ export function calculateAssetTransferForLiabilityTransfer(
  * @param initialPctToLiquidate Starting liquidatable fraction at slot zero of the ramp, LIQUIDATION_PCT_PRECISION (1e4).
  * @param liquidationDuration Ramp length as a wall-clock duration; decode the onchain field with `millisFromStoredUnits(state.liquidationDuration)` (~1 minute for the onchain default).
  * @param isIsolatedPosition If true, always returns 100% (LIQUIDATION_PCT_PRECISION) regardless of the other inputs (default false).
- * @param slotDurationState The `State` account (or its slot-duration fields); elapsed ramp time is integrated per slot-duration regime, mirroring `calculate_max_pct_to_liquidate`.
+ * @param slotDurationState The `State` account (or its slot duration fields); elapsed ramp time is integrated per slot duration regime, mirroring `calculate_max_pct_to_liquidate`.
  * @returns Fraction of the remaining liability liquidatable now, LIQUIDATION_PCT_PRECISION (1e4).
  */
 export function calculateMaxPctToLiquidate(
@@ -460,11 +460,11 @@ export function calculateMaxPctToLiquidate(
 		return LIQUIDATION_PCT_PRECISION;
 	}
 
-	// ratio of elapsed wall-clock time to the configured liquidation window;
-	// elapsed time is integrated per slot-duration regime so an interval
-	// spanning an IBRL transition ramps at the same wall-clock rate on both
+	// ratio of elapsed wall clock time to the configured liquidation window;
+	// elapsed time is integrated per slot duration regime so an interval
+	// spanning an IBRL transition ramps at the same wall clock rate on both
 	// sides, identity with the historical slot ratio at 400ms. duration 0
-	// (unset) -> 100%, matching the program's divide-by-zero fallback
+	// (unset) -> 100%, matching the program's divide by zero fallback
 	const elapsedMs = elapsedMillis(slotDurationState, userLastActiveSlot, slot);
 
 	const rampPct = liquidationDuration.isZero()

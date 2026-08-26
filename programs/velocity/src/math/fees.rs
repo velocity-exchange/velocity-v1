@@ -381,7 +381,7 @@ fn calculate_filler_reward(
 
     // reward curve accrues per whole 400ms period of order age (its
     // historical calibration), so the time-based reward keeps its wall-clock
-    // shape at any slot duration; the age is integrated per slot-duration
+    // shape at any slot duration; the age is integrated per slot duration
     // regime
     let periods_since_order = max(
         1,

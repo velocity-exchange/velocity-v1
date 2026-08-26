@@ -135,6 +135,7 @@ mod order_breaches_oracle_price_limits {
         math::{
             constants::{MARGIN_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64},
             orders::order_breaches_maker_oracle_price_bands,
+            time::SlotClock,
         },
         state::{perp_market::PerpMarket, user::Order},
     };
@@ -163,7 +164,7 @@ mod order_breaches_oracle_price_limits {
             slot,
             tick_size,
             margin_ratio_initial,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -194,7 +195,7 @@ mod order_breaches_oracle_price_limits {
             slot,
             tick_size,
             margin_ratio_initial,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -227,7 +228,7 @@ mod order_breaches_oracle_price_limits {
             slot,
             tick_size,
             margin_ratio_initial,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -260,7 +261,7 @@ mod order_breaches_oracle_price_limits {
             slot,
             tick_size,
             margin_ratio_initial,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -293,7 +294,7 @@ mod order_breaches_oracle_price_limits {
             slot,
             tick_size,
             margin_ratio_initial,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -326,7 +327,7 @@ mod order_breaches_oracle_price_limits {
             slot,
             tick_size,
             margin_ratio_initial,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -725,6 +726,7 @@ mod find_maker_orders {
         math::{
             constants::{PRICE_PRECISION_I64, PRICE_PRECISION_U64},
             orders::find_maker_orders,
+            time::SlotClock,
         },
         state::user::{MarketType, Order, OrderStatus, OrderTriggerCondition, OrderType, User},
     };
@@ -747,7 +749,7 @@ mod find_maker_orders {
             Some(oracle_price),
             slot,
             tick_size,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -782,7 +784,7 @@ mod find_maker_orders {
             Some(oracle_price),
             slot,
             tick_size,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -818,7 +820,7 @@ mod find_maker_orders {
             Some(oracle_price),
             slot,
             tick_size,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -854,7 +856,7 @@ mod find_maker_orders {
             Some(oracle_price),
             slot,
             tick_size,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -890,7 +892,7 @@ mod find_maker_orders {
             Some(oracle_price),
             slot,
             tick_size,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -926,7 +928,7 @@ mod find_maker_orders {
             Some(oracle_price),
             slot,
             tick_size,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -965,7 +967,7 @@ mod find_maker_orders {
             Some(oracle_price),
             slot,
             tick_size,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -1006,7 +1008,7 @@ mod find_maker_orders {
             Some(oracle_price),
             slot,
             tick_size,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -1052,7 +1054,7 @@ mod find_maker_orders {
             Some(oracle_price),
             slot,
             tick_size,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -1080,6 +1082,7 @@ mod calculate_max_spot_order_size {
                     MarginRequirementType,
                 },
                 orders::calculate_max_spot_order_size,
+                time::SlotClock,
             },
             state::{
                 margin_calculation::{MarginCalculation, MarginContext},
@@ -1111,13 +1114,8 @@ mod calculate_max_spot_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotClock::baseline(),
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let _market_map = PerpMarketMap::empty();
 
@@ -1223,13 +1221,8 @@ mod calculate_max_spot_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotClock::baseline(),
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let _market_map = PerpMarketMap::empty();
 
@@ -1336,13 +1329,8 @@ mod calculate_max_spot_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotClock::baseline(),
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let _market_map = PerpMarketMap::empty();
 
@@ -1448,13 +1436,8 @@ mod calculate_max_spot_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotClock::baseline(),
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let _market_map = PerpMarketMap::empty();
 
@@ -1543,13 +1526,8 @@ mod calculate_max_spot_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotClock::baseline(),
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let _market_map = PerpMarketMap::empty();
 
@@ -1656,13 +1634,8 @@ mod calculate_max_spot_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotClock::baseline(),
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let _market_map = PerpMarketMap::empty();
 
@@ -1769,13 +1742,8 @@ mod calculate_max_spot_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotClock::baseline(),
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let _market_map = PerpMarketMap::empty();
 
@@ -1882,13 +1850,8 @@ mod calculate_max_spot_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotClock::baseline(),
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let _market_map = PerpMarketMap::empty();
 
@@ -1997,6 +1960,7 @@ mod calculate_max_perp_order_size {
                     MarginRequirementType,
                 },
                 orders::calculate_max_perp_order_size,
+                time::SlotClock,
             },
             state::{
                 margin_calculation::{MarginCalculation, MarginContext},
@@ -2032,13 +1996,8 @@ mod calculate_max_perp_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotClock::baseline(),
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2158,13 +2117,8 @@ mod calculate_max_perp_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotClock::baseline(),
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2267,13 +2221,8 @@ mod calculate_max_perp_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotClock::baseline(),
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2393,13 +2342,8 @@ mod calculate_max_perp_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotClock::baseline(),
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2502,13 +2446,8 @@ mod calculate_max_perp_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotClock::baseline(),
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2629,13 +2568,8 @@ mod calculate_max_perp_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotClock::baseline(),
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2756,13 +2690,8 @@ mod calculate_max_perp_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotClock::baseline(),
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2884,13 +2813,8 @@ mod calculate_max_perp_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotClock::baseline(),
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -3011,13 +2935,8 @@ mod calculate_max_perp_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotClock::baseline(),
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -3138,13 +3057,8 @@ mod calculate_max_perp_order_size {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotClock::baseline(),
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -3493,7 +3407,7 @@ mod calculate_max_perp_order_size {
         let mut oracle_map = OracleMap::load(
             &mut account_infos.iter().peekable(),
             clock_slot,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
             None,
         )
         .unwrap();

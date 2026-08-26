@@ -42,14 +42,14 @@ mod get_auction_duration {
         let price = 100 * PRICE_PRECISION_U64;
         let tier = ContractTier::C;
 
-        // a 2%-diff auction is 48s at tier C: 120 wall-clock 400ms units,
+        // a 2%-diff auction is 48s at tier C: 120 wall clock 400ms units,
         // whatever the live slot duration; progress converts elapsed slots to
-        // wall-clock at fill time instead of inflating the stored count
+        // wall clock at fill time instead of inflating the stored count
         let diff = 2 * PRICE_PRECISION_U64;
         assert_eq!(get_auction_duration(diff, price, tier).unwrap(), 120);
 
-        // the 180-unit (72s) maximum fits the u8 with room to spare (255
-        // units = 102s), so no wall-clock compression exists at any gate
+        // the 180 unit (72s) maximum fits the u8 with room to spare (255
+        // units = 102s), so no wall clock compression exists at any gate
         let max_diff = 3 * PRICE_PRECISION_U64;
         assert_eq!(get_auction_duration(max_diff, price, tier).unwrap(), 180);
     }
@@ -1787,7 +1787,7 @@ mod update_perp_auction_params {
 mod get_close_perp_params {
     use {
         crate::{
-            math::orders::get_posted_slot_from_clock_slot,
+            math::{orders::get_posted_slot_from_clock_slot, time::SlotClock},
             state::{
                 oracle::HistoricalOracleData,
                 order_params::PostOnlyParam,
@@ -1860,7 +1860,7 @@ mod get_close_perp_params {
             &perp_market,
             Some(oracle_price),
             slot,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -1912,7 +1912,7 @@ mod get_close_perp_params {
             &perp_market,
             Some(oracle_price),
             slot,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -1964,7 +1964,7 @@ mod get_close_perp_params {
             &perp_market,
             Some(oracle_price),
             slot,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -2024,7 +2024,7 @@ mod get_close_perp_params {
             &perp_market,
             Some(oracle_price),
             slot,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -2076,7 +2076,7 @@ mod get_close_perp_params {
             &perp_market,
             Some(oracle_price),
             slot,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -2129,7 +2129,7 @@ mod get_close_perp_params {
             &perp_market,
             Some(oracle_price),
             slot,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -2184,7 +2184,7 @@ mod get_close_perp_params {
             &perp_market,
             Some(oracle_price),
             slot,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -2239,7 +2239,7 @@ mod get_close_perp_params {
             &perp_market,
             Some(oracle_price),
             slot,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -2350,7 +2350,7 @@ mod get_close_perp_params {
             &perp_market,
             Some(oracle_price),
             slot,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
     }

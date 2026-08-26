@@ -383,7 +383,7 @@ describe('currentSlotDuration (off-chain resolver)', () => {
 	});
 });
 
-// Pins the auction mirrors against the program's wall-clock auction math:
+// Pins the auction mirrors against the program's wall clock auction math:
 // `Order.auctionDuration` is 400ms units and progress integrates elapsed
 // slots through the slot clock (`auction_wall_clock_across_gates` in
 // `math/auction.rs` tests).

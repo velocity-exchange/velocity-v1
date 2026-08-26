@@ -689,9 +689,9 @@ export function createMarketBasedAuctionParams(
 			: args.auctionStartPriceOffset;
 
 	// Set market-specific defaults (only used if values are undefined)
-	// default durations are wall-clock ms in the onchain 400ms-unit encoding
+	// default durations are wall clock ms in the onchain 400ms unit encoding
 	// (`Order.auction_duration`); the program converts elapsed slots to
-	// wall-clock at fill time, so no live slot duration is needed here
+	// wall clock at fill time, so no live slot duration is needed here
 	const marketSpecificDefaults: Partial<AuctionParamArgs> = {
 		...DEFAULT_AUCTION_PARAMS,
 		auctionDuration: Math.min(

@@ -463,9 +463,9 @@ pub fn calculate_max_pct_to_liquidate(
         return Ok(LIQUIDATION_PCT_PRECISION);
     }
 
-    // The ramp is the ratio of elapsed wall-clock time to the configured
-    // liquidation window. Elapsed time is integrated per slot-duration regime,
-    // so an interval spanning an IBRL transition ramps at the same wall-clock
+    // The ramp is the ratio of elapsed wall clock time to the configured
+    // liquidation window. Elapsed time is integrated per slot duration regime,
+    // so an interval spanning an IBRL transition ramps at the same wall clock
     // rate on both sides. Identity with the historical slot ratio at 400ms.
     let elapsed_ms = slot_clock.elapsed(user.last_active_slot, slot).as_ms();
     let duration_ms = liquidation_duration.as_ms();
@@ -632,7 +632,7 @@ pub fn get_liquidation_fee(
     // The fee ramps per whole 400ms period of elapsed time past the grace
     // window (the rate's historical calibration). Floor on the period count:
     // the fee escalates marginally later, favoring the user. Elapsed time is
-    // integrated per slot-duration regime.
+    // integrated per slot duration regime.
     let elapsed = slot_clock.elapsed(last_active_user_slot, current_slot);
     if elapsed < LIQUIDATION_FEE_ADJUST_GRACE_PERIOD {
         return Ok(base_liquidation_fee);

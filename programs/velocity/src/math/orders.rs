@@ -1199,8 +1199,8 @@ pub fn slots_since_order_posted(slot: u64, posted_slot_tail: u8) -> u64 {
 
 /// Collect the resting bid/ask levels for `perp_market` from the supplied `users`.
 ///
-/// `min_quote_rest` drops any quote that has rested for less wall-clock time than that
-/// (integrated per slot-duration regime). Pass `BID_ASK_TWAP_MIN_QUOTE_REST` when the result
+/// `min_quote_rest` drops any quote that has rested for less wall clock time than that
+/// (integrated per slot duration regime). Pass `BID_ASK_TWAP_MIN_QUOTE_REST` when the result
 /// feeds the mark TWAP, and `Millis::ZERO` when the caller needs the true current book.
 /// Arbitrage needs the latter, because a fresh quote is still takeable.
 pub fn find_bids_and_asks_from_users(

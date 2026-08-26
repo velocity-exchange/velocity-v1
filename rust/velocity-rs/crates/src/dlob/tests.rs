@@ -1,3 +1,4 @@
+use program::math::time::SlotClock;
 use solana_pubkey::Pubkey;
 
 use crate::{
@@ -3885,12 +3886,8 @@ fn market_order_get_price_same_start_end_price() {
         };
 
         // Test at start of auction (slot = start_slot)
-        let price_at_start = order.get_price(
-            start_slot,
-            oracle_price,
-            tick_size,
-            program::math::time::SlotClock::baseline(),
-        );
+        let price_at_start =
+            order.get_price(start_slot, oracle_price, tick_size, SlotClock::baseline());
         assert_eq!(
             price_at_start,
             Some(auction_price as u64),
@@ -3903,7 +3900,7 @@ fn market_order_get_price_same_start_end_price() {
             start_slot + 5,
             oracle_price,
             tick_size,
-            program::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         );
         assert_eq!(
             price_during,
@@ -3917,7 +3914,7 @@ fn market_order_get_price_same_start_end_price() {
             start_slot + duration as u64,
             oracle_price,
             tick_size,
-            program::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         );
         assert_eq!(
             price_at_end,
@@ -3931,7 +3928,7 @@ fn market_order_get_price_same_start_end_price() {
             start_slot + duration as u64 + 1,
             oracle_price,
             tick_size,
-            program::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         );
         // After auction, if price is 0, it returns None, otherwise returns price
         // Since we set price = 0, it should return None
@@ -4060,12 +4057,7 @@ fn dlob_oracle_order_negative_offset_prices_post_auction() {
     };
 
     // post auction: limit = oracle + offset, standardized (Long rounds down to tick)
-    let price = order.get_price(
-        200,
-        oracle_price,
-        tick_size,
-        program::math::time::SlotClock::baseline(),
-    );
+    let price = order.get_price(200, oracle_price, tick_size, SlotClock::baseline());
     assert_eq!(price, Some(99_750));
 
     // offset-less order falls back to vamm pricing
@@ -4074,12 +4066,7 @@ fn dlob_oracle_order_negative_offset_prices_post_auction() {
         ..order.clone()
     };
     assert_eq!(
-        no_offset.get_price(
-            200,
-            oracle_price,
-            tick_size,
-            program::math::time::SlotClock::baseline()
-        ),
+        no_offset.get_price(200, oracle_price, tick_size, SlotClock::baseline()),
         None
     );
 
@@ -4090,12 +4077,7 @@ fn dlob_oracle_order_negative_offset_prices_post_auction() {
         ..order
     };
     assert_eq!(
-        pos_offset.get_price(
-            200,
-            oracle_price,
-            tick_size,
-            program::math::time::SlotClock::baseline()
-        ),
+        pos_offset.get_price(200, oracle_price, tick_size, SlotClock::baseline()),
         Some(100_250)
     );
 }
@@ -4486,7 +4468,7 @@ fn dlob_vamm_taker_candidate_requires_fill_path_quote() {
         stale_oracle,
         &rails,
         slot - 50,
-        program::math::time::SlotClock::baseline(),
+        SlotClock::baseline(),
     )
     .unwrap();
 
@@ -4505,7 +4487,7 @@ fn dlob_vamm_taker_candidate_requires_fill_path_quote() {
         exchange_oracle,
         &rails,
         slot,
-        program::math::time::SlotClock::baseline(),
+        SlotClock::baseline(),
     )
     .unwrap();
 
@@ -4699,7 +4681,7 @@ fn post_trigger_price_mirrors_program_trigger_auction_params() {
             has_sufficient_number_of_data_points: true,
             sequence_id: None,
         },
-        20, // ~8s in wall-clock 400ms units
+        20, // ~8s in wall clock 400ms units
         Some(&market),
     )
     .unwrap();
@@ -4712,7 +4694,7 @@ fn post_trigger_price_mirrors_program_trigger_auction_params() {
         slot,
         market.order_tick_size,
         Some(oracle_price as i64),
-        program::math::time::SlotClock::baseline(),
+        SlotClock::baseline(),
     )
     .unwrap();
     assert_eq!(
@@ -4721,9 +4703,9 @@ fn post_trigger_price_mirrors_program_trigger_auction_params() {
     );
 
     // Trigger and fill are simulated at the same slot, so the returned price is
-    // the auction start price on any clock: the duration is wall-clock 400ms
+    // the auction start price on any clock: the duration is wall clock 400ms
     // units and progress is zero, so a fully-200ms clock changes nothing.
-    let fast_clock = program::math::time::SlotClock::from_state_fields([1, 1, 1, 1], 0, 0, 0);
+    let fast_clock = SlotClock::from_state_fields([1, 1, 1, 1], 0, 0, 0);
     let fast_price = calculate_auction_price(
         &expected_order,
         slot,

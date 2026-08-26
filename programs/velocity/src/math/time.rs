@@ -241,13 +241,13 @@ pub fn legacy_slot_duration_u64_to_millis(value: LegacySlotDurationU64) -> Milli
     }
 }
 
-/// The four post-baseline regimes, in activation order, matching the IBRL
-/// feature-gate schedule (400 is the pre-upgrade baseline; there is no path
+/// The four post baseline regimes, in activation order, matching the IBRL
+/// feature gate schedule (400 is the pre upgrade baseline; there is no path
 /// back to slower slots, feature gates cannot deactivate). `State` stores the
 /// exact first slot of each regime at the matching array index.
 pub const SLOT_DURATION_TRANSITION_MS: [u16; 4] = [350, 300, 250, 200];
 
-/// Archive index for a post-baseline slot duration.
+/// Archive index for a post baseline slot duration.
 pub const fn slot_duration_transition_index(slot_duration_ms: u16) -> Option<usize> {
     let mut i = 0;
     while i < SLOT_DURATION_TRANSITION_MS.len() {
@@ -280,9 +280,9 @@ pub const fn active_slot_duration_ms(
 /// Cluster slot clock reconstructed from the four IBRL transition slots.
 ///
 /// The legacy staging fields remain as a fallback for accounts written by the
-/// first slot-duration implementation. Once any archive entry exists, the
+/// first slot duration implementation. Once any archive entry exists, the
 /// archive is authoritative and elapsed intervals are integrated piecewise.
-/// `Default` is the 400ms baseline: all-zero fields are exactly
+/// `Default` is the 400ms baseline: all zero fields are exactly
 /// [`SlotClock::baseline`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct SlotClock {
@@ -338,8 +338,8 @@ impl SlotClock {
         SlotDuration::from_state_ms(duration_ms)
     }
 
-    /// Exact elapsed wall-clock milliseconds from the start of `start_slot`
-    /// to the start of `end_slot`. Every crossed slot-duration regime is
+    /// Exact elapsed wall clock milliseconds from the start of `start_slot`
+    /// to the start of `end_slot`. Every crossed slot duration regime is
     /// integrated separately, matching Agave's transition archive semantics.
     pub fn elapsed(self, start_slot: u64, end_slot: u64) -> Millis {
         if end_slot <= start_slot {
@@ -670,7 +670,7 @@ mod tests {
         assert!(!clock.has_transition_history());
         assert_eq!(clock.slot_duration_at(999).as_ms(), 400);
         assert_eq!(clock.slot_duration_at(1_000).as_ms(), 350);
-        // no history: the whole delta is priced at the end-slot duration
+        // no history: the whole delta is priced at the end slot duration
         assert_eq!(clock.elapsed(0, 10).as_ms(), 10 * 400);
         assert_eq!(clock.elapsed(1_000, 1_010).as_ms(), 10 * 350);
     }
@@ -679,7 +679,7 @@ mod tests {
     fn slot_clock_archive_is_authoritative_over_legacy_fields() {
         let clock = SlotClock::from_state_fields([1_000, 0, 0, 0], 200, 250, 5);
         assert!(clock.has_transition_history());
-        // pre-transition is the 400ms baseline regardless of stale legacy fields
+        // pre transition is the 400ms baseline regardless of stale legacy fields
         assert_eq!(clock.slot_duration_at(999).as_ms(), 400);
         assert_eq!(clock.slot_duration_at(1_000).as_ms(), 350);
     }

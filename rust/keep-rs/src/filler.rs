@@ -39,7 +39,10 @@ use {
             AccountUpdate, TransactionUpdate,
         },
         priority_fee_subscriber::PriorityFeeSubscriber,
-        program::math::auction::calculate_auction_price,
+        program::math::{
+            auction::calculate_auction_price,
+            time::{Millis, SlotClock},
+        },
         swift_order_subscriber::{SignedOrderInfo, SwiftOrderStream},
         types::{
             accounts::{PerpMarket, User, UserStats},
@@ -220,7 +223,7 @@ impl FillerBot {
         let mut slots_before_stale_for_amm = velocity
             .state_account()
             .map(|s| {
-                velocity_rs::program::math::time::Millis::from_stored_units(
+                Millis::from_stored_units(
                     s.oracle_guard_rails
                         .validity
                         .slots_before_stale_for_amm
@@ -631,7 +634,7 @@ impl FillerBot {
                             slots_before_stale_for_amm = velocity
                                 .state_account()
                                 .map(|s| {
-                                    velocity_rs::program::math::time::Millis::from_stored_units(
+                                    Millis::from_stored_units(
                                         s.oracle_guard_rails.validity.slots_before_stale_for_amm.max(0) as u64,
                                     )
                                     .to_slots(slot_duration) as i64
@@ -834,7 +837,7 @@ fn evaluate_swift_crosses(
     oracle_delay: i64,
     landing_slot: u64,
     slots_before_stale_for_amm: i64,
-    slot_clock: velocity_rs::program::math::time::SlotClock,
+    slot_clock: SlotClock,
 ) -> SwiftEval {
     let mut order_params = signed_order.order_params();
     let _ = order_params.update_perp_auction_params(perp_market, oracle_price, true);
@@ -2012,17 +2015,16 @@ fn vamm_can_fill_taker(
 fn mm_oracle_stale_for_amm_immediate(
     perp_market: &PerpMarket,
     landing_slot: u64,
-    slot_clock: velocity_rs::program::math::time::SlotClock,
+    slot_clock: SlotClock,
 ) -> bool {
     let mm_oracle_delay =
         (landing_slot as i64).saturating_sub(perp_market.market_stats.mm_oracle_slot as i64);
-    // the age is wall-clock, integrated per slot-duration regime like
+    // the age is wall clock, integrated per slot duration regime like
     // `oracle_validity`; thresholds are 400ms baseline units
     let mm_oracle_age = slot_clock.elapsed_slot_delta(mm_oracle_delay.max(0) as u64, landing_slot);
     let override_ = perp_market.oracle_slot_delay_override;
     if override_ > 0 {
-        mm_oracle_age
-            > velocity_rs::program::math::time::Millis::from_stored_units(override_ as u64)
+        mm_oracle_age > Millis::from_stored_units(override_ as u64)
     } else if override_ < 0 {
         mm_oracle_age > velocity_rs::program::math::constants::MM_ORACLE_MIN_WRITE_GAP
     } else {
@@ -3166,8 +3168,8 @@ mod tests {
     };
 
     // The unset (override < 0) MM-sourced immediate threshold compares the
-    // wall-clock MM-oracle age against MM_ORACLE_MIN_WRITE_GAP, matching the
-    // program's `oracle_validity`. The age integrates per slot-duration
+    // wall clock MM-oracle age against MM_ORACLE_MIN_WRITE_GAP, matching the
+    // program's `oracle_validity`. The age integrates per slot duration
     // regime, so the effective slot count scales with the clock.
     #[test]
     fn unset_mm_immediate_threshold_scales_per_gate() {

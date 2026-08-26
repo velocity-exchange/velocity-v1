@@ -249,8 +249,8 @@ fn process_order(
     let market_index = taker_order.market_index;
     let taker_direction = taker_order.direction;
 
-    // auction_duration is in wall-clock 400ms units; remaining time is its
-    // wall-clock length minus the elapsed time, integrated per regime
+    // auction_duration is in wall clock 400ms units; remaining time is its
+    // wall clock length minus the elapsed time, integrated per regime
     let ms_left = Millis::from_stored_units(taker_order.auction_duration as u64)
         .as_ms()
         .cast::<i64>()?

@@ -1,4 +1,5 @@
 use crate::{
+    math::time::SlotClock,
     state::{
         fill_mode::FillMode,
         user::{Order, OrderType},
@@ -31,7 +32,7 @@ fn test() {
             oracle_price,
             slot,
             tick_size,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -45,7 +46,7 @@ fn test() {
             oracle_price,
             slot,
             tick_size,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -65,7 +66,7 @@ fn test() {
             oracle_price,
             slot,
             tick_size,
-            crate::math::time::SlotClock::baseline(),
+            SlotClock::baseline(),
         )
         .unwrap();
 

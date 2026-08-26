@@ -53,7 +53,7 @@ pub struct OracleMap<'a> {
     validity: BTreeMap<OracleValidityKey, OracleValidity>,
     pub slot: u64,
     /// Full transition archive (from `State::slot_clock()`): scales the
-    /// 400ms-baseline staleness thresholds and measures oracle ages and
+    /// 400ms baseline staleness thresholds and measures oracle ages and
     /// cooldowns exactly across IBRL transitions.
     pub slot_clock: SlotClock,
     pub oracle_guard_rails: OracleGuardRails,
@@ -364,14 +364,9 @@ impl<'a> OracleMap<'a> {
         }
 
         validate!(
-            OracleMap::load_one(
-                account_info,
-                0,
-                crate::math::time::SlotClock::baseline(),
-                None
-            )?
-            .oracles
-            .len()
+            OracleMap::load_one(account_info, 0, SlotClock::baseline(), None)?
+                .oracles
+                .len()
                 == 1,
             ErrorCode::InvalidOracle,
             "oracle owner not recognizable"
@@ -387,7 +382,7 @@ impl<'a> OracleMap<'a> {
             validity: BTreeMap::new(),
             price_data: BTreeMap::new(),
             slot: 0,
-            slot_clock: crate::math::time::SlotClock::baseline(),
+            slot_clock: SlotClock::baseline(),
             oracle_guard_rails: OracleGuardRails::default(),
             quote_asset_price_data: OraclePriceData {
                 price: PRICE_PRECISION_I64,

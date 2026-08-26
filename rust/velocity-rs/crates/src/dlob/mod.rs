@@ -117,7 +117,7 @@ struct Orderbook {
     market_tick_size: u64,
     /// slot where dynamic orders where last checked
     last_modified_slot: u64,
-    /// cluster slot clock (IBRL transition archive) auction wall-clock math
+    /// cluster slot clock (IBRL transition archive) auction wall clock math
     /// converts elapsed slots through; stamped by the owning `DLOB`
     slot_clock: SlotClock,
     /// market index of this book
@@ -168,7 +168,7 @@ impl Orderbook {
         self.last_modified_slot = slot;
     }
 
-    /// Update the cluster slot clock auction wall-clock math converts through
+    /// Update the cluster slot clock auction wall clock math converts through
     pub fn update_slot_clock(&mut self, slot_clock: SlotClock) {
         self.slot_clock = slot_clock;
     }
@@ -311,7 +311,7 @@ impl DLOBNotifier {
             .expect("Failed to send DLOB event - channel may be closed");
     }
 
-    /// Push a cluster slot-clock update (the velocity `State` transition
+    /// Push a cluster slot clock update (the velocity `State` transition
     /// archive) to the DLOB. Cheap to send every slot: the DLOB no-ops
     /// unless the clock changed.
     #[inline]
@@ -351,7 +351,7 @@ pub struct DLOB {
     program_data: &'static ProgramData,
     /// last slot update
     last_modified_slot: AtomicU64,
-    /// cluster slot clock (IBRL transition archive); auction wall-clock math
+    /// cluster slot clock (IBRL transition archive); auction wall clock math
     /// converts elapsed slots through it. Update via `update_slot_clock`
     /// whenever the velocity `State` account changes.
     slot_clock: std::sync::RwLock<SlotClock>,
@@ -507,8 +507,8 @@ impl DLOB {
     }
 
     /// Update the cluster slot clock (the velocity `State` transition
-    /// archive) so auction wall-clock math stays exact across IBRL
-    /// slot-duration transitions; without it the books assume the 400ms
+    /// archive) so auction wall clock math stays exact across IBRL
+    /// slot duration transitions; without it the books assume the 400ms
     /// baseline. Cheap to call every slot: a no-op unless the clock changed.
     pub fn update_slot_clock(&self, slot_clock: SlotClock) {
         if *self.slot_clock.read().expect("read slot clock") == slot_clock {

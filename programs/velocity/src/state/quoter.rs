@@ -87,8 +87,8 @@ pub struct QuoteContext<'a> {
     /// resting post-auction).
     pub slot: u64,
     /// Cluster slot clock (`State::slot_clock()`). Used to scale
-    /// slot-denominated windows calibrated to the 400ms baseline (e.g. the
-    /// reference-price-offset smoothing budget) across IBRL transitions.
+    /// slot denominated windows calibrated to the 400ms baseline (e.g. the
+    /// reference price offset smoothing budget) across IBRL transitions.
     pub slot_clock: SlotClock,
     /// Base-asset precision divisor: when computing `quote_amount` from a
     /// base amount filled at a price, the formula is
@@ -568,7 +568,7 @@ mod dlob_order_maker_tests {
             tick: 1,
             step_size: 1,
             slot: 100,
-            slot_clock: crate::math::time::SlotClock::baseline(),
+            slot_clock: SlotClock::baseline(),
             base_precision: crate::math::constants::BASE_PRECISION as u64,
             market_status: crate::state::market_status::MarketStatus::default(),
             market_config: 0,

@@ -135,7 +135,7 @@ class DLOBBuilder {
 		);
 		const dlob = new DLOB();
 		try {
-			// auction wall-clock math converts elapsed slots through the State
+			// auction wall clock math converts elapsed slots through the State
 			// slot clock; unsubscribed state falls back to the 400ms baseline
 			dlob.slotDurationState = this.velocityClient.getStateAccount();
 		} catch {
@@ -237,7 +237,7 @@ class DLOBBuilder {
 			orderData['signing_authority']
 		);
 
-		// mirrors the program's max_slot: auctionDuration is wall-clock 400ms
+		// mirrors the program's max_slot: auctionDuration is wall clock 400ms
 		// units, converted to actual slots (ceil) at the live slot duration
 		const maxSlot = signedMessage.slot.add(
 			millisToSlotsCeil(

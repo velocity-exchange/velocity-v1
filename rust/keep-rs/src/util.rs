@@ -21,6 +21,7 @@ use {
             pyth_lazer_feed_id_to_spot_market_index, spot_market_index_to_pyth_lazer_feed_id,
         },
         dlob::{L3Order, MakerCrosses},
+        program::math::time::{Millis, SlotClock, SlotDuration},
         types::{MarketId, MarketType},
         Pubkey,
     },
@@ -29,10 +30,7 @@ use {
 /// Live slot duration at `now_slot` from the client's cached `State`, resolved
 /// through the full slot clock (transition archive first, legacy staging fields
 /// as fallback); the 400ms baseline when State is not yet subscribed.
-pub fn client_slot_duration(
-    velocity: &velocity_rs::VelocityClient,
-    now_slot: u64,
-) -> velocity_rs::program::math::time::SlotDuration {
+pub fn client_slot_duration(velocity: &velocity_rs::VelocityClient, now_slot: u64) -> SlotDuration {
     velocity.slot_duration_at(now_slot)
 }
 
@@ -469,15 +467,14 @@ impl<const N: usize> PendingTxs<N> {
 ///
 /// Mirrors the staleness gate in `place_signed_msg_taker_order`
 /// (programs/velocity/src/instructions/keeper.rs).
-pub const SWIFT_SIGNED_MSG_MAX_AGE: velocity_rs::program::math::time::Millis =
-    velocity_rs::program::math::time::Millis::from_secs(200);
+pub const SWIFT_SIGNED_MSG_MAX_AGE: Millis = Millis::from_secs(200);
 
 /// Returns true if a swift (signed-message) order can no longer be usefully *placed* on-chain,
 /// so the bot shouldn't spend a tx trying.
 ///
 /// The two slot gates mirror `place_signed_msg_taker_order` exactly:
-/// - **signed-message staleness**: the program rejects once the order's
-///   wall-clock age (integrated per slot-duration regime) exceeds ~200s
+/// - **signed message staleness**: the program rejects once the order's
+///   wall clock age (integrated per slot duration regime) exceeds ~200s
 /// - **placement deadline**: program silently no-ops once `max_slot < current_slot`, where
 ///   `max_slot = order_slot + auction_duration converted from 400ms units to
 ///   actual slots (ceil)` (identical formula for limit & market orders)
@@ -492,7 +489,7 @@ pub fn swift_placement_expired(
     max_ts: i64,
     current_slot: u64,
     now_ts: i64,
-    slot_clock: velocity_rs::program::math::time::SlotClock,
+    slot_clock: SlotClock,
 ) -> bool {
     // signed message too old for the program to accept
     if slot_clock.elapsed(order_slot, current_slot) > SWIFT_SIGNED_MSG_MAX_AGE {
@@ -500,7 +497,7 @@ pub fn swift_placement_expired(
     }
     // placement deadline: program no-ops once max_slot < current_slot
     let max_slot = order_slot.saturating_add(
-        velocity_rs::program::math::time::Millis::from_stored_units(auction_duration as u64)
+        Millis::from_stored_units(auction_duration as u64)
             .to_slots_ceil(slot_clock.slot_duration_at(current_slot)),
     );
     if current_slot > max_slot {
@@ -841,6 +838,7 @@ mod tests {
         },
         pyth_lazer_protocol::router::TimestampUs,
         solana_sdk::signature::Signature,
+        velocity_rs::program::math::time::SlotClock,
     };
 
     #[test]
@@ -874,7 +872,7 @@ mod tests {
             0,
             255,
             0,
-            velocity_rs::program::math::time::SlotClock::baseline()
+            SlotClock::baseline()
         ));
         assert!(swift_placement_expired(
             0,
@@ -882,7 +880,7 @@ mod tests {
             0,
             256,
             0,
-            velocity_rs::program::math::time::SlotClock::baseline()
+            SlotClock::baseline()
         ));
     }
 
@@ -895,7 +893,7 @@ mod tests {
             0,
             130,
             0,
-            velocity_rs::program::math::time::SlotClock::baseline()
+            SlotClock::baseline()
         )); // exactly at deadline: still placeable
         assert!(swift_placement_expired(
             100,
@@ -903,7 +901,7 @@ mod tests {
             0,
             131,
             0,
-            velocity_rs::program::math::time::SlotClock::baseline()
+            SlotClock::baseline()
         )); // one past: gone
             // Zero auction duration (limit order default): only placeable in the signing slot.
         assert!(!swift_placement_expired(
@@ -912,7 +910,7 @@ mod tests {
             0,
             100,
             0,
-            velocity_rs::program::math::time::SlotClock::baseline()
+            SlotClock::baseline()
         ));
         assert!(swift_placement_expired(
             100,
@@ -920,7 +918,7 @@ mod tests {
             0,
             101,
             0,
-            velocity_rs::program::math::time::SlotClock::baseline()
+            SlotClock::baseline()
         ));
     }
 
@@ -933,7 +931,7 @@ mod tests {
             0,
             100,
             i64::MAX,
-            velocity_rs::program::math::time::SlotClock::baseline()
+            SlotClock::baseline()
         ));
         // now == max_ts is still valid; now > max_ts expires.
         assert!(!swift_placement_expired(
@@ -942,7 +940,7 @@ mod tests {
             5_000,
             100,
             5_000,
-            velocity_rs::program::math::time::SlotClock::baseline()
+            SlotClock::baseline()
         ));
         assert!(swift_placement_expired(
             100,
@@ -950,7 +948,7 @@ mod tests {
             5_000,
             100,
             5_001,
-            velocity_rs::program::math::time::SlotClock::baseline()
+            SlotClock::baseline()
         ));
     }
 

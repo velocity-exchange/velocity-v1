@@ -87,6 +87,8 @@ fn quoter_registry_lifecycle() {
             admin: as_admin,
             state: state_pda(),
             quoter,
+            quoter_program: clob_id(),
+            quoter_program_data: None,
         }
         .to_account_metas(None),
         data: velocity::instruction::UpdateQuoterApproved { approved }.data(),

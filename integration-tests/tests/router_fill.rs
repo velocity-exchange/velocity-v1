@@ -464,6 +464,8 @@ fn register_clob_quoter(
             admin: admin.pubkey(),
             state: state_pda(),
             quoter,
+            quoter_program: clob_id(),
+            quoter_program_data: None,
         }
         .to_account_metas(None),
         data: velocity::instruction::UpdateQuoterApproved { approved: true }.data(),
@@ -4880,6 +4882,8 @@ fn setup_midpoint_maker(fixture: &mut Fixture, deposit: u64, side_size: u64) -> 
             admin: fixture.admin.pubkey(),
             state: state_pda(),
             quoter: entry,
+            quoter_program: midpoint_id(),
+            quoter_program_data: None,
         }
         .to_account_metas(None),
         data: velocity::instruction::UpdateQuoterApproved { approved: true }.data(),
@@ -5243,6 +5247,8 @@ fn declare_midpoint_watch(fixture: &mut Fixture, maker: &MidpointMaker) {
             admin: fixture.admin.pubkey(),
             state: state_pda(),
             quoter: maker.entry,
+            quoter_program: midpoint_id(),
+            quoter_program_data: None,
         }
         .to_account_metas(None),
         data: velocity::instruction::UpdateQuoterApproved { approved: true }.data(),

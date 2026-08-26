@@ -90,6 +90,10 @@ const SCRATCH = process.env.E2E_SCRATCH_DIR ?? '/tmp/velocity-e2e';
 const PUBLISHER_BIN =
 	process.env.BOOK_PUBLISHER_BIN ?? 'rust/target/debug/book-publisher';
 
+/** `BPFLoaderUpgradeab1e11111111111111111111111`, which owns a program's data account. */
+const BPF_LOADER_UPGRADEABLE_ID = new PublicKey(
+	'BPFLoaderUpgradeab1e11111111111111111111111'
+);
 const VELOCITY_ID = new PublicKey(
 	'vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P'
 );
@@ -743,6 +747,14 @@ describe('e2e localnet: programs + publisher + redis', function () {
 						admin: payer.publicKey,
 						state: await admin.getStatePublicKey(),
 						quoter,
+						// Approval is approval of a binary, so the program has to
+						// be frozen and its program-data account says whether it
+						// is. These are deployed non-upgradeable in the harness.
+						quoterProgram: args.quoterProgram,
+						quoterProgramData: PublicKey.findProgramAddressSync(
+							[args.quoterProgram.toBuffer()],
+							BPF_LOADER_UPGRADEABLE_ID
+						)[0],
 					},
 				}),
 			],

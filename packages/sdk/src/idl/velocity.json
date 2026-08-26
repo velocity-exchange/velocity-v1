@@ -15609,6 +15609,20 @@
         {
           "name": "quoter",
           "writable": true
+        },
+        {
+          "name": "quoter_program",
+          "docs": [
+            "and, through it, whether the code can still change."
+          ]
+        },
+        {
+          "name": "quoter_program_data",
+          "docs": [
+            "handler. Optional because revoking approval needs none of this, and a",
+            "program on a loader that cannot upgrade in place has no such account."
+          ],
+          "optional": true
         }
       ],
       "args": [

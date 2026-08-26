@@ -15615,6 +15615,20 @@ export type Velocity = {
         {
           "name": "quoter",
           "writable": true
+        },
+        {
+          "name": "quoterProgram",
+          "docs": [
+            "and, through it, whether the code can still change."
+          ]
+        },
+        {
+          "name": "quoterProgramData",
+          "docs": [
+            "handler. Optional because revoking approval needs none of this, and a",
+            "program on a loader that cannot upgrade in place has no such account."
+          ],
+          "optional": true
         }
       ],
       "args": [

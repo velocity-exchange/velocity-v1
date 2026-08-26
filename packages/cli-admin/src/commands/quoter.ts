@@ -16,6 +16,11 @@ import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
 import { reportDispatch, sendOrPropose } from '../lib/squads';
 
+/** `BPFLoaderUpgradeab1e11111111111111111111111`, which owns a program's data account. */
+const BPF_LOADER_UPGRADEABLE_ID = new PublicKey(
+	'BPFLoaderUpgradeab1e11111111111111111111111'
+);
+
 /** Parse a CLI truthy/falsy flag argument (`true|false|on|off|1|0|enable|disable`). */
 function parseEnable(value: string): boolean {
 	const v = value.trim().toLowerCase();
@@ -421,13 +426,28 @@ export function registerQuoter(parent: Command): void {
 			const provider = buildProvider(opts);
 			const client = await buildAdminClient(opts, false);
 			try {
+				// Approval is approval of a binary, so the program behind the entry
+				// has to be frozen — the program-data account is what says whether
+				// it is. Read from the entry rather than taken as a flag: an
+				// operator naming the wrong program would approve the wrong code.
+				const quoterKey = new PublicKey(quoterArg);
+				const entry = await (client.program.account as any).quoterV0.fetch(
+					quoterKey
+				);
+				const quoterProgram = new PublicKey(entry.programId);
+				const [programData] = PublicKey.findProgramAddressSync(
+					[quoterProgram.toBuffer()],
+					BPF_LOADER_UPGRADEABLE_ID
+				);
 				const ix = client.program.instruction.updateQuoterApproved(on, {
 					accounts: {
 						admin: flags.admin
 							? new PublicKey(flags.admin)
 							: provider.wallet.publicKey,
 						state: await client.getStatePublicKey(),
-						quoter: new PublicKey(quoterArg),
+						quoter: quoterKey,
+						quoterProgram,
+						quoterProgramData: on ? programData : null,
 					},
 				});
 				const result = await sendOrPropose(

@@ -22,6 +22,11 @@ import {
 	withCrankCostUnitOptions,
 } from '../lib/crankCostUnits';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
+
+/** `BPFLoaderUpgradeab1e11111111111111111111111`, which owns a program's data account. */
+const BPF_LOADER_UPGRADEABLE_ID = new PublicKey(
+	'BPFLoaderUpgradeab1e11111111111111111111111'
+);
 import { buildAdminClient, buildProvider } from '../lib/provider';
 
 /** Anchor default instruction discriminator: sha256("global:<name>")[..8]. */
@@ -406,11 +411,21 @@ export function registerClobMarket(parent: Command): void {
 						{ leg, index: 0, metas },
 						{ accounts: { authority: wallet, quoter: quoterPda } }
 					);
+				// Approving an entry approves the binary behind it, so the CLOB
+				// program has to be frozen and its program-data account is the
+				// proof. A program on a loader that cannot upgrade in place has
+				// no such account and the program is inherently fixed.
+				const [clobProgramData] = PublicKey.findProgramAddressSync(
+					[clobProgram.toBuffer()],
+					BPF_LOADER_UPGRADEABLE_ID
+				);
 				const approve = client.program.instruction.updateQuoterApproved(true, {
 					accounts: {
 						admin: wallet,
 						state: await client.getStatePublicKey(),
 						quoter: quoterPda,
+						quoterProgram: clobProgram,
+						quoterProgramData: clobProgramData,
 					},
 				});
 				await provider.sendAndConfirm(

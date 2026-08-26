@@ -18,7 +18,7 @@
 		"@pythnetwork/client": "2.21.0",
 		"@pythnetwork/price-service-client": "1.9.0",
 		"@solana/spl-token": "0.4.13",
-		"@solana/web3.js": "1.73.5",
+		"@solana/web3.js": "1.98.4",
 		"@swc/core": "1.15.41",
 		"@swc/jest": "0.2.39",
 		"@types/bn.js": "5.1.6",
@@ -89,7 +89,7 @@
 	"resolutions": {
 		"@opentelemetry/auto-instrumentations-node": "0.62.2",
 		"@opentelemetry/api": "1.7.0",
-		"@solana/web3.js": "1.73.5",
+		"@solana/web3.js": "1.98.4",
 		"chalk": "4.1.2",
 		"debug": "<4.4.2",
 		"ansi-styles": "4.3.0",
@@ -112,7 +112,7 @@
 	"overrides": {
 		"@opentelemetry/auto-instrumentations-node": "0.62.2",
 		"@opentelemetry/api": "1.7.0",
-		"@solana/web3.js": "1.73.5",
+		"@solana/web3.js": "1.98.4",
 		"chalk": "4.1.2",
 		"debug": "<4.4.2",
 		"ansi-styles": "4.3.0",

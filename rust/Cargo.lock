@@ -2520,6 +2520,7 @@ version = "0.1.7"
 dependencies = [
  "anchor-lang",
  "axum 0.8.9",
+ "byteorder",
  "clap",
  "crossbeam",
  "dashmap",

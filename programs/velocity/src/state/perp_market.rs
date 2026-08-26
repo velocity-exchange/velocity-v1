@@ -23,7 +23,7 @@ use {
                 VelocityAction,
             },
             safe_math::SafeMath,
-            time::SlotDuration,
+            time::SlotClock,
         },
         msg,
         state::{
@@ -532,7 +532,13 @@ pub struct PerpMarket {
     /// This market's hedge (LP pool) configuration. Sits immediately after `amm`
     /// so the trailing `[amm, hedge_config]` span is the contiguous VLP region.
     pub hedge_config: HedgeConfig,
+    /// Reserved for future fields. Existing accounts must be extended before
+    /// the program loads them with this layout.
+    pub _padding_future: [u8; 256],
 }
+
+const _: () = assert!(std::mem::size_of::<PerpMarket>() == 1552);
+const _: () = assert!(std::mem::offset_of!(PerpMarket, _padding_future) == 1296);
 
 impl Default for PerpMarket {
     fn default() -> Self {
@@ -600,6 +606,7 @@ impl Default for PerpMarket {
             pending_revenue_share: 0,
             amm: AMM::default(),
             hedge_config: HedgeConfig::default(),
+            _padding_future: [0; 256],
             protocol_fee_pool: PoolBalance::default(),
             protocol_liquidation_fee: 0,
             taker_fee_addon_tenth_bps: 0,
@@ -610,13 +617,13 @@ impl Default for PerpMarket {
 }
 
 impl Size for PerpMarket {
-    // 1200-byte struct + 8-byte discriminator. The cached spread state
+    // 1552-byte struct + 8-byte discriminator. The cached spread state
     // (4×u128 spread reserves, i64 last_oracle_reserve_price_spread_pct,
     // 2×u32 long/short_spread, i32 reference_price_offset) plus a dedicated
     // u64 last_spread_update_slot live back on AMM — refreshed by
     // `math::spread::update_amm_quote_state` on each crank/fill `setup` and
     // read directly by quote/fill paths and dashboards.
-    const SIZE: usize = 1304;
+    const SIZE: usize = 1560;
 }
 
 impl MarketIndexOffset for PerpMarket {
@@ -710,7 +717,7 @@ impl PerpMarket {
         oracle_validity: Option<crate::math::oracle::OracleValidity>,
         now: i64,
         clock_slot: u64,
-        slot_duration: SlotDuration,
+        slot_clock: SlotClock,
     ) -> VelocityResult<()> {
         let Some(oracle_validity) = oracle_validity else {
             return Ok(());
@@ -729,7 +736,7 @@ impl PerpMarket {
             oracle_validity,
             clock_slot,
             reserve_price_after,
-            slot_duration,
+            slot_clock,
         )
     }
 
@@ -778,7 +785,7 @@ impl PerpMarket {
         mm_oracle_price_data: &crate::state::oracle::MMOraclePriceData,
         oracle_validity: Option<crate::math::oracle::OracleValidity>,
         clock_slot: u64,
-        slot_duration: SlotDuration,
+        slot_clock: SlotClock,
     ) -> VelocityResult<()> {
         let Some(oracle_validity) = oracle_validity else {
             return Ok(());
@@ -790,7 +797,7 @@ impl PerpMarket {
             oracle_validity,
             clock_slot,
             reserve_price_after,
-            slot_duration,
+            slot_clock,
         )
     }
 
@@ -800,7 +807,7 @@ impl PerpMarket {
         oracle_validity: crate::math::oracle::OracleValidity,
         clock_slot: u64,
         reserve_price: u64,
-        slot_duration: SlotDuration,
+        slot_clock: SlotClock,
     ) -> VelocityResult<()> {
         // Refresh the AMM's cached spread state (long/short spread, reference
         // offset, oracle-reserve spread pct, ask/bid reserves) in place, then
@@ -815,7 +822,7 @@ impl PerpMarket {
             mm_oracle_price_data,
             reserve_price,
             clock_slot,
-            slot_duration,
+            slot_clock,
         )?;
         market_stats.last_reference_price_offset = amm.reference_price_offset;
 
@@ -1347,7 +1354,7 @@ impl PerpMarket {
         oracle_price_data: OraclePriceData,
         clock_slot: u64,
         oracle_guard_rails: &ValidityGuardRails,
-        slot_duration: SlotDuration,
+        slot_clock: SlotClock,
     ) -> VelocityResult<MMOraclePriceData> {
         let delay = clock_slot
             .cast::<i64>()?
@@ -1376,7 +1383,8 @@ impl PerpMarket {
                 self.oracle_slot_delay_override,
                 true, // classifying the MM oracle price itself
                 self.oracle_low_risk_slot_delay_override,
-                slot_duration,
+                clock_slot,
+                slot_clock,
             )?
         };
         MMOraclePriceData::new(

@@ -84,9 +84,9 @@ pub struct SpotMarket {
     /// Revenue the protocol has collected in this markets token
     /// e.g. for SOL-PERP, funds can be settled in usdc and will flow into the USDC revenue pool
     pub revenue_pool: PoolBalance, // in base asset
-    /// The fees collected from swaps between this market and the quote market
-    /// Is settled to the quote markets revenue pool
-    pub spot_fee_pool: PoolBalance,
+    /// Reserved bytes from the retired spot fee pool. Spot swaps do not charge
+    /// a fee and the pool has never been used.
+    pub padding_former_spot_fee_pool: [u8; 32],
     pub historical_oracle_data: HistoricalOracleData,
     pub historical_index_data: HistoricalIndexData,
     /// no withdraw limits/guards when deposits below this threshold
@@ -265,6 +265,9 @@ pub struct SpotMarket {
     /// withdraw-and-restake at the active share price — and does *not* read this
     /// field.) Repurposed from trailing padding — layout and size are unchanged.
     pub if_last_settle_vault_amount: u64,
+    /// Reserved for future fields. Existing accounts must be extended before
+    /// the program loads them with this layout.
+    pub _padding_future: [u8; 256],
 }
 
 // Layout guards: the deployed account layout is frozen, and the borsh/IDL
@@ -272,7 +275,7 @@ pub struct SpotMarket {
 // padding (off-chain decoders read the IDL's packed layout). If one of these
 // fires after a struct change, re-size the explicit padding fields — never
 // let the compiler insert implicit padding.
-const _: () = assert!(std::mem::size_of::<SpotMarket>() == 800);
+const _: () = assert!(std::mem::size_of::<SpotMarket>() == 1056);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, withdraw_circuit_breaker_bps) == 740);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, max_deposit_bps_per_day) == 742);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, deposit_guard_threshold) == 744);
@@ -280,6 +283,7 @@ const _: () = assert!(std::mem::offset_of!(SpotMarket, protocol_fee_pool) == 752
 const _: () = assert!(std::mem::offset_of!(SpotMarket, protocol_liquidation_fee) == 784);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, protocol_fee_factor) == 788);
 const _: () = assert!(std::mem::offset_of!(SpotMarket, if_last_settle_vault_amount) == 792);
+const _: () = assert!(std::mem::offset_of!(SpotMarket, _padding_future) == 800);
 
 impl Default for SpotMarket {
     fn default() -> Self {
@@ -298,7 +302,7 @@ impl Default for SpotMarket {
             total_social_loss: 0,
             total_quote_social_loss: 0,
             revenue_pool: PoolBalance::default(),
-            spot_fee_pool: PoolBalance::default(),
+            padding_former_spot_fee_pool: [0; 32],
             historical_oracle_data: HistoricalOracleData::default(),
             historical_index_data: HistoricalIndexData::default(),
             withdraw_guard_threshold: 0,
@@ -350,26 +354,18 @@ impl Default for SpotMarket {
             protocol_liquidation_fee: 0,
             protocol_fee_factor: 0,
             if_last_settle_vault_amount: 0,
+            _padding_future: [0; 256],
         }
     }
 }
 
 impl Size for SpotMarket {
-    const SIZE: usize = 808;
+    const SIZE: usize = 1064;
 }
 
 impl MarketIndexOffset for SpotMarket {
-    // Fields were reordered so that all u128-containing types (insurance_fund and
-    // the seven direct u128 fields) appear before revenue_pool and spot_fee_pool.
-    // This ensures revenue_pool is at a 16-byte-aligned offset (384), eliminating
-    // the implicit 8-byte gap that #[repr(C)] inserted on x86_64.  Combined with
-    // PoolBalance padding widened to [u8;14] (sizeof == 32 on both platforms),
-    // sizeof(SpotMarket) is identical on both architectures.  The deposit-cap /
-    // configurable-breaker fields (deposit_guard_threshold u64, then two u32s)
-    // were appended after protocol_fee_factor with a trailing [u8;8] padding so
-    // total content stays a multiple of 16 (816); none are u128/i128 so the
-    // "u128 before PoolBalance" ordering rule is unaffected. They sit after
-    // market_index, so market_index stays at struct byte 692, account byte 700.
+    // market_index remains at struct byte 692 and account byte 700. Appending
+    // reserved bytes does not move it.
     const MARKET_INDEX_OFFSET: usize = 700;
 }
 

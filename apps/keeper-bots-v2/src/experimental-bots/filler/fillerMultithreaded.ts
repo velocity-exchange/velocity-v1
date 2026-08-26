@@ -32,6 +32,7 @@ import {
 	UserAccount,
 	UserMap,
 	msToSlotsNum,
+	currentSlotDuration,
 } from '@velocity-exchange/sdk';
 import { FillerMultiThreadedConfig, GlobalConfig } from '../../config';
 import { JITO_METRIC_TYPES, BundleSender } from '../../bundleSender';
@@ -72,7 +73,6 @@ import {
 	swapFillerHardEarnedUSDCForSOL,
 	validMinimumGasAmount,
 	validRebalanceSettledPnlThreshold,
-	currentSlotDuration,
 } from '../../utils';
 import {
 	spawnChild,

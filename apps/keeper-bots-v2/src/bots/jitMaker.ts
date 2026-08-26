@@ -22,7 +22,6 @@ import {
 	calculateBaseAmountToMarketMakePerp,
 	calculateBaseAmountToMarketMakeSpot,
 	convertToMarketType,
-	currentSlotDuration,
 	getBestLimitAskExcludePubKey,
 	getBestLimitBidExcludePubKey,
 	isMarketVolatile,
@@ -378,7 +377,7 @@ export class JitMaker implements Bot {
 			this.velocityClient.getMMOracleDataForPerpMarket(perpIdx, slot),
 			true,
 			new BN(slot),
-			currentSlotDuration(this.velocityClient, slot)
+			this.velocityClient.getStateAccount()
 		);
 
 		let bestBidPrice;

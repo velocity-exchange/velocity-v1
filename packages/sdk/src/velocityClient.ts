@@ -269,7 +269,6 @@ import { getOrderParams } from './orderParams';
 import { numberToSafeBN } from './math/utils';
 import { TransactionParamProcessor } from './tx/txParamProcessor';
 import { isOracleValid, getOracleValidity } from './math/oracles';
-import { activeSlotDurationFromState } from './math/time';
 import { TxHandler } from './tx/txHandler';
 import { createMinimalEd25519VerifyIx } from './util/ed25519Utils';
 import {
@@ -9959,7 +9958,7 @@ export class VelocityClient {
 	 * @param orderParams.newLimitPrice - The new limit price for the order, PRICE_PRECISION (1e6).
 	 * @param orderParams.newOraclePriceOffset - The new oracle price offset for the order, PRICE_PRECISION (1e6), signed.
 	 * @param orderParams.newTriggerPrice - Optional - the new trigger price for the order, PRICE_PRECISION (1e6).
-	 * @param orderParams.auctionDuration - Slots the auction lasts; only relevant for market/oracle orders.
+	 * @param orderParams.auctionDuration - Auction length in fixed 400ms units; only relevant for market/oracle orders.
 	 * @param orderParams.auctionStartPrice - PRICE_PRECISION (1e6), signed; only relevant for market/oracle orders.
 	 * @param orderParams.auctionEndPrice - PRICE_PRECISION (1e6), signed; only relevant for market/oracle orders.
 	 * @param orderParams.reduceOnly - Whether the modified order must only reduce the position.
@@ -10112,7 +10111,7 @@ export class VelocityClient {
 	 * @param orderParams.newLimitPrice - The new limit price for the order, PRICE_PRECISION (1e6).
 	 * @param orderParams.newOraclePriceOffset - The new oracle price offset for the order, PRICE_PRECISION (1e6), signed.
 	 * @param orderParams.newTriggerPrice - Optional - the new trigger price for the order, PRICE_PRECISION (1e6).
-	 * @param orderParams.auctionDuration - Only required if order type changed to market from something else; slots.
+	 * @param orderParams.auctionDuration - Only required if order type changed to market from something else; fixed 400ms units.
 	 * @param orderParams.auctionStartPrice - Only required if order type changed to market from something else; PRICE_PRECISION (1e6), signed.
 	 * @param orderParams.auctionEndPrice - Only required if order type changed to market from something else; PRICE_PRECISION (1e6), signed.
 	 * @param orderParams.reduceOnly - Whether the modified order must only reduce the position; defaults to `false` if omitted.
@@ -10288,7 +10287,7 @@ export class VelocityClient {
 					oraclePriceData,
 					oracleGuardRails,
 					nowSlot,
-					activeSlotDurationFromState(stateAccountAndSlot.data, new BN(nowSlot))
+					stateAccountAndSlot.data
 				);
 
 				if (isValid) {
@@ -12222,7 +12221,7 @@ export class VelocityClient {
 					nowSlot,
 					undefined,
 					true, // classifying the MM oracle price itself
-					activeSlotDurationFromState(stateAccountAndSlot.data, nowSlot)
+					stateAccountAndSlot.data
 			  );
 		const isMMOracleInvalidForUse =
 			mmOracleValidity === OracleValidity.NonPositive ||

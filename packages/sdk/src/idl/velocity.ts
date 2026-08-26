@@ -8154,6 +8154,55 @@ export type Velocity = {
       ]
     },
     {
+      "name": "syncStateSlotDuration",
+      "discriminator": [
+        144,
+        123,
+        176,
+        126,
+        81,
+        180,
+        87,
+        131
+      ],
+      "accounts": [
+        {
+          "name": "state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  101,
+                  108,
+                  111,
+                  99,
+                  105,
+                  116,
+                  121,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "featureGate",
+          "docs": [
+            "serialized activation state is validated by the handler."
+          ]
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "transferDeposit",
       "discriminator": [
         20,
@@ -12869,35 +12918,6 @@ export type Velocity = {
       "args": [
         {
           "name": "settlementDuration",
-          "type": "u16"
-        }
-      ]
-    },
-    {
-      "name": "updateStateSlotDurationMs",
-      "discriminator": [
-        122,
-        155,
-        95,
-        123,
-        0,
-        221,
-        47,
-        218
-      ],
-      "accounts": [
-        {
-          "name": "admin",
-          "signer": true
-        },
-        {
-          "name": "state",
-          "writable": true
-        }
-      ],
-      "args": [
-        {
-          "name": "slotDurationMs",
           "type": "u16"
         }
       ]
@@ -20925,7 +20945,11 @@ export type Velocity = {
           {
             "name": "auctionDuration",
             "docs": [
-              "How many slots the auction lasts"
+              "Auction length in wall clock 400ms units (one slot at the 400ms",
+              "baseline, where the raw value is identical to the historical slot",
+              "count). Progress compares `SlotClock::elapsed` against this value's",
+              "wall clock length, so the ramp holds at every slot duration and the",
+              "u8 keeps the full historical 72s range."
             ],
             "type": "u8"
           },
@@ -22377,6 +22401,19 @@ export type Velocity = {
               "defined": {
                 "name": "hedgeConfig"
               }
+            }
+          },
+          {
+            "name": "paddingFuture",
+            "docs": [
+              "Reserved for future fields. Existing accounts must be extended before",
+              "the program loads them with this layout."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                256
+              ]
             }
           }
         ]
@@ -23849,15 +23886,16 @@ export type Velocity = {
             }
           },
           {
-            "name": "spotFeePool",
+            "name": "paddingFormerSpotFeePool",
             "docs": [
-              "The fees collected from swaps between this market and the quote market",
-              "Is settled to the quote markets revenue pool"
+              "Reserved bytes from the retired spot fee pool. Spot swaps do not charge",
+              "a fee and the pool has never been used."
             ],
             "type": {
-              "defined": {
-                "name": "poolBalance"
-              }
+              "array": [
+                "u8",
+                32
+              ]
             }
           },
           {
@@ -24296,6 +24334,19 @@ export type Velocity = {
               "field.) Repurposed from trailing padding — layout and size are unchanged."
             ],
             "type": "u64"
+          },
+          {
+            "name": "paddingFuture",
+            "docs": [
+              "Reserved for future fields. Existing accounts must be extended before",
+              "the program loads them with this layout."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                256
+              ]
+            }
           }
         ]
       }
@@ -24719,27 +24770,24 @@ export type Velocity = {
           {
             "name": "slotDurationMs",
             "docs": [
-              "Current Solana slot duration in milliseconds, updated by the admin as",
-              "the IBRL feature gates activate (400 -> 350 -> 300 -> 250 -> 200).",
-              "`0` means unset (what pre-upgrade accounts read out of former padding)",
-              "and is interpreted as the 400ms baseline. Wall-clock durations",
-              "(`math::time::Millis`) are expressed in actual slots through this",
-              "value. Never read this field directly — use [`State::slot_duration`],",
-              "which handles the `0` sentinel. Settable only downward (slots never",
-              "get slower again), and only to values in",
-              "`math::time::VALID_SLOT_DURATIONS_MS`."
+              "Legacy current slot duration field in milliseconds, kept coherent by",
+              "the permissionless sync as the IBRL feature gates activate",
+              "(400 -> 350 -> 300 -> 250 -> 200). `0` means unset (what pre upgrade",
+              "accounts read out of former padding) and is interpreted as the 400ms",
+              "baseline. Never read this field directly, use [`State::slot_clock`] /",
+              "[`State::slot_duration`]; once any `slot_duration_transition_slots`",
+              "entry is set the archive is authoritative over this field."
             ],
             "type": "u16"
           },
           {
             "name": "pendingSlotDurationMs",
             "docs": [
-              "Staged next slot duration in ms, set by the admin during the target IBRL",
-              "gate's one-epoch warmup. `0` means nothing is staged. Once",
-              "`slot_duration_effective_slot` is reached, [`State::slot_duration`] returns",
-              "this value instead of `slot_duration_ms`, so State switches in lockstep",
-              "with the chain at the exact boundary without a second admin transaction.",
-              "Staging the next gate first promotes this into `slot_duration_ms`."
+              "Legacy staged next slot duration in ms, kept coherent by the",
+              "permissionless sync for older readers. `0` means nothing is staged. Once",
+              "`slot_duration_effective_slot` is reached, the legacy resolution returns",
+              "this value instead of `slot_duration_ms`. Superseded by the transition",
+              "archive."
             ],
             "type": "u16"
           },
@@ -24759,16 +24807,33 @@ export type Velocity = {
           {
             "name": "slotDurationEffectiveSlot",
             "docs": [
-              "Slot at which `pending_slot_duration_ms` takes effect: the target gate's",
-              "activation slot + the one-epoch (432,000-slot) warmup, read from the IBRL",
-              "feature account when the switch is staged. `0` when nothing is staged."
+              "Slot at which `pending_slot_duration_ms` takes effect: the first slot of",
+              "the epoch after the target gate's activation epoch, derived from the",
+              "`EpochSchedule` sysvar at sync time. `0` when nothing is staged."
             ],
             "type": "u64"
           },
           {
+            "name": "slotDurationTransitionSlots",
+            "docs": [
+              "First slot of each post baseline IBRL regime, ordered as",
+              "`[350ms, 300ms, 250ms, 200ms]`. Zero means that transition has not been",
+              "synchronized yet. These anchors let elapsed time math integrate an",
+              "interval piecewise instead of multiplying its whole slot delta by the",
+              "duration at one endpoint."
+            ],
+            "type": {
+              "array": [
+                "u64",
+                4
+              ]
+            }
+          },
+          {
             "name": "padding",
             "docs": [
-              "232 = the former 244-byte padding minus the 12 bytes taken above",
+              "200 = the former 244 byte padding minus the 12 staging bytes and the 32",
+              "bytes used by `slot_duration_transition_slots`.",
               "(`pending_slot_duration_ms` 2 + `slot_duration_pad` 2 + the 8-byte",
               "`slot_duration_effective_slot`). The padding still absorbs the 8 bytes that",
               "were previously *implicit* trailing padding on x86_64 (State contains a",
@@ -24779,7 +24844,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                232
+                200
               ]
             }
           }

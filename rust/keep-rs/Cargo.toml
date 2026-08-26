@@ -41,6 +41,9 @@ solana-transaction-status-client-types = "3"
 tokio = "1.48"
 dashmap = "6.1.0"
 
+[dev-dependencies]
+byteorder = "1.5"
+
 [[bin]]
 name = "tx_history"
 path = "src/tx_history.rs"

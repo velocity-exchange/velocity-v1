@@ -30,7 +30,7 @@ import {
 } from '../constants/numericConstants';
 import { getTokenAmount } from './spotBalance';
 import { assert } from '../assert/assert';
-import { SlotDurationMs } from './time';
+import { SlotDurationState } from './time';
 
 /**
  * Calculates the perp market's current mark (mid) price from its raw (non-spread) AMM reserves,
@@ -69,7 +69,7 @@ export function calculateBidPrice(
 	market: PerpMarketAccount,
 	mmOraclePriceData?: MMOraclePriceData,
 	latestSlot?: BN,
-	slotDuration?: SlotDurationMs
+	slotDurationState?: SlotDurationState
 ): BN {
 	const { baseAssetReserve, quoteAssetReserve, newPeg } =
 		calculateUpdatedAMMSpreadReserves(
@@ -78,7 +78,7 @@ export function calculateBidPrice(
 			PositionDirection.SHORT,
 			mmOraclePriceData,
 			latestSlot,
-			slotDuration
+			slotDurationState
 		);
 
 	return calculatePrice(baseAssetReserve, quoteAssetReserve, newPeg);
@@ -99,7 +99,7 @@ export function calculateAskPrice(
 	market: PerpMarketAccount,
 	mmOraclePriceData?: MMOraclePriceData,
 	latestSlot?: BN,
-	slotDuration?: SlotDurationMs
+	slotDurationState?: SlotDurationState
 ): BN {
 	const { baseAssetReserve, quoteAssetReserve, newPeg } =
 		calculateUpdatedAMMSpreadReserves(
@@ -108,7 +108,7 @@ export function calculateAskPrice(
 			PositionDirection.LONG,
 			mmOraclePriceData,
 			latestSlot,
-			slotDuration
+			slotDurationState
 		);
 
 	return calculatePrice(baseAssetReserve, quoteAssetReserve, newPeg);

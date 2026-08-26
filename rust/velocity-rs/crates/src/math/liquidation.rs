@@ -2,6 +2,7 @@
 //! liquidation and margin helpers
 //!
 
+use program::math::time::{Millis, SlotClock};
 use std::ops::Neg;
 
 use super::get_oracle_normalization_factor;
@@ -333,8 +334,8 @@ pub fn calculate_max_pct_to_liquidate(
     margin_shortage: u128,
     slot: u64,
     initial_pct_to_liquidate: u128,
-    liquidation_duration: program::math::time::Millis,
-    slot_duration: program::math::time::SlotDuration,
+    liquidation_duration: Millis,
+    slot_clock: SlotClock,
 ) -> SdkResult<u128> {
     // if margin shortage is tiny, accelerate liquidation
     if margin_shortage < 50 * QUOTE_PRECISION {
@@ -344,20 +345,17 @@ pub fn calculate_max_pct_to_liquidate(
     if slot < user.last_active_slot {
         return Err(SdkError::MathError("slot < user.last_active_slot"));
     }
-    // ratio of elapsed slots to the liquidation window in slots (mirrors the
-    // program's calculate_max_pct_to_liquidate). Takes a resolved `SlotDuration`
-    // (not a raw ms number) so a caller cannot pass the pre-switch base while a
-    // staged value is active; the window ceils so the ramp never reaches 100%
-    // earlier than intended; both scale with the slot duration so the ratio is
-    // duration-independent and identity at 400ms. Taking `Millis` keeps the
-    // legacy storage encoding at the account boundary instead of making this
-    // arithmetic helper guess what a bare integer means.
-    let elapsed_slots = slot - user.last_active_slot;
-    let duration_slots = liquidation_duration.to_slots_ceil(slot_duration);
+    // ratio of elapsed wall clock time to the liquidation window, integrated
+    // per slot duration regime (mirrors the program's
+    // calculate_max_pct_to_liquidate); identity at 400ms. Taking `Millis`
+    // keeps the legacy storage encoding at the account boundary instead of
+    // making this arithmetic helper guess what a bare integer means.
+    let elapsed_ms = slot_clock.elapsed(user.last_active_slot, slot).as_ms();
+    let duration_ms = liquidation_duration.as_ms();
 
-    let ramp = (elapsed_slots as u128)
+    let ramp = (elapsed_ms as u128)
         .saturating_mul(LIQUIDATION_PCT_PRECISION)
-        .checked_div(duration_slots as u128) // ~1 minute at the onchain default
+        .checked_div(duration_ms as u128) // ~1 minute at the onchain default
         .unwrap_or(LIQUIDATION_PCT_PRECISION); // if divide by zero, default to 100%
     let pct_freeable = ramp
         .saturating_add(initial_pct_to_liquidate)

@@ -8,7 +8,7 @@ use crate::{
 
 mod is_maker_for_taker {
     use crate::{
-        math::matching::is_maker_for_taker,
+        math::{matching::is_maker_for_taker, time::SlotClock},
         state::user::{Order, OrderType},
     };
 
@@ -22,7 +22,10 @@ mod is_maker_for_taker {
             post_only: false,
             ..Default::default()
         };
-        assert_eq!(is_maker_for_taker(&maker, &taker, 0).unwrap(), false);
+        assert_eq!(
+            is_maker_for_taker(&maker, &taker, 0, SlotClock::baseline()).unwrap(),
+            false
+        );
     }
 
     #[test]
@@ -37,7 +40,10 @@ mod is_maker_for_taker {
             order_type: OrderType::Market,
             ..Default::default()
         };
-        assert_eq!(is_maker_for_taker(&maker, &taker, 0).unwrap(), false);
+        assert_eq!(
+            is_maker_for_taker(&maker, &taker, 0, SlotClock::baseline()).unwrap(),
+            false
+        );
     }
 
     #[test]
@@ -55,7 +61,10 @@ mod is_maker_for_taker {
             slot: 0,
             ..Default::default()
         };
-        assert_eq!(is_maker_for_taker(&maker, &taker, 0).unwrap(), false);
+        assert_eq!(
+            is_maker_for_taker(&maker, &taker, 0, SlotClock::baseline()).unwrap(),
+            false
+        );
 
         // limit order in auction
         let taker = Order {
@@ -64,7 +73,10 @@ mod is_maker_for_taker {
             auction_duration: 10,
             ..Default::default()
         };
-        assert_eq!(is_maker_for_taker(&maker, &taker, 0).unwrap(), false);
+        assert_eq!(
+            is_maker_for_taker(&maker, &taker, 0, SlotClock::baseline()).unwrap(),
+            false
+        );
     }
 
     #[test]
@@ -83,7 +95,10 @@ mod is_maker_for_taker {
             slot: slot - 1,
             ..Default::default()
         };
-        assert_eq!(is_maker_for_taker(&maker, &taker, slot).unwrap(), true);
+        assert_eq!(
+            is_maker_for_taker(&maker, &taker, slot, SlotClock::baseline()).unwrap(),
+            true
+        );
 
         // limit order in auction
         let taker = Order {
@@ -93,7 +108,10 @@ mod is_maker_for_taker {
             slot: slot - 1,
             ..Default::default()
         };
-        assert_eq!(is_maker_for_taker(&maker, &taker, slot).unwrap(), true);
+        assert_eq!(
+            is_maker_for_taker(&maker, &taker, slot, SlotClock::baseline()).unwrap(),
+            true
+        );
     }
 
     #[test]
@@ -111,8 +129,16 @@ mod is_maker_for_taker {
             ..Default::default()
         };
         let slot = 11;
-        assert_eq!(maker.is_resting_limit_order(slot).unwrap(), true);
-        assert_eq!(is_maker_for_taker(&maker, &taker, slot).unwrap(), true);
+        assert_eq!(
+            maker
+                .is_resting_limit_order(slot, SlotClock::baseline())
+                .unwrap(),
+            true
+        );
+        assert_eq!(
+            is_maker_for_taker(&maker, &taker, slot, SlotClock::baseline()).unwrap(),
+            true
+        );
 
         // limit order in auction
         let taker = Order {
@@ -122,8 +148,16 @@ mod is_maker_for_taker {
             auction_duration: 10,
             ..Default::default()
         };
-        assert_eq!(taker.is_resting_limit_order(slot).unwrap(), false);
-        assert_eq!(is_maker_for_taker(&maker, &taker, slot).unwrap(), true);
+        assert_eq!(
+            taker
+                .is_resting_limit_order(slot, SlotClock::baseline())
+                .unwrap(),
+            false
+        );
+        assert_eq!(
+            is_maker_for_taker(&maker, &taker, slot, SlotClock::baseline()).unwrap(),
+            true
+        );
     }
 
     #[test]
@@ -137,7 +171,12 @@ mod is_maker_for_taker {
             auction_duration: 10,
             ..Default::default()
         };
-        assert_eq!(taker.is_resting_limit_order(slot).unwrap(), true);
+        assert_eq!(
+            taker
+                .is_resting_limit_order(slot, SlotClock::baseline())
+                .unwrap(),
+            true
+        );
 
         let maker = Order {
             slot: 1,
@@ -145,7 +184,10 @@ mod is_maker_for_taker {
             order_type: OrderType::Limit,
             ..Default::default()
         };
-        assert_eq!(is_maker_for_taker(&maker, &taker, slot).unwrap(), true);
+        assert_eq!(
+            is_maker_for_taker(&maker, &taker, slot, SlotClock::baseline()).unwrap(),
+            true
+        );
     }
 
     #[test]
@@ -159,7 +201,12 @@ mod is_maker_for_taker {
             auction_duration: 10,
             ..Default::default()
         };
-        assert_eq!(taker.is_resting_limit_order(slot).unwrap(), true);
+        assert_eq!(
+            taker
+                .is_resting_limit_order(slot, SlotClock::baseline())
+                .unwrap(),
+            true
+        );
 
         let maker = Order {
             post_only: false,
@@ -168,9 +215,17 @@ mod is_maker_for_taker {
             auction_duration: 10,
             ..Default::default()
         };
-        assert_eq!(taker.is_resting_limit_order(slot).unwrap(), true);
+        assert_eq!(
+            taker
+                .is_resting_limit_order(slot, SlotClock::baseline())
+                .unwrap(),
+            true
+        );
 
-        assert_eq!(is_maker_for_taker(&maker, &taker, slot).unwrap(), false);
+        assert_eq!(
+            is_maker_for_taker(&maker, &taker, slot, SlotClock::baseline()).unwrap(),
+            false
+        );
 
         let taker = Order {
             post_only: false,
@@ -179,9 +234,17 @@ mod is_maker_for_taker {
             auction_duration: 10,
             ..Default::default()
         };
-        assert_eq!(taker.is_resting_limit_order(slot).unwrap(), true);
+        assert_eq!(
+            taker
+                .is_resting_limit_order(slot, SlotClock::baseline())
+                .unwrap(),
+            true
+        );
 
-        assert_eq!(is_maker_for_taker(&maker, &taker, slot).unwrap(), true);
+        assert_eq!(
+            is_maker_for_taker(&maker, &taker, slot, SlotClock::baseline()).unwrap(),
+            true
+        );
     }
 
     #[test]
@@ -205,7 +268,10 @@ mod is_maker_for_taker {
             ..Default::default()
         };
 
-        assert_eq!(is_maker_for_taker(&maker, &taker, slot).unwrap(), true);
+        assert_eq!(
+            is_maker_for_taker(&maker, &taker, slot, SlotClock::baseline()).unwrap(),
+            true
+        );
     }
 
     #[test]
@@ -230,7 +296,30 @@ mod is_maker_for_taker {
             ..Default::default()
         };
 
-        assert_eq!(is_maker_for_taker(&maker, &taker, slot).unwrap(), true);
+        assert_eq!(
+            is_maker_for_taker(&maker, &taker, slot, SlotClock::baseline()).unwrap(),
+            true
+        );
+    }
+
+    #[test]
+    fn resting_order_age_compares_wall_clock_auction_ends() {
+        let maker = Order {
+            order_type: OrderType::Limit,
+            slot: 100_000,
+            auction_duration: 10,
+            ..Default::default()
+        };
+        let taker = Order {
+            order_type: OrderType::Limit,
+            slot: 100_005,
+            auction_duration: 6,
+            ..Default::default()
+        };
+        let clock_200 = SlotClock::from_state_fields([1, 1, 1, 1], 0, 0, 0);
+
+        // maker ends after 4s; taker ends after 1s offset + 2.4s.
+        assert!(!is_maker_for_taker(&maker, &taker, 100_021, clock_200).unwrap());
     }
 }
 

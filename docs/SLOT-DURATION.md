@@ -17,49 +17,56 @@ The design separates three concerns and gives each one mechanism:
 
 | Concern | Mechanism | Where |
 | --- | --- | --- |
-| What is a slot worth right now | `State.slot_duration_ms`, admin-set once per gate | [`state.rs`](../programs/velocity/src/state/state.rs) |
-| Existing rules keep their wall-clock meaning | durations convert to actual slots at the read site | [`math/time.rs`](../programs/velocity/src/math/time.rs) |
+| What is a slot worth at any slot | `State.slot_duration_transition_slots`, synchronized permissionlessly per gate | [`state.rs`](../programs/velocity/src/state/state.rs) |
+| Elapsed intervals crossing a gate stay exact | `SlotClock` integrates each regime piecewise | [`math/time.rs`](../programs/velocity/src/math/time.rs) |
+| Existing rules keep their wall-clock meaning | durations convert to actual slots at the read site | same module |
 | Future code cannot recreate the bug | wall-clock durations are a type (`Millis`), not a number | same module |
 
-The result: the entire slot transition is a data change. One admin instruction per gate
-activation, no constant retunes, no redeploys, and a compile error for anyone who later tries to
-compare a duration against a slot count without converting.
+The result: the entire slot transition is a data change. One permissionless sync instruction per
+gate activation, no constant retunes, no redeploys, and a compile error for anyone who later tries
+to compare a duration against a slot count without converting.
 
-## The knob: `State.slot_duration_ms`
+## The clock: `State.slot_duration_transition_slots`
 
-The live slot length is held by three `State` fields carved in place from the padding after
-`promo_fee_tier` (offsets pinned by `const_assert_eq!` and the native-offset guard test):
+The slot clock is held by `State` fields carved in place from the padding after `promo_fee_tier`
+(offsets pinned by `const_assert_eq!` and the native-offset guard test):
 
-- `slot_duration_ms` (`u16`, bytes 1506..1508): the current base value. Pre-upgrade accounts read
-  `0` out of former padding, which means "unset" and resolves to the 400ms baseline, so there was
-  no migration.
-- `pending_slot_duration_ms` (`u16`, bytes 1508..1510): a staged next value, `0` when nothing is
-  staged.
-- `slot_duration_effective_slot` (`u64`, bytes 1512..1520): the slot at which the staged value takes
-  effect.
+- `slot_duration_transition_slots` (`[u64; 4]`, bytes 1520..1552): the first slot of each
+  post-baseline regime, ordered `[350ms, 300ms, 250ms, 200ms]`. `0` means that transition has not
+  been synchronized yet. This archive is the authoritative clock: it answers both "what is a slot
+  worth at slot N" (`SlotClock::slot_duration_at`) and "how much wall-clock time passed between two
+  slots" (`SlotClock::elapsed`, integrated per regime).
+- The legacy staging trio remains as a fallback for accounts written by the first implementation
+  and for older readers: `slot_duration_ms` (`u16`, bytes 1506..1508; `0` = unset = 400ms baseline,
+  so there was no migration), `pending_slot_duration_ms` (`u16`, bytes 1508..1510), and
+  `slot_duration_effective_slot` (`u64`, bytes 1512..1520). The sync instruction keeps these
+  coherent, but once any archive entry exists the archive wins.
 
-Never read the fields directly: `State::slot_duration()` reads the current slot from the Clock
-sysvar and returns the staged value once `slot_duration_effective_slot` has been reached, otherwise
-the base — so **State switches itself at the boundary with no second transaction**. The switch
-decision lives in one place, `math::time::active_slot_duration_ms`, shared by `slot_duration()`, the
-native fast-path reader, and the off-chain mirrors.
+Never read the fields directly: `State::slot_clock()` returns the full clock, and
+`State::slot_duration()` resolves the live duration from it against the Clock sysvar, so **State
+switches itself at each boundary with no boundary-timed transaction**. The resolution lives in one
+place, `math::time::SlotClock`, shared by `slot_duration()`, the native fast-path reader, the
+foreign-account reader vaults uses, and the off-chain mirrors.
 
-The setter is `update_state_slot_duration_ms` (warm admin; CLI:
-`velocity-admin exchange set-slot-duration-ms <ms>`). It *stages* the switch during the target
-gate's warmup:
+The writer is `sync_state_slot_duration` (permissionless; CLI:
+`velocity-admin exchange sync-slot-duration <ms>`). Anyone may crank it once per gate; the caller
+supplies no timing truth:
 
-1. **Exact successor only.** The value must be the one immediately after the current effective
-   duration on the schedule `400 -> 350 -> 300 -> 250 -> 200` (`next_slot_duration_ms`):
-   monotonic-decreasing (slots never get slower again; feature gates cannot deactivate), skips
-   rejected (so any in-flight measurement crosses at most one step), non-schedule typos rejected —
-   all in one check. Staging the next value first promotes an already-effective pending into the
-   base.
-2. **Effective slot read from the gate.** The instruction takes the target's IBRL feature-gate
-   account as a remaining account, verifies it (owned by `Feature111…`, activated with `data[0] == 1`),
-   and reads its activation slot; `slot_duration_effective_slot = activation + one epoch (432,000
-   slots)`. It does **not** require the warmup to have elapsed — the activation slot is exposed one
-   epoch ahead precisely so State can be staged during the warmup and flip in lockstep with the
-   chain. The SDK/CLI fill in the account from the target value.
+1. **Fixed gate set.** The accounts struct constrains the feature account to the feature-gate
+   program and to one of the four scheduled IBRL keys; the target duration is derived from the key
+   (`ibrl_slot_duration_ms`), so there is nothing to typo. Recorded transition slots must be
+   monotonic. A forward sync may skip an abandoned gate after the last recorded boundary is live;
+   a missing older gate may be backfilled later. Neither path may make the active duration slower.
+   Re-syncing an already-recorded gate is an idempotent no-op that revalidates the recorded slot
+   against the feature account.
+2. **Effective slot derived from the gate and the `EpochSchedule` sysvar.** The handler verifies
+   the feature account is activated (`data[0] == 1`), reads its activation slot, and computes
+   `epoch_schedule.get_first_slot_in_epoch(get_epoch(activated_at) + 1)`, exactly Agave's own
+   feature-activation arithmetic, correct for warmup epochs and for a mid-epoch `activated_at`. It
+   does **not** require the following epoch to have begun: recording the boundary in advance is the
+   point. Because everything accepted is fixed by the feature account and the sysvar, admin
+   authorization would add a failure mode (a missed multisig) without adding security, which is why
+   the instruction is permissionless.
 
 **Why lockstep matters — there is no universally-safe direction for a mismatch** between the live
 `slot_duration_ms` and the real slot length. A conversion serves both risk *ceilings* (oracle
@@ -74,52 +81,72 @@ age `= (window_ms / live_ms) x real_slot_ms`:
   becomes `48000/400 x 200 = 24s` — it *tightens* (safe ceiling, at a liveness cost); but ramps and
   grace periods *shorten* to half their intended wall-clock (unsafe minimum).
 
-Staging during the warmup makes the effective value match the chain at the exact boundary, so
-neither lag is ever live in steady state — which is the whole point of reading the effective slot
+Synchronizing during the warmup makes the effective value match the chain at the exact boundary, so
+neither lag is ever live in steady state, which is the whole point of deriving the effective slot
 from the gate rather than requiring a hand-timed transaction at the boundary.
 
 Runbook, in full:
 
 ```
-# during the target gate's warmup epoch (feature activated, not yet effective),
-# once the Feature Gate Tracker shows it activated for the *next* epoch:
-velocity-admin exchange set-slot-duration-ms 350   # then 300, 250, 200 as each is activated
-
-# once the 200ms transition is effective, finalize the raw base field
-velocity-admin exchange set-slot-duration-ms 200
+# once the Feature Gate Tracker shows the gate activated (any signer; keepers can crank it):
+velocity-admin exchange sync-slot-duration 350   # then 300, 250, 200 as each is activated
 ```
 
-Each transition itself still needs only its one staging transaction: State switches automatically
-at the effective slot. The final 200ms command is a bookkeeping transaction after the last switch;
-it promotes the already-effective pending value into `slot_duration_ms` because there is no later
-gate whose staging transaction could perform that promotion. It does not control or delay the live
-switch. No guard-rail retunes, per-market updates, or bot restarts are needed (the off-chain mirrors
-read the same fields from their state subscription and apply the switch against a live chain slot).
+Each transition needs only its one sync transaction, ideally during the activation epoch: State
+switches automatically at the effective slot. A late sync still records the exact historical
+boundary (the feature account keeps its activation slot forever), so elapsed-time math is repaired
+retroactively; the only cost of lateness is that the live duration lagged in the interim. No
+guard-rail retunes, per-market updates, or bot restarts are needed (the off-chain mirrors read the
+same fields from their state subscription).
 
-### The one residual: measurements that straddle the switch
+For a cluster whose legacy staging fields already reached a faster regime before this archive is
+initialized, synchronize the currently active fastest gate first, then backfill older gates. For
+example, a cluster already at 200ms must sync 200ms before 350/300/250ms. The handler checks the
+proposed clock at the current slot and rejects any archive write that would move it backward, so a
+permissionless caller cannot temporarily restore a slower duration. The legacy staging trio is
+then rebuilt from the archive rather than allowed to block canonical repair.
 
-Staging removes the operator-timing lag, but it does not remove the arithmetic residual at the
-switch instant. The conversions assume every slot in a measured delta had the current duration;
-Solana's slot *counter* does not record that earlier slots were longer, so a measurement whose
-interval began before the switch slot and ends after it is converted with the new (shorter) duration
-and reads marginally younger than its true wall-clock age. That under-count is safe for elapsed/ramp
-sites (favors the user) and unsafe for oracle-freshness gates (briefly accepts a slightly-staler
-oracle).
+### Deployment on a cluster already below 400ms
 
-Two honest caveats on the magnitude:
+`Order.auction_duration` previously stored live slot counts and now stores fixed 400ms units. Raw
+bytes are migration-free only when the program upgrade lands before that cluster's first slot-time
+reduction. On any cluster already below 400ms, deployment must be coordinated: cancel or drain
+existing orders, discard pending signed messages minted with the old meaning, deploy the program
+and SDK/bots together, then resume placement. Otherwise an existing raw value is reinterpreted as
+a different wall-clock duration.
 
-- A warm admin catching a lagged State up can stage successive gates back-to-back, so a measurement
-  straddling that catch-up can see more than one step at once. Each step still requires its gate to
-  be staged, so it only happens when the chain has genuinely passed those gates.
-- A measurement window longer than the gap between two real gate activations naturally spans more
-  than one transition. In practice the risk-sensitive windows (oracle staleness ~seconds,
-  liquidation ramp ~minutes) are far shorter than the weeks-apart rollout, so they span at most one
-  transition; only the long user-protection windows (idle, force-delete) can span more, and their
-  under-count direction favors the user.
+### Adding another slot-duration transition
 
-We accept this residual rather than carry a full per-regime activation-slot clock. The robust
-alternative, if the tail ever bites, is to keep the history of effective transition slots in State
-and compute elapsed time piecewise (`slot_duration_at(slot)` + a summed walk over the transitions).
+The clock math and elapsed-time call sites already support piecewise regimes. A future reduction,
+for example to 120ms, requires extending the transition-duration list and State archive capacity,
+adding the canonical feature key mapping, updating the native and foreign-account byte readers,
+and mirroring the new field and constant in TypeScript and Rust clients. Derive its boundary from
+the feature account plus `EpochSchedule`; do not add a hardcoded epoch length or an admin setter.
+If no padding remains, this is a State version/layout migration rather than permission to overload
+a legacy field. Add parity tests for intervals and forward deadlines crossing the new boundary.
+
+### Measurements that straddle a switch: the piecewise clock
+
+Solana's slot *counter* does not record that earlier slots were longer, so converting a whole
+measured delta at one endpoint duration mis-times any interval that crosses a transition, an
+under-count that is safe for elapsed/ramp sites (favors the user) and unsafe for oracle-freshness
+gates (briefly accepts a slightly-staler oracle).
+
+The transition archive removes that residual. `SlotClock::elapsed(start_slot, end_slot)` walks the
+recorded transitions and sums each segment at its own duration, so an interval spanning one or all
+four gates converts to its exact wall-clock length. `SlotClock::elapsed_slot_delta(delta, end_slot)`
+is the same walk for the "measured delta ending now" shape most call sites have. Every elapsed-time
+rule in the program measures through it: oracle ages (`oracle_validity`), the AMM staleness gate,
+liquidation fee and ramp (`get_liquidation_fee`, `calculate_max_pct_to_liquidate`), the filler
+time-reward curve, auction interpolation and completion, idle/eviction/rest windows, and the VLP
+hedge uncertainty fees. Forward-looking conversion of a wall-clock window into a slot bound uses
+`SlotClock::slot_at_or_after_duration`, which walks known future boundaries. The signed-message
+order's `max_slot` therefore agrees with auction completion even when its placement window crosses
+a synchronized transition.
+
+Without any archive entry (pre-sync accounts, hand-built test states), `SlotClock` falls back to
+the legacy staging fields and prices the whole delta at the end-slot duration: the previous
+behavior, identity at the 400ms baseline.
 
 ## The types
 
@@ -142,13 +169,21 @@ m.to_slots_ceil(d)                     // express in actual slots, ceil (user-pr
 m.div_periods(Millis::UNIT)            // count whole 400ms periods (legacy per-slot rates)
 ```
 
-**`SlotDuration`** is the live slot length. Its only constructor from chain data is
-`SlotDuration::from_state_ms` (used by `State::slot_duration()` and, byte-decoded, by the native
-MM-oracle handlers); there is deliberately no constructor from an arbitrary number in program
-logic, so a slot *count* can never be passed where the slot *length* belongs. Both directions of
-that mixup were previously bare `u64`s sitting next to each other in thirty function signatures.
-`SlotDuration::BASELINE` (400ms) exists for tests and for contexts with no `State` account, which
-by construction also run on default guard rails.
+**`SlotClock`** is the cluster clock: the four transition slots plus the legacy staging fields,
+built only from `State` (`State::slot_clock()`, `SlotClock::from_state_fields`). It answers
+`slot_duration_at(slot)` for any slot and integrates `elapsed(start, end)` /
+`elapsed_slot_delta(delta, end)` piecewise across the recorded regimes. Every measured-interval
+site takes a `SlotClock`; `SlotClock::baseline()` is the all-zero 400ms clock for tests and
+contexts with no `State`.
+
+**`SlotDuration`** is one slot length. Program logic obtains it from the clock
+(`slot_clock.slot_duration_at(slot)` or the `State::slot_duration()` shorthand); there is
+deliberately no constructor from an arbitrary number in program logic, so a slot *count* can never
+be passed where the slot *length* belongs. Both directions of that mixup were previously bare
+`u64`s sitting next to each other in thirty function signatures. It remains the parameter type for
+forward-looking window conversions (`to_slots` / `to_slots_ceil`). `SlotDuration::BASELINE`
+(400ms) exists for tests and for contexts with no `State` account, which by construction also run
+on default guard rails.
 
 **`StoredSlotDuration<T, const SLOT_MS: u64>`** is the compact account-storage type. `T` fixes the
 wire width and `SLOT_MS` records the slot length assumed when that field was created. Thus
@@ -182,10 +217,10 @@ sentinel branching out of `oracle_validity` and into two constructors
 type instead of an if-chain.
 
 Plain `u64` remains the type of actual slot counts, and genuine chain-slot logic never touches
-`Millis`: same-slot idempotence checks, blockhash validity windows, "a fill lands ~1 slot ahead"
-estimates, and the per-order `auction_duration` snapshot (see
-[Auctions](#auctions-and-the-u8-ceiling)). Two kinds of numbers exist and the type system keeps
-them apart rather than flattening them.
+`Millis`: same-slot idempotence checks, blockhash validity windows, and "a fill lands ~1 slot
+ahead" estimates. Two kinds of numbers exist and the type system keeps them apart rather than
+flattening them. (`Order.auction_duration` stores 400ms *units*, not slots — see
+[Auctions](#auctions-the-u8-stores-400ms-units).)
 
 ## How a rule survives the gates
 
@@ -193,24 +228,17 @@ Take the signed-msg eviction grace as the worked example:
 
 ```rust
 pub const SIGNED_MSG_EVICTION_BUFFER: Millis = Millis::from_ms(4_000);
-// at the use site:
-let eviction_buffer = SIGNED_MSG_EVICTION_BUFFER.to_slots(slot_duration);
+// at the use site: the measured age, integrated per regime, against the intent
+let expired = slot_clock.elapsed(existing.max_slot, current_slot) > SIGNED_MSG_EVICTION_BUFFER;
 ```
 
 The author's decision is "give relayers ~4 seconds of grace". The constant states that decision
-directly; the slot expression of it floats with the chain:
+directly; the measured age floats with the chain: 10 elapsed slots read as 4.0s at 400ms and 2.0s
+at 200ms, and an interval crossing a gate sums each side at its own duration.
 
-| Chain slot time | `to_slots` gives | real grace |
-| --- | --- | --- |
-| 400ms | 10 slots | 4.0s |
-| 350ms | 11 slots | 3.85s |
-| 300ms | 13 slots | 3.9s |
-| 250ms | 16 slots | 4.0s |
-| 200ms | 20 slots | 4.0s |
-
-At the baseline every conversion is the identity on the historical values (4000/400 = 10, exactly
-the old constant), which is why the refactor changed no test expectation: the program's unit
-suite passes unmodified, and that is the proof the type system is pure structure with zero
+At the baseline every conversion is the identity on the historical values (10 slots = 4,000ms,
+exactly the old constant), which is why the refactor changed no test expectation: the program's
+unit suite passes unmodified, and that is the proof the type system is pure structure with zero
 behavior change until the first gate flips.
 
 The compile-time half of the story, for the same constant. All of these were expressible (and one
@@ -234,7 +262,7 @@ change one side without the other.
 | Conversion | Rounding | Why |
 | --- | --- | --- |
 | `to_slots` (staleness windows, rate limits) | floor | a marginally tighter window is the safe failure direction |
-| `to_slots_ceil` (liquidation ramps, grace periods, auction durations) | ceil | the user never gets less than the intended time |
+| `to_slots_ceil` (forward slot bounds: the signed-msg `max_slot`, the MM-oracle write gate) | ceil | the user never gets less than the intended time |
 | `from_slots` (measured deltas) | exact | multiplication, no rounding |
 | `div_periods` (elapsed time into rate periods) | floor | elapsed time is under-counted, so fee ramps and expiries engage marginally later, favoring the affected user |
 
@@ -272,25 +300,27 @@ count the same periods, and `get_auction_duration` grants its per-1%-of-price-di
 400ms steps. The period is visible at those sites on purpose: it is part of the tuned economics,
 and changing it changes the rate.
 
-## Auctions and the u8 ceiling
+## Auctions: the u8 stores 400ms units
 
-Auction durations are the one place a wall-clock value is *stored* in actual slots:
-`Order.auction_duration` is a per-order snapshot, minted at placement by
-`get_auction_duration` (which computes the intended wall-clock ramp and expresses it via
-`to_slots_ceil` at the placement-time slot duration) and then interpolated per-slot as always. An
-order's auction is an artifact of the slot regime it was placed in, which is exactly right.
+`Order.auction_duration: u8` stores the auction's wall-clock length in 400ms units (one unit =
+one slot at the 400ms baseline, so the raw byte is identical to the historical slot count on a
+cluster upgraded before its first reduction). The value is minted duration-independently at placement
+(`get_auction_duration` counts calibration steps; admin minimums like `min_perp_auction_duration`
+are already stored in the same units) and interpolated at fill time as wall-clock progress:
+`SlotClock::elapsed(order.slot, now)` over `auction_duration * 400ms`, exact across transitions.
+User-supplied `OrderParams.auction_duration` carries the same 400ms-unit meaning.
 
-The field is a `u8`, so the inflated duration clamps at 255 actual slots. At 200ms that is ~51
-seconds; the historical maximum was 180 slots = ~72 seconds. This is the single deliberate
-compression of wall-clock behavior in the design: the extreme tail of auction lengths shortens at
-the fastest gates. `BID_ASK_TWAP_MIN_QUOTE_REST` (~9.6s) scales from the same source as
-`min_perp_auction_duration` and the `SafeTriggerOrder` horizon, so the OtterSec #146 resting
-invariant (a quote must rest at least as long as the auction it can move) survives every gate.
+The u8 therefore keeps the full historical range at every gate: the derived maximum is 180 units
+= 72s, and the representable ceiling is 255 units = 102s. No wall-clock compression exists at any
+slot duration (this replaced the earlier design that stored actual slots and clamped to ~51s at
+200ms). `BID_ASK_TWAP_MIN_QUOTE_REST` (~9.6s) is measured piecewise from the same clock as the
+auction ramp and the `SafeTriggerOrder` horizon, so the OtterSec #146 resting invariant (a quote
+must rest at least as long as the auction it can move) survives every gate.
 
 Related non-scaling fact: `Order.posted_slot_tail` is a mod-256 slot stamp (a field width, not a
 constant), so the honest order-age window it can express shrinks in wall-clock as slots get
-faster (102s at 400ms, 51s at 200ms). The scaled rest requirement (48 actual slots at 200ms)
-still fits under it.
+faster (102s at 400ms, 51s at 200ms). The rest requirement (48 actual slots at 200ms) still fits
+under it.
 
 ## What deliberately does not convert
 
@@ -313,15 +343,13 @@ every slot duration.
 
 A few instruction paths load oracle validity without a velocity `State` account in scope and so
 decode the guard-rail staleness windows at the 400ms baseline regardless of the live slot duration:
-`jit-proxy`'s `check_order_constraints`, the two `UpdateUser` handlers (margin-trading toggle,
-pool-id), and the vaults `manager_update_borrow` instruction (its account struct carries no velocity
-`State`). Every other vaults instruction now resolves the live duration from its `velocity_state`
-account via `State::slot_duration_from_account_info` (owner + discriminator validated, staging fields
-read by offset), so only that one vault path stays on the baseline. Floor-tightening is the safe
+`jit-proxy`'s `check_order_constraints` and the two `UpdateUser` handlers (margin-trading toggle,
+pool-id). Vault instructions, including `manager_update_borrow`, resolve the full clock from their
+`velocity_state` account via `State::slot_clock_from_account_info` (owner + discriminator validated,
+archive and staging fields read by offset). Floor-tightening is the safe
 direction (a 4s window becomes 2s at 200ms, stricter, never more permissive), so the remaining
 baseline paths are a liveness note, not a safety gap: at 200ms they want an oracle cranked within
-~2s. Threading `State` into `manager_update_borrow` (an account/ABI change) is the one step left if
-that tightening ever bites. keep-rs's liquidator and filler re-sample the slot duration on a live
+~2s. keep-rs's liquidator and filler re-sample the slot duration on a live
 cadence — the liquidator's rate limiter reads a shared value the main loop refreshes, the filler
 refreshes on an elapsed-slot config tick — so a process spanning a gate activation picks up the new
 duration without a restart.
@@ -331,9 +359,9 @@ duration without a restart.
 The rules reduce to one decision: is the value about wall-clock time, or about slots as slots?
 
 ```rust
-// a wall-clock rule: write the time you mean
+// a wall-clock rule: write the time you mean, measure through the clock
 const REBALANCE_COOLDOWN: Millis = Millis::from_secs(30);
-if Millis::from_slots(slot - last_rebalance, state.slot_duration()) >= REBALANCE_COOLDOWN { ... }
+if state.slot_clock().elapsed(last_rebalance, slot) >= REBALANCE_COOLDOWN { ... }
 
 // genuine slot logic: plain u64, no conversion, no Millis
 if amm.last_update_slot == slot { return Ok(()); }   // same-slot idempotence
@@ -353,38 +381,109 @@ and the resulting type error leads to `math/time.rs`, whose module doc states th
 
 ## Off-chain mirrors
 
-Everything off chain reads the same `State.slotDurationMs` field from its existing state
+Everything off chain reads the same `State` slot-duration fields from its existing state
 subscription; no service needs a restart at a gate flip.
 
 - **SDK** ([`math/time.ts`](../packages/sdk/src/math/time.ts)): branded `Millis` (a `BN`) and
-  `SlotDurationMs` (a `number`), zero runtime cost. `getOracleValidity`, `isOracleValid`,
-  `getSpotOracleValidity` and `User.canMakeIdle` take an optional trailing `SlotDurationMs`
-  (defaulting to the baseline, so existing callers stay correct until the first gate);
-  `calculateMaxPctToLiquidate` takes its ramp as `Millis` (`millisFromStoredUnits(state.liquidationDuration)`).
+  `SlotDurationMs` (a `number`), zero runtime cost. `activeSlotDurationFromState` consults the
+  transition archive first (legacy staging fields as fallback), and `elapsedMillis` /
+  `elapsedMillisFromSlotDelta` mirror `SlotClock::elapsed` piecewise. The program mirrors that
+  measure elapsed time (`getOracleValidity`, `isOracleValid`, `getSpotOracleValidity`,
+  `blockOperation`, `getLiquidationFee`, `calculateMaxPctToLiquidate`, `User.canMakeIdle`) take an
+  optional trailing `SlotDurationState` (the decoded `State`, or its slot-duration fields;
+  defaulting to the baseline, so state-less callers stay correct until the first gate).
   `SLOT_TIME_ESTIMATE_MS` is deprecated; there is no correct constant to replace it with, only the
-  live field.
-- **Bots** (`apps/dlob-server`, `apps/keeper-bots-v2`): all pacing and threshold constants are
-  wall-clock ms (`JITO_LEADER_LEAD_MS`, `MARKET_UPDATE_COOLDOWN_MS`, auction duration defaults,
-  the vAMM stale-removal threshold), expressed in slots via `msToSlotsNum` and the shared
-  `currentSlotDuration(velocityClient, currentSlot)` helper (pass a live chain slot so a staged
-  switch is applied). Operator config knobs are ms
-  (`fillAttemptIntervalMs`, `deriskAuctionDurationMs`).
-- **Rust bots** (`rust/keep-rs`, `rust/swift`, `rust/velocity-rs`): mirror the program types
-  through `velocity_rs::program::math::time`; the swift server's signed-msg staleness gate and
-  auction-band staleness knob, keep-rs's oracle-age and liquidation rate limits, and the AMM
-  quoting projection all take the live `SlotDuration`.
+  live fields. `currentSlotDuration` / `currentSlotClock` resolve the live duration for any client
+  holding a subscribed `State` (see [Off-chain clients](#off-chain-clients-sdk-common-ts-ui-bots)).
+- **Bots** (`apps/dlob-server`, `apps/keeper-bots-v2`): pacing and threshold constants are
+  wall-clock ms (`JITO_LEADER_LEAD_MS`, `MARKET_UPDATE_COOLDOWN_MS`, the vAMM stale-removal
+  threshold), expressed in slots via `msToSlotsNum` at the live duration. Auction duration
+  defaults are the exception: they encode to the onchain 400ms units (`msToSlotsCeilNum(ms,
+  SLOT_DURATION_BASELINE)`), deliberately independent of the live duration. `keeper-bots-v2`
+  resolves live durations through the SDK's `currentSlotDuration(client, currentSlot)` helper
+  (pass a live chain slot so a switch is applied; unavailable state/slot falls back to the 400ms
+  baseline); `dlob-server`'s remaining live-duration read (the vAMM quote-spread estimate) still
+  calls `activeSlotDurationFromState` directly and so has no dead-feed fallback. Operator config
+  knobs are ms (`fillAttemptIntervalMs`, `deriskAuctionDurationMs`).
+- **Rust bots** (`rust/keep-rs`, `rust/swift`, `rust/velocity-rs`): use the program's `SlotClock`
+  directly through `velocity_rs::slot_clock_from_state` / `VelocityClient::slot_clock`; keep-rs's
+  oracle-validity gates and liquidation-fee mirror, the AMM quoting projection, and the swift
+  local margin simulation all measure through it, while forward window conversions keep the live
+  `SlotDuration` (`VelocityClient::slot_duration_at`).
+
+### Off-chain clients (SDK, common-ts, UI, bots)
+
+Every TypeScript client resolves live slot lengths through the same `State` fields: **no client
+holds a slot length of its own**, not a constant and not a config value. (The math helpers listed
+above still default their trailing `SlotDurationState`/`slotDuration` to the baseline so existing
+callers keep compiling; a client that has a subscribed `State` should always pass it rather than
+take the default.) The one deliberate baseline constant is the auction-duration *encoding*:
+`Order.auction_duration` is stored in 400ms units, so a client minting one divides ms by
+`SLOT_DURATION_BASELINE` (ceil) on purpose, never by the live duration.
+`SLOT_TIME_ESTIMATE_MS` stays exported and deprecated for one minor series only so consumers can
+bump without a flag day; there is no correct constant to replace it with.
+
+The entry point for any client holding a subscribed `State` is
+`currentSlotDuration(source, currentSlot)` in
+[`math/time.ts`](../packages/sdk/src/math/time.ts) (`currentSlotClock` returns the same value plus
+an `isLive` flag). `source` is duck-typed on `{ getStateAccount() }`, so anything holding a
+subscribed `State` works, and `math/time` keeps importing only `BN`.
+
+Code that already has a decoded `State` and a slot in hand — `velocityClient`, `user.ts`,
+`math/auction.ts`, `adminClient`, `cli-admin`, `dlob-server` — calls the underlying
+`activeSlotDurationFromState(state, slot)` instead. That is the same staged-flip resolution
+without the subscription lookup or the fallback, so those sites must handle an absent `State`
+themselves. Reach for the resolver whenever the state comes from a subscription that may not be
+ready. Two rules the resolver enforces so callers cannot get them wrong:
+
+- **`currentSlot` must be the live chain slot**, not the slot `State` was last written at. `State`
+  does not change at the gate boundary, so a cached State slot would never trigger the staged
+  switch.
+- **A missing or `0` slot is a dead feed, not slot zero.** A failed slot subscription reports `0`,
+  and slot `0` precedes every effective slot, so treating it as live would return the pre-flip base
+  while looking correct. The resolver returns the hardcoded 400ms `SLOT_DURATION_BASELINE` and
+  `isLive: false` instead.
+
+**The fallback is the baseline, not per call site.** Unavailable state/slot falls back to 400ms,
+the longest scheduled slot. Callers never pass a fallback. Which direction that errs in is set by
+the conversion, not by the kind of caller:
+
+| Conversion | Effect of the 400ms fallback on a 200ms chain | Typical call site |
+| --- | --- | --- |
+| ms -> slots (`msToSlotsNum`, `msToSlotsCeilNum`) | **fewer slots** — the window closes sooner | staleness gates, rate limits, auction durations |
+| slots -> ms (`millisFromSlots`, a bare multiply) | **up to 2x more ms** — the window stays open longer | countdowns, cache TTLs, signing budgets |
+
+"Fewer slots" is the safe side for a threshold you want to be conservative under, and the wrong
+side for a countdown you are showing a user. "More ms" is always the wrong side for anything the
+user relies on to still be valid: at a real 200ms, telling someone they have 400ms per slot
+promises twice the wall clock they have, and they keep signing an already-expired transaction.
+
+So a call site in the slots -> ms direction, and any user-protection window in either direction,
+must branch on `isLive` and substitute `SLOT_DURATION_FLOOR` (200ms, the shortest scheduled slot)
+rather than consume `slotDurationMs` blindly. `SLOT_DURATION_SCHEDULE_MS` mirrors the program's
+full schedule for callers that need the whole ladder. Worked examples in the tree:
+`dlobBuilder`'s signed-message cache TTL (slots -> ms, so it uses the floor when the feed is
+dead) and the UI's `useSlotClock` hook, which exposes `useUserProtectionSlotClock` and
+`useRiskCeilingSlotClock` over this API.
+
+**Program mirrors convert exactly as the program does.** Where a client reproduces an on-chain
+computation (auction durations above all), mirror the program's arithmetic step for step: the same
+`Millis` intent, the same clamps, the same rounding direction, and the same `min(255)` cap that
+`Order.auction_duration`'s `u8` imposes. The reference implementation is the auction-param builder
+in `apps/dlob-server/src/utils/utils.ts`. A mirror that floors where the program ceils, or that
+skips the cap, makes the client predict a different fill than the chain grants.
 
 ## Quick reference
 
 | Thing | Value |
 | --- | --- |
-| Knob | `State.slot_duration_ms` (u16, bytes 1506..1508; `0` = unset = 400ms) |
-| Setter | `update_state_slot_duration_ms`, warm admin; allowlist `{350, 300, 250, 200}`, decrease-only |
-| CLI | `velocity-admin exchange set-slot-duration-ms <ms>` |
-| Duration types | `Millis` for arithmetic; `StoredSlotDuration<T, SLOT_MS>` for compact account storage |
-| Slot length type | `SlotDuration` / `SlotDurationMs`, sole source `State::slot_duration()` |
+| Clock | `State.slot_duration_transition_slots` (`[u64; 4]`, bytes 1520..1552; `0` = unsynced); legacy staging trio as fallback |
+| Writer | `sync_state_slot_duration`, permissionless; gate keys fixed on the accounts struct, effective slot from `EpochSchedule` |
+| CLI | `velocity-admin exchange sync-slot-duration <ms>` |
+| Duration types | `Millis` for arithmetic; `SlotClock` for measured intervals; `StoredSlotDuration<T, SLOT_MS>` for compact account storage |
+| Slot length type | `SlotDuration` / `SlotDurationMs`, sourced from the clock (`State::slot_duration()`) |
 | Legacy encoding | `STORED_UNIT_MS` = 400, carried in the stored fields' Rust types and normalized to `Millis` |
 | Legacy rate period | `Millis::UNIT` (400ms), explicit at each rate site |
-| Ops | one staging instruction per gate, plus one post-200ms base-field finalization |
+| Ops | one permissionless sync per gate, any time at or after activation (during the activation epoch keeps the live value lockstep) |
 | Behavior at 400ms | identity: every conversion reproduces the historical slot counts exactly |
-| Known compression | max auction length ~51s at 200ms (u8 `Order.auction_duration` ceiling) |
+| Auction storage | `Order.auction_duration` = wall-clock 400ms units (max 180 = 72s, u8 ceiling 255 = 102s); no compression at any gate |

@@ -40,7 +40,7 @@
 use crate::{
     controller::position::PositionDirection,
     error::{ErrorCode, VelocityResult},
-    math::{safe_math::SafeMath, time::SlotDuration},
+    math::{safe_math::SafeMath, time::SlotClock},
     state::{
         oracle::{MMOraclePriceData, OraclePriceData},
         perp_market::MarketStats,
@@ -86,10 +86,10 @@ pub struct QuoteContext<'a> {
     /// (an order in active auction prices differently than the same order
     /// resting post-auction).
     pub slot: u64,
-    /// Current slot duration in ms (`State::slot_duration()`). Used to
-    /// scale slot-denominated windows calibrated to the 400ms baseline (e.g.
-    /// the reference-price-offset smoothing budget).
-    pub slot_duration: SlotDuration,
+    /// Cluster slot clock (`State::slot_clock()`). Used to scale
+    /// slot denominated windows calibrated to the 400ms baseline (e.g. the
+    /// reference price offset smoothing budget) across IBRL transitions.
+    pub slot_clock: SlotClock,
     /// Base-asset precision divisor: when computing `quote_amount` from a
     /// base amount filled at a price, the formula is
     /// `quote = base * price / base_precision` to convert from raw base
@@ -425,8 +425,13 @@ impl<'a> DlobOrderQuoter<'a> {
     fn effective_price(&self, ctx: &QuoteContext) -> VelocityResult<Option<u64>> {
         // Slot 0 + valid_oracle_price = ctx.oracle.price; this drives
         // get_limit_price's auction / oracle-offset handling.
-        self.order
-            .get_limit_price(Some(ctx.oracle.price), None, ctx.slot, ctx.tick.max(1))
+        self.order.get_limit_price(
+            Some(ctx.oracle.price),
+            None,
+            ctx.slot,
+            ctx.tick.max(1),
+            ctx.slot_clock,
+        )
     }
 
     fn remaining(&self) -> u64 {
@@ -563,7 +568,7 @@ mod dlob_order_maker_tests {
             tick: 1,
             step_size: 1,
             slot: 100,
-            slot_duration: crate::math::time::SlotDuration::BASELINE,
+            slot_clock: SlotClock::baseline(),
             base_precision: crate::math::constants::BASE_PRECISION as u64,
             market_status: crate::state::market_status::MarketStatus::default(),
             market_config: 0,

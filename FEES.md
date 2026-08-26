@@ -329,7 +329,7 @@ Classifies every fee the protocol charges by destination: **protocol-retained re
 
 ## Differences from upstream Drift
 
-- **Spot trading charges no fee.** The swap fee is hardcoded to zero (`let fee = 0_u64;`, `instructions/user.rs:3949`), and there is no spot order-book fill path (`fulfill_spot_order` does not exist); spot trades route through `begin_swap`/`end_swap` and `lp_pool_swap`. `SpotMarket.total_spot_fee`, `spot_fee_pool`, and `total_swap_fee` are therefore inert.
+- **Spot trading charges no fee.** The swap fee is hardcoded to zero (`let fee = 0_u64;`, `instructions/user.rs:3949`), and there is no spot order-book fill path (`fulfill_spot_order` does not exist); spot trades route through `begin_swap`/`end_swap` and `lp_pool_swap`. `SpotMarket.total_spot_fee` and `total_swap_fee` are therefore inert. The unused `spot_fee_pool` slot is reserved padding.
 - **Perp taker fees are the only trading-fee revenue.**
 - **The AMM lives in `src/vlp/`** (the decoupled AMM). Its fee counters (`total_fee`, `total_mm_fee`, `total_fee_minus_distributions`, `total_fee_withdrawn`, `fee_pool`) are on `vlp/amm/state.rs`, not `PerpMarket`; `lp_fee_transfer_scalar` is now `HedgeConfig.fee_transfer_scalar` (`vlp/hedge/state.rs:80`).
 - **The protocol's automatic fee share is ½ of taker fees** (`SHARE_OF_FEES_ALLOCATED_TO_DRIFT = 1/2`, `math/constants.rs:111-112`). This bounds only the continuous revenue-pool sweep; AMM spread surplus and trading PnL are excluded from it and are realized at market wind-down instead (see [Protocol fee share](#protocol-fee-share-streaming-vs-wind-down)).

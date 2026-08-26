@@ -210,6 +210,7 @@ function mockPerpMarketCommon(): Omit<
 			exchangeFeeExclusionScalar: 0,
 			feeTransferScalar: 0,
 		},
+		paddingFuture: Array(256).fill(0),
 		marketConfig: 0,
 
 		// Fields migrated off AMM to top-level PerpMarket
@@ -331,12 +332,8 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		nextFillRecordId: new BN(0),
 		nextDepositRecordId: new BN(0),
 		ordersEnabled: true,
-		spotFeePool: {
-			scaledBalance: new BN(0),
-			marketIndex: 0,
-			pendingInterestSplitDust: 0,
-			pendingInterestDust: new BN(0),
-		},
+		paddingFormerSpotFeePool: Array(32).fill(0),
+		paddingFuture: Array(256).fill(0),
 		totalSpotFee: new BN(0),
 		totalSwapFee: new BN(0),
 		flashLoanAmount: new BN(0),
@@ -435,12 +432,8 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		nextFillRecordId: new BN(0),
 		nextDepositRecordId: new BN(0),
 		ordersEnabled: true,
-		spotFeePool: {
-			scaledBalance: new BN(0),
-			marketIndex: 0,
-			pendingInterestSplitDust: 0,
-			pendingInterestDust: new BN(0),
-		},
+		paddingFormerSpotFeePool: Array(32).fill(0),
+		paddingFuture: Array(256).fill(0),
 		totalSpotFee: new BN(0),
 		totalSwapFee: new BN(0),
 		flashLoanAmount: new BN(0),
@@ -541,12 +534,8 @@ export const mockSpotMarkets: Array<SpotMarketAccount> = [
 		nextFillRecordId: new BN(0),
 		nextDepositRecordId: new BN(0),
 		ordersEnabled: true,
-		spotFeePool: {
-			scaledBalance: new BN(0),
-			marketIndex: 0,
-			pendingInterestSplitDust: 0,
-			pendingInterestDust: new BN(0),
-		},
+		paddingFormerSpotFeePool: Array(32).fill(0),
+		paddingFuture: Array(256).fill(0),
 		totalSpotFee: new BN(0),
 		totalSwapFee: new BN(0),
 		flashLoanAmount: new BN(0),
@@ -678,11 +667,12 @@ export const mockStateAccount: StateAccount = {
 	whitelistMint: PublicKey.default,
 	maxNumberOfSubAccounts: 0,
 	maxInitializeUserFee: 0,
-	// 0 = unset, resolves to the 400ms baseline; nothing staged
+	// 0 = unset, resolves to the 400ms baseline; nothing staged or synchronized
 	slotDurationMs: 0,
 	pendingSlotDurationMs: 0,
 	slotDurationPad: [0, 0],
 	slotDurationEffectiveSlot: new BN(0),
+	slotDurationTransitionSlots: [new BN(0), new BN(0), new BN(0), new BN(0)],
 };
 
 export class MockUserMap implements UserMapInterface {

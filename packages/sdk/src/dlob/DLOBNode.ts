@@ -5,6 +5,7 @@ import {
 	ZERO,
 } from '../constants/numericConstants';
 import { getLimitPrice } from '../math/orders';
+import { SlotDurationState } from '../math/time';
 import { isVariant, MarketTypeStr, Order } from '../types';
 import { MMOraclePriceData, OraclePriceData } from '../oracles/types';
 import { convertToNumber } from '../math/conversion';
@@ -42,7 +43,8 @@ export interface DLOBNode {
 	getPrice<T extends MarketTypeStr>(
 		oraclePriceData: NodeOraclePriceData<T>,
 		slot: number,
-		tickSize?: BN
+		tickSize?: BN,
+		slotDurationState?: SlotDurationState
 	): BN | undefined;
 	/**
 	 * Same as `getPrice`, but throws instead of returning `undefined` when the node has no limit
@@ -60,7 +62,8 @@ export interface DLOBNode {
 	getPriceOrThrow<T extends MarketTypeStr>(
 		oraclePriceData: NodeOraclePriceData<T>,
 		slot: number,
-		tickSize?: BN
+		tickSize?: BN,
+		slotDurationState?: SlotDurationState
 	): BN;
 	/** True for synthetic vAMM liquidity nodes (not backed by an on-chain `Order`); always `false` for `OrderNode` subclasses. */
 	isVammNode(): boolean;
@@ -149,14 +152,16 @@ export abstract class OrderNode implements DLOBNode {
 	getPrice<T extends MarketTypeStr>(
 		oraclePriceData: NodeOraclePriceData<T>,
 		slot: number,
-		tickSize?: BN
+		tickSize?: BN,
+		slotDurationState?: SlotDurationState
 	): BN | undefined {
 		return getLimitPrice<T>(
 			this.order,
 			oraclePriceData,
 			slot,
 			undefined,
-			tickSize
+			tickSize,
+			slotDurationState
 		);
 	}
 
@@ -164,9 +169,15 @@ export abstract class OrderNode implements DLOBNode {
 	getPriceOrThrow<T extends MarketTypeStr>(
 		oraclePriceData: NodeOraclePriceData<T>,
 		slot: number,
-		tickSize?: BN
+		tickSize?: BN,
+		slotDurationState?: SlotDurationState
 	): BN {
-		const price = this.getPrice<T>(oraclePriceData, slot, tickSize);
+		const price = this.getPrice<T>(
+			oraclePriceData,
+			slot,
+			tickSize,
+			slotDurationState
+		);
 		if (price === undefined) {
 			throw new Error(
 				`OrderNode.getPrice: order ${this.order.orderId} has no limit price`

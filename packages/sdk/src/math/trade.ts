@@ -29,7 +29,7 @@ import {
 	calculateMarketOpenBidAsk,
 } from './amm';
 import { squareRootBN } from './utils';
-import { SlotDurationMs } from './time';
+import { SlotDurationState } from './time';
 import { isVariant } from '../types';
 import { MMOraclePriceData } from '../oracles/types';
 import { DLOB } from '../dlob/DLOB';
@@ -83,7 +83,7 @@ export function calculateTradeSlippage(
 	mmOraclePriceData: MMOraclePriceData,
 	useSpread = true,
 	latestSlot?: BN,
-	slotDuration?: SlotDurationMs
+	slotDurationState?: SlotDurationState
 ): [BN, BN, BN, BN] {
 	let oldPrice: BN;
 
@@ -93,14 +93,14 @@ export function calculateTradeSlippage(
 				market,
 				mmOraclePriceData,
 				latestSlot,
-				slotDuration
+				slotDurationState
 			);
 		} else {
 			oldPrice = calculateBidPrice(
 				market,
 				mmOraclePriceData,
 				latestSlot,
-				slotDuration
+				slotDurationState
 			);
 		}
 	} else {
@@ -118,7 +118,7 @@ export function calculateTradeSlippage(
 			mmOraclePriceData,
 			useSpread,
 			latestSlot,
-			slotDuration
+			slotDurationState
 		);
 
 	const entryPrice = acquiredQuoteAssetAmount
@@ -135,7 +135,7 @@ export function calculateTradeSlippage(
 				direction,
 				mmOraclePriceData,
 				latestSlot,
-				slotDuration
+				slotDurationState
 			);
 		amm = {
 			baseAssetReserve,
@@ -197,7 +197,7 @@ export function calculateTradeAcquiredAmounts(
 	mmOraclePriceData: MMOraclePriceData,
 	useSpread = true,
 	latestSlot?: BN,
-	slotDuration?: SlotDurationMs
+	slotDurationState?: SlotDurationState
 ): [BN, BN, BN] {
 	if (amount.eq(ZERO)) {
 		return [ZERO, ZERO, ZERO];
@@ -214,7 +214,7 @@ export function calculateTradeAcquiredAmounts(
 				direction,
 				mmOraclePriceData,
 				latestSlot,
-				slotDuration
+				slotDurationState
 			);
 		amm = {
 			baseAssetReserve,
@@ -270,7 +270,7 @@ export function calculateTargetPriceTrade(
 	mmOraclePriceData?: MMOraclePriceData,
 	useSpread = true,
 	latestSlot?: BN,
-	slotDuration?: SlotDurationMs
+	slotDurationState?: SlotDurationState
 ): [PositionDirection, BN, BN, BN] {
 	assert(market.amm.baseAssetReserve.gt(ZERO));
 	assert(targetPrice.gt(ZERO));
@@ -281,13 +281,13 @@ export function calculateTargetPriceTrade(
 		market,
 		mmOraclePriceData,
 		latestSlot,
-		slotDuration
+		slotDurationState
 	);
 	const askPriceBefore = calculateAskPrice(
 		market,
 		mmOraclePriceData,
 		latestSlot,
-		slotDuration
+		slotDurationState
 	);
 
 	let direction;
@@ -319,7 +319,7 @@ export function calculateTargetPriceTrade(
 				direction,
 				mmOraclePriceData,
 				latestSlot,
-				slotDuration
+				slotDurationState
 			);
 		baseAssetReserveBefore = baseAssetReserve;
 		quoteAssetReserveBefore = quoteAssetReserve;
@@ -462,7 +462,7 @@ export function calculateEstimatedPerpEntryPrice(
 	dlob: DLOB,
 	slot: number,
 	usersToSkip = new Map<PublicKey, boolean>(),
-	slotDuration?: SlotDurationMs
+	slotDurationState?: SlotDurationState
 ): {
 	entryPrice: BN;
 	priceImpact: BN;
@@ -503,7 +503,7 @@ export function calculateEstimatedPerpEntryPrice(
 			direction,
 			mmOraclePriceData,
 			new BN(slot),
-			slotDuration
+			slotDurationState
 		);
 	const amm = {
 		baseAssetReserve,
@@ -553,7 +553,8 @@ export function calculateEstimatedPerpEntryPrice(
 		const limitOrderPrice = limitOrder.getPriceOrThrow(
 			mmOraclePriceData,
 			slot,
-			market.orderTickSize
+			market.orderTickSize,
+			slotDurationState ?? dlob.slotDurationState
 		);
 		bestPrice = takerIsLong
 			? BN.min(limitOrderPrice, bestPrice)

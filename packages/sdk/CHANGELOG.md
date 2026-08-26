@@ -1,5 +1,15 @@
 # @velocity-exchange/sdk
 
+## 0.16.0
+
+### Minor Changes
+
+- [#447](https://github.com/velocity-exchange/velocity-v1/pull/447) [`ce01885`](https://github.com/velocity-exchange/velocity-v1/commit/ce0188563670520bfcddb689866e37c1fa19ed00) Thanks [@0xahzam](https://github.com/0xahzam)! - Slot-duration transition archive and permissionless sync. `StateAccount` gains `slotDurationTransitionSlots` (first slot of each IBRL regime); `activeSlotDurationFromState` consults the archive first, and new `elapsedMillis` / `elapsedMillisFromSlotDelta` integrate elapsed intervals per slot-duration regime, mirroring the program's `SlotClock`. Program mirrors that measure elapsed time (`getOracleValidity`, `isOracleValid`, `getSpotOracleValidity`, `blockOperation`, `getLiquidationFee`, `calculateMaxPctToLiquidate`, `User.canMakeIdle`) now take a trailing `SlotDurationState` (the decoded `State`) instead of a `SlotDurationMs`. Forward deadlines, MM-oracle gates, and vAMM spread smoothing also use the transition archive instead of one endpoint duration. The admin instruction `updateStateSlotDurationMs` was replaced by the permissionless `syncStateSlotDuration` (`AdminClient.syncStateSlotDuration` / `getSyncStateSlotDurationIx`; `IBRL_FEATURE_WARMUP_SLOTS` removed, the effective slot now derives onchain from the `EpochSchedule` sysvar). CLI: `exchange set-slot-duration-ms` is now `exchange sync-slot-duration`. Auction durations (`Order.auctionDuration`, `OrderParams.auctionDuration`) now mean wall-clock 400ms units instead of live slots (identical raw values at the 400ms baseline); auction mirrors (`isAuctionComplete`, `getAuctionPrice*`, `getLimitPrice`, `hasLimitPrice`, `hasAuctionPrice`, `isRestingLimitOrder`, `DLOBNode.getPrice`) take a trailing optional `SlotDurationState`, and `DLOB.slotDurationState` carries it for book math. When converting an auction duration from ms, divide by 400 (ceil), not by the live slot duration.
+
+### Patch Changes
+
+- [#446](https://github.com/velocity-exchange/velocity-v1/pull/446) [`823724e`](https://github.com/velocity-exchange/velocity-v1/commit/823724e4a8ea0d34b5a79883512eec9cb40b6123) Thanks [@0xahzam](https://github.com/0xahzam)! - Extend perp and spot market accounts with reserved padding and retire the unused spot fee pool field.
+
 ## 0.15.0
 
 ### Minor Changes

@@ -1,7 +1,8 @@
 # Trading the CLOB from a client
 
 What a client needs to place, cancel, modify and display orders that rest on a book. The design
-behind these choices is [`clob-client-surface.md`](./clob-client-surface.md); this is the working
+behind these choices is [`clob-client-surface.md`](./clob-client-surface.md), whose **Still to do**
+section lists what is not closed yet — read it before building on the feed. This is the working
 reference.
 
 The one thing to internalise: **a resting CLOB order has no `User.orders` slot.** `place_clob_order`
@@ -151,6 +152,10 @@ Three things to design around:
   move, so a quiet feed is not a stale feed. The one write a client must not miss is the empty list
   that says the last order left.
 
+The path from publisher tick to websocket has not been run end to end against a live Redis yet — the
+two sides are unit-tested and the row shape is pinned across them, but the whole loop is unproven.
+Expect to shake it out rather than to find it working first time.
+
 ## Merging the two venues in one list
 
 Not every order can rest on a book. These stay in `User.orders` on the DLOB, and will for as long as
@@ -212,7 +217,8 @@ Two gaps the client should know are gaps rather than bugs:
 - **`cancelAllClobOrders` emits no velocity record per order.** A sweep takes up to 128 orders and a
   record is 480 bytes, which no transaction's log budget holds. The per-order detail is on the
   book's own `OrdersCancelRecordV0`, which lists velocity's ids — so it joins the same stream, but
-  it needs a decoder for the CLOB program's events, which does not exist in TypeScript yet.
+  it needs a decoder for the CLOB program's events, which does not exist in TypeScript yet. That is
+  indexer work, tracked in the surface doc's **Still to do**.
 
 ## The order book display
 

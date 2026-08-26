@@ -190,19 +190,59 @@ state the book does not hold. W3's `venue` tag is what makes this invisible to a
 
 ## Tests
 
-- `integration-tests/`: place through velocity, assert the client order id round-trips onto the node,
-  onto every removal wire, and onto the emitted `OrderRecord`; a partial fill attributes to a maker
-  order id; evict, expire, cull and force-cancel each emit their explanation.
-- `rust/book-publisher`: the arena walk against a synthesized book, grouping and the unchanged-skip.
-- SDK: unit tests for the account resolution and the stale-hint retry.
+- `integration-tests/router_fill.rs`: place through velocity and assert the id minted from
+  `User.next_order_id` round-trips onto the book and back out of the removal wire, and that the
+  emitted `OrderRecord` and `OrderActionRecord` name the order by it. Events are decoded out of the
+  transaction's logs, so this reads what a subscriber reads.
+- `anchor-v2/programs/clob`: the partial-fill record exists for every size that stops mid-order and
+  never twice; a placement refuses to rest crossed when asked, at the touch and through it, and
+  rests when it did not ask.
+- `crates/clob-state`: a live order reports its arena index rather than its position among live
+  orders — the index is half a cancel hint, so counting live orders would hand a caller a hint
+  pointing at another order. A short or partly written account yields nothing rather than failing.
+- `rust/book-publisher`: the two gates — an unchanged arena writes nothing, and one user placing
+  does not republish anyone else's rows; emptying publishes once and then goes quiet; markets are
+  gated independently.
+- `packages/sdk`: the feed's wire form deserializes, keeping velocity's ids and the book's handles
+  apart.
 
-## Left for the indexer
+**The row shape is pinned by one fixture both sides assert against**
+(`packages/sdk/tests/fixtures/userClobOrderRow.json`): the publisher that it emits exactly that, the
+SDK that it reads exactly that. A producer test and a consumer test that each build their own
+fixture are blind to the wire between them — a field the producer stops emitting stays in the
+consumer's literal and both suites pass. That is the same argument `quoter-spec` and `clob-wire`
+make for the on-chain wires, applied to a JSON one.
 
-Order history in infrastructure-v3 needs two things this side cannot do for it: decode the CLOB's
-`OrdersCancelRecordV0` (the only per-order detail a sweep produces) and `ExecuteRecordV0` (per-order
-fill sizes, which the response wire deliberately does not carry per order). Both now name orders by
-velocity's ids, so they join the existing stream on the same key. Neither has a TypeScript decoder
-today, because anchor-v2 emits no IDL for the CLOB — that is the thing worth fixing upstream.
+## Still to do
+
+Three things this branch does not close. None blocks a client from being built against the surface;
+all three are worth knowing before one is.
+
+**1. The CLOB's events have no TypeScript decoder, so order history is incomplete.** Two facts live
+only on the book's own event stream: `OrdersCancelRecordV0` (the per-order detail of a sweep, which
+cannot be a velocity record — 128 orders against a 10 KB log budget) and `ExecuteRecordV0`
+(per-order fill sizes, which the response wire deliberately does not carry per order). Both name
+orders by velocity's ids now, so they join the existing stream on the same key rather than needing a
+pipeline of their own. What is missing is the decoder, and the reason it is missing is upstream:
+anchor-v2 emits no IDL for the CLOB — `idl-build` is an empty stub, and even a complete IDL would
+describe the market account as its header (`Slab<H, T>` forwards only `H`).
+
+Until it exists: a maker's own fills attribute to an order only when the fill's balance change named
+exactly one, and a cancel-all shows as a set of orders that stopped without a per-order reason. The
+work lands in infrastructure-v3, not here. Getting anchor-v2 to emit an IDL is the fix worth
+pushing; a hand-written decoder is the fallback.
+
+**2. The feed has never run against a live Redis and publisher.** Both sides are unit-tested and the
+row shape is pinned across them, but nothing exercises the whole path — publisher tick, Redis write,
+HTTP read, websocket fan-out — end to end. `test:e2e:localnet` does not cover it, and the gates that
+make the feed cheap (an unchanged arena writing nothing) are exactly the kind of thing that is
+correct in a unit test and wrong against a real account feed. Worth a manual run before a client is
+built on it.
+
+**3. The webapp is several SDK versions behind, independent of any of this.** It pins
+`@velocity-exchange/sdk` 0.4.0 against 0.13.0 here. Equity floor, isolated positions, revenue share
+and the swap clients all have to be absorbed regardless, and that catch-up should be scoped on its
+own rather than counted as part of adopting the CLOB.
 
 ## Not in this plan
 

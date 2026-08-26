@@ -20,9 +20,16 @@ named a book held the book's `place_authority` as a live signature inside its ow
 `place_order_v0` takes the user it places for as an argument. Keying the quoter side per entry also
 means the signature a quoter receives proves velocity called *that* quoter and nothing else.
 
-**Approval requires a frozen program.** `update_quoter_approved` takes two more accounts,
-`quoterProgram` and an optional `quoterProgramData`, and refuses to approve an entry whose program
-still has an upgrade authority. Approving an upgradeable program approves its author, not its code.
+**Approval records the program's deploy slot.** `update_quoter_approved` takes two more accounts,
+`quoterProgram` and an optional `quoterProgramData`, and stores the slot the program was last
+deployed at in the new `QuoterV0.approvedProgramSlot`. An upgrade moves that slot, so a reader can
+see the code changed instead of inferring it from behaviour. Nothing on chain checks the slot during
+a fill, because that would cost an account lock per quoter.
+
+Approval deliberately does *not* require or impose a frozen program. A maker may upgrade. A `Custom`
+entry can move only its own registered user, at a price held to its own quote and the taker's limit,
+sized inside its own margin — so an upgrade can lose the maker's money and cannot take anyone
+else's.
 
 **`RouterAllocation.scaledQuote`** is new: `Σ price · base` before the division into quote units,
 which is the scalar the program holds a fill to. A client predicting whether a fill will be accepted

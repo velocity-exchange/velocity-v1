@@ -120,9 +120,24 @@ pub struct QuoterV0 {
     pub watch_offset: u32,
     pub watch_len: u32,
     pub watch_account: Pubkey,
-    /// Room for the next field, so adding one does not move the account's
-    /// size or its alignment invariant.
-    pub padding: [u8; 8],
+    /// The slot the approved program was last deployed at, read from its
+    /// program-data account when the admin approved this entry. Zero when the
+    /// program sits on a loader that cannot redeploy it, and therefore has no
+    /// such account.
+    ///
+    /// Approval does not freeze the program. A maker may upgrade, and the
+    /// bounds on a quoter hold either way: a `Custom` entry can move only its
+    /// own registered user, at a price held to its own quote and to the taker's
+    /// limit, sized inside its own margin. So an upgrade can lose the maker's
+    /// money and cannot take anyone else's.
+    ///
+    /// What it can still do is quote and not deliver, which costs the taker a
+    /// fill. That is why the slot is recorded: an off-chain reader compares it
+    /// to the live one and knows the code changed, rather than waiting to infer
+    /// it from behaviour. Deliberately not checked during a fill — that would
+    /// cost one more account lock per quoter, on the budget that decides how
+    /// many quoters a route can hold.
+    pub approved_program_slot: u64,
 }
 
 // Zero-copy layout invariant (see docs/alignment-and-native-offsets.md):

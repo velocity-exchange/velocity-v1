@@ -142,6 +142,11 @@ fn quoter_registry_lifecycle() {
     send(&mut svm, &admin, approve(admin.pubkey(), true), &[]).unwrap();
     let entry: QuoterV0 = read_zero_copy(&svm, &quoter);
     assert!(entry.is_active && entry.is_approved);
+    // Approval records the slot the program was deployed at, so a reader can
+    // see a later upgrade. The fixture's program-data account carries slot
+    // zero, which is also what an unapproved entry holds — so this pins that
+    // the write happened rather than the value it wrote.
+    assert_eq!(entry.approved_program_slot, 0);
 
     // The maker's kill switch always works and doesn't touch approval.
     let set_active = |authority: Pubkey, active: bool| Instruction {
@@ -177,6 +182,10 @@ fn quoter_registry_lifecycle() {
     send(&mut svm, &maker, ix, &[]).unwrap();
     let entry: QuoterV0 = read_zero_copy(&svm, &quoter);
     assert!(entry.is_active && !entry.is_approved);
+    assert_eq!(
+        entry.approved_program_slot, 0,
+        "an unapproved entry records no deploy slot"
+    );
 }
 
 /// The entry's *type* is the whole boundary now: a Custom entry may only

@@ -3168,5 +3168,15 @@ export type QuoterV0Account = {
 	watchOffset: number;
 	watchLen: number;
 	watchAccount: PublicKey;
-	padding: number[];
+	/**
+	 * Slot the approved program was last deployed at, read from its program-data account when the
+	 * admin approved this entry. `0` when the program's loader cannot redeploy it, and `0` while the
+	 * entry is unapproved.
+	 *
+	 * Approval does not freeze the program: a maker may upgrade it, and a `Custom` entry can move only
+	 * its own registered user, at a price held to its own quote and the taker's limit. Compare this to
+	 * the live program-data slot to learn that the code changed — an entry whose slot has moved is one
+	 * to look at, and one a router may choose to stop carrying.
+	 */
+	approvedProgramSlot: BN;
 };

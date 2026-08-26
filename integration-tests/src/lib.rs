@@ -55,11 +55,11 @@ pub fn svm() -> LiteSVM {
         .expect("clob.so missing — run `bun run program:build:clob` first");
     svm.add_program_from_file(midpoint_id(), MIDPOINT_SO)
         .expect("midpoint.so missing — run `bun run program:build:midpoint` first");
-    // Approval requires the program behind a quoter entry to be frozen, and
-    // litesvm loads a program under the upgradeable loader without writing the
-    // program-data account that says so. Every fixture program gets one.
+    // Approval reads the deploy slot out of a program's program-data account,
+    // and litesvm loads a program under the upgradeable loader without writing
+    // one. Every fixture program gets one.
     for program in [clob_id(), midpoint_id()] {
-        set_frozen_program_data(&mut svm, &program);
+        set_program_data(&mut svm, &program);
     }
     // Every resolver names the program-wide staging account, so it exists
     // from the start rather than each fixture remembering to create it.
@@ -82,13 +82,13 @@ pub fn program_data_pda(program: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(&[program.as_ref()], &bpf_loader_upgradeable_id()).0
 }
 
-/// Write a `ProgramData` account for `program` carrying no upgrade authority,
-/// which is what `update_quoter_approved` requires of a quoter program.
+/// Write a `ProgramData` account for `program`, which approval reads to record
+/// the slot the program was last deployed at.
 ///
-/// Layout: a four-byte enum tag (3 = `ProgramData`), the slot it was deployed
-/// at, then the authority behind an option tag — zero here, meaning nobody can
-/// redeploy it.
-pub fn set_frozen_program_data(svm: &mut LiteSVM, program: &Pubkey) -> Pubkey {
+/// Layout: a four-byte enum tag (3 = `ProgramData`), the deploy slot, then the
+/// upgrade authority behind an option tag. Both are zero here, so an approval
+/// records slot zero.
+pub fn set_program_data(svm: &mut LiteSVM, program: &Pubkey) -> Pubkey {
     let address = program_data_pda(program);
     let mut data = vec![0u8; 45];
     data[0] = 3;

@@ -5663,8 +5663,7 @@ pub mod types {
         pub watch_offset: u32,
         pub watch_len: u32,
         pub watch_account: Pubkey,
-        #[serde(skip)]
-        pub padding: Padding<8>,
+        pub approved_program_slot: u64,
     }
     #[repr(C)]
     #[derive(
@@ -7649,8 +7648,7 @@ pub mod accounts {
         pub watch_offset: u32,
         pub watch_len: u32,
         pub watch_account: Pubkey,
-        #[serde(skip)]
-        pub padding: Padding<8>,
+        pub approved_program_slot: u64,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for QuoterV0 {

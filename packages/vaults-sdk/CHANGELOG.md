@@ -1,5 +1,12 @@
 # @velocity-exchange/vaults-sdk
 
+## 0.1.23
+
+### Patch Changes
+
+- Updated dependencies [[`079d579`](https://github.com/velocity-exchange/velocity-v1/commit/079d579d4fac0f3402a4a9f8fb1aeccf21ac32ba)]:
+  - @velocity-exchange/sdk@0.17.0
+
 ## 0.1.22
 
 ### Patch Changes

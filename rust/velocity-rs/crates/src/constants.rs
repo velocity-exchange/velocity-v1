@@ -130,13 +130,24 @@ pub fn derive_velocity_signer() -> Pubkey {
     account
 }
 
-/// The signer velocity uses for quoter CPIs and its CLOB calls, and the
-/// `place_authority` every book is configured with. Deliberately not
-/// [`derive_velocity_signer`], which is the token authority on every vault:
-/// signer privilege is inherited by a callee, so the key handed to an external
-/// program must be the authority on nothing.
-pub fn derive_quoter_signer() -> Pubkey {
-    let (account, _seed) = Pubkey::find_program_address(&[&b"quoter_signer"[..]], &PROGRAM_ID);
+/// The `place_authority` every book is configured with, and what velocity signs
+/// its own CLOB calls as.
+///
+/// Deliberately not [`derive_velocity_signer`], which is the token authority on
+/// every vault, and deliberately not [`derive_quoter_signer`], which is what a
+/// third-party quoter is handed: signer privilege is inherited by a callee, and
+/// this key may place and cancel on any book for any user.
+pub fn derive_clob_authority() -> Pubkey {
+    let (account, _seed) = Pubkey::find_program_address(&[&b"clob_authority"[..]], &PROGRAM_ID);
+    account
+}
+
+/// The signer velocity CPIs one registry entry's quoter as, derived from that
+/// entry — so the signature authenticates velocity at that quoter and nowhere
+/// else. The authority on nothing.
+pub fn derive_quoter_signer(entry: &Pubkey) -> Pubkey {
+    let (account, _seed) =
+        Pubkey::find_program_address(&[&b"quoter_signer"[..], entry.as_ref()], &PROGRAM_ID);
     account
 }
 

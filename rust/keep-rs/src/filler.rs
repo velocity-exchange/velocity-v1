@@ -36,7 +36,9 @@ use {
         RouteContext,
     },
     velocity_rs::{
-        constants::{derive_clob_crank_conditions, derive_quoter_signer, PROGRAM_ID},
+        constants::{
+            derive_clob_authority, derive_clob_crank_conditions, derive_quoter_signer, PROGRAM_ID,
+        },
         dlob::{
             CrossesAndTopMakers, CrossingRegion, DLOBNotifier, L3Order, MakerCrosses, OrderKind,
             TakerOrder, DLOB,
@@ -1185,7 +1187,7 @@ async fn try_swift_fill(
         quoter: clob_quoter,
         clob_market: entry.response_account,
         clob_program: entry.program_id,
-        quoter_signer: derive_quoter_signer(),
+        clob_authority: derive_clob_authority(),
         crank_conditions: Some(derive_clob_crank_conditions(taker_order.market_index)),
     });
 
@@ -1430,11 +1432,17 @@ async fn route_quoter_metas(
         *cpi_union.entry(entry.response_account).or_default() |= true;
         cpi_union.entry(entry.program_id).or_default();
     }
-    // The quoter CPI signer, not the vault authority: velocity signs quoter
-    // legs as a PDA that is the authority on nothing. Each entry's registered
-    // list usually names it already; this makes the fill work for one that
+    // The signing identities the legs authenticate as, neither of them the vault
+    // authority. A book's execute wants the place authority; every other entry
+    // wants the key derived from its own registry entry. An entry's registered
+    // list usually names its own already; this makes the fill work for one that
     // does not.
-    cpi_union.entry(derive_quoter_signer()).or_default();
+    cpi_union.entry(derive_clob_authority()).or_default();
+    for entry_key in &kept {
+        cpi_union
+            .entry(derive_quoter_signer(entry_key))
+            .or_default();
+    }
 
     Some(
         kept.iter()

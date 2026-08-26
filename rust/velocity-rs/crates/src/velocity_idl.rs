@@ -5698,8 +5698,8 @@ pub mod types {
         Debug,
         PartialEq,
     )]
-    pub struct RelayBlock11x32 {
-        pub bytes: ByteArray<3200>,
+    pub struct RelayBlock11x48 {
+        pub bytes: ByteArray<3728>,
     }
     #[repr(C)]
     #[derive(
@@ -6667,7 +6667,7 @@ pub mod types {
         PartialEq,
     )]
     pub struct UserConditionsV0 {
-        pub relay: RelayBlock11x32,
+        pub relay: RelayBlock11x48,
         pub trigger_slots: [TriggerSlotMetaV0; 8],
         pub trigger_resolvers: ByteArray<1344>,
         pub user: Pubkey,
@@ -8382,7 +8382,7 @@ pub mod accounts {
         PartialEq,
     )]
     pub struct UserConditionsV0 {
-        pub relay: RelayBlock11x32,
+        pub relay: RelayBlock11x48,
         pub trigger_slots: [TriggerSlotMetaV0; 8],
         pub trigger_resolvers: ByteArray<1344>,
         pub user: Pubkey,
@@ -9198,7 +9198,7 @@ pub mod accounts {
         pub quoter: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub quoter_signer: Pubkey,
+        pub clob_authority: Pubkey,
         pub crank_conditions: Pubkey,
     }
     #[automatically_derived]
@@ -9248,7 +9248,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.quoter_signer,
+                    pubkey: self.clob_authority,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -9299,7 +9299,7 @@ pub mod accounts {
         pub quoter: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub quoter_signer: Pubkey,
+        pub clob_authority: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for CancelClobOrder {
@@ -9353,7 +9353,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.quoter_signer,
+                    pubkey: self.clob_authority,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -9933,7 +9933,7 @@ pub mod accounts {
         pub quoter: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub quoter_signer: Pubkey,
+        pub clob_authority: Pubkey,
         pub crank_conditions: Pubkey,
     }
     #[automatically_derived]
@@ -9998,7 +9998,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.quoter_signer,
+                    pubkey: self.clob_authority,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -10051,7 +10051,7 @@ pub mod accounts {
         pub quoter: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub quoter_signer: Pubkey,
+        pub clob_authority: Pubkey,
         pub crank_conditions: Pubkey,
     }
     #[automatically_derived]
@@ -10116,7 +10116,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.quoter_signer,
+                    pubkey: self.clob_authority,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -10251,7 +10251,7 @@ pub mod accounts {
         pub quoter: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub quoter_signer: Pubkey,
+        pub clob_authority: Pubkey,
         pub crank_conditions: Pubkey,
     }
     #[automatically_derived]
@@ -10316,7 +10316,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.quoter_signer,
+                    pubkey: self.clob_authority,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -11889,7 +11889,7 @@ pub mod accounts {
         pub quoter: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub quoter_signer: Pubkey,
+        pub clob_authority: Pubkey,
         pub crank_conditions: Pubkey,
     }
     #[automatically_derived]
@@ -11954,7 +11954,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.quoter_signer,
+                    pubkey: self.clob_authority,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -12007,7 +12007,7 @@ pub mod accounts {
         pub quoter: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub quoter_signer: Pubkey,
+        pub clob_authority: Pubkey,
         pub crank_conditions: Pubkey,
     }
     #[automatically_derived]
@@ -12072,7 +12072,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.quoter_signer,
+                    pubkey: self.clob_authority,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -15572,7 +15572,7 @@ pub mod accounts {
         pub quoter: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub quoter_signer: Pubkey,
+        pub clob_authority: Pubkey,
         pub instructions_sysvar: Pubkey,
     }
     #[automatically_derived]
@@ -15622,7 +15622,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.quoter_signer,
+                    pubkey: self.clob_authority,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -16119,7 +16119,7 @@ pub mod accounts {
         pub quoter: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub quoter_signer: Pubkey,
+        pub clob_authority: Pubkey,
         pub crank_conditions: Pubkey,
     }
     #[automatically_derived]
@@ -16184,7 +16184,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.quoter_signer,
+                    pubkey: self.clob_authority,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -16405,7 +16405,7 @@ pub mod accounts {
         pub quoter: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub quoter_signer: Pubkey,
+        pub clob_authority: Pubkey,
         pub crank_conditions: Pubkey,
     }
     #[automatically_derived]
@@ -16460,7 +16460,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.quoter_signer,
+                    pubkey: self.clob_authority,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -16510,7 +16510,7 @@ pub mod accounts {
         pub quoter: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub quoter_signer: Pubkey,
+        pub clob_authority: Pubkey,
         pub instructions_sysvar: Pubkey,
     }
     #[automatically_derived]
@@ -16560,7 +16560,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.quoter_signer,
+                    pubkey: self.clob_authority,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -20775,7 +20775,7 @@ pub mod accounts {
         pub quoter: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub quoter_signer: Pubkey,
+        pub clob_authority: Pubkey,
         pub crank_conditions: Pubkey,
         pub trigger_conditions: Pubkey,
     }
@@ -20841,7 +20841,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.quoter_signer,
+                    pubkey: self.clob_authority,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -24000,7 +24000,7 @@ pub mod accounts {
         pub quoter: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub quoter_signer: Pubkey,
+        pub clob_authority: Pubkey,
         pub crank_conditions: Pubkey,
         pub treasury: Pubkey,
         pub rent: Pubkey,
@@ -24053,7 +24053,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.quoter_signer,
+                    pubkey: self.clob_authority,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -27015,6 +27015,8 @@ pub mod accounts {
         pub admin: Pubkey,
         pub state: Pubkey,
         pub quoter: Pubkey,
+        pub quoter_program: Pubkey,
+        pub quoter_program_data: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdateQuoterApproved {
@@ -27046,6 +27048,16 @@ pub mod accounts {
                     pubkey: self.quoter,
                     is_signer: false,
                     is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.quoter_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quoter_program_data,
+                    is_signer: false,
+                    is_writable: false,
                 },
             ]
         }
@@ -32389,6 +32401,8 @@ pub mod errors {
         InsufficientCrankTreasury,
         #[msg("Crank reservoir is above its refill watermark")]
         CrankReservoirNotLow,
+        #[msg("User conditions sync does not cover every market the user is exposed in")]
+        InvalidUserConditionsSync,
     }
 }
 pub mod events {

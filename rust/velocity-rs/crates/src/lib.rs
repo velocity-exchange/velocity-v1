@@ -1970,7 +1970,9 @@ pub struct ClobFillAccounts {
     pub quoter: Pubkey,
     pub clob_market: Pubkey,
     pub clob_program: Pubkey,
-    pub quoter_signer: Pubkey,
+    /// The book's `place_authority`, which is its own PDA — not the per-entry
+    /// key a third-party quoter is handed. See `velocity::signer`.
+    pub clob_authority: Pubkey,
     /// `None` = the market's crank conditions were never initialized; the
     /// placement skips the wake hint and the fallback poll covers it.
     pub crank_conditions: Option<Pubkey>,
@@ -3530,7 +3532,7 @@ impl<'a> TransactionBuilder<'a> {
                     quoter: clob.quoter,
                     clob_market: clob.clob_market,
                     clob_program: clob.clob_program,
-                    quoter_signer: clob.quoter_signer,
+                    clob_authority: clob.clob_authority,
                     crank_conditions: clob.crank_conditions,
                 },
                 makers.iter().chain(std::iter::once(taker_account)),

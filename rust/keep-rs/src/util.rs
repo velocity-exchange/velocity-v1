@@ -2,7 +2,7 @@ use {
     futures_util::StreamExt,
     pyth_lazer_client::AnyResponse,
     pyth_lazer_protocol::{
-        message::Message,
+        message::{Message, SolanaMessage},
         payload::{PayloadData, PayloadPropertyValue},
         router::{
             Channel, DeliveryFormat, FixedRate, Format, JsonBinaryEncoding, PriceFeedId,
@@ -21,8 +21,9 @@ use {
             pyth_lazer_feed_id_to_spot_market_index, spot_market_index_to_pyth_lazer_feed_id,
         },
         dlob::{L3Order, MakerCrosses},
+        math::constants::PRICE_PRECISION,
         program::math::time::{Millis, SlotClock, SlotDuration},
-        types::{MarketId, MarketType},
+        types::{MarketId, MarketType, OraclePriceData, OracleSource},
         Pubkey,
     },
 };
@@ -524,6 +525,123 @@ pub struct PythPriceUpdate {
     pub ts: TimestampUs,
 }
 
+/// One-shot marker recorded when a liquidate-with-fill tx fails onchain with
+/// `LiquidationOrderFailedToFill`, telling the liquidator to route the next
+/// attempt on that (liquidatee, market) straight to a collateral takeover.
+/// The marker survives until a takeover tx is actually sent; `attempts`
+/// counts takeover routings it has driven and `recorded_ms` bounds its
+/// lifetime, so a takeover path that keeps failing before send cannot pin
+/// the marker forever.
+#[derive(Clone, Copy, Debug)]
+pub struct PerpFillFallback {
+    pub recorded_ms: u64,
+    pub attempts: u32,
+}
+
+/// The oracle state `update_pyth_lazer_oracle` would persist for `update`,
+/// read back the way `get_pyth_price` reads it, with `delay: 0` since the
+/// posting tx stamps the current slot. Mirrors the program end to end:
+/// confidence is the widest of the 20bps floor, the bid/ask distance and the
+/// signed confidence property (`calculate_lazer_conf`), price and confidence
+/// scale by the feed exponent and the source multiple, and a stablecoin
+/// source snaps to $1 inside the tighter of 5bps and the confidence
+/// (`get_pyth_stable_coin_price`). Returns `None` when the retained message
+/// does not parse or does not carry the update's feed.
+pub fn preview_pyth_lazer_oracle(
+    update: &PythPriceUpdate,
+    oracle_source: &OracleSource,
+) -> Option<OraclePriceData> {
+    let message = SolanaMessage::deserialize_slice(&update.message).ok()?;
+    let data = PayloadData::deserialize_slice_le(&message.payload).ok()?;
+    let feed = data
+        .feeds
+        .iter()
+        .find(|feed| feed.feed_id.0 == update.feed_id)?;
+
+    let mut price: Option<i64> = None;
+    let mut best_bid: Option<i64> = None;
+    let mut best_ask: Option<i64> = None;
+    let mut exponent: Option<i16> = None;
+    let mut signed_confidence: Option<i64> = None;
+    let mut feed_ts_us: Option<u64> = None;
+
+    for property in &feed.properties {
+        match property {
+            PayloadPropertyValue::Price(value) => price = value.map(|p| p.0.get()),
+            PayloadPropertyValue::BestBidPrice(value) => best_bid = value.map(|p| p.0.get()),
+            PayloadPropertyValue::BestAskPrice(value) => best_ask = value.map(|p| p.0.get()),
+            PayloadPropertyValue::Exponent(exp) => exponent = Some(*exp),
+            PayloadPropertyValue::Confidence(value) => signed_confidence = value.map(|p| p.0.get()),
+            PayloadPropertyValue::FeedUpdateTimestamp(ts) => feed_ts_us = ts.map(|t| t.0),
+            _ => {}
+        }
+    }
+
+    let price = price.filter(|p| *p != 0)?;
+    let exponent = exponent?;
+
+    // widest-of-three confidence, as `calculate_lazer_conf` stores it
+    let mut conf = price / 500;
+    if let (Some(bid), Some(ask)) = (best_bid, best_ask) {
+        let spread = i128::from(ask)
+            .saturating_sub(i128::from(bid))
+            .abs()
+            .min(i64::MAX.into()) as i64;
+        conf = conf.max(spread);
+    }
+    if let Some(signed_confidence) = signed_confidence {
+        conf = conf.max(signed_confidence);
+    }
+
+    // scale mantissas to PRICE_PRECISION, as `get_pyth_price` reads them
+    let multiple = match oracle_source {
+        OracleSource::PythLazer | OracleSource::PythLazerStableCoin => 1u128,
+        OracleSource::PythLazer1K => 1_000,
+        OracleSource::PythLazer1M => 1_000_000,
+        _ => return None,
+    };
+    let precision = 10_u128.checked_pow(u32::from(exponent.unsigned_abs()))?;
+    if precision <= multiple {
+        return None;
+    }
+    let precision = precision / multiple;
+    let (scale_mult, scale_div) = if precision > PRICE_PRECISION {
+        (1u128, precision / PRICE_PRECISION)
+    } else {
+        (PRICE_PRECISION / precision, 1u128)
+    };
+
+    let mut price_scaled = i64::try_from(
+        i128::from(price)
+            .checked_mul(scale_mult as i128)?
+            .checked_div(scale_div as i128)?,
+    )
+    .ok()?;
+    let conf_scaled = u64::try_from(
+        u128::from(conf.unsigned_abs())
+            .checked_mul(scale_mult)?
+            .checked_div(scale_div)?,
+    )
+    .ok()?;
+
+    if matches!(oracle_source, OracleSource::PythLazerStableCoin) {
+        let five_bps = 500_i64;
+        if (price_scaled - PRICE_PRECISION as i64).abs()
+            <= five_bps.min(i64::try_from(conf_scaled).unwrap_or(i64::MAX))
+        {
+            price_scaled = PRICE_PRECISION as i64;
+        }
+    }
+
+    Some(OraclePriceData {
+        price: price_scaled,
+        confidence: conf_scaled,
+        delay: 0,
+        has_sufficient_number_of_data_points: true,
+        sequence_id: feed_ts_us,
+    })
+}
+
 /// Tolerated forward clock skew before a future-dated feed timestamp is treated as invalid —
 /// a timestamp further ahead than this means a bad clock on one side, not a fresh price.
 const PYTH_MAX_CLOCK_SKEW_US: u64 = 1_000_000;
@@ -836,13 +954,123 @@ pub fn subscribe_price_feeds(
 mod tests {
     use {
         super::{
-            pyth_update_is_fresh, swift_placement_expired, OrderSlotLimiter, PendingTxMeta,
-            PendingTxs, Pubkey, TxIntent,
+            preview_pyth_lazer_oracle, pyth_update_is_fresh, swift_placement_expired,
+            OrderSlotLimiter, PendingTxMeta, PendingTxs, Pubkey, PythPriceUpdate, TxIntent,
         },
-        pyth_lazer_protocol::router::TimestampUs,
+        pyth_lazer_protocol::{
+            message::SolanaMessage,
+            payload::{PayloadData, PayloadFeedData, PayloadPropertyValue},
+            router::{ChannelId, Price, PriceFeedId, TimestampUs},
+        },
         solana_sdk::signature::Signature,
-        velocity_rs::program::math::time::SlotClock,
+        std::num::NonZeroI64,
+        velocity_rs::{
+            program::math::time::SlotClock,
+            types::{MarketType, OracleSource},
+        },
     };
+
+    /// One lazer solana envelope carrying a single feed with the given
+    /// properties, retained the way `subscribe_price_feeds` retains it.
+    fn lazer_message(feed_id: u32, properties: Vec<PayloadPropertyValue>) -> Vec<u8> {
+        let payload = PayloadData {
+            timestamp_us: TimestampUs(0),
+            channel_id: ChannelId(1),
+            feeds: vec![PayloadFeedData {
+                feed_id: PriceFeedId(feed_id),
+                properties,
+            }],
+        };
+        let mut payload_buf = Vec::new();
+        payload
+            .serialize::<byteorder::LE>(&mut payload_buf)
+            .unwrap();
+        let message = SolanaMessage {
+            payload: payload_buf,
+            signature: [0u8; 64],
+            public_key: [0u8; 32],
+        };
+        let mut buf = Vec::new();
+        message.serialize(&mut buf).unwrap();
+        buf
+    }
+
+    fn price(mantissa: i64) -> Option<Price> {
+        Some(Price(NonZeroI64::new(mantissa).unwrap()))
+    }
+
+    #[test]
+    fn lazer_preview_matches_program_post_semantics() {
+        // mantissas at exponent -8; PRICE_PRECISION is 1e6, so the read path
+        // divides by 100
+        let mantissa = 100_00000000_i64;
+        let feed_ts = 1_700_000_000_000_000_u64;
+        let message = lazer_message(
+            5,
+            vec![
+                PayloadPropertyValue::Price(price(mantissa)),
+                PayloadPropertyValue::BestBidPrice(price(mantissa - 300_000_000)),
+                PayloadPropertyValue::BestAskPrice(price(mantissa + 300_000_000)),
+                PayloadPropertyValue::Exponent(-8),
+                PayloadPropertyValue::Confidence(price(mantissa / 1000)),
+                PayloadPropertyValue::FeedUpdateTimestamp(Some(TimestampUs(feed_ts))),
+            ],
+        );
+        let update = PythPriceUpdate {
+            market_type: MarketType::Perp,
+            market_id: 0,
+            feed_id: 5,
+            price: 100_000_000,
+            message,
+            ts: TimestampUs(feed_ts),
+        };
+
+        let preview = preview_pyth_lazer_oracle(&update, &OracleSource::PythLazer).unwrap();
+        assert_eq!(preview.price, 100_000_000); // $100 at 1e6 precision
+                                                // the bid/ask spread (600_000_000 raw) is the widest of the three
+                                                // confidence signals; scaled by 100 like the price
+        assert_eq!(preview.confidence, 6_000_000);
+        assert_eq!(preview.delay, 0);
+        assert_eq!(preview.sequence_id, Some(feed_ts));
+
+        // signed confidence wins when it is widest
+        let message = lazer_message(
+            5,
+            vec![
+                PayloadPropertyValue::Price(price(mantissa)),
+                PayloadPropertyValue::Exponent(-8),
+                PayloadPropertyValue::Confidence(price(mantissa / 10)),
+                PayloadPropertyValue::FeedUpdateTimestamp(Some(TimestampUs(feed_ts))),
+            ],
+        );
+        let update = PythPriceUpdate { message, ..update };
+        let preview = preview_pyth_lazer_oracle(&update, &OracleSource::PythLazer).unwrap();
+        assert_eq!(preview.confidence, 10_000_000);
+
+        // no properties beyond price: the 20bps floor stands
+        let message = lazer_message(
+            5,
+            vec![
+                PayloadPropertyValue::Price(price(mantissa)),
+                PayloadPropertyValue::Exponent(-8),
+                PayloadPropertyValue::FeedUpdateTimestamp(Some(TimestampUs(feed_ts))),
+            ],
+        );
+        let update = PythPriceUpdate { message, ..update };
+        let preview = preview_pyth_lazer_oracle(&update, &OracleSource::PythLazer).unwrap();
+        assert_eq!(preview.confidence, 200_000);
+
+        // a message without the update's feed does not preview
+        let message = lazer_message(
+            6,
+            vec![
+                PayloadPropertyValue::Price(price(mantissa)),
+                PayloadPropertyValue::Exponent(-8),
+            ],
+        );
+        let update = PythPriceUpdate { message, ..update };
+        assert!(preview_pyth_lazer_oracle(&update, &OracleSource::PythLazer).is_none());
+    }
 
     #[test]
     fn pending_txs_confirm_consumes_entry() {

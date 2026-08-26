@@ -4,7 +4,7 @@ use {
         http::{FeedHealth, Metrics},
         util::{
             pyth_update_is_fresh, swift_placement_expired, OrderSlotLimiter, PendingTxMeta,
-            PendingTxs, PythPriceUpdate, TxIntent,
+            PendingTxs, PerpFillFallback, PythPriceUpdate, TxIntent,
         },
         Config, UseMarkets,
     },
@@ -2268,7 +2268,7 @@ pub struct TxWorker {
     txs_in_flight: Option<Arc<DashMap<Pubkey, HashSet<Signature>>>>,
     tx_sig_to_collateral: Option<Arc<DashMap<Signature, (u128, u64)>>>,
     free_collateral_per_subaccount: Option<Arc<DashMap<Pubkey, u128>>>,
-    perp_fill_fallbacks: Option<Arc<DashMap<(Pubkey, u16), ()>>>,
+    perp_fill_fallbacks: Option<Arc<DashMap<(Pubkey, u16), PerpFillFallback>>>,
 }
 
 impl TxWorker {
@@ -2279,7 +2279,7 @@ impl TxWorker {
         txs_in_flight: Option<Arc<DashMap<Pubkey, HashSet<Signature>>>>,
         tx_sig_to_collateral: Option<Arc<DashMap<Signature, (u128, u64)>>>,
         free_collateral_per_subaccount: Option<Arc<DashMap<Pubkey, u128>>>,
-        perp_fill_fallbacks: Option<Arc<DashMap<(Pubkey, u16), ()>>>,
+        perp_fill_fallbacks: Option<Arc<DashMap<(Pubkey, u16), PerpFillFallback>>>,
     ) -> Self {
         Self {
             velocity: Box::leak(Box::new(velocity)),
@@ -3027,7 +3027,7 @@ fn is_revert_fill_error(error: &UiTransactionError) -> bool {
 fn record_perp_fill_fallback(
     intent: &TxIntent,
     error: &TransactionError,
-    fallbacks: Option<&Arc<DashMap<(Pubkey, u16), ()>>>,
+    fallbacks: Option<&Arc<DashMap<(Pubkey, u16), PerpFillFallback>>>,
 ) {
     let TransactionError::InstructionError(_, InstructionError::Custom(code)) = error else {
         return;
@@ -3046,7 +3046,16 @@ fn record_perp_fill_fallback(
         return;
     };
     if let Some(fallbacks) = fallbacks {
-        fallbacks.insert((*liquidatee, *market_index), ());
+        fallbacks.insert(
+            (*liquidatee, *market_index),
+            PerpFillFallback {
+                recorded_ms: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0),
+                attempts: 0,
+            },
+        );
         log::info!(
             target: TARGET,
             "recorded perp takeover fallback: liquidatee={liquidatee:?} market={market_index}"

@@ -296,6 +296,38 @@ fn immediate_staleness_threshold_by_override() {
         "unset must not tolerate more than MM_ORACLE_MIN_WRITE_GAP"
     );
 
+    let is_valid_350 = |delay: i64| {
+        let oracle_price_data = OraclePriceData {
+            price: (100 * PRICE_PRECISION) as i64,
+            confidence: 1,
+            delay,
+            has_sufficient_number_of_data_points: true,
+            sequence_id: None,
+        };
+        matches!(
+            oracle_validity(
+                MarketType::Perp,
+                0,
+                (100 * PRICE_PRECISION) as i64,
+                &oracle_price_data,
+                &guard_rails,
+                1,
+                &OracleSource::PythLazer,
+                LogMode::ExchangeOracle,
+                -1,
+                true,
+                0,
+                1_000_000,
+                SlotClock::from_state_fields([1, 0, 0, 0], 0, 0, 0),
+            )
+            .unwrap(),
+            OracleValidity::Valid
+        )
+    };
+    // 800ms rounds up to the crank's legal three-slot interval (1050ms).
+    assert!(is_valid_350(3));
+    assert!(!is_valid_350(4));
+
     // Unset + exchange-sourced keeps the strict zero threshold: the exchange
     // oracle can be same-slot fresh, so nothing forces a wider window there.
     assert!(is_valid(0, -1, false));

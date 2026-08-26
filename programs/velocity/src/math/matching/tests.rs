@@ -301,6 +301,26 @@ mod is_maker_for_taker {
             true
         );
     }
+
+    #[test]
+    fn resting_order_age_compares_wall_clock_auction_ends() {
+        let maker = Order {
+            order_type: OrderType::Limit,
+            slot: 100_000,
+            auction_duration: 10,
+            ..Default::default()
+        };
+        let taker = Order {
+            order_type: OrderType::Limit,
+            slot: 100_005,
+            auction_duration: 6,
+            ..Default::default()
+        };
+        let clock_200 = SlotClock::from_state_fields([1, 1, 1, 1], 0, 0, 0);
+
+        // maker ends after 4s; taker ends after 1s offset + 2.4s.
+        assert!(!is_maker_for_taker(&maker, &taker, 100_021, clock_200).unwrap());
+    }
 }
 
 #[test]

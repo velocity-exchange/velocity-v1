@@ -16,7 +16,7 @@ import { BigNum } from '../factory/bigNum';
 import { PerpMarketAccount, isVariant } from '../types';
 import { MMOraclePriceData, OraclePriceData } from '../oracles/types';
 import { calculateBidAskPrice } from './amm';
-import { SlotDurationMs } from './time';
+import { SlotDurationState } from './time';
 import { calculateLiveOracleTwap } from './oracles';
 import { clampBN } from './utils';
 import {
@@ -47,7 +47,7 @@ function calculateLiveMarkTwap(
 	// with no slot the smoothing is inactive (so the duration is moot), but a
 	// slot-aware caller gets it applied at the correct slot length across a gate
 	latestSlot?: BN,
-	slotDuration?: SlotDurationMs
+	slotDurationState?: SlotDurationState
 ): BN {
 	now = now || new BN((Date.now() / 1000).toFixed(0));
 
@@ -84,7 +84,7 @@ function calculateLiveMarkTwap(
 			mmOraclePriceData,
 			true,
 			latestSlot,
-			slotDuration
+			slotDurationState
 		);
 		markPrice = bid.add(ask).div(new BN(2));
 	}
@@ -203,7 +203,7 @@ export function calculateAllEstimatedFundingRate(
 	// live chain slot + duration for the mark bid/ask smoothing (only used when
 	// markPrice is not supplied); omit for the baseline/no-smoothing estimate
 	latestSlot?: BN,
-	slotDuration?: SlotDurationMs
+	slotDurationState?: SlotDurationState
 ): [BN, BN, BN, BN, BN] {
 	if (isVariant(market.status, 'uninitialized')) {
 		return [ZERO, ZERO, ZERO, ZERO, ZERO];
@@ -220,7 +220,7 @@ export function calculateAllEstimatedFundingRate(
 		now,
 		market.marketStats.fundingPeriod,
 		latestSlot,
-		slotDuration
+		slotDurationState
 	);
 	if (!oraclePriceData) {
 		throw new Error(
@@ -474,7 +474,7 @@ export function calculateLongShortFundingRate(
 	markPrice?: BN,
 	now?: BN,
 	latestSlot?: BN,
-	slotDuration?: SlotDurationMs
+	slotDurationState?: SlotDurationState
 ): [BN, BN] {
 	const [_1, _2, _, cappedAltEst, interpEst] = calculateAllEstimatedFundingRate(
 		market,
@@ -483,7 +483,7 @@ export function calculateLongShortFundingRate(
 		markPrice,
 		now,
 		latestSlot,
-		slotDuration
+		slotDurationState
 	);
 
 	if (market.baseAssetAmountLong.gt(market.baseAssetAmountShort)) {
@@ -513,7 +513,7 @@ export function calculateLongShortFundingRateAndLiveTwaps(
 	markPrice?: BN,
 	now?: BN,
 	latestSlot?: BN,
-	slotDuration?: SlotDurationMs
+	slotDurationState?: SlotDurationState
 ): [BN, BN, BN, BN] {
 	const [markTwapLive, oracleTwapLive, _2, cappedAltEst, interpEst] =
 		calculateAllEstimatedFundingRate(
@@ -523,7 +523,7 @@ export function calculateLongShortFundingRateAndLiveTwaps(
 			markPrice,
 			now,
 			latestSlot,
-			slotDuration
+			slotDurationState
 		);
 
 	if (market.baseAssetAmountLong.gt(market.baseAssetAmountShort.abs())) {

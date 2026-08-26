@@ -141,6 +141,53 @@ describe('MM oracle validity gate (UseMMOraclePrice semantics)', () => {
 
 		assert(mmOracleValidity === OracleValidity.TooVolatile);
 	});
+
+	it('matches the ceiled MM write interval at 350ms', () => {
+		const market = _.cloneDeep(mockPerpMarkets[0]);
+		const price = new BN(100).mul(PRICE_PRECISION);
+		market.marketStats.historicalOracleData.lastOraclePriceTwap = price;
+		market.oracleSlotDelayOverride = -1;
+		const guardRails: OracleGuardRails = {
+			priceDivergence: {
+				markOraclePercentDivergence: new BN(0),
+				oracleTwap5MinPercentDivergence: new BN(0),
+			},
+			validity: {
+				slotsBeforeStaleForAmm: new BN(10),
+				slotsBeforeStaleForMargin: new BN(120),
+				confidenceIntervalMaxSize: new BN(20_000),
+				tooVolatileRatio: new BN(5),
+			},
+		};
+		const currentSlot = new BN(1_000);
+		const validityAtDelay = (delay: number) =>
+			getOracleValidity(
+				market,
+				{
+					price,
+					confidence: new BN(1),
+					slot: currentSlot.subn(delay),
+					hasSufficientNumberOfDataPoints: true,
+				},
+				guardRails,
+				currentSlot,
+				new BN(0),
+				true,
+				{
+					slotDurationTransitionSlots: [
+						new BN(1),
+						new BN(0),
+						new BN(0),
+						new BN(0),
+					],
+				}
+			);
+
+		assert(validityAtDelay(3) === OracleValidity.Valid);
+		assert(
+			validityAtDelay(4) === OracleValidity.isStaleForAmmImmediate
+		);
+	});
 });
 
 describe('funding blockOperation mirror', () => {

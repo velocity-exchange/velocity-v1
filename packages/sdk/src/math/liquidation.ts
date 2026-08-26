@@ -505,9 +505,6 @@ export function getLiquidationFee(
 	currentSlot: BN,
 	slotDurationState: SlotDurationState = {}
 ): number {
-	if (currentSlot.lt(lastActiveUserSlot)) {
-		throw new Error('currentSlot must not precede lastActiveUserSlot');
-	}
 	const elapsed = elapsedMillis(
 		slotDurationState,
 		lastActiveUserSlot,

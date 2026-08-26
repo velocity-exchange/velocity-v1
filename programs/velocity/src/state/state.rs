@@ -611,7 +611,7 @@ impl Size for State {
     // + 2*FeeStructure + OracleGuardRails + scalars + solvency_status[1] + promo_fee_tier[1]
     // + slot_duration_ms[2] + pending_slot_duration_ms[2] + slot_duration_pad[2]
     // + slot_duration_effective_slot[8] + transition slots[32] + padding[200] = 1752 B.
-    // The padding starts at struct offset 1512, not 1500 — carve new fields from there.
+    // The padding starts at struct offset 1544 after the transition archive.
     // hot_if_rebalance was removed with the if-rebalance machinery (its 32 B went into
     // the padding); protocol_fee_recipient_spot later took 32 B back out; solvency_status
     // took 1 B out of the padding; hot_account_extension took another 32 B out;

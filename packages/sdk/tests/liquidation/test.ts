@@ -88,10 +88,10 @@ describe('getLiquidationFee', () => {
 		assert.equal(fee, 5_625);
 	});
 
-	it('rejects a current slot before the last-active slot like the program', () => {
-		assert.throws(
-			() => getLiquidationFee(20_000, 50_000, new BN(101), new BN(100)),
-			/currentSlot must not precede lastActiveUserSlot/
+	it('saturates a current slot before the last-active slot like the program', () => {
+		assert.equal(
+			getLiquidationFee(20_000, 50_000, new BN(101), new BN(100)),
+			20_000
 		);
 	});
 });

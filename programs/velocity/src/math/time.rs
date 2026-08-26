@@ -9,8 +9,8 @@
 //!   threshold, window, ramp, and grace period is a `Millis`, whether it comes
 //!   from a code constant or an admin-set field. It cannot be compared against
 //!   a slot count without converting through the live slot length.
-//! - [`SlotDuration`] is the current slot length, admin-updated on `State` as
-//!   each gate activates. It is the sole bridge between durations and slots
+//! - [`SlotDuration`] is the slot length resolved from the permissionlessly
+//!   synchronized transition archive on `State`. It is the sole bridge between durations and slots
 //!   and is not constructible from an arbitrary number, so a raw slot value
 //!   can never be passed where the slot length belongs.
 //! - [`StoredSlotDuration`] is a compact onchain duration encoded in quanta of
@@ -380,6 +380,38 @@ impl SlotClock {
         self.elapsed(end_slot.saturating_sub(slot_delta), end_slot)
     }
 
+    /// First slot whose start is at least `duration` after `start_slot`.
+    /// Integrates known future transition boundaries instead of converting the
+    /// whole window with the duration at one endpoint.
+    pub fn slot_at_or_after_duration(self, start_slot: u64, duration: Millis) -> u64 {
+        if duration == Millis::ZERO {
+            return start_slot;
+        }
+
+        let mut cursor = start_slot;
+        let mut remaining_ms = duration.as_ms();
+        let mut current_duration = self.slot_duration_at(cursor);
+
+        for transition_slot in self.transition_slots {
+            if transition_slot == 0 || transition_slot <= cursor {
+                continue;
+            }
+
+            let slots_in_regime = transition_slot.saturating_sub(cursor);
+            let regime_ms = slots_in_regime.saturating_mul(current_duration.as_ms());
+            if remaining_ms <= regime_ms {
+                return cursor
+                    .saturating_add(Millis::from_ms(remaining_ms).to_slots_ceil(current_duration));
+            }
+
+            remaining_ms = remaining_ms.saturating_sub(regime_ms);
+            cursor = transition_slot;
+            current_duration = self.slot_duration_at(cursor);
+        }
+
+        cursor.saturating_add(Millis::from_ms(remaining_ms).to_slots_ceil(current_duration))
+    }
+
     pub const fn transition_slots(self) -> [u64; 4] {
         self.transition_slots
     }
@@ -726,6 +758,26 @@ mod tests {
         );
         // a delta larger than the end slot saturates to slot zero
         assert_eq!(clock.elapsed_slot_delta(100, 50).as_ms(), 50 * 400);
+    }
+
+    #[test]
+    fn slot_clock_projects_duration_across_future_transitions() {
+        let clock = SlotClock::from_state_fields([1_000, 2_000, 0, 0], 0, 0, 0);
+        assert_eq!(
+            clock.slot_at_or_after_duration(995, Millis::from_secs(4)),
+            1_006
+        );
+        assert_eq!(clock.elapsed(995, 1_005).as_ms(), 3_750);
+        assert_eq!(clock.elapsed(995, 1_006).as_ms(), 4_100);
+
+        assert_eq!(
+            SlotClock::baseline().slot_at_or_after_duration(10, Millis::from_ms(801)),
+            13
+        );
+        assert_eq!(
+            SlotClock::baseline().slot_at_or_after_duration(10, Millis::ZERO),
+            10
+        );
     }
 
     #[test]

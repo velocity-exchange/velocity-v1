@@ -54,10 +54,11 @@ supplies no timing truth:
 
 1. **Fixed gate set.** The accounts struct constrains the feature account to the feature-gate
    program and to one of the four scheduled IBRL keys; the target duration is derived from the key
-   (`ibrl_slot_duration_ms`), so there is nothing to typo. Transitions must be synchronized in
-   order (the previous archive entry must exist and be effective) and recorded transition slots
-   must be monotonic. Re-syncing an already-recorded gate is an idempotent no-op that revalidates
-   the recorded slot against the feature account.
+   (`ibrl_slot_duration_ms`), so there is nothing to typo. Recorded transition slots must be
+   monotonic. A forward sync may skip an abandoned gate after the last recorded boundary is live;
+   a missing older gate may be backfilled later. Neither path may make the active duration slower.
+   Re-syncing an already-recorded gate is an idempotent no-op that revalidates the recorded slot
+   against the feature account.
 2. **Effective slot derived from the gate and the `EpochSchedule` sysvar.** The handler verifies
    the feature account is activated (`data[0] == 1`), reads its activation slot, and computes
    `epoch_schedule.get_first_slot_in_epoch(get_epoch(activated_at) + 1)`, exactly Agave's own
@@ -98,6 +99,32 @@ retroactively; the only cost of lateness is that the live duration lagged in the
 guard-rail retunes, per-market updates, or bot restarts are needed (the off-chain mirrors read the
 same fields from their state subscription).
 
+For a cluster whose legacy staging fields already reached a faster regime before this archive is
+initialized, synchronize the currently active fastest gate first, then backfill older gates. For
+example, a cluster already at 200ms must sync 200ms before 350/300/250ms. The handler checks the
+proposed clock at the current slot and rejects any archive write that would move it backward, so a
+permissionless caller cannot temporarily restore a slower duration. The legacy staging trio is
+then rebuilt from the archive rather than allowed to block canonical repair.
+
+### Deployment on a cluster already below 400ms
+
+`Order.auction_duration` previously stored live slot counts and now stores fixed 400ms units. Raw
+bytes are migration-free only when the program upgrade lands before that cluster's first slot-time
+reduction. On any cluster already below 400ms, deployment must be coordinated: cancel or drain
+existing orders, discard pending signed messages minted with the old meaning, deploy the program
+and SDK/bots together, then resume placement. Otherwise an existing raw value is reinterpreted as
+a different wall-clock duration.
+
+### Adding another slot-duration transition
+
+The clock math and elapsed-time call sites already support piecewise regimes. A future reduction,
+for example to 120ms, requires extending the transition-duration list and State archive capacity,
+adding the canonical feature key mapping, updating the native and foreign-account byte readers,
+and mirroring the new field and constant in TypeScript and Rust clients. Derive its boundary from
+the feature account plus `EpochSchedule`; do not add a hardcoded epoch length or an admin setter.
+If no padding remains, this is a State version/layout migration rather than permission to overload
+a legacy field. Add parity tests for intervals and forward deadlines crossing the new boundary.
+
 ### Measurements that straddle a switch: the piecewise clock
 
 Solana's slot *counter* does not record that earlier slots were longer, so converting a whole
@@ -112,10 +139,10 @@ is the same walk for the "measured delta ending now" shape most call sites have.
 rule in the program measures through it: oracle ages (`oracle_validity`), the AMM staleness gate,
 liquidation fee and ramp (`get_liquidation_fee`, `calculate_max_pct_to_liquidate`), the filler
 time-reward curve, auction interpolation and completion, idle/eviction/rest windows, and the VLP
-hedge uncertainty fees. The rare forward-looking conversion of a wall-clock window into a slot
-bound that must be one number (the signed-msg order's `max_slot`) uses the duration at the current
-slot; that endpoint choice is bounded by the window's own length and only matters in the single
-window that straddles a gate.
+hedge uncertainty fees. Forward-looking conversion of a wall-clock window into a slot bound uses
+`SlotClock::slot_at_or_after_duration`, which walks known future boundaries. The signed-message
+order's `max_slot` therefore agrees with auction completion even when its placement window crosses
+a synchronized transition.
 
 Without any archive entry (pre-sync accounts, hand-built test states), `SlotClock` falls back to
 the legacy staging fields and prices the whole delta at the end-slot duration: the previous
@@ -276,8 +303,8 @@ and changing it changes the rate.
 ## Auctions: the u8 stores 400ms units
 
 `Order.auction_duration: u8` stores the auction's wall-clock length in 400ms units (one unit =
-one slot at the 400ms baseline, so the raw byte is identical to the historical slot count and no
-migration was needed). The value is minted duration-independently at placement
+one slot at the 400ms baseline, so the raw byte is identical to the historical slot count on a
+cluster upgraded before its first reduction). The value is minted duration-independently at placement
 (`get_auction_duration` counts calibration steps; admin minimums like `min_perp_auction_duration`
 are already stored in the same units) and interpolated at fill time as wall-clock progress:
 `SlotClock::elapsed(order.slot, now)` over `auction_duration * 400ms`, exact across transitions.
@@ -316,15 +343,13 @@ every slot duration.
 
 A few instruction paths load oracle validity without a velocity `State` account in scope and so
 decode the guard-rail staleness windows at the 400ms baseline regardless of the live slot duration:
-`jit-proxy`'s `check_order_constraints`, the two `UpdateUser` handlers (margin-trading toggle,
-pool-id), and the vaults `manager_update_borrow` instruction (its account struct carries no velocity
-`State`). Every other vaults instruction now resolves the full clock from its `velocity_state`
-account via `State::slot_clock_from_account_info` (owner + discriminator validated, archive and
-staging fields read by offset), so only that one vault path stays on the baseline. Floor-tightening is the safe
+`jit-proxy`'s `check_order_constraints` and the two `UpdateUser` handlers (margin-trading toggle,
+pool-id). Vault instructions, including `manager_update_borrow`, resolve the full clock from their
+`velocity_state` account via `State::slot_clock_from_account_info` (owner + discriminator validated,
+archive and staging fields read by offset). Floor-tightening is the safe
 direction (a 4s window becomes 2s at 200ms, stricter, never more permissive), so the remaining
 baseline paths are a liveness note, not a safety gap: at 200ms they want an oracle cranked within
-~2s. Threading `State` into `manager_update_borrow` (an account/ABI change) is the one step left if
-that tightening ever bites. keep-rs's liquidator and filler re-sample the slot duration on a live
+~2s. keep-rs's liquidator and filler re-sample the slot duration on a live
 cadence — the liquidator's rate limiter reads a shared value the main loop refreshes, the filler
 refreshes on an elapsed-slot config tick — so a process spanning a gate activation picks up the new
 duration without a restart.

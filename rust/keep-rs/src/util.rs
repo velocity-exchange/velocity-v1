@@ -476,8 +476,8 @@ pub const SWIFT_SIGNED_MSG_MAX_AGE: Millis = Millis::from_secs(200);
 /// - **signed message staleness**: the program rejects once the order's
 ///   wall clock age (integrated per slot duration regime) exceeds ~200s
 /// - **placement deadline**: program silently no-ops once `max_slot < current_slot`, where
-///   `max_slot = order_slot + auction_duration converted from 400ms units to
-///   actual slots (ceil)` (identical formula for limit & market orders)
+///   `max_slot` is the first slot reaching the auction duration across all
+///   known slot-duration transitions (identical formula for limit & market orders)
 ///
 /// The `max_ts` check is an *additional* client-side guard (the program does not gate placement
 /// on `max_ts`): an order whose `max_ts` has passed is already dead, so placing it would waste a
@@ -491,14 +491,17 @@ pub fn swift_placement_expired(
     now_ts: i64,
     slot_clock: SlotClock,
 ) -> bool {
+    if order_slot > current_slot {
+        return true;
+    }
     // signed message too old for the program to accept
     if slot_clock.elapsed(order_slot, current_slot) > SWIFT_SIGNED_MSG_MAX_AGE {
         return true;
     }
     // placement deadline: program no-ops once max_slot < current_slot
-    let max_slot = order_slot.saturating_add(
-        Millis::from_stored_units(auction_duration as u64)
-            .to_slots_ceil(slot_clock.slot_duration_at(current_slot)),
+    let max_slot = slot_clock.slot_at_or_after_duration(
+        order_slot,
+        Millis::from_stored_units(auction_duration as u64),
     );
     if current_slot > max_slot {
         return true;

@@ -14,10 +14,9 @@ import { getOrderSignature, NodeList } from './NodeList';
 import { BN } from '../isomorphic/anchor';
 import {
 	SlotDurationState,
-	activeSlotDurationFromState,
 	elapsedMillis,
 	millisFromStoredUnits,
-	millisToSlotsCeil,
+	slotAtOrAfterDuration,
 } from '../math/time';
 import {
 	BASE_PRECISION,
@@ -1158,7 +1157,8 @@ export class DLOB {
 				const makerPrice = makerNode.getPriceOrThrow(
 					oraclePriceData,
 					slot,
-					tickSize
+					tickSize,
+					this.slotDurationState
 				);
 				const takerPrice = takerNode.getPrice(
 					oraclePriceData,
@@ -1334,14 +1334,10 @@ export class DLOB {
 	 * slot duration.
 	 */
 	private signedMsgMaxSlot(order: Order): BN {
-		return order.slot.add(
-			millisToSlotsCeil(
-				millisFromStoredUnits(order.auctionDuration),
-				activeSlotDurationFromState(
-					this.slotDurationState,
-					order.slot // best effort: placement time duration
-				)
-			)
+		return slotAtOrAfterDuration(
+			this.slotDurationState,
+			order.slot,
+			millisFromStoredUnits(order.auctionDuration)
 		);
 	}
 
@@ -1723,8 +1719,20 @@ export class DLOB {
 			slot,
 			(bestNode, currentNode, slot, oraclePriceData) => {
 				return bestNode
-					.getPriceOrThrow(oraclePriceData, slot, tickSize)
-					.lt(currentNode.getPriceOrThrow(oraclePriceData, slot, tickSize));
+					.getPriceOrThrow(
+						oraclePriceData,
+						slot,
+						tickSize,
+						this.slotDurationState
+					)
+					.lt(
+						currentNode.getPriceOrThrow(
+							oraclePriceData,
+							slot,
+							tickSize,
+							this.slotDurationState
+						)
+					);
 			},
 			filterFcn
 		);
@@ -1768,8 +1776,20 @@ export class DLOB {
 			slot,
 			(bestNode, currentNode, slot, oraclePriceData) => {
 				return bestNode
-					.getPriceOrThrow(oraclePriceData, slot, tickSize)
-					.gt(currentNode.getPriceOrThrow(oraclePriceData, slot, tickSize));
+					.getPriceOrThrow(
+						oraclePriceData,
+						slot,
+						tickSize,
+						this.slotDurationState
+					)
+					.gt(
+						currentNode.getPriceOrThrow(
+							oraclePriceData,
+							slot,
+							tickSize,
+							this.slotDurationState
+						)
+					);
 			},
 			filterFcn
 		);
@@ -1972,12 +1992,14 @@ export class DLOB {
 				const bidPrice = bidNode.getPriceOrThrow(
 					oraclePriceData,
 					slot,
-					tickSize
+					tickSize,
+					this.slotDurationState
 				);
 				const askPrice = askNode.getPriceOrThrow(
 					oraclePriceData,
 					slot,
-					tickSize
+					tickSize,
+					this.slotDurationState
 				);
 
 				// orders don't cross
@@ -2592,7 +2614,8 @@ export class DLOB {
 			),
 			oraclePriceData,
 			slot,
-			tickSize
+			tickSize,
+			this.slotDurationState
 		);
 
 		const fallbackAskGenerators = fallbackL2Generators.map(
@@ -2621,7 +2644,8 @@ export class DLOB {
 			),
 			oraclePriceData,
 			slot,
-			tickSize
+			tickSize,
+			this.slotDurationState
 		);
 
 		const fallbackBidGenerators = fallbackL2Generators.map((fallbackOrders) => {
@@ -2685,7 +2709,12 @@ export class DLOB {
 		for (const ask of restingAsks) {
 			const askOrder = getOrderOrThrow(ask);
 			asks.push({
-				price: ask.getPriceOrThrow(oraclePriceData, slot, tickSize),
+				price: ask.getPriceOrThrow(
+					oraclePriceData,
+					slot,
+					tickSize,
+					this.slotDurationState
+				),
 				size: askOrder.baseAssetAmount.sub(askOrder.baseAssetAmountFilled),
 				maker: new PublicKey(getUserAccountOrThrow(ask)),
 				orderId: askOrder.orderId,
@@ -2704,7 +2733,12 @@ export class DLOB {
 		for (const bid of restingBids) {
 			const bidOrder = getOrderOrThrow(bid);
 			bids.push({
-				price: bid.getPriceOrThrow(oraclePriceData, slot, tickSize),
+				price: bid.getPriceOrThrow(
+					oraclePriceData,
+					slot,
+					tickSize,
+					this.slotDurationState
+				),
 				size: bidOrder.baseAssetAmount.sub(bidOrder.baseAssetAmountFilled),
 				maker: new PublicKey(getUserAccountOrThrow(bid)),
 				orderId: bidOrder.orderId,
@@ -2728,7 +2762,12 @@ export class DLOB {
 		let runningSumQuote = ZERO;
 		let runningSumBase = ZERO;
 		for (const side of dlobSide) {
-			const price = side.getPriceOrThrow(oraclePriceData, slot, tickSize); //side.order.quoteAssetAmount.div(side.order.baseAssetAmount);
+			const price = side.getPriceOrThrow(
+				oraclePriceData,
+				slot,
+				tickSize,
+				this.slotDurationState
+			);
 			const sideOrder = getOrderOrThrow(side);
 			const baseAmountRemaining = sideOrder.baseAssetAmount.sub(
 				sideOrder.baseAssetAmountFilled

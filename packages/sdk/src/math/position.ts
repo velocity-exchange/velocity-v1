@@ -24,7 +24,7 @@ import {
 } from './amm';
 import { calculateBaseAssetValueWithOracle } from './margin';
 import { calculateNetUserPnlImbalance } from './market';
-import { SlotDurationMs } from './time';
+import { SlotDurationState } from './time';
 
 /**
  * Simulates fully closing `userPosition` against the AMM (optionally through its bid/ask
@@ -46,7 +46,7 @@ export function calculateBaseAssetValue(
 	useSpread = true,
 	skipUpdate = false,
 	latestSlot?: BN,
-	slotDuration?: SlotDurationMs
+	slotDurationState?: SlotDurationState
 ): BN {
 	if (userPosition.baseAssetAmount.eq(ZERO)) {
 		return ZERO;
@@ -64,7 +64,7 @@ export function calculateBaseAssetValue(
 					directionToClose,
 					mmOraclePriceData,
 					latestSlot,
-					slotDuration
+					slotDurationState
 				);
 			prepegAmm = {
 				baseAssetReserve,

@@ -10,6 +10,7 @@ import {
 	activeSlotDurationFromState,
 	elapsedMillis,
 	elapsedMillisFromSlotDelta,
+	slotAtOrAfterDuration,
 	millis,
 	millisFromSecs,
 	millisFromStoredUnits,
@@ -131,6 +132,21 @@ describe('slot-time helpers (program parity)', () => {
 		assert.equal(
 			elapsedMillisFromSlotDelta(state, new BN(100), new BN(50)).toNumber(),
 			50 * 400
+		);
+	});
+
+	it('projects duration across a known future transition', () => {
+		const state: SlotDurationState = {
+			slotDurationTransitionSlots: [
+				new BN(1_000),
+				new BN(2_000),
+				new BN(0),
+				new BN(0),
+			],
+		};
+		assert.equal(
+			slotAtOrAfterDuration(state, new BN(995), millisFromSecs(4)).toNumber(),
+			1_006
 		);
 	});
 

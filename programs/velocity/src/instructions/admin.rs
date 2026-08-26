@@ -37,8 +37,7 @@ use {
             },
             time::{
                 legacy_slot_duration_i64_raw, legacy_slot_duration_u8,
-                slot_duration_transition_index, SlotClock, SlotDuration,
-                SLOT_DURATION_TRANSITION_MS,
+                slot_duration_transition_index, SlotClock, SLOT_DURATION_TRANSITION_MS,
             },
         },
         math_error, msg,
@@ -2775,6 +2774,60 @@ fn feature_gate_effective_slot(
     Ok(epoch_schedule.get_first_slot_in_epoch(activation_epoch.saturating_add(1)))
 }
 
+fn validated_slot_duration_archive_update(
+    state: &State,
+    transition_index: usize,
+    effective_slot: u64,
+    now_slot: u64,
+) -> Result<[u64; 4]> {
+    let previous_slot = state.slot_duration_transition_slots[..transition_index]
+        .iter()
+        .rev()
+        .find(|slot| **slot != 0)
+        .copied();
+    let next_slot = state.slot_duration_transition_slots[transition_index + 1..]
+        .iter()
+        .find(|slot| **slot != 0)
+        .copied();
+
+    validate!(
+        previous_slot.map_or(true, |slot| effective_slot >= slot)
+            && next_slot.map_or(true, |slot| effective_slot <= slot),
+        ErrorCode::DefaultError,
+        "IBRL transition slots are not monotonic"
+    )?;
+
+    if let Some(highest) = state
+        .slot_duration_transition_slots
+        .iter()
+        .rposition(|slot| *slot != 0)
+    {
+        if transition_index > highest {
+            validate!(
+                now_slot >= state.slot_duration_transition_slots[highest],
+                ErrorCode::DefaultError,
+                "previous synchronized IBRL transition is not effective"
+            )?;
+        }
+    }
+
+    let current_duration_ms = state.slot_clock().slot_duration_at(now_slot).as_ms();
+    let mut proposed_slots = state.slot_duration_transition_slots;
+    proposed_slots[transition_index] = effective_slot;
+    let proposed_clock = SlotClock::from_state_fields(
+        proposed_slots,
+        state.slot_duration_ms,
+        state.pending_slot_duration_ms,
+        state.slot_duration_effective_slot,
+    );
+    validate!(
+        proposed_clock.slot_duration_at(now_slot).as_ms() <= current_duration_ms,
+        ErrorCode::DefaultError,
+        "IBRL synchronization cannot regress the active slot duration"
+    )?;
+    Ok(proposed_slots)
+}
+
 /// Synchronize one IBRL transition from its feature account. Permissionless:
 /// all accepted data is fixed by the feature key, feature program ownership,
 /// serialized activation slot and the cluster EpochSchedule sysvar.
@@ -2800,46 +2853,42 @@ pub fn handle_sync_state_slot_duration(ctx: Context<SyncStateSlotDuration>) -> R
         )?;
         return Ok(());
     }
-    if transition_index > 0 {
-        let previous_slot = state.slot_duration_transition_slots[transition_index - 1];
-        validate!(
-            previous_slot != 0 && now_slot >= previous_slot,
-            ErrorCode::DefaultError,
-            "previous IBRL transition is not synchronized or effective"
-        )?;
-        validate!(
-            effective_slot >= previous_slot,
-            ErrorCode::DefaultError,
-            "IBRL transition slots are not monotonic"
-        )?;
-    }
 
-    // Keep the original staging fields coherent for older clients. New readers
-    // use the transition archive, so no terminal promotion transaction exists.
-    if state.pending_slot_duration_ms != 0 && now_slot >= state.slot_duration_effective_slot {
-        state.slot_duration_ms = state.pending_slot_duration_ms;
-        state.pending_slot_duration_ms = 0;
-        state.slot_duration_effective_slot = 0;
-    }
-    validate!(
-        state.pending_slot_duration_ms == 0,
-        ErrorCode::DefaultError,
-        "previous IBRL transition is not effective"
-    )?;
-
+    // A permissionless caller may backfill a missing historical transition,
+    // but adding it must never make the clock at the current slot slower. This
+    // also closes migration from a legacy state already at 300/250/200ms: sync
+    // the currently active (fastest) gate first, then backfill older gates.
+    let proposed_slots =
+        validated_slot_duration_archive_update(&state, transition_index, effective_slot, now_slot)?;
+    let proposed_clock = SlotClock::from_state_fields(
+        proposed_slots,
+        state.slot_duration_ms,
+        state.pending_slot_duration_ms,
+        state.slot_duration_effective_slot,
+    );
     msg!(
         "slot_duration_ms: synchronized {}ms effective at slot {}",
         slot_duration_ms,
         effective_slot
     );
-    state.slot_duration_transition_slots[transition_index] = effective_slot;
-    if effective_slot <= now_slot {
-        state.slot_duration_ms = slot_duration_ms;
+    state.slot_duration_transition_slots = proposed_slots;
+
+    // Keep the legacy staging trio coherent for old readers. Archive readers
+    // apply every boundary themselves. Old readers get the active duration and
+    // the earliest known future boundary; stale legacy staging never blocks a
+    // canonical archive repair.
+    state.slot_duration_ms = proposed_clock.slot_duration_at(now_slot).as_ms() as u16;
+    let next_future = proposed_slots
+        .iter()
+        .enumerate()
+        .filter(|(_, slot)| **slot > now_slot)
+        .min_by_key(|(_, slot)| **slot);
+    if let Some((index, next_slot)) = next_future {
+        state.pending_slot_duration_ms = SLOT_DURATION_TRANSITION_MS[index];
+        state.slot_duration_effective_slot = *next_slot;
+    } else {
         state.pending_slot_duration_ms = 0;
         state.slot_duration_effective_slot = 0;
-    } else {
-        state.pending_slot_duration_ms = slot_duration_ms;
-        state.slot_duration_effective_slot = effective_slot;
     }
     Ok(())
 }
@@ -3818,14 +3867,8 @@ const STATE_SLOT_DURATION_EFFECTIVE_SLOT_OFFSET: usize = 1512;
 /// Byte offset of `State::slot_duration_transition_slots` (`[u64; 4]` LE).
 const STATE_SLOT_DURATION_TRANSITION_SLOTS_OFFSET: usize = 1520;
 
-/// Read the live slot duration from a raw (already discriminator-checked) state
-/// account, applying a staged switch once `current_slot` has reached its
-/// effective slot (mirrors [`State::active_slot_duration_ms`]) and resolving the
-/// `0` sentinel to the 400ms baseline.
-fn read_native_state_slot_duration(
-    state_account: &AccountInfo,
-    current_slot: u64,
-) -> Result<SlotDuration> {
+/// Read the full clock from a raw, already discriminator-checked State account.
+fn read_native_state_slot_clock(state_account: &AccountInfo) -> Result<SlotClock> {
     let state = state_account.try_borrow_data()?;
     let read_u16 = |off: usize| -> Result<u16> {
         let bytes: [u8; 2] = state
@@ -3856,10 +3899,12 @@ fn read_native_state_slot_duration(
             .map_err(|_| ErrorCode::InvalidNativeStateAccount)?;
         *transition_slot = u64::from_le_bytes(bytes);
     }
-    Ok(
-        SlotClock::from_state_fields(transition_slots, base, pending, effective_slot)
-            .slot_duration_at(current_slot),
-    )
+    Ok(SlotClock::from_state_fields(
+        transition_slots,
+        base,
+        pending,
+        effective_slot,
+    ))
 }
 
 pub fn handle_update_mm_oracle_native(accounts: &[AccountInfo], data: &[u8]) -> Result<()> {
@@ -3955,7 +4000,7 @@ fn update_mm_oracle(accounts: &[AccountInfo], data: &[u8], current_slot: u64) ->
         incoming_price,
         incoming_sequence_id,
         source_slot,
-        read_native_state_slot_duration(&accounts[2], current_slot)?,
+        read_native_state_slot_clock(&accounts[2])?,
     )? {
         MmOracleUpdateOutcome::Written { price } => {
             if price != incoming_price {
@@ -4198,7 +4243,7 @@ fn update_mm_oracle_batch(
         State::DISCRIMINATOR,
         ErrorCode::InvalidNativeStateAccount,
     )?;
-    let slot_duration = read_native_state_slot_duration(state_account, current_slot)?;
+    let slot_clock = read_native_state_slot_clock(state_account)?;
 
     {
         let state = state_account.try_borrow_data()?;
@@ -4266,7 +4311,7 @@ fn update_mm_oracle_batch(
             incoming_price,
             incoming_sequence_id,
             source_slot,
-            slot_duration,
+            slot_clock,
         )? {
             MmOracleUpdateOutcome::Written { price } => {
                 if price != incoming_price {
@@ -4311,6 +4356,19 @@ enum MmOracleUpdateOutcome {
     Skipped(MmOracleSkipReason),
 }
 
+fn mm_oracle_source_slot_out_of_range(
+    slot_clock: SlotClock,
+    current_slot: u64,
+    source_slot: u64,
+) -> bool {
+    if source_slot <= current_slot {
+        slot_clock.elapsed(source_slot, current_slot) > MM_ORACLE_MAX_SOURCE_AGE
+    } else {
+        source_slot.saturating_sub(current_slot)
+            > MM_ORACLE_MAX_SOURCE_AGE.to_slots(slot_clock.slot_duration_at(current_slot))
+    }
+}
+
 /// Applies one MM oracle update to an already-authenticated perp market
 /// account. The single copy of the per-market gating, shared by opcode 0
 /// (`update_mm_oracle`) and the batch handler (opcode 2), so the two cannot
@@ -4344,7 +4402,7 @@ fn apply_mm_oracle_update(
     incoming_price: i64,
     incoming_sequence_id: u64,
     source_slot: u64,
-    slot_duration: SlotDuration,
+    slot_clock: SlotClock,
 ) -> Result<MmOracleUpdateOutcome> {
     use {MmOracleSkipReason as Skip, MmOracleUpdateOutcome as Outcome};
 
@@ -4391,22 +4449,23 @@ fn apply_mm_oracle_update(
     // never shorter than intended (floor would loosen the slew cap at intermediate
     // gates). The immediate-fill staleness fallback in `oracle_validity` ceils the
     // same constant, so the accept threshold there matches this write gate exactly.
+    let slot_duration = slot_clock.slot_duration_at(current_slot);
     let min_gap = MM_ORACLE_MIN_WRITE_GAP.to_slots_ceil(slot_duration);
     if gap < min_gap {
         return Ok(Outcome::Skipped(Skip::RecrankGapTooSmall { gap, min_gap }));
     }
 
-    // Source-observation freshness, symmetric around the landing slot.
+    // Source-observation freshness around the landing slot.
     // `mm_oracle_slot` is stamped with the landing slot, so a late-landing
     // signed update would otherwise make an old observation read as fresh.
     // The bound applies in both directions: a source slot far in the future is
     // a caller bug (a wrong-unit value, e.g. a millisecond timestamp, would
     // otherwise disable this gate permanently and silently), while a small
     // forward allowance still lets a crank estimate its landing slot.
-    // This bound floors while the write gate above ceils, so the true observation
-    // age this admits is `ceil(gap) + floor(age)` slots, not twice the gap. The two
-    // are equal only at the 400ms baseline; at 350ms the bound is 5 slots (1750ms).
-    if current_slot.abs_diff(source_slot) > MM_ORACLE_MAX_SOURCE_AGE.to_slots(slot_duration) {
+    // Past observations use the piecewise clock so a transition cannot disguise
+    // old source time. A small future landing estimate has no elapsed interval
+    // yet, so it keeps the conservative endpoint conversion.
+    if mm_oracle_source_slot_out_of_range(slot_clock, current_slot, source_slot) {
         return Ok(Outcome::Skipped(Skip::SourceSlotOutOfRange { source_slot }));
     }
 
@@ -6852,6 +6911,15 @@ mod native_batch_tests {
         assert_eq!(clamped, 0);
         assert_eq!(read_stats(&market_info), initial);
     }
+
+    #[test]
+    fn source_age_integrates_across_slot_duration_transition() {
+        let clock = SlotClock::from_state_fields([1, 1, 1, 100], 0, 0, 0);
+        // Four slots priced only at the 200ms endpoint would look exactly 800ms
+        // old. Two of them were actually 250ms, so the observation is 900ms old.
+        assert!(mm_oracle_source_slot_out_of_range(clock, 102, 98));
+        assert!(!mm_oracle_source_slot_out_of_range(clock, 102, 99));
+    }
 }
 
 #[cfg(test)]
@@ -6930,7 +6998,8 @@ mod feature_gate_tests {
     use {
         super::{
             feature_gate_effective_slot, ibrl_feature_gate, ibrl_slot_duration_ms,
-            read_native_state_slot_duration, FEATURE_GATE_PROGRAM,
+            read_native_state_slot_clock, validated_slot_duration_archive_update,
+            FEATURE_GATE_PROGRAM,
         },
         crate::state::state::State,
         anchor_lang::prelude::*,
@@ -6970,6 +7039,38 @@ mod feature_gate_tests {
             assert_eq!(ibrl_slot_duration_ms(&key), Some(ms));
         }
         assert_eq!(ibrl_slot_duration_ms(&Pubkey::new_unique()), None);
+    }
+
+    #[test]
+    fn archive_sync_never_regresses_legacy_live_duration() {
+        let mut state = State::default();
+        state.slot_duration_ms = 200;
+
+        // Starting catch-up with an old slower gate would make the archive
+        // authoritative at 350ms and is rejected.
+        assert!(validated_slot_duration_archive_update(&state, 0, 100, 200).is_err());
+
+        // Sync the currently active fastest gate first, then historical gates
+        // may be backfilled without changing the live 200ms duration.
+        let slots = validated_slot_duration_archive_update(&state, 3, 100, 200).unwrap();
+        state.slot_duration_transition_slots = slots;
+        assert!(validated_slot_duration_archive_update(&state, 0, 10, 200).is_ok());
+    }
+
+    #[test]
+    fn archive_sync_allows_skips_but_not_early_forward_advances() {
+        let state = State::default();
+        // No predecessor is required, so an abandoned 350ms gate cannot brick
+        // synchronization of a verified 300ms transition.
+        assert!(validated_slot_duration_archive_update(&state, 1, 100, 200).is_ok());
+
+        let mut state = State::default();
+        state.slot_duration_transition_slots[0] = 300;
+        assert!(validated_slot_duration_archive_update(&state, 2, 400, 299).is_err());
+        assert!(validated_slot_duration_archive_update(&state, 2, 400, 300).is_ok());
+        state.slot_duration_transition_slots[2] = 400;
+        assert!(validated_slot_duration_archive_update(&state, 1, 301, 300).is_ok());
+        assert!(validated_slot_duration_archive_update(&state, 1, 401, 300).is_err());
     }
 
     #[test]
@@ -7145,12 +7246,16 @@ mod feature_gate_tests {
         let acct = account(&key, &owner, &mut lamports, &mut data);
         // before the effective slot: base 350; at/after: staged 300
         assert_eq!(
-            read_native_state_slot_duration(&acct, 999).unwrap().as_ms(),
+            read_native_state_slot_clock(&acct)
+                .unwrap()
+                .slot_duration_at(999)
+                .as_ms(),
             350
         );
         assert_eq!(
-            read_native_state_slot_duration(&acct, 1_000)
+            read_native_state_slot_clock(&acct)
                 .unwrap()
+                .slot_duration_at(1_000)
                 .as_ms(),
             300
         );
@@ -7184,8 +7289,9 @@ mod feature_gate_tests {
                 expected_ms
             );
             assert_eq!(
-                read_native_state_slot_duration(&acct, slot)
+                read_native_state_slot_clock(&acct)
                     .unwrap()
+                    .slot_duration_at(slot)
                     .as_ms(),
                 expected_ms
             );

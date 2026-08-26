@@ -7,7 +7,7 @@ use {
             constants::{BID_ASK_SPREAD_PRECISION_I128, TEN_BPS_I64},
             orders::calculate_quote_asset_amount_for_maker_order,
             safe_math::SafeMath,
-            time::SlotClock,
+            time::{Millis, SlotClock},
         },
         state::user::Order,
     },
@@ -34,12 +34,16 @@ pub fn is_maker_for_taker(
         Ok(true)
     // otherwise the maker must be older than the taker order
     } else {
-        Ok(maker_order
-            .slot
-            .safe_add(maker_order.auction_duration.cast()?)?
-            <= taker_order
-                .slot
-                .safe_add(taker_order.auction_duration.cast()?)?)
+        let anchor_slot = maker_order.slot.min(taker_order.slot);
+        let maker_end_ms = slot_clock
+            .elapsed(anchor_slot, maker_order.slot)
+            .as_ms()
+            .safe_add(Millis::from_stored_units(maker_order.auction_duration as u64).as_ms())?;
+        let taker_end_ms = slot_clock
+            .elapsed(anchor_slot, taker_order.slot)
+            .as_ms()
+            .safe_add(Millis::from_stored_units(taker_order.auction_duration as u64).as_ms())?;
+        Ok(maker_end_ms <= taker_end_ms)
     }
 }
 

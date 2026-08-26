@@ -685,6 +685,14 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
 
     // Set max slot for the order early so we set correct signed msg order id
     let order_slot = verified_message_and_signature.slot;
+    if order_slot > clock.slot {
+        msg!(
+            "SignedMsg order slot {} is ahead of current slot {}",
+            order_slot,
+            clock.slot
+        );
+        return Err(print_error!(ErrorCode::InvalidSignedMsgOrderParam)().into());
+    }
     // ~200s of wall clock age, integrated per slot duration regime
     let max_order_age = Millis::from_secs(200);
     if state.slot_clock().elapsed(order_slot, clock.slot) > max_order_age {
@@ -697,18 +705,18 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
         return Err(print_error!(ErrorCode::InvalidSignedMsgOrderParam)().into());
     }
     let market_index = matching_taker_order_params.market_index;
-    // `auction_duration` is in wall clock 400ms units; the slot bound converts
-    // it at the live slot duration (ceil, so the order never expires before
-    // its auction's wall clock length)
+    // `auction_duration` is in wall clock 400ms units. Resolve the first slot
+    // reaching that duration across every known future transition so placement
+    // expiry cannot disagree with auction completion at a gate boundary.
     let auction_duration_units = if matching_taker_order_params.order_type == OrderType::Limit {
         matching_taker_order_params.auction_duration.unwrap_or(0)
     } else {
         matching_taker_order_params.auction_duration.unwrap()
     };
-    let max_slot = order_slot.safe_add(
-        Millis::from_stored_units(auction_duration_units as u64)
-            .to_slots_ceil(state.slot_duration()),
-    )?;
+    let max_slot = state.slot_clock().slot_at_or_after_duration(
+        order_slot,
+        Millis::from_stored_units(auction_duration_units as u64),
+    );
 
     // Dont place order if max slot already passed
     if max_slot < clock.slot {

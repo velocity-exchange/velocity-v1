@@ -8,7 +8,6 @@ import {
 	SlotSource,
 } from './types';
 import { VelocityClient } from '../velocityClient';
-import { currentSlotDuration } from '../math/time';
 import { isVariant, MarketType } from '../types';
 import {
 	DEFAULT_TOP_OF_BOOK_QUOTE_AMOUNTS,
@@ -173,14 +172,7 @@ export class DLOBSubscriber {
 								? MAJORS_TOP_OF_BOOK_QUOTE_AMOUNTS
 								: DEFAULT_TOP_OF_BOOK_QUOTE_AMOUNTS,
 						latestSlot,
-						// Resolve at the slot the quote is priced at: a staged
-						// flip between latestSlot and the slot source would
-						// otherwise measure elapsed slots in the new regime and
-						// convert them at the old duration.
-						slotDuration: currentSlotDuration(
-							this.velocityClient,
-							latestSlot?.toNumber() ?? this.slotSource.getSlot()
-						),
+						slotDurationState: this.velocityClient.getStateAccount(),
 					}),
 				];
 			}

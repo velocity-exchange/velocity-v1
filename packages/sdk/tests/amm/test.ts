@@ -17,7 +17,6 @@ import {
 	calculateAllEstimatedFundingRate,
 	calculateLongShortFundingRateAndLiveTwaps,
 	getVammL2Generator,
-	SLOT_DURATION_BASELINE,
 	BASE_PRECISION,
 	PerpMarketAccount,
 	L2Level,
@@ -1861,7 +1860,7 @@ describe('AMM Tests', () => {
 			mmOraclePriceData,
 			numOrders: 10,
 			now,
-			slotDuration: SLOT_DURATION_BASELINE,
+			slotDurationState: {},
 			topOfBookQuoteAmounts: [],
 		});
 
@@ -1939,7 +1938,7 @@ describe('AMM Tests', () => {
 			mmOraclePriceData,
 			numOrders: 10,
 			now,
-			slotDuration: SLOT_DURATION_BASELINE,
+			slotDurationState: {},
 			topOfBookQuoteAmounts: [],
 		});
 
@@ -2018,7 +2017,7 @@ describe('AMM Tests', () => {
 			mmOraclePriceData,
 			numOrders: 10,
 			now,
-			slotDuration: SLOT_DURATION_BASELINE,
+			slotDurationState: {},
 			topOfBookQuoteAmounts: [
 				new BN(10).mul(QUOTE_PRECISION),
 				new BN(100).mul(QUOTE_PRECISION),
@@ -2101,7 +2100,7 @@ describe('AMM Tests', () => {
 			mmOraclePriceData,
 			numOrders: 10,
 			now,
-			slotDuration: SLOT_DURATION_BASELINE,
+			slotDurationState: {},
 			topOfBookQuoteAmounts: [
 				new BN(10).mul(QUOTE_PRECISION),
 				new BN(100).mul(QUOTE_PRECISION),
@@ -2187,7 +2186,7 @@ describe('AMM Tests', () => {
 			mmOraclePriceData,
 			numOrders: 10,
 			now,
-			slotDuration: SLOT_DURATION_BASELINE,
+			slotDurationState: {},
 			topOfBookQuoteAmounts: [
 				new BN(10).mul(QUOTE_PRECISION),
 				new BN(100).mul(QUOTE_PRECISION),
@@ -2271,7 +2270,7 @@ describe('AMM Tests', () => {
 			mmOraclePriceData,
 			numOrders: 10,
 			now,
-			slotDuration: SLOT_DURATION_BASELINE,
+			slotDurationState: {},
 			topOfBookQuoteAmounts: [],
 		});
 

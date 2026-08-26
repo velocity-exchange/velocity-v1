@@ -128,11 +128,7 @@ import {
 	getSpotOracleValidity,
 	isOracleValidForMarginCalc,
 } from './math/oracles';
-import {
-	activeSlotDurationFromState,
-	elapsedMillis,
-	SlotDurationState,
-} from './math/time';
+import { elapsedMillis, SlotDurationState } from './math/time';
 import { getPerpMarketTierNumber, getSpotMarketTierNumber } from './math/tiers';
 import { StrictOraclePrice } from './oracles/strictOraclePrice';
 
@@ -2029,12 +2025,7 @@ export class User {
 		if (useAMMClose) {
 			const latestSlot = slot !== undefined ? new BN(slot) : undefined;
 			const slotDuration =
-				slot !== undefined
-					? activeSlotDurationFromState(
-							this.velocityClient.getStateAccount(),
-							new BN(slot)
-					  )
-					: undefined;
+				slot !== undefined ? this.velocityClient.getStateAccount() : undefined;
 			baseAssetValue = calculateBaseAssetValue(
 				market,
 				position,

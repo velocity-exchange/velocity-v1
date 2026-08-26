@@ -32,6 +32,7 @@ import {
 	millis,
 	millisFromStoredUnits,
 	millisToSlots,
+	millisToSlotsCeil,
 } from './time';
 import { isOperationPaused } from './exchangeStatus';
 
@@ -175,9 +176,17 @@ export function getOracleValidity(
 	// threshold for an exchange-sourced price, which can be same-slot fresh.
 	let isStaleForAmmImmediate = true;
 	if (market.oracleSlotDelayOverride < 0) {
-		isStaleForAmmImmediate = oracleAge.gt(
-			isMmSourcedPrice ? MM_ORACLE_MIN_WRITE_GAP : (ZERO as Millis)
-		);
+		const unsetThreshold = isMmSourcedPrice
+			? elapsedMillisFromSlotDelta(
+					slotDurationState,
+					millisToSlotsCeil(
+						MM_ORACLE_MIN_WRITE_GAP,
+						activeSlotDurationFromState(slotDurationState, slot)
+					),
+					slot
+			  )
+			: (ZERO as Millis);
+		isStaleForAmmImmediate = oracleAge.gt(unsetThreshold);
 	} else if (market.oracleSlotDelayOverride != 0) {
 		isStaleForAmmImmediate = oracleAge.gt(
 			millisFromStoredUnits(market.oracleSlotDelayOverride)

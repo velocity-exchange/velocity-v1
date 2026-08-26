@@ -41,6 +41,7 @@ use {
         priority_fee_subscriber::PriorityFeeSubscriber,
         program::math::{
             auction::calculate_auction_price,
+            constants::MM_ORACLE_MIN_WRITE_GAP,
             time::{Millis, SlotClock},
         },
         swift_order_subscriber::{SignedOrderInfo, SwiftOrderStream},
@@ -2026,7 +2027,9 @@ fn mm_oracle_stale_for_amm_immediate(
     if override_ > 0 {
         mm_oracle_age > Millis::from_stored_units(override_ as u64)
     } else if override_ < 0 {
-        mm_oracle_age > velocity_rs::program::math::constants::MM_ORACLE_MIN_WRITE_GAP
+        let accepted_slots =
+            MM_ORACLE_MIN_WRITE_GAP.to_slots_ceil(slot_clock.slot_duration_at(landing_slot));
+        mm_oracle_age > slot_clock.elapsed_slot_delta(accepted_slots, landing_slot)
     } else {
         true
     }
@@ -3180,6 +3183,7 @@ mod tests {
         // MM_ORACLE_MIN_WRITE_GAP = 800ms: 2 slots at 400ms, 4 at 200ms
         for (clock, threshold) in [
             (SlotClock::baseline(), 2u64),
+            (SlotClock::from_state_fields([1, 0, 0, 0], 0, 0, 0), 3),
             (SlotClock::from_state_fields([1, 1, 1, 1], 0, 0, 0), 4),
         ] {
             // age exactly at the write gap is NOT stale (`age > gap`)

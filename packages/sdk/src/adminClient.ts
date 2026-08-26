@@ -89,7 +89,6 @@ import {
 } from './constants/numericConstants';
 import { calculateTargetPriceTrade } from './math/trade';
 import { calculateAmmReservesAfterSwap, getSwapDirection } from './math/amm';
-import { activeSlotDurationFromState } from './math/time';
 import { JupiterClient, JupiterSwapQuote } from './jupiter/jupiterClient';
 import { SwapMode } from './swap/UnifiedSwapClient';
 
@@ -1414,7 +1413,7 @@ export class AdminClient extends VelocityClient {
 			this.getMMOracleDataForPerpMarket(perpMarketIndex, currentSlot),
 			true,
 			new BN(currentSlot),
-			activeSlotDurationFromState(this.getStateAccount(), new BN(currentSlot))
+			this.getStateAccount()
 		);
 
 		const [newQuoteAssetAmount, newBaseAssetAmount] =
@@ -4673,7 +4672,7 @@ export class AdminClient extends VelocityClient {
 	/**
 	 * Sets the protocol-wide default spot-order auction duration
 	 * (`state.defaultSpotAuctionDuration`). Requires warm admin (`check_warm`).
-	 * @param defaultAuctionDuration - Default auction duration, slots.
+	 * @param defaultAuctionDuration - Default auction duration in fixed 400ms units.
 	 * @returns Transaction signature.
 	 */
 	public async updateSpotAuctionDuration(

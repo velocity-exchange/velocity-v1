@@ -453,7 +453,15 @@ pub fn oracle_validity(
             DelayOverride::Never => true,
             DelayOverride::Unset => {
                 let unset_threshold: Millis = if immediate_price_is_mm_sourced {
-                    MM_ORACLE_MIN_WRITE_GAP
+                    // The MM write gate rounds its minimum interval up to a
+                    // whole number of slots. Measure that same accepted slot
+                    // window through the clock, otherwise 3 x 350ms is marked
+                    // stale even though the crank cannot legally write at 2.
+                    slot_clock.elapsed_slot_delta(
+                        MM_ORACLE_MIN_WRITE_GAP
+                            .to_slots_ceil(slot_clock.slot_duration_at(current_slot)),
+                        current_slot,
+                    )
                 } else {
                     Millis::ZERO
                 };

@@ -1,7 +1,6 @@
 import {
 	SLOT_DURATION_BASELINE,
 	msToSlotsCeilNum,
-	activeSlotDurationFromState,
 	BN,
 	BigNum,
 	VelocityClient,
@@ -1502,7 +1501,7 @@ export const getVammSideQuoteWithMargin = (
 			mmOracle,
 			true,
 			nowSlot,
-			activeSlotDurationFromState(velocityClient.getStateAccount(), nowSlot)
+			velocityClient.getStateAccount()
 		);
 		const marginPct = parseFloat(
 			process.env.DYNAMIC_VAMM_QUOTE_MARGIN || '0.15'

@@ -197,10 +197,7 @@ export class DLOBSubscriberIO extends DLOBSubscriber {
 							),
 							true,
 							new BN(this.slotSource.getSlot()),
-							activeSlotDurationFromState(
-								this.velocityClient.getStateAccount(),
-								new BN(this.slotSource.getSlot())
-							)
+							this.velocityClient.getStateAccount()
 						);
 
 						bestBid =

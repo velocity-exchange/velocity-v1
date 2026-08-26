@@ -9,7 +9,7 @@
 		"@velocity-exchange/jit-proxy": "workspace:*",
 		"@opentelemetry/api": "1.7.0",
 		"@opentelemetry/auto-instrumentations-node": "0.62.2",
-		"@opentelemetry/exporter-prometheus": "0.217.0",
+		"@opentelemetry/exporter-prometheus": "0.31.0",
 		"@opentelemetry/sdk-node": "0.31.0",
 		"@project-serum/anchor": "0.19.1-beta.1",
 		"@project-serum/serum": "0.13.65",

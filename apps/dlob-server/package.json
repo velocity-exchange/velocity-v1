@@ -12,7 +12,7 @@
 		"@velocity-exchange/common": "0.0.1",
 		"@velocity-exchange/sdk": "workspace:*",
 		"@opentelemetry/api": "1.7.0",
-		"@opentelemetry/exporter-prometheus": "0.217.0",
+		"@opentelemetry/exporter-prometheus": "0.31.0",
 		"@project-serum/anchor": "0.19.1-beta.1",
 		"@project-serum/serum": "0.13.65",
 		"@solana/web3.js": "1.98.4",

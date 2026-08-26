@@ -448,7 +448,7 @@ mod calculate_margin_requirement_and_total_collateral {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -544,7 +544,7 @@ mod calculate_margin_requirement_and_total_collateral {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -640,7 +640,7 @@ mod calculate_margin_requirement_and_total_collateral {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -739,7 +739,7 @@ mod calculate_margin_requirement_and_total_collateral {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -938,7 +938,7 @@ mod calculate_margin_requirement_and_total_collateral {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -1125,7 +1125,7 @@ mod calculate_margin_requirement_and_total_collateral {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -1255,7 +1255,7 @@ mod calculate_margin_requirement_and_total_collateral {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -1453,7 +1453,7 @@ mod calculate_margin_requirement_and_total_collateral {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -1578,7 +1578,7 @@ mod calculate_margin_requirement_and_total_collateral {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -1700,7 +1700,7 @@ mod calculate_margin_requirement_and_total_collateral {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -1755,7 +1755,7 @@ mod calculate_margin_requirement_and_total_collateral {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -1857,7 +1857,7 @@ mod calculate_margin_requirement_and_total_collateral {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -1976,7 +1976,7 @@ mod calculate_margin_requirement_and_total_collateral {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -2090,7 +2090,7 @@ mod calculate_margin_requirement_and_total_collateral {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -2242,7 +2242,7 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -2355,7 +2355,7 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -2514,7 +2514,7 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -2637,7 +2637,7 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
         let mut oracle_map = OracleMap::load(
             &mut oracle_account_infos.iter().peekable(),
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -2791,7 +2791,7 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
         let mut oracle_map = OracleMap::load(
             &mut oracle_account_infos.iter().peekable(),
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -2942,7 +2942,7 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
         let mut oracle_map = OracleMap::load(
             &mut oracle_account_infos.iter().peekable(),
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -3099,7 +3099,7 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -3242,7 +3242,7 @@ mod calculate_max_withdrawable_amount {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -3333,7 +3333,7 @@ mod calculate_max_withdrawable_amount {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -3426,7 +3426,7 @@ mod calculate_max_withdrawable_amount {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -3551,7 +3551,7 @@ mod validate_spot_margin_trading {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -3639,7 +3639,7 @@ mod validate_spot_margin_trading {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -3727,7 +3727,7 @@ mod validate_spot_margin_trading {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -3815,7 +3815,7 @@ mod validate_spot_margin_trading {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -3903,7 +3903,7 @@ mod validate_spot_margin_trading {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -3991,7 +3991,7 @@ mod validate_spot_margin_trading {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -4079,7 +4079,7 @@ mod validate_spot_margin_trading {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -4227,7 +4227,7 @@ mod calculate_user_equity {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -4336,7 +4336,7 @@ mod calculate_user_equity {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -4442,7 +4442,7 @@ mod calculate_user_equity {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -4545,7 +4545,7 @@ mod calculate_user_equity {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -4665,7 +4665,7 @@ mod floor_net_equity {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -4855,7 +4855,7 @@ mod trip_net_equity {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -4956,7 +4956,7 @@ mod trip_net_equity {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -5372,7 +5372,7 @@ mod pools {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -5436,7 +5436,7 @@ mod pools {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -5528,7 +5528,7 @@ mod isolated_position {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -5739,7 +5739,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -5852,7 +5852,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let mut oracle_map = OracleMap::load_one(
             &sol_oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -5942,7 +5942,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -6039,7 +6039,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -6135,7 +6135,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -6230,7 +6230,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -6325,7 +6325,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -6421,7 +6421,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -6535,7 +6535,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let mut oracle_map = OracleMap::load(
             &mut oracle_account_infos.iter().peekable(),
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -6704,7 +6704,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let mut oracle_map = OracleMap::load(
             &mut oracle_account_infos.iter().peekable(),
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -6884,7 +6884,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let mut oracle_map = OracleMap::load(
             &mut oracle_account_infos.iter().peekable(),
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -7075,7 +7075,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let mut oracle_map = OracleMap::load(
             &mut oracle_account_infos.iter().peekable(),
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -7209,7 +7209,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let mut oracle_map = OracleMap::load(
             &mut oracle_account_infos.iter().peekable(),
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -7367,7 +7367,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let mut oracle_map = OracleMap::load(
             &mut oracle_account_infos.iter().peekable(),
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -7488,7 +7488,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let mut oracle_map = OracleMap::load(
             &mut oracle_account_infos.iter().peekable(),
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -7585,7 +7585,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let mut oracle_map = OracleMap::load(
             &mut oracle_account_infos.iter().peekable(),
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -7691,7 +7691,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let mut oracle_map = OracleMap::load(
             &mut oracle_account_infos.iter().peekable(),
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -7826,7 +7826,7 @@ mod meets_place_order_margin_requirement_with_isolated {
         let mut oracle_map = OracleMap::load(
             &mut oracle_account_infos.iter().peekable(),
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -8259,7 +8259,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
         let mut oracle_map = OracleMap::load(
             &mut oracle_account_infos.iter().peekable(),
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();

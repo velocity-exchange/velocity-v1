@@ -42,7 +42,7 @@ fn staleness_windows_scale_at_non_baseline_duration() {
         has_sufficient_number_of_data_points: true,
         sequence_id: None,
     };
-    let validity = |slot_duration| {
+    let validity = |current_slot, slot_clock| {
         oracle_validity(
             MarketType::Perp,
             0,
@@ -55,17 +55,22 @@ fn staleness_windows_scale_at_non_baseline_duration() {
             10,
             false,
             10,
-            slot_duration,
+            current_slot,
+            slot_clock,
         )
         .unwrap()
     };
 
+    // 15 slots of delay: 6s at 400ms (stale beyond the 4s window), 3s at 200ms
     assert!(matches!(
-        validity(crate::math::time::SlotDuration::BASELINE),
+        validity(1_000_000, crate::math::time::SlotClock::baseline()),
         OracleValidity::StaleForAMM { .. }
     ));
     assert_eq!(
-        validity(crate::math::time::SlotDuration::from_state_ms(200)),
+        validity(
+            1_000_000,
+            crate::math::time::SlotClock::from_state_fields([1, 1, 1, 1], 0, 0, 0)
+        ),
         OracleValidity::Valid
     );
 }
@@ -113,7 +118,7 @@ fn calculate_oracle_valid() {
             oracle_price_data,
             10000,
             &state.oracle_guard_rails.validity,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
         )
         .unwrap();
 
@@ -138,7 +143,8 @@ fn calculate_oracle_valid() {
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
-        crate::math::time::SlotDuration::BASELINE,
+        1_000_000,
+        crate::math::time::SlotClock::baseline(),
     )
     .unwrap();
 
@@ -170,7 +176,8 @@ fn calculate_oracle_valid() {
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
-        crate::math::time::SlotDuration::BASELINE,
+        1_000_000,
+        crate::math::time::SlotClock::baseline(),
     )
     .unwrap();
     assert!(oracle_status.oracle_validity != OracleValidity::Valid);
@@ -189,7 +196,8 @@ fn calculate_oracle_valid() {
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
-        crate::math::time::SlotDuration::BASELINE,
+        1_000_000,
+        crate::math::time::SlotClock::baseline(),
     )
     .unwrap();
     assert!(oracle_status.oracle_validity == OracleValidity::Valid);
@@ -204,7 +212,8 @@ fn calculate_oracle_valid() {
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
-        crate::math::time::SlotDuration::BASELINE,
+        1_000_000,
+        crate::math::time::SlotClock::baseline(),
     )
     .unwrap();
     assert!(oracle_status.mark_too_divergent);
@@ -216,7 +225,8 @@ fn calculate_oracle_valid() {
         &oracle_price_data,
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
-        crate::math::time::SlotDuration::BASELINE,
+        1_000_000,
+        crate::math::time::SlotClock::baseline(),
     )
     .unwrap();
     assert!(oracle_status.mark_too_divergent);
@@ -264,7 +274,8 @@ fn immediate_staleness_threshold_by_override() {
             immediate_override,
             mm_sourced,
             0,
-            crate::math::time::SlotDuration::BASELINE,
+            1_000_000,
+            crate::math::time::SlotClock::baseline(),
         )
         .unwrap();
         matches!(validity, OracleValidity::Valid)

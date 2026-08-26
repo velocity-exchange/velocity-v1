@@ -119,38 +119,42 @@ pub struct State {
     /// Reset to 0 and every account is back on its volume tier at its next
     /// fill; no per-user state.
     pub promo_fee_tier: u8,
-    /// Current Solana slot duration in milliseconds, updated by the admin as
-    /// the IBRL feature gates activate (400 -> 350 -> 300 -> 250 -> 200).
-    /// `0` means unset (what pre-upgrade accounts read out of former padding)
-    /// and is interpreted as the 400ms baseline. Wall-clock durations
-    /// (`math::time::Millis`) are expressed in actual slots through this
-    /// value. Never read this field directly — use [`State::slot_duration`],
-    /// which handles the `0` sentinel. Settable only downward (slots never
-    /// get slower again), and only to values in
-    /// `math::time::VALID_SLOT_DURATIONS_MS`.
+    /// Legacy current-slot-duration field in milliseconds, kept coherent by
+    /// the permissionless sync as the IBRL feature gates activate
+    /// (400 -> 350 -> 300 -> 250 -> 200). `0` means unset (what pre-upgrade
+    /// accounts read out of former padding) and is interpreted as the 400ms
+    /// baseline. Never read this field directly, use [`State::slot_clock`] /
+    /// [`State::slot_duration`]; once any `slot_duration_transition_slots`
+    /// entry is set the archive is authoritative over this field.
     pub slot_duration_ms: u16,
-    /// Staged next slot duration in ms, set by the admin during the target IBRL
-    /// gate's one-epoch warmup. `0` means nothing is staged. Once
-    /// `slot_duration_effective_slot` is reached, [`State::slot_duration`] returns
-    /// this value instead of `slot_duration_ms`, so State switches in lockstep
-    /// with the chain at the exact boundary without a second admin transaction.
-    /// Staging the next gate first promotes this into `slot_duration_ms`.
+    /// Legacy staged next slot duration in ms, kept coherent by the
+    /// permissionless sync for older readers. `0` means nothing is staged. Once
+    /// `slot_duration_effective_slot` is reached, the legacy resolution returns
+    /// this value instead of `slot_duration_ms`. Superseded by the transition
+    /// archive.
     pub pending_slot_duration_ms: u16,
     /// Explicit padding so `slot_duration_effective_slot` (u64) lands on its
     /// 8-byte alignment with no *implicit* padding (see the alignment invariant).
     pub slot_duration_pad: [u8; 2],
-    /// Slot at which `pending_slot_duration_ms` takes effect: the target gate's
-    /// activation slot + the one-epoch (432,000-slot) warmup, read from the IBRL
-    /// feature account when the switch is staged. `0` when nothing is staged.
+    /// Slot at which `pending_slot_duration_ms` takes effect: the first slot of
+    /// the epoch after the target gate's activation epoch, derived from the
+    /// `EpochSchedule` sysvar at sync time. `0` when nothing is staged.
     pub slot_duration_effective_slot: u64,
-    /// 232 = the former 244-byte padding minus the 12 bytes taken above
+    /// First slot of each post-baseline IBRL regime, ordered as
+    /// `[350ms, 300ms, 250ms, 200ms]`. Zero means that transition has not been
+    /// synchronized yet. These anchors let elapsed-time math integrate an
+    /// interval piecewise instead of multiplying its whole slot delta by the
+    /// duration at one endpoint.
+    pub slot_duration_transition_slots: [u64; 4],
+    /// 200 = the former 244-byte padding minus the 12 staging bytes and the 32
+    /// bytes used by `slot_duration_transition_slots`.
     /// (`pending_slot_duration_ms` 2 + `slot_duration_pad` 2 + the 8-byte
     /// `slot_duration_effective_slot`). The padding still absorbs the 8 bytes that
     /// were previously *implicit* trailing padding on x86_64 (State contains a
     /// u128, align 16 on the host but 8 on SBF; explicit padding keeps
     /// `size_of::<State>()` 1744 on both targets, per the alignment invariant in
     /// docs/alignment-and-native-offsets.md).
-    pub padding: [u8; 232],
+    pub padding: [u8; 200],
 }
 
 /// Purpose-specific hot role keys held on `State`. Each variant maps to one of the
@@ -257,12 +261,23 @@ impl Default for State {
             pending_slot_duration_ms: 0,
             slot_duration_pad: [0; 2],
             slot_duration_effective_slot: 0,
-            padding: [0; 232],
+            slot_duration_transition_slots: [0; 4],
+            padding: [0; 200],
         }
     }
 }
 
 impl State {
+    /// Full slot clock, including every synchronized IBRL transition.
+    pub fn slot_clock(&self) -> crate::math::time::SlotClock {
+        crate::math::time::SlotClock::from_state_fields(
+            self.slot_duration_transition_slots,
+            self.slot_duration_ms,
+            self.pending_slot_duration_ms,
+            self.slot_duration_effective_slot,
+        )
+    }
+
     /// The live slot length, applying a staged switch once its effective slot has
     /// passed. Reads the current slot from the Clock sysvar so every existing
     /// caller keeps its signature; if the sysvar is unavailable (unit tests) it
@@ -270,7 +285,7 @@ impl State {
     /// sentinel resolves to the 400ms baseline.
     pub fn slot_duration(&self) -> SlotDuration {
         let now_slot = Clock::get().map(|c| c.slot).unwrap_or(0);
-        SlotDuration::from_state_ms(self.active_slot_duration_ms(now_slot))
+        self.slot_clock().slot_duration_at(now_slot)
     }
 
     /// The raw `slot_duration_ms` in effect at `now_slot`: the staged
@@ -279,26 +294,29 @@ impl State {
     /// yields the base, so pre-switch is the safe default. Shared by
     /// [`State::slot_duration`] and the native fast-path reader.
     pub fn active_slot_duration_ms(&self, now_slot: u64) -> u16 {
-        crate::math::time::active_slot_duration_ms(
-            self.slot_duration_ms,
-            self.pending_slot_duration_ms,
-            self.slot_duration_effective_slot,
-            now_slot,
-        )
+        self.slot_clock().slot_duration_at(now_slot).as_ms() as u16
     }
 
-    /// Read the live slot duration from a foreign, unchecked `State` account, for
-    /// programs (e.g. `vaults`) that hold velocity's State as a bare `AccountInfo`
-    /// and cannot use `AccountLoader` — its `try_from` requires a `&'info`
-    /// borrow that an `#[derive(Accounts)]` struct field cannot provide. Validates
-    /// the velocity-program owner and the `State` discriminator (together unique
-    /// to the singleton State), then reads the staging fields by offset and
-    /// applies any switch effective at `now_slot` via the shared helper. Offsets
-    /// come from `offset_of!` so they cannot drift from the layout.
+    /// Read the live slot duration from a foreign, unchecked `State` account.
+    /// Thin wrapper over [`State::slot_clock_from_account_info`].
     pub fn slot_duration_from_account_info(
         account: &AccountInfo,
         now_slot: u64,
     ) -> Result<SlotDuration> {
+        Ok(Self::slot_clock_from_account_info(account)?.slot_duration_at(now_slot))
+    }
+
+    /// Read the full slot clock from a foreign, unchecked `State` account, for
+    /// programs (e.g. `vaults`) that hold velocity's State as a bare `AccountInfo`
+    /// and cannot use `AccountLoader` — its `try_from` requires a `&'info`
+    /// borrow that an `#[derive(Accounts)]` struct field cannot provide. Validates
+    /// the velocity-program owner and the `State` discriminator (together unique
+    /// to the singleton State), then reads the transition archive and the legacy
+    /// staging fields by offset. Offsets come from `offset_of!` so they cannot
+    /// drift from the layout.
+    pub fn slot_clock_from_account_info(
+        account: &AccountInfo,
+    ) -> Result<crate::math::time::SlotClock> {
         // velocity's ErrorCode (the `validate!` macro binds `ErrorCode`
         // unqualified; the anchor prelude otherwise shadows it here)
         use crate::error::ErrorCode;
@@ -323,9 +341,10 @@ impl State {
         let base_off = DISC + std::mem::offset_of!(State, slot_duration_ms);
         let pending_off = DISC + std::mem::offset_of!(State, pending_slot_duration_ms);
         let eff_off = DISC + std::mem::offset_of!(State, slot_duration_effective_slot);
+        let transitions_off = DISC + std::mem::offset_of!(State, slot_duration_transition_slots);
         // one bounds check covers every field read below
         crate::validate!(
-            data.len() >= eff_off + 8,
+            data.len() >= transitions_off + 32,
             ErrorCode::DefaultError,
             "velocity State account data too short"
         )?;
@@ -334,8 +353,18 @@ impl State {
         let mut eff = [0u8; 8];
         eff.copy_from_slice(&data[eff_off..eff_off + 8]);
         let effective = u64::from_le_bytes(eff);
-        Ok(SlotDuration::from_state_ms(
-            crate::math::time::active_slot_duration_ms(base, pending, effective, now_slot),
+        let mut transition_slots = [0u64; 4];
+        for (i, transition_slot) in transition_slots.iter_mut().enumerate() {
+            let off = transitions_off + i * 8;
+            let mut bytes = [0u8; 8];
+            bytes.copy_from_slice(&data[off..off + 8]);
+            *transition_slot = u64::from_le_bytes(bytes);
+        }
+        Ok(crate::math::time::SlotClock::from_state_fields(
+            transition_slots,
+            base,
+            pending,
+            effective,
         ))
     }
 
@@ -583,7 +612,7 @@ impl Size for State {
     // + protocol_fee_recipient_perp/_spot + hot_fee_withdraw + hot_account_extension, 256 B)
     // + 2*FeeStructure + OracleGuardRails + scalars + solvency_status[1] + promo_fee_tier[1]
     // + slot_duration_ms[2] + pending_slot_duration_ms[2] + slot_duration_pad[2]
-    // + slot_duration_effective_slot[8] + padding[232] = 1752 B.
+    // + slot_duration_effective_slot[8] + transition slots[32] + padding[200] = 1752 B.
     // The padding starts at struct offset 1512, not 1500 — carve new fields from there.
     // hot_if_rebalance was removed with the if-rebalance machinery (its 32 B went into
     // the padding); protocol_fee_recipient_spot later took 32 B back out; solvency_status
@@ -609,6 +638,10 @@ static_assertions::const_assert_eq!(std::mem::offset_of!(State, pending_slot_dur
 static_assertions::const_assert_eq!(
     std::mem::offset_of!(State, slot_duration_effective_slot),
     1504
+);
+static_assertions::const_assert_eq!(
+    std::mem::offset_of!(State, slot_duration_transition_slots),
+    1512
 );
 static_assertions::const_assert_eq!(std::mem::size_of::<State>(), 1744);
 

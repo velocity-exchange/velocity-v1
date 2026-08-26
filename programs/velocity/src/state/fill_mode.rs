@@ -1,6 +1,10 @@
 use crate::{
     error::VelocityResult,
-    math::{auction::calculate_auction_price, casting::Cast, safe_math::SafeMath},
+    math::{
+        auction::{auction_progress_at_fraction, calculate_auction_price_with_progress},
+        casting::Cast,
+        time::SlotClock,
+    },
     state::user::Order,
 };
 
@@ -22,29 +26,29 @@ impl FillMode {
         valid_oracle_price: Option<i64>,
         slot: u64,
         tick_size: u64,
+        slot_clock: SlotClock,
     ) -> VelocityResult<Option<u64>> {
         match self {
             FillMode::Fill | FillMode::PlaceAndMake | FillMode::Liquidation => {
-                order.get_limit_price(valid_oracle_price, None, slot, tick_size)
+                order.get_limit_price(valid_oracle_price, None, slot, tick_size, slot_clock)
             }
             FillMode::PlaceAndTake(_, auction_duration_percentage) => {
-                let auction_duration = order
-                    .auction_duration
-                    .cast::<u64>()?
-                    .safe_mul(auction_duration_percentage.min(&100).cast()?)?
-                    .safe_div(100)?
-                    .cast::<u64>()?;
-
                 if order.has_auction() {
-                    calculate_auction_price(
+                    // price the auction at the requested fraction of its
+                    // wall-clock length, not at a synthetic chain slot
+                    let progress = auction_progress_at_fraction(
                         order,
-                        order.slot.safe_add(auction_duration)?,
+                        auction_duration_percentage.min(&100).cast()?,
+                    )?;
+                    calculate_auction_price_with_progress(
+                        order,
+                        progress,
                         tick_size,
                         valid_oracle_price,
                     )
                     .map(Some)
                 } else {
-                    order.get_limit_price(valid_oracle_price, None, slot, tick_size)
+                    order.get_limit_price(valid_oracle_price, None, slot, tick_size, slot_clock)
                 }
             }
         }

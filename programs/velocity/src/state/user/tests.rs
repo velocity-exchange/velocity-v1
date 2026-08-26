@@ -1761,21 +1761,27 @@ mod resting_limit_order {
         };
         let slot = 0;
 
-        assert!(!order.is_resting_limit_order(slot).unwrap());
+        assert!(!order
+            .is_resting_limit_order(slot, crate::math::time::SlotClock::baseline())
+            .unwrap());
 
         let order = Order {
             order_type: OrderType::TriggerMarket,
             ..Order::default()
         };
 
-        assert!(!order.is_resting_limit_order(slot).unwrap());
+        assert!(!order
+            .is_resting_limit_order(slot, crate::math::time::SlotClock::baseline())
+            .unwrap());
 
         let order = Order {
             order_type: OrderType::Oracle,
             ..Order::default()
         };
 
-        assert!(!order.is_resting_limit_order(slot).unwrap());
+        assert!(!order
+            .is_resting_limit_order(slot, crate::math::time::SlotClock::baseline())
+            .unwrap());
 
         // limit order before end of auction
         let order = Order {
@@ -1787,7 +1793,9 @@ mod resting_limit_order {
         };
         let slot = 2;
 
-        assert!(!order.is_resting_limit_order(slot).unwrap());
+        assert!(!order
+            .is_resting_limit_order(slot, crate::math::time::SlotClock::baseline())
+            .unwrap());
 
         // limit order after end of auction
         let order = Order {
@@ -1799,7 +1807,9 @@ mod resting_limit_order {
         };
         let slot = 12;
 
-        assert!(order.is_resting_limit_order(slot).unwrap());
+        assert!(order
+            .is_resting_limit_order(slot, crate::math::time::SlotClock::baseline())
+            .unwrap());
 
         // limit order post only
         let order = Order {
@@ -1809,7 +1819,9 @@ mod resting_limit_order {
         };
         let slot = 1;
 
-        assert!(order.is_resting_limit_order(slot).unwrap());
+        assert!(order
+            .is_resting_limit_order(slot, crate::math::time::SlotClock::baseline())
+            .unwrap());
 
         // trigger order long crosses trigger, auction complete
         let order = Order {
@@ -1824,7 +1836,9 @@ mod resting_limit_order {
 
         let slot = 12;
 
-        assert!(order.is_resting_limit_order(slot).unwrap());
+        assert!(order
+            .is_resting_limit_order(slot, crate::math::time::SlotClock::baseline())
+            .unwrap());
 
         // trigger order long doesnt cross trigger, auction complete
         let order = Order {
@@ -1839,7 +1853,9 @@ mod resting_limit_order {
 
         let slot = 12;
 
-        assert!(order.is_resting_limit_order(slot).unwrap());
+        assert!(order
+            .is_resting_limit_order(slot, crate::math::time::SlotClock::baseline())
+            .unwrap());
 
         // trigger order short crosses trigger, auction complete
         let order = Order {
@@ -1854,7 +1870,9 @@ mod resting_limit_order {
 
         let slot = 12;
 
-        assert!(order.is_resting_limit_order(slot).unwrap());
+        assert!(order
+            .is_resting_limit_order(slot, crate::math::time::SlotClock::baseline())
+            .unwrap());
 
         // trigger order long doesnt cross trigger, auction complete
         let order = Order {
@@ -1869,7 +1887,9 @@ mod resting_limit_order {
 
         let slot = 12;
 
-        assert!(order.is_resting_limit_order(slot).unwrap());
+        assert!(order
+            .is_resting_limit_order(slot, crate::math::time::SlotClock::baseline())
+            .unwrap());
     }
 }
 
@@ -2206,7 +2226,7 @@ pub mod meets_withdraw_margin_requirement {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();

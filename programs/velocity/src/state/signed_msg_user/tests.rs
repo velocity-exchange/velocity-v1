@@ -32,7 +32,7 @@ mod signed_msg_order_id_eviction {
             signed_msg_user.check_exists_and_prune_stale_signed_msg_order_ids(
                 new_signed_msg_order_id,
                 11,
-                crate::math::time::SlotDuration::BASELINE
+                crate::math::time::SlotClock::baseline()
             ),
             true
         );
@@ -40,7 +40,7 @@ mod signed_msg_order_id_eviction {
             signed_msg_user.check_exists_and_prune_stale_signed_msg_order_ids(
                 new_signed_msg_order_id,
                 20,
-                crate::math::time::SlotDuration::BASELINE
+                crate::math::time::SlotClock::baseline()
             ),
             true
         );
@@ -48,7 +48,7 @@ mod signed_msg_order_id_eviction {
             signed_msg_user.check_exists_and_prune_stale_signed_msg_order_ids(
                 new_signed_msg_order_id,
                 30,
-                crate::math::time::SlotDuration::BASELINE
+                crate::math::time::SlotClock::baseline()
             ),
             false
         );

@@ -33,6 +33,8 @@ import {
 	currentSlotDuration,
 	currentSlotClock,
 	SLOT_DURATION_FLOOR,
+	millisFromStoredUnits,
+	millisToSlotsCeil,
 } from '@velocity-exchange/sdk';
 import { Connection, PublicKey } from '@solana/web3.js';
 import dotenv from 'dotenv';
@@ -132,6 +134,13 @@ class DLOBBuilder {
 			`${logPrefix} Building DLOB with ${this.userAccountData.size} users`
 		);
 		const dlob = new DLOB();
+		try {
+			// auction wall-clock math converts elapsed slots through the State
+			// slot clock; unsubscribed state falls back to the 400ms baseline
+			dlob.slotDurationState = this.velocityClient.getStateAccount();
+		} catch {
+			// not subscribed yet: keep the baseline
+		}
 		let counter = 0;
 		this.userAccountData.forEach((userAccount, pubkey) => {
 			userAccount.orders.forEach((order) => {
@@ -228,8 +237,13 @@ class DLOBBuilder {
 			orderData['signing_authority']
 		);
 
-		const maxSlot = signedMessage.slot.addn(
-			signedMsgOrderParams.auctionDuration ?? 0
+		// mirrors the program's max_slot: auctionDuration is wall-clock 400ms
+		// units, converted to actual slots (ceil) at the live slot duration
+		const maxSlot = signedMessage.slot.add(
+			millisToSlotsCeil(
+				millisFromStoredUnits(signedMsgOrderParams.auctionDuration ?? 0),
+				currentSlotDuration(this.velocityClient, this.slotSubscriber.getSlot())
+			)
 		);
 		if (maxSlot.toNumber() < this.slotSubscriber.getSlot()) {
 			logger.warn(

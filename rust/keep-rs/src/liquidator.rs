@@ -1522,6 +1522,9 @@ fn on_slot_update_fn(
     let market_ids: Vec<MarketId> = market_ids.to_vec();
     let consecutive_failures = std::sync::atomic::AtomicU32::new(0);
     move |new_slot| {
+        // keep the DLOB's slot clock in sync with `State` (no-op unless an
+        // IBRL transition was synchronized since the last slot)
+        dlob_notifier.slot_clock_update(velocity.slot_clock());
         for market in market_ids.iter() {
             // tolerate transient failures; panic (=> service restart) if persistent
             match velocity.try_get_mmoracle_for_perp_market(market.index(), new_slot) {
@@ -2021,7 +2024,7 @@ impl PrimaryLiquidationStrategy {
 
         let validity_guard_rails: velocity_rs::program::state::state::ValidityGuardRails =
             unsafe { std::mem::transmute_copy(&state.oracle_guard_rails.validity) };
-        let slot_duration = velocity.slot_duration_at(slot);
+        let slot_clock = velocity.slot_clock();
         let exchange_validity = oracle_validity(
             MarketType::Perp,
             market.market_index,
@@ -2037,12 +2040,13 @@ impl PrimaryLiquidationStrategy {
             market.oracle_slot_delay_override,
             false,
             market.oracle_low_risk_slot_delay_override,
-            slot_duration,
+            slot,
+            slot_clock,
         )
         .ok()?;
 
         let mm_oracle = market
-            .get_mm_oracle_price_data(exchange_oracle, slot, &validity_guard_rails, slot_duration)
+            .get_mm_oracle_price_data(exchange_oracle, slot, &validity_guard_rails, slot_clock)
             .ok()?;
         let safe_oracle = mm_oracle.get_safe_oracle_price_data();
         let safe_validity = oracle_validity(
@@ -2060,7 +2064,8 @@ impl PrimaryLiquidationStrategy {
             market.oracle_slot_delay_override,
             mm_oracle.is_safe_price_mm_sourced(),
             market.oracle_low_risk_slot_delay_override,
-            slot_duration,
+            slot,
+            slot_clock,
         )
         .ok()?;
 

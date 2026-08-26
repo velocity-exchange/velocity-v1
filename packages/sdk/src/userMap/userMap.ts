@@ -363,6 +363,13 @@ export class UserMap implements UserMapInterface {
 	 */
 	public async getDLOB(slot: number): Promise<DLOB> {
 		const dlob = new DLOB();
+		try {
+			// auction wall-clock math converts elapsed slots through the State
+			// slot clock; unsubscribed state falls back to the 400ms baseline
+			dlob.slotDurationState = this.velocityClient.getStateAccount();
+		} catch {
+			// not subscribed yet: keep the baseline
+		}
 		await dlob.initFromUserMap(this, slot);
 		return dlob;
 	}

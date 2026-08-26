@@ -15,12 +15,7 @@ import { PublicKey } from '@solana/web3.js';
 import { EventEmitter } from 'events';
 import StrictEventEmitter from 'strict-event-emitter-types';
 import { VelocityClient } from './velocityClient';
-import {
-	SlotDurationMs,
-	SLOT_DURATION_BASELINE,
-	millisFromSecs,
-	millisFromSlots,
-} from './math/time';
+import { millisFromSecs } from './math/time';
 import {
 	HealthComponent,
 	HealthComponents,
@@ -135,7 +130,8 @@ import {
 } from './math/oracles';
 import {
 	activeSlotDurationFromState,
-	slotDurationFromState,
+	elapsedMillis,
+	SlotDurationState,
 } from './math/time';
 import { getPerpMarketTierNumber, getSpotMarketTierNumber } from './math/tiers';
 import { StrictOraclePrice } from './oracles/strictOraclePrice';
@@ -2352,9 +2348,6 @@ export class User {
 	getFloorNetEquity(slot?: BN): FloorNetEquity {
 		const stateAccount = this.velocityClient.getStateAccount();
 		const oracleGuardRails = stateAccount.oracleGuardRails;
-		const slotDuration = slot
-			? activeSlotDurationFromState(stateAccount, slot)
-			: slotDurationFromState(stateAccount.slotDurationMs);
 		const userAccount = this.getUserAccountOrThrow();
 
 		let value = ZERO;
@@ -2379,7 +2372,7 @@ export class User {
 							oracleGuardRails,
 							slot,
 							undefined,
-							slotDuration
+							stateAccount
 						)
 				  )
 				: true;
@@ -2422,7 +2415,7 @@ export class User {
 							oracleGuardRails,
 							slot,
 							undefined,
-							slotDuration
+							stateAccount
 						)
 				  )
 				: true;
@@ -2454,7 +2447,7 @@ export class User {
 							slot,
 							undefined,
 							undefined,
-							slotDuration
+							stateAccount
 						)
 				  )
 				: true;
@@ -2497,9 +2490,6 @@ export class User {
 	getTripNetEquity(slot?: BN): TripNetEquity {
 		const stateAccount = this.velocityClient.getStateAccount();
 		const oracleGuardRails = stateAccount.oracleGuardRails;
-		const slotDuration = slot
-			? activeSlotDurationFromState(stateAccount, slot)
-			: slotDurationFromState(stateAccount.slotDurationMs);
 		const userAccount = this.getUserAccountOrThrow();
 
 		const unprovable: TripNetEquity = {
@@ -2528,7 +2518,7 @@ export class User {
 							oracleGuardRails,
 							slot,
 							undefined,
-							slotDuration
+							stateAccount
 						)
 				  )
 				: true;
@@ -2601,7 +2591,7 @@ export class User {
 							oracleGuardRails,
 							slot,
 							undefined,
-							slotDuration
+							stateAccount
 						)
 				  )
 				: true;
@@ -2638,7 +2628,7 @@ export class User {
 								slot,
 								undefined,
 								undefined,
-								slotDuration
+								stateAccount
 							)
 					  )
 					: true);
@@ -4913,11 +4903,11 @@ export class User {
 	 * liquidated; and
 	 * no open perp positions, borrows, spot open orders, or open orders of any kind.
 	 * @param slot Current slot to evaluate inactivity against.
-	 * @param slotDuration Current slot duration (`slotDurationFromState(state.slotDurationMs)`).
+	 * @param slotDurationState The `State` account (or its slot-duration fields); inactivity is integrated per slot-duration regime.
 	 */
 	public canMakeIdle(
 		slot: BN,
-		slotDuration: SlotDurationMs = SLOT_DURATION_BASELINE
+		slotDurationState: SlotDurationState = {}
 	): boolean {
 		const userAccount = this.getUserAccountOrThrow();
 		if (userAccount.idle) {
@@ -4933,9 +4923,10 @@ export class User {
 			: millisFromSecs(604_800); // 1 week
 
 		const userLastActiveSlot = userAccount.lastActiveSlot;
-		const timeSinceLastActive = millisFromSlots(
-			slot.sub(userLastActiveSlot),
-			slotDuration
+		const timeSinceLastActive = elapsedMillis(
+			slotDurationState,
+			userLastActiveSlot,
+			slot
 		);
 		if (timeSinceLastActive.lt(idleAfter)) {
 			return false;

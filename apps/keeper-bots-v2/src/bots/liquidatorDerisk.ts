@@ -34,6 +34,7 @@ import {
 	RECOMMENDED_JUPITER_API,
 	msToSlotsCeilNum,
 	currentSlotDuration,
+	SLOT_DURATION_BASELINE,
 } from '@velocity-exchange/sdk';
 import {
 	ComputeBudgetProgram,
@@ -238,13 +239,13 @@ export class LiquidatorDerisk {
 				baseAssetAmount: standardizedTokenAmount,
 				reduceOnly: true,
 				price: limitPrice,
-				// See the note on the perp derisk order below: the 400ms
-				// fallback shortens the auction, which is the safe side here.
+				// wall-clock ms in the onchain 400ms-unit encoding; the program
+				// converts elapsed slots to wall-clock at fill time
 				auctionDuration: Math.min(
 					255,
 					msToSlotsCeilNum(
 						this.config.deriskAuctionDurationMs!,
-						currentSlotDuration(this.velocityClient, this.userMap.getSlot())
+						SLOT_DURATION_BASELINE
 					)
 				),
 				auctionStartPrice,
@@ -633,15 +634,13 @@ export class LiquidatorDerisk {
 			baseAssetAmount,
 			reduceOnly: true,
 			marketIndex: position.marketIndex,
-			// A dead feed's 400ms fallback yields fewer slots, so the auction
-			// sweeps to the limit price sooner than configured. Deliberate: this
-			// is the bot's own derisk order, and derisking faster is the safe
-			// side for a liquidator.
+			// wall-clock ms in the onchain 400ms-unit encoding; the program
+			// converts elapsed slots to wall-clock at fill time
 			auctionDuration: Math.min(
 				255,
 				msToSlotsCeilNum(
 					this.config.deriskAuctionDurationMs!,
-					currentSlotDuration(this.velocityClient, this.userMap.getSlot())
+					SLOT_DURATION_BASELINE
 				)
 			),
 			auctionStartPrice,

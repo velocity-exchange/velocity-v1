@@ -72,7 +72,8 @@ export function getTriggerLimitOrderParams(
 /**
  * Builds `OptionalOrderParams` for a market order (`OrderType.MARKET`), filled immediately via a
  * Dutch auction between `auctionStartPrice` and `auctionEndPrice` (defaults derived on-chain from
- * the oracle price if omitted) over `auctionDuration` slots.
+ * the oracle price if omitted) over `auctionDuration` wall-clock 400ms units (one slot at the
+ * 400ms baseline).
  * @param params - Order fields (see `OrderParams`); `baseAssetAmount` is in BASE_PRECISION (1e9),
  * any price fields are in PRICE_PRECISION (1e6). `orderType` is set automatically and must not be
  * passed in.

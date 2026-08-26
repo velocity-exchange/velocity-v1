@@ -50,7 +50,7 @@ fn can_transfer_to_isolated_when_cross_still_meets_after_withdraw() {
     let mut oracle_map = OracleMap::load_one(
         &oracle_account_info,
         slot,
-        crate::math::time::SlotDuration::BASELINE,
+        crate::math::time::SlotClock::baseline(),
         None,
     )
     .unwrap();
@@ -167,7 +167,7 @@ fn cannot_transfer_to_isolated_when_cross_would_fail_after_withdraw() {
     let mut oracle_map = OracleMap::load_one(
         &oracle_account_info,
         slot,
-        crate::math::time::SlotDuration::BASELINE,
+        crate::math::time::SlotClock::baseline(),
         None,
     )
     .unwrap();
@@ -299,7 +299,7 @@ fn can_transfer_from_isolated_when_isolated_still_meets_after_withdraw() {
     let mut oracle_map = OracleMap::load_one(
         &oracle_account_info,
         slot,
-        crate::math::time::SlotDuration::BASELINE,
+        crate::math::time::SlotClock::baseline(),
         None,
     )
     .unwrap();
@@ -413,7 +413,7 @@ fn cannot_transfer_from_isolated_when_isolated_would_fail() {
     let mut oracle_map = OracleMap::load_one(
         &oracle_account_info,
         slot,
-        crate::math::time::SlotDuration::BASELINE,
+        crate::math::time::SlotClock::baseline(),
         None,
     )
     .unwrap();

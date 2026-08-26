@@ -11,7 +11,6 @@ import {
 	MMOraclePriceData,
 	StateAccount,
 	VelocityClient,
-	slotDurationFromState,
 } from '../../src';
 import { mockPerpMarkets } from '../dlob/helpers';
 import { mockOrder } from '../user/helpers';
@@ -173,14 +172,9 @@ describe('funding blockOperation mirror', () => {
 		};
 
 		assert(
-			!blockOperation(
-				market,
-				oracle,
-				guardRails,
-				price,
-				thresholdSlots,
-				slotDurationFromState(200)
-			)
+			!blockOperation(market, oracle, guardRails, price, thresholdSlots, {
+				slotDurationMs: 200,
+			})
 		);
 		assert(
 			blockOperation(
@@ -189,7 +183,7 @@ describe('funding blockOperation mirror', () => {
 				guardRails,
 				price,
 				thresholdSlots.addn(1),
-				slotDurationFromState(200)
+				{ slotDurationMs: 200 }
 			)
 		);
 	});

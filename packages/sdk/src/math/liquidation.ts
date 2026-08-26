@@ -1,13 +1,11 @@
 import { BN } from '../isomorphic/anchor';
 import {
 	Millis,
-	SlotDurationMs,
-	SLOT_DURATION_BASELINE,
+	SlotDurationState,
 	MILLIS_UNIT,
 	divPeriods,
+	elapsedMillis,
 	millisFromSecs,
-	millisFromSlots,
-	millisToSlotsCeil,
 } from './time';
 import {
 	PRICE_PRECISION,
@@ -439,7 +437,7 @@ export function calculateAssetTransferForLiabilityTransfer(
  * @param initialPctToLiquidate Starting liquidatable fraction at slot zero of the ramp, LIQUIDATION_PCT_PRECISION (1e4).
  * @param liquidationDuration Ramp length as a wall-clock duration; decode the onchain field with `millisFromStoredUnits(state.liquidationDuration)` (~1 minute for the onchain default).
  * @param isIsolatedPosition If true, always returns 100% (LIQUIDATION_PCT_PRECISION) regardless of the other inputs (default false).
- * @param slotDuration Current slot duration (`slotDurationFromState(state.slotDurationMs)`); the ramp's wall-clock length is slot-duration independent, mirroring `calculate_max_pct_to_liquidate`.
+ * @param slotDurationState The `State` account (or its slot-duration fields); elapsed ramp time is integrated per slot-duration regime, mirroring `calculate_max_pct_to_liquidate`.
  * @returns Fraction of the remaining liability liquidatable now, LIQUIDATION_PCT_PRECISION (1e4).
  */
 export function calculateMaxPctToLiquidate(
@@ -450,7 +448,7 @@ export function calculateMaxPctToLiquidate(
 	initialPctToLiquidate: BN,
 	liquidationDuration: Millis,
 	isIsolatedPosition = false,
-	slotDuration: SlotDurationMs = SLOT_DURATION_BASELINE
+	slotDurationState: SlotDurationState = {}
 ): BN {
 	// isolated perp positions are liquidated 100% in one shot
 	if (isIsolatedPosition) {
@@ -462,17 +460,16 @@ export function calculateMaxPctToLiquidate(
 		return LIQUIDATION_PCT_PRECISION;
 	}
 
-	// ratio of elapsed slots to the liquidation window in slots; the window
-	// ceils (never ramps to 100% earlier than intended), both scale with the
-	// slot duration so the ratio is duration-independent, and it is identity
-	// with the historical slot ratio at 400ms. duration 0 (unset) -> 100%,
-	// matching the program's divide-by-zero fallback
-	const elapsedSlots = BN.max(slot.sub(userLastActiveSlot), new BN(0));
-	const durationSlots = millisToSlotsCeil(liquidationDuration, slotDuration);
+	// ratio of elapsed wall-clock time to the configured liquidation window;
+	// elapsed time is integrated per slot-duration regime so an interval
+	// spanning an IBRL transition ramps at the same wall-clock rate on both
+	// sides, identity with the historical slot ratio at 400ms. duration 0
+	// (unset) -> 100%, matching the program's divide-by-zero fallback
+	const elapsedMs = elapsedMillis(slotDurationState, userLastActiveSlot, slot);
 
-	const rampPct = durationSlots.isZero()
+	const rampPct = liquidationDuration.isZero()
 		? LIQUIDATION_PCT_PRECISION
-		: elapsedSlots.mul(LIQUIDATION_PCT_PRECISION).div(durationSlots);
+		: elapsedMs.mul(LIQUIDATION_PCT_PRECISION).div(liquidationDuration);
 
 	const pctFreeable = BN.min(
 		rampPct.add(initialPctToLiquidate),
@@ -506,13 +503,16 @@ export function getLiquidationFee(
 	maxLiquidationFee: number,
 	lastActiveUserSlot: BN,
 	currentSlot: BN,
-	slotDuration: SlotDurationMs = SLOT_DURATION_BASELINE
+	slotDurationState: SlotDurationState = {}
 ): number {
 	if (currentSlot.lt(lastActiveUserSlot)) {
 		throw new Error('currentSlot must not precede lastActiveUserSlot');
 	}
-	const elapsedSlots = currentSlot.sub(lastActiveUserSlot);
-	const elapsed = millisFromSlots(elapsedSlots, slotDuration);
+	const elapsed = elapsedMillis(
+		slotDurationState,
+		lastActiveUserSlot,
+		currentSlot
+	);
 	if (elapsed.lt(LIQUIDATION_FEE_ADJUST_GRACE_PERIOD)) {
 		return baseLiquidationFee;
 	}

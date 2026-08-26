@@ -7,7 +7,7 @@ use {
             constants::PRICE_PRECISION_I64,
             oracle::{oracle_validity, LogMode, OracleValidity},
             safe_unwrap::SafeUnwrap,
-            time::SlotDuration,
+            time::SlotClock,
         },
         msg,
         state::{
@@ -52,9 +52,10 @@ pub struct OracleMap<'a> {
     price_data: BTreeMap<OracleIdentifier, OraclePriceData>,
     validity: BTreeMap<OracleValidityKey, OracleValidity>,
     pub slot: u64,
-    /// Current slot duration in ms (from `State::slot_duration()`), used to
-    /// inflate the 400ms-baseline staleness thresholds inside `oracle_validity`.
-    pub slot_duration: SlotDuration,
+    /// Full transition archive (from `State::slot_clock()`): scales the
+    /// 400ms-baseline staleness thresholds and measures oracle ages and
+    /// cooldowns exactly across IBRL transitions.
+    pub slot_clock: SlotClock,
     pub oracle_guard_rails: OracleGuardRails,
     pub quote_asset_price_data: OraclePriceData,
 }
@@ -150,7 +151,8 @@ impl<'a> OracleMap<'a> {
                     slots_before_stale_for_amm_override,
                     false, // exchange-oracle price, never MM-sourced
                     oracle_low_risk_slot_delay_override_override,
-                    self.slot_duration,
+                    self.slot,
+                    self.slot_clock,
                 )?;
                 self.validity.insert(validity_key, oracle_validity);
                 oracle_validity
@@ -183,7 +185,8 @@ impl<'a> OracleMap<'a> {
             slots_before_stale_for_amm_override,
             false, // exchange-oracle price, never MM-sourced
             oracle_low_risk_slot_delay_override_override,
-            self.slot_duration,
+            self.slot,
+            self.slot_clock,
         )?;
         self.validity.insert(validity_key, oracle_validity);
 
@@ -227,7 +230,7 @@ impl<'a> OracleMap<'a> {
     pub fn load<'c>(
         account_info_iter: &'c mut Peekable<Iter<AccountInfo<'a>>>,
         slot: u64,
-        slot_duration: SlotDuration,
+        slot_clock: SlotClock,
         oracle_guard_rails: Option<OracleGuardRails>,
     ) -> VelocityResult<OracleMap<'a>> {
         let mut oracles: BTreeMap<Pubkey, AccountInfo<'a>> = BTreeMap::new();
@@ -280,7 +283,7 @@ impl<'a> OracleMap<'a> {
             price_data: BTreeMap::new(),
             validity: BTreeMap::new(),
             slot,
-            slot_duration,
+            slot_clock,
             oracle_guard_rails: ogr,
             quote_asset_price_data: OraclePriceData {
                 price: PRICE_PRECISION_I64,
@@ -295,7 +298,7 @@ impl<'a> OracleMap<'a> {
     pub fn load_one<'c>(
         account_info: &'c AccountInfo<'a>,
         slot: u64,
-        slot_duration: SlotDuration,
+        slot_clock: SlotClock,
         oracle_guard_rails: Option<OracleGuardRails>,
     ) -> VelocityResult<OracleMap<'a>> {
         let mut oracles: BTreeMap<Pubkey, AccountInfo<'a>> = BTreeMap::new();
@@ -343,7 +346,7 @@ impl<'a> OracleMap<'a> {
             price_data: BTreeMap::new(),
             validity: BTreeMap::new(),
             slot,
-            slot_duration,
+            slot_clock,
             oracle_guard_rails: ogr,
             quote_asset_price_data: OraclePriceData {
                 price: PRICE_PRECISION_I64,
@@ -364,7 +367,7 @@ impl<'a> OracleMap<'a> {
             OracleMap::load_one(
                 account_info,
                 0,
-                crate::math::time::SlotDuration::BASELINE,
+                crate::math::time::SlotClock::baseline(),
                 None
             )?
             .oracles
@@ -384,7 +387,7 @@ impl<'a> OracleMap<'a> {
             validity: BTreeMap::new(),
             price_data: BTreeMap::new(),
             slot: 0,
-            slot_duration: crate::math::time::SlotDuration::BASELINE,
+            slot_clock: crate::math::time::SlotClock::baseline(),
             oracle_guard_rails: OracleGuardRails::default(),
             quote_asset_price_data: OraclePriceData {
                 price: PRICE_PRECISION_I64,

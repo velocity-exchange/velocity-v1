@@ -26,6 +26,7 @@ use {
                 get_signed_token_amount, get_strict_token_value, get_token_amount, get_token_value,
             },
             stats::calculate_rolling_sum,
+            time::SlotClock,
         },
         math_error, msg, safe_increment,
         state::{
@@ -1509,7 +1510,11 @@ pub struct Order {
     pub immediate_or_cancel: bool,
     /// Whether the order is triggered above or below the trigger price. Only relevant for trigger orders
     pub trigger_condition: OrderTriggerCondition,
-    /// How many slots the auction lasts
+    /// Auction length in wall-clock 400ms units (one slot at the 400ms
+    /// baseline, where the raw value is identical to the historical slot
+    /// count). Progress compares `SlotClock::elapsed` against this value's
+    /// wall-clock length, so the ramp holds at every slot duration and the
+    /// u8 keeps the full historical 72s range.
     pub auction_duration: u8,
     /// Last 8 bits of the slot the order was posted onchain (not order slot for signed msg orders)
     pub posted_slot_tail: u8,
@@ -1540,13 +1545,15 @@ impl Order {
         fallback_price: Option<u64>,
         slot: u64,
         tick_size: u64,
+        slot_clock: SlotClock,
     ) -> VelocityResult<Option<u64>> {
-        let price = if self.has_auction_price(self.slot, self.auction_duration, slot)? {
+        let price = if self.has_auction_price(self.slot, self.auction_duration, slot, slot_clock)? {
             Some(calculate_auction_price(
                 self,
                 slot,
                 tick_size,
                 valid_oracle_price,
+                slot_clock,
             )?)
         } else if self.has_oracle_price_offset() {
             let oracle_price = valid_oracle_price.ok_or_else(|| {
@@ -1580,8 +1587,15 @@ impl Order {
         fallback_price: Option<u64>,
         slot: u64,
         tick_size: u64,
+        slot_clock: SlotClock,
     ) -> VelocityResult<u64> {
-        match self.get_limit_price(valid_oracle_price, fallback_price, slot, tick_size)? {
+        match self.get_limit_price(
+            valid_oracle_price,
+            fallback_price,
+            slot,
+            tick_size,
+            slot_clock,
+        )? {
             Some(price) => Ok(price),
             None => {
                 let caller = Location::caller();
@@ -1595,14 +1609,14 @@ impl Order {
         }
     }
 
-    pub fn has_limit_price(self, slot: u64) -> VelocityResult<bool> {
+    pub fn has_limit_price(self, slot: u64, slot_clock: SlotClock) -> VelocityResult<bool> {
         Ok(self.price > 0
             || self.has_oracle_price_offset()
-            || !is_auction_complete(self.slot, self.auction_duration, slot)?)
+            || !is_auction_complete(self.slot, self.auction_duration, slot, slot_clock)?)
     }
 
-    pub fn is_auction_complete(self, slot: u64) -> VelocityResult<bool> {
-        is_auction_complete(self.slot, self.auction_duration, slot)
+    pub fn is_auction_complete(self, slot: u64, slot_clock: SlotClock) -> VelocityResult<bool> {
+        is_auction_complete(self.slot, self.auction_duration, slot, slot_clock)
     }
 
     pub fn has_auction(&self) -> bool {
@@ -1614,8 +1628,9 @@ impl Order {
         order_slot: u64,
         auction_duration: u8,
         slot: u64,
+        slot_clock: SlotClock,
     ) -> VelocityResult<bool> {
-        let auction_complete = is_auction_complete(order_slot, auction_duration, slot)?;
+        let auction_complete = is_auction_complete(order_slot, auction_duration, slot, slot_clock)?;
         let has_auction_prices = self.auction_start_price != 0 || self.auction_end_price != 0;
         Ok(!auction_complete && has_auction_prices)
     }
@@ -1719,12 +1734,12 @@ impl Order {
         matches!(self.order_type, OrderType::Limit | OrderType::TriggerLimit)
     }
 
-    pub fn is_resting_limit_order(&self, slot: u64) -> VelocityResult<bool> {
+    pub fn is_resting_limit_order(&self, slot: u64, slot_clock: SlotClock) -> VelocityResult<bool> {
         if !self.is_limit_order() {
             return Ok(false);
         }
 
-        Ok(self.post_only || self.is_auction_complete(slot)?)
+        Ok(self.post_only || self.is_auction_complete(slot, slot_clock)?)
     }
 
     pub fn is_signed_msg(&self) -> bool {

@@ -7,7 +7,10 @@ use arrayvec::ArrayVec;
 use solana_pubkey::Pubkey;
 
 use program::{
-    math::auction::{calculate_auction_params_for_trigger_order, calculate_auction_price},
+    math::{
+        auction::{calculate_auction_params_for_trigger_order, calculate_auction_price},
+        time::{Millis, SlotClock},
+    },
     state::{
         oracle::OraclePriceData,
         user::{Order as VelocityOrder, OrderBitFlag},
@@ -177,6 +180,8 @@ pub enum DLOBEvent {
         deltas: Vec<OrderDelta>,
         slot: u64,
     },
+    /// cluster slot clock changed (an IBRL transition was synchronized)
+    SlotClockUpdate { slot_clock: SlotClock },
 }
 
 /// Event type for tracking order lifecycle
@@ -200,7 +205,13 @@ pub struct OrderEvent {
 
 /// Order with dynamic price calculation
 pub(crate) trait DynamicPrice {
-    fn get_price(&self, slot: u64, oracle_price: u64, tick_size: u64) -> Option<u64>;
+    fn get_price(
+        &self,
+        slot: u64,
+        oracle_price: u64,
+        tick_size: u64,
+        slot_clock: SlotClock,
+    ) -> Option<u64>;
     fn size(&self) -> u64;
 }
 
@@ -417,12 +428,9 @@ impl TriggerOrder {
                     // This estimator simulates triggering and filling in the same
                     // slot, so it always evaluates the auction start price. The
                     // minimum duration cannot affect that price; it matters only
-                    // after elapsed slots become nonzero. Keep the historical
-                    // baseline inputs unless this helper starts projecting a
-                    // future post-trigger slot or returning auction metadata.
+                    // after elapsed time becomes nonzero.
                     20,
                     Some(market),
-                    program::math::time::SlotDuration::BASELINE,
                 )
                 .unwrap();
             order.auction_duration = auction_duration;
@@ -433,11 +441,14 @@ impl TriggerOrder {
                 order.bit_flags |= OrderBitFlag::OracleTriggerMarket as u8;
             }
 
+            // same-slot simulation: auction progress is zero, so the clock
+            // cannot influence the price
             return calculate_auction_price(
                 &order,
                 slot,
                 market.order_tick_size,
                 Some(oracle_price as i64),
+                SlotClock::baseline(),
             )
             .map_err(|e| crate::SdkError::Anchor(Box::new(e.into())));
         }
@@ -453,8 +464,14 @@ impl DynamicPrice for MarketOrder {
     /// Returns the price of the market order at `slot`
     ///
     /// A value of None indicates the order will use the fallback/vamm price
-    fn get_price(&self, slot: u64, _oracle_price: u64, tick_size: u64) -> Option<u64> {
-        if crate::dlob::types::order_is_auction_complete(slot, self.slot, self.duration)
+    fn get_price(
+        &self,
+        slot: u64,
+        _oracle_price: u64,
+        tick_size: u64,
+        slot_clock: SlotClock,
+    ) -> Option<u64> {
+        if crate::dlob::types::order_is_auction_complete(slot, self.slot, self.duration, slot_clock)
             && (self.start_price != 0 || self.end_price != 0)
         {
             return if self.price == 0 {
@@ -463,9 +480,11 @@ impl DynamicPrice for MarketOrder {
                 Some(self.price)
             };
         }
-        let slots_elapsed = slot.saturating_sub(self.slot) as i64;
-        let delta_denominator = self.duration as i64;
-        let delta_numerator = slots_elapsed.min(delta_denominator);
+        // elapsed wall-clock over the auction's wall-clock length (400ms units)
+        let duration_ms = Millis::from_stored_units(self.duration as u64).as_ms() as i64;
+        let elapsed_ms = slot_clock.elapsed(self.slot, slot).as_ms() as i64;
+        let delta_denominator = duration_ms;
+        let delta_numerator = elapsed_ms.min(delta_denominator);
 
         if delta_denominator == 0 {
             return Some(standardize_price(
@@ -516,12 +535,20 @@ impl DynamicPrice for OracleOrder {
     /// Returns price of oracle auction at given `slot`
     ///
     /// A value of None indicates the order will use the fallback/vamm price
-    fn get_price(&self, slot: u64, oracle_price: u64, tick_size: u64) -> Option<u64> {
-        let slots_elapsed = slot.saturating_sub(self.slot) as i64;
+    fn get_price(
+        &self,
+        slot: u64,
+        oracle_price: u64,
+        tick_size: u64,
+        slot_clock: SlotClock,
+    ) -> Option<u64> {
+        // elapsed wall-clock over the auction's wall-clock length (400ms units)
+        let duration_ms = Millis::from_stored_units(self.duration as u64).as_ms() as i64;
+        let elapsed_ms = slot_clock.elapsed(self.slot, slot).as_ms() as i64;
         // limit price after auction end
         // mirrors onchain `Order::get_limit_price`: any non-zero offset (negative included)
         // is a real limit price; only offset-less orders fall back to the vamm price
-        if slots_elapsed > self.duration as i64 {
+        if elapsed_ms > duration_ms {
             return if self.oracle_price_offset != 0 {
                 let price =
                     ((oracle_price as i64 + self.oracle_price_offset).max(tick_size as i64)) as u64;
@@ -530,8 +557,8 @@ impl DynamicPrice for OracleOrder {
                 None
             };
         }
-        let delta_denominator = self.duration as i64;
-        let delta_numerator = slots_elapsed.min(delta_denominator);
+        let delta_denominator = duration_ms;
+        let delta_numerator = elapsed_ms.min(delta_denominator);
 
         if delta_denominator == 0 {
             let price = ((oracle_price as i64 + self.end_price_offset) as u64).max(tick_size);
@@ -849,7 +876,15 @@ impl TriggerL3Order {
 pub fn order_is_expired(max_ts: u64, now_unix_seconds: u64) -> bool {
     max_ts != 0 && max_ts < now_unix_seconds
 }
-/// Check if order's auction is complete.
-pub fn order_is_auction_complete(current_slot: u64, order_slot: u64, auction_duration: u8) -> bool {
-    auction_duration == 0 || current_slot.saturating_sub(order_slot) > auction_duration as u64
+/// Check if order's auction is complete. `auction_duration` is in wall-clock
+/// 400ms units; elapsed time integrates per slot-duration regime.
+pub fn order_is_auction_complete(
+    current_slot: u64,
+    order_slot: u64,
+    auction_duration: u8,
+    slot_clock: SlotClock,
+) -> bool {
+    auction_duration == 0
+        || slot_clock.elapsed(order_slot, current_slot)
+            > Millis::from_stored_units(auction_duration as u64)
 }

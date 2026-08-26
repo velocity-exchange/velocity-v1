@@ -134,7 +134,7 @@ fn test_daily_withdraw_limits() {
     let _oracle_map = OracleMap::load_one(
         &oracle_account_info,
         slot,
-        crate::math::time::SlotDuration::BASELINE,
+        crate::math::time::SlotClock::baseline(),
         None,
     )
     .unwrap();
@@ -487,7 +487,7 @@ fn test_check_withdraw_limits() {
     let _oracle_map = OracleMap::load_one(
         &oracle_account_info,
         slot,
-        crate::math::time::SlotDuration::BASELINE,
+        crate::math::time::SlotClock::baseline(),
         None,
     )
     .unwrap();
@@ -811,7 +811,7 @@ fn check_fee_collection() {
     let _oracle_map = OracleMap::load_one(
         &oracle_account_info,
         slot,
-        crate::math::time::SlotDuration::BASELINE,
+        crate::math::time::SlotClock::baseline(),
         None,
     )
     .unwrap();
@@ -1218,7 +1218,7 @@ fn check_fee_collection_larger_nums() {
     let _oracle_map = OracleMap::load_one(
         &oracle_account_info,
         slot,
-        crate::math::time::SlotDuration::BASELINE,
+        crate::math::time::SlotClock::baseline(),
         None,
     )
     .unwrap();
@@ -1644,7 +1644,7 @@ fn attempt_borrow_with_massive_upnl() {
     let mut oracle_map = OracleMap::load_one(
         &oracle_account_info,
         slot,
-        crate::math::time::SlotDuration::BASELINE,
+        crate::math::time::SlotClock::baseline(),
         None,
     )
     .unwrap();
@@ -2999,7 +2999,8 @@ fn update_and_check_validity_judges_and_snapshots_before_refreshing() {
             -1,
             false,
             0,
-            crate::math::time::SlotDuration::BASELINE,
+            1_000_000,
+            crate::math::time::SlotClock::baseline(),
         )
         .unwrap()
     };
@@ -3029,7 +3030,8 @@ fn update_and_check_validity_judges_and_snapshots_before_refreshing() {
             later,
             Some(VelocityAction::Liquidate),
             false,
-            crate::math::time::SlotDuration::BASELINE,
+            1_000_000,
+            crate::math::time::SlotClock::baseline(),
         )
         .unwrap_err(),
         ErrorCode::InvalidOracle
@@ -3045,7 +3047,8 @@ fn update_and_check_validity_judges_and_snapshots_before_refreshing() {
         later,
         Some(VelocityAction::UpdateTwap),
         false,
-        crate::math::time::SlotDuration::BASELINE,
+        1_000_000,
+        crate::math::time::SlotClock::baseline(),
     )
     .unwrap();
     assert_eq!(refresh.validity, OracleValidity::TooVolatile);

@@ -8,6 +8,8 @@ import {
 	MILLIS_UNIT,
 	slotDurationFromState,
 	activeSlotDurationFromState,
+	elapsedMillis,
+	elapsedMillisFromSlotDelta,
 	millis,
 	millisFromSecs,
 	millisFromStoredUnits,
@@ -67,6 +69,84 @@ describe('slot-time helpers (program parity)', () => {
 		assert.equal(
 			activeSlotDurationFromState({ slotDurationMs: 350 }, new BN(1_000)),
 			350
+		);
+	});
+
+	it('transition archive is authoritative over the legacy staging fields', () => {
+		// mirrors SlotClock::slot_duration_at: stale legacy fields lose
+		const state: SlotDurationState = {
+			slotDurationMs: 200,
+			pendingSlotDurationMs: 250,
+			slotDurationEffectiveSlot: new BN(5),
+			slotDurationTransitionSlots: [
+				new BN(1_000),
+				new BN(2_000),
+				new BN(0),
+				new BN(0),
+			],
+		};
+		assert.equal(activeSlotDurationFromState(state, new BN(999)), 400);
+		assert.equal(activeSlotDurationFromState(state, new BN(1_000)), 350);
+		assert.equal(activeSlotDurationFromState(state, new BN(1_999)), 350);
+		assert.equal(activeSlotDurationFromState(state, new BN(2_000)), 300);
+		assert.equal(activeSlotDurationFromState(state, new BN(1_000_000)), 300);
+	});
+
+	it('elapsedMillis integrates each slot-duration regime (SlotClock::elapsed parity)', () => {
+		const state: SlotDurationState = {
+			slotDurationTransitionSlots: [
+				new BN(1_000),
+				new BN(2_000),
+				new BN(3_000),
+				new BN(4_000),
+			],
+		};
+		// fully inside one regime
+		assert.equal(
+			elapsedMillis(state, new BN(0), new BN(10)).toNumber(),
+			10 * 400
+		);
+		assert.equal(
+			elapsedMillis(state, new BN(4_000), new BN(4_010)).toNumber(),
+			10 * 200
+		);
+		// spanning one transition: 10 slots at 400ms + 10 at 350ms
+		assert.equal(
+			elapsedMillis(state, new BN(990), new BN(1_010)).toNumber(),
+			10 * 400 + 10 * 350
+		);
+		// spanning every transition
+		assert.equal(
+			elapsedMillis(state, new BN(0), new BN(5_000)).toNumber(),
+			1_000 * (400 + 350 + 300 + 250 + 200)
+		);
+		// degenerate intervals are zero
+		assert.equal(elapsedMillis(state, new BN(10), new BN(10)).toNumber(), 0);
+		assert.equal(elapsedMillis(state, new BN(20), new BN(10)).toNumber(), 0);
+		// the delta form anchors at the end slot and saturates at slot zero
+		assert.equal(
+			elapsedMillisFromSlotDelta(state, new BN(20), new BN(1_010)).toNumber(),
+			10 * 400 + 10 * 350
+		);
+		assert.equal(
+			elapsedMillisFromSlotDelta(state, new BN(100), new BN(50)).toNumber(),
+			50 * 400
+		);
+	});
+
+	it('elapsedMillis without an archive prices the delta at the end-slot duration', () => {
+		const staged: SlotDurationState = {
+			slotDurationMs: 400,
+			pendingSlotDurationMs: 350,
+			slotDurationEffectiveSlot: new BN(1_000),
+		};
+		assert.equal(
+			elapsedMillis(staged, new BN(0), new BN(10)).toNumber(),
+			10 * 400
+		);
+		assert.equal(
+			elapsedMillis(staged, new BN(1_000), new BN(1_010)).toNumber(),
+			10 * 350
 		);
 	});
 
@@ -300,5 +380,65 @@ describe('currentSlotDuration (off-chain resolver)', () => {
 			assert.isAtLeast(slotsToMsNum(slots, d), 4_000);
 			assert.isBelow(slotsToMsNum(slots, d), 4_000 + ms);
 		}
+	});
+});
+
+// Pins the auction mirrors against the program's wall-clock auction math:
+// `Order.auctionDuration` is 400ms units and progress integrates elapsed
+// slots through the slot clock (`auction_wall_clock_across_gates` in
+// `math/auction.rs` tests).
+describe('auction wall-clock across gates (program parity)', () => {
+	// deferred import to avoid a cycle at module load
+	// eslint-disable-next-line @typescript-eslint/no-var-requires
+	const {
+		getAuctionPrice,
+		isAuctionComplete,
+	} = require('../../src/math/auction');
+	// eslint-disable-next-line @typescript-eslint/no-var-requires
+	const { OrderType, PositionDirection } = require('../../src/types');
+	const PRICE = new BN(1_000_000);
+
+	const order = () => ({
+		orderType: OrderType.MARKET,
+		direction: PositionDirection.LONG,
+		auctionDuration: 10, // 4s in 400ms units
+		slot: new BN(1_000),
+		auctionStartPrice: new BN(100).mul(PRICE),
+		auctionEndPrice: new BN(110).mul(PRICE),
+		price: new BN(0),
+		oraclePriceOffset: new BN(0),
+		bitFlags: 0,
+	});
+
+	const clock200: SlotDurationState = {
+		slotDurationTransitionSlots: [new BN(1), new BN(1), new BN(1), new BN(1)],
+	};
+
+	it('interpolation holds its wall-clock shape at 200ms', () => {
+		const o = order();
+		// 10 slots at 200ms = 2s = halfway through the 4s ramp
+		assert.equal(
+			getAuctionPrice(o, 1_010, new BN(0), undefined, clock200).toString(),
+			new BN(105).mul(PRICE).toString()
+		);
+		// 20 slots = 4s = the end
+		assert.equal(
+			getAuctionPrice(o, 1_020, new BN(0), undefined, clock200).toString(),
+			new BN(110).mul(PRICE).toString()
+		);
+		// baseline identity: 5 slots at 400ms = 2s = halfway
+		assert.equal(
+			getAuctionPrice(o, 1_005, new BN(0), undefined, {}).toString(),
+			new BN(105).mul(PRICE).toString()
+		);
+	});
+
+	it('completion holds its wall-clock length at 200ms', () => {
+		const o = order();
+		assert.isFalse(isAuctionComplete(o, 1_020, clock200));
+		assert.isTrue(isAuctionComplete(o, 1_021, clock200));
+		// baseline: 10 slots at 400ms is exactly the 4s length
+		assert.isFalse(isAuctionComplete(o, 1_010, {}));
+		assert.isTrue(isAuctionComplete(o, 1_011, {}));
 	});
 });

@@ -223,11 +223,9 @@ pub struct VelocityAccounts {
     pub oracles: Vec<(Pubkey, OwnedAccount)>,
     pub latest_slot: u64,
     pub oracle_guard_rails: Option<OracleGuardRails>,
-    /// Live slot duration in ms, already resolved by the caller through
-    /// `State::active_slot_duration_ms` so a staged switch is applied. `0`
-    /// means unset and resolves to the 400ms baseline. This is not the raw
-    /// `State.slot_duration_ms` field, which lags a staged switch.
-    pub slot_duration_ms: u16,
+    /// Cluster slot clock, built by the caller from the `State` account
+    /// (`State::slot_clock`). Default is the 400ms baseline.
+    pub slot_clock: crate::math::time::SlotClock,
 }
 
 /// Fabricate an `AccountInfo` borrowing directly into `slot`'s
@@ -271,7 +269,7 @@ pub fn calculate_margin(
     let mut oracle_map = OracleMap::load(
         &mut oracle_infos.iter().peekable(),
         accounts.latest_slot,
-        crate::math::time::SlotDuration::from_state_ms(accounts.slot_duration_ms),
+        accounts.slot_clock,
         accounts.oracle_guard_rails,
     )?;
 

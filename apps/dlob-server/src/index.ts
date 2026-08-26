@@ -7,10 +7,8 @@ import morgan from 'morgan';
 import { Commitment, Connection, Keypair, PublicKey } from '@solana/web3.js';
 
 import {
-	BN,
 	DLOBNode,
 	DLOBSubscriber,
-	activeSlotDurationFromState,
 	VelocityClient,
 	VelocityEnv,
 	SlotSubscriber,
@@ -999,11 +997,7 @@ const main = async (): Promise<void> => {
 			const inputParams = createMarketBasedAuctionParams(
 				auctionParamsInput,
 				undefined,
-				apiVersion,
-				activeSlotDurationFromState(
-					velocityClient.getStateAccount(),
-					new BN(dlobProvider.getSlot())
-				)
+				apiVersion
 			);
 
 			const result = await mapToMarketOrderParams(

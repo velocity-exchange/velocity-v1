@@ -28,7 +28,7 @@ pub fn check_order_constraints<'c: 'info, 'info>(
         &BTreeSet::new(),
         &BTreeSet::new(),
         slot,
-        ctx.accounts.state.load()?.slot_duration(),
+        ctx.accounts.state.load()?.slot_clock(),
         None,
     )?;
 

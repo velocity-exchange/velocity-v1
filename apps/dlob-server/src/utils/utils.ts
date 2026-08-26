@@ -1,5 +1,4 @@
 import {
-	SlotDurationMs,
 	SLOT_DURATION_BASELINE,
 	msToSlotsCeilNum,
 	activeSlotDurationFromState,
@@ -657,8 +656,7 @@ export const selectMostRecentBySlot = (
 export function createMarketBasedAuctionParams(
 	args: AuctionParamArgs,
 	overrideDefaults?: Partial<AuctionParamArgs>,
-	version: number = 1,
-	slotDuration: SlotDurationMs = SLOT_DURATION_BASELINE
+	version: number = 1
 ): AuctionParamArgs {
 	// Determine if this is a major market (PERP: SOL, BTC, ETH, HYPE)
 	const isMajorMarket =
@@ -691,8 +689,9 @@ export function createMarketBasedAuctionParams(
 			: args.auctionStartPriceOffset;
 
 	// Set market-specific defaults (only used if values are undefined)
-	// default durations are wall-clock ms, expressed in actual slots so the
-	// auction's ramp is independent of the slot duration
+	// default durations are wall-clock ms in the onchain 400ms-unit encoding
+	// (`Order.auction_duration`); the program converts elapsed slots to
+	// wall-clock at fill time, so no live slot duration is needed here
 	const marketSpecificDefaults: Partial<AuctionParamArgs> = {
 		...DEFAULT_AUCTION_PARAMS,
 		auctionDuration: Math.min(
@@ -701,7 +700,7 @@ export function createMarketBasedAuctionParams(
 				isFastFill
 					? FAST_FILL_AUCTION_DURATION_MS
 					: DEFAULT_MARKET_AUCTION_DURATION_MS,
-				slotDuration
+				SLOT_DURATION_BASELINE
 			)
 		),
 		auctionStartPriceOffsetFrom:

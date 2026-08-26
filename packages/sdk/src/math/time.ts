@@ -86,7 +86,17 @@ export function slotDurationFromState(raw?: number): SlotDurationMs {
 }
 
 /**
- * The three `State` staging fields the live slot duration is resolved from.
+ * The four post-baseline slot lengths in activation order, the mirror of the
+ * program's `SLOT_DURATION_TRANSITION_MS`. `State.slotDurationTransitionSlots`
+ * stores the first slot of each regime at the matching index.
+ */
+export const SLOT_DURATION_TRANSITION_MS: readonly SlotDurationMs[] = [
+	350, 300, 250, 200,
+] as SlotDurationMs[];
+
+/**
+ * The `State` fields the live slot duration is resolved from: the IBRL
+ * transition archive plus the legacy staging trio it supersedes.
  * Declared structurally rather than as `Pick<StateAccount, ...>`: importing
  * `StateAccount` closes the cycle `types.ts -> constants/numericConstants.ts ->
  * math/time.ts`, and `numericConstants` calls into this module at load time.
@@ -96,6 +106,12 @@ export type SlotDurationState = {
 	slotDurationMs?: number;
 	pendingSlotDurationMs?: number;
 	slotDurationEffectiveSlot?: BN;
+	/**
+	 * First slot of each post-baseline regime (`[350, 300, 250, 200]`ms). Zero
+	 * means that transition has not been synchronized yet. Once any entry is
+	 * set the archive is authoritative over the legacy staging fields.
+	 */
+	slotDurationTransitionSlots?: BN[];
 };
 
 /**
@@ -129,6 +145,19 @@ export function activeSlotDurationFromState(
 	state: SlotDurationState,
 	currentSlot: BN
 ): SlotDurationMs {
+	// Once any transition-archive entry exists, the archive is authoritative
+	// (mirrors `SlotClock::slot_duration_at`).
+	const transitions = validTransitionSlots(state);
+	if (transitions) {
+		let duration = SLOT_DURATION_BASELINE;
+		for (let i = 0; i < SLOT_DURATION_TRANSITION_MS.length; i++) {
+			if (!transitions[i].isZero() && currentSlot.gte(transitions[i])) {
+				duration = SLOT_DURATION_TRANSITION_MS[i];
+			}
+		}
+		return duration;
+	}
+
 	// Tolerate hand-built / older State objects that omit the staging fields:
 	// an absent pending field means nothing is staged, not `undefined !== 0`.
 	// `isBN` rather than `!== undefined` so a null/garbage effective slot reads
@@ -139,6 +168,83 @@ export function activeSlotDurationFromState(
 		return slotDurationFromState(pending);
 	}
 	return slotDurationFromState(state.slotDurationMs);
+}
+
+/**
+ * The transition archive when it is present, well-formed, and non-empty;
+ * `undefined` otherwise (hand-built / pre-upgrade State objects, or no
+ * transition synchronized yet; the legacy staging fields then apply).
+ */
+function validTransitionSlots(state: SlotDurationState): BN[] | undefined {
+	const transitions = state.slotDurationTransitionSlots;
+	if (
+		!Array.isArray(transitions) ||
+		transitions.length !== SLOT_DURATION_TRANSITION_MS.length ||
+		!transitions.every((slot) => BN.isBN(slot) && !slot.isNeg())
+	) {
+		return undefined;
+	}
+	return transitions.some((slot) => !slot.isZero()) ? transitions : undefined;
+}
+
+/**
+ * Exact elapsed wall-clock time from the start of `startSlot` to the start of
+ * `endSlot`, integrating every crossed slot-duration regime separately,
+ * the mirror of the program's `SlotClock::elapsed`. Without a synchronized
+ * transition archive, the whole delta is priced at the end-slot duration
+ * (the legacy-staging behavior).
+ */
+export function elapsedMillis(
+	state: SlotDurationState,
+	startSlot: BN,
+	endSlot: BN
+): Millis {
+	if (endSlot.lte(startSlot)) {
+		return millis(0);
+	}
+
+	const transitions = validTransitionSlots(state);
+	if (!transitions) {
+		return millisFromSlots(
+			endSlot.sub(startSlot),
+			activeSlotDurationFromState(state, endSlot)
+		);
+	}
+
+	let cursor = startSlot;
+	let elapsed = new BN(0);
+	let duration = activeSlotDurationFromState(state, startSlot);
+	for (let i = 0; i < transitions.length; i++) {
+		const transitionSlot = transitions[i];
+		if (
+			transitionSlot.isZero() ||
+			transitionSlot.lte(cursor) ||
+			transitionSlot.gt(endSlot)
+		) {
+			continue;
+		}
+		elapsed = elapsed.add(transitionSlot.sub(cursor).muln(duration));
+		cursor = transitionSlot;
+		duration = activeSlotDurationFromState(state, cursor);
+	}
+	elapsed = elapsed.add(endSlot.sub(cursor).muln(duration));
+	return elapsed as Millis;
+}
+
+/**
+ * Elapsed wall-clock time represented by `slotDelta`, ending at `endSlot`,
+ * the mirror of `SlotClock::elapsed_slot_delta`.
+ */
+export function elapsedMillisFromSlotDelta(
+	state: SlotDurationState,
+	slotDelta: BN,
+	endSlot: BN
+): Millis {
+	return elapsedMillis(
+		state,
+		BN.max(endSlot.sub(slotDelta), new BN(0)),
+		endSlot
+	);
 }
 
 /**

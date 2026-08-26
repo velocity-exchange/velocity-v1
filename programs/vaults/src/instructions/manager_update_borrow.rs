@@ -101,9 +101,9 @@ pub struct ManagerUpdateBorrow<'info> {
     )]
     /// CHECK: checked in velocity cpi
     pub velocity_user: AccountLoader<'info, User>,
-    /// Velocity's `State`, read only for the live slot duration so this
+    /// Velocity's `State`, read only for the slot clock so this
     /// instruction's oracle staleness windows match every other vault path.
     /// CHECK: owner, discriminator, and PDA address checked by
-    /// `State::slot_duration_from_account_info`
+    /// `State::slot_clock_from_account_info`
     pub velocity_state: AccountInfo<'info>,
 }

@@ -57,7 +57,7 @@ pub fn get_amm_is_available(
             *oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
         )
         .unwrap();
     let safe_oracle_price_data = mm_oracle_price_data.get_safe_oracle_price_data();
@@ -76,7 +76,8 @@ pub fn get_amm_is_available(
         market.oracle_slot_delay_override,
         mm_oracle_price_data.is_safe_price_mm_sourced(),
         market.oracle_low_risk_slot_delay_override,
-        crate::math::time::SlotDuration::BASELINE,
+        slot,
+        crate::math::time::SlotClock::baseline(),
     )
     .unwrap();
     market
@@ -206,7 +207,7 @@ pub mod amm_jit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -412,7 +413,7 @@ pub mod amm_jit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -632,7 +633,7 @@ pub mod amm_jit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -849,7 +850,7 @@ pub mod amm_jit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -1065,7 +1066,7 @@ pub mod amm_jit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -1278,7 +1279,7 @@ pub mod amm_jit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -1507,7 +1508,7 @@ pub mod amm_jit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -1724,7 +1725,7 @@ pub mod amm_jit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -1943,7 +1944,7 @@ pub mod amm_jit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -2165,7 +2166,7 @@ pub mod amm_jit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -2383,7 +2384,7 @@ pub mod amm_jit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -2529,15 +2530,21 @@ pub mod amm_jit {
                 taker.orders[0].slot,
                 auction_duration,
                 slot,
+                crate::math::time::SlotClock::baseline(),
             )
             .unwrap();
             if is_complete {
                 break;
             }
 
-            let auction_price =
-                crate::math::auction::calculate_auction_price(&taker.orders[0], slot, 1, None)
-                    .unwrap();
+            let auction_price = crate::math::auction::calculate_auction_price(
+                &taker.orders[0],
+                slot,
+                1,
+                None,
+                crate::math::time::SlotClock::baseline(),
+            )
+            .unwrap();
             let baa = market.order_step_size * 4;
 
             let (mark, ask, bid) = {
@@ -2672,7 +2679,7 @@ pub mod amm_jit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -2820,6 +2827,7 @@ pub mod amm_jit {
                 taker.orders[0].slot,
                 auction_duration,
                 slot,
+                crate::math::time::SlotClock::baseline(),
             )
             .unwrap();
 
@@ -2827,9 +2835,14 @@ pub mod amm_jit {
                 break;
             }
 
-            let auction_price =
-                crate::math::auction::calculate_auction_price(&taker.orders[0], slot, 1, None)
-                    .unwrap();
+            let auction_price = crate::math::auction::calculate_auction_price(
+                &taker.orders[0],
+                slot,
+                1,
+                None,
+                crate::math::time::SlotClock::baseline(),
+            )
+            .unwrap();
             let baa = 1000 * 4;
 
             let (mark, ask, bid) = {
@@ -2990,7 +3003,7 @@ pub mod amm_jit {
         let mut oracle_map = OracleMap::load_one(
             &oracle_account_info,
             slot,
-            crate::math::time::SlotDuration::BASELINE,
+            crate::math::time::SlotClock::baseline(),
             None,
         )
         .unwrap();

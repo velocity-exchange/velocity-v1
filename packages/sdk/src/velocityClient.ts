@@ -269,7 +269,6 @@ import { getOrderParams } from './orderParams';
 import { numberToSafeBN } from './math/utils';
 import { TransactionParamProcessor } from './tx/txParamProcessor';
 import { isOracleValid, getOracleValidity } from './math/oracles';
-import { activeSlotDurationFromState } from './math/time';
 import { TxHandler } from './tx/txHandler';
 import { createMinimalEd25519VerifyIx } from './util/ed25519Utils';
 import {
@@ -10288,7 +10287,7 @@ export class VelocityClient {
 					oraclePriceData,
 					oracleGuardRails,
 					nowSlot,
-					activeSlotDurationFromState(stateAccountAndSlot.data, new BN(nowSlot))
+					stateAccountAndSlot.data
 				);
 
 				if (isValid) {
@@ -12222,7 +12221,7 @@ export class VelocityClient {
 					nowSlot,
 					undefined,
 					true, // classifying the MM oracle price itself
-					activeSlotDurationFromState(stateAccountAndSlot.data, nowSlot)
+					stateAccountAndSlot.data
 			  );
 		const isMMOracleInvalidForUse =
 			mmOracleValidity === OracleValidity.NonPositive ||

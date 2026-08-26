@@ -7,6 +7,7 @@ use {
             constants::{BID_ASK_SPREAD_PRECISION_I128, TEN_BPS_I64},
             orders::calculate_quote_asset_amount_for_maker_order,
             safe_math::SafeMath,
+            time::SlotClock,
         },
         state::user::Order,
     },
@@ -20,15 +21,16 @@ pub fn is_maker_for_taker(
     maker_order: &Order,
     taker_order: &Order,
     slot: u64,
+    slot_clock: SlotClock,
 ) -> VelocityResult<bool> {
     // Self match protection handled upstream via maker_key != taker_key check.
     // Removed slot equality restriction to enable same slot fills.
 
     // taker cant be post only and maker must be resting limit order
-    if taker_order.post_only || !maker_order.is_resting_limit_order(slot)? {
+    if taker_order.post_only || !maker_order.is_resting_limit_order(slot, slot_clock)? {
         Ok(false)
     // can make if taker order isn't resting (market order or limit going through auction)
-    } else if !taker_order.is_resting_limit_order(slot)? || maker_order.post_only {
+    } else if !taker_order.is_resting_limit_order(slot, slot_clock)? || maker_order.post_only {
         Ok(true)
     // otherwise the maker must be older than the taker order
     } else {

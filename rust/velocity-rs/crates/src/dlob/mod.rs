@@ -16,6 +16,8 @@ use dashmap::{mapref::one::RefMut, DashMap};
 use rustc_hash::FxBuildHasher;
 use solana_pubkey::Pubkey;
 
+use program::math::time::SlotClock;
+
 use crate::{
     constants::ProgramData,
     dlob::util::order_hash,
@@ -115,6 +117,9 @@ struct Orderbook {
     market_tick_size: u64,
     /// slot where dynamic orders where last checked
     last_modified_slot: u64,
+    /// cluster slot clock (IBRL transition archive) auction wall-clock math
+    /// converts elapsed slots through; stamped by the owning `DLOB`
+    slot_clock: SlotClock,
     /// market index of this book
     market: MarketId,
 }
@@ -130,6 +135,7 @@ impl Orderbook {
             trigger_orders: Orders::default(),
             market_tick_size,
             last_modified_slot: 0,
+            slot_clock: SlotClock::baseline(),
             market,
             l2_snapshot: Default::default(),
             l3_snapshot: Default::default(),
@@ -162,6 +168,11 @@ impl Orderbook {
         self.last_modified_slot = slot;
     }
 
+    /// Update the cluster slot clock auction wall-clock math converts through
+    pub fn update_slot_clock(&mut self, slot_clock: SlotClock) {
+        self.slot_clock = slot_clock;
+    }
+
     /// Expire all auctions past current `slot`
     ///
     /// limit orders with finishing auctions are moved to resting orders
@@ -171,9 +182,10 @@ impl Orderbook {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
+        let slot_clock = self.slot_clock;
 
         let filter_fn = move |x: &MarketOrder, orderbook: &mut Orders<LimitOrder>, is_bid: bool| {
-            if crate::dlob::types::order_is_auction_complete(slot, x.slot, x.duration) {
+            if crate::dlob::types::order_is_auction_complete(slot, x.slot, x.duration, slot_clock) {
                 if crate::dlob::types::order_is_expired(x.max_ts, now) {
                     log::trace!(target: TARGET, "auction expired: {}@{}", x.id, slot);
                     false
@@ -195,23 +207,24 @@ impl Orderbook {
             .bids
             .retain(|_, x| filter_fn(x, &mut self.resting_limit_orders, true));
 
-        let filter_fn =
-            move |x: &OracleOrder, orderbook: &mut Orders<FloatingLimitOrder>, is_bid: bool| {
-                if crate::dlob::types::order_is_auction_complete(slot, x.slot, x.duration) {
-                    if crate::dlob::types::order_is_expired(x.max_ts, now) {
-                        log::trace!(target: TARGET, "auction expired: {}@{}", x.id, slot);
-                        false
-                    } else if x.is_limit {
-                        log::trace!(target: TARGET, "auction => resting: {}@{}", x.id, slot);
-                        orderbook.insert_raw(is_bid, x.to_floating_limit_order());
-                        false
-                    } else {
-                        true
-                    }
+        let filter_fn = move |x: &OracleOrder,
+                              orderbook: &mut Orders<FloatingLimitOrder>,
+                              is_bid: bool| {
+            if crate::dlob::types::order_is_auction_complete(slot, x.slot, x.duration, slot_clock) {
+                if crate::dlob::types::order_is_expired(x.max_ts, now) {
+                    log::trace!(target: TARGET, "auction expired: {}@{}", x.id, slot);
+                    false
+                } else if x.is_limit {
+                    log::trace!(target: TARGET, "auction => resting: {}@{}", x.id, slot);
+                    orderbook.insert_raw(is_bid, x.to_floating_limit_order());
+                    false
                 } else {
                     true
                 }
-            };
+            } else {
+                true
+            }
+        };
         self.oracle_orders
             .asks
             .retain(|_, x| filter_fn(x, &mut self.floating_limit_orders, false));
@@ -298,6 +311,16 @@ impl DLOBNotifier {
             .expect("Failed to send DLOB event - channel may be closed");
     }
 
+    /// Push a cluster slot-clock update (the velocity `State` transition
+    /// archive) to the DLOB. Cheap to send every slot: the DLOB no-ops
+    /// unless the clock changed.
+    #[inline]
+    pub fn slot_clock_update(&self, slot_clock: SlotClock) {
+        self.sender
+            .send(DLOBEvent::SlotClockUpdate { slot_clock })
+            .expect("Failed to send DLOB event - channel may be closed");
+    }
+
     #[inline]
     pub fn slot_and_oracle_update(&self, market: MarketId, slot: u64, oracle_price: u64) {
         self.sender
@@ -328,6 +351,10 @@ pub struct DLOB {
     program_data: &'static ProgramData,
     /// last slot update
     last_modified_slot: AtomicU64,
+    /// cluster slot clock (IBRL transition archive); auction wall-clock math
+    /// converts elapsed slots through it. Update via `update_slot_clock`
+    /// whenever the velocity `State` account changes.
+    slot_clock: std::sync::RwLock<SlotClock>,
     // Maintain live L2 snapshots (default: false)
     enable_l2_snapshot: AtomicBool,
     // Maintain live L3 snapshots (default: true)
@@ -342,6 +369,7 @@ impl Default for DLOB {
             order_events: DashMap::default(),
             program_data: Box::leak(Box::new(ProgramData::uninitialized())),
             last_modified_slot: Default::default(),
+            slot_clock: std::sync::RwLock::new(SlotClock::baseline()),
             enable_l2_snapshot: AtomicBool::new(false),
             enable_l3_snapshot: AtomicBool::new(true),
         }
@@ -462,12 +490,34 @@ impl DLOB {
                             }
                         }
                     }
+                    DLOBEvent::SlotClockUpdate { slot_clock } => {
+                        self.update_slot_clock(slot_clock);
+                    }
                 }
             }
             log::error!(target: TARGET, "notifier thread finished");
         });
 
         DLOBNotifier::new(tx)
+    }
+
+    /// The cluster slot clock this DLOB's auction math converts through
+    fn slot_clock(&self) -> SlotClock {
+        *self.slot_clock.read().expect("read slot clock")
+    }
+
+    /// Update the cluster slot clock (the velocity `State` transition
+    /// archive) so auction wall-clock math stays exact across IBRL
+    /// slot-duration transitions; without it the books assume the 400ms
+    /// baseline. Cheap to call every slot: a no-op unless the clock changed.
+    pub fn update_slot_clock(&self, slot_clock: SlotClock) {
+        if *self.slot_clock.read().expect("read slot clock") == slot_clock {
+            return;
+        }
+        *self.slot_clock.write().expect("write slot clock") = slot_clock;
+        for mut book in self.markets.iter_mut() {
+            book.update_slot_clock(slot_clock);
+        }
     }
 
     /// run function on a market Orderbook
@@ -486,7 +536,9 @@ impl DLOB {
                     .map(|m| m.order_tick_size)
                     .unwrap_or(1),
             };
-            Orderbook::new(*market_id, market_tick_size)
+            let mut book = Orderbook::new(*market_id, market_tick_size);
+            book.update_slot_clock(self.slot_clock());
+            book
         });
         f(ob);
     }
@@ -765,7 +817,7 @@ impl DLOB {
                         */
                         let is_floating = order.oracle_price_offset != 0;
                         let is_post_only = order.post_only;
-                        let has_auction_price = (order.auction_end_price != 0 && order.auction_start_price != 0) && !is_auction_complete(&order, slot);
+                        let has_auction_price = (order.auction_end_price != 0 && order.auction_start_price != 0) && !is_auction_complete(&order, slot, self.slot_clock());
                         let order_kind = if !is_post_only {
                             match (has_auction_price, is_floating) {
                                 (true, true) => {
@@ -826,7 +878,7 @@ impl DLOB {
                         OrderTriggerCondition::TriggeredAbove
                         | OrderTriggerCondition::TriggeredBelow => {
                             log::trace!(target: TARGET, "insert triggered limit order: {order_id}");
-                            let is_resting = is_auction_complete(&order, slot);
+                            let is_resting = is_auction_complete(&order, slot, self.slot_clock());
                             if is_resting {
                                 orderbook.resting_limit_orders.insert(order_id, order);
                                 OrderKind::Limit
@@ -1698,7 +1750,12 @@ impl L3Book {
             total_orders_count += 1;
             if let Some(meta) = metadata.get(&order.id) {
                 let price = order
-                    .get_price(self.slot, oracle_price, market_tick_size)
+                    .get_price(
+                        self.slot,
+                        oracle_price,
+                        market_tick_size,
+                        orderbook.slot_clock,
+                    )
                     .unwrap_or_default(); // 0 => fill at vamm price
                 let order = L3Order {
                     price,
@@ -1723,7 +1780,12 @@ impl L3Book {
             total_orders_count += 1;
             if let Some(meta) = metadata.get(&order.id) {
                 let price = order
-                    .get_price(self.slot, oracle_price, market_tick_size)
+                    .get_price(
+                        self.slot,
+                        oracle_price,
+                        market_tick_size,
+                        orderbook.slot_clock,
+                    )
                     .unwrap_or_default(); // 0 => fill at vamm price
                 let order = L3Order {
                     price,
@@ -1787,7 +1849,12 @@ impl L3Book {
             total_orders_count += 1;
             if let Some(meta) = metadata.get(&order.id) {
                 let price = order
-                    .get_price(self.slot, oracle_price, market_tick_size)
+                    .get_price(
+                        self.slot,
+                        oracle_price,
+                        market_tick_size,
+                        orderbook.slot_clock,
+                    )
                     .unwrap_or_default();
                 let order = L3Order {
                     price,
@@ -1812,7 +1879,12 @@ impl L3Book {
             total_orders_count += 1;
             if let Some(meta) = metadata.get(&order.id) {
                 let price = order
-                    .get_price(self.slot, oracle_price, market_tick_size)
+                    .get_price(
+                        self.slot,
+                        oracle_price,
+                        market_tick_size,
+                        orderbook.slot_clock,
+                    )
                     .unwrap_or_default();
                 let order = L3Order {
                     price,
@@ -2025,7 +2097,12 @@ impl L2Book {
         // Process market orders as taker orders
         for order in orderbook.market_orders.bids.values() {
             if order.size > 0 {
-                if let Some(price) = order.get_price(self.slot, oracle_price, market_tick_size) {
+                if let Some(price) = order.get_price(
+                    self.slot,
+                    oracle_price,
+                    market_tick_size,
+                    orderbook.slot_clock,
+                ) {
                     let size = self.bids.entry(price).or_insert(0);
                     *size = size.saturating_add(order.size);
                 } else {
@@ -2035,7 +2112,12 @@ impl L2Book {
         }
         for order in orderbook.market_orders.asks.values() {
             if order.size > 0 {
-                if let Some(price) = order.get_price(self.slot, oracle_price, market_tick_size) {
+                if let Some(price) = order.get_price(
+                    self.slot,
+                    oracle_price,
+                    market_tick_size,
+                    orderbook.slot_clock,
+                ) {
                     let size = self.asks.entry(price).or_insert(0);
                     *size = size.saturating_add(order.size);
                 } else {
@@ -2047,7 +2129,12 @@ impl L2Book {
         // Process oracle orders as taker orders
         for order in orderbook.oracle_orders.bids.values() {
             if order.size > 0 {
-                if let Some(price) = order.get_price(self.slot, oracle_price, market_tick_size) {
+                if let Some(price) = order.get_price(
+                    self.slot,
+                    oracle_price,
+                    market_tick_size,
+                    orderbook.slot_clock,
+                ) {
                     let size = self.bids.entry(price).or_insert(0);
                     *size = size.saturating_add(order.size);
                 } else {
@@ -2057,7 +2144,12 @@ impl L2Book {
         }
         for order in orderbook.oracle_orders.asks.values() {
             if order.size > 0 {
-                if let Some(price) = order.get_price(self.slot, oracle_price, market_tick_size) {
+                if let Some(price) = order.get_price(
+                    self.slot,
+                    oracle_price,
+                    market_tick_size,
+                    orderbook.slot_clock,
+                ) {
                     let size = self.asks.entry(price).or_insert(0);
                     *size = size.saturating_add(order.size);
                 } else {

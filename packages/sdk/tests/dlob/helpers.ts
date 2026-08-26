@@ -667,11 +667,12 @@ export const mockStateAccount: StateAccount = {
 	whitelistMint: PublicKey.default,
 	maxNumberOfSubAccounts: 0,
 	maxInitializeUserFee: 0,
-	// 0 = unset, resolves to the 400ms baseline; nothing staged
+	// 0 = unset, resolves to the 400ms baseline; nothing staged or synchronized
 	slotDurationMs: 0,
 	pendingSlotDurationMs: 0,
 	slotDurationPad: [0, 0],
 	slotDurationEffectiveSlot: new BN(0),
+	slotDurationTransitionSlots: [new BN(0), new BN(0), new BN(0), new BN(0)],
 };
 
 export class MockUserMap implements UserMapInterface {

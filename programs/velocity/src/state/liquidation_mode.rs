@@ -22,7 +22,7 @@ use {
             liquidation::calculate_max_pct_to_liquidate,
             margin::calculate_user_safest_position_tiers,
             safe_unwrap::SafeUnwrap,
-            time::{Millis, SlotDuration},
+            time::{Millis, SlotClock},
         },
         state::margin_calculation::MarginCalculation,
         validate,
@@ -53,7 +53,7 @@ pub trait LiquidatePerpMode {
         slot: u64,
         initial_pct_to_liquidate: u128,
         liquidation_duration: Millis,
-        slot_duration: SlotDuration,
+        slot_clock: SlotClock,
     ) -> VelocityResult<u128>;
 
     fn increment_free_margin(&self, user: &mut User, amount: u64) -> VelocityResult<()>;
@@ -177,7 +177,7 @@ impl LiquidatePerpMode for CrossMarginLiquidatePerpMode {
         slot: u64,
         initial_pct_to_liquidate: u128,
         liquidation_duration: Millis,
-        slot_duration: SlotDuration,
+        slot_clock: SlotClock,
     ) -> VelocityResult<u128> {
         calculate_max_pct_to_liquidate(
             user,
@@ -185,7 +185,7 @@ impl LiquidatePerpMode for CrossMarginLiquidatePerpMode {
             slot,
             initial_pct_to_liquidate,
             liquidation_duration,
-            slot_duration,
+            slot_clock,
         )
     }
 
@@ -348,7 +348,7 @@ impl LiquidatePerpMode for IsolatedMarginLiquidatePerpMode {
         _slot: u64,
         _initial_pct_to_liquidate: u128,
         _liquidation_duration: Millis,
-        _slot_duration: SlotDuration,
+        _slot_clock: SlotClock,
     ) -> VelocityResult<u128> {
         Ok(LIQUIDATION_PCT_PRECISION)
     }

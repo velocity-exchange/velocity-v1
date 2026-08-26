@@ -52,8 +52,8 @@ pub fn spot_markets_that_price_equity<'info>(
         .collect();
 
     if !isolated_perp_market_indexes.is_empty() {
-        let slot_duration =
-            velocity::state::state::State::slot_duration_from_account_info(velocity_state, slot)?;
+        let slot_clock =
+            velocity::state::state::State::slot_clock_from_account_info(velocity_state)?;
         let AccountMaps {
             perp_market_map, ..
         } = load_maps(
@@ -61,7 +61,7 @@ pub fn spot_markets_that_price_equity<'info>(
             &BTreeSet::new(),
             &BTreeSet::new(),
             slot,
-            slot_duration,
+            slot_clock,
             None,
         )?;
 

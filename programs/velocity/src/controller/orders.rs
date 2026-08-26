@@ -36,7 +36,7 @@ use {
             orders::*,
             safe_math::SafeMath,
             safe_unwrap::SafeUnwrap,
-            time::{Millis, SlotDuration},
+            time::{Millis, SlotClock},
         },
         msg, print_error,
         state::{
@@ -253,7 +253,6 @@ pub fn place_perp_order(
             market,
             oracle_price_data.price,
             options.is_signed_msg_order(),
-            state.slot_duration(),
         )?;
     }
 
@@ -261,10 +260,8 @@ pub fn place_perp_order(
         &params,
         oracle_price_data,
         market.order_tick_size,
-        state
-            .min_perp_auction_duration_ms()
-            .to_slots_ceil(state.slot_duration())
-            .min(u8::MAX as u64) as u8,
+        // the stored min is already in the auction's wall-clock 400ms units
+        crate::math::time::legacy_slot_duration_u8_raw(state.min_perp_auction_duration),
     )?;
 
     let max_ts = match params.max_ts {
@@ -273,12 +270,11 @@ pub fn place_perp_order(
             // default TIF: at least 30s, else the auction's wall-clock length
             // plus a quarter again plus 10s of pad, so the default always
             // outlives the auction. The /800 reproduces the historical
-            // `auction_duration_slots / 2 + 10` exactly at the 400ms baseline
-            // (a slot was 400ms, so slots/2 == ms/800) and holds that
-            // wall-clock shape at every slot duration.
+            // `auction_duration_slots / 2 + 10` exactly (a 400ms unit is one
+            // historical slot, so units/2 == ms/800).
             OrderType::Market | OrderType::Oracle => now.safe_add(
                 30_i64.max(
-                    Millis::from_slots(auction_duration as u64, state.slot_duration())
+                    Millis::from_stored_units(auction_duration as u64)
                         .as_ms()
                         .safe_div(800)?
                         .cast::<i64>()?
@@ -368,7 +364,13 @@ pub fn place_perp_order(
     };
 
     let valid_oracle_price = Some(oracle_price_data.price);
-    match validate_order(&new_order, market, valid_oracle_price, slot) {
+    match validate_order(
+        &new_order,
+        market,
+        valid_oracle_price,
+        slot,
+        state.slot_clock(),
+    ) {
         Ok(()) => {}
         Err(ErrorCode::PlacePostOnlyLimitFailure)
             if params.post_only == PostOnlyParam::TryPostOnly =>
@@ -1219,13 +1221,14 @@ pub fn fill_perp_order(
             market.oracle_slot_delay_override,
             false,
             market.oracle_low_risk_slot_delay_override,
-            state.slot_duration(),
+            slot,
+            state.slot_clock(),
         )?;
         let mm_oracle_price_data = market.get_mm_oracle_price_data(
             *oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
-            state.slot_duration(),
+            state.slot_clock(),
         )?;
         let safe_oracle_price_data = mm_oracle_price_data.get_safe_oracle_price_data();
         safe_oracle_validity = oracle_validity(
@@ -1243,7 +1246,8 @@ pub fn fill_perp_order(
             market.oracle_slot_delay_override,
             mm_oracle_price_data.is_safe_price_mm_sourced(),
             market.oracle_low_risk_slot_delay_override,
-            state.slot_duration(),
+            slot,
+            state.slot_clock(),
         )?;
 
         user_can_skip_duration = user.can_skip_auction_duration(user_stats, order_reduce_only)?;
@@ -1259,12 +1263,10 @@ pub fn fill_perp_order(
         amm_jit_allowed = amm_not_globally_paused
             && market.amm_fill_gates_ok(safe_oracle_validity, &mm_oracle_price_data)?;
 
-        oracle_stale_for_margin = mm_oracle_price_data.get_delay()
-            > state
-                .oracle_guard_rails
-                .validity
-                .stale_for_margin_ms()
-                .to_slots(state.slot_duration()) as i64;
+        oracle_stale_for_margin = state
+            .slot_clock()
+            .elapsed_slot_delta(mm_oracle_price_data.get_delay().max(0) as u64, slot)
+            > state.oracle_guard_rails.validity.stale_for_margin_ms();
 
         // No AMM mutation here — `fulfill_perp_order_step` constructs an
         // `AmmQuoter` and calls `Quoter::setup` before quoting, which is
@@ -1277,7 +1279,8 @@ pub fn fill_perp_order(
                 market,
                 &mm_oracle_price_data,
                 &state.oracle_guard_rails.validity,
-                state.slot_duration(),
+                slot,
+                state.slot_clock(),
             )?;
 
         // Snapshot the 5-minute oracle TWAP *before* the refresh below advances
@@ -1301,7 +1304,7 @@ pub fn fill_perp_order(
             amm_refresh_validity,
             now,
             slot,
-            state.slot_duration(),
+            state.slot_clock(),
         )?;
 
         reserve_price_before = market.amm.reserve_price()?;
@@ -1703,6 +1706,7 @@ fn get_maker_orders_info(
             Some(oracle_price),
             slot,
             market.order_tick_size,
+            oracle_map.slot_clock,
         )?;
 
         if maker_order_price_and_indexes.is_empty() {
@@ -1760,7 +1764,7 @@ fn get_maker_orders_info(
             let maker_order_price = *maker_order_price;
 
             let maker_order = &maker.orders[maker_order_index];
-            if !is_maker_for_taker(maker_order, taker_order, slot)? {
+            if !is_maker_for_taker(maker_order, taker_order, slot, oracle_map.slot_clock)? {
                 continue;
             }
 
@@ -2137,6 +2141,7 @@ fn fulfill_perp_order(
         valid_oracle_price,
         slot,
         perp_market.order_tick_size,
+        oracle_map.slot_clock,
     )?;
     let perp_market_oi_before = perp_market.get_open_interest();
     drop(perp_market);
@@ -2157,20 +2162,17 @@ fn fulfill_perp_order(
         // same curve. When the projection is a passthrough (oracle invalid for
         // curve updates, zero intensity, or the affordability floor rejected
         // it) the AMM is left at its stored curve and routing behaves as before.
-        let slot_duration = oracle_map.slot_duration;
+        let slot_clock = oracle_map.slot_clock;
         let oracle_pd = *oracle_map.get_price_data(&market.oracle_id())?;
-        let mm_oracle_pd = market.get_mm_oracle_price_data(
-            oracle_pd,
-            slot,
-            validity_guard_rails,
-            slot_duration,
-        )?;
+        let mm_oracle_pd =
+            market.get_mm_oracle_price_data(oracle_pd, slot, validity_guard_rails, slot_clock)?;
         let amm_refresh_validity =
             crate::vlp::amm::refresh::compute_amm_refresh_validity_with_guard_rails(
                 &market,
                 &mm_oracle_pd,
                 validity_guard_rails,
-                slot_duration,
+                slot,
+                slot_clock,
             )?;
         let projection_inputs =
             crate::vlp::amm::math::repeg::ProjectionInputs::from_market(&market);
@@ -2195,7 +2197,7 @@ fn fulfill_perp_order(
                 &mm_oracle_pd,
                 projected_reserve_price,
                 slot,
-                slot_duration,
+                slot_clock,
             )?;
         }
         determine_perp_fulfillment_methods(
@@ -2859,7 +2861,7 @@ fn settle_amm_house_fill(
     promo_fee_tier: u8,
     builder_fee_allowed: bool,
 ) -> VelocityResult<(u64, u64)> {
-    let slot_duration = oracle_map.slot_duration;
+    let slot_clock = oracle_map.slot_clock;
     // For sole-AMM steps with a post_only taker, override the
     // fill's quote at the order's limit price (the taker, acting
     // as maker, transacts at limit; the AMM captures the curve
@@ -2921,7 +2923,7 @@ fn settle_amm_house_fill(
         market.taker_fee_addon_tenth_bps,
         now,
         promo_fee_tier,
-        slot_duration,
+        slot_clock,
     )?;
     let builder_fee = builder_fee_option.unwrap_or(0);
 
@@ -3162,7 +3164,7 @@ fn settle_dlob_match_fill(
     promo_fee_tier: u8,
     builder_fee_allowed: bool,
 ) -> VelocityResult<(u64, u64, u64)> {
-    let slot_duration = oracle_map.slot_duration;
+    let slot_clock = oracle_map.slot_clock;
     // DlobMatch fills only land from a Match step, which always
     // populates `match_maker_price`.
     let match_maker_price = match_maker_price.ok_or_else(print_error!(ErrorCode::DefaultError))?;
@@ -3269,7 +3271,7 @@ fn settle_dlob_match_fill(
         market.taker_fee_addon_tenth_bps,
         now,
         promo_fee_tier,
-        slot_duration,
+        slot_clock,
     )?;
     let builder_fee = builder_fee_option.unwrap_or(0);
 
@@ -3521,11 +3523,11 @@ pub fn fulfill_perp_order_step(
         msg!("Order has builder but no escrow account included; builder fee skipped.");
     }
 
-    let slot_duration = oracle_map.slot_duration;
+    let slot_clock = oracle_map.slot_clock;
     let oracle_pd = *oracle_map.get_price_data(&market.oracle_id())?;
     let oracle_price = oracle_pd.price;
     let mm_oracle_price_data =
-        market.get_mm_oracle_price_data(oracle_pd, slot, validity_guard_rails, slot_duration)?;
+        market.get_mm_oracle_price_data(oracle_pd, slot, validity_guard_rails, slot_clock)?;
     let sanitize_clamp_denom = market.get_sanitize_clamp_denominator()?;
 
     // Construct the AMM-side `Quoter` and run setup once. `Quoter::setup`
@@ -3545,7 +3547,8 @@ pub fn fulfill_perp_order_step(
             market,
             &mm_oracle_price_data,
             validity_guard_rails,
-            slot_duration,
+            slot,
+            slot_clock,
         )?
     } else {
         None
@@ -3565,7 +3568,7 @@ pub fn fulfill_perp_order_step(
         tick: order_tick_size,
         step_size: order_step_size,
         slot,
-        slot_duration,
+        slot_clock,
         base_precision: BASE_PRECISION_U64,
         market_status: market_status_local,
         market_config: market_config_local,
@@ -3682,7 +3685,7 @@ pub fn fulfill_perp_order_step(
         tick: order_tick_size,
         step_size: order_step_size,
         slot,
-        slot_duration,
+        slot_clock,
         base_precision: BASE_PRECISION_U64,
         market_status: MarketStatus::default(),
         market_config: 0,
@@ -3756,7 +3759,7 @@ pub fn fulfill_perp_order_step(
             // (pause/drawdown) must keep it off the reserves. Else: DLOB only.
             if amm_jit_allowed {
                 let taker_has_limit_price =
-                    taker.orders[taker_order_index].has_limit_price(slot)?;
+                    taker.orders[taker_order_index].has_limit_price(slot, slot_clock)?;
                 let mut amm_jit = crate::vlp::amm::AmmJitQuoter::from_match_context(
                     market,
                     maker_price,
@@ -4160,12 +4163,12 @@ pub fn trigger_order(
             &mut user.orders[order_index],
             oracle_price_data,
             slot,
-            // ~8s minimum, expressed in actual slots
+            // ~8s minimum, in wall-clock 400ms units
             Millis::from_secs(8)
-                .to_slots_ceil(state.slot_duration())
+                .div_periods(Millis::UNIT)
                 .min(u8::MAX as u64) as u8,
             Some(&perp_market),
-            state.slot_duration(),
+            state.slot_clock(),
         )?;
 
         if user.orders[order_index].has_auction() {
@@ -4337,7 +4340,7 @@ fn update_trigger_order_params(
     slot: u64,
     min_auction_duration: u8,
     perp_market: Option<&PerpMarket>,
-    slot_duration: SlotDuration,
+    slot_clock: SlotClock,
 ) -> VelocityResult {
     order.trigger_condition = match order.trigger_condition {
         OrderTriggerCondition::Above => OrderTriggerCondition::TriggeredAbove,
@@ -4348,10 +4351,9 @@ fn update_trigger_order_params(
     };
 
     // ~60s: a reduce-only trigger left resting this long is flagged safe for
-    // the relaxed oracle-delay gate.
-    if slot.saturating_sub(order.slot) > Millis::from_secs(60).to_slots(slot_duration)
-        && order.reduce_only
-    {
+    // the relaxed oracle-delay gate. Rest time is integrated per
+    // slot-duration regime.
+    if slot_clock.elapsed(order.slot, slot) > Millis::from_secs(60) && order.reduce_only {
         order.add_bit_flag(OrderBitFlag::SafeTriggerOrder);
     }
 
@@ -4363,7 +4365,6 @@ fn update_trigger_order_params(
             oracle_price_data,
             min_auction_duration,
             perp_market,
-            slot_duration,
         )?;
 
     msg!(

@@ -18,6 +18,7 @@ use {
             safe_math::SafeMath,
             spot_balance::get_strict_token_value,
             spot_withdraw::get_max_withdraw_for_market_with_token_amount,
+            time::{Millis, SlotClock},
         },
         math_error, msg, print_error,
         state::{
@@ -391,9 +392,10 @@ pub fn order_breaches_maker_oracle_price_bands(
     slot: u64,
     tick_size: u64,
     margin_ratio_initial: u32,
+    slot_clock: SlotClock,
 ) -> VelocityResult<bool> {
     let order_limit_price =
-        order.force_get_limit_price(Some(oracle_price), None, slot, tick_size)?;
+        order.force_get_limit_price(Some(oracle_price), None, slot, tick_size, slot_clock)?;
     limit_price_breaches_maker_oracle_price_bands(
         order_limit_price,
         order.direction,
@@ -717,6 +719,7 @@ pub fn find_maker_orders(
     valid_oracle_price: Option<i64>,
     slot: u64,
     tick_size: u64,
+    slot_clock: SlotClock,
 ) -> VelocityResult<Vec<(usize, u64)>> {
     let mut orders: Vec<(usize, u64)> = Vec::with_capacity(32);
 
@@ -738,7 +741,8 @@ pub fn find_maker_orders(
             continue;
         }
 
-        let limit_price = order.force_get_limit_price(valid_oracle_price, None, slot, tick_size)?;
+        let limit_price =
+            order.force_get_limit_price(valid_oracle_price, None, slot, tick_size, slot_clock)?;
 
         orders.push((order_index, limit_price));
     }
@@ -1195,16 +1199,18 @@ pub fn slots_since_order_posted(slot: u64, posted_slot_tail: u8) -> u64 {
 
 /// Collect the resting bid/ask levels for `perp_market` from the supplied `users`.
 ///
-/// `min_resting_slots` drops any quote that has rested for fewer slots than that. Pass
-/// `BID_ASK_TWAP_MIN_QUOTE_REST` when the result feeds the mark TWAP, and `0` when the caller
-/// needs the true current book. Arbitrage needs the latter, because a fresh quote is still takeable.
+/// `min_quote_rest` drops any quote that has rested for less wall-clock time than that
+/// (integrated per slot-duration regime). Pass `BID_ASK_TWAP_MIN_QUOTE_REST` when the result
+/// feeds the mark TWAP, and `Millis::ZERO` when the caller needs the true current book.
+/// Arbitrage needs the latter, because a fresh quote is still takeable.
 pub fn find_bids_and_asks_from_users(
     perp_market: &PerpMarket,
     oracle_price_date: &OraclePriceData,
     users: &UserMap,
     slot: u64,
     now: i64,
-    min_resting_slots: u64,
+    min_quote_rest: Millis,
+    slot_clock: SlotClock,
 ) -> VelocityResult<(Vec<Level>, Vec<Level>)> {
     let mut bids: Vec<Level> = Vec::with_capacity(32);
     let mut asks: Vec<Level> = Vec::with_capacity(32);
@@ -1258,7 +1264,7 @@ pub fn find_bids_and_asks_from_users(
                 continue;
             }
 
-            if !order.is_resting_limit_order(slot)? {
+            if !order.is_resting_limit_order(slot, slot_clock)? {
                 continue;
             }
 
@@ -1266,8 +1272,11 @@ pub fn find_bids_and_asks_from_users(
             // before it can move the mark TWAP. `is_resting_limit_order` admits a post-only order in
             // its own post slot, so without this the crank's caller can quote, crank and cancel in one
             // transaction at no risk.
-            if min_resting_slots > 0
-                && slots_since_order_posted(slot, order.posted_slot_tail) < min_resting_slots
+            if min_quote_rest > Millis::ZERO
+                && slot_clock.elapsed_slot_delta(
+                    slots_since_order_posted(slot, order.posted_slot_tail),
+                    slot,
+                ) < min_quote_rest
             {
                 continue;
             }
@@ -1278,7 +1287,8 @@ pub fn find_bids_and_asks_from_users(
 
             let existing_position = user.get_perp_position(market_index)?.base_asset_amount;
             let base_amount = order.get_base_asset_amount_unfilled(Some(existing_position))?;
-            let limit_price = order.force_get_limit_price(oracle_price, None, slot, tick_size)?;
+            let limit_price =
+                order.force_get_limit_price(oracle_price, None, slot, tick_size, slot_clock)?;
 
             insert_order(base_amount, limit_price, order.direction);
         }

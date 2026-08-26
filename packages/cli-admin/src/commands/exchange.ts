@@ -4,15 +4,10 @@ import { BN } from '@coral-xyz/anchor';
 import {
 	activeSlotDurationFromState,
 	getIbrlFeatureGate,
-	IBRL_FEATURE_WARMUP_SLOTS,
 } from '@velocity-exchange/sdk';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
-import {
-	reportDispatch,
-	resolveAdminAuthority,
-	sendOrPropose,
-} from '../lib/squads';
+import { reportDispatch, sendOrPropose } from '../lib/squads';
 
 export function registerExchange(parent: Command): void {
 	const ex = parent.command('exchange').description('Whole-protocol controls.');
@@ -45,9 +40,9 @@ export function registerExchange(parent: Command): void {
 
 	withGlobalOptions(
 		ex
-			.command('set-slot-duration-ms <ms>')
+			.command('sync-slot-duration <ms>')
 			.description(
-				"Stage the next slot duration during the target IBRL gate's one-epoch warmup. Accepts only the exact next value on the schedule (400 -> 350 -> 300 -> 250 -> 200); reads the switch slot from the gate feature account and State flips itself at the boundary in lockstep with the chain (no second tx). 0 on chain reads as 400. Warm admin."
+				'Synchronize one IBRL slot-duration transition (400 -> 350 -> 300 -> 250 -> 200) from its feature-gate account. Permissionless: the program validates the gate and derives the effective slot from the EpochSchedule itself; idempotent per gate. 0 on chain reads as 400.'
 			)
 	).action(async (ms: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
@@ -61,23 +56,23 @@ export function registerExchange(parent: Command): void {
 			}
 			const newMs = Number.parseInt(ms.trim(), 10);
 			const currentSlot = await provider.connection.getSlot();
-			// The live value, not the raw base field: a staged switch that is
-			// already effective is the duration the program steps from, so the base
-			// field alone would preview the wrong starting point.
+			// The live value, resolved through the transition archive.
 			const currentMs = activeSlotDurationFromState(
 				client.getStateAccount(),
 				new BN(currentSlot)
 			);
 			console.log(`slot duration ${currentMs}ms -> ${newMs}ms`);
-			// Preview the switch slot from the target IBRL gate account (the same
-			// account the program reads): activation slot + one-epoch warmup =
-			// effective slot at which State auto-switches.
+			// Preview the effective slot the program will derive: first slot of the
+			// epoch after the gate's activation epoch (mirrors Agave).
 			const featureGate = getIbrlFeatureGate(newMs);
 			if (featureGate) {
 				const acct = await provider.connection.getAccountInfo(featureGate);
 				if (acct && acct.data.length === 9 && acct.data[0] === 1) {
 					const activation = Number(acct.data.readBigUInt64LE(1));
-					const effective = activation + IBRL_FEATURE_WARMUP_SLOTS;
+					const epochSchedule = await provider.connection.getEpochSchedule();
+					const effective = epochSchedule.getFirstSlotInEpoch(
+						epochSchedule.getEpoch(activation) + 1
+					);
 					const status =
 						currentSlot >= effective
 							? 'already effective'
@@ -92,20 +87,17 @@ export function registerExchange(parent: Command): void {
 					);
 				}
 			}
-			const multisigPda = opts.multisig
-				? new PublicKey(opts.multisig)
-				: undefined;
-			const ix = await client.getUpdateStateSlotDurationMsIx(
-				newMs,
-				resolveAdminAuthority(provider, multisigPda)
-			);
+			const ix = await client.getSyncStateSlotDurationIx(newMs);
+			// permissionless instruction with no admin signer: always send
+			// directly, never through a multisig proposal (a proposal would
+			// fail to execute and only adds delay)
 			const result = await sendOrPropose(
 				provider,
 				[ix],
-				multisigPda,
-				'velocity-admin exchange set-slot-duration-ms'
+				undefined,
+				'velocity-admin exchange sync-slot-duration'
 			);
-			reportDispatch(`slot duration = ${newMs}ms`, result);
+			reportDispatch(`slot duration sync = ${newMs}ms`, result);
 		} finally {
 			await client.unsubscribe();
 		}

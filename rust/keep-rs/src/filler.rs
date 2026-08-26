@@ -212,6 +212,8 @@ impl FillerBot {
         // reflects it immediately, not only after the first config refresh
         let startup_slot = velocity.get_slot().await.unwrap_or(0);
         let mut slot_duration = crate::util::client_slot_duration(velocity, startup_slot);
+        let mut slot_clock = velocity.slot_clock();
+        dlob.update_slot_clock(slot_clock);
         // effective (actual-slot) staleness threshold: the onchain value is in
         // 400ms baseline units and inflated by slot_duration, mirroring
         // `oracle_validity`
@@ -310,7 +312,7 @@ impl FillerBot {
                                 .unwrap_or(perp_market);
 
                             // try an immediate fill against resting liquidity
-                            match evaluate_swift_crosses(dlob, &signed_order, &perp_market, oracle_price_data.price, oracle_price_data.delay, landing_slot, slots_before_stale_for_amm, slot_duration) {
+                            match evaluate_swift_crosses(dlob, &signed_order, &perp_market, oracle_price_data.price, oracle_price_data.delay, landing_slot, slots_before_stale_for_amm, slot_clock) {
                                 SwiftEval::Fillable(crosses) => {
                                     log::info!(target: TARGET, "found resting cross. market={market_index} oracle={} delay={} crosses={crosses:?}", oracle_price_data.price, oracle_price_data.delay);
                                     let pf = priority_fee_subscriber.priority_fee_nth(0.6);
@@ -334,7 +336,7 @@ impl FillerBot {
                                     let order_slot = signed_order.slot();
                                     let auction_duration = order_params.auction_duration.unwrap_or(0);
                                     let max_ts = order_params.max_ts.unwrap_or(0);
-                                    if swift_placement_expired(order_slot, auction_duration, max_ts, slot, now_ts, slot_duration) {
+                                    if swift_placement_expired(order_slot, auction_duration, max_ts, slot, now_ts, slot_clock) {
                                         log::debug!(target: TARGET, "swift order past placement window, not placing. uuid={}", signed_order.order_uuid_str());
                                         metrics.swift_place_skipped.inc();
                                     } else {
@@ -624,6 +626,8 @@ impl FillerBot {
                                 .map(|s| s.has_median_trigger_price_feature())
                                 .unwrap_or(false);
                             slot_duration = crate::util::client_slot_duration(velocity, slot);
+                            slot_clock = velocity.slot_clock();
+                            dlob.update_slot_clock(slot_clock);
                             slots_before_stale_for_amm = velocity
                                 .state_account()
                                 .map(|s| {
@@ -830,10 +834,10 @@ fn evaluate_swift_crosses(
     oracle_delay: i64,
     landing_slot: u64,
     slots_before_stale_for_amm: i64,
-    slot_duration: velocity_rs::program::math::time::SlotDuration,
+    slot_clock: velocity_rs::program::math::time::SlotClock,
 ) -> SwiftEval {
     let mut order_params = signed_order.order_params();
-    let _ = order_params.update_perp_auction_params(perp_market, oracle_price, true, slot_duration);
+    let _ = order_params.update_perp_auction_params(perp_market, oracle_price, true);
 
     // Post-only limits are maker orders: never taker-fill them, but do place them on-chain so
     // they rest on the book (the program cancels/amends them if they'd cross on placement).
@@ -901,6 +905,7 @@ fn evaluate_swift_crosses(
                 landing_slot,
                 perp_market.price_tick(),
                 Some(oracle_price),
+                slot_clock,
             ) {
                 Ok(p) => p,
                 Err(err) => {
@@ -915,6 +920,7 @@ fn evaluate_swift_crosses(
                 Some(vamm_price),
                 landing_slot,
                 perp_market.price_tick(),
+                slot_clock,
             ) {
                 Ok(Some(p)) => p,
                 // No resolvable limit price at this slot (e.g. auction-limit with no final
@@ -1390,12 +1396,9 @@ async fn try_auction_fill(
         // JIT leg validates the MM oracle at the landing slot (crosses were snapshotted at
         // `crosses.slot`; the fill lands ~next slot). A same-slot snapshot that looks fresh
         // routinely lands one slot stale under the immediate threshold, so measure at landing.
-        // Resolve the slot duration at the same landing slot so a switch on that exact
-        // boundary matches the program's regime rather than the snapshot's.
         let landing_slot = crosses.slot.saturating_add(1);
-        let slot_duration = crate::util::client_slot_duration(velocity, landing_slot);
         let mm_stale_immediate =
-            mm_oracle_stale_for_amm_immediate(&perp_market, landing_slot, slot_duration);
+            mm_oracle_stale_for_amm_immediate(&perp_market, landing_slot, velocity.slot_clock());
         let mut vamm_usable = crosses.has_vamm_cross
             && vamm_can_fill_taker(
                 drawdown,
@@ -2009,22 +2012,19 @@ fn vamm_can_fill_taker(
 fn mm_oracle_stale_for_amm_immediate(
     perp_market: &PerpMarket,
     landing_slot: u64,
-    slot_duration: velocity_rs::program::math::time::SlotDuration,
+    slot_clock: velocity_rs::program::math::time::SlotClock,
 ) -> bool {
     let mm_oracle_delay =
         (landing_slot as i64).saturating_sub(perp_market.market_stats.mm_oracle_slot as i64);
-    // thresholds are 400ms baseline units, inflated like `oracle_validity` does
+    // the age is wall-clock, integrated per slot-duration regime like
+    // `oracle_validity`; thresholds are 400ms baseline units
+    let mm_oracle_age = slot_clock.elapsed_slot_delta(mm_oracle_delay.max(0) as u64, landing_slot);
     let override_ = perp_market.oracle_slot_delay_override;
     if override_ > 0 {
-        mm_oracle_delay
+        mm_oracle_age
             > velocity_rs::program::math::time::Millis::from_stored_units(override_ as u64)
-                .to_slots(slot_duration) as i64
     } else if override_ < 0 {
-        // ceil, matching the program's unset MM-sourced threshold and the crank
-        // write gate (a floor would sit a slot below the gate at 350/300/250ms)
-        mm_oracle_delay
-            > velocity_rs::program::math::constants::MM_ORACLE_MIN_WRITE_GAP
-                .to_slots_ceil(slot_duration) as i64
+        mm_oracle_age > velocity_rs::program::math::constants::MM_ORACLE_MIN_WRITE_GAP
     } else {
         true
     }
@@ -3165,29 +3165,31 @@ mod tests {
         },
     };
 
-    // The unset (override < 0) MM-sourced immediate threshold must CEIL
-    // MM_ORACLE_MIN_WRITE_GAP, matching the program's `oracle_validity` and the
-    // crank write gate. Floor would sit a slot below at 350/300/250ms and reject
-    // a quote the crank was allowed to post.
+    // The unset (override < 0) MM-sourced immediate threshold compares the
+    // wall-clock MM-oracle age against MM_ORACLE_MIN_WRITE_GAP, matching the
+    // program's `oracle_validity`. The age integrates per slot-duration
+    // regime, so the effective slot count scales with the clock.
     #[test]
-    fn unset_mm_immediate_threshold_ceils_per_gate() {
-        use velocity_rs::program::math::time::SlotDuration;
+    fn unset_mm_immediate_threshold_scales_per_gate() {
+        use velocity_rs::program::math::time::SlotClock;
         let mut market = PerpMarket::default();
         market.oracle_slot_delay_override = -1; // unset -> source-aware fallback
-        market.market_stats.mm_oracle_slot = 100;
-        // MM_ORACLE_MIN_WRITE_GAP = 800ms; ceil(800 / d) per gate
-        for (ms, threshold) in [(400u16, 2u64), (350, 3), (300, 3), (250, 4), (200, 4)] {
-            let d = SlotDuration::from_state_ms(ms);
-            // delay exactly at the ceil threshold is NOT stale (`delay > threshold`)
+        market.market_stats.mm_oracle_slot = 1_000;
+        // MM_ORACLE_MIN_WRITE_GAP = 800ms: 2 slots at 400ms, 4 at 200ms
+        for (clock, threshold) in [
+            (SlotClock::baseline(), 2u64),
+            (SlotClock::from_state_fields([1, 1, 1, 1], 0, 0, 0), 4),
+        ] {
+            // age exactly at the write gap is NOT stale (`age > gap`)
             let at = market.market_stats.mm_oracle_slot + threshold;
             assert!(
-                !mm_oracle_stale_for_amm_immediate(&market, at, d),
-                "delay == ceil threshold should be fresh at {ms}ms"
+                !mm_oracle_stale_for_amm_immediate(&market, at, clock),
+                "age == write gap should be fresh"
             );
             // one slot past is stale
             assert!(
-                mm_oracle_stale_for_amm_immediate(&market, at + 1, d),
-                "delay past threshold should be stale at {ms}ms"
+                mm_oracle_stale_for_amm_immediate(&market, at + 1, clock),
+                "age past write gap should be stale"
             );
         }
     }

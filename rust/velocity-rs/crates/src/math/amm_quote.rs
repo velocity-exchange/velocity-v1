@@ -18,7 +18,7 @@
 //! vAMM-cross decisions against this projection.
 
 use program::{
-    math::time::SlotDuration,
+    math::time::SlotClock,
     state::{oracle::OraclePriceData, perp_market::PerpMarket, state::ValidityGuardRails},
     vlp::amm::{
         math::{
@@ -51,16 +51,17 @@ pub fn project_perp_market_for_quoting(
     exchange_oracle: OraclePriceData,
     guard_rails: &ValidityGuardRails,
     slot: u64,
-    slot_duration: SlotDuration,
+    slot_clock: SlotClock,
 ) -> SdkResult<PerpMarket> {
     let mm_oracle = perp_market
-        .get_mm_oracle_price_data(exchange_oracle, slot, guard_rails, slot_duration)
+        .get_mm_oracle_price_data(exchange_oracle, slot, guard_rails, slot_clock)
         .map_err(|e| SdkError::Anchor(Box::new(e.into())))?;
     let validity = compute_amm_refresh_validity_with_guard_rails(
         &perp_market,
         &mm_oracle,
         guard_rails,
-        slot_duration,
+        slot,
+        slot_clock,
     )
     .map_err(|e| SdkError::Anchor(Box::new(e.into())))?;
 
@@ -86,7 +87,7 @@ pub fn project_perp_market_for_quoting(
         &mm_oracle,
         reserve_price,
         slot,
-        slot_duration,
+        slot_clock,
     )
     .map_err(|e| SdkError::Anchor(Box::new(e.into())))?;
 

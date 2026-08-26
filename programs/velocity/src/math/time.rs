@@ -9,8 +9,8 @@
 //!   threshold, window, ramp, and grace period is a `Millis`, whether it comes
 //!   from a code constant or an admin-set field. It cannot be compared against
 //!   a slot count without converting through the live slot length.
-//! - [`SlotDuration`] is the current slot length, admin-updated on `State` as
-//!   each gate activates. It is the sole bridge between durations and slots
+//! - [`SlotDuration`] is the slot length resolved from the permissionlessly
+//!   synchronized transition archive on `State`. It is the sole bridge between durations and slots
 //!   and is not constructible from an arbitrary number, so a raw slot value
 //!   can never be passed where the slot length belongs.
 //! - [`StoredSlotDuration`] is a compact onchain duration encoded in quanta of
@@ -219,6 +219,17 @@ pub const fn legacy_slot_duration_i64_raw(value: LegacySlotDurationI64) -> i64 {
     }
 }
 
+pub const fn legacy_slot_duration_u8_raw(value: LegacySlotDurationU8) -> u8 {
+    #[cfg(not(feature = "idl-build"))]
+    {
+        value.raw_units()
+    }
+    #[cfg(feature = "idl-build")]
+    {
+        value
+    }
+}
+
 pub fn legacy_slot_duration_u64_to_millis(value: LegacySlotDurationU64) -> Millis {
     #[cfg(not(feature = "idl-build"))]
     {
@@ -230,29 +241,18 @@ pub fn legacy_slot_duration_u64_to_millis(value: LegacySlotDurationU64) -> Milli
     }
 }
 
-/// The set of slot durations the admin may configure, matching the IBRL
-/// feature-gate schedule. 400 is the pre-upgrade default and is not settable
-/// (there is no path back to slower slots: feature gates cannot deactivate).
-pub const VALID_SLOT_DURATIONS_MS: [u16; 4] = [350, 300, 250, 200];
+/// The four post baseline regimes, in activation order, matching the IBRL
+/// feature gate schedule (400 is the pre upgrade baseline; there is no path
+/// back to slower slots, feature gates cannot deactivate). `State` stores the
+/// exact first slot of each regime at the matching array index.
+pub const SLOT_DURATION_TRANSITION_MS: [u16; 4] = [350, 300, 250, 200];
 
-/// The full slot-duration schedule, largest first: the 400ms baseline followed
-/// by the four gate values. The admin may only step from one entry to the one
-/// immediately after it (see [`next_slot_duration_ms`]).
-pub const SLOT_DURATION_SCHEDULE_MS: [u16; 5] = [400, 350, 300, 250, 200];
-
-/// The only value the admin may set next, given the current effective slot
-/// duration in ms: the immediately smaller entry on the schedule. `None` at
-/// 200ms (fully rolled out) or when `current_ms` is not a schedule value.
-///
-/// Requiring the exact successor makes the setter monotonic-decreasing, rejects
-/// gate skips (so each in-flight measurement crosses at most one step), and
-/// rejects non-schedule typos in a single check.
-pub const fn next_slot_duration_ms(current_ms: u64) -> Option<u16> {
-    let sched = SLOT_DURATION_SCHEDULE_MS;
+/// Archive index for a post baseline slot duration.
+pub const fn slot_duration_transition_index(slot_duration_ms: u16) -> Option<usize> {
     let mut i = 0;
-    while i + 1 < sched.len() {
-        if sched[i] as u64 == current_ms {
-            return Some(sched[i + 1]);
+    while i < SLOT_DURATION_TRANSITION_MS.len() {
+        if SLOT_DURATION_TRANSITION_MS[i] == slot_duration_ms {
+            return Some(i);
         }
         i += 1;
     }
@@ -274,6 +274,146 @@ pub const fn active_slot_duration_ms(
         pending_ms
     } else {
         base_ms
+    }
+}
+
+/// Cluster slot clock reconstructed from the four IBRL transition slots.
+///
+/// The legacy staging fields remain as a fallback for accounts written by the
+/// first slot duration implementation. Once any archive entry exists, the
+/// archive is authoritative and elapsed intervals are integrated piecewise.
+/// `Default` is the 400ms baseline: all zero fields are exactly
+/// [`SlotClock::baseline`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub struct SlotClock {
+    transition_slots: [u64; 4],
+    legacy_base_ms: u16,
+    legacy_pending_ms: u16,
+    legacy_effective_slot: u64,
+}
+
+impl SlotClock {
+    pub const fn from_state_fields(
+        transition_slots: [u64; 4],
+        legacy_base_ms: u16,
+        legacy_pending_ms: u16,
+        legacy_effective_slot: u64,
+    ) -> Self {
+        Self {
+            transition_slots,
+            legacy_base_ms,
+            legacy_pending_ms,
+            legacy_effective_slot,
+        }
+    }
+
+    pub const fn baseline() -> Self {
+        Self::from_state_fields([0; 4], 0, 0, 0)
+    }
+
+    pub fn has_transition_history(self) -> bool {
+        self.transition_slots.iter().any(|slot| *slot != 0)
+    }
+
+    /// Slot duration in force at the start of `slot`.
+    pub fn slot_duration_at(self, slot: u64) -> SlotDuration {
+        if !self.has_transition_history() {
+            return SlotDuration::from_state_ms(active_slot_duration_ms(
+                self.legacy_base_ms,
+                self.legacy_pending_ms,
+                self.legacy_effective_slot,
+                slot,
+            ));
+        }
+
+        let mut duration_ms = STORED_UNIT_MS as u16;
+        let mut i = 0;
+        while i < self.transition_slots.len() {
+            let transition_slot = self.transition_slots[i];
+            if transition_slot != 0 && slot >= transition_slot {
+                duration_ms = SLOT_DURATION_TRANSITION_MS[i];
+            }
+            i += 1;
+        }
+        SlotDuration::from_state_ms(duration_ms)
+    }
+
+    /// Exact elapsed wall clock milliseconds from the start of `start_slot`
+    /// to the start of `end_slot`. Every crossed slot duration regime is
+    /// integrated separately, matching Agave's transition archive semantics.
+    pub fn elapsed(self, start_slot: u64, end_slot: u64) -> Millis {
+        if end_slot <= start_slot {
+            return Millis::ZERO;
+        }
+        if !self.has_transition_history() {
+            return Millis::from_slots(
+                end_slot.saturating_sub(start_slot),
+                self.slot_duration_at(end_slot),
+            );
+        }
+
+        let mut cursor = start_slot;
+        let mut elapsed_ms = 0u64;
+        let mut duration = self.slot_duration_at(start_slot);
+        for transition_slot in self.transition_slots {
+            if transition_slot == 0 || transition_slot <= cursor || transition_slot > end_slot {
+                continue;
+            }
+            elapsed_ms = elapsed_ms.saturating_add(
+                transition_slot
+                    .saturating_sub(cursor)
+                    .saturating_mul(duration.as_ms()),
+            );
+            cursor = transition_slot;
+            duration = self.slot_duration_at(cursor);
+        }
+        elapsed_ms = elapsed_ms.saturating_add(
+            end_slot
+                .saturating_sub(cursor)
+                .saturating_mul(duration.as_ms()),
+        );
+        Millis::from_ms(elapsed_ms)
+    }
+
+    /// Elapsed time represented by `slot_delta`, ending at `end_slot`.
+    pub fn elapsed_slot_delta(self, slot_delta: u64, end_slot: u64) -> Millis {
+        self.elapsed(end_slot.saturating_sub(slot_delta), end_slot)
+    }
+
+    /// First slot whose start is at least `duration` after `start_slot`.
+    /// Integrates known future transition boundaries instead of converting the
+    /// whole window with the duration at one endpoint.
+    pub fn slot_at_or_after_duration(self, start_slot: u64, duration: Millis) -> u64 {
+        if duration == Millis::ZERO {
+            return start_slot;
+        }
+
+        let mut cursor = start_slot;
+        let mut remaining_ms = duration.as_ms();
+        let mut current_duration = self.slot_duration_at(cursor);
+
+        for transition_slot in self.transition_slots {
+            if transition_slot == 0 || transition_slot <= cursor {
+                continue;
+            }
+
+            let slots_in_regime = transition_slot.saturating_sub(cursor);
+            let regime_ms = slots_in_regime.saturating_mul(current_duration.as_ms());
+            if remaining_ms <= regime_ms {
+                return cursor
+                    .saturating_add(Millis::from_ms(remaining_ms).to_slots_ceil(current_duration));
+            }
+
+            remaining_ms = remaining_ms.saturating_sub(regime_ms);
+            cursor = transition_slot;
+            current_duration = self.slot_duration_at(cursor);
+        }
+
+        cursor.saturating_add(Millis::from_ms(remaining_ms).to_slots_ceil(current_duration))
+    }
+
+    pub const fn transition_slots(self) -> [u64; 4] {
+        self.transition_slots
     }
 }
 
@@ -542,36 +682,120 @@ mod tests {
     }
 
     #[test]
-    fn valid_slot_durations_are_the_gate_values_only() {
-        // pins the admin-settable set: exactly the four IBRL gate values, and
-        // neither 0 (unset sentinel) nor 400 (baseline) is settable.
-        assert_eq!(VALID_SLOT_DURATIONS_MS, [350, 300, 250, 200]);
-        assert!(!VALID_SLOT_DURATIONS_MS.contains(&0));
-        assert!(!VALID_SLOT_DURATIONS_MS.contains(&400));
-        // every settable value is strictly below the 400ms baseline, so the
-        // first flip from unset (which resolves to 400) always passes the
-        // handler's monotonic-decrease guard.
-        for v in VALID_SLOT_DURATIONS_MS {
+    fn transition_durations_are_the_gate_values_only() {
+        // pins the synchronizable set: exactly the four IBRL gate values, and
+        // neither 0 (unset sentinel) nor 400 (baseline) has a gate.
+        assert_eq!(SLOT_DURATION_TRANSITION_MS, [350, 300, 250, 200]);
+        assert!(!SLOT_DURATION_TRANSITION_MS.contains(&0));
+        assert!(!SLOT_DURATION_TRANSITION_MS.contains(&400));
+        // every value is strictly below the 400ms baseline: there is no path
+        // back to slower slots.
+        for v in SLOT_DURATION_TRANSITION_MS {
             assert!((v as u64) < SlotDuration::BASELINE.as_ms());
         }
     }
 
     #[test]
-    fn next_slot_duration_is_the_exact_successor() {
-        // walks the full schedule one step at a time
-        assert_eq!(next_slot_duration_ms(400), Some(350));
-        assert_eq!(next_slot_duration_ms(350), Some(300));
-        assert_eq!(next_slot_duration_ms(300), Some(250));
-        assert_eq!(next_slot_duration_ms(250), Some(200));
-        // fully rolled out: nothing after 200
-        assert_eq!(next_slot_duration_ms(200), None);
-        // non-schedule values (incl the 0 unset sentinel) have no successor;
-        // `State::slot_duration()` resolves 0 to 400 before this is ever called
-        assert_eq!(next_slot_duration_ms(0), None);
-        assert_eq!(next_slot_duration_ms(375), None);
-        // every settable value is exactly one successor step, and skipping is
-        // unrepresentable (400 -> 300 is not the successor of 400)
-        assert_ne!(next_slot_duration_ms(400), Some(300));
+    fn slot_clock_without_history_falls_back_to_legacy_staging() {
+        // legacy staging fields: base 400, pending 350 effective at 1_000
+        let clock = SlotClock::from_state_fields([0; 4], 400, 350, 1_000);
+        assert!(!clock.has_transition_history());
+        assert_eq!(clock.slot_duration_at(999).as_ms(), 400);
+        assert_eq!(clock.slot_duration_at(1_000).as_ms(), 350);
+        // no history: the whole delta is priced at the end slot duration
+        assert_eq!(clock.elapsed(0, 10).as_ms(), 10 * 400);
+        assert_eq!(clock.elapsed(1_000, 1_010).as_ms(), 10 * 350);
+    }
+
+    #[test]
+    fn slot_clock_archive_is_authoritative_over_legacy_fields() {
+        let clock = SlotClock::from_state_fields([1_000, 0, 0, 0], 200, 250, 5);
+        assert!(clock.has_transition_history());
+        // pre transition is the 400ms baseline regardless of stale legacy fields
+        assert_eq!(clock.slot_duration_at(999).as_ms(), 400);
+        assert_eq!(clock.slot_duration_at(1_000).as_ms(), 350);
+    }
+
+    #[test]
+    fn slot_clock_switches_at_each_transition_slot() {
+        let clock = SlotClock::from_state_fields([1_000, 2_000, 3_000, 4_000], 0, 0, 0);
+        for (slot, expected_ms) in [
+            (0u64, 400u64),
+            (999, 400),
+            (1_000, 350),
+            (1_999, 350),
+            (2_000, 300),
+            (2_999, 300),
+            (3_000, 250),
+            (3_999, 250),
+            (4_000, 200),
+            (1_000_000, 200),
+        ] {
+            assert_eq!(clock.slot_duration_at(slot).as_ms(), expected_ms);
+        }
+    }
+
+    #[test]
+    fn slot_clock_integrates_elapsed_time_piecewise() {
+        let clock = SlotClock::from_state_fields([1_000, 2_000, 3_000, 4_000], 0, 0, 0);
+        // fully inside one regime
+        assert_eq!(clock.elapsed(0, 10).as_ms(), 10 * 400);
+        assert_eq!(clock.elapsed(4_000, 4_010).as_ms(), 10 * 200);
+        // spanning one transition: 10 slots at 400ms + 10 at 350ms
+        assert_eq!(clock.elapsed(990, 1_010).as_ms(), 10 * 400 + 10 * 350);
+        // spanning every transition
+        assert_eq!(
+            clock.elapsed(0, 5_000).as_ms(),
+            1_000 * 400 + 1_000 * 350 + 1_000 * 300 + 1_000 * 250 + 1_000 * 200
+        );
+        // degenerate intervals are zero
+        assert_eq!(clock.elapsed(10, 10), Millis::ZERO);
+        assert_eq!(clock.elapsed(20, 10), Millis::ZERO);
+        // the delta form anchors the interval at its end slot
+        assert_eq!(
+            clock.elapsed_slot_delta(20, 1_010).as_ms(),
+            10 * 400 + 10 * 350
+        );
+        // a delta larger than the end slot saturates to slot zero
+        assert_eq!(clock.elapsed_slot_delta(100, 50).as_ms(), 50 * 400);
+    }
+
+    #[test]
+    fn slot_clock_projects_duration_across_future_transitions() {
+        let clock = SlotClock::from_state_fields([1_000, 2_000, 0, 0], 0, 0, 0);
+        assert_eq!(
+            clock.slot_at_or_after_duration(995, Millis::from_secs(4)),
+            1_006
+        );
+        assert_eq!(clock.elapsed(995, 1_005).as_ms(), 3_750);
+        assert_eq!(clock.elapsed(995, 1_006).as_ms(), 4_100);
+
+        assert_eq!(
+            SlotClock::baseline().slot_at_or_after_duration(10, Millis::from_ms(801)),
+            13
+        );
+        assert_eq!(
+            SlotClock::baseline().slot_at_or_after_duration(10, Millis::ZERO),
+            10
+        );
+    }
+
+    #[test]
+    fn slot_clock_with_partial_archive_stays_on_the_last_synced_regime() {
+        // only the first two transitions synchronized so far
+        let clock = SlotClock::from_state_fields([1_000, 2_000, 0, 0], 0, 0, 0);
+        assert_eq!(clock.slot_duration_at(1_000_000).as_ms(), 300);
+        assert_eq!(clock.elapsed(1_990, 2_010).as_ms(), 10 * 350 + 10 * 300);
+    }
+
+    #[test]
+    fn transition_index_maps_the_four_gates() {
+        assert_eq!(slot_duration_transition_index(350), Some(0));
+        assert_eq!(slot_duration_transition_index(300), Some(1));
+        assert_eq!(slot_duration_transition_index(250), Some(2));
+        assert_eq!(slot_duration_transition_index(200), Some(3));
+        assert_eq!(slot_duration_transition_index(400), None);
+        assert_eq!(slot_duration_transition_index(0), None);
     }
 
     #[test]

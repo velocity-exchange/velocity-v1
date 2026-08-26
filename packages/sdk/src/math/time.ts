@@ -49,9 +49,9 @@ export type SlotDurationMs = number & {
 export const SLOT_DURATION_BASELINE = STORED_UNIT_MS as SlotDurationMs;
 
 /**
- * Every slot length the gate rollout schedules, longest first — the mirror of
- * the program's `SLOT_DURATION_SCHEDULE_MS`. The setter is monotonic-decreasing
- * and rejects gate skips, so the live duration is always one of these.
+ * Every slot length in the current gate rollout, longest first. Permissionless
+ * synchronization only accepts the four fixed feature keys and never permits
+ * the active duration to move backward.
  */
 export const SLOT_DURATION_SCHEDULE_MS: readonly SlotDurationMs[] = [
 	400, 350, 300, 250, 200,
@@ -86,7 +86,17 @@ export function slotDurationFromState(raw?: number): SlotDurationMs {
 }
 
 /**
- * The three `State` staging fields the live slot duration is resolved from.
+ * The four post baseline slot lengths in activation order, the mirror of the
+ * program's `SLOT_DURATION_TRANSITION_MS`. `State.slotDurationTransitionSlots`
+ * stores the first slot of each regime at the matching index.
+ */
+export const SLOT_DURATION_TRANSITION_MS: readonly SlotDurationMs[] = [
+	350, 300, 250, 200,
+] as SlotDurationMs[];
+
+/**
+ * The `State` fields the live slot duration is resolved from: the IBRL
+ * transition archive plus the legacy staging trio it supersedes.
  * Declared structurally rather than as `Pick<StateAccount, ...>`: importing
  * `StateAccount` closes the cycle `types.ts -> constants/numericConstants.ts ->
  * math/time.ts`, and `numericConstants` calls into this module at load time.
@@ -96,6 +106,12 @@ export type SlotDurationState = {
 	slotDurationMs?: number;
 	pendingSlotDurationMs?: number;
 	slotDurationEffectiveSlot?: BN;
+	/**
+	 * First slot of each post baseline regime (`[350, 300, 250, 200]`ms). Zero
+	 * means that transition has not been synchronized yet. Once any entry is
+	 * set the archive is authoritative over the legacy staging fields.
+	 */
+	slotDurationTransitionSlots?: BN[];
 };
 
 /**
@@ -129,6 +145,19 @@ export function activeSlotDurationFromState(
 	state: SlotDurationState,
 	currentSlot: BN
 ): SlotDurationMs {
+	// Once any transition archive entry exists, the archive is authoritative
+	// (mirrors `SlotClock::slot_duration_at`).
+	const transitions = validTransitionSlots(state);
+	if (transitions) {
+		let duration = SLOT_DURATION_BASELINE;
+		for (let i = 0; i < SLOT_DURATION_TRANSITION_MS.length; i++) {
+			if (!transitions[i].isZero() && currentSlot.gte(transitions[i])) {
+				duration = SLOT_DURATION_TRANSITION_MS[i];
+			}
+		}
+		return duration;
+	}
+
 	// Tolerate hand-built / older State objects that omit the staging fields:
 	// an absent pending field means nothing is staged, not `undefined !== 0`.
 	// `isBN` rather than `!== undefined` so a null/garbage effective slot reads
@@ -139,6 +168,135 @@ export function activeSlotDurationFromState(
 		return slotDurationFromState(pending);
 	}
 	return slotDurationFromState(state.slotDurationMs);
+}
+
+/**
+ * The transition archive when it is present, well formed, and non empty;
+ * `undefined` otherwise (hand built / pre upgrade State objects, or no
+ * transition synchronized yet; the legacy staging fields then apply).
+ */
+const transitionSlotsCache = new WeakMap<
+	SlotDurationState,
+	{ source: BN[] | undefined; value: BN[] | undefined }
+>();
+
+function validTransitionSlots(state: SlotDurationState): BN[] | undefined {
+	const transitions = state.slotDurationTransitionSlots;
+	const cached = transitionSlotsCache.get(state);
+	if (cached && cached.source === transitions) {
+		return cached.value;
+	}
+
+	if (
+		!Array.isArray(transitions) ||
+		transitions.length !== SLOT_DURATION_TRANSITION_MS.length ||
+		!transitions.every((slot) => BN.isBN(slot) && !slot.isNeg())
+	) {
+		transitionSlotsCache.set(state, { source: transitions, value: undefined });
+		return undefined;
+	}
+	const value = transitions.some((slot) => !slot.isZero())
+		? transitions
+		: undefined;
+	transitionSlotsCache.set(state, { source: transitions, value });
+	return value;
+}
+
+/**
+ * Exact elapsed wall clock time from the start of `startSlot` to the start of
+ * `endSlot`, integrating every crossed slot duration regime separately,
+ * the mirror of the program's `SlotClock::elapsed`. Without a synchronized
+ * transition archive, the whole delta is priced at the end slot duration
+ * (the legacy staging behavior).
+ */
+export function elapsedMillis(
+	state: SlotDurationState,
+	startSlot: BN,
+	endSlot: BN
+): Millis {
+	if (endSlot.lte(startSlot)) {
+		return millis(0);
+	}
+
+	const transitions = validTransitionSlots(state);
+	if (!transitions) {
+		return millisFromSlots(
+			endSlot.sub(startSlot),
+			activeSlotDurationFromState(state, endSlot)
+		);
+	}
+
+	let cursor = startSlot;
+	let elapsed = new BN(0);
+	let duration = activeSlotDurationFromState(state, startSlot);
+	for (let i = 0; i < transitions.length; i++) {
+		const transitionSlot = transitions[i];
+		if (
+			transitionSlot.isZero() ||
+			transitionSlot.lte(cursor) ||
+			transitionSlot.gt(endSlot)
+		) {
+			continue;
+		}
+		elapsed = elapsed.add(transitionSlot.sub(cursor).muln(duration));
+		cursor = transitionSlot;
+		duration = activeSlotDurationFromState(state, cursor);
+	}
+	elapsed = elapsed.add(endSlot.sub(cursor).muln(duration));
+	return elapsed as Millis;
+}
+
+/**
+ * Elapsed wall clock time represented by `slotDelta`, ending at `endSlot`,
+ * the mirror of `SlotClock::elapsed_slot_delta`.
+ */
+export function elapsedMillisFromSlotDelta(
+	state: SlotDurationState,
+	slotDelta: BN,
+	endSlot: BN
+): Millis {
+	return elapsedMillis(
+		state,
+		BN.max(endSlot.sub(slotDelta), new BN(0)),
+		endSlot
+	);
+}
+
+/**
+ * First slot whose start is at least `duration` after `startSlot`, integrating
+ * known future transition boundaries. Mirrors
+ * `SlotClock::slot_at_or_after_duration`.
+ */
+export function slotAtOrAfterDuration(
+	state: SlotDurationState,
+	startSlot: BN,
+	duration: Millis
+): BN {
+	if (duration.isZero()) {
+		return startSlot;
+	}
+
+	const transitions = validTransitionSlots(state);
+	let cursor = startSlot;
+	let remaining = duration;
+	let currentDuration = activeSlotDurationFromState(state, cursor);
+
+	for (const transitionSlot of transitions ?? []) {
+		if (transitionSlot.isZero() || transitionSlot.lte(cursor)) {
+			continue;
+		}
+
+		const regimeMillis = transitionSlot.sub(cursor).muln(currentDuration);
+		if (remaining.lte(regimeMillis)) {
+			return cursor.add(millisToSlotsCeil(remaining, currentDuration));
+		}
+
+		remaining = remaining.sub(regimeMillis) as Millis;
+		cursor = transitionSlot;
+		currentDuration = activeSlotDurationFromState(state, cursor);
+	}
+
+	return cursor.add(millisToSlotsCeil(remaining, currentDuration));
 }
 
 /**

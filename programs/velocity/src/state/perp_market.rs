@@ -23,7 +23,7 @@ use {
                 VelocityAction,
             },
             safe_math::SafeMath,
-            time::SlotDuration,
+            time::SlotClock,
         },
         msg,
         state::{
@@ -717,7 +717,7 @@ impl PerpMarket {
         oracle_validity: Option<crate::math::oracle::OracleValidity>,
         now: i64,
         clock_slot: u64,
-        slot_duration: SlotDuration,
+        slot_clock: SlotClock,
     ) -> VelocityResult<()> {
         let Some(oracle_validity) = oracle_validity else {
             return Ok(());
@@ -736,7 +736,7 @@ impl PerpMarket {
             oracle_validity,
             clock_slot,
             reserve_price_after,
-            slot_duration,
+            slot_clock,
         )
     }
 
@@ -785,7 +785,7 @@ impl PerpMarket {
         mm_oracle_price_data: &crate::state::oracle::MMOraclePriceData,
         oracle_validity: Option<crate::math::oracle::OracleValidity>,
         clock_slot: u64,
-        slot_duration: SlotDuration,
+        slot_clock: SlotClock,
     ) -> VelocityResult<()> {
         let Some(oracle_validity) = oracle_validity else {
             return Ok(());
@@ -797,7 +797,7 @@ impl PerpMarket {
             oracle_validity,
             clock_slot,
             reserve_price_after,
-            slot_duration,
+            slot_clock,
         )
     }
 
@@ -807,7 +807,7 @@ impl PerpMarket {
         oracle_validity: crate::math::oracle::OracleValidity,
         clock_slot: u64,
         reserve_price: u64,
-        slot_duration: SlotDuration,
+        slot_clock: SlotClock,
     ) -> VelocityResult<()> {
         // Refresh the AMM's cached spread state (long/short spread, reference
         // offset, oracle-reserve spread pct, ask/bid reserves) in place, then
@@ -822,7 +822,7 @@ impl PerpMarket {
             mm_oracle_price_data,
             reserve_price,
             clock_slot,
-            slot_duration,
+            slot_clock,
         )?;
         market_stats.last_reference_price_offset = amm.reference_price_offset;
 
@@ -1354,7 +1354,7 @@ impl PerpMarket {
         oracle_price_data: OraclePriceData,
         clock_slot: u64,
         oracle_guard_rails: &ValidityGuardRails,
-        slot_duration: SlotDuration,
+        slot_clock: SlotClock,
     ) -> VelocityResult<MMOraclePriceData> {
         let delay = clock_slot
             .cast::<i64>()?
@@ -1383,7 +1383,8 @@ impl PerpMarket {
                 self.oracle_slot_delay_override,
                 true, // classifying the MM oracle price itself
                 self.oracle_low_risk_slot_delay_override,
-                slot_duration,
+                clock_slot,
+                slot_clock,
             )?
         };
         MMOraclePriceData::new(

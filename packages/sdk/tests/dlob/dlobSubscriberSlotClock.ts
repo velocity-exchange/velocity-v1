@@ -1,19 +1,22 @@
 import { assert } from 'chai';
-import { BN, DLOBSubscriber, MarketType, StateAccount } from '../../src';
+import {
+	activeSlotDurationFromState,
+	BN,
+	DLOBSubscriber,
+	MarketType,
+	StateAccount,
+} from '../../src';
 import * as orderBookLevels from '../../src/dlob/orderBookLevels';
 import { mockPerpMarkets, mockStateAccount } from './helpers';
 
 /**
- * The vAMM quote's slot duration must be resolved at the slot the quote is
- * priced at. `getVammL2Generator` prices at `latestSlot` when the caller
- * supplies one, so resolving at the subscription slot instead would measure
- * elapsed slots in the post-flip regime and convert them at the pre-flip
- * duration — an inconsistent quote across a gate boundary.
+ * The vAMM quote must receive the full State clock so smoothing can integrate
+ * an interval crossing a slot-duration boundary.
  */
 describe('DLOBSubscriber vAMM slot-duration consistency', () => {
 	const EFFECTIVE_SLOT = 1_000;
 	const original = orderBookLevels.getVammL2Generator;
-	let seen: { slotDuration?: number; latestSlot?: BN };
+	let seen: { slotDurationState?: StateAccount; latestSlot?: BN };
 
 	beforeEach(() => {
 		seen = {};
@@ -22,8 +25,14 @@ describe('DLOBSubscriber vAMM slot-duration consistency', () => {
 		Object.defineProperty(orderBookLevels, 'getVammL2Generator', {
 			configurable: true,
 			writable: true,
-			value: (args: { slotDuration: number; latestSlot?: BN }) => {
-				seen = { slotDuration: args.slotDuration, latestSlot: args.latestSlot };
+			value: (args: {
+				slotDurationState: StateAccount;
+				latestSlot?: BN;
+			}) => {
+				seen = {
+					slotDurationState: args.slotDurationState,
+					latestSlot: args.latestSlot,
+				};
 				return { getL2Levels: () => [] };
 			},
 		});
@@ -80,24 +89,29 @@ describe('DLOBSubscriber vAMM slot-duration consistency', () => {
 		// generator 400ms for a quote it prices in the 200ms regime.
 		const got = resolveAt(EFFECTIVE_SLOT - 1, new BN(EFFECTIVE_SLOT));
 		assert.equal(got.latestSlot?.toNumber(), EFFECTIVE_SLOT);
-		assert.equal(got.slotDuration, 200);
+		assert.equal(
+			activeSlotDurationFromState(
+				got.slotDurationState!,
+				new BN(EFFECTIVE_SLOT)
+			),
+			200
+		);
 	});
 
 	it('resolves the pre-flip duration when latestSlot is still short of the gate', () => {
 		const got = resolveAt(EFFECTIVE_SLOT - 5, new BN(EFFECTIVE_SLOT - 1));
-		assert.equal(got.slotDuration, 400);
+		assert.equal(
+			activeSlotDurationFromState(
+				got.slotDurationState!,
+				new BN(EFFECTIVE_SLOT - 1)
+			),
+			400
+		);
 	});
 
 	it('falls back to the subscription slot when no latestSlot is given', () => {
-		// latestSlot undefined means the generator does not use slotDuration at
-		// all, but the value must still be the live one, not a stale guess.
 		const got = resolveAt(EFFECTIVE_SLOT + 1, undefined);
 		assert.isUndefined(got.latestSlot);
-		assert.equal(got.slotDuration, 200);
-	});
-
-	it('reports the baseline when the slot feed is dead', () => {
-		const got = resolveAt(0, undefined);
-		assert.equal(got.slotDuration, 400);
+		assert.equal(got.slotDurationState?.pendingSlotDurationMs, 200);
 	});
 });

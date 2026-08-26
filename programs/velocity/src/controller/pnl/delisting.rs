@@ -16,6 +16,7 @@ fn get_user_keys() -> (Pubkey, Pubkey, Pubkey) {
 
 #[cfg(test)]
 pub mod delisting_test {
+    use crate::math::time::{Millis, SlotClock};
     // use crate::controller::orders::fill_order;
     use {
         super::*,
@@ -87,13 +88,8 @@ pub mod delisting_test {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // net users are short
         let mut market = PerpMarket {
@@ -203,13 +199,8 @@ pub mod delisting_test {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // net users are long
         let mut market = PerpMarket {
@@ -318,13 +309,8 @@ pub mod delisting_test {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // net users are short
         let mut market = PerpMarket {
@@ -440,13 +426,8 @@ pub mod delisting_test {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // net users are short
         let mut market = PerpMarket {
@@ -563,13 +544,8 @@ pub mod delisting_test {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // net users are short
         let mut market = PerpMarket {
@@ -678,13 +654,8 @@ pub mod delisting_test {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // net users are short
         let mut market = PerpMarket {
@@ -918,13 +889,8 @@ pub mod delisting_test {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -1080,13 +1046,8 @@ pub mod delisting_test {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // net users are short
         let mut market = PerpMarket {
@@ -1308,13 +1269,8 @@ pub mod delisting_test {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // net users are short
         let mut market = PerpMarket {
@@ -1517,13 +1473,8 @@ pub mod delisting_test {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // net users are short
         let mut market = PerpMarket {
@@ -1947,13 +1898,8 @@ pub mod delisting_test {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // net users are short
         let mut market = PerpMarket {
@@ -2335,13 +2281,8 @@ pub mod delisting_test {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // net users are short
         let mut market = PerpMarket {
@@ -2748,7 +2689,7 @@ pub mod delisting_test {
                 clock.slot,
                 10,
                 PERCENTAGE_PRECISION,
-                crate::math::time::Millis::from_stored_units(150),
+                Millis::from_stored_units(150),
                 false,
             )
             .unwrap();
@@ -2839,7 +2780,7 @@ pub mod delisting_test {
                 clock.slot,
                 10,
                 PERCENTAGE_PRECISION,
-                crate::math::time::Millis::from_stored_units(150),
+                Millis::from_stored_units(150),
                 false,
             )
             .unwrap();

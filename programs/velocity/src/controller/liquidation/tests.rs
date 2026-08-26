@@ -20,7 +20,7 @@ pub mod liquidate_perp {
                     MarginRequirementType,
                 },
                 position::calculate_base_asset_value_with_oracle_price,
-                time::legacy_slot_duration_u8,
+                time::{legacy_slot_duration_u8, SlotClock},
             },
             state::{
                 margin_calculation::{MarginCalculation, MarginContext},
@@ -61,13 +61,8 @@ pub mod liquidate_perp {
             &pyth_program,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
         let mut market = PerpMarket {
             amm: AMM {
                 base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
@@ -179,13 +174,8 @@ pub mod liquidate_perp {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -339,13 +329,8 @@ pub mod liquidate_perp {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -479,13 +464,8 @@ pub mod liquidate_perp {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -632,13 +612,8 @@ pub mod liquidate_perp {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -781,13 +756,8 @@ pub mod liquidate_perp {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -936,13 +906,8 @@ pub mod liquidate_perp {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -1075,13 +1040,8 @@ pub mod liquidate_perp {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -1229,13 +1189,8 @@ pub mod liquidate_perp {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -1416,13 +1371,8 @@ pub mod liquidate_perp {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -1635,13 +1585,8 @@ pub mod liquidate_perp {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -1772,13 +1717,8 @@ pub mod liquidate_perp {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -1909,13 +1849,8 @@ pub mod liquidate_perp {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2060,13 +1995,8 @@ pub mod liquidate_perp {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2342,13 +2272,8 @@ pub mod liquidate_perp {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2484,13 +2409,8 @@ pub mod liquidate_perp {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2613,13 +2533,8 @@ pub mod liquidate_perp {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2746,13 +2661,8 @@ pub mod liquidate_perp {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2879,13 +2789,8 @@ pub mod liquidate_perp {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -3062,7 +2967,6 @@ pub mod liquidate_perp {
 }
 
 pub mod liquidate_perp_with_fill {
-
     use {
         crate::{
             controller::{liquidation::liquidate_perp_with_fill, position::PositionDirection},
@@ -3075,7 +2979,7 @@ pub mod liquidate_perp_with_fill {
                     SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
                     SPOT_WEIGHT_PRECISION,
                 },
-                time::legacy_slot_duration_u8,
+                time::{legacy_slot_duration_u8, SlotClock},
             },
             state::{
                 market_status::MarketStatus,
@@ -3114,13 +3018,8 @@ pub mod liquidate_perp_with_fill {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -3339,13 +3238,8 @@ pub mod liquidate_perp_with_fill {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -3554,13 +3448,8 @@ pub mod liquidate_perp_with_fill {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -3729,13 +3618,8 @@ pub mod liquidate_perp_with_fill {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -3906,7 +3790,7 @@ pub mod liquidate_spot {
                 margin::calculate_margin_requirement_and_total_collateral_and_liability_info,
                 orders::is_oracle_too_divergent_with_twap_5min,
                 spot_balance::{get_strict_token_value, get_token_amount, get_token_value},
-                time::legacy_slot_duration_u8,
+                time::{legacy_slot_duration_u8, SlotClock},
             },
             state::{
                 margin_calculation::{MarginCalculation, MarginContext},
@@ -3940,13 +3824,8 @@ pub mod liquidate_spot {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let perp_market_map = PerpMarketMap::empty();
 
@@ -4088,13 +3967,8 @@ pub mod liquidate_spot {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let perp_market_map = PerpMarketMap::empty();
 
@@ -4238,13 +4112,8 @@ pub mod liquidate_spot {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let perp_market_map = PerpMarketMap::empty();
 
@@ -4385,13 +4254,8 @@ pub mod liquidate_spot {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let perp_market_map = PerpMarketMap::empty();
 
@@ -4536,13 +4400,8 @@ pub mod liquidate_spot {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let perp_market_map = PerpMarketMap::empty();
 
@@ -4706,13 +4565,8 @@ pub mod liquidate_spot {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let perp_market_map = PerpMarketMap::empty();
 
@@ -4843,13 +4697,8 @@ pub mod liquidate_spot {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let perp_market_map = PerpMarketMap::empty();
 
@@ -5012,13 +4861,8 @@ pub mod liquidate_spot {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let market_map = PerpMarketMap::empty();
 
@@ -5235,13 +5079,8 @@ pub mod liquidate_spot {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let perp_market_map = PerpMarketMap::empty();
 
@@ -5363,13 +5202,8 @@ pub mod liquidate_spot {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let perp_market_map = PerpMarketMap::empty();
 
@@ -5491,13 +5325,8 @@ pub mod liquidate_spot {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let market_map = PerpMarketMap::empty();
 
@@ -5626,13 +5455,8 @@ pub mod liquidate_spot {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let market_map = PerpMarketMap::empty();
 
@@ -5853,13 +5677,8 @@ pub mod liquidate_spot {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let market_map = PerpMarketMap::empty();
 
@@ -6028,6 +5847,7 @@ pub mod liquidate_borrow_for_perp_pnl {
                 },
                 margin::calculate_margin_requirement_and_total_collateral_and_liability_info,
                 spot_balance::{get_token_amount, get_token_value},
+                time::{Millis, SlotClock},
             },
             state::{
                 margin_calculation::{MarginCalculation, MarginContext},
@@ -6061,13 +5881,8 @@ pub mod liquidate_borrow_for_perp_pnl {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -6189,7 +6004,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             slot,
             10,
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -6224,13 +6039,8 @@ pub mod liquidate_borrow_for_perp_pnl {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -6352,7 +6162,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             slot,
             10,
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -6391,13 +6201,8 @@ pub mod liquidate_borrow_for_perp_pnl {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -6521,7 +6326,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             slot,
             10,
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -6562,13 +6367,8 @@ pub mod liquidate_borrow_for_perp_pnl {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -6692,7 +6492,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             slot,
             liquidation_buffer,
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -6768,13 +6568,8 @@ pub mod liquidate_borrow_for_perp_pnl {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -6895,7 +6690,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             slot,
             10,
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -6925,13 +6720,8 @@ pub mod liquidate_borrow_for_perp_pnl {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -7054,7 +6844,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             slot,
             10,
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         );
 
@@ -7075,13 +6865,8 @@ pub mod liquidate_borrow_for_perp_pnl {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -7204,7 +6989,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             slot,
             10,
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         );
 
@@ -7225,13 +7010,8 @@ pub mod liquidate_borrow_for_perp_pnl {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -7355,7 +7135,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             slot,
             liquidation_buffer,
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -7385,13 +7165,8 @@ pub mod liquidate_borrow_for_perp_pnl {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -7515,7 +7290,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             slot,
             liquidation_buffer,
             LIQUIDATION_PCT_PRECISION / 10,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -7562,7 +7337,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             slot,
             liquidation_buffer,
             LIQUIDATION_PCT_PRECISION / 10,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -7609,7 +7384,7 @@ pub mod liquidate_borrow_for_perp_pnl {
             slot,
             liquidation_buffer,
             LIQUIDATION_PCT_PRECISION / 10,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -7635,7 +7410,7 @@ pub mod liquidate_perp_pnl_for_deposit {
                     SPOT_WEIGHT_PRECISION,
                 },
                 margin::calculate_margin_requirement_and_total_collateral_and_liability_info,
-                time::legacy_slot_duration_u8,
+                time::{legacy_slot_duration_u8, Millis, SlotClock},
             },
             state::{
                 margin_calculation::MarginContext,
@@ -7673,13 +7448,8 @@ pub mod liquidate_perp_pnl_for_deposit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -7801,7 +7571,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             MARGIN_PRECISION / 50, // 2% buffer
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         );
 
@@ -7859,13 +7629,8 @@ pub mod liquidate_perp_pnl_for_deposit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -7987,7 +7752,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             10,
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -8022,13 +7787,8 @@ pub mod liquidate_perp_pnl_for_deposit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -8152,7 +7912,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             10,
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         );
 
@@ -8177,13 +7937,8 @@ pub mod liquidate_perp_pnl_for_deposit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -8282,7 +8037,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             10,
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         );
 
@@ -8314,13 +8069,8 @@ pub mod liquidate_perp_pnl_for_deposit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -8443,7 +8193,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             MARGIN_PRECISION / 50,
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -8476,13 +8226,8 @@ pub mod liquidate_perp_pnl_for_deposit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -8604,7 +8349,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             10,
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -8639,13 +8384,8 @@ pub mod liquidate_perp_pnl_for_deposit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -8767,7 +8507,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             10,
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -8800,13 +8540,8 @@ pub mod liquidate_perp_pnl_for_deposit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -8929,7 +8664,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             10,
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         );
 
@@ -8950,13 +8685,8 @@ pub mod liquidate_perp_pnl_for_deposit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -9079,7 +8809,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             10,
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         );
 
@@ -9100,13 +8830,8 @@ pub mod liquidate_perp_pnl_for_deposit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -9229,7 +8954,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             MARGIN_PRECISION / 50,
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -9263,13 +8988,8 @@ pub mod liquidate_perp_pnl_for_deposit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -9393,7 +9113,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             liquidation_buffer,
             LIQUIDATION_PCT_PRECISION / 10,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -9435,7 +9155,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             liquidation_buffer,
             LIQUIDATION_PCT_PRECISION / 10,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -9477,7 +9197,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             liquidation_buffer,
             LIQUIDATION_PCT_PRECISION / 10,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -9499,13 +9219,8 @@ pub mod liquidate_perp_pnl_for_deposit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -9640,7 +9355,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             // the transfer is refused as loss-making
             200,
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         )
         .is_err());
@@ -9688,7 +9403,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             200,
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -9712,7 +9427,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             200,
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -9743,13 +9458,8 @@ pub mod liquidate_perp_pnl_for_deposit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -9921,7 +9631,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             // the transfer is refused as loss-making
             200,
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         )
         .is_err());
@@ -9943,7 +9653,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             200,
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -9965,7 +9675,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             slot,
             200,
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -9996,13 +9706,8 @@ pub mod liquidate_perp_pnl_for_deposit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -10172,7 +9877,7 @@ pub mod liquidate_perp_pnl_for_deposit {
             // the transfer is refused as loss-making
             200,
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -10200,14 +9905,17 @@ pub mod resolve_perp_bankruptcy {
                 },
             },
             create_anchor_account_info,
-            math::constants::{
-                AMM_RESERVE_PRECISION, BANKRUPTCY_IF_FLOOR_DISABLED, BASE_PRECISION_I128,
-                BASE_PRECISION_I64, BASE_PRECISION_U64, FUNDING_RATE_PRECISION_I128,
-                FUNDING_RATE_PRECISION_I64, LIQUIDATION_FEE_PRECISION, PEG_PRECISION,
-                PERCENTAGE_PRECISION_U32, QUOTE_PRECISION, QUOTE_PRECISION_I128,
-                QUOTE_PRECISION_I64, QUOTE_PRECISION_U64, QUOTE_SPOT_MARKET_INDEX,
-                SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
-                SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+            math::{
+                constants::{
+                    AMM_RESERVE_PRECISION, BANKRUPTCY_IF_FLOOR_DISABLED, BASE_PRECISION_I128,
+                    BASE_PRECISION_I64, BASE_PRECISION_U64, FUNDING_RATE_PRECISION_I128,
+                    FUNDING_RATE_PRECISION_I64, LIQUIDATION_FEE_PRECISION, PEG_PRECISION,
+                    PERCENTAGE_PRECISION_U32, QUOTE_PRECISION, QUOTE_PRECISION_I128,
+                    QUOTE_PRECISION_I64, QUOTE_PRECISION_U64, QUOTE_SPOT_MARKET_INDEX,
+                    SPOT_BALANCE_PRECISION, SPOT_BALANCE_PRECISION_U64,
+                    SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+                },
+                time::SlotClock,
             },
             state::{
                 market_status::MarketStatus,
@@ -10246,13 +9954,8 @@ pub mod resolve_perp_bankruptcy {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -10480,13 +10183,8 @@ pub mod resolve_perp_bankruptcy {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // Open base 7.0, split 4.0 long / 3.0 short: $100/7 doesn't divide even.
         let mut market = PerpMarket {
@@ -10646,13 +10344,8 @@ pub mod resolve_perp_bankruptcy {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -10782,13 +10475,8 @@ pub mod resolve_perp_bankruptcy {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -10904,13 +10592,8 @@ pub mod resolve_perp_bankruptcy {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -11159,13 +10842,8 @@ pub mod resolve_perp_bankruptcy {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // loss = -100. Tranches: pending IF 30 (counter-only), IF vault 25
         // (capped by quote_max_insurance), provision clawback 15 = 8
@@ -11339,13 +11017,8 @@ pub mod resolve_perp_bankruptcy {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -11497,13 +11170,8 @@ pub mod resolve_perp_bankruptcy {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // OI = 5 base at a $100 TWAP -> 500 QUOTE notional; 30% floor = 150,
         // covering the full accrued pending IF fee
@@ -11663,13 +11331,8 @@ pub mod resolve_perp_bankruptcy {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -11990,13 +11653,8 @@ pub mod resolve_perp_bankruptcy {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -12132,13 +11790,8 @@ pub mod resolve_perp_bankruptcy {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -12300,13 +11953,8 @@ pub mod resolve_perp_bankruptcy {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -12427,13 +12075,8 @@ pub mod resolve_perp_bankruptcy {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -12587,13 +12230,8 @@ pub mod resolve_perp_bankruptcy {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // The market carrying the debt.
         let mut debt_market = PerpMarket {
@@ -12760,13 +12398,8 @@ pub mod resolve_perp_bankruptcy {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut debt_market = PerpMarket {
             amm: AMM {
@@ -12945,6 +12578,7 @@ pub mod resolve_spot_bankruptcy {
                     SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
                 },
                 spot_balance::get_token_amount,
+                time::SlotClock,
             },
             state::{
                 market_status::MarketStatus,
@@ -12979,13 +12613,8 @@ pub mod resolve_spot_bankruptcy {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -13123,13 +12752,8 @@ pub mod resolve_spot_bankruptcy {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -13242,13 +12866,8 @@ pub mod resolve_spot_bankruptcy {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -13393,13 +13012,8 @@ pub mod resolve_spot_bankruptcy {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -13539,13 +13153,8 @@ pub mod resolve_spot_bankruptcy {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -13690,13 +13299,8 @@ pub mod resolve_spot_bankruptcy {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -13834,7 +13438,6 @@ pub mod resolve_spot_bankruptcy {
 }
 
 pub mod set_user_status_to_being_liquidated {
-
     use {
         crate::{
             controller::{
@@ -13849,7 +13452,7 @@ pub mod set_user_status_to_being_liquidated {
                     QUOTE_PRECISION_I128, QUOTE_PRECISION_I64, SPOT_CUMULATIVE_INTEREST_PRECISION,
                     SPOT_WEIGHT_PRECISION,
                 },
-                time::legacy_slot_duration_u8,
+                time::{legacy_slot_duration_u8, SlotClock},
             },
             state::{
                 market_status::MarketStatus,
@@ -13886,13 +13489,8 @@ pub mod set_user_status_to_being_liquidated {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -14003,13 +13601,8 @@ pub mod set_user_status_to_being_liquidated {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut user = User {
             orders: [Order::default(); 32],
@@ -14073,13 +13666,8 @@ pub mod set_user_status_to_being_liquidated {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -14185,7 +13773,7 @@ pub mod liquidate_spot_with_swap {
                     SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
                 },
                 spot_balance::get_token_amount,
-                time::legacy_slot_duration_u8,
+                time::{legacy_slot_duration_u8, SlotClock},
             },
             state::{
                 oracle::{HistoricalOracleData, OracleSource},
@@ -14218,13 +13806,8 @@ pub mod liquidate_spot_with_swap {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let market_map = PerpMarketMap::empty();
 
@@ -14426,13 +14009,8 @@ pub mod liquidate_spot_with_swap {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let market_map = PerpMarketMap::empty();
 
@@ -14614,13 +14192,8 @@ pub mod liquidate_spot_with_swap {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let market_map = PerpMarketMap::empty();
 
@@ -14810,13 +14383,8 @@ pub mod liquidate_spot_with_swap {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let market_map = PerpMarketMap::empty();
 
@@ -14976,11 +14544,11 @@ pub mod liquidate_spot_with_swap {
 }
 
 mod liquidate_dust_spot_market {
-
     use {
         crate::{
             controller::liquidation::liquidate_spot,
             create_anchor_account_info,
+            math::time::SlotClock,
             state::{
                 oracle::OracleSource,
                 oracle_map::OracleMap,
@@ -15113,7 +14681,7 @@ mod liquidate_dust_spot_market {
         let mut oracle_map = OracleMap::load(
             &mut account_infos.iter().peekable(),
             clock_slot,
-            crate::math::time::SlotDuration::BASELINE,
+            SlotClock::baseline(),
             None,
         )
         .unwrap();
@@ -15194,7 +14762,7 @@ pub mod liquidate_isolated_perp {
                 liquidation::validate_user_not_being_liquidated,
                 margin::calculate_margin_requirement_and_total_collateral_and_liability_info,
                 position::calculate_base_asset_value_with_oracle_price,
-                time::legacy_slot_duration_u8,
+                time::{legacy_slot_duration_u8, SlotClock},
             },
             state::{
                 margin_calculation::MarginContext,
@@ -15233,13 +14801,8 @@ pub mod liquidate_isolated_perp {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -15388,13 +14951,8 @@ pub mod liquidate_isolated_perp {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -15544,13 +15102,8 @@ pub mod liquidate_isolated_perp {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -15731,13 +15284,8 @@ pub mod liquidate_isolated_perp {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -15866,13 +15414,8 @@ pub mod liquidate_isolated_perp {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -15995,13 +15538,8 @@ pub mod liquidate_isolated_perp {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -16124,13 +15662,8 @@ pub mod liquidate_isolated_perp {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -16381,13 +15914,8 @@ pub mod liquidate_isolated_perp {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -16556,6 +16084,7 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
                     SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
                 },
                 margin::calculate_margin_requirement_and_total_collateral_and_liability_info,
+                time::{Millis, SlotClock},
             },
             state::{
                 margin_calculation::MarginContext,
@@ -16589,13 +16118,8 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -16716,7 +16240,7 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
             // the transfer is refused as loss-making
             200,
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -16749,13 +16273,8 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -16875,7 +16394,7 @@ pub mod liquidate_isolated_perp_pnl_for_deposit {
             slot,
             MARGIN_PRECISION / 50,
             PERCENTAGE_PRECISION,
-            crate::math::time::Millis::from_stored_units(150),
+            Millis::from_stored_units(150),
             false,
         )
         .unwrap();
@@ -16942,6 +16461,7 @@ mod liquidation_mode {
                     SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
                 },
                 margin::calculate_margin_requirement_and_total_collateral_and_liability_info,
+                time::SlotClock,
             },
             state::{
                 liquidation_mode::{
@@ -16978,13 +16498,8 @@ mod liquidation_mode {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(
-            &oracle_account_info,
-            slot,
-            crate::math::time::SlotDuration::BASELINE,
-            None,
-        )
-        .unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {

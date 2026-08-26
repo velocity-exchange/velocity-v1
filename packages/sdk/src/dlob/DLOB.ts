@@ -13,6 +13,12 @@
 import { getOrderSignature, NodeList } from './NodeList';
 import { BN } from '../isomorphic/anchor';
 import {
+	SlotDurationState,
+	elapsedMillis,
+	millisFromStoredUnits,
+	slotAtOrAfterDuration,
+} from '../math/time';
+import {
 	BASE_PRECISION,
 	BN_MAX,
 	PRICE_PRECISION,
@@ -153,6 +159,15 @@ export class DLOB {
 
 	/** Set to `true` once `initFromUserMap` has successfully populated this instance; `initFromUserMap` is then a no-op. */
 	initialized = false;
+
+	/**
+	 * The `State` slot duration fields (`SlotDurationState`) auction wall clock
+	 * math converts elapsed slots through. Set it from a subscribed `State`
+	 * (e.g. `dlob.slotDurationState = velocityClient.getStateAccount()`) so
+	 * auction progress stays exact across IBRL slot duration transitions;
+	 * unset, the 400ms baseline applies.
+	 */
+	slotDurationState: SlotDurationState = {};
 
 	/** Constructs an empty, uninitialized `DLOB` with no orders. Call `initFromUserMap` (or `insertOrder`/`insertSignedMsgOrder`) to populate it. */
 	public constructor() {
@@ -481,7 +496,11 @@ export class DLOB {
 		} else if (!order.oraclePriceOffset.eq(ZERO)) {
 			return marketNodeLists.floatingLimit[subType];
 		} else {
-			const isResting = isRestingLimitOrder(order, slot);
+			const isResting = isRestingLimitOrder(
+				order,
+				slot,
+				this.slotDurationState
+			);
 			return isResting
 				? marketNodeLists.restingLimit[subType]
 				: marketNodeLists.takingLimit[subType];
@@ -532,7 +551,13 @@ export class DLOB {
 		)) {
 			const nodesToUpdate: Array<{ side: 'ask' | 'bid'; node: DLOBNode }> = [];
 			for (const node of nodeLists.takingLimit.ask.getGenerator()) {
-				if (!isRestingLimitOrder(getOrderOrThrow(node), slot)) {
+				if (
+					!isRestingLimitOrder(
+						getOrderOrThrow(node),
+						slot,
+						this.slotDurationState
+					)
+				) {
 					continue;
 				}
 
@@ -543,7 +568,13 @@ export class DLOB {
 			}
 
 			for (const node of nodeLists.takingLimit.bid.getGenerator()) {
-				if (!isRestingLimitOrder(getOrderOrThrow(node), slot)) {
+				if (
+					!isRestingLimitOrder(
+						getOrderOrThrow(node),
+						slot,
+						this.slotDurationState
+					)
+				) {
 					continue;
 				}
 
@@ -1126,9 +1157,15 @@ export class DLOB {
 				const makerPrice = makerNode.getPriceOrThrow(
 					oraclePriceData,
 					slot,
-					tickSize
+					tickSize,
+					this.slotDurationState
 				);
-				const takerPrice = takerNode.getPrice(oraclePriceData, slot, tickSize);
+				const takerPrice = takerNode.getPrice(
+					oraclePriceData,
+					slot,
+					tickSize,
+					this.slotDurationState
+				);
 
 				const ordersCross = doesCross(takerPrice, makerPrice);
 				if (!ordersCross) {
@@ -1245,7 +1282,8 @@ export class DLOB {
 				oraclePriceData,
 				slot,
 				undefined,
-				tickSize
+				tickSize,
+				this.slotDurationState
 			);
 
 			// order crosses if there is no limit price or it crosses fallback price
@@ -1279,8 +1317,8 @@ export class DLOB {
 	 * Finds orders in a market that are eligible to be expired: any non-trigger, non-TIF-limit
 	 * order whose `maxTs` (plus a 25-second buffer for limit orders, via `isOrderExpired`) has
 	 * passed the given timestamp. Also proactively removes (not just reports) signed-message
-	 * orders whose auction window (`order.slot + order.auctionDuration`) has passed `slot`, since
-	 * those never landed on-chain and have no on-chain expiration to wait for.
+	 * orders whose placement window (`signedMsgMaxSlot`, mirroring the program's `max_slot`) has
+	 * passed `slot`, since those never landed on-chain and have no on-chain expiration to wait for.
 	 *
 	 * @param marketIndex the market to scan
 	 * @param ts current unix timestamp (seconds)
@@ -1289,6 +1327,20 @@ export class DLOB {
 	 * @returns `NodeToFill`s (with empty `makerNodes`) for orders ready to expire
 	 * @throws if a signed-message order is present and `slot` was not provided
 	 */
+	/**
+	 * The last slot a signed message order can still be placed on-chain,
+	 * mirroring the program's `max_slot`: placement slot plus the auction
+	 * duration converted from 400ms units to actual slots (ceil) at the live
+	 * slot duration.
+	 */
+	private signedMsgMaxSlot(order: Order): BN {
+		return slotAtOrAfterDuration(
+			this.slotDurationState,
+			order.slot,
+			millisFromStoredUnits(order.auctionDuration)
+		);
+	}
+
 	public findExpiredNodesToFill(
 		marketIndex: number,
 		ts: number,
@@ -1330,7 +1382,7 @@ export class DLOB {
 							'Must provide slot to findExpiredNodesToFill to expire signedMsg orders'
 						);
 					}
-					if (slot.gt(bidOrder.slot.addn(bidOrder.auctionDuration))) {
+					if (slot.gt(this.signedMsgMaxSlot(bidOrder))) {
 						nodeLists.signedMsg.bid.remove(
 							bidOrder,
 							getUserAccountOrThrow(bid)
@@ -1356,7 +1408,7 @@ export class DLOB {
 							'Must provide slot to findExpiredNodesToFill to expire signedMsg orders'
 						);
 					}
-					if (slot.gt(askOrder.slot.addn(askOrder.auctionDuration))) {
+					if (slot.gt(this.signedMsgMaxSlot(askOrder))) {
 						nodeLists.signedMsg.ask.remove(
 							askOrder,
 							getUserAccountOrThrow(ask)
@@ -1468,7 +1520,8 @@ export class DLOB {
 			orderLists.takingLimit.bid.getGenerator(),
 			this.signedMsgGenerator(
 				orderLists.signedMsg.bid,
-				(x: DLOBNode) => !isRestingLimitOrder(getOrderOrThrow(x), slot)
+				(x: DLOBNode) =>
+					!isRestingLimitOrder(getOrderOrThrow(x), slot, this.slotDurationState)
 			),
 		];
 
@@ -1508,7 +1561,8 @@ export class DLOB {
 			orderLists.takingLimit.ask.getGenerator(),
 			this.signedMsgGenerator(
 				orderLists.signedMsg.ask,
-				(x: DLOBNode) => !isRestingLimitOrder(getOrderOrThrow(x), slot)
+				(x: DLOBNode) =>
+					!isRestingLimitOrder(getOrderOrThrow(x), slot, this.slotDurationState)
 			),
 		];
 
@@ -1655,7 +1709,7 @@ export class DLOB {
 			nodeLists.restingLimit.ask.getGenerator(),
 			nodeLists.floatingLimit.ask.getGenerator(),
 			this.signedMsgGenerator(nodeLists.signedMsg.ask, (x: DLOBNode) =>
-				isRestingLimitOrder(getOrderOrThrow(x), slot)
+				isRestingLimitOrder(getOrderOrThrow(x), slot, this.slotDurationState)
 			),
 		];
 
@@ -1665,8 +1719,20 @@ export class DLOB {
 			slot,
 			(bestNode, currentNode, slot, oraclePriceData) => {
 				return bestNode
-					.getPriceOrThrow(oraclePriceData, slot, tickSize)
-					.lt(currentNode.getPriceOrThrow(oraclePriceData, slot, tickSize));
+					.getPriceOrThrow(
+						oraclePriceData,
+						slot,
+						tickSize,
+						this.slotDurationState
+					)
+					.lt(
+						currentNode.getPriceOrThrow(
+							oraclePriceData,
+							slot,
+							tickSize,
+							this.slotDurationState
+						)
+					);
 			},
 			filterFcn
 		);
@@ -1700,7 +1766,7 @@ export class DLOB {
 			nodeLists.restingLimit.bid.getGenerator(),
 			nodeLists.floatingLimit.bid.getGenerator(),
 			this.signedMsgGenerator(nodeLists.signedMsg.bid, (x: DLOBNode) =>
-				isRestingLimitOrder(getOrderOrThrow(x), slot)
+				isRestingLimitOrder(getOrderOrThrow(x), slot, this.slotDurationState)
 			),
 		];
 
@@ -1710,8 +1776,20 @@ export class DLOB {
 			slot,
 			(bestNode, currentNode, slot, oraclePriceData) => {
 				return bestNode
-					.getPriceOrThrow(oraclePriceData, slot, tickSize)
-					.gt(currentNode.getPriceOrThrow(oraclePriceData, slot, tickSize));
+					.getPriceOrThrow(
+						oraclePriceData,
+						slot,
+						tickSize,
+						this.slotDurationState
+					)
+					.gt(
+						currentNode.getPriceOrThrow(
+							oraclePriceData,
+							slot,
+							tickSize,
+							this.slotDurationState
+						)
+					);
 			},
 			filterFcn
 		);
@@ -1766,9 +1844,19 @@ export class DLOB {
 			slot,
 			(bestNode, currentNode, slot, oraclePriceData) => {
 				const bestNodePrice =
-					bestNode.getPrice(oraclePriceData, slot, tickSize) ?? ZERO;
+					bestNode.getPrice(
+						oraclePriceData,
+						slot,
+						tickSize,
+						this.slotDurationState
+					) ?? ZERO;
 				const currentNodePrice =
-					currentNode.getPrice(oraclePriceData, slot, tickSize) ?? ZERO;
+					currentNode.getPrice(
+						oraclePriceData,
+						slot,
+						tickSize,
+						this.slotDurationState
+					) ?? ZERO;
 
 				if (bestNodePrice.eq(currentNodePrice)) {
 					return getOrderOrThrow(bestNode).slot.lt(
@@ -1830,9 +1918,19 @@ export class DLOB {
 			slot,
 			(bestNode, currentNode, slot, oraclePriceData) => {
 				const bestNodePrice =
-					bestNode.getPrice(oraclePriceData, slot, tickSize) ?? BN_MAX;
+					bestNode.getPrice(
+						oraclePriceData,
+						slot,
+						tickSize,
+						this.slotDurationState
+					) ?? BN_MAX;
 				const currentNodePrice =
-					currentNode.getPrice(oraclePriceData, slot, tickSize) ?? BN_MAX;
+					currentNode.getPrice(
+						oraclePriceData,
+						slot,
+						tickSize,
+						this.slotDurationState
+					) ?? BN_MAX;
 
 				if (bestNodePrice.eq(currentNodePrice)) {
 					return getOrderOrThrow(bestNode).slot.lt(
@@ -1894,12 +1992,14 @@ export class DLOB {
 				const bidPrice = bidNode.getPriceOrThrow(
 					oraclePriceData,
 					slot,
-					tickSize
+					tickSize,
+					this.slotDurationState
 				);
 				const askPrice = askNode.getPriceOrThrow(
 					oraclePriceData,
 					slot,
-					tickSize
+					tickSize,
+					this.slotDurationState
 				);
 
 				// orders don't cross
@@ -1968,8 +2068,9 @@ export class DLOB {
 	/**
 	 * Decides which of a crossing ask/bid pair is the maker and which is the taker: if both are
 	 * post-only, they can't be matched (`undefined`); if exactly one is post-only, it's the
-	 * maker; otherwise whichever order's auction window (`order.slot + order.auctionDuration`)
-	 * ends later is treated as the taker (it "arrived crossing" the earlier order).
+	 * maker; otherwise whichever order's auction ends later in wall clock (placement time plus
+	 * `auctionDuration` in 400ms units, measured through the slot clock) is treated as the taker
+	 * (it "arrived crossing" the earlier order).
 	 *
 	 * @param askNode the crossing ask node
 	 * @param bidNode the crossing bid node
@@ -1981,8 +2082,19 @@ export class DLOB {
 	): { takerNode: DLOBNode; makerNode: DLOBNode } | undefined {
 		const askOrder = getOrderOrThrow(askNode);
 		const bidOrder = getOrderOrThrow(bidNode);
-		const askSlot = askOrder.slot.add(new BN(askOrder.auctionDuration));
-		const bidSlot = bidOrder.slot.add(new BN(bidOrder.auctionDuration));
+		// auction end instants in ms from a common anchor, so the ordering is
+		// exact even when the two auctions straddle a slot duration transition
+		const anchorSlot = BN.min(askOrder.slot, bidOrder.slot);
+		const askSlot = elapsedMillis(
+			this.slotDurationState,
+			anchorSlot,
+			askOrder.slot
+		).add(millisFromStoredUnits(askOrder.auctionDuration));
+		const bidSlot = elapsedMillis(
+			this.slotDurationState,
+			anchorSlot,
+			bidOrder.slot
+		).add(millisFromStoredUnits(bidOrder.auctionDuration));
 
 		if (bidOrder.postOnly && askOrder.postOnly) {
 			return undefined;
@@ -2039,7 +2151,12 @@ export class DLOB {
 		).next().value;
 
 		if (bestAsk) {
-			return bestAsk.getPrice(oraclePriceData, slot, tickSize);
+			return bestAsk.getPrice(
+				oraclePriceData,
+				slot,
+				tickSize,
+				this.slotDurationState
+			);
 		}
 		return undefined;
 	}
@@ -2074,7 +2191,12 @@ export class DLOB {
 		).next().value;
 
 		if (bestBid) {
-			return bestBid.getPrice(oraclePriceData, slot, tickSize);
+			return bestBid.getPrice(
+				oraclePriceData,
+				slot,
+				tickSize,
+				this.slotDurationState
+			);
 		}
 		return undefined;
 	}
@@ -2492,7 +2614,8 @@ export class DLOB {
 			),
 			oraclePriceData,
 			slot,
-			tickSize
+			tickSize,
+			this.slotDurationState
 		);
 
 		const fallbackAskGenerators = fallbackL2Generators.map(
@@ -2521,7 +2644,8 @@ export class DLOB {
 			),
 			oraclePriceData,
 			slot,
-			tickSize
+			tickSize,
+			this.slotDurationState
 		);
 
 		const fallbackBidGenerators = fallbackL2Generators.map((fallbackOrders) => {
@@ -2585,7 +2709,12 @@ export class DLOB {
 		for (const ask of restingAsks) {
 			const askOrder = getOrderOrThrow(ask);
 			asks.push({
-				price: ask.getPriceOrThrow(oraclePriceData, slot, tickSize),
+				price: ask.getPriceOrThrow(
+					oraclePriceData,
+					slot,
+					tickSize,
+					this.slotDurationState
+				),
 				size: askOrder.baseAssetAmount.sub(askOrder.baseAssetAmountFilled),
 				maker: new PublicKey(getUserAccountOrThrow(ask)),
 				orderId: askOrder.orderId,
@@ -2604,7 +2733,12 @@ export class DLOB {
 		for (const bid of restingBids) {
 			const bidOrder = getOrderOrThrow(bid);
 			bids.push({
-				price: bid.getPriceOrThrow(oraclePriceData, slot, tickSize),
+				price: bid.getPriceOrThrow(
+					oraclePriceData,
+					slot,
+					tickSize,
+					this.slotDurationState
+				),
 				size: bidOrder.baseAssetAmount.sub(bidOrder.baseAssetAmountFilled),
 				maker: new PublicKey(getUserAccountOrThrow(bid)),
 				orderId: bidOrder.orderId,
@@ -2628,7 +2762,12 @@ export class DLOB {
 		let runningSumQuote = ZERO;
 		let runningSumBase = ZERO;
 		for (const side of dlobSide) {
-			const price = side.getPriceOrThrow(oraclePriceData, slot, tickSize); //side.order.quoteAssetAmount.div(side.order.baseAssetAmount);
+			const price = side.getPriceOrThrow(
+				oraclePriceData,
+				slot,
+				tickSize,
+				this.slotDurationState
+			);
 			const sideOrder = getOrderOrThrow(side);
 			const baseAmountRemaining = sideOrder.baseAssetAmount.sub(
 				sideOrder.baseAssetAmountFilled

@@ -44,8 +44,12 @@ use {
             tiers::{perp_tier_is_as_safe_as, AssetTierExt, ContractTierExt},
         },
         priority_fee_subscriber::PriorityFeeSubscriber,
-        program::math::oracle::{
-            is_oracle_valid_for_action, oracle_validity, LogMode, OracleValidity, VelocityAction,
+        program::math::{
+            oracle::{
+                is_oracle_valid_for_action, oracle_validity, LogMode, OracleValidity,
+                VelocityAction,
+            },
+            time::{Millis, SlotDuration},
         },
         titan::{self, TitanSwapApi},
         types::{
@@ -60,8 +64,7 @@ use {
 
 /// min wall-clock time between successive liquidation attempts on same user
 /// (expressed in actual slots at the current slot duration)
-const LIQUIDATION_RATE_LIMIT: velocity_rs::program::math::time::Millis =
-    velocity_rs::program::math::time::Millis::from_secs(2);
+const LIQUIDATION_RATE_LIMIT: Millis = Millis::from_secs(2);
 
 /// Maximum time allowed for a liquidation attempt in milliseconds
 const LIQUIDATION_DEADLINE_MS: u64 = 1_000;
@@ -135,8 +138,7 @@ const HIGH_RISK_FREE_MARGIN_RATIO: f64 = 0.1;
 
 /// Maximum oracle price age before considering stale (~20s, expressed in
 /// actual slots at the current slot duration)
-const MAX_ORACLE_AGE: velocity_rs::program::math::time::Millis =
-    velocity_rs::program::math::time::Millis::from_secs(20);
+const MAX_ORACLE_AGE: Millis = Millis::from_secs(20);
 /// Maximum age for Pyth prices in milliseconds before considering stale
 const MAX_PYTH_AGE_MS: u64 = 5000;
 
@@ -182,7 +184,7 @@ fn validate_data_freshness(
     user_meta: &UserAccountMetadata,
     oracle_prices: &HashMap<MarketId, OraclePriceMetadata>,
     current_slot: u64,
-    slot_duration: velocity_rs::program::math::time::SlotDuration,
+    slot_duration: SlotDuration,
 ) -> Result<(), StalenessError> {
     let max_oracle_age_slots = MAX_ORACLE_AGE.to_slots(slot_duration);
     // Check oracle prices for all markets user has positions in
@@ -1522,6 +1524,9 @@ fn on_slot_update_fn(
     let market_ids: Vec<MarketId> = market_ids.to_vec();
     let consecutive_failures = std::sync::atomic::AtomicU32::new(0);
     move |new_slot| {
+        // keep the DLOB's slot clock in sync with `State` (no-op unless an
+        // IBRL transition was synchronized since the last slot)
+        dlob_notifier.slot_clock_update(velocity.slot_clock());
         for market in market_ids.iter() {
             // tolerate transient failures; panic (=> service restart) if persistent
             match velocity.try_get_mmoracle_for_perp_market(market.index(), new_slot) {
@@ -1733,11 +1738,10 @@ fn spawn_liquidation_worker(
             // wall-clock rate limit expressed in actual slots, at the live slot
             // duration (kept current by the main loop) so a mid-run gate switch
             // re-paces without a restart
-            let liquidation_slot_rate_limit = LIQUIDATION_RATE_LIMIT.to_slots(
-                velocity_rs::program::math::time::SlotDuration::from_state_ms(
+            let liquidation_slot_rate_limit =
+                LIQUIDATION_RATE_LIMIT.to_slots(SlotDuration::from_state_ms(
                     slot_duration_ms.load(std::sync::atomic::Ordering::Relaxed) as u16,
-                ),
-            );
+                ));
             // Drop entries older than 1 second to handle backpressure
             let now = current_time_millis();
             if now.saturating_sub(timestamp_ms) > MAX_LIQUIDATION_AGE_MS {
@@ -2021,7 +2025,7 @@ impl PrimaryLiquidationStrategy {
 
         let validity_guard_rails: velocity_rs::program::state::state::ValidityGuardRails =
             unsafe { std::mem::transmute_copy(&state.oracle_guard_rails.validity) };
-        let slot_duration = velocity.slot_duration_at(slot);
+        let slot_clock = velocity.slot_clock();
         let exchange_validity = oracle_validity(
             MarketType::Perp,
             market.market_index,
@@ -2037,12 +2041,13 @@ impl PrimaryLiquidationStrategy {
             market.oracle_slot_delay_override,
             false,
             market.oracle_low_risk_slot_delay_override,
-            slot_duration,
+            slot,
+            slot_clock,
         )
         .ok()?;
 
         let mm_oracle = market
-            .get_mm_oracle_price_data(exchange_oracle, slot, &validity_guard_rails, slot_duration)
+            .get_mm_oracle_price_data(exchange_oracle, slot, &validity_guard_rails, slot_clock)
             .ok()?;
         let safe_oracle = mm_oracle.get_safe_oracle_price_data();
         let safe_validity = oracle_validity(
@@ -2060,7 +2065,8 @@ impl PrimaryLiquidationStrategy {
             market.oracle_slot_delay_override,
             mm_oracle.is_safe_price_mm_sourced(),
             market.oracle_low_risk_slot_delay_override,
-            slot_duration,
+            slot,
+            slot_clock,
         )
         .ok()?;
 

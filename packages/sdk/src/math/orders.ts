@@ -18,6 +18,7 @@ import {
 } from '../constants/numericConstants';
 import { BN } from '../isomorphic/anchor';
 import { MMOraclePriceData, OraclePriceData } from '../oracles/types';
+import { SlotDurationState } from './time';
 import {
 	getAuctionPrice,
 	isAuctionComplete,
@@ -97,10 +98,17 @@ export function getLimitPrice<T extends MarketTypeStr>(
 	oraclePriceData: T extends 'spot' ? OraclePriceData : MMOraclePriceData,
 	slot: number,
 	fallbackPrice?: BN,
-	tickSize: BN = ONE
+	tickSize: BN = ONE,
+	slotDurationState: SlotDurationState = {}
 ): BN | undefined {
-	if (hasAuctionPrice(order, slot)) {
-		return getAuctionPrice(order, slot, oraclePriceData.price, tickSize);
+	if (hasAuctionPrice(order, slot, slotDurationState)) {
+		return getAuctionPrice(
+			order,
+			slot,
+			oraclePriceData.price,
+			tickSize,
+			slotDurationState
+		);
 	} else if (!order.oraclePriceOffset.eq(ZERO)) {
 		const limitPrice = BN.max(
 			oraclePriceData.price.add(order.oraclePriceOffset),
@@ -117,18 +125,26 @@ export function getLimitPrice<T extends MarketTypeStr>(
 }
 
 /** True if the order has any way to resolve a limit price right now: a fixed `price`, a nonzero oracle offset, or an auction still in progress. */
-export function hasLimitPrice(order: Order, slot: number): boolean {
+export function hasLimitPrice(
+	order: Order,
+	slot: number,
+	slotDurationState: SlotDurationState = {}
+): boolean {
 	return (
 		order.price.gt(ZERO) ||
 		!order.oraclePriceOffset.eq(ZERO) ||
-		!isAuctionComplete(order, slot)
+		!isAuctionComplete(order, slot, slotDurationState)
 	);
 }
 
 /** True if the order still has an active (incomplete) auction with a nonzero start or end price. */
-export function hasAuctionPrice(order: Order, slot: number): boolean {
+export function hasAuctionPrice(
+	order: Order,
+	slot: number,
+	slotDurationState: SlotDurationState = {}
+): boolean {
 	return (
-		!isAuctionComplete(order, slot) &&
+		!isAuctionComplete(order, slot, slotDurationState) &&
 		(!order.auctionStartPrice.eq(ZERO) || !order.auctionEndPrice.eq(ZERO))
 	);
 }
@@ -381,12 +397,16 @@ export function isTriggered(order: Order): boolean {
 }
 
 /** True if a limit order currently rests on the book — i.e. it's `postOnly`, or its auction (if any) has completed. Always false for non-limit orders. */
-export function isRestingLimitOrder(order: Order, slot: number): boolean {
+export function isRestingLimitOrder(
+	order: Order,
+	slot: number,
+	slotDurationState: SlotDurationState = {}
+): boolean {
 	if (!isLimitOrder(order)) {
 		return false;
 	}
 
-	return order.postOnly || isAuctionComplete(order, slot);
+	return order.postOnly || isAuctionComplete(order, slot, slotDurationState);
 }
 
 /** True if the order was submitted via the signed-message (swift/off-chain relay) path (`OrderBitFlag.SignedMessage`). */

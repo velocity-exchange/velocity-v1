@@ -20,7 +20,7 @@ use {
             spot_balance::{get_signed_token_amount, get_token_amount},
             time::{
                 legacy_slot_duration_u64, legacy_slot_duration_u64_to_millis,
-                LegacySlotDurationU64, Millis, SlotDuration,
+                LegacySlotDurationU64, Millis, SlotClock,
             },
         },
         state::{
@@ -285,7 +285,8 @@ impl LPPool {
         out_target_weight: i64,
         in_amount: u128,
         correlation: i64,
-        slot_duration: SlotDuration,
+        current_slot: u64,
+        slot_clock: SlotClock,
     ) -> VelocityResult<(u128, u128, i128, i128)> {
         let (swap_price_num, swap_price_denom) = self.get_swap_price(
             in_spot_market.decimals,
@@ -310,12 +311,14 @@ impl LPPool {
         in_fee = in_fee.safe_add(self.get_target_uncertainty_fees(
             in_target_position_slot_delay,
             in_target_oracle_slot_delay,
-            slot_duration,
+            current_slot,
+            slot_clock,
         )?)?;
         out_fee = out_fee.safe_add(self.get_target_uncertainty_fees(
             out_target_position_slot_delay,
             out_target_oracle_slot_delay,
-            slot_duration,
+            current_slot,
+            slot_clock,
         )?)?;
 
         in_fee = in_fee.min(MAX_SWAP_FEE);
@@ -353,7 +356,8 @@ impl LPPool {
         in_oracle: &OraclePriceData,
         in_target_weight: i64,
         dlp_total_supply: u64,
-        slot_duration: SlotDuration,
+        current_slot: u64,
+        slot_clock: SlotClock,
     ) -> VelocityResult<(u64, u128, i64, i128)> {
         let (mut in_fee_pct, out_fee_pct) = if self.last_aum == 0 {
             (0, 0)
@@ -375,7 +379,8 @@ impl LPPool {
         in_fee_pct += self.get_target_uncertainty_fees(
             in_target_position_slot_delay,
             in_target_oracle_slot_delay,
-            slot_duration,
+            current_slot,
+            slot_clock,
         )?;
         in_fee_pct = in_fee_pct.min(MAX_SWAP_FEE * 2);
 
@@ -431,7 +436,8 @@ impl LPPool {
         out_oracle: &OraclePriceData,
         out_target_weight: i64,
         dlp_total_supply: u64,
-        slot_duration: SlotDuration,
+        current_slot: u64,
+        slot_clock: SlotClock,
     ) -> VelocityResult<(u64, u128, i64, i128)> {
         let lp_fee_to_charge_pct = self.min_mint_fee;
         let mut lp_burn_amount = lp_to_burn;
@@ -481,7 +487,8 @@ impl LPPool {
         out_fee_pct += self.get_target_uncertainty_fees(
             out_target_position_slot_delay,
             out_target_oracle_slot_delay,
-            slot_duration,
+            current_slot,
+            slot_clock,
         )?;
         out_fee_pct = in_fee_pct.safe_add(out_fee_pct)?;
         out_fee_pct = out_fee_pct.min(MAX_SWAP_FEE * 2);
@@ -739,14 +746,17 @@ impl LPPool {
         self,
         target_position_slot_delay: u64,
         target_oracle_slot_delay: u64,
-        slot_duration: SlotDuration,
+        current_slot: u64,
+        slot_clock: SlotClock,
     ) -> VelocityResult<i128> {
         // measured slot delays become wall-clock, counted in whole 400ms
         // periods (the fee ramp's historical granularity)
-        let position_periods =
-            Millis::from_slots(target_position_slot_delay, slot_duration).div_periods(Millis::UNIT);
-        let oracle_periods =
-            Millis::from_slots(target_oracle_slot_delay, slot_duration).div_periods(Millis::UNIT);
+        let position_periods = slot_clock
+            .elapsed_slot_delta(target_position_slot_delay, current_slot)
+            .div_periods(Millis::UNIT);
+        let oracle_periods = slot_clock
+            .elapsed_slot_delta(target_oracle_slot_delay, current_slot)
+            .div_periods(Millis::UNIT);
         // Gives an uncertainty fee in bps if the oracle or position was stale when calcing target.
         // Uses a step function that goes up every 10 periods (one 400ms period = one "block")
         // beyond a threshold where we consider it okay:
@@ -798,17 +808,15 @@ impl LPPool {
         constituent_target_base: &AccountZeroCopyMut<'_, TargetsDatum, ConstituentTargetBaseFixed>,
         amm_cache: &AccountZeroCopyMut<'_, CacheInfo, AmmCacheFixed>,
     ) -> VelocityResult<(u128, i128, BTreeMap<u16, Vec<u16>>)> {
-        let slot_duration = oracle_map.slot_duration;
+        let slot_clock = oracle_map.slot_clock;
         let mut aum: i128 = 0;
         let mut crypto_delta = 0_i128;
         let mut derivative_groups: BTreeMap<u16, Vec<u16>> = BTreeMap::new();
         for i in 0..self.constituents as usize {
             let constituent = constituent_map.get_ref(&(i as u16))?;
             // threshold is admin-set (stored in legacy 400ms units)
-            if Millis::from_slots(
-                slot.saturating_sub(constituent.last_oracle_slot),
-                slot_duration,
-            ) > legacy_slot_duration_u64_to_millis(constituent.oracle_staleness_threshold)
+            if slot_clock.elapsed(constituent.last_oracle_slot, slot)
+                > legacy_slot_duration_u64_to_millis(constituent.oracle_staleness_threshold)
             {
                 msg!(
                     "Constituent {} oracle slot is too stale: {}, current slot: {}",
@@ -1450,7 +1458,7 @@ impl<'a> AccountZeroCopyMut<'a, TargetsDatum, ConstituentTargetBaseFixed> {
         amm_inventory_and_prices: &std::collections::BTreeMap<u16, AmmInventoryAndPricesAndSlots>,
         constituents_indexes_and_decimals_and_prices: &mut [ConstituentIndexAndDecimalAndPrice],
         slot: u64,
-        slot_duration: SlotDuration,
+        slot_clock: SlotClock,
     ) -> VelocityResult<()> {
         // Sorts by constituent index
         constituents_indexes_and_decimals_and_prices.sort_by_key(|c| c.constituent_index);
@@ -1541,8 +1549,7 @@ impl<'a> AccountZeroCopyMut<'a, TargetsDatum, ConstituentTargetBaseFixed> {
                 );
             }
 
-            if Millis::from_slots(slot.saturating_sub(oldest_oracle_slot), slot_duration)
-                <= MAX_ORACLE_STALENESS_FOR_TARGET_CALC
+            if slot_clock.elapsed(oldest_oracle_slot, slot) <= MAX_ORACLE_STALENESS_FOR_TARGET_CALC
             {
                 cell.last_oracle_slot = slot;
             } else {

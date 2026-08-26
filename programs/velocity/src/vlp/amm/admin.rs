@@ -105,7 +105,7 @@ pub fn handle_update_initial_amm_cache_info<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         Clock::get()?.slot,
-        state.slot_duration(),
+        state.slot_clock(),
         None,
     )?;
 
@@ -117,7 +117,7 @@ pub fn handle_update_initial_amm_cache_info<'c: 'info, 'info>(
             *oracle_data,
             slot,
             &validity,
-            state.slot_duration(),
+            state.slot_clock(),
         )?;
 
         amm_cache.update_perp_market_fields(&perp_market)?;
@@ -127,7 +127,7 @@ pub fn handle_update_initial_amm_cache_info<'c: 'info, 'info>(
             &mm_oracle_data,
             &perp_market,
             &state.oracle_guard_rails,
-            state.slot_duration(),
+            state.slot_clock(),
         )?;
     }
 
@@ -598,7 +598,7 @@ pub fn handle_repeg_amm_curve(ctx: Context<RepegCurve>, new_peg_candidate: u128)
         new_peg_candidate,
         clock_slot,
         &oracle_validity_rails,
-        ctx.accounts.state.load()?.slot_duration(),
+        ctx.accounts.state.load()?.slot_clock(),
     )?;
 
     let peg_multiplier_after = perp_market.amm.peg_multiplier;

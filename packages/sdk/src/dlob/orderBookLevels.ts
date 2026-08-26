@@ -25,7 +25,7 @@ import {
 import { MMOraclePriceData, OraclePriceData } from '../oracles/types';
 import { PublicKey } from '@solana/web3.js';
 import { standardizeBaseAssetAmount, standardizePrice } from '../math/orders';
-import { SlotDurationMs } from '../math/time';
+import { SlotDurationState } from '../math/time';
 
 type liquiditySource = 'vamm' | 'dlob' | 'indicative';
 
@@ -126,7 +126,8 @@ export function* getL2GeneratorFromDLOBNodes(
 	dlobNodes: Generator<DLOBNode>,
 	oraclePriceData: OraclePriceData,
 	slot: number,
-	tickSize?: BN
+	tickSize: BN | undefined,
+	slotDurationState: SlotDurationState
 ): Generator<L2Level> {
 	for (const dlobNode of dlobNodes) {
 		if (!dlobNode.order) {
@@ -142,7 +143,12 @@ export function* getL2GeneratorFromDLOBNodes(
 
 		yield {
 			size,
-			price: dlobNode.getPriceOrThrow(oraclePriceData, slot, tickSize),
+			price: dlobNode.getPriceOrThrow(
+				oraclePriceData,
+				slot,
+				tickSize,
+				slotDurationState
+			),
 			sources:
 				dlobNode.userAccount == INDICATIVE_QUOTES_PUBKEY
 					? { indicative: size }
@@ -269,7 +275,7 @@ export function getVammL2Generator({
 	now = new BN(Math.floor(Date.now() / 1000)),
 	topOfBookQuoteAmounts = [],
 	latestSlot,
-	slotDuration,
+	slotDurationState,
 }: {
 	marketAccount: PerpMarketAccount;
 	mmOraclePriceData: MMOraclePriceData;
@@ -277,10 +283,9 @@ export function getVammL2Generator({
 	now?: BN;
 	topOfBookQuoteAmounts?: BN[];
 	latestSlot?: BN;
-	// required: reference-price-offset smoothing depends on the live slot
-	// duration, so a caller must supply it rather than silently defaulting to
-	// the 400ms baseline (which mispredicts quotes once a gate flips)
-	slotDuration: SlotDurationMs;
+	// required: reference-price-offset smoothing integrates the complete clock
+	// across any transition boundary.
+	slotDurationState: SlotDurationState;
 }): L2OrderBookGenerator {
 	const updatedAmm = calculateUpdatedAMM(marketAccount.amm, mmOraclePriceData);
 	const paused = isOperationPaused(
@@ -307,7 +312,7 @@ export function getVammL2Generator({
 		mmOraclePriceData,
 		now,
 		latestSlot,
-		slotDuration
+		slotDurationState
 	);
 
 	const numBaseOrders = Math.max(1, numOrders - topOfBookQuoteAmounts.length);

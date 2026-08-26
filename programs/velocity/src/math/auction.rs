@@ -3,8 +3,11 @@ use {
         controller::position::PositionDirection,
         error::{ErrorCode, VelocityResult},
         math::{
-            casting::Cast, constants::AUCTION_DERIVE_PRICE_FRACTION, orders::standardize_price,
-            safe_math::SafeMath, time::SlotDuration,
+            casting::Cast,
+            constants::AUCTION_DERIVE_PRICE_FRACTION,
+            orders::standardize_price,
+            safe_math::SafeMath,
+            time::{Millis, SlotClock},
         },
         msg,
         state::{
@@ -85,9 +88,50 @@ pub fn calculate_auction_prices(
     Ok((oracle_price, auction_end_price))
 }
 
+/// Auction interpolation progress: elapsed wall clock ms (integrated per
+/// slot duration regime, saturating at zero for a same slot read) capped at
+/// the auction's wall clock length, over that length.
+/// `Order.auction_duration` stores 400ms units, so the ramp's endpoints and
+/// wall clock shape are identical to the historical per slot interpolation at
+/// the 400ms baseline and hold at every gate.
+fn auction_progress(order: &Order, slot: u64, slot_clock: SlotClock) -> (u64, u64) {
+    let duration_ms = Millis::from_stored_units(order.auction_duration as u64).as_ms();
+    let elapsed_ms = slot_clock.elapsed(order.slot, slot).as_ms();
+    (min(elapsed_ms, duration_ms), duration_ms)
+}
+
+/// The auction's wall clock progress at `fraction_pct` percent of its length,
+/// for callers that price a fixed fraction rather than a chain slot
+/// (place-and-take's `auction_duration_percentage`).
+pub fn auction_progress_at_fraction(
+    order: &Order,
+    fraction_pct: u64,
+) -> VelocityResult<(u64, u64)> {
+    let duration_ms = Millis::from_stored_units(order.auction_duration as u64).as_ms();
+    let elapsed_ms = duration_ms.safe_mul(fraction_pct.min(100))?.safe_div(100)?;
+    Ok((elapsed_ms, duration_ms))
+}
+
 pub fn calculate_auction_price(
     order: &Order,
     slot: u64,
+    tick_size: u64,
+    valid_oracle_price: Option<i64>,
+    slot_clock: SlotClock,
+) -> VelocityResult<u64> {
+    calculate_auction_price_with_progress(
+        order,
+        auction_progress(order, slot, slot_clock),
+        tick_size,
+        valid_oracle_price,
+    )
+}
+
+/// Interpolate the auction price at an explicit `(elapsed_ms, duration_ms)`
+/// progress pair (see [`auction_progress`] / [`auction_progress_at_fraction`]).
+pub fn calculate_auction_price_with_progress(
+    order: &Order,
+    progress: (u64, u64),
     tick_size: u64,
     valid_oracle_price: Option<i64>,
 ) -> VelocityResult<u64> {
@@ -95,29 +139,29 @@ pub fn calculate_auction_price(
         OrderType::TriggerMarket if order.is_bit_flag_set(OrderBitFlag::OracleTriggerMarket) => {
             calculate_auction_price_for_oracle_offset_auction(
                 order,
-                slot,
+                progress,
                 tick_size,
                 valid_oracle_price,
             )
         }
         OrderType::Market | OrderType::TriggerMarket | OrderType::TriggerLimit => {
-            calculate_auction_price_for_fixed_auction(order, slot, tick_size)
+            calculate_auction_price_for_fixed_auction(order, progress, tick_size)
         }
         OrderType::Limit => {
             if order.has_oracle_price_offset() {
                 calculate_auction_price_for_oracle_offset_auction(
                     order,
-                    slot,
+                    progress,
                     tick_size,
                     valid_oracle_price,
                 )
             } else {
-                calculate_auction_price_for_fixed_auction(order, slot, tick_size)
+                calculate_auction_price_for_fixed_auction(order, progress, tick_size)
             }
         }
         OrderType::Oracle => calculate_auction_price_for_oracle_offset_auction(
             order,
-            slot,
+            progress,
             tick_size,
             valid_oracle_price,
         ),
@@ -126,13 +170,10 @@ pub fn calculate_auction_price(
 
 fn calculate_auction_price_for_fixed_auction(
     order: &Order,
-    slot: u64,
+    progress: (u64, u64),
     tick_size: u64,
 ) -> VelocityResult<u64> {
-    let slots_elapsed = slot.safe_sub(order.slot)?;
-
-    let delta_numerator = min(slots_elapsed, order.auction_duration.cast()?);
-    let delta_denominator = order.auction_duration;
+    let (delta_numerator, delta_denominator) = progress;
 
     let auction_start_price = order.auction_start_price.cast::<u64>()?;
     let auction_end_price = order.auction_end_price.cast::<u64>()?;
@@ -162,7 +203,7 @@ fn calculate_auction_price_for_fixed_auction(
 
 fn calculate_auction_price_for_oracle_offset_auction(
     order: &Order,
-    slot: u64,
+    progress: (u64, u64),
     tick_size: u64,
     valid_oracle_price: Option<i64>,
 ) -> VelocityResult<u64> {
@@ -171,10 +212,7 @@ fn calculate_auction_price_for_oracle_offset_auction(
         ErrorCode::OracleNotFound
     })?;
 
-    let slots_elapsed = slot.safe_sub(order.slot)?;
-
-    let delta_numerator = min(slots_elapsed, order.auction_duration.cast()?);
-    let delta_denominator = order.auction_duration;
+    let (delta_numerator, delta_denominator) = progress;
 
     let auction_start_price_offset = order.auction_start_price;
     let auction_end_price_offset = order.auction_end_price;
@@ -216,14 +254,18 @@ pub fn is_auction_complete(
     order_slot: u64,
     auction_duration: u8,
     slot: u64,
+    slot_clock: SlotClock,
 ) -> VelocityResult<bool> {
     if auction_duration == 0 {
         return Ok(true);
     }
 
-    let slots_elapsed = slot.safe_sub(order_slot)?;
+    // wall clock elapsed (integrated per slot duration regime) vs the
+    // auction's wall clock length in 400ms units; identity with the
+    // historical per slot comparison at the 400ms baseline
+    let elapsed = slot_clock.elapsed(order_slot, slot);
 
-    Ok(slots_elapsed > auction_duration.cast()?)
+    Ok(elapsed > Millis::from_stored_units(auction_duration as u64))
 }
 
 pub fn calculate_auction_params_for_trigger_order(
@@ -231,7 +273,6 @@ pub fn calculate_auction_params_for_trigger_order(
     oracle_price_data: &OraclePriceData,
     min_auction_duration: u8,
     perp_market: Option<&PerpMarket>,
-    slot_duration: SlotDuration,
 ) -> VelocityResult<(u8, i64, i64)> {
     let auction_duration = min_auction_duration;
 
@@ -254,7 +295,6 @@ pub fn calculate_auction_params_for_trigger_order(
                     oracle_price_data.price,
                     None,
                     auction_start_buffer,
-                    slot_duration,
                 )?
             } else {
                 OrderParams::derive_market_order_auction_params(
@@ -263,7 +303,6 @@ pub fn calculate_auction_params_for_trigger_order(
                     oracle_price_data.price,
                     order.price,
                     auction_start_buffer,
-                    slot_duration,
                 )?
             };
 

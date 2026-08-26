@@ -19,16 +19,46 @@ import { getPerpMarketTierNumber } from './tiers';
 import { MMOraclePriceData } from '../oracles/types';
 import { isLowRiskForAmm, standardizePrice } from './orders';
 import { getOracleValidity } from './oracles';
-import { activeSlotDurationFromState } from './time';
 import { isAmmDrawdownPause, isOperationPaused } from './exchangeStatus';
+import {
+	SlotDurationState,
+	elapsedMillis,
+	millisFromStoredUnits,
+} from './time';
 
-/** True if `order`'s auction has run its full `auctionDuration` (in slots) as of `slot`, or the order has no auction (`auctionDuration === 0`). */
-export function isAuctionComplete(order: Order, slot: number): boolean {
+/**
+ * Auction interpolation progress, mirroring the program's `auction_progress`:
+ * elapsed wall clock ms (integrated per slot duration regime) capped at the
+ * auction's wall clock length, over that length. `order.auctionDuration` is
+ * stored in 400ms units (one slot at the 400ms baseline, where this is
+ * identical to the historical per slot interpolation).
+ */
+function auctionProgress(
+	order: Order,
+	slot: number,
+	slotDurationState: SlotDurationState
+): { deltaNumerator: BN; deltaDenominator: BN } {
+	const deltaDenominator = millisFromStoredUnits(order.auctionDuration);
+	const elapsed = elapsedMillis(slotDurationState, order.slot, new BN(slot));
+	return {
+		deltaNumerator: BN.min(elapsed, deltaDenominator),
+		deltaDenominator,
+	};
+}
+
+/** True if `order`'s auction has run its full `auctionDuration` (wall clock 400ms units) as of `slot`, or the order has no auction (`auctionDuration === 0`). */
+export function isAuctionComplete(
+	order: Order,
+	slot: number,
+	slotDurationState: SlotDurationState = {}
+): boolean {
 	if (order.auctionDuration === 0) {
 		return true;
 	}
 
-	return new BN(slot).sub(order.slot).gt(new BN(order.auctionDuration));
+	return elapsedMillis(slotDurationState, order.slot, new BN(slot)).gt(
+		millisFromStoredUnits(order.auctionDuration)
+	);
 }
 
 /**
@@ -94,7 +124,7 @@ export function isFallbackAvailableLiquiditySource(
 		new BN(slot),
 		undefined,
 		mmOraclePriceData.isMMSourcedPrice ?? false,
-		activeSlotDurationFromState(state, new BN(slot))
+		state
 	);
 	if (oracleValidity <= OracleValidity.StaleForAMMLowRisk) {
 		return false;
@@ -134,24 +164,36 @@ export function getAuctionPrice(
 	order: Order,
 	slot: number,
 	oraclePrice: BN,
-	tickSize: BN = ONE
+	tickSize: BN = ONE,
+	slotDurationState: SlotDurationState = {}
 ): BN {
 	if (
 		isOneOfVariant(order.orderType, ['market', 'triggerLimit']) ||
 		(isVariant(order.orderType, 'triggerMarket') &&
 			(order.bitFlags & OrderBitFlag.OracleTriggerMarket) === 0)
 	) {
-		return getAuctionPriceForFixedAuction(order, slot, tickSize);
+		return getAuctionPriceForFixedAuction(
+			order,
+			slot,
+			tickSize,
+			slotDurationState
+		);
 	} else if (isVariant(order.orderType, 'limit')) {
 		if (order.oraclePriceOffset != null && !order.oraclePriceOffset.eq(ZERO)) {
 			return getAuctionPriceForOracleOffsetAuction(
 				order,
 				slot,
 				oraclePrice,
-				tickSize
+				tickSize,
+				slotDurationState
 			);
 		} else {
-			return getAuctionPriceForFixedAuction(order, slot, tickSize);
+			return getAuctionPriceForFixedAuction(
+				order,
+				slot,
+				tickSize,
+				slotDurationState
+			);
 		}
 	} else if (
 		isVariant(order.orderType, 'oracle') ||
@@ -162,7 +204,8 @@ export function getAuctionPrice(
 			order,
 			slot,
 			oraclePrice,
-			tickSize
+			tickSize,
+			slotDurationState
 		);
 	} else {
 		throw Error(
@@ -185,12 +228,14 @@ export function getAuctionPrice(
 export function getAuctionPriceForFixedAuction(
 	order: Order,
 	slot: number,
-	tickSize: BN = ONE
+	tickSize: BN = ONE,
+	slotDurationState: SlotDurationState = {}
 ): BN {
-	const slotsElapsed = new BN(slot).sub(order.slot);
-
-	const deltaDenominator = new BN(order.auctionDuration);
-	const deltaNumerator = BN.min(slotsElapsed, deltaDenominator);
+	const { deltaNumerator, deltaDenominator } = auctionProgress(
+		order,
+		slot,
+		slotDurationState
+	);
 
 	if (deltaDenominator.eq(ZERO)) {
 		return standardizePrice(order.auctionEndPrice, tickSize, order.direction);
@@ -236,12 +281,14 @@ export function getAuctionPriceForOracleOffsetAuction(
 	order: Order,
 	slot: number,
 	oraclePrice: BN,
-	tickSize: BN = ONE
+	tickSize: BN = ONE,
+	slotDurationState: SlotDurationState = {}
 ): BN {
-	const slotsElapsed = new BN(slot).sub(order.slot);
-
-	const deltaDenominator = new BN(order.auctionDuration);
-	const deltaNumerator = BN.min(slotsElapsed, deltaDenominator);
+	const { deltaNumerator, deltaDenominator } = auctionProgress(
+		order,
+		slot,
+		slotDurationState
+	);
 
 	if (deltaDenominator.eq(ZERO)) {
 		const price = BN.max(oraclePrice.add(order.auctionEndPrice), tickSize);

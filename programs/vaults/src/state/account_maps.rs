@@ -35,16 +35,17 @@ impl<'info, T: anchor_lang::Bumps> AccountMapProvider<'info> for Context<'info, 
         end_index -= has_fee_update as usize;
 
         // Every vault path that loads maps carries velocity's State, so the live
-        // slot duration is always available. Taking it unconditionally keeps a
+        // slot clock is always available. Taking it unconditionally keeps a
         // 400ms baseline fallback unrepresentable: on a faster chain the baseline
         // shrinks every oracle staleness window, which would fail this
         // instruction on an oracle the rest of the protocol accepts.
-        let slot_duration =
-            velocity::state::state::State::slot_duration_from_account_info(velocity_state, slot)
-                .map_err(|error| {
-                    msg!("invalid velocity State account: {}", error);
-                    velocity::error::ErrorCode::DefaultError
-                })?;
+        let slot_clock = velocity::state::state::State::slot_clock_from_account_info(
+            velocity_state,
+        )
+        .map_err(|error| {
+            msg!("invalid velocity State account: {}", error);
+            velocity::error::ErrorCode::DefaultError
+        })?;
 
         let remaining_accounts_iter = &mut self.remaining_accounts[..end_index].iter().peekable();
         load_maps(
@@ -54,7 +55,7 @@ impl<'info, T: anchor_lang::Bumps> AccountMapProvider<'info> for Context<'info, 
                 .map(get_writable_spot_market_set)
                 .unwrap_or_default(),
             slot,
-            slot_duration,
+            slot_clock,
             None,
         )
     }

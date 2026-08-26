@@ -792,21 +792,18 @@ export class FillerBot extends TxThreaded implements Bot {
 		);
 
 		const slot = new BN(this.slotSubscriber.getSlot());
-		const slotDuration = currentSlotDuration(
-			this.velocityClient,
-			this.slotSubscriber.getSlot()
-		);
+		const slotDurationState = this.velocityClient.getStateAccount();
 		const vAsk = calculateAskPrice(
 			market,
 			mmOraclePriceData as MMOraclePriceData,
 			slot,
-			slotDuration
+			slotDurationState
 		);
 		const vBid = calculateBidPrice(
 			market,
 			mmOraclePriceData as MMOraclePriceData,
 			slot,
-			slotDuration
+			slotDurationState
 		);
 
 		const fillSlot = this.getMaxSlot();

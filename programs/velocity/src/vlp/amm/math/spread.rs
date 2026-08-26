@@ -45,7 +45,7 @@ use {
                 SPREAD_VOL_STD_DISCOUNT_DIVISOR,
             },
             safe_math::SafeMath,
-            time::{Millis, SlotDuration},
+            time::{Millis, SlotClock},
         },
         msg,
         state::{
@@ -88,7 +88,7 @@ pub fn update_amm_quote_state(
     mm_oracle_price_data: &MMOraclePriceData,
     reserve_price: u64,
     slot: u64,
-    slot_duration: SlotDuration,
+    slot_clock: SlotClock,
 ) -> VelocityResult<()> {
     let quote_state = compute_quote_state(
         amm,
@@ -96,7 +96,7 @@ pub fn update_amm_quote_state(
         mm_oracle_price_data,
         reserve_price,
         slot,
-        slot_duration,
+        slot_clock,
     )?;
     commit_quote_state(amm, &quote_state, slot)?;
     validate_amm_quote_state(amm)
@@ -130,7 +130,7 @@ fn compute_quote_state(
     mm_oracle_price_data: &MMOraclePriceData,
     reserve_price: u64,
     slot: u64,
-    slot_duration: SlotDuration,
+    slot_clock: SlotClock,
 ) -> VelocityResult<QuoteState> {
     // last_oracle_reserve_price_spread_pct
     let last_oracle_reserve_price_spread_pct =
@@ -242,10 +242,7 @@ fn compute_quote_state(
         // consecutive-slot crank becomes once slots are faster than that; the
         // step would then pin to the minimum and converge slower the more often
         // the market is cranked.
-        let elapsed_ms = Millis::from_slots(
-            slot.saturating_sub(amm.last_spread_update_slot),
-            slot_duration,
-        );
+        let elapsed_ms = slot_clock.elapsed(amm.last_spread_update_slot, slot);
         let reference_price_delta = {
             let full_offset_delta = reference_price_offset
                 .cast::<i128>()?

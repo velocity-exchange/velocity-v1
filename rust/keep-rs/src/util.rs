@@ -21,52 +21,17 @@ use {
             pyth_lazer_feed_id_to_spot_market_index, spot_market_index_to_pyth_lazer_feed_id,
         },
         dlob::{L3Order, MakerCrosses},
+        program::math::time::{Millis, SlotClock, SlotDuration},
         types::{MarketId, MarketType},
         Pubkey,
     },
 };
 
-/// Live slot duration from a `State` snapshot's staging fields, applying a
-/// staged switch once `now_slot` reaches the effective slot (mirrors the
-/// on-chain `State::active_slot_duration_ms` via the shared program helper).
-/// Pass the current chain slot, not the slot State was last written at; `0`
-/// yields the base value. Reads the fields directly so no `State` type import
-/// is needed at the call sites.
-pub fn active_slot_duration(
-    base_ms: u16,
-    pending_ms: u16,
-    effective_slot: u64,
-    now_slot: u64,
-) -> velocity_rs::program::math::time::SlotDuration {
-    velocity_rs::program::math::time::SlotDuration::from_state_ms(
-        velocity_rs::program::math::time::active_slot_duration_ms(
-            base_ms,
-            pending_ms,
-            effective_slot,
-            now_slot,
-        ),
-    )
-}
-
-/// Live slot duration from the client's cached `State`, applying a staged switch
-/// at `now_slot` (see [`active_slot_duration`]); the 400ms baseline when State is
-/// not yet subscribed. Wraps the repeated
-/// `state_account().map(...).unwrap_or(BASELINE)` boilerplate.
-pub fn client_slot_duration(
-    velocity: &velocity_rs::VelocityClient,
-    now_slot: u64,
-) -> velocity_rs::program::math::time::SlotDuration {
-    velocity
-        .state_account()
-        .map(|s| {
-            active_slot_duration(
-                s.slot_duration_ms,
-                s.pending_slot_duration_ms,
-                s.slot_duration_effective_slot,
-                now_slot,
-            )
-        })
-        .unwrap_or(velocity_rs::program::math::time::SlotDuration::BASELINE)
+/// Live slot duration at `now_slot` from the client's cached `State`, resolved
+/// through the full slot clock (transition archive first, legacy staging fields
+/// as fallback); the 400ms baseline when State is not yet subscribed.
+pub fn client_slot_duration(velocity: &velocity_rs::VelocityClient, now_slot: u64) -> SlotDuration {
+    velocity.slot_duration_at(now_slot)
 }
 
 pub struct OrderSlotLimiter<const N: usize> {
@@ -502,35 +467,42 @@ impl<const N: usize> PendingTxs<N> {
 ///
 /// Mirrors the staleness gate in `place_signed_msg_taker_order`
 /// (programs/velocity/src/instructions/keeper.rs).
-pub const SWIFT_SIGNED_MSG_MAX_AGE: velocity_rs::program::math::time::Millis =
-    velocity_rs::program::math::time::Millis::from_secs(200);
+pub const SWIFT_SIGNED_MSG_MAX_AGE: Millis = Millis::from_secs(200);
 
 /// Returns true if a swift (signed-message) order can no longer be usefully *placed* on-chain,
 /// so the bot shouldn't spend a tx trying.
 ///
 /// The two slot gates mirror `place_signed_msg_taker_order` exactly:
-/// - **signed-message staleness**: program rejects when `order_slot < current_slot - 500`
+/// - **signed message staleness**: the program rejects once the order's
+///   wall clock age (integrated per slot duration regime) exceeds ~200s
 /// - **placement deadline**: program silently no-ops once `max_slot < current_slot`, where
-///   `max_slot = order_slot + auction_duration` (identical formula for limit & market orders)
+///   `max_slot` is the first slot reaching the auction duration across all
+///   known slot-duration transitions (identical formula for limit & market orders)
 ///
 /// The `max_ts` check is an *additional* client-side guard (the program does not gate placement
 /// on `max_ts`): an order whose `max_ts` has passed is already dead, so placing it would waste a
-/// tx. Note `auction_duration` is a `u8` (≤ 255), so the placement deadline always binds before
-/// the 500-slot staleness window; both are checked for completeness/robustness.
+/// tx. Note `auction_duration` is a `u8` (≤ 255 units ≈ 102s), so the placement deadline always
+/// binds before the ~200s staleness window; both are checked for completeness/robustness.
 pub fn swift_placement_expired(
     order_slot: u64,
     auction_duration: u8,
     max_ts: i64,
     current_slot: u64,
     now_ts: i64,
-    slot_duration: velocity_rs::program::math::time::SlotDuration,
+    slot_clock: SlotClock,
 ) -> bool {
+    if order_slot > current_slot {
+        return true;
+    }
     // signed message too old for the program to accept
-    if current_slot > order_slot.saturating_add(SWIFT_SIGNED_MSG_MAX_AGE.to_slots(slot_duration)) {
+    if slot_clock.elapsed(order_slot, current_slot) > SWIFT_SIGNED_MSG_MAX_AGE {
         return true;
     }
     // placement deadline: program no-ops once max_slot < current_slot
-    let max_slot = order_slot.saturating_add(auction_duration as u64);
+    let max_slot = slot_clock.slot_at_or_after_duration(
+        order_slot,
+        Millis::from_stored_units(auction_duration as u64),
+    );
     if current_slot > max_slot {
         return true;
     }
@@ -869,6 +841,7 @@ mod tests {
         },
         pyth_lazer_protocol::router::TimestampUs,
         solana_sdk::signature::Signature,
+        velocity_rs::program::math::time::SlotClock,
     };
 
     #[test]
@@ -902,7 +875,7 @@ mod tests {
             0,
             255,
             0,
-            velocity_rs::program::math::time::SlotDuration::BASELINE
+            SlotClock::baseline()
         ));
         assert!(swift_placement_expired(
             0,
@@ -910,7 +883,7 @@ mod tests {
             0,
             256,
             0,
-            velocity_rs::program::math::time::SlotDuration::BASELINE
+            SlotClock::baseline()
         ));
     }
 
@@ -923,7 +896,7 @@ mod tests {
             0,
             130,
             0,
-            velocity_rs::program::math::time::SlotDuration::BASELINE
+            SlotClock::baseline()
         )); // exactly at deadline: still placeable
         assert!(swift_placement_expired(
             100,
@@ -931,7 +904,7 @@ mod tests {
             0,
             131,
             0,
-            velocity_rs::program::math::time::SlotDuration::BASELINE
+            SlotClock::baseline()
         )); // one past: gone
             // Zero auction duration (limit order default): only placeable in the signing slot.
         assert!(!swift_placement_expired(
@@ -940,7 +913,7 @@ mod tests {
             0,
             100,
             0,
-            velocity_rs::program::math::time::SlotDuration::BASELINE
+            SlotClock::baseline()
         ));
         assert!(swift_placement_expired(
             100,
@@ -948,7 +921,7 @@ mod tests {
             0,
             101,
             0,
-            velocity_rs::program::math::time::SlotDuration::BASELINE
+            SlotClock::baseline()
         ));
     }
 
@@ -961,7 +934,7 @@ mod tests {
             0,
             100,
             i64::MAX,
-            velocity_rs::program::math::time::SlotDuration::BASELINE
+            SlotClock::baseline()
         ));
         // now == max_ts is still valid; now > max_ts expires.
         assert!(!swift_placement_expired(
@@ -970,7 +943,7 @@ mod tests {
             5_000,
             100,
             5_000,
-            velocity_rs::program::math::time::SlotDuration::BASELINE
+            SlotClock::baseline()
         ));
         assert!(swift_placement_expired(
             100,
@@ -978,7 +951,7 @@ mod tests {
             5_000,
             100,
             5_001,
-            velocity_rs::program::math::time::SlotDuration::BASELINE
+            SlotClock::baseline()
         ));
     }
 

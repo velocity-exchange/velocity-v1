@@ -6,7 +6,6 @@ import {
 	UserMap,
 	TxSigAndSlot,
 	BlockhashSubscriber,
-	currentSlotDuration,
 } from '@velocity-exchange/sdk';
 import { Mutex } from 'async-mutex';
 
@@ -116,7 +115,7 @@ export class UserIdleFlipperBot implements Bot {
 				if (
 					user.canMakeIdle(
 						new BN(currentSlot),
-						currentSlotDuration(this.velocityClient, currentSlot)
+						this.velocityClient.getStateAccount()
 					)
 				) {
 					usersToIdle.push([

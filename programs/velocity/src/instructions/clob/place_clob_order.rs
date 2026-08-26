@@ -1,7 +1,7 @@
 //! Place a resting limit order on a registered CLOB. Velocity owns placement
 //! policy: it verifies the `User` authority, reserves the order's worst-case
 //! open-order aggregates, and gates margin exactly like a DLOB placement —
-//! the CLOB trusts its `place_authority` (the quoter CPI signer PDA) and only
+//! the CLOB trusts its `place_authority` (the CLOB place authority PDA) and only
 //! enforces book-level rules (tick/step/min, capacity, activation delay).
 
 use {
@@ -17,7 +17,7 @@ use {
         load_mut,
         math::{margin::meets_place_order_margin_requirement, orders::is_order_position_reducing},
         msg,
-        signer::QUOTER_SIGNER_SEED,
+        signer::CLOB_AUTHORITY_SEED,
         state::{
             market_status::MarketStatus,
             perp_market_map::MarketSet,
@@ -50,11 +50,11 @@ pub struct PlaceClobOrder<'info> {
     /// CHECK: locked to the registered quoter program.
     #[account(address = quoter.load()?.program_id)]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the quoter CPI signer PDA — what a book's `place_authority` is
-    /// set to. Deliberately not the vault authority: signer privilege is
-    /// inherited by a callee, so the key velocity hands an external program
-    /// must be the authority on nothing.
-    #[account(seeds = [QUOTER_SIGNER_SEED], bump)]
+    /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
+    /// is set to. Its own key, distinct from the per-entry signer a
+    /// third-party quoter is handed: signer privilege is inherited by a
+    /// callee, and this one may place and cancel on any book, for any user.
+    #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
     pub quoter_signer: UncheckedAccount<'info>,
     /// CHECK: the instructions sysvar, locked by address. Required only for
     /// a faster-than-default activation delay: the handler introspects it

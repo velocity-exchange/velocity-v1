@@ -1070,6 +1070,7 @@ pub fn fill_perp_order(
     let mut router_inputs = crate::math::router::RouterFillInputs {
         books: &[],
         executor: &mut no_externals,
+        protocol_authority: state.signer,
     };
     fill_perp_order_with_router(
         order_id,
@@ -3714,6 +3715,7 @@ fn fulfill_perp_order_router_pass(
         authority: taker.authority,
         sub_account_id: taker.sub_account_id.into(),
     };
+    let protocol_authority = router.protocol_authority;
     let resolve_user = |user: &crate::state::prop_amm::ClobUserRefV0| -> VelocityResult<Pubkey> {
         user_ref_index
             .get(&(user.authority, user.sub_account_id))
@@ -4271,9 +4273,17 @@ fn fulfill_perp_order_router_pass(
         // response — so the records below borrow out of the quoter's account
         // instead of being copied onto velocity's heap.
         // Priced before the CPI: execute overwrites the very buffer the ladder
-        // was read from, and step 1 because the book fills whole orders
-        // best-first — the same walk, so the totals agree exactly.
-        let quoted = crate::math::router::quoted_prefix(books[i].levels, 1, allocation.base)?;
+        // was read from.
+        //
+        // Quantized at the same step the split used. The split skips a level's
+        // sub-step tail, so it reaches further down the ladder than an
+        // unquantized walk of the same base would, and the two disagree about
+        // which levels the allocation was cut from. The band below is built
+        // from this prefix's best and worst price, so a prefix that stopped
+        // short rejects an honest fill priced at the level the split actually
+        // allocated at.
+        let quoted =
+            crate::math::router::quoted_prefix(books[i].levels, order_step_size, allocation.base)?;
         let located = router.executor.execute(i, direction, allocation.base)?;
         let data = located.borrow()?;
         let response = located.execute_response(&data)?;
@@ -4325,7 +4335,7 @@ fn fulfill_perp_order_router_pass(
             }
             let maker_key = resolve_user(&change.user)?;
             validate!(
-                subjects.permits(&change.user, &maker_key, &taker_ref),
+                subjects.permits(&change.user, &maker_key, &taker_ref, &protocol_authority),
                 ErrorCode::QuoterSubjectNotPermitted,
                 "quoter {} may not act against user {}",
                 router.executor.quoter_key(i),
@@ -4420,7 +4430,7 @@ fn fulfill_perp_order_router_pass(
             for cancelled in response.cancelled {
                 let maker_key = resolve_user(&cancelled.user)?;
                 validate!(
-                    subjects.permits(&cancelled.user, &maker_key, &taker_ref),
+                    subjects.permits(&cancelled.user, &maker_key, &taker_ref, &protocol_authority),
                     ErrorCode::QuoterSubjectNotPermitted,
                     "quoter {} may not cancel for user {}",
                     router.executor.quoter_key(i),
@@ -4702,6 +4712,7 @@ pub fn cross_match(
         authority: taker.authority,
         sub_account_id: taker.sub_account_id.into(),
     };
+    let protocol_authority = state.signer;
     let user_ref_index = makers_and_referrer.user_ref_index()?;
     let resolve_user = |user: &crate::state::prop_amm::ClobUserRefV0| -> VelocityResult<Pubkey> {
         user_ref_index
@@ -4859,7 +4870,7 @@ pub fn cross_match(
             }
             let maker_key = resolve_user(&change.user)?;
             validate!(
-                subjects.permits(&change.user, &maker_key, &taker_ref),
+                subjects.permits(&change.user, &maker_key, &taker_ref, &protocol_authority),
                 ErrorCode::QuoterSubjectNotPermitted,
                 "quoter {} may not act against user {} (the protocol user \
                  itself is never a subject)",
@@ -4944,7 +4955,7 @@ pub fn cross_match(
             for cancelled in response.cancelled {
                 let maker_key = resolve_user(&cancelled.user)?;
                 validate!(
-                    subjects.permits(&cancelled.user, &maker_key, &taker_ref),
+                    subjects.permits(&cancelled.user, &maker_key, &taker_ref, &protocol_authority),
                     ErrorCode::QuoterSubjectNotPermitted,
                     "quoter {} may not cancel for user {}",
                     executor.quoter_key(book_index),
@@ -5384,6 +5395,7 @@ pub fn settle_taker_origin_cross(
             sub_account_id: taker.sub_account_id.into(),
         }
     };
+    let protocol_authority = state.signer;
     let maker_key = *makers_and_referrer
         .user_ref_index()?
         .get(&(leg.user.authority, leg.user.sub_account_id))
@@ -5400,7 +5412,7 @@ pub fn settle_taker_origin_cross(
     } = counterparty
     {
         validate!(
-            subjects.permits(&leg.user, &maker_key, &taker_ref),
+            subjects.permits(&leg.user, &maker_key, &taker_ref, &protocol_authority),
             ErrorCode::QuoterSubjectNotPermitted,
             "the book may not fill user {} for this cross",
             maker_key

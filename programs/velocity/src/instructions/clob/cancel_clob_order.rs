@@ -11,7 +11,7 @@ use {
         error::ErrorCode,
         instructions::constraints::*,
         load_mut, msg,
-        signer::QUOTER_SIGNER_SEED,
+        signer::CLOB_AUTHORITY_SEED,
         state::{
             prop_amm::{
                 ClobCancelOrderArgsV0, ClobMarket, ClobOrderRefV0, QuoterV0, WireDirectionExt,
@@ -41,11 +41,11 @@ pub struct CancelClobOrder<'info> {
     /// CHECK: locked to the registered quoter program.
     #[account(address = quoter.load()?.program_id)]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the quoter CPI signer PDA — what a book's `place_authority` is
-    /// set to. Deliberately not the vault authority: signer privilege is
-    /// inherited by a callee, so the key velocity hands an external program
-    /// must be the authority on nothing.
-    #[account(seeds = [QUOTER_SIGNER_SEED], bump)]
+    /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
+    /// is set to. Its own key, distinct from the per-entry signer a
+    /// third-party quoter is handed: signer privilege is inherited by a
+    /// callee, and this one may place and cancel on any book, for any user.
+    #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
     pub quoter_signer: UncheckedAccount<'info>,
 }
 

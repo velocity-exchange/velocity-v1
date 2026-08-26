@@ -33,11 +33,17 @@ pub fn velocity_signer() -> Pubkey {
     Pubkey::find_program_address(&[crate::signer::VELOCITY_SIGNER_SEED], &crate::ID).0
 }
 
-/// The signer every CPI into an external program (registered quoters, the
-/// CLOB) uses — authority over nothing, so a callee that forwards it gains
-/// nothing. See `crate::signer`.
-pub fn quoter_signer() -> Pubkey {
-    crate::signer::find_quoter_signer().0
+/// Every book's `place_authority` — what velocity signs its own CLOB CPIs as.
+/// See `crate::signer` for why this is not the key a third-party quoter is
+/// handed.
+pub fn clob_authority() -> Pubkey {
+    crate::signer::find_clob_authority().0
+}
+
+/// The signer velocity CPIs one registry entry's quoter as: derived from the
+/// entry, so it authenticates velocity at that quoter and nowhere else.
+pub fn quoter_signer(entry: &Pubkey) -> Pubkey {
+    crate::signer::find_quoter_signer(entry).0
 }
 
 pub fn user(authority: &Pubkey, sub_account_id: u16) -> Pubkey {

@@ -841,6 +841,8 @@ pub enum ErrorCode {
     InsufficientCrankTreasury,
     #[msg("Crank reservoir is above its refill watermark")]
     CrankReservoirNotLow,
+    #[msg("User conditions sync does not cover every market the user is exposed in")]
+    InvalidUserConditionsSync,
 }
 
 #[macro_export]

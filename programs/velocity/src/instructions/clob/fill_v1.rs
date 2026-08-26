@@ -34,7 +34,7 @@ use {
         error::ErrorCode,
         instructions::{constraints::*, keeper::FillAccounts, ClobRemainderRoute},
         load,
-        signer::QUOTER_SIGNER_SEED,
+        signer::CLOB_AUTHORITY_SEED,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             prop_amm::QuoterV0,
@@ -79,9 +79,9 @@ pub struct FillOrderV1<'info> {
     /// CHECK: locked to the registered quoter program.
     #[account(address = quoter.load()?.program_id)]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the quoter CPI signer PDA — what a book's `place_authority` is,
-    /// and the authority on nothing else.
-    #[account(seeds = [QUOTER_SIGNER_SEED], bump)]
+    /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
+    /// is, and nothing a third-party quoter is ever handed.
+    #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
     pub quoter_signer: UncheckedAccount<'info>,
     /// Wake-hint host for the rested remainder. Optional as on every CLOB
     /// placement path: a market whose conditions were never initialized must

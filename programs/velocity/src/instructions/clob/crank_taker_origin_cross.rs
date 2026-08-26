@@ -49,7 +49,7 @@ use {
         load, load_mut,
         math::{casting::Cast, safe_math::SafeMath},
         msg,
-        signer::QUOTER_SIGNER_SEED,
+        signer::CLOB_AUTHORITY_SEED,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             events::TakerOriginCrossRecordV0,
@@ -113,9 +113,9 @@ pub struct CrankTakerOriginCross<'info> {
     /// CHECK: locked to the registered quoter program.
     #[account(address = quoter.load()?.program_id)]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the quoter CPI signer PDA — what a book's `place_authority` is
-    /// set to, and the authority on nothing else.
-    #[account(seeds = [QUOTER_SIGNER_SEED], bump)]
+    /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
+    /// is set to, and nothing a third-party quoter is ever handed.
+    #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
     pub quoter_signer: UncheckedAccount<'info>,
     /// The market's relay conditions account: the wake-hint host and the
     /// lamport reservoir. Optional so a signed keeper can crank a market whose
@@ -447,6 +447,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
                         // on it.
                         limit_price: 0,
                     },
+                    &ctx.accounts.quoter.key(),
                     &ctx.accounts.quoter_signer.key(),
                     ctx.bumps.quoter_signer,
                     &accounts,
@@ -463,6 +464,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
                     users: &users,
                     taker: Some(taker_ref),
                 },
+                &ctx.accounts.quoter.key(),
                 &ctx.accounts.quoter_signer.key(),
                 ctx.bumps.quoter_signer,
                 &accounts,
@@ -732,7 +734,7 @@ pub(super) fn stage_taker_origin_cross(
             quoter: ctx.accounts.quoter.key(),
             clob_market: ctx.accounts.clob_market.key(),
             clob_program: quoter.program_id,
-            quoter_signer: pdas::quoter_signer(),
+            quoter_signer: pdas::clob_authority(),
             crank_conditions: Some(ctx.accounts.crank_conditions.key()),
         })
         // Both `(User, UserStats)` pairs derive from the nodes' own

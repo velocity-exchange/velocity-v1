@@ -10,7 +10,11 @@
 
 use {
     crate::{
-        error::ErrorCode, msg, signer::get_quoter_signer_seeds, state::traits::Size, validate,
+        error::ErrorCode,
+        msg,
+        signer::{get_clob_authority_seeds, get_quoter_signer_seeds},
+        state::traits::Size,
+        validate,
     },
     anchor_lang::prelude::*,
     solana_program::{
@@ -583,12 +587,16 @@ pub struct ClobMarket<'a, 'info> {
     pub market: &'a AccountInfo<'info>,
     /// The registered CLOB program.
     pub program: &'a AccountInfo<'info>,
-    /// The quoter CPI signer PDA — what a book's `place_authority` is set to.
-    /// The CLOB gates place/cancel/evict/expire *and* `execute_v0` on that one
-    /// field, so this leg and the registry's execute leg necessarily sign as
-    /// the same key; that key is `quoter_signer` rather than the vault
-    /// authority so no external program ever receives a signature that can
-    /// move protocol funds.
+    /// The CLOB place authority PDA — what a book's `place_authority` is set
+    /// to. The CLOB gates place/cancel/evict/expire *and* `execute_v0` on that
+    /// one field, so this leg and the registry's execute leg for a CLOB entry
+    /// necessarily sign as the same key.
+    ///
+    /// It is its own key rather than the one a third-party quoter is handed.
+    /// Signer privilege is inherited by a callee, and this key may place and
+    /// cancel on any book for *any* user (`place_order_v0` takes the user as an
+    /// argument), so a quoter that received it and also held a book in its
+    /// account list could rest unreserved orders on that book or wipe it.
     pub quoter_signer: &'a AccountInfo<'info>,
     pub quoter_signer_nonce: u8,
 }
@@ -707,7 +715,7 @@ impl<'a, 'info> ClobMarket<'a, 'info> {
                 self.quoter_signer.clone(),
                 self.program.clone(),
             ],
-            &[&get_quoter_signer_seeds(&self.quoter_signer_nonce)],
+            &[&get_clob_authority_seeds(&self.quoter_signer_nonce)],
         )?;
 
         clob_response(&self.program.key(), what)
@@ -941,8 +949,22 @@ impl QuoterSubjects {
     /// price of its choosing. The wire tells every quoter to skip the taker;
     /// this is the rule rather than the request, and it lives here so no
     /// caller can apply the type check without it.
-    pub fn permits(&self, user: &ClobUserRefV0, key: &Pubkey, taker: &ClobUserRefV0) -> bool {
+    /// `protocol_authority` is `State::signer`. The protocol `User` is never a
+    /// subject either: it is the inventory-free taker the cranks fill through,
+    /// so a quoter that could name it would move a position onto protocol
+    /// funds at a price of its own choosing. It is excluded by identity rather
+    /// than by never being loaded, because the cross cranks load it on purpose.
+    pub fn permits(
+        &self,
+        user: &ClobUserRefV0,
+        key: &Pubkey,
+        taker: &ClobUserRefV0,
+        protocol_authority: &Pubkey,
+    ) -> bool {
         if user == taker {
+            return false;
+        }
+        if user.sub_account_id == 0 && user.authority == *protocol_authority {
             return false;
         }
         match self {
@@ -1167,6 +1189,21 @@ impl<'info> ExternalQuoterExecutor<'info> for NoExternalQuoters {
 pub use quoter_spec::UserBalanceChangeV0;
 
 impl QuoterV0 {
+    /// The identity velocity signs this entry's CPI legs as, and its bump.
+    ///
+    /// A `Clob` entry signs as the book's place authority, because that is the
+    /// key `execute_v0` requires; the caller passes it in because anchor already
+    /// derived it for the named account and its bump is free there. Every other
+    /// entry signs as a key derived from the entry itself, which is what keeps a
+    /// quoter's signature from authenticating anywhere but at that quoter — not
+    /// at a book, and not at a second quoter the same maker controls.
+    pub fn cpi_signer(&self, entry: &Pubkey, clob_authority: (Pubkey, u8)) -> (Pubkey, u8) {
+        match self.quoter_type {
+            QuoterType::Clob => clob_authority,
+            _ => crate::signer::find_quoter_signer(entry),
+        }
+    }
+
     /// This entry really is the CLOB serving `market_index`, and `book` is one
     /// of the accounts the admin vetted onto it — so a caller can't point an
     /// otherwise-valid entry at an arbitrary account it happens to own.
@@ -1229,6 +1266,7 @@ impl QuoterV0 {
         &self,
         market_index: u16,
         args: QuoteArgsV0<'_>,
+        entry: &Pubkey,
         quoter_signer: &Pubkey,
         quoter_signer_nonce: u8,
         accounts: &[AccountInfo<'info>],
@@ -1236,6 +1274,7 @@ impl QuoterV0 {
         let located = self.quote_in_place(
             market_index,
             args,
+            entry,
             quoter_signer,
             quoter_signer_nonce,
             accounts,
@@ -1245,8 +1284,18 @@ impl QuoterV0 {
         // The copy a fill earns: the split reads every book at once, and the
         // execute leg then writes the very accounts these levels sit in, so
         // the ladder has to outlive this borrow.
+        //
+        // Truncated at what a reader can use. The router's cursor and its level
+        // validation both stop at `MAX_LEVELS_PER_BOOK`, so a deeper ladder is
+        // copied and then never read — and a market may set `max_quote_levels`
+        // high enough that the discarded tail is kilobytes per book, on a 32 KB
+        // heap that never reclaims.
+        let usable = response
+            .levels
+            .len()
+            .min(crate::math::router::MAX_LEVELS_PER_BOOK);
         Ok(QuotedLadderV0 {
-            levels: response.levels.to_vec(),
+            levels: response.levels[..usable].to_vec(),
             withheld: response.withheld,
         })
     }
@@ -1260,6 +1309,7 @@ impl QuoterV0 {
         &self,
         market_index: u16,
         args: QuoteArgsV0<'_>,
+        entry: &Pubkey,
         quoter_signer: &Pubkey,
         quoter_signer_nonce: u8,
         accounts: &[AccountInfo<'info>],
@@ -1270,6 +1320,7 @@ impl QuoterV0 {
             &self.quote_accounts,
             self.quote_accounts_count,
             &args,
+            entry,
             quoter_signer,
             quoter_signer_nonce,
             accounts,
@@ -1290,6 +1341,7 @@ impl QuoterV0 {
         &self,
         market_index: u16,
         args: L3ArgsV0,
+        entry: &Pubkey,
         quoter_signer: &Pubkey,
         quoter_signer_nonce: u8,
         accounts: &[AccountInfo<'info>],
@@ -1303,6 +1355,7 @@ impl QuoterV0 {
             &self.quote_accounts,
             self.quote_accounts_count,
             &args,
+            entry,
             quoter_signer,
             quoter_signer_nonce,
             accounts,
@@ -1318,6 +1371,7 @@ impl QuoterV0 {
         &self,
         market_index: u16,
         args: ExecuteArgsV0<'_>,
+        entry: &Pubkey,
         quoter_signer: &Pubkey,
         quoter_signer_nonce: u8,
         accounts: &[AccountInfo<'info>],
@@ -1328,6 +1382,7 @@ impl QuoterV0 {
             &self.execute_accounts,
             self.execute_accounts_count,
             &args,
+            entry,
             quoter_signer,
             quoter_signer_nonce,
             accounts,
@@ -1346,6 +1401,7 @@ impl QuoterV0 {
         registered: &[AmmAccountMeta],
         count: u8,
         args: &A,
+        entry: &Pubkey,
         quoter_signer: &Pubkey,
         quoter_signer_nonce: u8,
         accounts: &[AccountInfo<'info>],
@@ -1390,6 +1446,25 @@ impl QuoterV0 {
             ErrorCode::DefaultError
         })?;
 
+        // Signed as whichever identity this entry authenticates velocity by,
+        // and the two families are deliberately separate. A `Clob` entry
+        // authenticates by the book's place authority, because that is the key
+        // its instructions require. Every other entry gets a key derived from
+        // its own registry entry, so the signature it receives proves velocity
+        // called *it* and proves nothing anywhere else — forwarded to a second
+        // quoter it does not authenticate, and it is not any book's authority.
+        let clob_seeds;
+        let entry_seeds;
+        let signer_seeds: &[&[u8]] = match self.quoter_type {
+            QuoterType::Clob => {
+                clob_seeds = get_clob_authority_seeds(&quoter_signer_nonce);
+                &clob_seeds
+            }
+            _ => {
+                entry_seeds = get_quoter_signer_seeds(entry, &quoter_signer_nonce);
+                &entry_seeds
+            }
+        };
         invoke_signed(
             &Instruction {
                 program_id: self.program_id,
@@ -1397,7 +1472,7 @@ impl QuoterV0 {
                 data,
             },
             &account_infos,
-            &[&get_quoter_signer_seeds(&quoter_signer_nonce)],
+            &[signer_seeds],
         )?;
 
         // The payload lives in the quoter's response account; return data

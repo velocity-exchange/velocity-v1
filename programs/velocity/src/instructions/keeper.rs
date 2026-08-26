@@ -270,7 +270,7 @@ fn fill_order<'c: 'info, 'info>(
             ),
         )
     };
-    let (quoter_signer, quoter_signer_nonce) = crate::signer::find_quoter_signer();
+    let (clob_authority, clob_authority_nonce) = crate::signer::find_clob_authority();
     let route_reference_price = {
         let oracle_id = perp_market_map.get_ref(&market_index)?.oracle_id();
         oracle_map.get_price_data(&oracle_id)?.price
@@ -294,8 +294,8 @@ fn fill_order<'c: 'info, 'info>(
             reference_price: route_reference_price,
             taker: taker_ref,
             limit_price: quote_limit_price,
-            quoter_signer,
-            quoter_signer_nonce,
+            clob_authority,
+            clob_authority_nonce,
         };
     // Before the quote, so a book never publishes depth standing on a maker
     // this fill would refuse to settle against.
@@ -327,6 +327,7 @@ fn fill_order<'c: 'info, 'info>(
     let mut router_inputs = RouterFillInputs {
         books,
         executor: &mut executor,
+        protocol_authority: state.signer,
     };
 
     controller::orders::fill_perp_order_with_router(

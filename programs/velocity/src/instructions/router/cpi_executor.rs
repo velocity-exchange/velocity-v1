@@ -28,9 +28,11 @@ pub struct CpiQuoterExecutor<'a, 'info> {
     /// The fill's account tail: the quoters' registered CPI accounts and their
     /// programs, searched by key.
     pub accounts: &'a [AccountInfo<'info>],
-    /// The privilege-free PDA every quoter CPI signs as, and its bump.
-    pub quoter_signer: Pubkey,
-    pub quoter_signer_nonce: u8,
+    /// The CLOB place authority and its bump — what a `Clob` entry's CPI legs
+    /// are signed as. Every other entry signs as a key derived from its own
+    /// registry entry (`QuoterV0::cpi_signer`).
+    pub clob_authority: Pubkey,
+    pub clob_authority_nonce: u8,
     /// The loaded-user set forwarded on every execute (quoters must not fill
     /// anyone else), in the wire's derivable form.
     pub users: &'a [ClobUserRefV0],
@@ -110,8 +112,9 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                         // against the ladder that comes back.
                         limit_price: 0,
                     },
-                    &self.quoter_signer,
-                    self.quoter_signer_nonce,
+                    &loader.key(),
+                    &self.clob_authority,
+                    self.clob_authority_nonce,
                     self.accounts,
                 )
                 .map_err(|_| {
@@ -170,8 +173,8 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
             );
             ErrorCode::DefaultError
         })?;
-        let signer = find_account(self.accounts, &self.quoter_signer).ok_or_else(|| {
-            msg!("quoter signer missing from the account map");
+        let signer = find_account(self.accounts, &self.clob_authority).ok_or_else(|| {
+            msg!("clob place authority missing from the account map");
             ErrorCode::DefaultError
         })?;
         let clob = ClobMarket::from_quoter(
@@ -180,7 +183,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
             book,
             program,
             signer,
-            self.quoter_signer_nonce,
+            self.clob_authority_nonce,
         )
         .map_err(|_| ErrorCode::DefaultError)?;
         clob.cancel_all(ClobCancelAllArgsV0 { user, sides })
@@ -209,6 +212,9 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
             msg!("router executor failed to load quoter {}", index);
             ErrorCode::DefaultError
         })?;
+        let entry_key = loader.key();
+        let (cpi_signer, cpi_signer_nonce) = quoter
+            .cpi_signer(&entry_key, (self.clob_authority, self.clob_authority_nonce));
         quoter
             .execute(
                 self.market_index,
@@ -220,8 +226,9 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                     users: self.users,
                     taker: Some(self.taker),
                 },
-                &self.quoter_signer,
-                self.quoter_signer_nonce,
+                &entry_key,
+                &cpi_signer,
+                cpi_signer_nonce,
                 self.accounts,
             )
             .map_err(|e| {

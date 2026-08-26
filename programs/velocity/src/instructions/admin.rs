@@ -4945,9 +4945,9 @@ pub struct AdminUpdatePerpMarketClobQuoter<'info> {
     pub clob_market: UncheckedAccount<'info>,
     /// CHECK: locked to the quoter entry's registered program in the handler.
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the quoter CPI signer PDA — what a book's `place_authority` is
-    /// set to, and therefore the only key that may register its cranks.
-    #[account(seeds = [crate::signer::QUOTER_SIGNER_SEED], bump)]
+    /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
+    /// is set to, and therefore the only key that may register its cranks.
+    #[account(seeds = [crate::signer::CLOB_AUTHORITY_SEED], bump)]
     pub quoter_signer: UncheckedAccount<'info>,
     /// The market's relay conditions + keeper reservoir, stood up (or
     /// re-priced) as part of the attach so a new market needs no separate

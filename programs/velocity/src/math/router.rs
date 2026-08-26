@@ -15,12 +15,15 @@
 //! and [`validate_executed_notional`] hold what a quoter's `execute_v0`
 //! returned to the levels it quoted moments earlier in the same transaction.
 
-use crate::{
-    error::{ErrorCode, VelocityResult},
-    math::{casting::Cast, constants::BASE_PRECISION, safe_math::SafeMath},
-    msg,
-    state::prop_amm::{Direction, PriceLevel},
-    validate,
+use {
+    crate::{
+        error::{ErrorCode, VelocityResult},
+        math::{casting::Cast, constants::BASE_PRECISION, safe_math::SafeMath},
+        msg,
+        state::prop_amm::{Direction, PriceLevel},
+        validate,
+    },
+    anchor_lang::prelude::Pubkey,
 };
 
 /// Levels processed per book; anything past this is ignored.
@@ -51,6 +54,10 @@ pub struct QuoterBook<'a> {
 pub struct RouterFillInputs<'a, 'b, 'info> {
     pub books: &'a [QuoterBook<'b>],
     pub executor: &'a mut dyn crate::state::prop_amm::ExternalQuoterExecutor<'info>,
+    /// `State::signer` — the authority of the protocol `User`, which no quoter
+    /// may name as a fill subject. Carried here because the router pass works
+    /// over account maps and does not hold `State`.
+    pub protocol_authority: Pubkey,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -259,6 +266,24 @@ pub fn split_across_quoters(
                 let d = remaining.min(total);
                 d - d % step
             };
+            if demand == 0 {
+                // Nothing step-sized left to give at this tier. Every
+                // allocation below is floored to the step, so a round that
+                // demands zero consumes nothing, advances no cursor and leaves
+                // `remaining` unchanged. The next pass of the outer loop would
+                // then be identical, and the walk would spin until the compute
+                // budget ran out.
+                //
+                // A step-aligned `taker_size` makes a sub-step remainder
+                // impossible, but that alignment is not something this function
+                // can rely on: the book carries its own `order_step_size`
+                // independent of the market's, and a reduce-only order is sized
+                // from a position magnitude that was never standardized. The
+                // walk ends here instead. The TypeScript mirror ends it the
+                // same way, so both report the same allocations.
+                remaining = 0;
+                break;
+            }
             // Indexed loops: `take` mutates three parallel structures.
             let mut given: u64 = 0;
             for i in 0..cursors.len() {

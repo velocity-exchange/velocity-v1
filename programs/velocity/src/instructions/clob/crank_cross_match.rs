@@ -183,15 +183,15 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
                 },
             ),
     )?;
-    let (quoter_signer, quoter_signer_nonce) = crate::signer::find_quoter_signer();
+    let (clob_authority, clob_authority_nonce) = crate::signer::find_clob_authority();
     let mut executor = CpiQuoterExecutor {
         caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
         reference_price: 0,
         quoted: &quoted,
         market_index,
         accounts: &accounts,
-        quoter_signer,
-        quoter_signer_nonce,
+        clob_authority,
+        clob_authority_nonce,
         users: &users,
         taker: taker_ref,
         slot: clock.slot,
@@ -326,9 +326,9 @@ pub(super) fn stage_cross(ctx: &Context<ResolveClobCrank>) -> Result<Option<Stag
             conditions.quote_spot_market_index,
         )
     };
-    // The CLOB's execute leg is signed by the quoter CPI signer, not the
+    // The CLOB's execute leg is signed by the book's place authority, not the
     // vault authority — stage the one the executor will actually sign as.
-    let (quoter_signer, _) = crate::signer::find_quoter_signer();
+    let (quoter_signer, _) = crate::signer::find_clob_authority();
     let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
 
     // Named accounts through the executor's own client struct (compile-time
@@ -381,6 +381,7 @@ const CROSS_ROWS_PER_SIDE: u16 = 32;
 /// re-derives an activation slot or an expiry.
 fn clob_rows<'info>(
     quoter: &QuoterV0,
+    entry: &Pubkey,
     market_index: u16,
     direction: crate::state::prop_amm::Direction,
     quoter_signer: &Pubkey,
@@ -397,6 +398,7 @@ fn clob_rows<'info>(
             size: 0,
             max_rows: CROSS_ROWS_PER_SIDE,
         },
+        entry,
         quoter_signer,
         quoter_signer_nonce,
         accounts,
@@ -506,7 +508,8 @@ fn find_clob_cross(ctx: &Context<ResolveClobCrank>) -> Result<ClobCross> {
         return Ok(cross_prefix(&[], &[]));
     }
     let market_index = ctx.accounts.crank_conditions.load()?.market_index;
-    let (quoter_signer, quoter_signer_nonce) = crate::signer::find_quoter_signer();
+    let (quoter_signer, quoter_signer_nonce) = crate::signer::find_clob_authority();
+    let clob_entry_key = ctx.accounts.quoter.key();
     let accounts = [
         ctx.accounts.clob_market.to_account_info(),
         ctx.accounts.clob_program.to_account_info(),
@@ -516,6 +519,7 @@ fn find_clob_cross(ctx: &Context<ResolveClobCrank>) -> Result<ClobCross> {
     // overwrites it. A buyer consumes the asks.
     let asks = clob_rows(
         &quoter,
+        &clob_entry_key,
         market_index,
         crate::state::prop_amm::Direction::Long,
         &quoter_signer,
@@ -524,6 +528,7 @@ fn find_clob_cross(ctx: &Context<ResolveClobCrank>) -> Result<ClobCross> {
     )?;
     let bids = clob_rows(
         &quoter,
+        &clob_entry_key,
         market_index,
         crate::state::prop_amm::Direction::Short,
         &quoter_signer,
@@ -584,7 +589,10 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             // conditions go quiet rather than erroring forever.
             return Ok(None);
         }
-        let (quoter_signer, quoter_signer_nonce) = crate::signer::find_quoter_signer();
+        let clob_authority = crate::signer::find_clob_authority();
+        let quoter_entry_key = ctx.accounts.quoter.key();
+        let (quoter_signer, quoter_signer_nonce) =
+            quoter.cpi_signer(&quoter_entry_key, clob_authority);
         // The resolver's own tail, searched rather than indexed: it is a
         // handful of accounts and this reads a few of them.
         let accounts: Vec<AccountInfo<'info>> = ctx
@@ -616,6 +624,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
                         // has been read.
                         limit_price: 0,
                     },
+                    &quoter_entry_key,
                     &quoter_signer,
                     quoter_signer_nonce,
                     &accounts,
@@ -646,14 +655,16 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             ctx.accounts.clob_market.to_account_info(),
             ctx.accounts.clob_program.to_account_info(),
         ];
+        let clob_entry_key = ctx.accounts.clob_quoter.key();
         let clob_book = |direction: crate::state::prop_amm::Direction| -> Result<Vec<_>> {
             let clob_entry = ctx.accounts.clob_quoter.load()?;
             clob_rows(
                 &clob_entry,
+                &clob_entry_key,
                 market_index,
                 direction,
-                &quoter_signer,
-                quoter_signer_nonce,
+                &clob_authority.0,
+                clob_authority.1,
                 &clob_accounts,
             )
         };

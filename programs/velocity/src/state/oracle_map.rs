@@ -249,7 +249,9 @@ impl<'a> OracleMap<'a> {
                     UnableToLoadOracle
                 })?;
 
-                let account_discriminator = &data[..8];
+                let Some(account_discriminator) = data.get(..8) else {
+                    break;
+                };
 
                 if account_discriminator == PrelaunchOracle::DISCRIMINATOR {
                     let expected_data_len = PrelaunchOracle::SIZE;
@@ -313,7 +315,10 @@ impl<'a> OracleMap<'a> {
                 UnableToLoadOracle
             })?;
 
-            let account_discriminator = &data[..8];
+            let Some(account_discriminator) = data.get(..8) else {
+                msg!("Account is too short to hold an oracle discriminator");
+                return Err(UnableToLoadOracle);
+            };
 
             if account_discriminator == PrelaunchOracle::DISCRIMINATOR {
                 let expected_data_len = PrelaunchOracle::SIZE;

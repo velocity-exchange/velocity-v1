@@ -281,10 +281,19 @@ pub mod test_utils {
 
     use anchor_lang::Discriminator;
     use bytes::BytesMut;
+    use program::state::oracle::{
+        PYTH_PUSH_ACCOUNT_TYPE_PRICE, PYTH_PUSH_MAGIC, PYTH_PUSH_VERSION,
+    };
     // helpers from velocity-program test_utils.
+    /// A pyth push price account, with the header the pyth program writes.
+    /// The velocity program refuses an account whose header does not say
+    /// "pyth price account", so a test feed has to carry one.
     pub fn get_pyth_price(price: i64, expo: i32) -> pyth_test::Price {
         let mut pyth_price = pyth_test::Price::default();
         let price = price * 10_i64.pow(expo as u32);
+        pyth_price.magic = PYTH_PUSH_MAGIC;
+        pyth_price.ver = PYTH_PUSH_VERSION;
+        pyth_price.atype = PYTH_PUSH_ACCOUNT_TYPE_PRICE;
         pyth_price.agg.price = price;
         pyth_price.twap = price;
         pyth_price.expo = expo;

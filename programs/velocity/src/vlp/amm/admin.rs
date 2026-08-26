@@ -418,7 +418,6 @@ pub struct UpdatePerpMarketSummaryStatsParams {
 
 #[access_control(
     perp_market_valid(&ctx.accounts.perp_market)
-    valid_oracle_for_perp_market(&ctx.accounts.oracle, &ctx.accounts.perp_market)
 )]
 pub fn handle_update_perp_market_amm_summary_stats(
     ctx: Context<AdminUpdatePerpMarketAmmSummaryStats>,
@@ -1468,19 +1467,25 @@ pub struct UpdateInitialAmmCacheInfo<'info> {
     pub amm_cache: Box<Account<'info, AmmCache>>,
 }
 
+/// Both handlers on this struct price the perp market from the oracle account
+/// the caller passes. `has_one` binds that account to the market, so a caller
+/// cannot substitute another feed and set the peg from it.
 #[derive(Accounts)]
 pub struct AdminUpdatePerpMarketAmmSummaryStats<'info> {
     #[account(constraint = check_hot(&admin.key(), &state, HotRole::AmmCrank)?)]
     pub admin: Signer<'info>,
     pub state: AccountLoader<'info, State>,
-    #[account(mut)]
+    #[account(
+        mut,
+        has_one = oracle @ ErrorCode::InvalidOracle,
+    )]
     pub perp_market: AccountLoader<'info, PerpMarket>,
     #[account(
         seeds = [b"spot_market", perp_market.load()?.quote_spot_market_index.to_le_bytes().as_ref()],
         bump,
     )]
     pub spot_market: AccountLoader<'info, SpotMarket>,
-    /// CHECK: checked in `admin_update_perp_market_summary_stats` ix constraint
+    /// CHECK: must be `perp_market.oracle` (enforced by `has_one` above)
     pub oracle: UncheckedAccount<'info>,
 }
 

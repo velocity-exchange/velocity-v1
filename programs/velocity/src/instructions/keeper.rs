@@ -316,14 +316,18 @@ fn fill_order<'c: 'info, 'info>(
         ..inputs
     };
 
-    let route = crate::instructions::QuotedRoute::assemble(tail, &inputs)?;
+    // One set of CPI buffers for the fill: the quote legs below and the
+    // execute legs the router runs later all refill the same allocation,
+    // because velocity's heap never gives a freed one back.
+    let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
+    let route = crate::instructions::QuotedRoute::assemble(tail, &inputs, &mut cpi_scratch)?;
     route.require_baseline(perp_market_map.get_ref(&market_index)?.clob_quoter)?;
     route.require_signed_route(&signed_route, route_digest)?;
 
     let mut book_storage =
         [crate::math::router::QuoterBook::default(); crate::instructions::MAX_ROUTE_QUOTERS];
     let books = route.books(&mut book_storage);
-    let mut executor = route.executor(&inputs, clock.slot, clock.unix_timestamp);
+    let mut executor = route.executor(&inputs, clock.slot, clock.unix_timestamp, &mut cpi_scratch);
     let mut router_inputs = RouterFillInputs {
         books,
         executor: &mut executor,

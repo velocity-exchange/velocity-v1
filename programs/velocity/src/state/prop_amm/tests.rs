@@ -64,7 +64,8 @@ fn only_the_quoter_signer_slot_is_a_signer() {
         meta(vault_authority, false),
         meta(taker_wallet, false),
     ];
-    let metas = quoter_account_metas(&registered, &quoter_signer);
+    let mut metas = Vec::new();
+    write_quoter_account_metas(&mut metas, &registered, &quoter_signer);
 
     assert_eq!(
         metas

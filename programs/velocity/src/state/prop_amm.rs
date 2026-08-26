@@ -192,15 +192,58 @@ pub fn validate_quoter_accounts<'a>(pubkeys: impl IntoIterator<Item = &'a Pubkey
 /// registered slot for it is how a quoter authenticates that velocity, not an
 /// arbitrary caller, is invoking it. That PDA is the authority on nothing, so
 /// a quoter that forwards the signature onward gains nothing by it.
-fn quoter_account_metas(registered: &[AmmAccountMeta], quoter_signer: &Pubkey) -> Vec<AccountMeta> {
-    registered
-        .iter()
-        .map(|meta| AccountMeta {
-            pubkey: meta.pubkey,
-            is_signer: meta.pubkey == *quoter_signer,
-            is_writable: meta.is_writable,
-        })
-        .collect()
+fn write_quoter_account_metas(
+    into: &mut Vec<AccountMeta>,
+    registered: &[AmmAccountMeta],
+    quoter_signer: &Pubkey,
+) {
+    into.clear();
+    into.extend(registered.iter().map(|meta| AccountMeta {
+        pubkey: meta.pubkey,
+        is_signer: meta.pubkey == *quoter_signer,
+        is_writable: meta.is_writable,
+    }));
+}
+
+/// The three buffers a quoter CPI leg needs, allocated once and reused by every
+/// leg of every entry in one instruction.
+///
+/// Velocity's heap is 32 KB and its allocator never reclaims, so a `Vec` per leg
+/// is a `Vec` for the rest of the instruction. At capacity a leg wants ~1.1 KB
+/// of account metas, ~1.6 KB of `AccountInfo`s and ~1.8 KB of args, and a fill
+/// runs two legs per entry across up to `MAX_ROUTE_QUOTERS` entries — call it
+/// 71 KB of scaffolding on a 32 KB heap, which is an out-of-memory abort well
+/// before the route reaches the size the account-lock budget allows.
+///
+/// Reserved at the widest any leg can be and then only ever cleared and
+/// refilled: `clear` keeps the allocation, so the whole fill pays for one set.
+pub struct QuoterCpiScratch<'info> {
+    /// Carries the metas and the args, because `Instruction` owns both and
+    /// `invoke_signed` wants an `&Instruction` — so reusing them means reusing
+    /// the instruction they live in.
+    instruction: Instruction,
+    infos: Vec<AccountInfo<'info>>,
+}
+
+impl<'info> Default for QuoterCpiScratch<'info> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<'info> QuoterCpiScratch<'info> {
+    pub fn new() -> Self {
+        Self {
+            instruction: Instruction {
+                program_id: Pubkey::default(),
+                accounts: Vec::with_capacity(MAX_QUOTER_ACCOUNTS),
+                data: Vec::with_capacity(QUOTER_CPI_DATA_MAX),
+            },
+            // One more than the registered accounts: the callee program's own
+            // info rides the same list.
+            infos: Vec::with_capacity(MAX_QUOTER_ACCOUNTS + 1),
+        }
+    }
 }
 
 /// The request half of the quoter wire, declared in `quoter-spec` alongside
@@ -1107,7 +1150,7 @@ pub trait ExternalQuoterExecutor<'info> {
     /// about to consume. `None` when velocity cannot read the quoter's
     /// liquidity, which is every quoter that is not a book.
     fn resting_levels(
-        &self,
+        &mut self,
         _index: usize,
         _direction: Direction,
         _size: u64,
@@ -1272,6 +1315,7 @@ impl QuoterV0 {
         quoter_signer: &Pubkey,
         quoter_signer_nonce: u8,
         accounts: &[AccountInfo<'info>],
+        scratch: &mut QuoterCpiScratch<'info>,
     ) -> Result<QuotedLadderV0> {
         let located = self.quote_in_place(
             market_index,
@@ -1280,6 +1324,7 @@ impl QuoterV0 {
             quoter_signer,
             quoter_signer_nonce,
             accounts,
+            scratch,
         )?;
         let data = located.borrow()?;
         let response = located.checked_quote_response(&data, args.direction)?;
@@ -1315,6 +1360,7 @@ impl QuoterV0 {
         quoter_signer: &Pubkey,
         quoter_signer_nonce: u8,
         accounts: &[AccountInfo<'info>],
+        scratch: &mut QuoterCpiScratch<'info>,
     ) -> Result<ResponseLocationV0<'info>> {
         self.gate_for_market(market_index)?;
         self.invoke_quoter(
@@ -1326,6 +1372,7 @@ impl QuoterV0 {
             quoter_signer,
             quoter_signer_nonce,
             accounts,
+            scratch,
         )
     }
 
@@ -1347,6 +1394,7 @@ impl QuoterV0 {
         quoter_signer: &Pubkey,
         quoter_signer_nonce: u8,
         accounts: &[AccountInfo<'info>],
+        scratch: &mut QuoterCpiScratch<'info>,
     ) -> Result<Option<ResponseLocationV0<'info>>> {
         if self.quote_l3_v0_discriminator == [0u8; 8] {
             return Ok(None);
@@ -1361,6 +1409,7 @@ impl QuoterV0 {
             quoter_signer,
             quoter_signer_nonce,
             accounts,
+            scratch,
         )
         .map(Some)
     }
@@ -1377,6 +1426,7 @@ impl QuoterV0 {
         quoter_signer: &Pubkey,
         quoter_signer_nonce: u8,
         accounts: &[AccountInfo<'info>],
+        scratch: &mut QuoterCpiScratch<'info>,
     ) -> Result<ResponseLocationV0<'info>> {
         self.gate_for_market(market_index)?;
         self.invoke_quoter(
@@ -1388,6 +1438,7 @@ impl QuoterV0 {
             quoter_signer,
             quoter_signer_nonce,
             accounts,
+            scratch,
         )
     }
 
@@ -1407,6 +1458,7 @@ impl QuoterV0 {
         quoter_signer: &Pubkey,
         quoter_signer_nonce: u8,
         accounts: &[AccountInfo<'info>],
+        scratch: &mut QuoterCpiScratch<'info>,
     ) -> Result<ResponseLocationV0<'info>> {
         validate!(
             (count as usize) <= registered.len(),
@@ -1415,35 +1467,49 @@ impl QuoterV0 {
             count,
             registered.len()
         )?;
-        let account_metas = quoter_account_metas(&registered[..count as usize], quoter_signer);
+        let QuoterCpiScratch { instruction, infos } = scratch;
+        instruction.program_id = self.program_id;
+        write_quoter_account_metas(
+            &mut instruction.accounts,
+            &registered[..count as usize],
+            quoter_signer,
+        );
 
-        let mut account_infos = Vec::with_capacity(account_metas.len() + 1);
-        for meta in &account_metas {
+        infos.clear();
+        for meta in instruction.accounts.iter() {
             let info = find_account(accounts, &meta.pubkey).ok_or_else(|| {
                 msg!("prop amm account {} missing from account map", meta.pubkey);
                 ErrorCode::DefaultError
             })?;
-            account_infos.push(info.clone());
+            infos.push(info.clone());
         }
         // CPI needs the callee program's account info too.
         let program_info = find_account(accounts, &self.program_id).ok_or_else(|| {
             msg!("quoter program account missing from account map");
             ErrorCode::DefaultError
         })?;
-        account_infos.push(program_info.clone());
+        infos.push(program_info.clone());
 
-        // Sized exactly, once, by the schema that writes the bytes. A `Vec`
-        // that grows into place by doubling leaks every intermediate buffer:
-        // velocity's bump allocator never reclaims, and one fill CPIs every
-        // registered quoter twice. Growing rather than reserving exhausted
-        // the 32 KB heap outright.
+        // Written into the buffer the scratch already reserved, which is sized
+        // at the widest any leg can be. `QUOTER_CPI_DATA_MAX` counts every byte
+        // the args serializer writes, so a leg that does not fit means that
+        // constant is wrong — say so rather than letting the `Vec` double and
+        // leak the buffer it grew out of.
         let args_len = quoter_spec::args_size(args).map_err(|_| {
             msg!("prop amm failed to size cpi args");
             ErrorCode::DefaultError
         })?;
-        let mut data = Vec::with_capacity(discriminator.len() + args_len);
-        data.extend_from_slice(discriminator);
-        quoter_spec::write_args(&mut data, args).map_err(|_| {
+        let data_len = discriminator.len().saturating_add(args_len);
+        validate!(
+            data_len <= QUOTER_CPI_DATA_MAX,
+            ErrorCode::DefaultError,
+            "prop amm cpi args are {} bytes, above the {} the wire allows",
+            data_len,
+            QUOTER_CPI_DATA_MAX
+        )?;
+        instruction.data.clear();
+        instruction.data.extend_from_slice(discriminator);
+        quoter_spec::write_args(&mut instruction.data, args).map_err(|_| {
             msg!("prop amm failed to serialize cpi args");
             ErrorCode::DefaultError
         })?;
@@ -1467,15 +1533,7 @@ impl QuoterV0 {
                 &entry_seeds
             }
         };
-        invoke_signed(
-            &Instruction {
-                program_id: self.program_id,
-                accounts: account_metas,
-                data,
-            },
-            &account_infos,
-            &[signer_seeds],
-        )?;
+        invoke_signed(instruction, infos, &[signer_seeds])?;
 
         // The payload lives in the quoter's response account; return data
         // carries only a pointer into it, so responses aren't bound by the

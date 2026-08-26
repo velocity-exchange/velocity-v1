@@ -122,6 +122,7 @@ impl<'info> QuotedRoute<'info> {
     pub fn assemble(
         tail: &'info [AccountInfo<'info>],
         inputs: &QuoteInputs<'_>,
+        scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
     ) -> Result<QuotedRoute<'info>> {
         let mut route = QuotedRoute {
             accounts: tail,
@@ -194,6 +195,7 @@ impl<'info> QuotedRoute<'info> {
                     &cpi_signer,
                     cpi_signer_nonce,
                     route.accounts,
+                    scratch,
                 )?;
                 (
                     quoter.quoter_type,
@@ -293,8 +295,10 @@ impl<'info> QuotedRoute<'info> {
         inputs: &'a QuoteInputs<'_>,
         slot: u64,
         now: i64,
+        scratch: &'a mut crate::state::prop_amm::QuoterCpiScratch<'info>,
     ) -> CpiQuoterExecutor<'a, 'info> {
         CpiQuoterExecutor {
+            scratch,
             caps: inputs.caps,
             reference_price: inputs.reference_price,
             quoted: &self.quoted,

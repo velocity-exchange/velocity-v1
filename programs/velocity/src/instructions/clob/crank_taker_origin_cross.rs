@@ -431,6 +431,8 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
                 ctx.accounts.clob_authority.to_account_info(),
                 ctx.accounts.clob_program.to_account_info(),
             ];
+            // One set of CPI buffers for both legs.
+            let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
             // Quote before executing: execute consumes the orders the ladder
             // describes. The book is the quote here — the crank carries no
             // quote of its own, so the run these orders rest at is what the
@@ -457,6 +459,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
                     &ctx.accounts.clob_authority.key(),
                     ctx.bumps.clob_authority,
                     &accounts,
+                    &mut cpi_scratch,
                 )?
                 .levels;
             let located = quoter.execute(
@@ -474,6 +477,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
                 &ctx.accounts.clob_authority.key(),
                 ctx.bumps.clob_authority,
                 &accounts,
+                &mut cpi_scratch,
             )?;
             // The guard ends with this arm: what the cross needs is copied
             // out of the response, and it is three fixed-width records.

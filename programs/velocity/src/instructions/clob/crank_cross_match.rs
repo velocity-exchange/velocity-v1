@@ -184,7 +184,10 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
             ),
     )?;
     let (clob_authority, clob_authority_nonce) = crate::signer::find_clob_authority();
+    // One set of CPI buffers for the whole crank, as the router fill uses.
+    let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
     let mut executor = CpiQuoterExecutor {
+        scratch: &mut cpi_scratch,
         caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
         reference_price: 0,
         quoted: &quoted,
@@ -387,6 +390,7 @@ fn clob_rows<'info>(
     clob_authority: &Pubkey,
     clob_authority_nonce: u8,
     accounts: &[AccountInfo<'info>],
+    scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
 ) -> Result<Vec<crate::state::prop_amm::L3RowV0>> {
     let located = quoter.quote_l3(
         market_index,
@@ -402,6 +406,7 @@ fn clob_rows<'info>(
         clob_authority,
         clob_authority_nonce,
         accounts,
+        scratch,
     )?;
     let Some(located) = located else {
         return Ok(Vec::new());
@@ -514,6 +519,7 @@ fn find_clob_cross(ctx: &Context<ResolveClobCrank>) -> Result<ClobCross> {
         ctx.accounts.clob_market.to_account_info(),
         ctx.accounts.clob_program.to_account_info(),
     ];
+    let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
     // One side at a time: both responses land in the same region of the book's
     // response tail, so the first is copied out before the second CPI
     // overwrites it. A buyer consumes the asks.
@@ -525,6 +531,7 @@ fn find_clob_cross(ctx: &Context<ResolveClobCrank>) -> Result<ClobCross> {
         &clob_authority,
         clob_authority_nonce,
         &accounts,
+        &mut cpi_scratch,
     )?;
     let bids = clob_rows(
         &quoter,
@@ -534,6 +541,7 @@ fn find_clob_cross(ctx: &Context<ResolveClobCrank>) -> Result<ClobCross> {
         &clob_authority,
         clob_authority_nonce,
         &accounts,
+        &mut cpi_scratch,
     )?;
     Ok(cross_prefix(&bids, &asks))
 }
@@ -590,6 +598,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             return Ok(None);
         }
         let clob_authority = crate::signer::find_clob_authority();
+        let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
         let quoter_entry_key = ctx.accounts.quoter.key();
         let (quoter_signer, quoter_signer_nonce) =
             quoter.cpi_signer(&quoter_entry_key, clob_authority);
@@ -605,7 +614,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
         // (unrestricted); no taker (the executor's taker is the protocol
         // User, which quotes nothing anywhere).
         let market_index = ctx.accounts.cross_conditions.load()?.market_index;
-        let quote = |direction: crate::state::prop_amm::Direction| -> Result<Vec<PriceLevel>> {
+        let mut quote = |direction: crate::state::prop_amm::Direction| -> Result<Vec<PriceLevel>> {
             quoter
                 .quote(
                     market_index,
@@ -628,6 +637,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
                     &quoter_signer,
                     quoter_signer_nonce,
                     &accounts,
+                    &mut cpi_scratch,
                 )
                 // The crank routes the book against itself; there is no
                 // caller-supplied user set for it to fall short of.
@@ -656,7 +666,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             ctx.accounts.clob_program.to_account_info(),
         ];
         let clob_entry_key = ctx.accounts.clob_quoter.key();
-        let clob_book = |direction: crate::state::prop_amm::Direction| -> Result<Vec<_>> {
+        let mut clob_book = |direction: crate::state::prop_amm::Direction| -> Result<Vec<_>> {
             let clob_entry = ctx.accounts.clob_quoter.load()?;
             clob_rows(
                 &clob_entry,
@@ -666,6 +676,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
                 &clob_authority.0,
                 clob_authority.1,
                 &clob_accounts,
+                &mut cpi_scratch,
             )
         };
         // The entry's asks cross the book's bids, which is what a seller

@@ -28,6 +28,10 @@ pub struct CpiQuoterExecutor<'a, 'info> {
     /// The fill's account tail: the quoters' registered CPI accounts and their
     /// programs, searched by key.
     pub accounts: &'a [AccountInfo<'info>],
+    /// The CPI buffers every leg of this fill reuses. One set for the whole
+    /// instruction: velocity's heap never reclaims, so a buffer per leg is a
+    /// buffer for the rest of the fill.
+    pub scratch: &'a mut crate::state::prop_amm::QuoterCpiScratch<'info>,
     /// The CLOB place authority and its bump — what a `Clob` entry's CPI legs
     /// are signed as. Every other entry signs as a key derived from its own
     /// registry entry (`QuoterV0::cpi_signer`).
@@ -72,7 +76,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
     }
 
     fn resting_levels(
-        &self,
+        &mut self,
         index: usize,
         direction: Direction,
         size: u64,
@@ -116,6 +120,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                     &self.clob_authority,
                     self.clob_authority_nonce,
                     self.accounts,
+                    self.scratch,
                 )
                 .map_err(|_| {
                     msg!("clob quote for entry {} failed", loader.key());
@@ -230,6 +235,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                 &cpi_signer,
                 cpi_signer_nonce,
                 self.accounts,
+                self.scratch,
             )
             .map_err(|e| {
                 // Name the entry, not just the failure. A quoter program

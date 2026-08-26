@@ -143,6 +143,8 @@ pub fn handle_quote_router<'c: 'info, 'info>(
     // once, into the buffer. Nothing holds a second copy: velocity's heap is
     // 32 KB and never reclaims, and this runs once per quoter.
     let clob_authority = crate::signer::find_clob_authority();
+    // One set of CPI buffers for every entry this view quotes.
+    let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
     for loader in &quoters {
         let (priority, quoter_type, quoter_user, entry_key, quoter_signer, quoter_signer_nonce, located) = {
             let quoter = loader.load()?;
@@ -183,6 +185,7 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                     &quoter_signer,
                     quoter_signer_nonce,
                     &accounts,
+                    &mut cpi_scratch,
                 )
                 .map_err(|e| {
                     msg!("quoter {} quote failed: {}", loader.key(), e);
@@ -270,6 +273,7 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                 &quoter_signer,
                 quoter_signer_nonce,
                 &accounts,
+                &mut cpi_scratch,
                 bound_to,
                 &mut buffer,
             )?;
@@ -402,6 +406,7 @@ fn quoter_rows<'info>(
     quoter_signer: &Pubkey,
     quoter_signer_nonce: u8,
     accounts: &[AccountInfo<'info>],
+    scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
     // The one user a Custom entry may name, `None` for a book. The same rule
     // settlement applies, applied to what the entry says about itself.
     bound_to: Option<ClobUserRefV0>,
@@ -420,6 +425,7 @@ fn quoter_rows<'info>(
             quoter_signer,
             quoter_signer_nonce,
             accounts,
+            scratch,
         )?
     };
     let Some(located) = located else {

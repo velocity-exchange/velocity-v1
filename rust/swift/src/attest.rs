@@ -15,12 +15,15 @@
 //! transaction-global — a malicious transaction could move the key's
 //! lamports — so co-signing is gated hard: the flow authority must appear
 //! as a *read-only, non-fee-payer* signer, every invoked program must be on
-//! the allowlist (velocity, compute budget, ed25519 verify), and the
-//! transaction must demonstrably fill the held order (its taker signature
-//! must appear in an instruction's data — the ed25519 verify instruction
-//! carries it). Same drain-vector analysis as relay's payment guards.
+//! the allowlist (velocity, compute budget, ed25519 verify), the transaction
+//! must demonstrably fill the held order (its taker signature must appear in
+//! an instruction's data — the ed25519 verify instruction carries it), and it
+//! must not place or modify a CLOB order — those carry the fast activation the
+//! co-signature unlocks, and a retail fill never rests one. Same drain-vector
+//! analysis as relay's payment guards.
 
 use {
+    anchor_lang::Discriminator,
     axum::{extract::State, http::StatusCode, response::IntoResponse, Json},
     base64::Engine,
     dashmap::DashMap,
@@ -30,6 +33,7 @@ use {
     solana_signer::Signer,
     solana_transaction::versioned::VersionedTransaction,
     std::time::{SystemTime, UNIX_EPOCH},
+    velocity_rs::velocity_idl::instructions::{ModifyClobOrder, PlaceClobOrder},
 };
 
 const COMPUTE_BUDGET_ID: &str = "ComputeBudget111111111111111111111111111111";
@@ -268,6 +272,20 @@ fn validate_attestable(
         if *program != velocity && *program != compute_budget && *program != ed25519 {
             return Err(format!("program {program} is not attestable"));
         }
+        // A retail fill never places or modifies a resting CLOB order. Those
+        // are the fast-activation instructions: the co-signature lets one skip
+        // the speed bump. Refusing them stops a maker-run keeper from smuggling
+        // its own fast placement into a transaction co-signed for the fill —
+        // the order signature the binding below checks is public, so the tx is
+        // otherwise the keeper's to shape.
+        if *program == velocity {
+            let discriminator = instruction.data.get(..8);
+            if discriminator == Some(PlaceClobOrder::DISCRIMINATOR)
+                || discriminator == Some(ModifyClobOrder::DISCRIMINATOR)
+            {
+                return Err("an attested transaction cannot place or modify a CLOB order".into());
+            }
+        }
     }
 
     // The transaction must actually fill the held order: its taker
@@ -365,6 +383,41 @@ mod tests {
         assert!(validate_attestable(&good, &stranger.pubkey(), &order_sig)
             .unwrap_err()
             .contains("not among"));
+    }
+
+    #[test]
+    fn attested_tx_cannot_place_a_clob_order() {
+        let flow = Keypair::new();
+        let order_sig = [7u8; 64];
+        let payer = Keypair::new();
+        let velocity = velocity_rs::constants::PROGRAM_ID;
+        let ed25519: Pubkey = ED25519_ID.parse().unwrap();
+        let mut ed25519_data = vec![0u8; 16];
+        ed25519_data.extend_from_slice(&order_sig);
+        // A velocity place_clob_order carries the fast-activation gate.
+        let mut place_data = PlaceClobOrder::DISCRIMINATOR.to_vec();
+        place_data.extend_from_slice(&[0u8; 8]);
+        let ixs = vec![
+            Instruction {
+                program_id: ed25519,
+                accounts: vec![],
+                data: ed25519_data,
+            },
+            Instruction {
+                program_id: velocity,
+                accounts: vec![AccountMeta::new_readonly(flow.pubkey(), true)],
+                data: place_data,
+            },
+        ];
+        let message = v0::Message::try_compile(&payer.pubkey(), &ixs, &[], Hash::default())
+            .expect("compiles");
+        let tx = VersionedTransaction {
+            signatures: vec![Default::default(); message.header.num_required_signatures as usize],
+            message: VersionedMessage::V0(message),
+        };
+        assert!(validate_attestable(&tx, &flow.pubkey(), &order_sig)
+            .unwrap_err()
+            .contains("CLOB order"));
     }
 
     #[test]

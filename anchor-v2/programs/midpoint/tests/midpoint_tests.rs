@@ -509,17 +509,17 @@ fn nonzero_mid_sequence_must_increase() {
         let ix = set_mid_ix(&ctx, MID + 1, 4);
         assert!(send(&mut ctx, ix).is_err());
     }
-    // Higher passes; zero always passes (opt-out).
+    // Higher passes; a later zero is a rejected downgrade, not an opt-out.
     {
         let ix = set_mid_ix(&ctx, MID + 1, 6);
         send(&mut ctx, ix).unwrap();
     }
     {
         let ix = set_mid_ix(&ctx, MID + 2, 0);
-        send(&mut ctx, ix).unwrap();
+        assert!(send(&mut ctx, ix).is_err());
     }
     let quoter: MidpointQuoterV0 = read_quoter(&ctx);
-    assert_eq!(quoter.mid_price, MID + 2);
+    assert_eq!(quoter.mid_price, MID + 1);
     assert_eq!(quoter.mid_sequence, 6);
 }
 

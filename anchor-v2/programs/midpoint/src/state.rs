@@ -549,7 +549,12 @@ impl MidpointQuoterV0 {
     /// The post-write assertion is deliberately O(1): this is the CU-pinned
     /// hot path, so it checks only what it just wrote, never the ladders.
     pub fn set_mid(&mut self, mid: u64, sequence: u64, slot: u64) -> Result<()> {
-        if sequence != 0 {
+        // Once a writer uses sequences, every later write must carry a higher
+        // one. A sequence of 0 skips the monotonic check but still refreshes
+        // the slot, so allowing it after a real sequence would let a replayed
+        // set_mid (through a durable nonce) re-stamp a stale mid as fresh. A
+        // writer that never sequences keeps opting out with 0.
+        if sequence != 0 || self.mid_sequence != 0 {
             require!(
                 sequence > self.mid_sequence,
                 MidpointError::StaleMidSequence
@@ -1295,10 +1300,11 @@ mod tests {
         assert!(quoter.set_mid(MID + 1, 5, 11).is_err());
         assert!(quoter.set_mid(MID + 1, 4, 11).is_err());
         quoter.set_mid(MID + 1, 6, 11).unwrap();
-        // Zero opts out of the guard entirely.
-        quoter.set_mid(MID + 2, 0, 12).unwrap();
-        assert_eq!(quoter.mid_price, MID + 2);
+        // A writer that used a sequence cannot fall back to zero: that would
+        // let a replay re-stamp a stale mid as fresh.
+        assert!(quoter.set_mid(MID + 2, 0, 12).is_err());
+        assert_eq!(quoter.mid_price, MID + 1);
         assert_eq!(quoter.mid_sequence, 6);
-        assert_eq!(quoter.mid_slot, 12);
+        assert_eq!(quoter.mid_slot, 11);
     }
 }

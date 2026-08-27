@@ -308,6 +308,24 @@ impl CrankPaymentsV0 {
         Ok(u64::try_from(cap_lamports.min(u128::from(priority_lamports))).unwrap_or(0))
     }
 
+    /// The quote value of a lamport figure at the SOL oracle price.
+    ///
+    /// The cross cranks pay their keeper in lamports but net the protocol its
+    /// surplus in quote. A floor set in one unit cannot bound a cost in the
+    /// other, so a cross must clear at least the keeper payment converted to
+    /// quote or the protocol loses on it net of what it pays to land it.
+    /// Rounded up, so the floor never sits below the true cost. Returns `None`
+    /// when the price is unusable, leaving the admin's own floor to stand.
+    pub fn lamports_to_quote(lamports: u64, sol_price: i64) -> Option<u64> {
+        if sol_price <= 0 || lamports == 0 {
+            return None;
+        }
+        let quote = (lamports as u128)
+            .checked_mul(sol_price as u128)?
+            .div_ceil(u128::from(crate::math::constants::LAMPORTS_PER_SOL_U64));
+        u64::try_from(quote).ok()
+    }
+
     /// The largest of them. What the reservoir has to be able to cover for
     /// every crank on the market to run.
     pub fn max(&self) -> u32 {

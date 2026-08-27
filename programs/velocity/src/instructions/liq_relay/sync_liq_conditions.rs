@@ -266,21 +266,50 @@ pub fn rewrite_liq_conditions<'info>(
     // The emptiness test is the margin engine's own `is_available`, not "holds
     // a base amount": a position carrying only open orders, unsettled PnL or an
     // isolated balance is one the margin walk still visits.
+    // A market entry is only usable if its oracle account rode along too. The
+    // market carries its oracle's pubkey, but the resolver reads the price off
+    // the oracle *account*; without it every wake fails and the block reads
+    // healthy while the user is never liquidated. A perp entry filed only from a
+    // ClobCrankConditionsV0 (which sets no oracle) fails this too, so the
+    // PerpMarket itself must be present. The quote market's default oracle needs
+    // no account. Both entry points are permissionless, so a caller cannot omit
+    // an oracle to shield a user.
+    let oracle_present = |oracle: Option<Pubkey>| -> bool {
+        oracle.is_some_and(|key| key == Pubkey::default() || oracle_infos.contains_key(&key))
+    };
     {
         let user = crate::load!(user_loader)?;
         for position in user.perp_positions.iter() {
+            if position.is_available() {
+                continue;
+            }
             validate!(
-                position.is_available() || perps.contains_key(&position.market_index),
+                perps.contains_key(&position.market_index),
                 ErrorCode::InvalidUserConditionsSync,
                 "sync is missing perp market {}, which the user has exposure in",
                 position.market_index
             )?;
+            validate!(
+                oracle_present(perps[&position.market_index].oracle),
+                ErrorCode::InvalidUserConditionsSync,
+                "sync is missing the oracle account for perp market {}",
+                position.market_index
+            )?;
         }
         for position in user.spot_positions.iter() {
+            if position.is_available() {
+                continue;
+            }
             validate!(
-                position.is_available() || spots.contains_key(&position.market_index),
+                spots.contains_key(&position.market_index),
                 ErrorCode::InvalidUserConditionsSync,
                 "sync is missing spot market {}, which the user has exposure in",
+                position.market_index
+            )?;
+            validate!(
+                oracle_present(spots[&position.market_index].oracle),
+                ErrorCode::InvalidUserConditionsSync,
+                "sync is missing the oracle account for spot market {}",
                 position.market_index
             )?;
         }

@@ -3585,6 +3585,7 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
                         unfilled,
                         max_ts,
                         order_id,
+                        true,
                         &Clock::get()?,
                     )?;
                 }
@@ -3790,6 +3791,7 @@ pub fn place_and_make_perp_order<'c: 'info, 'info>(
                     unfilled,
                     max_ts,
                     order_id,
+                    false,
                     clock,
                 )?;
             }

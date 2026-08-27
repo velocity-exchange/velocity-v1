@@ -235,6 +235,30 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         )?;
     }
 
+    // Raise the surplus floor to cover the keeper's lamport payment valued in
+    // quote, so a cross the reservoir pays for never nets the protocol less
+    // than it costs to land. The two figures are in different units; the SOL
+    // oracle bridges them. When no SOL market rides the crank or its oracle is
+    // unusable, the admin's `min_cross_surplus` stands alone.
+    let cross_floor = {
+        let (min_surplus, payment_lamports) = {
+            let conditions = ctx.accounts.crank_conditions.load()?;
+            (
+                conditions.min_cross_surplus,
+                u64::from(conditions.crank_payments.cross),
+            )
+        };
+        let payment_quote = sol_oracle_price(&state, &spot_market_map, &mut oracle_map)
+            .and_then(|sol_price| {
+                crate::state::clob_crank::CrankPaymentsV0::lamports_to_quote(
+                    payment_lamports,
+                    sol_price,
+                )
+            })
+            .unwrap_or(0);
+        min_surplus.max(payment_quote)
+    };
+
     let (base_matched, surplus) = controller::orders::cross_match(
         &state,
         market_index,
@@ -250,7 +274,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         &spot_market_map,
         &mut oracle_map,
         &clock,
-        ctx.accounts.crank_conditions.load()?.min_cross_surplus,
+        cross_floor,
     )?;
 
     // The keeper's fee, so relay's assert_paid_v0 has a balance to measure.
@@ -275,6 +299,34 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         market_index
     );
     Ok(())
+}
+
+/// The validity-gated SOL oracle price, for pricing a lamport crank payment in
+/// quote. `None` when no SOL market is configured, it is not loaded on this
+/// crank, or its oracle is not valid — the caller then falls back to the
+/// admin-set floor rather than block the cross.
+fn sol_oracle_price(
+    state: &State,
+    spot_market_map: &crate::state::spot_market_map::SpotMarketMap,
+    oracle_map: &mut crate::state::oracle_map::OracleMap,
+) -> Option<i64> {
+    if state.sol_spot_market_index == 0 {
+        return None;
+    }
+    let sol_market = spot_market_map.get_ref(&state.sol_spot_market_index).ok()?;
+    let (oracle_data, validity) = oracle_map
+        .get_price_data_and_validity(
+            crate::state::user::MarketType::Spot,
+            sol_market.market_index,
+            &sol_market.oracle_id(),
+            sol_market.historical_oracle_data.last_oracle_price_twap,
+            sol_market.get_max_confidence_interval_multiplier().ok()?,
+            -1,
+            0,
+            None,
+        )
+        .ok()?;
+    matches!(validity, crate::math::oracle::OracleValidity::Valid).then_some(oracle_data.price)
 }
 
 /// Resolver for the cross conditions: find the book's crossing prefix,

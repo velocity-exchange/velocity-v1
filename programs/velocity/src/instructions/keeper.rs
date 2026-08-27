@@ -367,7 +367,7 @@ fn fill_order<'c: 'info, 'info>(
         obligation,
     };
 
-    controller::orders::fill_perp_order_with_router(
+    let (base_asset_amount_filled, _) = controller::orders::fill_perp_order_with_router(
         order_id,
         &*accounts.state.load()?,
         &accounts.user,
@@ -402,10 +402,24 @@ fn fill_order<'c: 'info, 'info>(
     if let Some(clob) = clob {
         let remainder = {
             let user = load!(accounts.user)?;
+            // Only the taker's own remainder migrates. A keeper fills any user's
+            // order, so without this a keeper could cancel a resting order that
+            // did not cross and re-place it on the book as taker_origin. Two
+            // gates bound it to a genuine taker remainder: the fill must have
+            // made progress or the order must be a taker-class order (one with
+            // an auction — a market or auction-limit taker), and the owner must
+            // not be under liquidation. `restable_remainder_price` (post-only,
+            // reduce-only, oracle-offset) carries the rest.
+            if user.is_being_liquidated() {
+                return Ok(());
+            }
             let Ok(order_index) = user.get_order_index(order_id) else {
                 return Ok(());
             };
             let order = &user.orders[order_index];
+            if base_asset_amount_filled == 0 && !order.has_auction() {
+                return Ok(());
+            }
             let position_base = user
                 .get_perp_position(market_index)
                 .map(|position| position.base_asset_amount)
@@ -448,6 +462,7 @@ fn fill_order<'c: 'info, 'info>(
                     unfilled,
                     max_ts,
                     order_id,
+                    true,
                     clock,
                 )?;
             }

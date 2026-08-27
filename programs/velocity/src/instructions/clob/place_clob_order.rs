@@ -328,9 +328,19 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
 /// Everything else stays behind. An oracle-floating price has nothing fixed
 /// to rest at, reduce-only has no meaning on the book, and a trigger has its
 /// own placement path.
+///
+/// A `post_only` order never migrates either. It is a maker's own quote, not a
+/// taker remainder — migrating it would cancel the maker's resting order, hide
+/// it for the activation window, and re-place it as `taker_origin`, so a later
+/// cross would charge the maker taker fees on a quote it posted as a maker. A
+/// maker order belongs where its owner placed it.
 pub fn restable_remainder_price(order: &crate::state::user::Order) -> Option<u64> {
     use crate::state::user::{OrderStatus, OrderType};
-    if order.status != OrderStatus::Open || order.has_oracle_price_offset() || order.reduce_only {
+    if order.status != OrderStatus::Open
+        || order.has_oracle_price_offset()
+        || order.reduce_only
+        || order.post_only
+    {
         return None;
     }
     let price = match order.order_type {
@@ -370,6 +380,14 @@ pub fn try_place_remainder_on_clob<'info>(
     // order keeps one identity through the migration: the same id names it in
     // the records before and the records after.
     client_order_id: u32,
+    // Whether this remainder rests as a taker-origin order. A taker's own
+    // remainder (`place_and_take`, a keeper fill) rests `true`, so a live
+    // counterparty crosses it at the counterparty's price rather than picking
+    // it off. A maker's own remainder (`place_and_make`) rests `false` — it is
+    // a maker quote, and resting it taker-origin would charge its owner taker
+    // fees when a later order crossed it. A maker rest also refuses to rest
+    // crossed, which is what post-only asked for.
+    taker_origin: bool,
     clock: &Clock,
 ) -> Result<bool> {
     let clob = {
@@ -388,6 +406,24 @@ pub fn try_place_remainder_on_clob<'info>(
         }
         clob
     };
+
+    // A remainder below the book's minimum cannot rest — the book rejects it,
+    // and that rejection would revert the whole fill that already landed. A
+    // partial fill routinely leaves a sub-min remainder, so drop it to the
+    // plain cancel here instead of failing the fill. Off-tick / off-step
+    // remainders do not arise while the book's grid matches the market's, which
+    // is the expected configuration; the book does not yet report its tick and
+    // step for the attach to pin, so a coarser book grid stays an ops-misconfig
+    // rather than a caught case.
+    let min_order_size = clob.reader().order_rules()?.min_order_size;
+    if min_order_size != 0 && base_asset_amount < min_order_size {
+        msg!(
+            "remainder {} is below the book minimum {}; stays cancelled",
+            base_asset_amount,
+            min_order_size
+        );
+        return Ok(false);
+    }
 
     // Reserve the worst-case aggregates and re-run the placement margin
     // gate BEFORE the CPI, so a failure can skip resting (remainder stays
@@ -463,16 +499,15 @@ pub fn try_place_remainder_on_clob<'info>(
         activation_delay_slots: None,
         max_ts,
         user: user_ref,
-        // The whole point of this path: the book must know this order is a
-        // migrated taker remainder, so it cannot be taken while a live
-        // counterparty crosses it and a cross settles at that
-        // counterparty's price.
-        taker_origin: true,
+        // A taker remainder rests taker-origin so a cross settles at the
+        // counterparty's price rather than picking it off; a maker remainder
+        // rests as an ordinary maker quote.
+        taker_origin,
         client_order_id,
-        // A remainder that refused to rest crossed would strand the taker
-        // that came to trade, which is the opposite of what migrating it is
-        // for.
-        reject_if_crossed: false,
+        // A taker remainder must rest even if crossed — refusing would strand
+        // the taker that came to trade. A maker remainder refuses to rest
+        // crossed, which is what post-only asked for.
+        reject_if_crossed: !taker_origin,
     })?;
 
     super::emit_clob_place_record(

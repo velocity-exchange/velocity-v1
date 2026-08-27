@@ -138,20 +138,6 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
         )?;
     }
 
-    // An order due within one escalation window would start earning the crank
-    // escalation bonus almost at once. Reject it so nobody places a short-lived
-    // order purely to farm that bonus.
-    validate!(
-        !crate::state::clob_crank::CrankPaymentsV0::max_ts_farms_escalation(
-            params.max_ts,
-            clock.unix_timestamp
-        ),
-        ErrorCode::ClobOrderExpiryTooSoon,
-        "max_ts {} is inside the expiry-escalation window of {}",
-        params.max_ts,
-        clock.unix_timestamp
-    )?;
-
     // The speed bump is the taker protection that replaced JIT; skipping it
     // is reserved for attested flow — a transaction the flow authority
     // (swift) co-signed after serving the hold window off-chain. Anything
@@ -406,17 +392,6 @@ pub fn try_place_remainder_on_clob<'info>(
     taker_origin: bool,
     clock: &Clock,
 ) -> Result<bool> {
-    // A remainder due within one escalation window would farm the crank
-    // escalation bonus once rested. Leave it cancelled rather than reverting
-    // the fill it came off.
-    if crate::state::clob_crank::CrankPaymentsV0::max_ts_farms_escalation(
-        max_ts,
-        clock.unix_timestamp,
-    ) {
-        msg!("remainder max_ts is inside the expiry-escalation window; stays cancelled");
-        return Ok(false);
-    }
-
     let clob = {
         let quoter = quoter_loader.load()?;
         let clob = ClobMarket::from_quoter(

@@ -32654,8 +32654,6 @@ pub mod errors {
         ReduceOnlyOrderCannotRestOnClob,
         # [msg ("User has orders resting on the CLOB; force_cancel_clob_orders must run before liquidation")]
         LiquidationConflictsWithClobOrders,
-        # [msg ("A clob order's max_ts is inside the expiry-escalation window and would farm the crank bonus")]
-        ClobOrderExpiryTooSoon,
     }
 }
 pub mod events {

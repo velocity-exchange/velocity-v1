@@ -21659,11 +21659,6 @@ export type Velocity = {
       "code": 6401,
       "name": "liquidationConflictsWithClobOrders",
       "msg": "User has orders resting on the CLOB; force_cancel_clob_orders must run before liquidation"
-    },
-    {
-      "code": 6402,
-      "name": "clobOrderExpiryTooSoon",
-      "msg": "A clob order's max_ts is inside the expiry-escalation window and would farm the crank bonus"
     }
   ],
   "types": [

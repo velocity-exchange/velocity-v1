@@ -242,19 +242,6 @@ impl CrankPaymentsV0 {
             .unwrap_or(EXPIRY_ESCALATION_CEILING)
     }
 
-    /// True when a fresh order's `max_ts` sits inside the escalation window and
-    /// would let its owner farm the escalation bonus.
-    ///
-    /// Escalation pays a crank more the longer an order rests past its expiry.
-    /// An order placed already expired, or due within one escalation window,
-    /// reaches a paying escalation almost at once. A placement rejects such a
-    /// `max_ts`, so every expiring order must live at least one window before
-    /// it can expire. The bonus then rewards a real wait, not a staged short
-    /// life. Zero is no expiry and never farms.
-    pub fn max_ts_farms_escalation(max_ts: i64, now: i64) -> bool {
-        max_ts != 0 && max_ts < now.saturating_add(EXPIRY_ESCALATION_SECONDS as i64)
-    }
-
     /// What a liquidation crank pays on top of its base figure: what the
     /// transaction actually cost, bounded by a share of what the liquidation
     /// recovered.
@@ -1059,28 +1046,5 @@ mod tests {
             CrankPaymentsV0::crank_priority_lamports(5_000, units, ceiling).unwrap(),
             u64::from(units) * 5_000 / 1_000_000
         );
-    }
-
-    /// A `max_ts` inside the escalation window farms the bonus and is rejected;
-    /// one past it, or zero, is fine.
-    #[test]
-    fn max_ts_farms_escalation_window() {
-        let now = 1_000_000;
-        let window = EXPIRY_ESCALATION_SECONDS as i64;
-        // Already expired, or due inside the window.
-        assert!(CrankPaymentsV0::max_ts_farms_escalation(now - 10, now));
-        assert!(CrankPaymentsV0::max_ts_farms_escalation(now, now));
-        assert!(CrankPaymentsV0::max_ts_farms_escalation(
-            now + window - 1,
-            now
-        ));
-        // Due one full window out, or later, is allowed.
-        assert!(!CrankPaymentsV0::max_ts_farms_escalation(now + window, now));
-        assert!(!CrankPaymentsV0::max_ts_farms_escalation(
-            now + window * 10,
-            now
-        ));
-        // No expiry never farms.
-        assert!(!CrankPaymentsV0::max_ts_farms_escalation(0, now));
     }
 }

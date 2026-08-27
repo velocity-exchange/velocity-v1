@@ -105,10 +105,10 @@ export function registerFees(parent: Command): void {
 	withGlobalOptions(
 		fees
 			.command(
-				'set-transaction-rails <inclusionLamports> <signatureLamports> <resourceFeeNumerator> <resourceFeeDenominator>'
+				'set-transaction-rails <inclusionLamports> <signatureLamports> <resourceFeeNumerator> <resourceFeeDenominator> <maxPriorityMicroLamportsPerCu>'
 			)
 			.description(
-				'Set what the protocol believes a transaction costs to land (warm/cold admin). Relay crank payments are derived from it, so this is the one write that re-prices every crank when the network changes its fee model: a fixed inclusion fee, a per-signature fee, and a rate in lamports per requested cost unit. A zero denominator prices cost units at nothing, which is the model that charges per signature alone. Markets keep the payments already written on their conditions accounts until their attach is re-run (velocity-admin quoter set-market-clob).'
+				'Set what the protocol believes a transaction costs to land (warm/cold admin). Relay crank payments are derived from it, so this is the one write that re-prices every crank when the network changes its fee model: a fixed inclusion fee, a per-signature fee, and a rate in lamports per requested cost unit. A zero denominator prices cost units at nothing, which is the model that charges per signature alone. The last argument caps the compute-unit price a liquidation crank reimburses its keeper for, in micro-lamports per compute unit; zero disables priority reimbursement. Markets keep the payments already written on their conditions accounts until their attach is re-run (velocity-admin quoter set-market-clob).'
 			)
 	).action(
 		async (
@@ -116,6 +116,7 @@ export function registerFees(parent: Command): void {
 			signatureLamports: string,
 			resourceFeeNumerator: string,
 			resourceFeeDenominator: string,
+			maxPriorityMicroLamportsPerCu: string,
 			_flags,
 			cmd: Command
 		) => {
@@ -124,6 +125,10 @@ export function registerFees(parent: Command): void {
 				signatureLamports: Number.parseInt(signatureLamports, 10),
 				resourceFeeNumerator: Number.parseInt(resourceFeeNumerator, 10),
 				resourceFeeDenominator: Number.parseInt(resourceFeeDenominator, 10),
+				maxPriorityMicroLamportsPerCu: Number.parseInt(
+					maxPriorityMicroLamportsPerCu,
+					10
+				),
 			};
 			const opts = readGlobalOpts(cmd);
 			const provider = buildProvider(opts);

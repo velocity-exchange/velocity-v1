@@ -239,6 +239,12 @@ fn validate_attestable(
         .ok_or("flow authority is not among the transaction's accounts")?;
     let signers = header.num_required_signatures as usize;
     let readonly_signed_start = signers - header.num_readonly_signed_accounts as usize;
+    // A well-formed transaction carries one signature slot per required signer.
+    // The signing path writes tx.signatures[index]; a short vector would panic
+    // there. This request is unauthenticated, so reject the mismatch here.
+    if tx.signatures.len() != signers {
+        return Err("signature count does not match the required signers".into());
+    }
     if index == 0 {
         return Err("flow authority must not be the fee payer".into());
     }
@@ -359,5 +365,18 @@ mod tests {
         assert!(validate_attestable(&good, &stranger.pubkey(), &order_sig)
             .unwrap_err()
             .contains("not among"));
+    }
+
+    #[test]
+    fn short_signature_vector_is_refused_not_panicked() {
+        let flow = Keypair::new();
+        let order_sig = [7u8; 64];
+        let mut short = fill_like_tx(&flow.pubkey(), &order_sig, false, None);
+        // A malformed transaction with no signature slots. Indexing the vector
+        // in the signing path would panic; validation must reject it first.
+        short.signatures.clear();
+        assert!(validate_attestable(&short, &flow.pubkey(), &order_sig)
+            .unwrap_err()
+            .contains("signature count"));
     }
 }

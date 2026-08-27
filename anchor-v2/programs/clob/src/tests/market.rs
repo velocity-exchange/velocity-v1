@@ -43,6 +43,9 @@ pub fn test_config() -> MarketConfigV0 {
         order_tick_size: 1,
         order_step_size: 1,
         min_order_size: 1,
+        // The default fixture leaves the floor off, so every existing test
+        // reads the behaviour a market with zeroed reserved bytes gets.
+        blocking_min_size: 0,
         default_activation_delay_slots: 0,
         max_activation_delay_slots: 20,
         unknown_user_grace_slots: 0,

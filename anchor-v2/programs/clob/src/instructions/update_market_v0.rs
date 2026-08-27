@@ -21,6 +21,7 @@ pub struct UpdateMarketArgsV0 {
     pub order_tick_size: Option<u64>,
     pub order_step_size: Option<u64>,
     pub min_order_size: Option<u64>,
+    pub blocking_min_size: Option<u64>,
     pub default_activation_delay_slots: Option<u32>,
     pub max_activation_delay_slots: Option<u32>,
     pub unknown_user_grace_slots: Option<u32>,
@@ -48,6 +49,9 @@ pub fn handle_update_market_v0(
     }
     if let Some(v) = args.min_order_size {
         market.min_order_size = v;
+    }
+    if let Some(v) = args.blocking_min_size {
+        market.blocking_min_size = v;
     }
     if let Some(v) = args.default_activation_delay_slots {
         market.default_activation_delay_slots = v;

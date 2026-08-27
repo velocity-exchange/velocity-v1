@@ -461,6 +461,7 @@ impl ClobBook for ClobMarketV0 {
             order_tick_size,
             order_step_size,
             min_order_size,
+            blocking_min_size,
             base_precision,
             next_order_id,
             best_bid,
@@ -490,6 +491,7 @@ impl ClobBook for ClobMarketV0 {
         *order_tick_size = config.order_tick_size;
         *order_step_size = config.order_step_size;
         *min_order_size = config.min_order_size;
+        *blocking_min_size = config.blocking_min_size;
         *base_precision = config.base_precision;
         *next_order_id = 1;
         *best_bid = NIL;
@@ -868,6 +870,7 @@ impl ClobBook for ClobMarketV0 {
         let max_fills = self.max_execute_fills.min(EXECUTE_FILLS_CEILING) as usize;
         let max_users = self.max_execute_users.min(EXECUTE_USERS_CEILING) as usize;
         let grace_slots = self.unknown_user_grace_slots;
+        let blocking_min_size = self.blocking_min_size;
         let mut writer = QuoteWriter::new();
         let mut levels = 0usize;
         // Orders promised so far, against `execute`'s budget rather than this
@@ -937,9 +940,9 @@ impl ClobBook for ClobMarketV0 {
             // `UserRefV0` is 34 bytes to assemble and 34 to compare.
             let user = node.user_ref();
             let owner = users.iter().position(|u| *u == user);
-            match settleable(users, owner, node, grace_slots, slot) {
+            match settleable(users, owner, node, grace_slots, blocking_min_size, slot) {
                 Settleable::Yes => {}
-                Settleable::TooFresh => return Ok(Walk::Continue),
+                Settleable::SteppedOver => return Ok(Walk::Continue),
                 Settleable::Withheld => {
                     withheld = Some(PriceLevel {
                         price: node.price,
@@ -1118,6 +1121,7 @@ impl ClobBook for ClobMarketV0 {
         let max_fills = self.max_execute_fills.min(EXECUTE_FILLS_CEILING) as usize;
         let max_users = self.max_execute_users.min(EXECUTE_USERS_CEILING) as usize;
         let grace_slots = self.unknown_user_grace_slots;
+        let blocking_min_size = self.blocking_min_size;
         let min_order_size = self.min_order_size;
         let base_precision = self.base_precision.max(1) as u128;
         let count_before = self.node_count(side);
@@ -1159,9 +1163,9 @@ impl ClobBook for ClobMarketV0 {
             }
             let user = node.user_ref();
             let owner = users.iter().position(|u| *u == user);
-            match settleable(users, owner, node, grace_slots, slot) {
+            match settleable(users, owner, node, grace_slots, blocking_min_size, slot) {
                 Settleable::Yes => {}
-                Settleable::TooFresh => return Ok(Walk::Continue),
+                Settleable::SteppedOver => return Ok(Walk::Continue),
                 Settleable::Withheld => return Ok(Walk::Stop),
             }
             let take = budget.allow(owner, remaining.min(node.base_asset_amount), node.price);
@@ -1504,12 +1508,16 @@ fn is_matchable(node: &OrderNodeV0, taker: Option<&UserRefV0>, slot: u64, now: i
 enum Settleable {
     /// The owner is in the caller's set, or the set is unrestricted.
     Yes,
-    /// Absent, but the order is younger than the grace window: the caller
-    /// cannot be expected to have heard of it yet. Passed over, and the walk
-    /// carries on to the depth behind it.
-    TooFresh,
-    /// Absent, and old enough that the caller had every chance to carry it.
-    /// The walk ends here.
+    /// Absent, and this order may not end the walk. Passed over, and the walk
+    /// carries on to the depth behind it. Two reasons reach this:
+    ///
+    /// - The order is younger than the grace window. The caller cannot be
+    ///   expected to have heard of it yet.
+    /// - The order is below `blocking_min_size`, at any age. Ending a walk is a
+    ///   right, and one that cost `min_order_size` could be bought in bulk.
+    SteppedOver,
+    /// Absent, old enough that the caller had every chance to carry it, and big
+    /// enough to be worth the right. The walk ends here.
     Withheld,
 }
 
@@ -1531,10 +1539,20 @@ fn settleable(
     index: Option<usize>,
     node: &OrderNodeV0,
     grace_slots: u32,
+    blocking_min_size: u64,
     slot: u64,
 ) -> Settleable {
     if users.is_empty() || index.is_some() {
         return Settleable::Yes;
+    }
+    // Ending a walk is a right, and a right that costs `min_order_size` is one
+    // a caller's own account budget can be turned against it: 49 orders on 49
+    // fresh sub-accounts is more owners than any caller can carry, so the depth
+    // behind them is unreachable for everyone, for rent. The floor prices the
+    // right in inventory at the top of book instead. Checked before the age,
+    // because a small order never earns the right however long it rests.
+    if blocking_min_size != 0 && node.base_asset_amount < blocking_min_size {
+        return Settleable::SteppedOver;
     }
     // Aged from the slot the order became matchable, not the slot it was
     // placed. An order inside its activation delay is invisible to every
@@ -1546,7 +1564,7 @@ fn settleable(
     // by resting a well-priced order on a fresh sub-account. The two are the
     // same slot for an order that activates immediately.
     if slot.saturating_sub(node.activation_slot) <= grace_slots as u64 {
-        return Settleable::TooFresh;
+        return Settleable::SteppedOver;
     }
     Settleable::Withheld
 }

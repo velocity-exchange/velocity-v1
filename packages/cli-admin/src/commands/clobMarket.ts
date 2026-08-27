@@ -54,6 +54,7 @@ type ClobConfigFlags = {
 	tickSize: string;
 	stepSize: string;
 	minOrderSize: string;
+	blockingMinSize: string;
 	defaultActivationDelay: string;
 	maxActivationDelay: string;
 	graceSlots: string;
@@ -82,6 +83,7 @@ function clobMarketConfig(marketIndex: number, flags: ClobConfigFlags): Buffer {
 		u64(flags.tickSize),
 		u64(flags.stepSize),
 		u64(flags.minOrderSize),
+		u64(flags.blockingMinSize),
 		u32(Number.parseInt(flags.defaultActivationDelay, 10)),
 		u32(Number.parseInt(flags.maxActivationDelay, 10)),
 		u32(Number.parseInt(flags.graceSlots, 10)),
@@ -258,6 +260,11 @@ export function registerClobMarket(parent: Command): void {
 				'--min-order-size <n>',
 				'minimum order size (base precision)',
 				'100000'
+			)
+			.option(
+				'--blocking-min-size <n>',
+				'floor on the size of an order that may end a fill walk when its owner is not carried; 0 disables',
+				'0'
 			)
 			.option(
 				'--default-activation-delay <slots>',

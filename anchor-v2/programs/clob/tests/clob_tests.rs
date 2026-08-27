@@ -96,6 +96,9 @@ fn setup_with_capacity(capacity: usize) -> Ctx {
             order_tick_size: 1,
             order_step_size: 1,
             min_order_size: 1,
+            // Off by default, so every test here reads the behaviour of a market
+            // whose reserved bytes are still zero.
+            blocking_min_size: 0,
             default_activation_delay_slots: 1,
             max_activation_delay_slots: 20,
             unknown_user_grace_slots: 2,
@@ -1394,6 +1397,106 @@ fn a_short_user_set_trades_less_of_the_book_not_a_worse_part() {
 
     // The maker behind is untouched and reachable by the next fill.
     assert_eq!(quote(&mut ctx, Direction::Long, 12), vec![(101, 7)]);
+}
+
+/// Set the blocking floor on the test market.
+fn set_blocking_min_size(ctx: &mut Ctx, size: u64) {
+    let ix = instruction::UpdateMarketV0 {
+        args: UpdateMarketArgsV0 {
+            blocking_min_size: Some(size),
+            ..Default::default()
+        },
+    }
+    .to_instruction(accounts::UpdateMarketV0 {
+        market: addr(ctx.market),
+        authority: addr(ctx.admin.pubkey()),
+        new_place_authority: None,
+    });
+    send(ctx, ix).unwrap();
+}
+
+/// Ending a walk is a right, and the floor is what it costs.
+///
+/// Without one the price is `min_order_size`: a caller carries at most
+/// `max_execute_users`, so one more order than that, each on a fresh
+/// sub-account at the top of book, puts the depth behind them out of reach of
+/// every caller for the price of rent. Above the floor a maker keeps price
+/// priority against a caller that left it out; below it the maker relies on
+/// being carried, and a carried maker fills either way.
+#[test]
+fn an_order_under_the_blocking_floor_is_stepped_over_at_any_age() {
+    let mut ctx = setup();
+    set_blocking_min_size(&mut ctx, 10);
+
+    let dust = addr(Pubkey::new_unique());
+    let blocker = addr(Pubkey::new_unique());
+    let carried = addr(Pubkey::new_unique());
+    ctx.svm.warp_to_slot(10);
+    // Best price, under the floor, owner not carried.
+    place(&mut ctx, place_args(Side::Ask, 100, 5), dust);
+    // Over the floor, owner not carried: this is the one that may end a walk.
+    place(&mut ctx, place_args(Side::Ask, 101, 20), blocker);
+    place(&mut ctx, place_args(Side::Ask, 102, 9), carried);
+    // Far past the grace window, so age is not what decides this.
+    ctx.svm.warp_to_slot(10_000);
+
+    // The dust order is stepped over. The walk then reaches the order over the
+    // floor, which still ends it, so the carried maker behind goes untraded.
+    assert_eq!(
+        quote_users(&mut ctx, Direction::Long, 40, Some(vec![carried])),
+        vec![]
+    );
+    assert_eq!(
+        quote_withheld(&mut ctx, Direction::Long, 40, Some(vec![carried])),
+        Some((101, 20)),
+        "the order over the floor is the one that ends the walk"
+    );
+
+    // Carrying the blocking maker too: only the dust is skipped now, and
+    // everything behind it trades.
+    assert_eq!(
+        quote_users(&mut ctx, Direction::Long, 40, Some(vec![carried, blocker])),
+        vec![(101, 20), (102, 9)]
+    );
+    assert_eq!(
+        quote_withheld(&mut ctx, Direction::Long, 40, Some(vec![carried, blocker])),
+        None,
+        "nothing over the floor was left out"
+    );
+
+    // A carried maker under the floor fills normally. The floor decides who may
+    // end a walk, never who may fill.
+    assert_eq!(
+        quote_users(
+            &mut ctx,
+            Direction::Long,
+            40,
+            Some(vec![dust, blocker, carried])
+        ),
+        vec![(100, 5), (101, 20), (102, 9)]
+    );
+}
+
+/// Zero is what a market reads out of reserved bytes, so an untouched market
+/// keeps the behaviour it had before the floor existed.
+#[test]
+fn a_zero_blocking_floor_lets_any_order_end_a_walk() {
+    let mut ctx = setup();
+    let dust = addr(Pubkey::new_unique());
+    ctx.svm.warp_to_slot(10);
+    place(&mut ctx, place_args(Side::Ask, 100, 1), dust);
+    ctx.svm.warp_to_slot(10_000);
+
+    assert_eq!(
+        quote_withheld(
+            &mut ctx,
+            Direction::Long,
+            30,
+            Some(vec![addr(Pubkey::new_unique())])
+        ),
+        Some((100, 1)),
+        "a one-lot order ends the walk when no floor is set"
+    );
 }
 
 /// The report is one order deep, and deliberately so.

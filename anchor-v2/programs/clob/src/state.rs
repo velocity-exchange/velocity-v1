@@ -324,6 +324,33 @@ pub struct ClobHeaderV0 {
     pub order_step_size: u64,
     /// Floor on order size so every resting order has real capital at risk.
     pub min_order_size: u64,
+    /// Floor on the size of an order that may end a walk.
+    ///
+    /// An order whose owner the caller did not carry ends the walk once it is
+    /// past `unknown_user_grace_slots`, and the depth behind it goes untraded.
+    /// That is what stops a caller filling around the maker who would have won.
+    /// It is also a blocking right, and a right that costs only
+    /// `min_order_size` can be bought in bulk: a caller can carry at most 48
+    /// users, so 49 orders at the top of book on 49 fresh sub-accounts make the
+    /// depth behind them unreachable for everyone, for rent.
+    ///
+    /// An order below this floor is stepped over instead, at any age, exactly
+    /// as a too-fresh order is. So the right now costs 49 times this size,
+    /// posted at the top of book and exposed to being filled, which is market
+    /// making rather than rent.
+    ///
+    /// What a maker gives up below the floor is stated and bounded: price
+    /// priority against a caller that did not carry it. At or above the floor
+    /// that priority is guaranteed; below it, a maker relies on being carried,
+    /// and a maker that is carried fills normally either way.
+    ///
+    /// Zero disables the floor, which is what every market reads out of
+    /// reserved bytes, so the behaviour is unchanged until an admin sets it.
+    /// There is no upper bound: raising it is the response to someone buying
+    /// blocking rights in bulk. Set it above the real book and no order can
+    /// end a walk, which hands every caller the freedom to fill around any
+    /// maker it left out.
+    pub blocking_min_size: u64,
     /// Base units per whole unit (velocity perps: 1e9; spot varies).
     /// Immutable after init — resting order sizes are denominated in it.
     pub base_precision: u64,
@@ -414,7 +441,7 @@ pub struct ClobHeaderV0 {
     /// second authority, a paused-operations bitmap) can be added without
     /// moving `response`, changing the account size, or migrating every live
     /// market. Must stay zero until claimed.
-    pub padding: [u8; 112],
+    pub padding: [u8; 104],
     /// Scratch region `quote_v0`/`execute_v0` stream their response into;
     /// return data carries a [`ResponsePointerV0`] locating it. Last field, so
     /// [`RESPONSE_OFFSET`] is the header size minus its length.
@@ -675,6 +702,8 @@ pub struct MarketConfigV0 {
     pub order_tick_size: u64,
     pub order_step_size: u64,
     pub min_order_size: u64,
+    /// See [`ClobHeaderV0::blocking_min_size`]. Zero disables the floor.
+    pub blocking_min_size: u64,
     pub default_activation_delay_slots: u32,
     pub max_activation_delay_slots: u32,
     pub unknown_user_grace_slots: u32,

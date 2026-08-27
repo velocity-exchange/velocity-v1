@@ -4827,9 +4827,7 @@ pub mod types {
         pub auction_duration: u8,
         pub posted_slot_tail: u8,
         pub bit_flags: u8,
-        pub route_digest: [u8; 4],
-        #[serde(skip)]
-        pub padding: Padding<1>,
+        pub route_digest: [u8; 5],
     }
     #[derive(
         AnchorSerialize,
@@ -32421,6 +32419,12 @@ pub mod errors {
         FillerPaddedTheUserSet,
         #[msg("A book withheld depth and the fill cannot count the transaction's accounts")]
         FillerObligationUncountable,
+        #[msg("A quoter filled less base than the allocation it won from its own quote")]
+        QuoterFilledShort,
+        #[msg(
+            "A book withheld depth and the transaction carries a quoter outside the signed route"
+        )]
+        FillerCarriedUnroutedQuoter,
     }
 }
 pub mod events {

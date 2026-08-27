@@ -22,6 +22,7 @@ pub fn handle_order_rules_v0(ctx: &mut Context<OrderRulesV0Accounts>) -> Result<
     let market = &ctx.accounts.market;
     Ok(OrderRulesV0 {
         min_order_size: market.min_order_size,
+        blocking_min_size: market.blocking_min_size,
         default_activation_delay_slots: market.default_activation_delay_slots,
         max_activation_delay_slots: market.max_activation_delay_slots,
     })

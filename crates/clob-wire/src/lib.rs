@@ -306,6 +306,19 @@ pub struct OrderRulesV0 {
     /// partially-filled remainder drops it instead of offering the book a
     /// placement it will reject.
     pub min_order_size: u64,
+    /// Floor on the size of an order that may end a fill walk when its owner
+    /// is not in the caller's user set. Below it the order is stepped over at
+    /// any age, exactly as a too-fresh one is.
+    ///
+    /// Two callers need it. A maker sizing a quote learns what it costs to keep
+    /// price priority against a caller that leaves it out. A router assembling
+    /// an account set learns which owners are load-bearing: an owner all of
+    /// whose orders sit below this cannot end a walk, so carrying it buys depth
+    /// rather than reach, and it goes last when locks are short.
+    ///
+    /// Zero disables the floor, which is what a market that has never set one
+    /// reports.
+    pub blocking_min_size: u64,
     /// Slots added to the placement slot to get `activation_slot` when the
     /// caller chooses no delay. A caller that gates on going faster than the
     /// book's own speed bump compares against this.

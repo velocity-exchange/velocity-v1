@@ -1109,7 +1109,7 @@ fn initialize_threads_the_whole_arena() {
     let book = market.book();
     assert_eq!(book.free_count, 4);
     assert_eq!(book.next_order_id, 1);
-    assert_eq!(book.padding, [0u8; 112]);
+    assert_eq!(book.padding, [0u8; 104]);
     // The wake hints start at "nothing pending" rather than at zero, which
     // would read as an expiry at the epoch and an activation already passed.
     assert_eq!(book.next_expiry_ts, i64::MAX);

@@ -155,12 +155,41 @@ impl QuoteView {
     /// maker the transaction did not carry, so a prefix of this list fills
     /// and a gap forfeits everything behind it.
     pub fn settleable_users(&self) -> Vec<UserRefV0> {
-        let mut users: Vec<UserRefV0> = Vec::new();
+        self.ranked_settleable_users(0)
+            .into_iter()
+            .map(|(user, _)| user)
+            .collect()
+    }
+
+    /// The same owners, ordered by whether carrying one buys *reach* or only
+    /// *depth*, and each tagged with which it is.
+    ///
+    /// A book ends its walk at the first order whose owner the caller did not
+    /// carry, so an owner that can end a walk gates every order behind it:
+    /// leaving that owner out forfeits the depth past it. An order below the
+    /// book's `blocking_min_size` cannot end a walk at all, so an owner all of
+    /// whose orders sit below it gates nothing — carrying it wins that owner's
+    /// own size and nothing more.
+    ///
+    /// A caller has room for a bounded number of users, so it wants the
+    /// gating owners first. Within each group the walk order is preserved,
+    /// because that is the order the book stops in: a prefix of gating owners
+    /// fills, and the first gap forfeits what is behind it.
+    ///
+    /// `blocking_min_size` of zero is a market with no floor, where every owner
+    /// gates and this is walk order.
+    pub fn ranked_settleable_users(&self, blocking_min_size: u64) -> Vec<(UserRefV0, bool)> {
+        let mut users: Vec<(UserRefV0, bool)> = Vec::new();
         for row in self.books.iter().flat_map(|book| book.rows.iter()) {
-            if !users.contains(&row.user) {
-                users.push(row.user);
+            let gates = blocking_min_size == 0 || row.size >= blocking_min_size;
+            match users.iter_mut().find(|(user, _)| *user == row.user) {
+                // One order over the floor is enough to make an owner gating,
+                // whichever of its orders the walk reached first.
+                Some((_, seen)) => *seen |= gates,
+                None => users.push((row.user, gates)),
             }
         }
+        users.sort_by_key(|(_, gates)| !gates);
         users
     }
 }
@@ -587,6 +616,85 @@ pub async fn simulate_quote_view_with_cost<S: ChainSource>(
 #[cfg(test)]
 mod tests {
     use {super::*, program::state::router_quote::MAX_QUOTED_SOURCES};
+
+    fn user(n: u8) -> UserRefV0 {
+        UserRefV0 {
+            authority: Pubkey::new_from_array([n; 32]),
+            sub_account_id: 0,
+        }
+    }
+
+    fn row(size: u64, owner: u8) -> QuotedRow {
+        QuotedRow {
+            price: 100,
+            size,
+            order_id: size,
+            user: user(owner),
+            flags: 0,
+        }
+    }
+
+    fn view_of(rows: Vec<QuotedRow>) -> QuoteView {
+        QuoteView {
+            market: 0,
+            direction: 0,
+            quoted_size: 0,
+            slot: 0,
+            rows_truncated: false,
+            books: vec![QuotedBook {
+                key: Pubkey::new_unique(),
+                kind: QuotedSourceKind::Quoter,
+                priority: 10,
+                clamped: false,
+                levels: vec![],
+                rows,
+            }],
+        }
+    }
+
+    /// An owner all of whose orders sit below the floor cannot end a walk, so
+    /// it goes last: truncating the list at the account budget then drops the
+    /// makers that cost the least to lose.
+    #[test]
+    fn ranking_puts_the_owners_that_gate_depth_first() {
+        // Walk order: dust(1), gating(2), dust(3), gating(4).
+        let view = view_of(vec![row(1, 1), row(50, 2), row(2, 3), row(80, 4)]);
+
+        let ranked = view.ranked_settleable_users(10);
+        assert_eq!(
+            ranked,
+            vec![
+                (user(2), true),
+                (user(4), true),
+                (user(1), false),
+                (user(3), false),
+            ],
+            "gating owners first, walk order kept inside each group"
+        );
+    }
+
+    /// One order over the floor is enough, whichever of an owner's orders the
+    /// walk reached first — the walk stops at that order either way.
+    #[test]
+    fn one_order_over_the_floor_makes_its_owner_gating() {
+        let view = view_of(vec![row(1, 1), row(2, 2), row(50, 1)]);
+        assert_eq!(
+            view.ranked_settleable_users(10),
+            vec![(user(1), true), (user(2), false)]
+        );
+    }
+
+    /// No floor is walk order, and every owner gates — which is what a market
+    /// that has never set one reports.
+    #[test]
+    fn no_floor_leaves_walk_order_untouched() {
+        let view = view_of(vec![row(1, 3), row(50, 1), row(2, 2)]);
+        assert_eq!(
+            view.ranked_settleable_users(0),
+            vec![(user(3), true), (user(1), true), (user(2), true)]
+        );
+        assert_eq!(view.settleable_users(), vec![user(3), user(1), user(2)]);
+    }
 
     #[test]
     fn quote_buffer_round_trips_through_the_decoder() {

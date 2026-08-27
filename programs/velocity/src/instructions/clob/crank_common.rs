@@ -179,13 +179,17 @@ pub fn crank_clob_removal(
         )?;
     }
 
-    // Pay the keeper from the maker first (the same flat reward DLOB order
-    // expiry pays; in program-keeper mode the filler is the protocol User),
-    // THEN unwind — unwinding an otherwise-empty position frees its slot,
-    // and the reward needs to resolve it.
+    // Expiry charges the maker the flat removal reward first (the same one
+    // DLOB order expiry pays; in program-keeper mode the filler is the
+    // protocol User), THEN unwinds — unwinding an otherwise-empty position
+    // frees its slot, and the reward needs to resolve it. Eviction charges the
+    // maker nothing: the book removed the order because it ran out of room, not
+    // for anything the maker did. Charging the evictee would let dust orders
+    // priced just inside honest depth push honest makers to the tail and bill
+    // them one reward per eviction. In program-keeper mode the keeper is still
+    // paid from the reservoir below, so eviction stays worth cranking.
     {
         let mut user = load_mut!(ctx.accounts.user)?;
-        let mut filler = load_mut!(ctx.accounts.filler)?;
         let mut market = load_mut!(ctx.accounts.perp_market)?;
         validate!(
             market.market_index == market_index,
@@ -194,13 +198,21 @@ pub fn crank_clob_removal(
             market.market_index,
             market_index
         )?;
-        pay_keeper_flat_reward_for_perps(
-            &mut user,
-            Some(&mut filler),
-            &mut market,
-            state.perp_fee_structure.flat_filler_fee,
-            clock.slot,
-        )?;
+        let removal_fee = if is_evict {
+            0
+        } else {
+            state.perp_fee_structure.flat_filler_fee
+        };
+        if !is_evict {
+            let mut filler = load_mut!(ctx.accounts.filler)?;
+            pay_keeper_flat_reward_for_perps(
+                &mut user,
+                Some(&mut filler),
+                &mut market,
+                removal_fee,
+                clock.slot,
+            )?;
+        }
 
         let position_index = get_position_index(&user.perp_positions, market_index)?;
         decrease_open_bids_and_asks(
@@ -256,7 +268,7 @@ pub fn crank_clob_removal(
                 OrderActionExplanation::OrderExpired
             },
             Some(ctx.accounts.filler.key()),
-            Some(state.perp_fee_structure.flat_filler_fee),
+            Some(removal_fee),
             user.perp_positions[position_index].is_isolated(),
         )?;
     }

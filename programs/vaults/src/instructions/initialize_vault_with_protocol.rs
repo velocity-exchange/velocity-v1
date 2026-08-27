@@ -4,13 +4,13 @@ use {
         error::ErrorCode,
         state::{Vault, VaultProtocol},
         validate,
-        velocity_cpi::InitializeUserCPI,
+        velocity_cpi::{InitializeUserCPI, SetUserVaultOwnedCPI},
         Size,
     },
     anchor_lang::prelude::*,
     anchor_spl::token::{Mint, Token, TokenAccount},
     velocity::{
-        cpi::accounts::{InitializeUser, InitializeUserStats},
+        cpi::accounts::{InitializeUser, InitializeUserStats, UpdateUser},
         math::{casting::Cast, constants::PERCENTAGE_PRECISION_U64},
         program::Velocity,
         state::spot_market::SpotMarket,
@@ -91,6 +91,11 @@ pub fn initialize_vault_with_protocol<'info>(
 
     ctx.velocity_initialize_user_stats(params.name, bump)?;
     ctx.velocity_initialize_user(params.name, bump)?;
+    // Flag the velocity User as vault-owned so the revenue-share sweep never
+    // credits builder/referral rewards into a NAV-priced protocol vault
+    // (OtterSec #91/#92/#93). Missing here, a protocol vault's User could be
+    // made a referrer/builder beneficiary and diluted against a timed sweep.
+    ctx.velocity_set_user_vault_owned(params.name, bump)?;
 
     Ok(())
 }
@@ -217,6 +222,24 @@ impl<'info> InitializeUserCPI for Context<'info, InitializeVaultWithProtocol<'in
         };
         let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signers);
         velocity::cpi::initialize_user_stats(cpi_ctx)?;
+
+        Ok(())
+    }
+}
+
+impl<'info> SetUserVaultOwnedCPI for Context<'info, InitializeVaultWithProtocol<'info>> {
+    fn velocity_set_user_vault_owned(&self, name: [u8; 32], bump: u8) -> Result<()> {
+        let signature_seeds = Vault::get_vault_signer_seeds(&name, &bump);
+        let signers = &[&signature_seeds[..]];
+
+        let cpi_program = self.accounts.velocity_program.key();
+        let cpi_accounts = UpdateUser {
+            user: self.accounts.velocity_user.clone(),
+            authority: self.accounts.vault.to_account_info().clone(),
+        };
+        let cpi_ctx = CpiContext::new_with_signer(cpi_program, cpi_accounts, signers);
+        // sub_account_id 0 matches the User PDA created by velocity_initialize_user
+        velocity::cpi::update_user_vault_owned(cpi_ctx, 0_u16)?;
 
         Ok(())
     }

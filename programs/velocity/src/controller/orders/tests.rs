@@ -11626,3 +11626,27 @@ mod keeper_reward {
         );
     }
 }
+
+#[test]
+fn crossing_prefix_size_stops_at_the_cross() {
+    use crate::state::prop_amm::PriceLevel;
+    let pl = |price: u64, size: u64| PriceLevel { price, size };
+
+    // asks ascending, bids descending. The first 5 units cross (100 <= 101),
+    // the next do not (102 > 99), so the prefix is 5.
+    assert_eq!(
+        super::crossing_prefix_size(&[pl(100, 5), pl(102, 5)], &[pl(101, 5), pl(99, 5)]),
+        5
+    );
+    // Fully crossing, bounded by the shallower side.
+    assert_eq!(super::crossing_prefix_size(&[pl(100, 3)], &[pl(105, 10)]), 3);
+    // Never crossing.
+    assert_eq!(super::crossing_prefix_size(&[pl(105, 5)], &[pl(100, 5)]), 0);
+    // Partial cross inside a level: only the 4 bid units at 101 cross the ask.
+    assert_eq!(
+        super::crossing_prefix_size(&[pl(100, 10)], &[pl(101, 4), pl(99, 10)]),
+        4
+    );
+    // Equal prices cross (at or below).
+    assert_eq!(super::crossing_prefix_size(&[pl(100, 5)], &[pl(100, 5)]), 5);
+}

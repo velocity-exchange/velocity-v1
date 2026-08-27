@@ -4906,6 +4906,45 @@ fn cancel_reduce_only_trigger_orders(
     Ok(())
 }
 
+/// The cumulative base where a buy book's asks still cross a sell book's bids.
+///
+/// `asks` and `bids` are best-first — asks ascending in price, bids descending —
+/// the order a book quotes them in. Pairing them unit for unit, a cross is
+/// profitable while the marginal ask is at or below the marginal bid; this is
+/// the size at which that stops. A cross sized to this fills only crossed levels
+/// on both legs, so no unit trades at a loss and none sweeps past the crossing
+/// region into the caller's own intermediate orders.
+fn crossing_prefix_size(
+    asks: &[crate::state::prop_amm::PriceLevel],
+    bids: &[crate::state::prop_amm::PriceLevel],
+) -> u64 {
+    let mut ai = 0usize;
+    let mut bi = 0usize;
+    let mut a_rem = asks.first().map_or(0, |level| level.size);
+    let mut b_rem = bids.first().map_or(0, |level| level.size);
+    let mut crossed = 0u64;
+    while ai < asks.len() && bi < bids.len() {
+        if a_rem == 0 {
+            ai += 1;
+            a_rem = asks.get(ai).map_or(0, |level| level.size);
+            continue;
+        }
+        if b_rem == 0 {
+            bi += 1;
+            b_rem = bids.get(bi).map_or(0, |level| level.size);
+            continue;
+        }
+        if asks[ai].price > bids[bi].price {
+            break;
+        }
+        let take = a_rem.min(b_rem);
+        crossed = crossed.saturating_add(take);
+        a_rem -= take;
+        b_rem -= take;
+    }
+    crossed
+}
+
 /// Match two crossed external sources against each other with the protocol
 /// `User` as the pass-through taker — the arb bot the cross-match crank
 /// runs. Buy `size` from the `buy_index` book's asks, then sell exactly what
@@ -4928,7 +4967,7 @@ fn cancel_reduce_only_trigger_orders(
 pub fn cross_match(
     state: &State,
     market_index: u16,
-    size: u64,
+    mut size: u64,
     buy_index: usize,
     sell_index: usize,
     taker_loader: &AccountLoader<User>,
@@ -5075,6 +5114,25 @@ pub fn cross_match(
     let mut none_filler_stats: Option<&mut UserStats> = None;
     let mut no_escrow: Option<&mut RevenueShareEscrowZeroCopyMut> = None;
     let mut filler_reward_paid = 0u64;
+
+    // Bound the cross to the prefix where the two books actually cross. The
+    // caller names `size`, and past the crossing depth the extra fills
+    // non-crossed levels — which lets a caller that rests its own orders at
+    // intermediate prices siphon the spread the protocol would have taken, and
+    // lets a sweep run past a taker-origin order the dedicated crank owes an
+    // improvement to. Computable only when both sides are books (a ladder to
+    // read); a Custom side is bounded by its pre-execute margin clamp and the
+    // surplus floor instead. The two ladders come from the same quote the
+    // execute below fills, so the boundary they show is the one it hits.
+    {
+        let buy_asks =
+            executor.resting_levels(buy_index, crate::state::prop_amm::Direction::Long, size)?;
+        let sell_bids =
+            executor.resting_levels(sell_index, crate::state::prop_amm::Direction::Short, size)?;
+        if let (Some(buy_asks), Some(sell_bids)) = (buy_asks, sell_bids) {
+            size = size.min(crossing_prefix_size(&buy_asks, &sell_bids));
+        }
+    }
 
     let mut leg_totals: [(u64, u64); 2] = [(0, 0); 2];
     let legs = [

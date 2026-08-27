@@ -46,15 +46,15 @@ pub struct QuoterBook<'a> {
     pub withheld: PriceLevel,
 }
 
-/// Router-mode inputs the fill entrypoint threads into the fill controller:
-/// the external quoter books it already quoted via CPI, and the execute leg
-/// for allocations that land on them. Books and executor share indexing.
-/// `'info` is the account lifetime the executor's responses are read out of —
-/// distinct from the books' `'b`, which borrows from the quoting section.
-/// Account locks a transaction may hold, less headroom for the compute-budget
-/// program. The runtime cap is 64.
-pub const TX_ACCOUNT_LOCK_CEILING: usize = 62;
-/// Accounts one more CLOB maker costs: its `User` and its `UserStats`.
+/// Writable and signer locks a transaction holds when it is full enough that
+/// a filler could not fit one more maker. Measured in contended locks, not the
+/// total account count: read-only locks are shared and free to pad, so they
+/// cannot prove a transaction was full. A fill that holds fewer writable locks
+/// than this had room for the maker it omitted. The value sits below the real
+/// writable-lock reach of a fill so a genuine deep fill is excused, and well
+/// above what a shallow padded fill holds so padding cannot buy the excuse.
+pub const TX_WRITABLE_LOCK_BUDGET: usize = 40;
+/// Writable locks one more CLOB maker costs: its `User` and its `UserStats`.
 pub const MAKER_ACCOUNT_COST: usize = 2;
 
 /// What the fill knows about the party that built the transaction.
@@ -109,11 +109,11 @@ pub fn withheld_obligation(
         return Err(ErrorCode::FillerObligationUncountable);
     };
     validate!(
-        accounts > TX_ACCOUNT_LOCK_CEILING.saturating_sub(MAKER_ACCOUNT_COST),
+        accounts > TX_WRITABLE_LOCK_BUDGET.saturating_sub(MAKER_ACCOUNT_COST),
         ErrorCode::FillerOmittedReachableMaker,
-        "transaction holds {} of {} account locks, so it had room for a maker the book wanted",
+        "transaction holds {} of {} writable locks, so it had room for a maker the book wanted",
         accounts,
-        TX_ACCOUNT_LOCK_CEILING
+        TX_WRITABLE_LOCK_BUDGET
     )?;
     validate!(
         idle_loaded_users == 0,
@@ -135,6 +135,11 @@ pub fn withheld_obligation(
     Ok(())
 }
 
+/// Router-mode inputs the fill entrypoint threads into the fill controller:
+/// the external quoter books it already quoted via CPI, and the execute leg
+/// for allocations that land on them. Books and executor share indexing.
+/// `'info` is the account lifetime the executor's responses are read out of —
+/// distinct from the books' `'b`, which borrows from the quoting section.
 pub struct RouterFillInputs<'a, 'b, 'info> {
     pub books: &'a [QuoterBook<'b>],
     pub executor: &'a mut dyn crate::state::prop_amm::ExternalQuoterExecutor<'info>,
@@ -716,7 +721,7 @@ mod tests {
     /// Room for one more maker means the filler owed that maker.
     #[test]
     fn room_for_another_maker_is_an_omission() {
-        let ceiling = TX_ACCOUNT_LOCK_CEILING - MAKER_ACCOUNT_COST;
+        let ceiling = TX_WRITABLE_LOCK_BUDGET - MAKER_ACCOUNT_COST;
         for accounts in [0, ceiling - 1, ceiling] {
             let roomy = FillerObligation {
                 taker_signed: false,
@@ -737,7 +742,7 @@ mod tests {
     fn a_quoter_outside_the_signed_route_is_refused() {
         let full = FillerObligation {
             taker_signed: false,
-            tx_accounts: Some(TX_ACCOUNT_LOCK_CEILING),
+            tx_accounts: Some(TX_WRITABLE_LOCK_BUDGET),
             unrouted_quoters: 1,
         };
         assert_eq!(
@@ -752,7 +757,7 @@ mod tests {
     fn a_full_honest_transaction_may_withhold() {
         let honest = FillerObligation {
             taker_signed: false,
-            tx_accounts: Some(TX_ACCOUNT_LOCK_CEILING),
+            tx_accounts: Some(TX_WRITABLE_LOCK_BUDGET),
             unrouted_quoters: 0,
         };
         assert!(withheld_obligation(&honest, 0).is_ok());
@@ -764,7 +769,7 @@ mod tests {
     fn a_padded_user_set_is_refused() {
         let full = FillerObligation {
             taker_signed: false,
-            tx_accounts: Some(TX_ACCOUNT_LOCK_CEILING),
+            tx_accounts: Some(TX_WRITABLE_LOCK_BUDGET),
             unrouted_quoters: 0,
         };
         assert_eq!(

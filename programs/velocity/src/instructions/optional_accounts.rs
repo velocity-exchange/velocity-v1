@@ -625,15 +625,24 @@ pub fn tx_reimbursement_claimants(
 /// not have.
 ///
 /// Bounded work: the cap is 64, so the scan stops there and reports 64.
-pub fn tx_distinct_account_count(instructions_sysvar: &AccountInfo) -> VelocityResult<usize> {
+pub fn tx_writable_lock_count(instructions_sysvar: &AccountInfo) -> VelocityResult<usize> {
     use solana_program::sysvar::instructions::load_instruction_at_checked;
     const CAP: usize = 64;
     let mut seen = [Pubkey::default(); CAP];
     let mut count = 0usize;
     let mut index = 0usize;
+    // Count only writable and signer accounts. A read-only lock is shared, so
+    // a filler can append read-only junk keys for free to inflate a total
+    // count and excuse itself from carrying a maker it omitted. A writable or
+    // signer lock is contended: it names a real account the transaction acts
+    // on, so it cannot be padded. Program ids are read-only, so they do not
+    // count either.
     while let Ok(instruction) = load_instruction_at_checked(index, instructions_sysvar) {
         index += 1;
         for meta in instruction.accounts.iter() {
+            if !(meta.is_writable || meta.is_signer) {
+                continue;
+            }
             if seen[..count].contains(&meta.pubkey) {
                 continue;
             }
@@ -641,14 +650,6 @@ pub fn tx_distinct_account_count(instructions_sysvar: &AccountInfo) -> VelocityR
                 return Ok(CAP);
             }
             seen[count] = meta.pubkey;
-            count += 1;
-        }
-        // The program id of each instruction holds a lock as well.
-        if !seen[..count].contains(&instruction.program_id) {
-            if count == CAP {
-                return Ok(CAP);
-            }
-            seen[count] = instruction.program_id;
             count += 1;
         }
     }

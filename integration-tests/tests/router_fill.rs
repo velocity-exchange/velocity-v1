@@ -2501,6 +2501,7 @@ fn each_crank_is_priced_from_what_it_requests_and_the_condition_agrees() {
         signature_lamports: 0,
         resource_fee_numerator: 1,
         resource_fee_denominator: 2,
+        max_priority_micro_lamports_per_cu: 0,
     };
     set_zero_copy_account(
         &mut fixture.svm,

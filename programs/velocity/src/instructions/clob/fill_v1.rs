@@ -153,7 +153,7 @@ pub fn handle_fill_perp_order_v1<'c: 'info, 'info>(
                 .instructions_sysvar
                 .as_ref()
                 .map(|sysvar| {
-                    crate::instructions::optional_accounts::tx_distinct_account_count(sysvar)
+                    crate::instructions::optional_accounts::tx_writable_lock_count(sysvar)
                 })
                 .transpose()?,
             // Set after the route is assembled: only then is it known which

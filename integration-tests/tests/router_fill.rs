@@ -265,8 +265,9 @@ fn clob_market_config(market_index: u16) -> Vec<u8> {
     v.extend_from_slice(&market_index.to_le_bytes());
     v.extend_from_slice(&UNIT.to_le_bytes()); // base_precision
     v.extend_from_slice(&1u64.to_le_bytes()); // order_tick_size
-    v.extend_from_slice(&1u64.to_le_bytes()); // order_step_size
+    v.extend_from_slice(&1000u64.to_le_bytes()); // order_step_size (matches the perp market step)
     v.extend_from_slice(&1u64.to_le_bytes()); // min_order_size
+    v.extend_from_slice(&0u64.to_le_bytes()); // blocking_min_size (0 disables the floor)
     v.extend_from_slice(&0u32.to_le_bytes()); // default_activation_delay
     v.extend_from_slice(&20u32.to_le_bytes()); // max_activation_delay
     v.extend_from_slice(&2u32.to_le_bytes()); // unknown_user_grace_slots
@@ -685,12 +686,12 @@ fn place_clob_ask(fixture: &mut Fixture, price: u64, size: u64) -> ClobOrderRefV
 /// below-default activation delay must fail without the flow authority
 /// co-signing the transaction, and pass with it — while at-or-above the
 /// default stays permissionless.
-/// Borsh `UpdateMarketArgsV0` setting only `default_activation_delay_slots`:
-/// ten `Option`s, each a presence byte, in the order the book declares them.
+/// `UpdateMarketArgsV0` setting only `default_activation_delay_slots`:
+/// eleven `Option`s, each a presence byte, in the order the book declares them.
 fn set_clob_default_activation_delay(fixture: &mut Fixture, slots: u32) {
     let mut args = Vec::new();
-    for _ in 0..3 {
-        args.push(0u8); // tick size, step size, min order size
+    for _ in 0..4 {
+        args.push(0u8); // tick size, step size, min order size, blocking min size
     }
     args.push(1u8);
     args.extend_from_slice(&slots.to_le_bytes());
@@ -1435,10 +1436,11 @@ fn cancel_all_clob_orders_unwinds_a_whole_ladder_in_one_instruction() {
     let mut bid_base = 0u64;
     let mut ask_base = 0u64;
     for i in 0..5u64 {
-        bid_base += UNIT / 2 + i;
-        ask_base += UNIT / 4 + i;
-        place_clob_bid(&mut fixture, (98 - i) * PRICE, UNIT / 2 + i);
-        place_clob_ask(&mut fixture, (99 + i) * PRICE, UNIT / 4 + i);
+        // Distinct sizes per level, each aligned to the market step of 1000.
+        bid_base += UNIT / 2 + i * 1000;
+        ask_base += UNIT / 4 + i * 1000;
+        place_clob_bid(&mut fixture, (98 - i) * PRICE, UNIT / 2 + i * 1000);
+        place_clob_ask(&mut fixture, (99 + i) * PRICE, UNIT / 4 + i * 1000);
     }
     let before: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert_eq!(before.perp_positions[0].open_orders, 10);
@@ -1525,7 +1527,7 @@ fn cancel_all_clob_orders_only_takes_the_signing_users_orders() {
                 market_index: 0,
                 direction: PositionDirection::Short,
                 price: 99 * PRICE,
-                base_asset_amount: UNIT / 3,
+                base_asset_amount: UNIT / 5,
                 max_ts: 0,
                 activation_delay_slots: Some(0),
                 reject_if_crossed: false,
@@ -1543,7 +1545,7 @@ fn cancel_all_clob_orders_only_takes_the_signing_users_orders() {
     assert_eq!(mine.perp_positions[0].open_asks, 0);
     assert_eq!(mine.perp_positions[0].open_orders, 0);
     let theirs: User = read_zero_copy(&fixture.svm, &other_user);
-    assert_eq!(theirs.perp_positions[0].open_asks, -((2 * UNIT / 3) as i64));
+    assert_eq!(theirs.perp_positions[0].open_asks, -((2 * (UNIT / 5)) as i64));
     assert_eq!(theirs.perp_positions[0].open_orders, 2);
 }
 

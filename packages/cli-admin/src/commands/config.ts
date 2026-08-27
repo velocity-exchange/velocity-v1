@@ -15,7 +15,13 @@ import { Command } from 'commander';
 import * as fs from 'fs';
 import * as os from 'os';
 import pc from 'picocolors';
-import { CliConfig, Profile, configPath, loadConfig, saveConfig } from '../lib/config';
+import {
+	CliConfig,
+	Profile,
+	configPath,
+	loadConfig,
+	saveConfig,
+} from '../lib/config';
 import { detectCluster } from '../lib/context';
 import { loadKeypair } from '../lib/provider';
 import { fetchStateAdmins } from '../lib/state';
@@ -173,8 +179,7 @@ export function registerConfig(parent: Command): void {
 						},
 						{
 							value: 'multisig',
-							label:
-								'multisig: wrap every action in a Squads V4 proposal',
+							label: 'multisig: wrap every action in a Squads V4 proposal',
 						},
 					],
 				})
@@ -258,9 +263,7 @@ export function registerConfig(parent: Command): void {
 			};
 			saveConfig(next);
 			outro(
-				`saved "${name}" to ${configPath()}${
-					makeDefault ? ' (default)' : ''
-				}`
+				`saved "${name}" to ${configPath()}${makeDefault ? ' (default)' : ''}`
 			);
 		});
 
@@ -302,7 +305,9 @@ export function registerConfig(parent: Command): void {
 		)
 		.action(async (env: string, url: string) => {
 			if (env !== 'mainnet-beta' && env !== 'devnet') {
-				throw new Error(`unknown env "${env}" (expected mainnet-beta or devnet)`);
+				throw new Error(
+					`unknown env "${env}" (expected mainnet-beta or devnet)`
+				);
 			}
 			const cluster = await detectCluster(new Connection(url, 'confirmed'));
 			if (cluster !== env) {

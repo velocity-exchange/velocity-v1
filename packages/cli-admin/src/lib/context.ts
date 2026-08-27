@@ -75,7 +75,10 @@ export async function announceContext(
 					`fix the profile/flags before anything is sent`
 			);
 		}
-		if (!args.envDeclared && (cluster === 'mainnet-beta' || cluster === 'devnet')) {
+		if (
+			!args.envDeclared &&
+			(cluster === 'mainnet-beta' || cluster === 'devnet')
+		) {
 			env = cluster;
 		}
 	}

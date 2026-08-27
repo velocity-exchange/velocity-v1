@@ -88,9 +88,7 @@ export function registerWhoami(parent: Command): void {
 				console.log(pc.bold(`multisig ${multisigPda.toBase58()}:`));
 				console.log(
 					`  ${member ? pc.green('✓ member') : pc.yellow('✗ not a member')}` +
-						` · threshold ${ms.threshold} · timelock ${Number(
-							ms.timeLock
-						)}s`
+						` · threshold ${ms.threshold} · timelock ${Number(ms.timeLock)}s`
 				);
 				const vaultRoles: string[] = [];
 				if (vault.equals(admins.coldAdmin)) {

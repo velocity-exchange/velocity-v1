@@ -58,7 +58,9 @@ export function loadConfig(): CliConfig {
 		parsed = JSON.parse(fs.readFileSync(p, 'utf-8'));
 	} catch (e) {
 		throw new Error(
-			`config ${p} is not valid JSON (${(e as Error).message}); fix or delete it`
+			`config ${p} is not valid JSON (${
+				(e as Error).message
+			}); fix or delete it`
 		);
 	}
 	const cfg = parsed as CliConfig;

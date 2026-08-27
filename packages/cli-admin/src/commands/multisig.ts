@@ -101,10 +101,7 @@ export function registerMultisig(parent: Command): void {
 		}
 		const provider = buildProvider(opts);
 		const multisigPda = new PublicKey(opts.multisig);
-		const limit = Number.parseInt(
-			cmd.optsWithGlobals().limit as string,
-			10
-		);
+		const limit = Number.parseInt(cmd.optsWithGlobals().limit as string, 10);
 
 		const info = await multisig.accounts.Multisig.fromAccountAddress(
 			provider.connection,
@@ -114,9 +111,9 @@ export function registerMultisig(parent: Command): void {
 		const stale = Number(info.staleTransactionIndex);
 		const timeLock = Number(info.timeLock);
 		console.log(
-			`multisig ${multisigPda.toBase58()}: threshold ${
-				info.threshold
-			}/${info.members.length}, timelock ${timeLock}s, ${latest} proposal(s) total`
+			`multisig ${multisigPda.toBase58()}: threshold ${info.threshold}/${
+				info.members.length
+			}, timelock ${timeLock}s, ${latest} proposal(s) total`
 		);
 		if (latest === 0) {
 			return;
@@ -138,7 +135,9 @@ export function registerMultisig(parent: Command): void {
 		accounts.forEach((acc, offset) => {
 			const index = latest - offset;
 			if (!acc) {
-				console.log(`  #${index}  (no proposal account: closed or vault tx only)`);
+				console.log(
+					`  #${index}  (no proposal account: closed or vault tx only)`
+				);
 				return;
 			}
 			const [proposal] = multisig.accounts.Proposal.fromAccountInfo(acc);
@@ -156,7 +155,9 @@ export function registerMultisig(parent: Command): void {
 			if (status === 'Active' && index <= stale) {
 				extra = ', STALE (superseded, cannot execute)';
 			}
-			console.log(`  #${index}  ${status.padEnd(9)} approvals ${approvals}${extra}`);
+			console.log(
+				`  #${index}  ${status.padEnd(9)} approvals ${approvals}${extra}`
+			);
 		});
 	});
 }

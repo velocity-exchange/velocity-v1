@@ -21,6 +21,9 @@ velocity-admin --help
 ## Commands
 
 ```
+velocity-admin config init|list|set-default|remove   # connection profiles (see Profiles below)
+velocity-admin whoami                                # which on-chain authorities the signer holds
+
 velocity-admin show config
 velocity-admin show fees    # every fee users pay: trading tiers, filler reward, split, per-market adjustments + liquidation fees
 
@@ -80,6 +83,7 @@ velocity-admin program halt [--so <path>]                        # deploy sbpf-a
 velocity-admin program close-buffers [--dry-run] [--program-only|--metadata-only]  # reclaim rent from orphaned program + IDL buffers
 
 velocity-admin multisig create --proposer <pubkey> [--name <name>]  # create a Squads V4 1/1 multisig
+velocity-admin multisig proposals [--limit <n>]                  # recent proposals: status, approvals, timelock ETA
 
 velocity-admin extend-account <account>                          # AccountExtension hot key (or warm/cold); grow one zero-copy account to the deployed program's size
 velocity-admin extend-account --type <type> [--batch-size <n>] [--dry-run]  # migration crank: scan + extend every account of a type (see docs/ACCOUNT-EXTENSION.md)
@@ -157,12 +161,49 @@ The dispatcher does no PDA derivation — every account must be supplied.
 
 ## Global options
 
-| Flag                      | Default                               |
-| ------------------------- | ------------------------------------- |
-| `-u, --url <url>`         | `https://api.mainnet-beta.solana.com` |
-| `-k, --keypair <path>`    | `~/.config/solana/id.json`            |
-| `-e, --env <env>`         | `mainnet-beta` (or `devnet`)          |
-| `-m, --multisig <pubkey>` | (none — direct send)                  |
+| Flag                      | Default                                          |
+| ------------------------- | ------------------------------------------------ |
+| `-p, --profile <name>`    | `VELOCITY_ADMIN_PROFILE` env, else config default |
+| `-u, --url <url>`         | profile, else `https://api.mainnet-beta.solana.com` |
+| `-k, --keypair <path>`    | profile, else `~/.config/solana/id.json`         |
+| `-e, --env <env>`         | profile, else detected from the RPC's genesis hash |
+| `-m, --multisig <pubkey>` | profile, else none — direct send (`--no-multisig` forces direct under a proposing profile) |
+| `-y, --yes`               | (unset — mainnet direct sends ask for confirmation) |
+
+## Profiles
+
+Connection settings can be bundled into named profiles instead of repeated
+flags, stored per-user at `~/.config/velocity-admin/config.json` (override
+with `VELOCITY_ADMIN_CONFIG`). Multisig addresses live only in this local
+config, deliberately not in the repo.
+
+```sh
+velocity-admin config init            # interactive; verifies everything against the live cluster
+velocity-admin config list
+velocity-admin config set-default <name>
+velocity-admin config remove <name>
+
+velocity-admin -p mainnet-cold auth set-hot-admin accountExtension <pubkey>
+VELOCITY_ADMIN_PROFILE=devnet velocity-admin extend-account --type state --dry-run
+```
+
+`config init` refuses to save anything it cannot verify: the RPC is
+classified by genesis hash (never by its URL), the keypair must load, and a
+multisig must exist on that cluster — its vault 0 is matched against the
+live State admins and mismatches are called out.
+
+Explicit flags always override the profile. Every command that touches the
+chain prints a one-line context header (cluster · profile · signer · dispatch
+mode), and dies when a declared env contradicts the RPC's actual genesis
+hash. Mainnet direct sends ask for interactive confirmation; pass `--yes`
+(implied when stdin is not a TTY) to skip.
+
+## Authority introspection
+
+```sh
+velocity-admin whoami [-p <profile>]      # which State roles the signer holds; multisig membership
+velocity-admin multisig proposals [-m <pda>] [--limit <n>]  # recent proposals: status, approvals, timelock ETA
+```
 
 ## Local development
 

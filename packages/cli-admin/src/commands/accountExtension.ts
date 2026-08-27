@@ -7,6 +7,7 @@ import {
 import { utils } from '@coral-xyz/anchor';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
+import { confirmMainnetDirect } from '../lib/context';
 
 /**
  * CLI type flag → IDL account name for every zero-copy account the program's
@@ -176,6 +177,9 @@ export function registerAccountExtension(parent: Command): void {
 				return;
 			}
 
+			await confirmMainnetDirect(
+				`extend ${candidates.length} account(s) to ${targetLen} bytes`
+			);
 			let extended = 0;
 			for (let i = 0; i < candidates.length; i += batchSize) {
 				const chunk = candidates.slice(i, i + batchSize);

@@ -42,7 +42,11 @@ pub const QUOTER_CROSS_CONDITIONS: usize = 3;
 /// The resolver's account list capacity: 5 named accounts + the entry's
 /// registered quote surface (≤32) + its program, rounded to
 /// [`RelayBlockV0`]'s granularity of 8.
-pub const QUOTER_CROSS_RESOLVER_CAPACITY: usize = 40;
+// 8 fixed accounts + the entry's full quote surface (`MAX_QUOTER_ACCOUNTS` = 32)
+// + the quoter program once more = 41 accounts. A capacity below that leaves a
+// maker with a full quote list unable to attach cross discovery. RelayBlockV0
+// requires a multiple of 8, so round up to 48.
+pub const QUOTER_CROSS_RESOLVER_CAPACITY: usize = 48;
 
 /// Account-data offset of the relay block (what a `WatchV0` registers at).
 pub const QUOTER_CROSS_BLOCK_OFFSET: usize =
@@ -70,11 +74,11 @@ pub struct QuoterCrossConditionsV0 {
     pub oracle: Pubkey,
     pub market_index: u16,
     pub quote_spot_market_index: u16,
-    /// Tail reserve: 4 bytes of alignment slack plus room for two more
+    /// Tail reserve: 3 bytes of alignment slack plus room for two more
     /// captured pubkeys, so a resolver that needs another fixed account can
     /// take it from here instead of forcing an `extend_account` migration on
     /// every attached quoter entry.
-    pub padding: [u8; 68],
+    pub padding: [u8; 60],
 }
 
 // `padding` is longer than 32 bytes, which `#[derive(Default)]` does not
@@ -90,7 +94,7 @@ impl Default for QuoterCrossConditionsV0 {
             oracle: Pubkey::default(),
             market_index: 0,
             quote_spot_market_index: 0,
-            padding: [0; 68],
+            padding: [0; 60],
         }
     }
 }
@@ -101,7 +105,7 @@ impl QuoterCrossConditionsV0 {
         + 5 * 32
         + 2
         + 2
-        + 68;
+        + 60;
 
     /// Write the resolver account list the conditions point at, and
     /// describe where it landed.

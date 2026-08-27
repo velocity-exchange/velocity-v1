@@ -84,6 +84,15 @@ pub fn handle_initialize_quoter(
     ctx: Context<InitializeQuoter>,
     args: InitializeQuoterArgs,
 ) -> Result<()> {
+    // A quoter's program is CPI'd during a fill; velocity itself must never be
+    // that program. A self-CPI would re-enter the fill under velocity's own
+    // authority against accounts a fill already holds, so the callee is always
+    // a distinct program.
+    validate!(
+        ctx.accounts.quoter_program.key() != crate::ID,
+        ErrorCode::InvalidQuoterConfig,
+        "a quoter program cannot be velocity itself"
+    )?;
     if args.quoter_type != QuoterType::Custom {
         // A book's response may name any user the transaction carries, so
         // designating one is not a maker's call to make.

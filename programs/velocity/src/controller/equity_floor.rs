@@ -24,9 +24,9 @@ use crate::{
 /// Arms the authority-wide equity breaker if the subaccount's net equity is
 /// provably below its raw floor. Decides with the same
 /// `TripNetEquity::proves_breach` predicate as the permissionless trip:
-/// invalid-oracle positions are conceded a bounded most-favorable value
-/// rather than vetoing the proof, and an asset or long past the dust
-/// allowance keeps the breach unprovable. Where the permissionless trip
+/// invalid-oracle liabilities and shorts receive their sound zero upper
+/// bound, while any invalid-oracle asset or long keeps the breach
+/// unprovable. Where the permissionless trip
 /// rejects on an unprovable breach so the keeper can retry, this skips
 /// silently (it must not fail its host); a breach that rides out such an
 /// outage is armed by
@@ -238,9 +238,8 @@ mod tests {
 
     #[test]
     fn no_trip_on_stale_material_position() {
-        // oracle map loaded far past the oracle's posted slot, and the
-        // position's twap notional (2 base at 100) is past the dust
-        // allowance: real exposure the trip cannot value, so the breaker
+        // oracle map loaded far past the oracle's posted slot. The long has
+        // no finite upper bound, so the breaker
         // must not arm. Equity would be 10 + (200 - 180) = 30 below the
         // 50 floor if the oracle were trusted.
         let stats = run_scenario_with_position(
@@ -254,12 +253,9 @@ mod tests {
     }
 
     #[test]
-    fn trips_on_stale_dust_position() {
-        // same stale oracle, but the position is dust (0.5 base, 50 at its
-        // twap). The base leg is conceded the full allowance and the breach
-        // is still provable: 10 + (-45 + 100) = 65 below the 100 floor.
-        // Before the concession this dust kept the whole subaccount
-        // untrippable for as long as the oracle stayed invalid.
+    fn no_trip_on_stale_small_long_position() {
+        // Size and stored twap do not bound an invalid-oracle long. Even this
+        // 0.5 base position keeps the trip unprovable until price recovers.
         let stats = run_scenario_with_position(
             100 * QUOTE_PRECISION_U64,
             false,
@@ -267,7 +263,7 @@ mod tests {
             BASE_PRECISION_I64 / 2,
             -45 * QUOTE_PRECISION_I64,
         );
-        assert!(stats.is_equity_breaker_tripped());
+        assert!(!stats.is_equity_breaker_tripped());
     }
 
     #[test]

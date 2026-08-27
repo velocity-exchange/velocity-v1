@@ -403,9 +403,8 @@ export function getEquityFloorLevel(
  * gates fail closed on the verdict: an action is authorized only when every
  * oracle is valid AND the value clears the relevant floor, and being below
  * the raw floor counts as force-cancel grounds only when every oracle is
- * valid AND the value sits below it. The breaker trip uses its own walk
- * (`TripNetEquity`), which concedes bounded value to invalid-oracle dust
- * instead of requiring every oracle valid. Values QUOTE_PRECISION.
+ * valid AND the value sits below it. The breaker trip derives a separate
+ * upper-bound verdict from the same position walk. Values QUOTE_PRECISION.
  */
 export type FloorNetEquity = {
 	value: BN;
@@ -415,15 +414,11 @@ export type FloorNetEquity = {
 /**
  * Net-equity upper bound for the breaker trip, mirroring the program's
  * `TripNetEquity`. Positions with valid oracles are valued at live prices.
- * A position with an invalid oracle is conceded its most favorable value:
- * a liability or a short base leg counts as zero at any size, an asset or
- * long base leg worth no more than `EQUITY_FLOOR_TRIP_DUST_ALLOWANCE` at
- * its own last twap counts as exactly the allowance, and a larger asset or
- * long (or one whose twap is not positive) makes the breach unprovable
- * (`provable` false). The zero concessions are sound at any price; the
- * allowance concession is sound as far as the twap sizes the position
- * honestly. Dust parked in dead-oracle markets cannot veto a material
- * breach. Values QUOTE_PRECISION.
+ * An invalid-oracle asset or long has no finite upper bound and makes the
+ * breach unprovable (`provable` false). An invalid-oracle liability or short
+ * base leg contributes zero, its sound maximum at a positive price; stored
+ * quote and funding legs still count exactly. An invalid quote conversion
+ * also makes the result unprovable. Values QUOTE_PRECISION.
  */
 export type TripNetEquity = {
 	equityUpperBound: BN;

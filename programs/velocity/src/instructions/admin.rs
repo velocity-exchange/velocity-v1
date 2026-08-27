@@ -4732,12 +4732,10 @@ pub fn handle_update_special_user_status(
 /// (a subaccount drifted back into breach after review) therefore fails
 /// instead of unfreezing a breached authority.
 ///
-/// The validity requirement here stays all-or-nothing, deliberately not
-/// sharing the trip's dust concession. The trip proves equity below the
-/// floor, so unknowns are conceded upward and a trip that fires is sound at
-/// any true dust price; the reset proves the opposite direction, where
-/// conceding dust upward would unfreeze off values the program cannot
-/// verify. A dead oracle on a dust position therefore blocks the reset
+/// The validity requirement here stays all-or-nothing. The trip proves
+/// equity below the floor and can use a zero upper bound for invalid-oracle
+/// liabilities and shorts; the reset proves the opposite direction, where
+/// an invalid price cannot establish health. A dead oracle on any position therefore blocks the reset
 /// until the feed recovers. The escape hatch, here and whenever resumption
 /// is the business decision anyway, is `update_user_equity_floor`: lower
 /// the floors first, explicitly and auditably.

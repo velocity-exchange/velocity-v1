@@ -1,7 +1,13 @@
 import { BN } from '@coral-xyz/anchor';
 import { assert } from 'chai';
 import * as _ from 'lodash';
-import { QUOTE_PRECISION, User, ZERO } from '../../src';
+import {
+	QUOTE_PRECISION,
+	SPOT_MARKET_BALANCE_PRECISION,
+	SpotBalanceType,
+	User,
+	ZERO,
+} from '../../src';
 import { mockPerpMarkets, mockSpotMarkets } from '../dlob/helpers';
 import { makeMockUser, mockUserAccount } from './helpers';
 
@@ -97,13 +103,48 @@ describe('equity floor fails closed on oracle validity', () => {
 		assert.isTrue(tripNetEquity.provable);
 		assert.isTrue(
 			tripNetEquity.equityUpperBound.eq(user.getFloorNetEquity(slot).value),
-			'no concession is taken while every oracle is valid'
+			'the upper bound equals observed equity while every oracle is valid'
 		);
 
 		// omitting the slot treats every oracle as valid, same as the point form
 		const withoutSlot = user.getTripNetEquity();
 		assert.isTrue(withoutSlot.provable);
 		assert.isTrue(withoutSlot.equityUpperBound.eq(user.getNetUsdValue()));
+	});
+
+	it('does not use a stale twap to bound an invalid-oracle asset', async () => {
+		const account = _.cloneDeep(mockUserAccount);
+		account.equityFloor = quote(1);
+		account.spotPositions[0].scaledBalance = SPOT_MARKET_BALANCE_PRECISION;
+		account.spotPositions[0].balanceType = SpotBalanceType.DEPOSIT;
+		const user = await makeMockUser(
+			_.cloneDeep(mockPerpMarkets),
+			_.cloneDeep(mockSpotMarkets),
+			account,
+			[1, 1, 1, 1, 1, 1, 1, 1],
+			[1, 1, 1, 1, 1, 1, 1, 1]
+		);
+
+		const tripNetEquity = user.getTripNetEquity(new BN(100_000));
+		assert.isFalse(tripNetEquity.provable);
+	});
+
+	it('keeps the sound zero upper bound for an invalid-oracle liability', async () => {
+		const account = _.cloneDeep(mockUserAccount);
+		account.equityFloor = quote(1);
+		account.spotPositions[0].scaledBalance = SPOT_MARKET_BALANCE_PRECISION;
+		account.spotPositions[0].balanceType = SpotBalanceType.BORROW;
+		const user = await makeMockUser(
+			_.cloneDeep(mockPerpMarkets),
+			_.cloneDeep(mockSpotMarkets),
+			account,
+			[1, 1, 1, 1, 1, 1, 1, 1],
+			[1, 1, 1, 1, 1, 1, 1, 1]
+		);
+
+		const tripNetEquity = user.getTripNetEquity(new BN(100_000));
+		assert.isTrue(tripNetEquity.provable);
+		assert.isTrue(tripNetEquity.equityUpperBound.eq(ZERO));
 	});
 
 	it('the trip fires only on a provable breach', async () => {

@@ -512,7 +512,7 @@ pub fn handle_trigger_order<'c: 'info, 'info>(
         Some(state.oracle_guard_rails),
     )?;
 
-    controller::orders::trigger_order(
+    let triggered = controller::orders::trigger_order(
         order_id,
         &state,
         &ctx.accounts.user,
@@ -524,16 +524,24 @@ pub fn handle_trigger_order<'c: 'info, 'info>(
         &Clock::get()?,
     )?;
 
-    crate::instructions::finish_trigger_crank(
-        &ctx.accounts.state,
-        &ctx.accounts.filler,
-        &ctx.accounts.authority,
-        &ctx.accounts.user,
-        &ctx.accounts.trigger_conditions,
-        &ctx.accounts.crank_conditions,
-        market_index_of_order,
-        order_id,
-    )?;
+    // Only a trigger that placed the order did payable work. A cancel (a
+    // failing account whose trigger condition is already met), an
+    // already-triggered order, or a no-op must not draw the reservoir — the
+    // cancel branch pays the user no flat reward, so paying the caller from
+    // the reservoir for it would be free lamports. Mirrors trigger_clob_order,
+    // whose cancel branch returns before this call.
+    if triggered {
+        crate::instructions::finish_trigger_crank(
+            &ctx.accounts.state,
+            &ctx.accounts.filler,
+            &ctx.accounts.authority,
+            &ctx.accounts.user,
+            &ctx.accounts.trigger_conditions,
+            &ctx.accounts.crank_conditions,
+            market_index_of_order,
+            order_id,
+        )?;
+    }
 
     Ok(())
 }

@@ -548,3 +548,17 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
         },
     );
 }
+
+/// Only a `Clob` unwinds maker aggregates. A `Custom` quoter's depth is never
+/// reserved, so a fill must not act on completions or culls it reports — doing
+/// so would let it decrement other loaded users' open-order counts, release
+/// their trigger slots, and free their margin. This pins the predicate the
+/// fill path keys that behaviour off, alongside the registration rule that
+/// only velocity's own CLOB is a `Clob`.
+#[test]
+fn only_clob_tracks_maker_aggregates() {
+    use super::QuoterType;
+    assert!(QuoterType::Clob.tracks_maker_aggregates());
+    assert!(!QuoterType::Custom.tracks_maker_aggregates());
+    assert!(!QuoterType::Vamm.tracks_maker_aggregates());
+}

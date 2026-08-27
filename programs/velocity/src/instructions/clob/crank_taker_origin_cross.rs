@@ -207,7 +207,13 @@ pub(crate) fn find_taker_origin_cross(heads: &ClobNextCrossV0) -> Option<TakerOr
         (true, true) if heads.bid.rested_before(&heads.ask) => ask_aggresses,
         (true, true) => bid_aggresses,
     };
-    if counterparty.user == taker_origin.user {
+    // A user cannot cross their own orders for the reward. Comparing the whole
+    // ref would only stop a self-cross within one sub-account; the reward is
+    // paid from the reservoir, so a single authority could otherwise post an
+    // aggressor on one sub-account and a counterparty on another, manufacture a
+    // zero-improvement cross, and farm the payout. Compare the authority so
+    // neither a same-sub-account nor a cross-sub-account self-pair qualifies.
+    if counterparty.user.authority == taker_origin.user.authority {
         return None;
     }
     Some(TakerOriginCross {

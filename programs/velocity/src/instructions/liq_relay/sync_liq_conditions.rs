@@ -149,7 +149,16 @@ pub fn handle_sync_liq_conditions<'c: 'info, 'info>(
 ) -> Result<()> {
     let state_rails = ctx.accounts.state.load()?.transaction_fee_rails;
     let terms = SyncLiqConditionsTerms {
-        sync_payment_lamports: state_rails.transaction_cost(u64::from(args.sync_cost_units), 1)?,
+        // Zero cost units is a genuinely unpaid opt-in, and the validation and
+        // arming below both read it that way. transaction_cost(0, 1) is not
+        // zero — it is the signature fee — so pricing it through the rails
+        // would arm the fallback poll to pay a signature's worth of lamports
+        // every interval for an account that named no work.
+        sync_payment_lamports: if args.sync_cost_units == 0 {
+            0
+        } else {
+            state_rails.transaction_cost(u64::from(args.sync_cost_units), 1)?
+        },
         sync_fallback_slots: args.sync_fallback_slots,
     };
     // The opt-in caller pays its own way: it submitted the transaction, so

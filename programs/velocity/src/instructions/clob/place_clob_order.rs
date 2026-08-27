@@ -214,6 +214,22 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
         ErrorCode::UserBankrupt,
         "user bankrupt"
     )?;
+    // Placement gates place_perp_order applies, mirrored so the book is not a
+    // way around them. A user being liquidated cannot add orders; an account in
+    // a non-default pool cannot trade this market.
+    crate::math::liquidation::validate_user_not_being_liquidated(
+        &mut user,
+        &perp_market_map,
+        &spot_market_map,
+        &mut oracle_map,
+        state.liquidation_margin_buffer_ratio,
+    )?;
+    validate!(
+        user.pool_id == 0,
+        ErrorCode::InvalidPoolId,
+        "user pool id ({}) != 0",
+        user.pool_id
+    )?;
     let position_index = get_position_index(&user.perp_positions, params.market_index)
         .or_else(|_| add_new_position(&mut user.perp_positions, params.market_index))?;
     let risk_increasing = !is_order_position_reducing(
@@ -221,6 +237,24 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
         params.base_asset_amount,
         user.perp_positions[position_index].base_asset_amount,
     )?;
+    // Reduce-only mode — the user's (set by the vaults program on a depositor
+    // liquidation) or the market's — cannot be enforced at fill on the book, so
+    // a risk-increasing placement is refused rather than clamped. A reducing
+    // order still rests.
+    if risk_increasing {
+        validate!(
+            !user.is_reduce_only(),
+            ErrorCode::UserReduceOnly,
+            "user is reduce-only; a risk-increasing order cannot rest on the book"
+        )?;
+        validate!(
+            !perp_market_map
+                .get_ref(&params.market_index)?
+                .is_reduce_only()?,
+            ErrorCode::MarketPlaceOrderPaused,
+            "market is reduce-only; a risk-increasing order cannot rest on the book"
+        )?;
+    }
     validate!(
         user.perp_positions[position_index].open_orders < u8::MAX,
         ErrorCode::MaxNumberOfOrders,

@@ -602,6 +602,12 @@ pub fn validate_change_notional(
     let base = base as u128;
     let at_best = (prefix.best_price as u128).safe_mul(base)?;
     let at_worst = (prefix.worst_price as u128).safe_mul(base)?;
+    // `orders` is quoter-reported, so cap the rounding slack it buys. One real
+    // change never merges more than the levels the router split off a book, so
+    // a figure past that cap is a quoter widening its own price band. The cap
+    // costs an honest quoter nothing: `MAX_LEVELS_PER_BOOK` sub-cent units is
+    // already more slack than any real merge needs.
+    let orders = orders.min(MAX_LEVELS_PER_BOOK as u64);
     notional_within(at_best.min(at_worst), at_best.max(at_worst), quote, orders)
 }
 

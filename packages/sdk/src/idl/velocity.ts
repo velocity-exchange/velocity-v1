@@ -21649,6 +21649,16 @@ export type Velocity = {
       "code": 6399,
       "name": "fillerCarriedUnroutedQuoter",
       "msg": "A book withheld depth and the transaction carries a quoter outside the signed route"
+    },
+    {
+      "code": 6400,
+      "name": "reduceOnlyOrderCannotRestOnClob",
+      "msg": "A reduce-only order cannot rest on the CLOB; the book cannot clamp its fill to the position"
+    },
+    {
+      "code": 6401,
+      "name": "liquidationConflictsWithClobOrders",
+      "msg": "User has orders resting on the CLOB; force_cancel_clob_orders must run before liquidation"
     }
   ],
   "types": [

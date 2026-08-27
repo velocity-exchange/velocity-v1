@@ -88,6 +88,19 @@ pub mod lighthouse {
     declare_id!("L2TExMFKdjpN9kozasaurPirfHy9P8sbXoAN1qA3S95");
 }
 
+/// The CLOB program velocity wrote and trusts. A `Clob`-type quoter entry may
+/// only name this program. A book settles for whoever rests on it, so
+/// `QuoterSubjects::Book` takes the book's word for maker identity — pinning
+/// the program id bounds that trust to velocity's own book. Without the pin, a
+/// warm admin could register a third-party program as the market's book and,
+/// through it, name any loaded user as a maker at a price of its choosing. The
+/// admin's designation stays a decision about which market gets a book, not
+/// about which code a book runs.
+pub mod clob_program {
+    use solana_program::declare_id;
+    declare_id!("BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU");
+}
+
 pub mod dflow_mainnet_aggregator_4 {
     use solana_program::declare_id;
     declare_id!("DF1ow4tspfHX9JwWJsAb9epbkA8hmpSEAtxXy1V27QBH");

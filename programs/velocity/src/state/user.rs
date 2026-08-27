@@ -660,6 +660,20 @@ impl User {
             .saturating_sub(listed)
     }
 
+    /// The first perp market where the user has an order resting on the CLOB,
+    /// if any. A CLOB-resident order reserves `open_bids`/`open_asks`, which
+    /// inflate the worst-case margin a liquidation reads — but the DLOB cancel
+    /// a liquidation runs cannot remove it, so the liquidation would proceed on
+    /// the inflated figure. A keeper reclaims these with
+    /// `force_cancel_clob_orders` before liquidating.
+    pub fn first_market_with_clob_resident_orders(&self) -> Option<u16> {
+        self.perp_positions
+            .iter()
+            .filter(|position| !position.is_available())
+            .map(|position| position.market_index)
+            .find(|market_index| self.clob_resident_open_orders(*market_index) > 0)
+    }
+
     /// The slot shadowing CLOB order `clob_order_id` on `market_index` — a
     /// placed trigger (see [`OrderBitFlag::PlacedOnClob`]). Order ids are
     /// unique per book, so at most one slot matches.

@@ -78,3 +78,38 @@ pub fn find_quoter_signer(entry: &Pubkey) -> (Pubkey, u8) {
 pub fn find_clob_authority() -> (Pubkey, u8) {
     Pubkey::find_program_address(&[CLOB_AUTHORITY_SEED], &crate::ID)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anchor_lang::prelude::Pubkey;
+
+    /// The quoter CPI signers must never be the vault authority.
+    ///
+    /// `velocity_signer` is the SPL token authority on every spot and IF vault.
+    /// Signer privilege is inherited by a CPI callee, so a quoter handed
+    /// `velocity_signer` could forward it to the token program and drain a
+    /// vault. Every quoter instead signs as `find_quoter_signer` (per entry) or
+    /// `find_clob_authority` (the book). This pins the separation the whole
+    /// quoter safety model rests on: a seed change that collided any of them
+    /// with `velocity_signer` fails here.
+    #[test]
+    fn quoter_signers_are_never_the_vault_authority() {
+        let (velocity_signer, _) =
+            Pubkey::find_program_address(&[VELOCITY_SIGNER_SEED], &crate::ID);
+        let (clob_authority, _) = find_clob_authority();
+        assert_ne!(velocity_signer, clob_authority);
+        for seed in 0u8..16 {
+            let entry = Pubkey::new_from_array([seed; 32]);
+            let (quoter_signer, _) = find_quoter_signer(&entry);
+            assert_ne!(
+                quoter_signer, velocity_signer,
+                "quoter signer collided with the vault authority"
+            );
+            assert_ne!(
+                quoter_signer, clob_authority,
+                "quoter signer collided with the book authority"
+            );
+        }
+    }
+}

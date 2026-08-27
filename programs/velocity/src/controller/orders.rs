@@ -1443,14 +1443,23 @@ pub fn fill_perp_order_with_router(
     // their own gates.
     let taker_can_match =
         can_floored_user_match_with_exchange_oracle(user, exchange_match_fills_allowed);
-    if (!safe_match_fills_allowed || !taker_can_match) && !maker_orders_info.is_empty() {
-        msg!(
-            "Perp market = {} oracle not valid for match fills (safe={}, taker_exchange={})",
-            market_index,
-            safe_match_fills_allowed,
-            taker_can_match,
-        );
-        maker_orders_info.clear();
+    if !safe_match_fills_allowed || !taker_can_match {
+        if !maker_orders_info.is_empty() {
+            msg!(
+                "Perp market = {} oracle not valid for match fills (safe={}, taker_exchange={})",
+                market_index,
+                safe_match_fills_allowed,
+                taker_can_match,
+            );
+            maker_orders_info.clear();
+        }
+        // External quoter books (CLOB, Custom PropAMMs) execute at their own
+        // maker prices with no auction protection, exactly like a DLOB match,
+        // so the same oracle gate applies. Without this they would fill while
+        // the oracle is NonPositive / TooVolatile / TooUncertain, bounded only
+        // by the margin band around that same suspect oracle. The vAMM keeps
+        // its own inclusion gate.
+        router.books = &[];
     }
 
     let oracle_too_divergent_with_twap_5min = is_oracle_too_divergent_with_twap_5min(
@@ -4438,12 +4447,24 @@ fn fulfill_perp_order_router_pass(
         // CLOB orders are margin-reserved through velocity at placement, so
         // their fills/culls unwind open-order aggregates; Custom PropAMM
         // depth is never reserved, so there is nothing to unwind.
-        let maker_aggregates_tracked =
-            router.executor.quoter_type(i) == crate::state::prop_amm::QuoterType::Clob;
+        let maker_aggregates_tracked = router.executor.quoter_type(i).tracks_maker_aggregates();
 
         let (ext_base, ext_quote) = response.changes.iter().try_fold(
             (0u64, 0u64),
             |(base, quote), change| -> VelocityResult<(u64, u64)> {
+                // A zero-base change is not a fill, so it has no place in the
+                // response. Admitting one lets a quoter carry quote on a record
+                // the per-change band and the subject check both skip (they
+                // continue on base_size == 0), while its quote was already
+                // summed here. A short taker is then settled at the quoter's
+                // worst rung and the quoter keeps the difference.
+                validate!(
+                    change.base_size > 0,
+                    ErrorCode::QuoterFillOffQuote,
+                    "quoter {} returned a zero-base balance change carrying {} quote",
+                    router.executor.quoter_key(i),
+                    change.quote_size
+                )?;
                 Ok((
                     base.safe_add(change.base_size)?,
                     quote.safe_add(change.quote_size)?,
@@ -4704,6 +4725,19 @@ fn fulfill_perp_order_router_pass(
     // Only reached when a book withheld depth, which is what keeps the cost of
     // this off every ordinary fill.
     if withheld_depth {
+        // `settled_users` and `idle_loaded_users` address loaded users by a bit
+        // in a u64. A loaded map past 64 users cannot mark a filled maker
+        // beyond index 64 as settled, so it would read as idle and fail an
+        // honest fill. Guard the assumption loudly. The wire user set is capped
+        // well under 64 (`MAX_QUOTER_WIRE_USERS`), so a real fill never reaches
+        // this; if the caps ever grow, widen the bitmap instead of silently
+        // miscounting.
+        validate!(
+            makers_and_referrer.0.len() <= u64::BITS as usize,
+            ErrorCode::DefaultError,
+            "loaded user map has {} users, past the 64 the obligation bitmap covers",
+            makers_and_referrer.0.len()
+        )?;
         let idle = idle_loaded_users(
             makers_and_referrer,
             settled_users,
@@ -5096,12 +5130,22 @@ pub fn cross_match(
         let data = located.borrow()?;
         let response = located.execute_response(&data)?;
         let maker_aggregates_tracked =
-            executor.quoter_type(book_index) == crate::state::prop_amm::QuoterType::Clob;
+            executor.quoter_type(book_index).tracks_maker_aggregates();
         let maker_direction = taker_direction.opposite();
 
         let (leg_base, leg_quote) = response.changes.iter().try_fold(
             (0u64, 0u64),
             |(base, quote), change| -> VelocityResult<(u64, u64)> {
+                // A zero-base change carries no fill; its quote would be summed
+                // here but skipped by the per-change price and subject checks
+                // below. Reject it so a cross leg cannot smuggle quote past them.
+                validate!(
+                    change.base_size > 0,
+                    ErrorCode::QuoterFillOffQuote,
+                    "cross leg quoter {} returned a zero-base balance change carrying {} quote",
+                    executor.quoter_key(book_index),
+                    change.quote_size
+                )?;
                 Ok((
                     base.safe_add(change.base_size)?,
                     quote.safe_add(change.quote_size)?,
@@ -5992,7 +6036,12 @@ pub fn trigger_order(
     oracle_map: &mut OracleMap,
     filler: &AccountLoader<User>,
     clock: &Clock,
-) -> VelocityResult {
+    // Returns whether the trigger did payable work: `true` when it triggered
+    // the order and paid the keeper, `false` when it cancelled, found the
+    // order already triggered, or did nothing. The crank handler skips the
+    // reservoir payout on `false`, so a failing account's cancel branch cannot
+    // drain the market's reservoir.
+) -> VelocityResult<bool> {
     let now = clock.unix_timestamp;
     let slot = clock.slot;
 
@@ -6034,7 +6083,7 @@ pub fn trigger_order(
 
     if user.orders[order_index].triggered() {
         msg!("Order is already triggered");
-        return Ok(());
+        return Ok(false);
     }
 
     validate!(
@@ -6254,7 +6303,9 @@ pub fn trigger_order(
                 oracle_map,
             )?;
 
-            return Ok(());
+            // The cancel did no payable trigger work — the user paid no flat
+            // reward here, so the crank must not draw the reservoir either.
+            return Ok(false);
         }
     }
 
@@ -6310,7 +6361,7 @@ pub fn trigger_order(
 
     user.update_last_active_slot(slot);
 
-    Ok(())
+    Ok(true)
 }
 
 fn update_trigger_order_params(

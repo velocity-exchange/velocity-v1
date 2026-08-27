@@ -52,6 +52,20 @@ impl QuoterType {
             QuoterType::Custom => 20,
         }
     }
+
+    /// Whether a fill unwinds this quoter's makers' open-order aggregates from
+    /// its execute response (`completed_orders` and `cancelled`).
+    ///
+    /// Only a `Clob` does. Its orders are margin-reserved through velocity at
+    /// placement, so a fill or cull must decrement those reservations. A
+    /// `Custom` quoter's depth is never reserved, so it has nothing to unwind —
+    /// and letting one report completions or culls would let it decrement other
+    /// loaded users' aggregates, release their trigger slots, and free their
+    /// margin. Held as one predicate so the fill path cannot drift from the
+    /// registration rule that only velocity's own CLOB is a `Clob`.
+    pub fn tracks_maker_aggregates(self) -> bool {
+        matches!(self, QuoterType::Clob)
+    }
 }
 
 #[account(zero_copy(unsafe))]
@@ -1277,6 +1291,15 @@ impl QuoterV0 {
             self.quoter_type == QuoterType::Clob,
             ErrorCode::DefaultError,
             "quoter entry is not a CLOB"
+        )?;
+        // A Clob entry's program is pinned at registration to the CLOB velocity
+        // wrote. Re-check on the hot path so the book trust here never rests on
+        // a stale entry the pin did not cover.
+        validate!(
+            self.program_id == crate::ids::clob_program::id(),
+            ErrorCode::DefaultError,
+            "clob quoter runs program {}, not velocity's CLOB",
+            self.program_id
         )?;
         validate!(
             self.market == market_index,

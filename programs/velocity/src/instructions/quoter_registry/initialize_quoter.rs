@@ -95,6 +95,19 @@ pub fn handle_initialize_quoter(
         )?;
     }
     if args.quoter_type == QuoterType::Clob {
+        // A book settles for whoever it says rests on it, so the program behind
+        // a Clob entry is the trust root for maker identity. Pin it to the CLOB
+        // velocity wrote, so the admin's power is to give a market a book, not
+        // to choose the code a book runs. Without this a warm admin could point
+        // a market's book at a program of its own and name any loaded user as a
+        // maker at a price of its choosing.
+        validate!(
+            ctx.accounts.quoter_program.key() == crate::ids::clob_program::id(),
+            ErrorCode::InvalidQuoterConfig,
+            "a Clob quoter must run velocity's CLOB program {}, not {}",
+            crate::ids::clob_program::id(),
+            ctx.accounts.quoter_program.key()
+        )?;
         // The market names its book here, and only here: a book settles for
         // whoever rests on it, so a market that could be pointed at a second
         // one later would put every user a fill carries behind whoever holds

@@ -314,9 +314,24 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
             user.orders[order_index].trigger_condition
         )?;
 
+        // Reduce-only has no meaning on the book. The CLOB cannot clamp a fill
+        // to the maker's position, so a reduce-only order that rests here fills
+        // its full size, and a position that shrank elsewhere after placement
+        // makes that fill risk-increasing. The trigger-time gate below exempts
+        // reduce-only orders the way trigger_order does, which on the CLOB
+        // would let the full size rest ungated. So a reduce-only trigger stays
+        // on the speed-bumped taker flow (trigger_order), where reduce-only is
+        // enforced at fill. Mirrors restable_remainder_price.
+        validate!(
+            !user.orders[order_index].reduce_only,
+            ErrorCode::ReduceOnlyOrderCannotRestOnClob,
+            "reduce-only trigger order {} cannot rest on the CLOB",
+            order_id
+        )?;
+
         // Reserve worst-case aggregates for the resting order, then gate
-        // exactly like trigger_order: a risk-increasing, non-reduce-only
-        // trigger on a failing account cancels instead of placing.
+        // exactly like trigger_order: a risk-increasing trigger on a failing
+        // account cancels instead of placing.
         let direction = user.orders[order_index].direction;
         let base_asset_amount = user.orders[order_index].get_base_asset_amount_unfilled(None)?;
         let (_, worst_case_before) = user

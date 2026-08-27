@@ -206,6 +206,22 @@ pub fn liquidate_perp(
     )?;
 
     let user_is_being_liquidated = liquidation_mode.user_is_being_liquidated(user)?;
+    // A CLOB-resident order reserves open_bids/open_asks that inflate the
+    // worst-case margin above, but the DLOB cancel below cannot remove it, so
+    // the intermediate re-check never runs and a solvent position is
+    // liquidated on the inflated figure. Refuse a fresh liquidation until the
+    // book orders are reclaimed (force_cancel_clob_orders un-reserves them). An
+    // account already in liquidation is not blocked — the entry that inflation
+    // could have caused already happened.
+    if !user_is_being_liquidated {
+        if let Some(clob_market) = user.first_market_with_clob_resident_orders() {
+            msg!(
+                "user has resting CLOB orders in market {}; force_cancel_clob_orders must run first",
+                clob_market
+            );
+            return Err(ErrorCode::LiquidationConflictsWithClobOrders);
+        }
+    }
     if !user_is_being_liquidated
         && liquidation_mode.meets_margin_requirements(&margin_calculation)?
     {
@@ -916,6 +932,19 @@ pub fn liquidate_perp_with_fill(
     )?;
 
     let user_is_being_liquidated = liquidation_mode.user_is_being_liquidated(&user)?;
+    // Same CLOB-inflation guard as plain liquidate_perp: a resting book order
+    // inflates the worst-case margin the entry check reads, and the DLOB
+    // cancel cannot remove it. The relay resolver reclaims these first; this
+    // refuses a manual caller that skips that step.
+    if !user_is_being_liquidated {
+        if let Some(clob_market) = user.first_market_with_clob_resident_orders() {
+            msg!(
+                "user has resting CLOB orders in market {}; force_cancel_clob_orders must run first",
+                clob_market
+            );
+            return Err(ErrorCode::LiquidationConflictsWithClobOrders);
+        }
+    }
     if !user_is_being_liquidated
         && liquidation_mode.meets_margin_requirements(&margin_calculation)?
     {

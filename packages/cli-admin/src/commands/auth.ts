@@ -3,7 +3,11 @@ import { PublicKey } from '@solana/web3.js';
 import { HotRole } from '@velocity-exchange/sdk';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
-import { reportDispatch, sendOrPropose } from '../lib/squads';
+import {
+	reportDispatch,
+	resolveAdminAuthority,
+	sendOrPropose,
+} from '../lib/squads';
 
 const HOT_ROLES = Object.values(HotRole) as string[];
 
@@ -114,14 +118,18 @@ export function registerAuth(parent: Command): void {
 		// client fails to decode them.
 		const client = await buildAdminClient(opts, false);
 		try {
+			const multisigPda = opts.multisig
+				? new PublicKey(opts.multisig)
+				: undefined;
 			const ix = await client.getUpdateHotAdminIx(
 				parseHotRole(role),
-				new PublicKey(pubkey)
+				new PublicKey(pubkey),
+				resolveAdminAuthority(provider, multisigPda)
 			);
 			const result = await sendOrPropose(
 				provider,
 				[ix],
-				opts.multisig ? new PublicKey(opts.multisig) : undefined,
+				multisigPda,
 				`velocity-admin auth set-hot-admin ${role}`
 			);
 			reportDispatch(`set-hot-admin ${role} → ${pubkey}`, result);

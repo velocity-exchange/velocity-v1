@@ -8650,7 +8650,8 @@ export class AdminClient extends VelocityClient {
 	 */
 	public async getUpdateHotAdminIx(
 		role: HotRole,
-		newPubkey: PublicKey
+		newPubkey: PublicKey,
+		admin?: PublicKey
 	): Promise<TransactionInstruction> {
 		return this.program.instruction.updateHotAdmin(
 			encodeHotRole(role),
@@ -8658,7 +8659,7 @@ export class AdminClient extends VelocityClient {
 			{
 				accounts: {
 					state: await this.getStatePublicKey(),
-					admin: this.wallet.publicKey,
+					admin: admin ?? this.wallet.publicKey,
 				},
 			}
 		);

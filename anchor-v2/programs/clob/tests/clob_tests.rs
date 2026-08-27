@@ -692,7 +692,6 @@ fn place_rejects_off_grid_undersized_and_bad_authority() {
     .to_instruction(accounts::UpdateMarketV0 {
         market: addr(ctx.market),
         authority: addr(ctx.admin.pubkey()),
-        new_place_authority: None,
     });
     send(&mut ctx, ix).unwrap();
 
@@ -1410,7 +1409,6 @@ fn set_blocking_min_size(ctx: &mut Ctx, size: u64) {
     .to_instruction(accounts::UpdateMarketV0 {
         market: addr(ctx.market),
         authority: addr(ctx.admin.pubkey()),
-        new_place_authority: None,
     });
     send(ctx, ix).unwrap();
 }
@@ -1581,7 +1579,6 @@ fn partial_fill_remainder_below_min_order_size_is_culled() {
     .to_instruction(accounts::UpdateMarketV0 {
         market: addr(ctx.market),
         authority: addr(ctx.admin.pubkey()),
-        new_place_authority: None,
     });
     send(&mut ctx, ix).unwrap();
 
@@ -1918,7 +1915,6 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
     .to_instruction(accounts::UpdateMarketV0 {
         market: addr(ctx.market),
         authority: addr(ctx.admin.pubkey()),
-        new_place_authority: None,
     });
     send(&mut ctx, ix).unwrap();
 

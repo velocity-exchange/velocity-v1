@@ -9,12 +9,24 @@ import {
 } from '@velocity-exchange/sdk';
 import * as fs from 'fs';
 import * as os from 'os';
+import { announceContext } from './context';
 
 export type GlobalOpts = {
 	url: string;
 	keypair: string;
 	env: VelocityEnv;
 	multisig?: string;
+	/**
+	 * Whether env came from a flag or profile (true) or is the legacy
+	 * fallback default (false). A declared env that contradicts the RPC's
+	 * genesis hash is a fatal mismatch; the fallback is silently replaced by
+	 * the detected cluster instead.
+	 */
+	envExplicit?: boolean;
+	/** Name of the config profile these opts were resolved from, if any. */
+	profile?: string;
+	/** Skip the interactive mainnet direct-send confirmation. */
+	yes?: boolean;
 };
 
 export function loadKeypair(path: string): Keypair {
@@ -53,14 +65,22 @@ export async function buildAdminClient(
 	user?: { authority: PublicKey; subAccountId?: number }
 ): Promise<AdminClient> {
 	const provider = buildProvider(opts);
-	const sdkConfig = initialize({ env: opts.env });
+	const env = (await announceContext(provider.connection, {
+		env: opts.env,
+		envDeclared: opts.envExplicit ?? true,
+		profile: opts.profile,
+		signer: provider.wallet.publicKey,
+		multisig: opts.multisig ? new PublicKey(opts.multisig) : undefined,
+		yes: opts.yes,
+	})) as VelocityEnv;
+	const sdkConfig = initialize({ env });
 	const programId = new PublicKey(sdkConfig.VELOCITY_PROGRAM_ID);
 
 	const client = new AdminClient({
 		connection: provider.connection,
 		wallet: provider.wallet,
 		programID: programId,
-		env: opts.env,
+		env,
 		opts: { commitment: 'confirmed', preflightCommitment: 'confirmed' },
 		authority: user?.authority,
 		activeSubAccountId: user?.subAccountId,

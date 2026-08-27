@@ -1,0 +1,5 @@
+---
+'@velocity-exchange/admin-cli': minor
+---
+
+Connection profiles and authority introspection. `config init` builds named profiles (keypair, env, optional multisig, optional own RPC) interactively and verifies every ingredient against the live cluster before saving: RPC classified by genesis hash, keypair loaded, multisig matched against the onchain State admins. RPC URLs are shared per cluster (`config set-rpc`); profiles without their own url inherit the shared one for their env. Select a profile with `-p/--profile`, `VELOCITY_ADMIN_PROFILE`, or the configured default, with explicit flags always overriding. Every chain-touching command prints a context header (cluster by genesis hash, profile, signer, dispatch mode) and dies on a declared env that contradicts the RPC's actual cluster; when env is not declared it is adopted from the chain. Mainnet direct sends ask for interactive confirmation (`--yes` skips, non-TTY implies it). New `whoami` reports which State admin tiers and hot roles the signer holds plus multisig membership, and `multisig proposals` lists recent proposals with status, approval counts, and timelock ETAs.

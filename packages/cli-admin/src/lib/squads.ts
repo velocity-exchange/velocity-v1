@@ -6,6 +6,7 @@ import {
 	TransactionMessage,
 } from '@solana/web3.js';
 import * as multisig from '@sqds/multisig';
+import { confirmMainnetDirect } from './context';
 
 /**
  * The authority that will actually sign a dispatched instruction: the Squads
@@ -74,6 +75,7 @@ export async function sendOrPropose(
 	}
 
 	if (!multisigPda) {
+		await confirmMainnetDirect(memo);
 		const tx = new Transaction().add(...instructions);
 		const signature = await provider.sendAndConfirm(tx);
 		return { kind: 'sent', signature };

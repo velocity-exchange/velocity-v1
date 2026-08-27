@@ -2561,6 +2561,34 @@ pub fn handle_update_perp_market_clob_quoter(
             rules.min_order_size,
             perp_market.market_stats.min_order_size
         )?;
+        // The book's place authority is its trust root: it settles for whoever
+        // it names as a maker, and velocity signs its CPIs as this key. Pin it
+        // to velocity's own clob authority PDA, so a book whose place authority
+        // is a stranger cannot be attached and, through it, forge orders for any
+        // loaded user. place_authority is immutable on the book, so a book that
+        // passes here stays pinned for the life of the attachment.
+        validate!(
+            rules.place_authority == ctx.accounts.clob_authority.key().to_bytes(),
+            ErrorCode::DefaultError,
+            "book place authority is not velocity's clob authority"
+        )?;
+        // The book's grid must match the market's. A remainder aligned to the
+        // market can then always rest; an off-tick or off-step remainder would
+        // revert the whole fill that carried it.
+        validate!(
+            rules.tick_size == perp_market.order_tick_size,
+            ErrorCode::DefaultError,
+            "book tick {} does not match the market tick {}",
+            rules.tick_size,
+            perp_market.order_tick_size
+        )?;
+        validate!(
+            rules.step_size == perp_market.order_step_size,
+            ErrorCode::DefaultError,
+            "book step {} does not match the market step {}",
+            rules.step_size,
+            perp_market.order_step_size
+        )?;
     }
 
     // The book's own conditions first: velocity registers which resolver

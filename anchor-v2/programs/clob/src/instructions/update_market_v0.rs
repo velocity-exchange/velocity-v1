@@ -12,8 +12,6 @@ pub struct UpdateMarketV0 {
     pub market: ClobMarketV0,
     #[account(address = market.authority @ ClobError::InvalidAuthority)]
     pub authority: Signer,
-    /// Present = becomes the new place authority.
-    pub new_place_authority: Option<UncheckedAccount>,
 }
 
 #[derive(Clone, Default, wincode::SchemaRead, wincode::SchemaWrite)]
@@ -35,11 +33,11 @@ pub fn handle_update_market_v0(
     ctx: &mut Context<UpdateMarketV0>,
     args: UpdateMarketArgsV0,
 ) -> Result<()> {
-    let new_place = ctx
-        .accounts
-        .new_place_authority
-        .as_ref()
-        .map(|a| *a.address());
+    // place_authority is immutable after initialize_market_v0. A book settles
+    // for whoever it names as a maker, and its caller (velocity) pins this to
+    // its own signing PDA; a rotation — even a transient one — would let this
+    // market's authority place orders for any user, so the book does not offer
+    // one.
     let market = &mut ctx.accounts.market;
     if let Some(v) = args.order_tick_size {
         market.order_tick_size = v;
@@ -90,8 +88,5 @@ pub fn handle_update_market_v0(
         market.default_activation_delay_slots <= market.max_activation_delay_slots,
         crate::error::ClobError::InvalidConfig
     );
-    if let Some(v) = new_place {
-        market.place_authority = v;
-    }
     Ok(())
 }

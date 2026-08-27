@@ -324,6 +324,19 @@ pub struct OrderRulesV0 {
     pub default_activation_delay_slots: u32,
     /// Upper bound on a caller-chosen activation delay.
     pub max_activation_delay_slots: u32,
+    /// The key the book requires to sign a placement, cancel, evict, expire, or
+    /// execute — the book's whole trust root. A caller that settles fills for
+    /// whoever the book names as a maker (velocity, via `QuoterSubjects::Book`)
+    /// pins this to its own signing PDA, so the book only ever acts under a key
+    /// the caller controls. Reported here rather than read from the header, so
+    /// the caller does not depend on where the book stores it.
+    pub place_authority: [u8; 32],
+    /// The book's price and size grid. A caller that migrates an order onto the
+    /// book pins these to its market's grid at attach, so a remainder aligned
+    /// to the market can always rest and is never rejected off-tick or
+    /// off-step (which would revert the whole fill that carried it).
+    pub tick_size: u64,
+    pub step_size: u64,
 }
 
 /// One order, as the book describes it to a caller.

@@ -25,5 +25,8 @@ pub fn handle_order_rules_v0(ctx: &mut Context<OrderRulesV0Accounts>) -> Result<
         blocking_min_size: market.blocking_min_size,
         default_activation_delay_slots: market.default_activation_delay_slots,
         max_activation_delay_slots: market.max_activation_delay_slots,
+        place_authority: market.place_authority.to_bytes(),
+        tick_size: market.order_tick_size,
+        step_size: market.order_step_size,
     })
 }

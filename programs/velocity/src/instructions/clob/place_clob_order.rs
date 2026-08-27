@@ -411,10 +411,8 @@ pub fn try_place_remainder_on_clob<'info>(
     // and that rejection would revert the whole fill that already landed. A
     // partial fill routinely leaves a sub-min remainder, so drop it to the
     // plain cancel here instead of failing the fill. Off-tick / off-step
-    // remainders do not arise while the book's grid matches the market's, which
-    // is the expected configuration; the book does not yet report its tick and
-    // step for the attach to pin, so a coarser book grid stays an ops-misconfig
-    // rather than a caught case.
+    // remainders cannot arise: the attach pins the book's tick and step to the
+    // market's, so a remainder aligned to the market is aligned to the book.
     let min_order_size = clob.reader().order_rules()?.min_order_size;
     if min_order_size != 0 && base_asset_amount < min_order_size {
         msg!(

@@ -75,11 +75,11 @@ const errorCodesToSuppress = [
 
 const LIQUIDATE_THROTTLE_BACKOFF = 5000; // the time to wait before trying to liquidate a throttled user again
 
-// Markets whose positions are wound down out of band; never send a liquidation.
-const PERP_MARKETS_NEVER_LIQUIDATED = [37, 49];
+// Markets whose positions are wound down out of band; never send a liquidation. Once markets are settled properly, this can be removed.
+const PERP_MARKETS_NEVER_LIQUIDATED: number[] = [];
 
-/** A perp position, reduced to what unstick-market selection depends on. */
-export type UnstickPosition = {
+/** A perp position, reduced to what liquidation-exit market selection depends on. */
+export type LiquidationExitPosition = {
 	marketIndex: number;
 	hasBase: boolean;
 	hasOpenOrder: boolean;
@@ -89,7 +89,7 @@ export type UnstickPosition = {
 	flagged: boolean;
 };
 
-export type UnstickCandidate = {
+export type LiquidationExitCandidate = {
 	/**
 	 * `crank`  - zero-base liquidate_perp; clears the flag via the early exit.
 	 * `base`   - real, step-sized liquidate_perp.
@@ -110,16 +110,16 @@ export type UnstickCandidate = {
  * on its own, a sized liquidation is the fallback, and a pnl-only slot needs a
  * different instruction entirely.
  */
-export function selectUnstickCandidates(
-	positions: UnstickPosition[],
+export function selectLiquidationExitCandidates(
+	positions: LiquidationExitPosition[],
 	isCrossFlagged: boolean,
 	actionableMarkets: number[]
-): UnstickCandidate[] {
-	const candidates: UnstickCandidate[] = [];
+): LiquidationExitCandidate[] {
+	const candidates: LiquidationExitCandidate[] = [];
 
 	const rank = (
-		position: UnstickPosition
-	): UnstickCandidate['kind'] | undefined => {
+		position: LiquidationExitPosition
+	): LiquidationExitCandidate['kind'] | undefined => {
 		if (position.hasOpenOrder && !position.hasBase) {
 			return 'crank';
 		}
@@ -128,8 +128,8 @@ export function selectUnstickCandidates(
 		}
 		return position.hasPnl ? 'pnl' : undefined;
 	};
-	const order: UnstickCandidate['kind'][] = ['crank', 'base', 'pnl'];
-	const push = (from: UnstickPosition[]) => {
+	const order: LiquidationExitCandidate['kind'][] = ['crank', 'base', 'pnl'];
+	const push = (from: LiquidationExitPosition[]) => {
 		for (const kind of order) {
 			for (const position of from) {
 				if (
@@ -1656,7 +1656,7 @@ export class LiquidatorBot implements Bot {
 		}
 
 		const positions = user.getActivePerpPositions();
-		const candidates = selectUnstickCandidates(
+		const candidates = selectLiquidationExitCandidates(
 			positions.map((position) => ({
 				marketIndex: position.marketIndex,
 				hasBase: !position.baseAssetAmount.isZero(),
@@ -1687,7 +1687,7 @@ export class LiquidatorBot implements Bot {
 		// in a market with no configured subaccount, or be too small to size, and
 		// stopping there would stall on the same slot every tick.
 		for (const candidate of candidates) {
-			const issued = await this.issueUnstickCandidate(
+			const issued = await this.issueLiquidationExitCandidate(
 				user,
 				positions,
 				candidate
@@ -1729,10 +1729,10 @@ export class LiquidatorBot implements Bot {
 	 * Sends the instruction a candidate calls for. Returns which counter to bump,
 	 * or undefined when nothing could be sent so the caller tries the next one.
 	 */
-	private async issueUnstickCandidate(
+	private async issueLiquidationExitCandidate(
 		user: User,
 		positions: PerpPosition[],
-		candidate: UnstickCandidate
+		candidate: LiquidationExitCandidate
 	): Promise<'liquidatePerp' | 'liquidatePerpPnlForDeposit' | undefined> {
 		const userKey = user.userAccountPublicKey.toBase58();
 
@@ -1842,7 +1842,6 @@ export class LiquidatorBot implements Bot {
 		subAccountToLiqPerp: number,
 		baseAmountToLiquidate: BN
 	): Promise<boolean> {
-		// TODO: remove this once the markets are settled properly
 		if (PERP_MARKETS_NEVER_LIQUIDATED.includes(perpMarketIndex)) {
 			logger.warn(
 				`[${this.name}]: perp market ${perpMarketIndex} is never liquidated, skipping`

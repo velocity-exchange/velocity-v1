@@ -1,13 +1,16 @@
 import { expect } from 'chai';
 
-import { selectUnstickCandidates, UnstickPosition } from './liquidator';
+import {
+	selectLiquidationExitCandidates,
+	LiquidationExitPosition,
+} from './liquidator';
 
 const ALL_MARKETS = [0, 1, 2, 3];
 
 function position(
 	marketIndex: number,
-	overrides: Partial<UnstickPosition> = {}
-): UnstickPosition {
+	overrides: Partial<LiquidationExitPosition> = {}
+): LiquidationExitPosition {
 	return {
 		marketIndex,
 		hasBase: false,
@@ -19,9 +22,9 @@ function position(
 	};
 }
 
-describe('selectUnstickCandidates', () => {
+describe('selectLiquidationExitCandidates', () => {
 	it('cranks a market holding orders but no base', () => {
-		const candidates = selectUnstickCandidates(
+		const candidates = selectLiquidationExitCandidates(
 			[position(2, { hasOpenOrder: true })],
 			true,
 			ALL_MARKETS
@@ -31,7 +34,7 @@ describe('selectUnstickCandidates', () => {
 	});
 
 	it('sizes a real liquidation for a base position', () => {
-		const candidates = selectUnstickCandidates(
+		const candidates = selectLiquidationExitCandidates(
 			[position(1, { hasBase: true, hasOpenOrder: true })],
 			true,
 			ALL_MARKETS
@@ -43,7 +46,7 @@ describe('selectUnstickCandidates', () => {
 	});
 
 	it('routes a pnl-only position away from liquidate_perp', () => {
-		const candidates = selectUnstickCandidates(
+		const candidates = selectLiquidationExitCandidates(
 			[position(0, { hasPnl: true })],
 			true,
 			ALL_MARKETS
@@ -54,13 +57,13 @@ describe('selectUnstickCandidates', () => {
 
 	it('falls back to a market with no position when nothing is actionable', () => {
 		// The shape a user is left in once their last position is settled away.
-		const candidates = selectUnstickCandidates([], true, ALL_MARKETS);
+		const candidates = selectLiquidationExitCandidates([], true, ALL_MARKETS);
 
 		expect(candidates).to.deep.equal([{ kind: 'crank', marketIndex: 0 }]);
 	});
 
 	it('always ends on the empty-market crank so the flag can still clear', () => {
-		const candidates = selectUnstickCandidates(
+		const candidates = selectLiquidationExitCandidates(
 			[position(0, { hasPnl: true })],
 			true,
 			ALL_MARKETS
@@ -73,7 +76,7 @@ describe('selectUnstickCandidates', () => {
 	});
 
 	it('orders candidates cheapest first', () => {
-		const candidates = selectUnstickCandidates(
+		const candidates = selectLiquidationExitCandidates(
 			[
 				position(0, { hasPnl: true }),
 				position(1, { hasBase: true }),
@@ -92,7 +95,7 @@ describe('selectUnstickCandidates', () => {
 	});
 
 	it('lists every base position so an unusable first one is not a dead end', () => {
-		const candidates = selectUnstickCandidates(
+		const candidates = selectLiquidationExitCandidates(
 			[position(1, { hasBase: true }), position(2, { hasBase: true })],
 			true,
 			ALL_MARKETS
@@ -105,7 +108,7 @@ describe('selectUnstickCandidates', () => {
 	});
 
 	it('drops markets this bot cannot liquidate', () => {
-		const candidates = selectUnstickCandidates(
+		const candidates = selectLiquidationExitCandidates(
 			[position(3, { hasBase: true })],
 			true,
 			[0, 1]
@@ -118,7 +121,11 @@ describe('selectUnstickCandidates', () => {
 
 	it('returns nothing when no market is actionable', () => {
 		expect(
-			selectUnstickCandidates([position(3, { hasBase: true })], true, [])
+			selectLiquidationExitCandidates(
+				[position(3, { hasBase: true })],
+				true,
+				[]
+			)
 		).to.deep.equal([]);
 	});
 
@@ -126,7 +133,7 @@ describe('selectUnstickCandidates', () => {
 		it('targets the flagged isolated market itself', () => {
 			// The program reads the per-position flag when the target market holds
 			// an isolated position, so only market 2 can clear market 2.
-			const candidates = selectUnstickCandidates(
+			const candidates = selectLiquidationExitCandidates(
 				[position(2, { hasBase: true, isolated: true, flagged: true })],
 				false,
 				ALL_MARKETS
@@ -139,7 +146,7 @@ describe('selectUnstickCandidates', () => {
 			// Targeting the isolated position would switch the program to isolated
 			// mode, which reads a flag that is not set, and fail as
 			// SufficientCollateral without clearing anything.
-			const candidates = selectUnstickCandidates(
+			const candidates = selectLiquidationExitCandidates(
 				[position(1, { hasBase: true, isolated: true })],
 				true,
 				ALL_MARKETS
@@ -149,7 +156,7 @@ describe('selectUnstickCandidates', () => {
 		});
 
 		it('handles both flags at once, isolated scope first', () => {
-			const candidates = selectUnstickCandidates(
+			const candidates = selectLiquidationExitCandidates(
 				[
 					position(0, { hasBase: true }),
 					position(1, { hasBase: true, isolated: true, flagged: true }),
@@ -167,7 +174,7 @@ describe('selectUnstickCandidates', () => {
 
 		it('offers nothing when an unflagged isolated position is all there is', () => {
 			expect(
-				selectUnstickCandidates(
+				selectLiquidationExitCandidates(
 					[position(0, { hasBase: true, isolated: true })],
 					false,
 					ALL_MARKETS

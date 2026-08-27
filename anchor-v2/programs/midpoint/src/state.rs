@@ -202,9 +202,15 @@ pub struct MidpointQuoterV0 {
     pub require_attested_flow: u8,
     pub bid_count: u8,
     pub ask_count: u8,
+    /// Max `|mid − reference_price| / reference_price` the quoter fills at,
+    /// parts per million. 0 disables the bound. Owned by the config key, not
+    /// the hot key. A compromised hot key cannot move mid past this band of
+    /// velocity's oracle, so a bad mid quotes and fills nothing rather than
+    /// draining the maker's collateral at an off-market price.
+    pub max_mid_deviation_ppm: u64,
     /// Room for two more pubkeys plus a scalar or two, so a future field
     /// lands without moving the ladders or the response tail.
-    pub padding: [u8; 72],
+    pub padding: [u8; 64],
     pub bids: [SplineLevelV0; MAX_SPLINE_LEVELS],
     pub asks: [SplineLevelV0; MAX_SPLINE_LEVELS],
     /// Scratch region `quote_v0`/`execute_v0` stream their borsh response
@@ -215,7 +221,7 @@ pub struct MidpointQuoterV0 {
 const_assert_eq!(core::mem::size_of::<MidpointQuoterV0>(), 5392);
 // The header (everything before the ladders) stays 8-aligned and hole-free —
 // `#[account]` is Pod, which rejects padding bytes.
-const_assert_eq!(4 * 32 + 8 * 8 + 8 + 72, 272);
+const_assert_eq!(4 * 32 + 8 * 8 + 8 + 8 + 64, 272);
 
 /// Account-data offset of the `response` region.
 pub const RESPONSE_OFFSET: usize =
@@ -367,6 +373,21 @@ impl MidpointQuoterV0 {
         self.is_paused == 0
             && self.mid_price != 0
             && slot.saturating_sub(self.mid_slot) <= self.max_mid_staleness_slots
+    }
+
+    /// Whether the current mid sits within the configured band of the caller's
+    /// reference price. The reference is velocity's oracle. A zero bound, a
+    /// zero mid, or a non-positive reference disables the check — a crank path
+    /// that passes no reference must not be blocked here.
+    pub fn mid_within_deviation(&self, reference_price: i64) -> bool {
+        if self.max_mid_deviation_ppm == 0 || self.mid_price == 0 || reference_price <= 0 {
+            return true;
+        }
+        let reference = reference_price as u128;
+        let diff = (self.mid_price as u128).abs_diff(reference);
+        // diff / reference <= ppm / 1e6  ⇔  diff * 1e6 <= ppm * reference.
+        diff.saturating_mul(PERCENTAGE_PRECISION)
+            <= (self.max_mid_deviation_ppm as u128).saturating_mul(reference)
     }
 
     /// Walk the consumed prefix for a fill of `size`, without mutating —
@@ -795,6 +816,25 @@ mod tests {
         quoter
     }
 
+    #[test]
+    fn mid_deviation_bound_gates_an_off_market_mid() {
+        let mut q = quoter(&[(1_000, UNIT)], &[(1_000, UNIT)]);
+        // Bound disabled: any mid passes, and a zero reference never gates.
+        assert!(q.mid_within_deviation(MID as i64));
+        assert!(q.mid_within_deviation(0));
+
+        // A one percent band around the oracle reference.
+        q.max_mid_deviation_ppm = 10_000;
+        assert!(q.mid_within_deviation(MID as i64)); // exact
+        assert!(q.mid_within_deviation((MID + MID / 200) as i64)); // ~0.5% off, inside
+        assert!(!q.mid_within_deviation((MID + MID / 50) as i64)); // ~2% off, outside
+        assert!(!q.mid_within_deviation((MID / 2) as i64)); // far below, outside
+
+        // A non-positive reference disables the check rather than gating.
+        assert!(q.mid_within_deviation(0));
+        assert!(q.mid_within_deviation(-5));
+    }
+
     /// The Vec-building reference encoder the program used to run, kept as
     /// the oracle for the streaming writer.
     fn reference_quote(quoter: &MidpointQuoterV0, direction: Direction, size: u64) -> Vec<u8> {
@@ -837,6 +877,7 @@ mod tests {
             changes: change.as_slice(),
             cancelled: &[],
             completed: &[],
+            partial: &[],
         })
         .unwrap()
     }

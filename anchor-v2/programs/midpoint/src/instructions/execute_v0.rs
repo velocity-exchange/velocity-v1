@@ -43,6 +43,13 @@ pub fn handle_execute_v0(
         ctx.accounts.instructions_sysvar.account(),
         ctx.accounts.velocity_state.account(),
     )?;
+    // A mid outside the band of velocity's oracle fills nothing, so a
+    // compromised hot key cannot settle the maker at an off-market price.
+    let open = open
+        && ctx
+            .accounts
+            .quoter
+            .mid_within_deviation(args.reference_price);
     let quoter = &mut ctx.accounts.quoter;
 
     let mut change = None;

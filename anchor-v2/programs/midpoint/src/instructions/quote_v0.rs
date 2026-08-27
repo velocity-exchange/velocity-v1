@@ -29,10 +29,11 @@ pub struct QuoteV0 {
 /// order, so a mirror that is missing one reads every field after it from the
 /// wrong place and reports nothing wrong.
 ///
-/// The midpoint reads `users`, `taker` and `limit_price`. It ignores `caps`
-/// and `reference_price`: it settles against one standing-intent user and
-/// holds no orders, so there is no per-user budget to spend and nothing to
-/// skip mid-book.
+/// The midpoint reads `users`, `taker`, `limit_price` and `reference_price`.
+/// It ignores `caps`: it settles against one standing-intent user and holds no
+/// orders, so there is no per-user budget to spend and nothing to skip
+/// mid-book. `reference_price` is velocity's oracle; the quoter refuses to
+/// quote when its mid is outside the configured band of that price.
 pub use quoter_spec::QuoteArgsV0;
 
 /// Whether this quoter has anything to say to this caller: settleability,
@@ -87,6 +88,13 @@ pub fn handle_quote_v0(ctx: &mut Context<QuoteV0>, args: QuoteArgsV0) -> Result<
         ctx.accounts.instructions_sysvar.account(),
         ctx.accounts.velocity_state.account(),
     )?;
+    // A mid outside the band of velocity's oracle quotes nothing, so a
+    // compromised hot key cannot draw flow onto an off-market price.
+    let open = open
+        && ctx
+            .accounts
+            .quoter
+            .mid_within_deviation(args.reference_price);
     ctx.accounts.quoter.write_quote_response(
         args.direction,
         args.size,

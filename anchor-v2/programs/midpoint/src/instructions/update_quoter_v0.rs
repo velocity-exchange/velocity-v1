@@ -29,6 +29,9 @@ pub struct UpdateQuoterArgsV0 {
     /// velocity's side silences the book rather than opening it.
     pub require_attested_flow: Option<bool>,
     pub is_paused: Option<bool>,
+    /// Max mid deviation from velocity's oracle, parts per million. 0 disables
+    /// the bound.
+    pub max_mid_deviation_ppm: Option<u64>,
 }
 
 pub fn handle_update_quoter_v0(
@@ -61,6 +64,9 @@ pub fn handle_update_quoter_v0(
     }
     if let Some(v) = args.is_paused {
         quoter.is_paused = v as u8;
+    }
+    if let Some(v) = args.max_mid_deviation_ppm {
+        quoter.max_mid_deviation_ppm = v;
     }
     quoter.validate()
 }

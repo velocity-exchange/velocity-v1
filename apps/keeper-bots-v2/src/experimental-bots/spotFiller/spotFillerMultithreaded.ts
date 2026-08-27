@@ -17,6 +17,8 @@ import {
 	UserAccount,
 	decodeUser,
 	PriorityFeeSubscriberMap,
+	msToSlotsNum,
+	currentSlotDuration,
 } from '@velocity-exchange/sdk';
 import {
 	Connection,
@@ -151,7 +153,8 @@ export const CONFIRM_TX_RATE_LIMIT_BACKOFF_MS = 5_000; // wait this long until t
 export const CONFIRM_TX_INTERVAL_MS = 5_000;
 const FILL_ORDER_THROTTLE_BACKOFF = 1000; // the time to wait before trying to fill a throttled (error filling) node again
 const CONFIRM_TX_ATTEMPTS = 2;
-const SLOTS_UNTIL_JITO_LEADER_TO_SEND = 4;
+// wall-clock lead to build+send before the jito leader window (~4 slots at 400ms)
+const JITO_LEADER_LEAD_MS = 1_600;
 const SIM_CU_ESTIMATE_MULTIPLIER = 1.15;
 const MAX_ACCOUNTS_PER_TX = 64; // solana limit, track https://github.com/solana-labs/solana/issues/27241
 
@@ -1608,7 +1611,16 @@ export class SpotFillerMultithreaded {
 			if (slotsUntilJito === undefined) {
 				return false;
 			}
-			return slotsUntilJito < SLOTS_UNTIL_JITO_LEADER_TO_SEND;
+			return (
+				slotsUntilJito <
+				msToSlotsNum(
+					JITO_LEADER_LEAD_MS,
+					currentSlotDuration(
+						this.velocityClient,
+						this.slotSubscriber.getSlot()
+					)
+				)
+			);
 		}
 		if (!this.bundleSender?.connected()) {
 			return false;

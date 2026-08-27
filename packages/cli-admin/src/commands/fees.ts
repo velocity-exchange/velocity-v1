@@ -11,10 +11,15 @@ import {
 	RevenueShareEscrowAccount,
 	RevenueShareEscrowMap,
 	TransferFeeAndPnlPoolDirection,
+	ACCELERATED_REFERRER_REWARD_PERCENT,
 } from '@velocity-exchange/sdk';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
-import { reportDispatch, sendOrPropose } from '../lib/squads';
+import {
+	reportDispatch,
+	resolveAdminAuthority,
+	sendOrPropose,
+} from '../lib/squads';
 
 function parseMarketType(value: string): MarketType {
 	switch (value.toLowerCase()) {
@@ -140,6 +145,63 @@ export function registerFees(parent: Command): void {
 			}
 		}
 	);
+
+	withGlobalOptions(
+		fees
+			.command('set-referral-rate <percent>')
+			.description(
+				`Set the Standard referrer reward percentage on every active perp fee tier. Accelerated remains fixed at ${ACCELERATED_REFERRER_REWARD_PERCENT}%. Preserves all other fee parameters. Warm or cold admin.`
+			)
+	).action(async (percentArg: string, _flags, cmd: Command) => {
+		if (!/^\d+$/.test(percentArg)) {
+			throw new Error(`percent must be an integer, got "${percentArg}"`);
+		}
+		const percent = Number.parseInt(percentArg, 10);
+		if (percent > 100) {
+			throw new Error('percent must be between 0 and 100');
+		}
+
+		const opts = readGlobalOpts(cmd);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const current = client.getStateAccount().perpFeeStructure;
+			const feeStructure = {
+				...current,
+				feeTiers: current.feeTiers.map((tier) => ({ ...tier })),
+			};
+			let updatedTiers = 0;
+			for (const tier of feeStructure.feeTiers) {
+				if (tier.feeNumerator > 0) {
+					tier.referrerRewardNumerator = percent;
+					updatedTiers++;
+				}
+			}
+			if (updatedTiers === 0) {
+				throw new Error('perp fee structure has no active tiers');
+			}
+
+			const multisigPda = opts.multisig
+				? new PublicKey(opts.multisig)
+				: undefined;
+			const ix = await client.getUpdatePerpFeeStructureIx(
+				feeStructure,
+				resolveAdminAuthority(provider, multisigPda)
+			);
+			const result = await sendOrPropose(
+				provider,
+				[ix],
+				multisigPda,
+				'velocity-admin fees set-referral-rate'
+			);
+			reportDispatch(
+				`Standard referral rate = ${percent}%, Accelerated remains ${ACCELERATED_REFERRER_REWARD_PERCENT}% across ${updatedTiers} active tiers`,
+				result
+			);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
 
 	withGlobalOptions(
 		fees

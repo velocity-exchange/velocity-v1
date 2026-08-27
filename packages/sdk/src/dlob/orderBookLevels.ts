@@ -25,6 +25,7 @@ import {
 import { MMOraclePriceData, OraclePriceData } from '../oracles/types';
 import { PublicKey } from '@solana/web3.js';
 import { standardizeBaseAssetAmount, standardizePrice } from '../math/orders';
+import { SlotDurationState } from '../math/time';
 
 /**
  * Where a level's depth came from.
@@ -134,7 +135,8 @@ export function* getL2GeneratorFromDLOBNodes(
 	dlobNodes: Generator<DLOBNode>,
 	oraclePriceData: OraclePriceData,
 	slot: number,
-	tickSize?: BN
+	tickSize: BN | undefined,
+	slotDurationState: SlotDurationState
 ): Generator<L2Level> {
 	for (const dlobNode of dlobNodes) {
 		if (!dlobNode.order) {
@@ -150,7 +152,12 @@ export function* getL2GeneratorFromDLOBNodes(
 
 		yield {
 			size,
-			price: dlobNode.getPriceOrThrow(oraclePriceData, slot, tickSize),
+			price: dlobNode.getPriceOrThrow(
+				oraclePriceData,
+				slot,
+				tickSize,
+				slotDurationState
+			),
 			sources:
 				dlobNode.userAccount == INDICATIVE_QUOTES_PUBKEY
 					? { indicative: size }
@@ -277,6 +284,7 @@ export function getVammL2Generator({
 	now = new BN(Math.floor(Date.now() / 1000)),
 	topOfBookQuoteAmounts = [],
 	latestSlot,
+	slotDurationState,
 }: {
 	marketAccount: PerpMarketAccount;
 	mmOraclePriceData: MMOraclePriceData;
@@ -284,6 +292,9 @@ export function getVammL2Generator({
 	now?: BN;
 	topOfBookQuoteAmounts?: BN[];
 	latestSlot?: BN;
+	// required: reference-price-offset smoothing integrates the complete clock
+	// across any transition boundary.
+	slotDurationState: SlotDurationState;
 }): L2OrderBookGenerator {
 	const updatedAmm = calculateUpdatedAMM(marketAccount.amm, mmOraclePriceData);
 	const paused = isOperationPaused(
@@ -309,7 +320,8 @@ export function getVammL2Generator({
 		marketAccount.marketStats,
 		mmOraclePriceData,
 		now,
-		latestSlot
+		latestSlot,
+		slotDurationState
 	);
 
 	const numBaseOrders = Math.max(1, numOrders - topOfBookQuoteAmounts.length);

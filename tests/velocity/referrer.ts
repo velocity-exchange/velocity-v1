@@ -3,7 +3,7 @@ import { assert } from 'chai';
 
 import { Program } from '@coral-xyz/anchor';
 
-import { Keypair, PublicKey } from '@solana/web3.js';
+import { Keypair, PublicKey, Transaction } from '@solana/web3.js';
 
 import {
 	TestClient,
@@ -13,9 +13,12 @@ import {
 	Wallet,
 	PRICE_PRECISION,
 	ReferrerStatus,
+	AcceleratedReferralStatus,
+	ACCELERATED_REFERRER_REWARD_PERCENT,
 	RevenueShareAccount,
 	RevenueShareEscrowAccount,
 	RevenueShareEscrowMap,
+	UserStatsAccount,
 	getRevenueShareAccountPublicKey,
 	isBuilderOrderReferral,
 	ZERO,
@@ -39,6 +42,18 @@ import { decodeName } from '../../packages/sdk/src/userName';
 import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
 import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';
+
+// `calculate_taker_fee` ceils the tier fee (safe_div_ceil), then each referral
+// proportion floors. Mirror both or the expectation drifts by one for quotes that do
+// not divide evenly.
+const takerFeeFor = (
+	quoteAssetAmountFilled: BN | number | string,
+	feeTier: { feeNumerator: number; feeDenominator: number }
+): BN =>
+	new BN(quoteAssetAmountFilled)
+		.muln(feeTier.feeNumerator)
+		.addn(feeTier.feeDenominator - 1)
+		.divn(feeTier.feeDenominator);
 
 describe('referrer', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
@@ -208,6 +223,40 @@ describe('referrer', () => {
 		await eventSubscriber.unsubscribe();
 	});
 
+	it('automatically accelerates new user creation', async () => {
+		// ACCELERATED_REFERRAL_ENROLLMENT_ENABLED is a beta-scoped constant, so every new
+		// account is enrolled. There is no runtime switch to toggle.
+		const [acceleratedClient] = await createUserWithUSDCAccount(
+			bankrunContextWrapper,
+			usdcMint,
+			chProgram,
+			usdcAmount,
+			[0],
+			[0],
+			[
+				{
+					publicKey: solOracle,
+					source: OracleSource.PYTH_LAZER,
+				},
+			],
+			bulkAccountLoader
+		);
+
+		try {
+			const acceleratedStats =
+				(await acceleratedClient.program.account.userStats.fetch(
+					acceleratedClient.getUserStatsAccountPublicKey()
+				)) as UserStatsAccount;
+			assert(
+				(acceleratedStats.acceleratedReferralStatus &
+					AcceleratedReferralStatus.Accelerated) >
+					0
+			);
+		} finally {
+			await acceleratedClient.unsubscribe();
+		}
+	});
+
 	it('initialize referrer name account', async () => {
 		await referrerVelocityClient.initializeReferrerName('crisp');
 		const referrerNameAccount =
@@ -367,11 +416,18 @@ describe('referrer', () => {
 
 	it('fill order accrues a referral reward to the escrow and settles it', async () => {
 		const marketIndex = 0;
+		// Enrollment is a const during the beta, so the referrer was auto-accelerated when
+		// their account was created. An admin revoke is the only way back to the Standard
+		// rate, and it blocks reenrollment so the revoke survives their next fill.
+		await referrerVelocityClient.updateUserAcceleratedReferralStatus(
+			referrerVelocityClient.authority,
+			false
+		);
+		await referrerVelocityClient.fetchAccounts();
 
 		// Referee places a crossing limit long order, filled against the vAMM by
-		// the filler. Passing hasBuilderFee=true forces the SDK to attach the
-		// referee's RevenueShareEscrow as a remaining account so the on-chain
-		// referral reward can be routed into the escrow's Referral order slot.
+		// the filler. The SDK detects referral status and attaches the escrow plus
+		// referrer UserStats without caller hints.
 		const price = new BN(101).mul(PRICE_PRECISION);
 		await refereeVelocityClient.placePerpOrder(
 			getLimitOrderParams({
@@ -385,25 +441,39 @@ describe('referrer', () => {
 		await refereeVelocityClient.fetchAccounts();
 		const order = refereeVelocityClient.getUser().getOpenOrders()[0];
 
+		const refereeDiscountBefore = refereeVelocityClient
+			.getUserStats()
+			.getAccount().fees.totalRefereeDiscount;
 		const txSig = await fillerVelocityClient.fillPerpOrder(
 			await refereeVelocityClient.getUserAccountPublicKey(),
 			refereeVelocityClient.getUserAccount(),
-			{ marketIndex, orderId: order.orderId },
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			true // hasBuilderFee -> attach RevenueShareEscrow remaining account
+			{ marketIndex, orderId: order.orderId }
 		);
 
 		await eventSubscriber.awaitTx(txSig);
 
 		const eventRecord = eventSubscriber.getEventsArray('OrderActionRecord')[0];
-		assert(eventRecord.referrerReward > 0);
 		const referrerReward = new BN(eventRecord.referrerReward);
+		const feeTier =
+			refereeVelocityClient.getStateAccount().perpFeeStructure.feeTiers[0];
+		const grossFee = takerFeeFor(eventRecord.quoteAssetAmountFilled, feeTier);
+		const expectedStandardReward = grossFee
+			.muln(feeTier.referrerRewardNumerator)
+			.divn(feeTier.referrerRewardDenominator);
+		assert(
+			referrerReward.eq(expectedStandardReward),
+			`standard reward ${referrerReward.toString()} !== ${expectedStandardReward.toString()}`
+		);
 
-		const refereeStats = refereeVelocityClient.getUserStats().getAccount();
-		assert(refereeStats.fees.totalRefereeDiscount.gt(ZERO));
+		await refereeVelocityClient.fetchAccounts();
+		const refereeDiscount = refereeVelocityClient
+			.getUserStats()
+			.getAccount()
+			.fees.totalRefereeDiscount.sub(refereeDiscountBefore);
+		const expectedDiscount = grossFee
+			.muln(feeTier.refereeFeeNumerator)
+			.divn(feeTier.refereeFeeDenominator);
+		assert(refereeDiscount.eq(expectedDiscount));
 
 		// The referral reward should now be sitting in a Referral-flagged order
 		// in the referee's escrow, waiting to be settled.
@@ -482,6 +552,118 @@ describe('referrer', () => {
 		assert(
 			referrerRewardChange.eq(referrerReward),
 			`referrerRewardChange ${referrerRewardChange.toString()} !== referrerReward ${referrerReward.toString()}`
+		);
+	});
+
+	it('Accelerated referrer receives the fixed Accelerated reward', async () => {
+		const marketIndex = 0;
+		await referrerVelocityClient.updateUserAcceleratedReferralStatus(
+			referrerVelocityClient.authority,
+			true
+		);
+		await referrerVelocityClient.fetchAccounts();
+		assert(
+			(referrerVelocityClient.getUserStats().getAccount()
+				.acceleratedReferralStatus &
+				AcceleratedReferralStatus.Accelerated) >
+				0
+		);
+
+		await refereeVelocityClient.placePerpOrder(
+			getLimitOrderParams({
+				baseAssetAmount: BASE_PRECISION,
+				direction: PositionDirection.SHORT,
+				marketIndex,
+				price: new BN(99).mul(PRICE_PRECISION),
+			})
+		);
+		await refereeVelocityClient.fetchAccounts();
+		const order = refereeVelocityClient.getUser().getOpenOrders()[0];
+		const discountBefore = refereeVelocityClient.getUserStats().getAccount()
+			.fees.totalRefereeDiscount;
+
+		const txSig = await fillerVelocityClient.fillPerpOrder(
+			await refereeVelocityClient.getUserAccountPublicKey(),
+			refereeVelocityClient.getUserAccount(),
+			{ marketIndex, orderId: order.orderId }
+		);
+		await eventSubscriber.awaitTx(txSig);
+
+		const eventRecord = eventSubscriber.getEventsArray('OrderActionRecord')[0];
+		const feeTier =
+			refereeVelocityClient.getStateAccount().perpFeeStructure.feeTiers[0];
+		const grossFee = takerFeeFor(eventRecord.quoteAssetAmountFilled, feeTier);
+		const expectedAcceleratedReward = grossFee
+			.muln(ACCELERATED_REFERRER_REWARD_PERCENT)
+			.divn(feeTier.referrerRewardDenominator);
+		assert(new BN(eventRecord.referrerReward).eq(expectedAcceleratedReward));
+
+		await refereeVelocityClient.fetchAccounts();
+		const discount = refereeVelocityClient
+			.getUserStats()
+			.getAccount()
+			.fees.totalRefereeDiscount.sub(discountBefore);
+		const expectedDiscount = grossFee
+			.muln(feeTier.refereeFeeNumerator)
+			.divn(feeTier.refereeFeeDenominator);
+		assert(discount.eq(expectedDiscount));
+	});
+
+	it('Standard reward applies when the fill omits the referrer UserStats', async () => {
+		// A client built before the accelerated-referral upgrade sends the taker's escrow with no
+		// referrer UserStats behind it. The fill must still land, at the Standard rate.
+		const marketIndex = 0;
+		await referrerVelocityClient.fetchAccounts();
+		assert(
+			(referrerVelocityClient.getUserStats().getAccount()
+				.acceleratedReferralStatus &
+				AcceleratedReferralStatus.Accelerated) >
+				0
+		);
+
+		await refereeVelocityClient.placePerpOrder(
+			getLimitOrderParams({
+				baseAssetAmount: BASE_PRECISION,
+				direction: PositionDirection.SHORT,
+				marketIndex,
+				price: new BN(99).mul(PRICE_PRECISION),
+			})
+		);
+		await refereeVelocityClient.fetchAccounts();
+		const order = refereeVelocityClient.getUser().getOpenOrders()[0];
+
+		const fillIx = await fillerVelocityClient.getFillPerpOrderIx(
+			await refereeVelocityClient.getUserAccountPublicKey(),
+			refereeVelocityClient.getUserAccount(),
+			{ marketIndex, orderId: order.orderId },
+			undefined, // makerInfo
+			undefined, // fillerSubAccountId
+			undefined, // isSignedMsg
+			undefined, // fillerAuthority
+			undefined, // hasBuilderFee
+			undefined, // takerEscrow
+			true, // takerIsReferred: attach the escrow
+			PublicKey.default // takerReferrer: and nothing behind it
+		);
+		const { txSig } = await fillerVelocityClient.sendTransaction(
+			(await fillerVelocityClient.buildTransaction([fillIx])) as Transaction
+		);
+		await eventSubscriber.awaitTx(txSig);
+
+		const eventRecord = eventSubscriber.getEventsArray('OrderActionRecord')[0];
+		const feeTier =
+			refereeVelocityClient.getStateAccount().perpFeeStructure.feeTiers[0];
+		const grossFee = takerFeeFor(eventRecord.quoteAssetAmountFilled, feeTier);
+		const expectedStandardReward = grossFee
+			.muln(feeTier.referrerRewardNumerator)
+			.divn(feeTier.referrerRewardDenominator);
+		assert(new BN(eventRecord.referrerReward).eq(expectedStandardReward));
+		assert(
+			!new BN(eventRecord.referrerReward).eq(
+				grossFee
+					.muln(ACCELERATED_REFERRER_REWARD_PERCENT)
+					.divn(feeTier.referrerRewardDenominator)
+			)
 		);
 	});
 

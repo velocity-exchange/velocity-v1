@@ -13,6 +13,7 @@ use {
                 SPOT_WEIGHT_PRECISION,
             },
             margin::MarginRequirementType,
+            time::SlotClock,
         },
         state::{
             margin_calculation::MarginTypeConfig,
@@ -47,7 +48,8 @@ fn can_transfer_to_isolated_when_cross_still_meets_after_withdraw() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+    let mut oracle_map =
+        OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
     let oracle_price_val = oracle_price.price;
     let mut market = PerpMarket {
@@ -158,7 +160,8 @@ fn cannot_transfer_to_isolated_when_cross_would_fail_after_withdraw() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+    let mut oracle_map =
+        OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
     let oracle_price_val = oracle_price.price;
     let mut market0 = PerpMarket {
@@ -284,7 +287,8 @@ fn can_transfer_from_isolated_when_isolated_still_meets_after_withdraw() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+    let mut oracle_map =
+        OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
     let oracle_price_val = oracle_price.price;
     let mut market = PerpMarket {
@@ -392,7 +396,8 @@ fn cannot_transfer_from_isolated_when_isolated_would_fail() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+    let mut oracle_map =
+        OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
     let oracle_price_val = oracle_price.price;
     let mut market = PerpMarket {

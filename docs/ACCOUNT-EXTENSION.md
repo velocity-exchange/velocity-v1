@@ -71,6 +71,12 @@ instruction resolves its targets from whatever binary is live.
 
 ## The migration runbook
 
+The market padding upgrade grows every `PerpMarket` from 1304 to 1560 bytes and every
+`SpotMarket` from 808 to 1064 bytes. Both accounts append 256 reserved bytes. Deploy the program
+upgrade, then immediately run the `perp-market` and `spot-market` extension cranks below. The old
+deployed binary cannot pre-extend to these sizes because `extend_account` always targets the size
+compiled into the live program.
+
 Say a field no longer fits in `User`'s padding and the struct must grow.
 
 1. **Extend the struct.** Append fields at the end (or claim trailing padding first). Follow

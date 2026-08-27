@@ -1,8 +1,11 @@
 use {
-    crate::state::{
-        oracle_map::OracleMap,
-        perp_market::MarketStats,
-        user::{Order, PerpPosition},
+    crate::{
+        math::time::{legacy_slot_duration_i64, legacy_slot_duration_u8},
+        state::{
+            oracle_map::OracleMap,
+            perp_market::MarketStats,
+            user::{Order, PerpPosition},
+        },
     },
     anchor_lang::prelude::Pubkey,
 };
@@ -13,6 +16,7 @@ fn get_user_keys() -> (Pubkey, Pubkey, Pubkey) {
 
 #[cfg(test)]
 pub mod delisting_test {
+    use crate::math::time::{Millis, SlotClock};
     // use crate::controller::orders::fill_order;
     use {
         super::*,
@@ -84,7 +88,8 @@ pub mod delisting_test {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // net users are short
         let mut market = PerpMarket {
@@ -128,8 +133,8 @@ pub mod delisting_test {
         let state = State {
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: 10,     // 5s
-                    slots_before_stale_for_margin: 120, // 60s
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },
@@ -194,7 +199,8 @@ pub mod delisting_test {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // net users are long
         let mut market = PerpMarket {
@@ -249,8 +255,8 @@ pub mod delisting_test {
         let state = State {
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: 10,     // 5s
-                    slots_before_stale_for_margin: 120, // 60s
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },
@@ -303,7 +309,8 @@ pub mod delisting_test {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // net users are short
         let mut market = PerpMarket {
@@ -358,8 +365,8 @@ pub mod delisting_test {
         let state = State {
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: 10,     // 5s
-                    slots_before_stale_for_margin: 120, // 60s
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },
@@ -419,7 +426,8 @@ pub mod delisting_test {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // net users are short
         let mut market = PerpMarket {
@@ -475,8 +483,8 @@ pub mod delisting_test {
         let state = State {
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: 10,     // 5s
-                    slots_before_stale_for_margin: 120, // 60s
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },
@@ -536,7 +544,8 @@ pub mod delisting_test {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // net users are short
         let mut market = PerpMarket {
@@ -592,8 +601,8 @@ pub mod delisting_test {
         let state = State {
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: 10,     // 5s
-                    slots_before_stale_for_margin: 120, // 60s
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },
@@ -645,7 +654,8 @@ pub mod delisting_test {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // net users are short
         let mut market = PerpMarket {
@@ -747,8 +757,8 @@ pub mod delisting_test {
         let state = State {
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: 10,     // 5s
-                    slots_before_stale_for_margin: 120, // 60s
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },
@@ -879,7 +889,8 @@ pub mod delisting_test {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -945,8 +956,8 @@ pub mod delisting_test {
             settlement_duration: 1,
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: 10,
-                    slots_before_stale_for_margin: 120,
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10),
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120),
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },
@@ -1035,7 +1046,8 @@ pub mod delisting_test {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // net users are short
         let mut market = PerpMarket {
@@ -1138,8 +1150,8 @@ pub mod delisting_test {
         let state = State {
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: 10,     // 5s
-                    slots_before_stale_for_margin: 120, // 60s
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },
@@ -1257,7 +1269,8 @@ pub mod delisting_test {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // net users are short
         let mut market = PerpMarket {
@@ -1360,8 +1373,8 @@ pub mod delisting_test {
         let state = State {
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: 10,     // 5s
-                    slots_before_stale_for_margin: 120, // 60s
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },
@@ -1460,7 +1473,8 @@ pub mod delisting_test {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // net users are short
         let mut market = PerpMarket {
@@ -1641,8 +1655,8 @@ pub mod delisting_test {
         let state = State {
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: 10,     // 5s
-                    slots_before_stale_for_margin: 120, // 60s
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },
@@ -1884,7 +1898,8 @@ pub mod delisting_test {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // net users are short
         let mut market = PerpMarket {
@@ -2051,8 +2066,8 @@ pub mod delisting_test {
         let state = State {
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: 10,     // 5s
-                    slots_before_stale_for_margin: 120, // 60s
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },
@@ -2266,7 +2281,8 @@ pub mod delisting_test {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // net users are short
         let mut market = PerpMarket {
@@ -2447,15 +2463,15 @@ pub mod delisting_test {
         let state = State {
             oracle_guard_rails: OracleGuardRails {
                 validity: ValidityGuardRails {
-                    slots_before_stale_for_amm: 10,     // 5s
-                    slots_before_stale_for_margin: 120, // 60s
+                    slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                    slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                     confidence_interval_max_size: 1000,
                     too_volatile_ratio: 5,
                 },
                 ..OracleGuardRails::default()
             },
             initial_pct_to_liquidate: LIQUIDATION_PCT_PRECISION as u16,
-            liquidation_duration: 150,
+            liquidation_duration: legacy_slot_duration_u8(150),
             ..State::default()
         };
 
@@ -2673,7 +2689,7 @@ pub mod delisting_test {
                 clock.slot,
                 10,
                 PERCENTAGE_PRECISION,
-                150,
+                Millis::from_stored_units(150),
                 false,
             )
             .unwrap();
@@ -2764,7 +2780,7 @@ pub mod delisting_test {
                 clock.slot,
                 10,
                 PERCENTAGE_PRECISION,
-                150,
+                Millis::from_stored_units(150),
                 false,
             )
             .unwrap();

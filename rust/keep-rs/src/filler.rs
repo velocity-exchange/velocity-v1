@@ -4,7 +4,7 @@ use {
         http::{FeedHealth, Metrics},
         util::{
             pyth_update_is_fresh, swift_placement_expired, OrderSlotLimiter, PendingTxMeta,
-            PendingTxs, PythPriceUpdate, TxIntent,
+            PendingTxs, PerpFillFallback, PythPriceUpdate, TxIntent,
         },
         Config, UseMarkets,
     },
@@ -50,7 +50,11 @@ use {
         },
         priority_fee_subscriber::PriorityFeeSubscriber,
         program::{
-            math::auction::calculate_auction_price,
+            math::{
+                auction::calculate_auction_price,
+                constants::MM_ORACLE_MIN_WRITE_GAP,
+                time::{Millis, SlotClock},
+            },
             state::prop_amm::{ClobUserRefV0, QuoterV0},
         },
         swift_order_subscriber::{SignedOrderInfo, SwiftOrderStream},
@@ -95,6 +99,7 @@ impl FillerBot {
             velocity.clone(),
             metrics.clone(),
             config.dry,
+            None,
             None,
             None,
             None,
@@ -223,13 +228,34 @@ impl FillerBot {
         // reused per-slot scratch buffer for triggerable order ids (avoids per-slot allocation)
         let mut triggerable_buf: Vec<(Pubkey, u32)> = Vec::new();
         let mut slot = 0;
+        // refresh state config on elapsed slots, not `slot % N == 0`: a skipped
+        // exact multiple would otherwise stall the refresh for another window.
+        const CONFIG_REFRESH_SLOTS: u64 = 300;
+        let mut last_config_refresh_slot: u64 = 0;
         let mut use_median_trigger_price = velocity
             .state_account()
             .map(|s| s.has_median_trigger_price_feature())
             .unwrap_or(false);
+        // seed with the real chain slot so a bot started after a gate switch
+        // reflects it immediately, not only after the first config refresh
+        let startup_slot = velocity.get_slot().await.unwrap_or(0);
+        let mut slot_duration = crate::util::client_slot_duration(velocity, startup_slot);
+        let mut slot_clock = velocity.slot_clock();
+        dlob.update_slot_clock(slot_clock);
+        // effective (actual-slot) staleness threshold: the onchain value is in
+        // 400ms baseline units and inflated by slot_duration, mirroring
+        // `oracle_validity`
         let mut slots_before_stale_for_amm = velocity
             .state_account()
-            .map(|s| s.oracle_guard_rails.validity.slots_before_stale_for_amm)
+            .map(|s| {
+                Millis::from_stored_units(
+                    s.oracle_guard_rails
+                        .validity
+                        .slots_before_stale_for_amm
+                        .max(0) as u64,
+                )
+                .to_slots(slot_duration) as i64
+            })
             .unwrap_or(10);
         let mut pyth_oracle_prices = BTreeMap::<u16, PythPriceUpdate>::new();
         // per-market consecutive perp-market/oracle cache-miss counters (see slot loop)
@@ -314,7 +340,7 @@ impl FillerBot {
                                 .unwrap_or(perp_market);
 
                             // try an immediate fill against resting liquidity
-                            match evaluate_swift_crosses(dlob, &signed_order, &perp_market, oracle_price_data.price, oracle_price_data.delay, landing_slot, slots_before_stale_for_amm) {
+                            match evaluate_swift_crosses(dlob, &signed_order, &perp_market, oracle_price_data.price, oracle_price_data.delay, landing_slot, slots_before_stale_for_amm, slot_clock) {
                                 SwiftEval::Fillable(crosses) => {
                                     log::info!(target: TARGET, "found resting cross. market={market_index} oracle={} delay={} crosses={crosses:?}", oracle_price_data.price, oracle_price_data.delay);
                                     let pf = priority_fee_subscriber.priority_fee_nth(0.6);
@@ -341,7 +367,7 @@ impl FillerBot {
                                     let order_slot = signed_order.slot();
                                     let auction_duration = order_params.auction_duration.unwrap_or(0);
                                     let max_ts = order_params.max_ts.unwrap_or(0);
-                                    if swift_placement_expired(order_slot, auction_duration, max_ts, slot, now_ts) {
+                                    if swift_placement_expired(order_slot, auction_duration, max_ts, slot, now_ts, slot_clock) {
                                         log::debug!(target: TARGET, "swift order past placement window, not placing. uuid={}", signed_order.order_uuid_str());
                                         metrics.swift_place_skipped.inc();
                                     } else {
@@ -623,15 +649,24 @@ impl FillerBot {
                             ).await;
                         }
 
-                        // check state config ~every minute
-                        if slot % 300 == 0 {
+                        // check state config ~every minute (elapsed-slot based)
+                        if slot.saturating_sub(last_config_refresh_slot) >= CONFIG_REFRESH_SLOTS {
+                            last_config_refresh_slot = slot;
                             use_median_trigger_price = velocity
                                 .state_account()
                                 .map(|s| s.has_median_trigger_price_feature())
                                 .unwrap_or(false);
+                            slot_duration = crate::util::client_slot_duration(velocity, slot);
+                            slot_clock = velocity.slot_clock();
+                            dlob.update_slot_clock(slot_clock);
                             slots_before_stale_for_amm = velocity
                                 .state_account()
-                                .map(|s| s.oracle_guard_rails.validity.slots_before_stale_for_amm)
+                                .map(|s| {
+                                    Millis::from_stored_units(
+                                        s.oracle_guard_rails.validity.slots_before_stale_for_amm.max(0) as u64,
+                                    )
+                                    .to_slots(slot_duration) as i64
+                                })
                                 .unwrap_or(10);
                         }
                     }
@@ -711,7 +746,9 @@ fn on_transaction_update_fn(
 /// thread panic doesn't stop the process — the bot would keep running with a frozen book
 /// (zombie). A transient miss is skipped and retried next slot; a persistent one exits the
 /// process so the supervisor restarts it with fresh subscriptions.
-const MAX_CONSECUTIVE_ORACLE_MISSES: u32 = 300; // ~2min of slots
+// ~2min of slot ticks at 400ms (shrinks in wall-clock as slot time drops —
+// deliberate: this is a dead-feed restart tripwire, firing sooner is fine)
+const MAX_CONSECUTIVE_ORACLE_MISSES: u32 = 300;
 
 fn on_slot_update_fn(
     velocity: VelocityClient,
@@ -828,6 +865,7 @@ fn evaluate_swift_crosses(
     oracle_delay: i64,
     landing_slot: u64,
     slots_before_stale_for_amm: i64,
+    slot_clock: SlotClock,
 ) -> SwiftEval {
     let mut order_params = signed_order.order_params();
     let _ = order_params.update_perp_auction_params(perp_market, oracle_price, true);
@@ -898,6 +936,7 @@ fn evaluate_swift_crosses(
                 landing_slot,
                 perp_market.price_tick(),
                 Some(oracle_price),
+                slot_clock,
             ) {
                 Ok(p) => p,
                 Err(err) => {
@@ -912,6 +951,7 @@ fn evaluate_swift_crosses(
                 Some(vamm_price),
                 landing_slot,
                 perp_market.price_tick(),
+                slot_clock,
             ) {
                 Ok(Some(p)) => p,
                 // No resolvable limit price at this slot (e.g. auction-limit with no final
@@ -1781,7 +1821,9 @@ async fn try_auction_fill(
         // JIT leg validates the MM oracle at the landing slot (crosses were snapshotted at
         // `crosses.slot`; the fill lands ~next slot). A same-slot snapshot that looks fresh
         // routinely lands one slot stale under the immediate threshold, so measure at landing.
-        let mm_stale_immediate = mm_oracle_stale_for_amm_immediate(&perp_market, crosses.slot + 1);
+        let landing_slot = crosses.slot.saturating_add(1);
+        let mm_stale_immediate =
+            mm_oracle_stale_for_amm_immediate(&perp_market, landing_slot, velocity.slot_clock());
         let mut vamm_usable = crosses.has_vamm_cross
             && vamm_can_fill_taker(
                 drawdown,
@@ -2409,18 +2451,27 @@ fn vamm_can_fill_taker(
 /// `is_stale_for_amm_immediate` (`math/oracle.rs`) with the per-market
 /// `oracle_slot_delay_override`: a positive override is used as-is; `override == 0` disables
 /// the immediate leg entirely (always stale); negative means unset and resolves to
-/// `MM_ORACLE_MIN_SLOT_GAP` for an MM-sourced price (the program refuses MM-oracle writes
+/// `MM_ORACLE_MIN_WRITE_GAP` for an MM-sourced price (the program refuses MM-oracle writes
 /// closer together than that, so a tighter threshold is unsatisfiable). Delay is measured
 /// against the *MM* oracle slot (`market_stats.mm_oracle_slot`) at the expected landing slot,
 /// since that — not the exchange oracle — is what the JIT leg validates.
-fn mm_oracle_stale_for_amm_immediate(perp_market: &PerpMarket, landing_slot: u64) -> bool {
+fn mm_oracle_stale_for_amm_immediate(
+    perp_market: &PerpMarket,
+    landing_slot: u64,
+    slot_clock: SlotClock,
+) -> bool {
     let mm_oracle_delay =
         (landing_slot as i64).saturating_sub(perp_market.market_stats.mm_oracle_slot as i64);
+    // the age is wall clock, integrated per slot duration regime like
+    // `oracle_validity`; thresholds are 400ms baseline units
+    let mm_oracle_age = slot_clock.elapsed_slot_delta(mm_oracle_delay.max(0) as u64, landing_slot);
     let override_ = perp_market.oracle_slot_delay_override;
     if override_ > 0 {
-        mm_oracle_delay > override_ as i64
+        mm_oracle_age > Millis::from_stored_units(override_ as u64)
     } else if override_ < 0 {
-        mm_oracle_delay > velocity_rs::program::math::constants::MM_ORACLE_MIN_SLOT_GAP as i64
+        let accepted_slots =
+            MM_ORACLE_MIN_WRITE_GAP.to_slots_ceil(slot_clock.slot_duration_at(landing_slot));
+        mm_oracle_age > slot_clock.elapsed_slot_delta(accepted_slots, landing_slot)
     } else {
         true
     }
@@ -2663,6 +2714,7 @@ pub struct TxWorker {
     txs_in_flight: Option<Arc<DashMap<Pubkey, HashSet<Signature>>>>,
     tx_sig_to_collateral: Option<Arc<DashMap<Signature, (u128, u64)>>>,
     free_collateral_per_subaccount: Option<Arc<DashMap<Pubkey, u128>>>,
+    perp_fill_fallbacks: Option<Arc<DashMap<(Pubkey, u16), PerpFillFallback>>>,
 }
 
 impl TxWorker {
@@ -2673,6 +2725,7 @@ impl TxWorker {
         txs_in_flight: Option<Arc<DashMap<Pubkey, HashSet<Signature>>>>,
         tx_sig_to_collateral: Option<Arc<DashMap<Signature, (u128, u64)>>>,
         free_collateral_per_subaccount: Option<Arc<DashMap<Pubkey, u128>>>,
+        perp_fill_fallbacks: Option<Arc<DashMap<(Pubkey, u16), PerpFillFallback>>>,
     ) -> Self {
         Self {
             velocity: Box::leak(Box::new(velocity)),
@@ -2682,6 +2735,7 @@ impl TxWorker {
             txs_in_flight,
             tx_sig_to_collateral,
             free_collateral_per_subaccount,
+            perp_fill_fallbacks,
         }
     }
 
@@ -2739,6 +2793,7 @@ impl TxWorker {
         let velocity = self.velocity;
         let pending_txs = Arc::clone(&self.pending_txs);
         let metrics = self.metrics.clone();
+        let perp_fill_fallbacks = self.perp_fill_fallbacks.clone();
         let intent_label = intent.label();
 
         metrics.tx_sent.with_label_values(&[intent_label]).inc();
@@ -2771,6 +2826,11 @@ impl TxWorker {
             match simulation {
                 Ok(sim_result) => {
                     if let Some(err) = sim_result.err {
+                        record_perp_fill_fallback(
+                            &intent,
+                            &TransactionError::from(err.clone()),
+                            perp_fill_fallbacks.as_ref(),
+                        );
                         if is_revert_fill_error(&err) {
                             log::debug!(
                                 target: TARGET,
@@ -2953,6 +3013,7 @@ impl TxWorker {
         let txs_in_flight = self.txs_in_flight.clone();
         let tx_sig_to_collateral = self.tx_sig_to_collateral.clone();
         let free_collateral = self.free_collateral_per_subaccount.clone();
+        let perp_fill_fallbacks = self.perp_fill_fallbacks.clone();
 
         rt.spawn(async move {
             let pending_tx_meta = {
@@ -3128,6 +3189,11 @@ impl TxWorker {
                                 );
                             }
                             Some(err) => {
+                                record_perp_fill_fallback(
+                                    &intent,
+                                    &err,
+                                    perp_fill_fallbacks.as_ref(),
+                                );
                                 log::warn!(
                                     target: TARGET,
                                     "tx failed: {err:?}, intent: {intent_label}, liquidatee: {:?}, sig: {signature}",
@@ -3432,6 +3498,45 @@ fn is_revert_fill_error(error: &UiTransactionError) -> bool {
     )
 }
 
+fn record_perp_fill_fallback(
+    intent: &TxIntent,
+    error: &TransactionError,
+    fallbacks: Option<&Arc<DashMap<(Pubkey, u16), PerpFillFallback>>>,
+) {
+    let TransactionError::InstructionError(_, InstructionError::Custom(code)) = error else {
+        return;
+    };
+    let expected = velocity_rs::program::error::ErrorCode::LiquidationOrderFailedToFill as u32
+        + anchor_lang::error::ERROR_CODE_OFFSET;
+    if *code != expected {
+        return;
+    }
+    let TxIntent::LiquidateWithFill {
+        market_index,
+        liquidatee,
+        ..
+    } = intent
+    else {
+        return;
+    };
+    if let Some(fallbacks) = fallbacks {
+        fallbacks.insert(
+            (*liquidatee, *market_index),
+            PerpFillFallback {
+                recorded_ms: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0),
+                attempts: 0,
+            },
+        );
+        log::info!(
+            target: TARGET,
+            "recorded perp takeover fallback: liquidatee={liquidatee:?} market={market_index}"
+        );
+    }
+}
+
 fn is_expected_fill_event(event: &VelocityEvent, intent: &TxIntent) -> bool {
     matches!(
         event,
@@ -3640,7 +3745,8 @@ mod tests {
     use {
         super::{
             build_fill_tx, classify_cross, is_expected_fill_event, is_revert_fill_error,
-            order_dedup_key, vamm_can_fill_taker, CrossAction, Pubkey, TxIntent, VelocityEvent,
+            mm_oracle_stale_for_amm_immediate, order_dedup_key, record_perp_fill_fallback,
+            vamm_can_fill_taker, CrossAction, Pubkey, TxIntent, VelocityEvent,
         },
         solana_sdk::{instruction::InstructionError, transaction::TransactionError},
         std::borrow::Cow,
@@ -3651,6 +3757,36 @@ mod tests {
             TransactionBuilder,
         },
     };
+
+    // The unset (override < 0) MM-sourced immediate threshold compares the
+    // wall clock MM-oracle age against MM_ORACLE_MIN_WRITE_GAP, matching the
+    // program's `oracle_validity`. The age integrates per slot duration
+    // regime, so the effective slot count scales with the clock.
+    #[test]
+    fn unset_mm_immediate_threshold_scales_per_gate() {
+        use velocity_rs::program::math::time::SlotClock;
+        let mut market = PerpMarket::default();
+        market.oracle_slot_delay_override = -1; // unset -> source-aware fallback
+        market.market_stats.mm_oracle_slot = 1_000;
+        // MM_ORACLE_MIN_WRITE_GAP = 800ms: 2 slots at 400ms, 4 at 200ms
+        for (clock, threshold) in [
+            (SlotClock::baseline(), 2u64),
+            (SlotClock::from_state_fields([1, 0, 0, 0], 0, 0, 0), 3),
+            (SlotClock::from_state_fields([1, 1, 1, 1], 0, 0, 0), 4),
+        ] {
+            // age exactly at the write gap is NOT stale (`age > gap`)
+            let at = market.market_stats.mm_oracle_slot + threshold;
+            assert!(
+                !mm_oracle_stale_for_amm_immediate(&market, at, clock),
+                "age == write gap should be fresh"
+            );
+            // one slot past is stale
+            assert!(
+                mm_oracle_stale_for_amm_immediate(&market, at + 1, clock),
+                "age past write gap should be stale"
+            );
+        }
+    }
 
     fn order_fill_event(taker: Pubkey, order_id: u32, base_filled: u64) -> VelocityEvent {
         VelocityEvent::OrderFill {
@@ -3749,6 +3885,47 @@ mod tests {
         assert!(!is_revert_fill_error(
             &TransactionError::InstructionError(3, InstructionError::Custom(6240)).into()
         ));
+    }
+
+    #[test]
+    fn failed_liquidation_fill_records_takeover_fallback() {
+        let liquidatee = Pubkey::new_unique();
+        let intent = TxIntent::LiquidateWithFill {
+            market_index: 7,
+            liquidatee,
+            slot: 42,
+        };
+        let fallbacks = std::sync::Arc::new(dashmap::DashMap::new());
+        let error_code = velocity_rs::program::error::ErrorCode::LiquidationOrderFailedToFill
+            as u32
+            + anchor_lang::error::ERROR_CODE_OFFSET;
+
+        record_perp_fill_fallback(
+            &intent,
+            &TransactionError::InstructionError(2, InstructionError::Custom(error_code)),
+            Some(&fallbacks),
+        );
+
+        assert!(fallbacks.contains_key(&(liquidatee, 7)));
+    }
+
+    #[test]
+    fn unrelated_failure_does_not_record_takeover_fallback() {
+        let liquidatee = Pubkey::new_unique();
+        let intent = TxIntent::LiquidateWithFill {
+            market_index: 7,
+            liquidatee,
+            slot: 42,
+        };
+        let fallbacks = std::sync::Arc::new(dashmap::DashMap::new());
+
+        record_perp_fill_fallback(
+            &intent,
+            &TransactionError::InstructionError(2, InstructionError::Custom(6239)),
+            Some(&fallbacks),
+        );
+
+        assert!(fallbacks.is_empty());
     }
 
     #[test]

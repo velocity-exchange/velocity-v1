@@ -2,15 +2,17 @@ use crate::{
     math::auction::{get_auction_price, is_auction_complete},
     types::{OraclePriceData, Order, OrderType, PositionDirection},
 };
+use program::math::time::SlotClock;
 
 pub fn get_limit_price(
     order: &Order,
     oracle_price_data: &OraclePriceData,
     slot: u64,
     fallback_price: Option<u64>,
+    slot_clock: SlotClock,
 ) -> u64 {
-    if has_auction_price(order, slot) {
-        get_auction_price(order, slot, oracle_price_data.price)
+    if has_auction_price(order, slot, slot_clock) {
+        get_auction_price(order, slot, oracle_price_data.price, slot_clock)
             .try_into()
             .unwrap()
     } else if order.oracle_price_offset != 0 {
@@ -30,12 +32,12 @@ pub fn get_limit_price(
     }
 }
 
-fn has_auction_price(order: &Order, slot: u64) -> bool {
-    !is_auction_complete(order, slot)
+fn has_auction_price(order: &Order, slot: u64, slot_clock: SlotClock) -> bool {
+    !is_auction_complete(order, slot, slot_clock)
         && (order.auction_start_price != 0 || order.auction_end_price != 0)
 }
 
-pub fn is_resting_limit_order(order: &Order, slot: u64) -> bool {
+pub fn is_resting_limit_order(order: &Order, slot: u64, slot_clock: SlotClock) -> bool {
     if !order.is_limit_order() {
         return false;
     }
@@ -48,9 +50,9 @@ pub fn is_resting_limit_order(order: &Order, slot: u64) -> bool {
             PositionDirection::Short if order.trigger_price > order.price => {
                 return false;
             }
-            _ => is_auction_complete(order, slot),
+            _ => is_auction_complete(order, slot, slot_clock),
         };
     };
 
-    order.post_only || is_auction_complete(order, slot)
+    order.post_only || is_auction_complete(order, slot, slot_clock)
 }

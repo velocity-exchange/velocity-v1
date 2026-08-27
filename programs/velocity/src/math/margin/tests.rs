@@ -412,6 +412,7 @@ mod calculate_margin_requirement_and_total_collateral {
                     calculate_margin_requirement_and_total_collateral_and_liability_info,
                     MarginRequirementType,
                 },
+                time::SlotClock,
             },
             state::{
                 margin_calculation::{MarginCalculation, MarginContext},
@@ -445,7 +446,8 @@ mod calculate_margin_requirement_and_total_collateral {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let market_map = PerpMarketMap::empty();
 
@@ -535,7 +537,8 @@ mod calculate_margin_requirement_and_total_collateral {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let market_map = PerpMarketMap::empty();
 
@@ -625,7 +628,8 @@ mod calculate_margin_requirement_and_total_collateral {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let market_map = PerpMarketMap::empty();
 
@@ -718,7 +722,8 @@ mod calculate_margin_requirement_and_total_collateral {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -911,7 +916,8 @@ mod calculate_margin_requirement_and_total_collateral {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -1092,7 +1098,8 @@ mod calculate_margin_requirement_and_total_collateral {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -1216,7 +1223,8 @@ mod calculate_margin_requirement_and_total_collateral {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -1408,7 +1416,8 @@ mod calculate_margin_requirement_and_total_collateral {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -1527,7 +1536,8 @@ mod calculate_margin_requirement_and_total_collateral {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -1643,7 +1653,8 @@ mod calculate_margin_requirement_and_total_collateral {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
         let MarginCalculation {
             total_collateral,
             margin_requirement,
@@ -1692,7 +1703,8 @@ mod calculate_margin_requirement_and_total_collateral {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let market_map = PerpMarketMap::empty();
 
@@ -1788,7 +1800,8 @@ mod calculate_margin_requirement_and_total_collateral {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -1901,7 +1914,8 @@ mod calculate_margin_requirement_and_total_collateral {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2009,7 +2023,8 @@ mod calculate_margin_requirement_and_total_collateral {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2122,6 +2137,7 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
                     calculate_margin_requirement_and_total_collateral_and_liability_info,
                     MarginRequirementType,
                 },
+                time::SlotClock,
             },
             state::{
                 margin_calculation::{MarginCalculation, MarginContext},
@@ -2155,7 +2171,8 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2262,7 +2279,8 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2415,7 +2433,8 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -2532,8 +2551,13 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
             usdc_oracle_account_info
         );
         let oracle_account_infos = Vec::from([sol_oracle_account_info, usdc_oracle_account_info]);
-        let mut oracle_map =
-            OracleMap::load(&mut oracle_account_infos.iter().peekable(), slot, None).unwrap();
+        let mut oracle_map = OracleMap::load(
+            &mut oracle_account_infos.iter().peekable(),
+            slot,
+            SlotClock::baseline(),
+            None,
+        )
+        .unwrap();
 
         let market_map = PerpMarketMap::empty();
 
@@ -2681,8 +2705,13 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
             usdc_oracle_account_info
         );
         let oracle_account_infos = Vec::from([sol_oracle_account_info, usdc_oracle_account_info]);
-        let mut oracle_map =
-            OracleMap::load(&mut oracle_account_infos.iter().peekable(), slot, None).unwrap();
+        let mut oracle_map = OracleMap::load(
+            &mut oracle_account_infos.iter().peekable(),
+            slot,
+            SlotClock::baseline(),
+            None,
+        )
+        .unwrap();
 
         let market_map = PerpMarketMap::empty();
 
@@ -2827,8 +2856,13 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
             usdc_oracle_account_info
         );
         let oracle_account_infos = Vec::from([sol_oracle_account_info, usdc_oracle_account_info]);
-        let mut oracle_map =
-            OracleMap::load(&mut oracle_account_infos.iter().peekable(), slot, None).unwrap();
+        let mut oracle_map = OracleMap::load(
+            &mut oracle_account_infos.iter().peekable(),
+            slot,
+            SlotClock::baseline(),
+            None,
+        )
+        .unwrap();
 
         let mut usdc_spot_market = SpotMarket {
             market_index: 0,
@@ -2979,7 +3013,8 @@ mod calculate_margin_requirement_and_total_collateral_and_liability_info {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -3087,6 +3122,7 @@ mod calculate_max_withdrawable_amount {
                     SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
                 },
                 margin::calculate_max_withdrawable_amount,
+                time::SlotClock,
             },
             state::{
                 oracle::{HistoricalOracleData, OracleSource},
@@ -3116,7 +3152,8 @@ mod calculate_max_withdrawable_amount {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let market_map = PerpMarketMap::empty();
 
@@ -3201,7 +3238,8 @@ mod calculate_max_withdrawable_amount {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let market_map = PerpMarketMap::empty();
 
@@ -3288,7 +3326,8 @@ mod calculate_max_withdrawable_amount {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let market_map = PerpMarketMap::empty();
 
@@ -3375,6 +3414,7 @@ mod validate_spot_margin_trading {
                     SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
                 },
                 margin::validate_spot_margin_trading,
+                time::SlotClock,
             },
             state::{
                 market_status::MarketStatus,
@@ -3407,7 +3447,8 @@ mod validate_spot_margin_trading {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let perp_market_map = PerpMarketMap::empty();
 
@@ -3489,7 +3530,8 @@ mod validate_spot_margin_trading {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let perp_market_map = PerpMarketMap::empty();
 
@@ -3571,7 +3613,8 @@ mod validate_spot_margin_trading {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let perp_market_map = PerpMarketMap::empty();
 
@@ -3653,7 +3696,8 @@ mod validate_spot_margin_trading {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let perp_market_map = PerpMarketMap::empty();
 
@@ -3735,7 +3779,8 @@ mod validate_spot_margin_trading {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let perp_market_map = PerpMarketMap::empty();
 
@@ -3817,7 +3862,8 @@ mod validate_spot_margin_trading {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let perp_market_map = PerpMarketMap::empty();
 
@@ -3899,7 +3945,8 @@ mod validate_spot_margin_trading {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -4009,6 +4056,7 @@ mod calculate_user_equity {
                     SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
                 },
                 margin::calculate_user_equity,
+                time::SlotClock,
             },
             state::{
                 oracle::{HistoricalOracleData, OracleSource},
@@ -4041,7 +4089,8 @@ mod calculate_user_equity {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -4144,7 +4193,8 @@ mod calculate_user_equity {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -4244,7 +4294,8 @@ mod calculate_user_equity {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -4341,7 +4392,8 @@ mod calculate_user_equity {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let market_map = PerpMarketMap::empty();
 
@@ -4422,6 +4474,7 @@ mod floor_net_equity {
                     SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
                 },
                 margin::{calculate_net_equity_for_floor, calculate_user_equity, FloorNetEquity},
+                time::SlotClock,
             },
             state::{
                 oracle::{HistoricalOracleData, OracleSource},
@@ -4455,7 +4508,8 @@ mod floor_net_equity {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let market_map = PerpMarketMap::empty();
 
@@ -4600,6 +4654,7 @@ mod trip_net_equity {
                     SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
                 },
                 margin::{calculate_user_equity, calculate_user_equity_for_trip, TripNetEquity},
+                time::SlotClock,
             },
             state::{
                 market_status::MarketStatus,
@@ -4639,7 +4694,8 @@ mod trip_net_equity {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let market_map = PerpMarketMap::empty();
 
@@ -4734,7 +4790,8 @@ mod trip_net_equity {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -5112,6 +5169,7 @@ mod pools {
                     calculate_margin_requirement_and_total_collateral_and_liability_info,
                     MarginRequirementType,
                 },
+                time::SlotClock,
             },
             state::{
                 margin_calculation::MarginContext,
@@ -5144,7 +5202,8 @@ mod pools {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let market_map = PerpMarketMap::empty();
 
@@ -5202,7 +5261,8 @@ mod pools {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM { ..AMM::default() },
@@ -5255,6 +5315,7 @@ mod isolated_position {
                     calculate_margin_requirement_and_total_collateral_and_liability_info,
                     MarginRequirementType,
                 },
+                time::SlotClock,
             },
             state::{
                 margin_calculation::MarginContext,
@@ -5288,7 +5349,8 @@ mod isolated_position {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -5449,6 +5511,7 @@ mod meets_place_order_margin_requirement_with_isolated {
                     SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
                 },
                 margin::meets_place_order_margin_requirement,
+                time::SlotClock,
             },
             state::{
                 market_status::MarketStatus,
@@ -5493,7 +5556,8 @@ mod meets_place_order_margin_requirement_with_isolated {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         // SOL-PERP market with 10% initial margin, 5% maintenance margin
         let mut sol_perp_market = PerpMarket {
@@ -5600,7 +5664,9 @@ mod meets_place_order_margin_requirement_with_isolated {
             PythLazerOracle,
             sol_oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&sol_oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&sol_oracle_account_info, slot, SlotClock::baseline(), None)
+                .unwrap();
 
         let mut sol_perp_market = PerpMarket {
             market_index: 0,
@@ -5684,7 +5750,8 @@ mod meets_place_order_margin_requirement_with_isolated {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut sol_perp_market = PerpMarket {
             market_index: 0,
@@ -5775,7 +5842,8 @@ mod meets_place_order_margin_requirement_with_isolated {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut sol_perp_market = PerpMarket {
             market_index: 0,
@@ -5865,7 +5933,8 @@ mod meets_place_order_margin_requirement_with_isolated {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut sol_perp_market = PerpMarket {
             market_index: 0,
@@ -5954,7 +6023,8 @@ mod meets_place_order_margin_requirement_with_isolated {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut sol_perp_market = PerpMarket {
             market_index: 0,
@@ -6043,7 +6113,8 @@ mod meets_place_order_margin_requirement_with_isolated {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut sol_perp_market = PerpMarket {
             market_index: 0,
@@ -6133,7 +6204,8 @@ mod meets_place_order_margin_requirement_with_isolated {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut sol_perp_market = PerpMarket {
             market_index: 0,
@@ -6241,8 +6313,13 @@ mod meets_place_order_margin_requirement_with_isolated {
         );
 
         let oracle_account_infos = [sol_oracle_account_info, eth_oracle_account_info];
-        let mut oracle_map =
-            OracleMap::load(&mut oracle_account_infos.iter().peekable(), slot, None).unwrap();
+        let mut oracle_map = OracleMap::load(
+            &mut oracle_account_infos.iter().peekable(),
+            slot,
+            SlotClock::baseline(),
+            None,
+        )
+        .unwrap();
 
         // SOL-PERP market with 10% initial margin, 5% maintenance margin
         let mut sol_perp_market = PerpMarket {
@@ -6405,8 +6482,13 @@ mod meets_place_order_margin_requirement_with_isolated {
         );
 
         let oracle_account_infos = [sol_oracle_account_info, eth_oracle_account_info];
-        let mut oracle_map =
-            OracleMap::load(&mut oracle_account_infos.iter().peekable(), slot, None).unwrap();
+        let mut oracle_map = OracleMap::load(
+            &mut oracle_account_infos.iter().peekable(),
+            slot,
+            SlotClock::baseline(),
+            None,
+        )
+        .unwrap();
 
         // SOL-PERP market (cross position) with 10% initial margin, 5% maintenance margin
         let mut sol_perp_market = PerpMarket {
@@ -6580,8 +6662,13 @@ mod meets_place_order_margin_requirement_with_isolated {
         );
 
         let oracle_account_infos = [sol_oracle_account_info, eth_oracle_account_info];
-        let mut oracle_map =
-            OracleMap::load(&mut oracle_account_infos.iter().peekable(), slot, None).unwrap();
+        let mut oracle_map = OracleMap::load(
+            &mut oracle_account_infos.iter().peekable(),
+            slot,
+            SlotClock::baseline(),
+            None,
+        )
+        .unwrap();
 
         // SOL-PERP market (cross position) with 10% initial margin, 5% maintenance margin
         let mut sol_perp_market = PerpMarket {
@@ -6766,8 +6853,13 @@ mod meets_place_order_margin_requirement_with_isolated {
         );
 
         let oracle_account_infos = [eth_oracle_account_info];
-        let mut oracle_map =
-            OracleMap::load(&mut oracle_account_infos.iter().peekable(), slot, None).unwrap();
+        let mut oracle_map = OracleMap::load(
+            &mut oracle_account_infos.iter().peekable(),
+            slot,
+            SlotClock::baseline(),
+            None,
+        )
+        .unwrap();
 
         // ETH-PERP market (isolated position) with 10% initial margin, 5% maintenance margin
         let mut eth_perp_market = PerpMarket {
@@ -6895,8 +6987,13 @@ mod meets_place_order_margin_requirement_with_isolated {
         );
 
         let oracle_account_infos = [sol_oracle_account_info, eth_oracle_account_info];
-        let mut oracle_map =
-            OracleMap::load(&mut oracle_account_infos.iter().peekable(), slot, None).unwrap();
+        let mut oracle_map = OracleMap::load(
+            &mut oracle_account_infos.iter().peekable(),
+            slot,
+            SlotClock::baseline(),
+            None,
+        )
+        .unwrap();
 
         // SOL-PERP market with 10% initial margin, 5% maintenance margin
         let mut sol_perp_market = PerpMarket {
@@ -7048,8 +7145,13 @@ mod meets_place_order_margin_requirement_with_isolated {
             eth_oracle_account_info
         );
         let oracle_account_infos = [sol_oracle_account_info, eth_oracle_account_info];
-        let mut oracle_map =
-            OracleMap::load(&mut oracle_account_infos.iter().peekable(), slot, None).unwrap();
+        let mut oracle_map = OracleMap::load(
+            &mut oracle_account_infos.iter().peekable(),
+            slot,
+            SlotClock::baseline(),
+            None,
+        )
+        .unwrap();
 
         let mut sol_perp_market = PerpMarket {
             market_index: 0,
@@ -7164,8 +7266,13 @@ mod meets_place_order_margin_requirement_with_isolated {
             eth_oracle_account_info
         );
         let oracle_account_infos = [eth_oracle_account_info];
-        let mut oracle_map =
-            OracleMap::load(&mut oracle_account_infos.iter().peekable(), slot, None).unwrap();
+        let mut oracle_map = OracleMap::load(
+            &mut oracle_account_infos.iter().peekable(),
+            slot,
+            SlotClock::baseline(),
+            None,
+        )
+        .unwrap();
 
         let mut eth_perp_market = PerpMarket {
             market_index: 2,
@@ -7256,8 +7363,13 @@ mod meets_place_order_margin_requirement_with_isolated {
             eth_oracle_account_info
         );
         let oracle_account_infos = [eth_oracle_account_info];
-        let mut oracle_map =
-            OracleMap::load(&mut oracle_account_infos.iter().peekable(), slot, None).unwrap();
+        let mut oracle_map = OracleMap::load(
+            &mut oracle_account_infos.iter().peekable(),
+            slot,
+            SlotClock::baseline(),
+            None,
+        )
+        .unwrap();
 
         let mut eth_perp_market = PerpMarket {
             market_index: 2,
@@ -7357,8 +7469,13 @@ mod meets_place_order_margin_requirement_with_isolated {
             eth_oracle_account_info
         );
         let oracle_account_infos = [sol_oracle_account_info, eth_oracle_account_info];
-        let mut oracle_map =
-            OracleMap::load(&mut oracle_account_infos.iter().peekable(), slot, None).unwrap();
+        let mut oracle_map = OracleMap::load(
+            &mut oracle_account_infos.iter().peekable(),
+            slot,
+            SlotClock::baseline(),
+            None,
+        )
+        .unwrap();
 
         let mut sol_perp_market = PerpMarket {
             market_index: 0,
@@ -7487,8 +7604,13 @@ mod meets_place_order_margin_requirement_with_isolated {
             eth_oracle_account_info
         );
         let oracle_account_infos = [sol_oracle_account_info, eth_oracle_account_info];
-        let mut oracle_map =
-            OracleMap::load(&mut oracle_account_infos.iter().peekable(), slot, None).unwrap();
+        let mut oracle_map = OracleMap::load(
+            &mut oracle_account_infos.iter().peekable(),
+            slot,
+            SlotClock::baseline(),
+            None,
+        )
+        .unwrap();
 
         let mut sol_perp_market = PerpMarket {
             market_index: 0,
@@ -7872,6 +7994,7 @@ mod fill_perp_order_margin_requirement_with_isolated {
                     calculate_margin_requirement_and_total_collateral_and_liability_info,
                     MarginRequirementType,
                 },
+                time::SlotClock,
             },
             state::{
                 margin_calculation::{MarginContext, MarginTypeConfig},
@@ -7915,8 +8038,13 @@ mod fill_perp_order_margin_requirement_with_isolated {
             eth_oracle_account_info
         );
         let oracle_account_infos = [sol_oracle_account_info, eth_oracle_account_info];
-        let mut oracle_map =
-            OracleMap::load(&mut oracle_account_infos.iter().peekable(), slot, None).unwrap();
+        let mut oracle_map = OracleMap::load(
+            &mut oracle_account_infos.iter().peekable(),
+            slot,
+            SlotClock::baseline(),
+            None,
+        )
+        .unwrap();
 
         let mut sol_perp_market = PerpMarket {
             market_index: 0,

@@ -4,7 +4,8 @@ mod test {
         error::VelocityResult,
         math::constants::{
             AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BID_ASK_SPREAD_PRECISION,
-            BID_ASK_SPREAD_PRECISION_I64, QUOTE_PRECISION, QUOTE_PRECISION_I128,
+            BID_ASK_SPREAD_PRECISION_I64, PRICE_PRECISION_U64, QUOTE_PRECISION,
+            QUOTE_PRECISION_I128,
         },
         state::perp_market::{PerpMarket, AMM},
         vlp::amm::math::{amm::calculate_price, spread::*},
@@ -104,6 +105,149 @@ mod test {
         let (l, s) = cap_to_max_spread(2510, 110, 2500).unwrap();
         assert_eq!(l, 2396);
         assert_eq!(s, 104);
+    }
+
+    #[test]
+    fn spread_reserve_delta_uses_exact_composite_spread() {
+        let amm = AMM {
+            quote_asset_reserve: 2_000_000_000,
+            sqrt_k: 2_000_000_000,
+            ..AMM::default()
+        };
+
+        let (_, quote_long_one) =
+            compute_spread_reserves_for_direction(&amm, 1, 0, PositionDirection::Long).unwrap();
+        let (_, quote_short_one) =
+            compute_spread_reserves_for_direction(&amm, 1, 0, PositionDirection::Short).unwrap();
+        assert_eq!(quote_long_one, 2_000_001_000);
+        assert_eq!(quote_short_one, 1_999_999_000);
+
+        let (_, quote_long_odd) =
+            compute_spread_reserves_for_direction(&amm, 3, 0, PositionDirection::Long).unwrap();
+        assert_eq!(quote_long_odd, 2_000_003_000);
+
+        let (_, quote_long_wide) =
+            compute_spread_reserves_for_direction(&amm, 600_000, 0, PositionDirection::Long)
+                .unwrap();
+        let (_, quote_short_wide) =
+            compute_spread_reserves_for_direction(&amm, 600_000, 0, PositionDirection::Short)
+                .unwrap();
+        assert_eq!(quote_long_wide, 2_600_000_000);
+        assert_eq!(quote_short_wide, 1_400_000_000);
+    }
+
+    #[test]
+    fn ordered_cap_preserves_priority() {
+        // raw = divergence (20, 0) + floor (10, 10) + steering (80, 0)
+        //     + padding (50, 50)
+        let components = SpreadComponents::from_raw(
+            SpreadPair {
+                long: 160,
+                short: 60,
+            },
+            SpreadPair { long: 20, short: 0 },
+            SpreadPair {
+                long: 10,
+                short: 10,
+            },
+            SpreadPair { long: 80, short: 0 },
+        )
+        .unwrap();
+
+        // Only padding yields: its two sides remain proportional.
+        assert_eq!(
+            components.cap_total_ordered(180).unwrap(),
+            SpreadPair {
+                long: 140,
+                short: 40,
+            }
+        );
+
+        // Padding is gone before steering is touched, but the floor remains.
+        assert_eq!(
+            components.cap_total_ordered(90).unwrap(),
+            SpreadPair {
+                long: 80,
+                short: 10,
+            }
+        );
+
+        // Divergence is still the last layer compressed when the ceiling
+        // cannot hold even the known oracle gap.
+        assert_eq!(
+            components.cap_total_ordered(10).unwrap(),
+            SpreadPair { long: 10, short: 0 }
+        );
+    }
+
+    #[test]
+    fn ordered_cap_handles_opposing_divergence_and_steering() {
+        // Divergence protects long while inventory steering protects short.
+        let components = SpreadComponents::from_raw(
+            SpreadPair {
+                long: 80,
+                short: 100,
+            },
+            SpreadPair { long: 60, short: 0 },
+            SpreadPair { long: 5, short: 5 },
+            SpreadPair { long: 0, short: 50 },
+        )
+        .unwrap();
+
+        let capped = components.cap_total_ordered(130).unwrap();
+        assert_eq!(capped.total().unwrap(), 130);
+        assert_eq!(capped.long, 67);
+        assert_eq!(capped.short, 63);
+        assert!(capped.long >= 60); // full divergence requirement survives
+        assert!(capped.short >= 50); // full steering requirement survives
+    }
+
+    #[test]
+    fn calculate_spread_maps_negative_oracle_gap_to_long_side() {
+        let amm = AMM {
+            base_spread: 1_000,
+            max_spread: 10_000,
+            total_fee_minus_distributions: 1,
+            ..AMM::default()
+        };
+
+        let spread = crate::vlp::amm::math::spread::calculate_spread(
+            &amm,
+            &SpreadInputs::default(),
+            PRICE_PRECISION_U64,
+            -5_000,
+        )
+        .unwrap();
+
+        // Reserve below oracle retreats the long/ask side. The short side
+        // remains at its half-base floor.
+        assert_eq!(spread, (5_000, 500));
+    }
+
+    #[test]
+    fn ordered_cap_is_identity_below_ceiling() {
+        let raw = SpreadPair {
+            long: 12_345,
+            short: 6_789,
+        };
+        let components = SpreadComponents::from_raw(
+            raw,
+            SpreadPair {
+                long: 1_000,
+                short: 0,
+            },
+            SpreadPair {
+                long: 100,
+                short: 100,
+            },
+            SpreadPair {
+                long: 5_000,
+                short: 0,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(components.cap_total_ordered(20_000).unwrap(), raw);
     }
 
     #[test]
@@ -520,8 +664,8 @@ mod test {
         .unwrap();
 
         assert_eq!(bar_s, 2000500125);
-        assert_eq!(bar_l, 1972972973);
-        assert_eq!(qar_l, 2027397260);
+        assert_eq!(bar_l, 1973096824);
+        assert_eq!(qar_l, 2027270000);
         assert_eq!(qar_s, 1999500000);
 
         assert!(qar_l > amm.quote_asset_reserve);
@@ -531,7 +675,7 @@ mod test {
 
         let l_price = calculate_price(qar_l, bar_l, amm.peg_multiplier).unwrap();
         let s_price = calculate_price(qar_s, bar_s, amm.peg_multiplier).unwrap();
-        assert_eq!(l_price, 1027584);
+        assert_eq!(l_price, 1027455);
         assert_eq!(s_price, 999500);
         assert!(l_price > s_price);
 
@@ -560,12 +704,12 @@ mod test {
         assert!(qar_s > amm.quote_asset_reserve);
         assert!(bar_s < amm.base_asset_reserve);
         assert_eq!(bar_s, 1999500124); // up
-        assert_eq!(bar_l, 1971830986); // down
-        assert_eq!(qar_l, 2028571428); // up
+        assert_eq!(bar_l, 1972124026); // down
+        assert_eq!(qar_l, 2028270000); // up
 
         let l_price = calculate_price(qar_l, bar_l, amm.peg_multiplier).unwrap();
         let s_price = calculate_price(qar_s, bar_s, amm.peg_multiplier).unwrap();
-        assert_eq!(l_price, 1028775);
+        assert_eq!(l_price, 1028469);
         assert_eq!(s_price, 1000500);
         assert!(l_price > s_price);
 
@@ -589,14 +733,14 @@ mod test {
         assert!(bar_l < amm.base_asset_reserve);
         assert!(qar_s < amm.quote_asset_reserve);
         assert!(bar_s > amm.base_asset_reserve);
-        assert_eq!(bar_s, 2001501501); // up
-        assert_eq!(bar_l, 1974025974); // up
-        assert_eq!(qar_l, 2026315789); // down
-        assert_eq!(qar_s, 1998499625); // down
+        assert_eq!(bar_s, 2001501125); // up
+        assert_eq!(bar_l, 1974070582); // up
+        assert_eq!(qar_l, 2026270000); // down
+        assert_eq!(qar_s, 1998500000); // down
 
         let l_price = calculate_price(qar_l, bar_l, amm.peg_multiplier).unwrap();
         let s_price = calculate_price(qar_s, bar_s, amm.peg_multiplier).unwrap();
-        assert_eq!(l_price, 1026488);
+        assert_eq!(l_price, 1026442);
         assert_eq!(s_price, 998500);
         assert!(l_price > s_price);
 
@@ -628,7 +772,7 @@ mod test {
         .unwrap();
 
         assert_eq!(long_spread_btc, 250);
-        assert_eq!(short_spread_btc, 74117);
+        assert_eq!(short_spread_btc, 74194);
 
         let (long_spread_btc1, short_spread_btc1) = calculate_spread(
             500,
@@ -657,7 +801,9 @@ mod test {
         )
         .unwrap();
 
-        assert_eq!(long_spread_btc1, 211);
+        // Steering consumes every byte above the explicit half-base floor on
+        // the healing side.
+        assert_eq!(long_spread_btc1, 250);
         assert_eq!(short_spread_btc1, 200000 - long_spread_btc1); // max spread
     }
 
@@ -796,8 +942,8 @@ mod test {
             0,
         )
         .unwrap();
-        assert_eq!(long_spread1, 345);
-        assert_eq!(short_spread1, 199655);
+        assert_eq!(long_spread1, 500);
+        assert_eq!(short_spread1, 199500);
 
         total_fee_minus_distributions = QUOTE_PRECISION_I128;
         let (long_spread1, short_spread1) = calculate_spread(
@@ -826,8 +972,8 @@ mod test {
             0,
         )
         .unwrap();
-        assert_eq!(long_spread1, 110);
-        assert_eq!(short_spread1, 199890); // todo
+        assert_eq!(long_spread1, 500);
+        assert_eq!(short_spread1, 199500);
 
         // flip sign
         let (d1, _) = calculate_long_short_vol_spread(
@@ -879,7 +1025,7 @@ mod test {
             0,
         )
         .unwrap();
-        assert_eq!(long_spread1, 199926);
+        assert_eq!(long_spread1, 199500);
         assert_eq!(short_spread1, max_spread - long_spread1);
 
         let (long_spread1, short_spread1) = calculate_spread(
@@ -908,7 +1054,7 @@ mod test {
             0,
         )
         .unwrap();
-        assert_eq!(long_spread1, 199951);
+        assert_eq!(long_spread1, 199500);
         assert_eq!(short_spread1, max_spread - long_spread1); // max on long
 
         let (long_spread1, short_spread1) = calculate_spread(
@@ -937,8 +1083,8 @@ mod test {
             0,
         )
         .unwrap();
-        assert_eq!(long_spread1, 199815);
-        assert_eq!(short_spread1, 185);
+        assert_eq!(long_spread1, 199500);
+        assert_eq!(short_spread1, 500);
     }
 
     #[test]
@@ -1199,6 +1345,34 @@ mod test {
     }
 
     #[test]
+    fn confidence_component_ramps_continuously() {
+        let threshold = SPREAD_CONF_FULL_WEIGHT_THRESHOLD;
+        assert_eq!(threshold, 2500);
+        assert_eq!(calculate_spread_conf_component(0).unwrap(), 0);
+        assert_eq!(calculate_spread_conf_component(threshold / 2).unwrap(), 656);
+        assert_eq!(
+            calculate_spread_conf_component(threshold - 1).unwrap(),
+            2498
+        );
+        assert_eq!(
+            calculate_spread_conf_component(threshold).unwrap(),
+            threshold
+        );
+        assert_eq!(
+            calculate_spread_conf_component(threshold + 1).unwrap(),
+            threshold + 1
+        );
+
+        let mut previous = 0;
+        for confidence in 0..=threshold + 1 {
+            let component = calculate_spread_conf_component(confidence).unwrap();
+            assert!(component >= previous);
+            assert!(component <= confidence);
+            previous = component;
+        }
+    }
+
+    #[test]
     fn calculate_vol_spread_tests() {
         let base_spread = 250; // .025%
         let last_oracle_reserve_price_spread_pct = 0;
@@ -1431,8 +1605,8 @@ mod test {
             0,
         )
         .unwrap();
-        assert_eq!(long_spread, 197666);
-        assert_eq!(short_spread, 2334);
+        assert_eq!(long_spread, 197541);
+        assert_eq!(short_spread, 2459);
 
         let (long_spread, short_spread) = calculate_spread(
             base_spread,
@@ -1637,8 +1811,10 @@ mod test {
             0,
         )
         .unwrap();
-        assert_eq!(long_spread, 197814); // big cause of oracel pct
-        assert_eq!(short_spread, 2186);
+        // The 5bp divergence on short is protected first, then its vol floor,
+        // before long-side steering receives the residual ceiling.
+        assert_eq!(long_spread, 192541);
+        assert_eq!(short_spread, 7459);
 
         let (long_spread, short_spread) = calculate_spread(
             base_spread,
@@ -1700,8 +1876,8 @@ mod test {
             0,
         )
         .unwrap();
-        assert_eq!(long_spread, 89746);
-        assert_eq!(short_spread, 910254);
+        assert_eq!(long_spread, 146096);
+        assert_eq!(short_spread, 853904);
 
         // terms 3
         let (long_spread, short_spread) = calculate_spread(
@@ -1730,8 +1906,8 @@ mod test {
             0,
         )
         .unwrap();
-        assert_eq!(long_spread, 89746);
-        assert_eq!(short_spread, 910254);
+        assert_eq!(long_spread, 146096);
+        assert_eq!(short_spread, 853904);
 
         // terms 4
         let (long_spread, short_spread) = calculate_spread(
@@ -1760,8 +1936,8 @@ mod test {
             0,
         )
         .unwrap();
-        assert_eq!(long_spread, 89746);
-        assert_eq!(short_spread, 910254);
+        assert_eq!(long_spread, 146096);
+        assert_eq!(short_spread, 853904);
 
         // extra one?
 
@@ -1980,7 +2156,8 @@ mod test {
             };
             let mm =
                 MMOraclePriceData::new(oracle_price, 0, 0, OracleValidity::Valid, opd).unwrap();
-            update_amm_quote_state(amm, stats, &mm, reserve_price, slot).unwrap();
+            update_amm_quote_state(amm, stats, &mm, reserve_price, slot, SlotClock::baseline())
+                .unwrap();
             assert_eq!(amm.last_spread_update_slot, slot);
             (
                 amm.long_spread,
@@ -2005,10 +2182,10 @@ mod test {
                     125,
                     0,
                     0,
-                    99988800538,
-                    100011200716,
-                    100006200396,
-                    99993799988
+                    99988801254,
+                    100011200000,
+                    100006250390,
+                    99993750000
                 )
             );
         }
@@ -2026,16 +2203,67 @@ mod test {
             assert_eq!(
                 out,
                 (
-                    44859,
-                    15141,
+                    55000,
+                    5000,
                     0,
                     -50000,
-                    97777777778,
-                    102272727272,
-                    100763358778,
-                    99242424243
+                    97323600973,
+                    102750000000,
+                    100250626566,
+                    99750000000
                 )
             );
+        }
+
+        #[test]
+        fn extreme_divergence_is_clipped_for_quote_math() {
+            let amm = base_amm();
+            let inputs = SpreadInputs::from_stats(&base_stats());
+            let reserve_price = amm.reserve_price().unwrap();
+
+            for (raw, clipped) in [
+                (
+                    -2 * BID_ASK_SPREAD_PRECISION_I64,
+                    -BID_ASK_SPREAD_PRECISION_I64,
+                ),
+                (
+                    2 * BID_ASK_SPREAD_PRECISION_I64,
+                    BID_ASK_SPREAD_PRECISION_I64,
+                ),
+            ] {
+                assert_eq!(
+                    crate::vlp::amm::math::spread::calculate_spread(
+                        &amm,
+                        &inputs,
+                        reserve_price,
+                        raw,
+                    )
+                    .unwrap(),
+                    crate::vlp::amm::math::spread::calculate_spread(
+                        &amm,
+                        &inputs,
+                        reserve_price,
+                        clipped,
+                    )
+                    .unwrap(),
+                );
+            }
+        }
+
+        #[test]
+        fn extreme_divergence_refresh_preserves_raw_value() {
+            let mut amm = base_amm();
+            let reserve_price = amm.reserve_price().unwrap();
+
+            let out = refresh(
+                &mut amm,
+                &base_stats(),
+                reserve_price.safe_mul(2).unwrap().cast().unwrap(),
+                100,
+            );
+
+            assert_eq!(out.3, -2 * BID_ASK_SPREAD_PRECISION_I64);
+            assert_eq!(out.0 as u64 + out.1 as u64, BID_ASK_SPREAD_PRECISION);
         }
 
         #[test]
@@ -2052,8 +2280,8 @@ mod test {
                     1250,
                     0,
                     0,
-                    99889012208,
-                    100111111111,
+                    99889123073,
+                    100111000000,
                     100062539086,
                     99937500000
                 )
@@ -2085,10 +2313,10 @@ mod test {
                     275,
                     0,
                     0,
-                    99978800085,
-                    100021204410,
-                    100013702383,
-                    99986299494
+                    99978754514,
+                    100021250000,
+                    100013751890,
+                    99986250000
                 )
             );
 
@@ -2105,10 +2333,10 @@ mod test {
                     425,
                     0,
                     0,
-                    99986301370,
-                    100013700506,
-                    100021208907,
-                    99978795590
+                    99986251890,
+                    100013750000,
+                    100021254516,
+                    99978750000
                 )
             );
 
@@ -2125,10 +2353,10 @@ mod test {
                     275,
                     0,
                     0,
-                    99986301370,
-                    100013700506,
-                    100013702383,
-                    99986299494
+                    99986251890,
+                    100013750000,
+                    100013751890,
+                    99986250000
                 )
             );
         }
@@ -2145,14 +2373,14 @@ mod test {
             assert_eq!(
                 out_at,
                 (
-                    350,
-                    250,
+                    2777,
+                    2500,
                     0,
                     0,
-                    99982502187,
-                    100017500875,
-                    100012501562,
-                    99987500000
+                    99861342525,
+                    100138850000,
+                    100125156445,
+                    99875000000
                 )
             );
 
@@ -2162,8 +2390,8 @@ mod test {
                 ..base_stats()
             };
             let out_above = refresh(&mut amm_above, &stats_above, 0, 100);
-            // One unit of confidence input above the 25 bp threshold moves the
-            // quoted spread ~8x. This pins the cliff itself (design issue 5).
+            // Crossing the threshold changes the quote by only the one-unit
+            // confidence increase; there is no full-weight cliff.
             assert_eq!(
                 out_above,
                 (
@@ -2171,10 +2399,10 @@ mod test {
                     2501,
                     0,
                     0,
-                    99861111111,
-                    100139082058,
-                    100125156445,
-                    99875000000
+                    99861292664,
+                    100138900000,
+                    100125206570,
+                    99874950000
                 )
             );
         }
@@ -2210,10 +2438,10 @@ mod test {
                     175,
                     -450,
                     0,
-                    99988800538,
-                    100011200716,
-                    100031210986,
-                    99968798752
+                    99988801254,
+                    100011200000,
+                    100031259768,
+                    99968750000
                 )
             );
         }
@@ -2235,10 +2463,10 @@ mod test {
                     188,
                     0,
                     0,
-                    99983201747,
-                    100016801075,
-                    100009401146,
-                    99990599737
+                    99983202821,
+                    100016800000,
+                    100009400883,
+                    99990600000
                 )
             );
 
@@ -2254,8 +2482,8 @@ mod test {
                     250,
                     0,
                     0,
-                    99977603584,
-                    100022401433,
+                    99977605016,
+                    100022400000,
                     100012501562,
                     99987500000
                 )
@@ -2284,14 +2512,14 @@ mod test {
             assert_eq!(
                 out_neg,
                 (
-                    17899,
-                    2101,
+                    20000,
+                    0,
                     0,
                     -20000,
-                    99107142858,
-                    100900900900,
-                    100105152470,
-                    99894957984
+                    99009900990,
+                    101000000000,
+                    100000000000,
+                    100000000000
                 )
             );
 
@@ -2301,14 +2529,14 @@ mod test {
             assert_eq!(
                 out_pos,
                 (
-                    2531,
-                    17469,
                     0,
                     20000,
-                    99873577750,
-                    100126582278,
-                    100884955751,
-                    99122807018
+                    0,
+                    20000,
+                    100000000000,
+                    100000000000,
+                    101010101010,
+                    99000000000
                 )
             );
         }
@@ -2339,10 +2567,10 @@ mod test {
                     157,
                     0,
                     0,
-                    99979000420,
-                    100021003990,
-                    100007800920,
-                    99992199688
+                    99979004409,
+                    100021000000,
+                    100007850616,
+                    99992150000
                 )
             );
 
@@ -2360,10 +2588,10 @@ mod test {
                     125,
                     0,
                     0,
-                    99993800372,
-                    100006200012,
-                    100006200396,
-                    99993799988
+                    99993750390,
+                    100006250000,
+                    100006250390,
+                    99993750000
                 )
             );
         }
@@ -2382,10 +2610,10 @@ mod test {
                     63,
                     0,
                     0,
-                    99994400269,
-                    100005600044,
-                    100003100102,
-                    99996899994
+                    99994400313,
+                    100005600000,
+                    100003150099,
+                    99996850000
                 )
             );
 
@@ -2401,10 +2629,10 @@ mod test {
                     188,
                     0,
                     0,
-                    99983201747,
-                    100016801075,
-                    100009401146,
-                    99990599737
+                    99983202821,
+                    100016800000,
+                    100009400883,
+                    99990600000
                 )
             );
 
@@ -2420,10 +2648,10 @@ mod test {
                     125,
                     0,
                     0,
-                    99993800372,
-                    100006200012,
-                    100006200396,
-                    99993799988
+                    99993750390,
+                    100006250000,
+                    100006250390,
+                    99993750000
                 )
             );
         }

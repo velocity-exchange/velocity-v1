@@ -32,6 +32,8 @@ import {
 	findDirectionToClose,
 	calculateMarketAvailablePNL,
 	RECOMMENDED_JUPITER_API,
+	msToSlotsCeilNum,
+	SLOT_DURATION_BASELINE,
 } from '@velocity-exchange/sdk';
 import {
 	ComputeBudgetProgram,
@@ -236,7 +238,15 @@ export class LiquidatorDerisk {
 				baseAssetAmount: standardizedTokenAmount,
 				reduceOnly: true,
 				price: limitPrice,
-				auctionDuration: this.config.deriskAuctionDurationSlots!,
+				// wall clock ms in the onchain 400ms unit encoding; the program
+				// converts elapsed slots to wall clock at fill time
+				auctionDuration: Math.min(
+					255,
+					msToSlotsCeilNum(
+						this.config.deriskAuctionDurationMs!,
+						SLOT_DURATION_BASELINE
+					)
+				),
 				auctionStartPrice,
 				auctionEndPrice: limitPrice,
 			}),
@@ -578,7 +588,8 @@ export class LiquidatorDerisk {
 		}
 
 		const oracle = this.velocityClient.getMMOracleDataForPerpMarket(
-			position.marketIndex
+			position.marketIndex,
+			this.userMap.getSlot()
 		);
 		const direction = findDirectionToClose(position);
 		let entryPrice;
@@ -591,7 +602,9 @@ export class LiquidatorDerisk {
 				this.velocityClient.getPerpMarketAccount(position.marketIndex)!,
 				oracle,
 				dlob,
-				this.userMap.getSlot()
+				this.userMap.getSlot(),
+				undefined,
+				this.velocityClient.getStateAccount()
 			));
 		} catch (e) {
 			const err = e as Error;
@@ -620,7 +633,15 @@ export class LiquidatorDerisk {
 			baseAssetAmount,
 			reduceOnly: true,
 			marketIndex: position.marketIndex,
-			auctionDuration: this.config.deriskAuctionDurationSlots!,
+			// wall clock ms in the onchain 400ms unit encoding; the program
+			// converts elapsed slots to wall clock at fill time
+			auctionDuration: Math.min(
+				255,
+				msToSlotsCeilNum(
+					this.config.deriskAuctionDurationMs!,
+					SLOT_DURATION_BASELINE
+				)
+			),
 			auctionStartPrice,
 			auctionEndPrice,
 			oraclePriceOffset,

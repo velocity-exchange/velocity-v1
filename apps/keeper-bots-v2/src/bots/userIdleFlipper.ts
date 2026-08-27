@@ -112,7 +112,12 @@ export class UserIdleFlipperBot implements Bot {
 					continue;
 				}
 
-				if (user.canMakeIdle(new BN(currentSlot))) {
+				if (
+					user.canMakeIdle(
+						new BN(currentSlot),
+						this.velocityClient.getStateAccount()
+					)
+				) {
 					usersToIdle.push([
 						user.getUserAccountPublicKey(),
 						user.getUserAccountOrThrow(),

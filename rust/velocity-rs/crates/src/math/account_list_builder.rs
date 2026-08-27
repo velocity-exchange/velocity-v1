@@ -1,5 +1,6 @@
 use crate::solana_sdk::pubkey::Pubkey;
 use ahash::{HashMap, HashMapExt};
+use program::math::time::SlotClock;
 
 use program::sdk::{AlignedAccountData, OwnedAccount, VelocityAccounts};
 
@@ -115,6 +116,15 @@ impl AccountsListBuilder {
         }
 
         self.accounts.latest_slot = latest_oracle_slot;
+        // Carry the full transition archive, not one resolved duration: the
+        // margin math integrates oracle ages and cooldowns per slot duration
+        // regime, exactly like the program.
+        self.accounts.slot_clock = SlotClock::from_state_fields(
+            velocity_state_account.slot_duration_transition_slots,
+            velocity_state_account.slot_duration_ms,
+            velocity_state_account.pending_slot_duration_ms,
+            velocity_state_account.slot_duration_effective_slot,
+        );
         self.accounts.oracle_guard_rails = Some(unsafe {
             std::mem::transmute_copy::<_, program::state::state::OracleGuardRails>(
                 &velocity_state_account.oracle_guard_rails,
@@ -198,6 +208,15 @@ impl AccountsListBuilder {
         }
 
         self.accounts.latest_slot = latest_oracle_slot;
+        // Carry the full transition archive, not one resolved duration: the
+        // margin math integrates oracle ages and cooldowns per slot duration
+        // regime, exactly like the program.
+        self.accounts.slot_clock = SlotClock::from_state_fields(
+            velocity_state_account.slot_duration_transition_slots,
+            velocity_state_account.slot_duration_ms,
+            velocity_state_account.pending_slot_duration_ms,
+            velocity_state_account.slot_duration_effective_slot,
+        );
         self.accounts.oracle_guard_rails = Some(unsafe {
             std::mem::transmute_copy::<_, program::state::state::OracleGuardRails>(
                 &velocity_state_account.oracle_guard_rails,

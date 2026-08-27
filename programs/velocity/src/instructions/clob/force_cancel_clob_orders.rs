@@ -174,6 +174,7 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set(QUOTE_SPOT_MARKET_INDEX),
         clock.slot,
+        state.slot_clock(),
         None,
     )?;
 

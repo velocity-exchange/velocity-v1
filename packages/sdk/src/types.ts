@@ -860,6 +860,30 @@ export type NewUserRecord = {
 	referrer: PublicKey;
 };
 
+/** Which code path changed an authority's Accelerated referral status. */
+export class AcceleratedReferralStatusChange {
+	static readonly ADMIN_GRANT = { adminGrant: {} };
+	static readonly ADMIN_REVOKE = { adminRevoke: {} };
+	static readonly AUTO_ENROLLMENT = { autoEnrollment: {} };
+}
+
+/**
+ * Emitted whenever an authority's `acceleratedReferralStatus` bitmask changes: automatic
+ * enrollment on an eligible interaction, or an admin grant/revoke. `previousStatus` and
+ * `newStatus` are `AcceleratedReferralStatus` bitmasks.
+ */
+export type AcceleratedReferralStatusChangedRecord = {
+	ts: BN;
+	authority: PublicKey;
+	previousStatus: number;
+	newStatus: number;
+	action: {
+		adminGrant?: any;
+		adminRevoke?: any;
+		autoEnrollment?: any;
+	};
+};
+
 /** Emitted on every deposit, withdraw, or internal transfer that moves tokens into/out of a spot market. */
 export type DepositRecord = {
 	ts: BN;
@@ -1495,7 +1519,7 @@ export type StateAccount = {
 	spotFeeStructure: FeeStructure;
 	/** LIQUIDATION_PCT_PRECISION (1e4); fraction of a position liquidated per partial-liquidation pass */
 	initialPctToLiquidate: number;
-	/** seconds a liquidation is spread over */
+	/** liquidation ramp length, stored in legacy 400ms units (decode with `millisFromStoredUnits`), NOT seconds */
 	liquidationDuration: number;
 	/** max SOL fee `getInitUserFee` may charge to create a new sub-account, in value/100 SOL (e.g. 100 = 1 SOL); ramps from 0 to this max as account-space utilization rises from 80% to 100% of `maxNumberOfSubAccounts` */
 	maxInitializeUserFee: number;
@@ -1507,6 +1531,40 @@ export type StateAccount = {
 	solvencyStatus: number;
 	/** promotional fee-tier floor for every account: effective perp tier = max(volume tier, promoFeeTier); 0 = disabled */
 	promoFeeTier: number;
+	/**
+	 * current Solana slot duration in ms, synchronized (permissionlessly) as the
+	 * IBRL feature gates activate (400 -> 350 -> 300 -> 250 -> 200). 0 = unset
+	 * (pre upgrade padding), meaning the 400ms baseline. Do not read directly:
+	 * resolve with `activeSlotDurationFromState` (or `slotDurationFromState` for
+	 * the base) from `math/time.ts`, which also consults the authoritative
+	 * `slotDurationTransitionSlots` archive. Wall-clock durations (`Millis`) are
+	 * expressed in actual slots through the resolved value via
+	 * `millisToSlots`/`millisFromSlots`.
+	 */
+	slotDurationMs: number;
+	/**
+	 * legacy staged next slot duration in ms. 0 = nothing staged. Once the chain
+	 * slot reaches `slotDurationEffectiveSlot`, this is the live value (see
+	 * `activeSlotDurationFromState`). Superseded by
+	 * `slotDurationTransitionSlots` once any archive entry is set.
+	 */
+	pendingSlotDurationMs: number;
+	/** explicit alignment padding (2 bytes) before `slotDurationEffectiveSlot` */
+	slotDurationPad: number[];
+	/**
+	 * slot at which `pendingSlotDurationMs` takes effect (first slot of the
+	 * epoch after the gate's activation epoch). 0 when nothing is staged.
+	 */
+	slotDurationEffectiveSlot: BN;
+	/**
+	 * first slot of each post baseline IBRL regime, ordered
+	 * `[350ms, 300ms, 250ms, 200ms]`; 0 = that transition not synchronized yet.
+	 * Written by the permissionless `syncStateSlotDuration` instruction. These
+	 * anchors let elapsed time math integrate an interval piecewise
+	 * (`elapsedMillis` in `math/time.ts`) instead of pricing the whole slot
+	 * delta at one endpoint duration.
+	 */
+	slotDurationTransitionSlots: BN[];
 };
 
 /** Decoded mirror of the on-chain `PerpMarket` zero-copy account. */
@@ -1600,6 +1658,8 @@ export type PerpMarketAccount = {
 		/** scalar for the share of fees transferred to the hedge pool */
 		feeTransferScalar: number;
 	};
+	/** reserved for future market fields */
+	paddingFuture: number[];
 	/** bitmask, see `MarketConfigFlag` */
 	marketConfig: number;
 
@@ -1720,10 +1780,15 @@ export type SpotMarketAccount = {
 	protocolLiquidationFee: number;
 	/** IF_FACTOR_PRECISION (1e6); protocol's carveout of lending deposit-interest gains */
 	protocolFeeFactor: number;
-	/** token mint precision; IF vault balance recorded at the last revenue settle, used as a
-	 * donation-proof base for the per-period revenue-settle APR cap (see `settle_revenue_to_insurance_fund`);
-	 * `0` = uninitialized (pre-upgrade accounts, seeded on first settle) */
+	/** token mint precision; lowest IF vault balance since the end of the last revenue settle.
+	 * The settle writes the balance it leaves behind, and every IF outflow lowers it again. The
+	 * per-period revenue-settle APR cap is sized off `min(live IF vault, this)`, so it counts only
+	 * capital the fund held for the whole period and neither a pre-settle donation nor one that
+	 * refills a mid-period dip can lift it (see `settle_revenue_to_insurance_fund`);
+	 * `0` = the market never settled revenue */
 	ifLastSettleVaultAmount: BN;
+	/** reserved for future market fields */
+	paddingFuture: number[];
 
 	/** token mint decimals; token-mint precision throughout this account is 10^decimals */
 	decimals: number;
@@ -1786,8 +1851,8 @@ export type SpotMarketAccount = {
 	/** token mint precision; 0 = no limit */
 	maxPositionSize: BN;
 	nextFillRecordId: BN;
-	/** fees collected from swaps between this market and the quote market, settled to the quote market's revenue pool; SPOT_BALANCE_PRECISION (1e9) scaled balance */
-	spotFeePool: PoolBalance;
+	/** reserved bytes from the retired spot fee pool */
+	paddingFormerSpotFeePool: number[];
 	/** QUOTE_PRECISION (1e6) */
 	totalSpotFee: BN;
 	/** token mint precision; total fees received from swaps */
@@ -2058,6 +2123,8 @@ export type UserStatsAccount = {
 	delegatePermissions: number;
 	/** non-zero when the permissionless `tripEquityFloorBreaker` fired: every subaccount of the authority rejects risk-increasing fills, withdrawals and transfers out until the warm admin resets */
 	equityBreakerTripped: number;
+	/** bitmask, see `AcceleratedReferralStatus` */
+	acceleratedReferralStatus: number;
 };
 
 /** Decoded mirror of the on-chain `User` (sub-account) zero-copy account. */
@@ -2151,7 +2218,7 @@ export type Order = {
 	immediateOrCancel: boolean;
 	/** if set, the limit price is `oraclePrice + oraclePriceOffset`; PRICE_PRECISION (1e6), signed */
 	oraclePriceOffset: BN;
-	/** slots the auction lasts; only relevant for market/oracle orders */
+	/** auction length in wall clock 400ms units (one slot at the 400ms baseline); only relevant for market/oracle orders */
 	auctionDuration: number;
 	/** PRICE_PRECISION (1e6), signed; only relevant for market/oracle orders */
 	auctionStartPrice: BN;
@@ -2188,7 +2255,7 @@ export type OrderParams = {
 	triggerCondition: OrderTriggerCondition;
 	/** signed offset from the oracle price, PRICE_PRECISION (1e6); when set, the order's effective limit price tracks the oracle */
 	oraclePriceOffset: BN | null;
-	/** slots; only used for market/oracle orders */
+	/** wall clock 400ms units (one slot at the 400ms baseline); only used for market/oracle orders */
 	auctionDuration: number | null;
 	/** unix timestamp after which the order expires */
 	maxTs: BN | null;
@@ -2393,6 +2460,13 @@ export enum ReferrerStatus {
 	BuilderReferral = 4,
 }
 
+/** Persistent referral reward flags stored on `UserStatsAccount.acceleratedReferralStatus`. */
+export enum AcceleratedReferralStatus {
+	Accelerated = 1,
+	/** prevents an admin revoked user from being immediately reenrolled by another trade */
+	AutoEnrollmentBlocked = 2,
+}
+
 /** Which fill outcome counts as "success" for a `placeAndTake*` instruction's on-chain success check. */
 export enum PlaceAndTakeOrderSuccessCondition {
 	PartialFill = 1,
@@ -2515,9 +2589,9 @@ export type OracleGuardRails = {
 		oracleTwap5MinPercentDivergence: BN;
 	};
 	validity: {
-		/** slots; oracle updates older than this are stale for AMM-facing actions */
+		/** legacy 400ms units; oracle updates older than this wall-clock duration are stale for AMM-facing actions */
 		slotsBeforeStaleForAmm: BN;
-		/** slots; oracle updates older than this are stale for margin/liquidation actions */
+		/** legacy 400ms units; oracle updates older than this wall-clock duration are stale for margin/liquidation actions */
 		slotsBeforeStaleForMargin: BN;
 		/** PERCENTAGE_PRECISION (1e6)-scaled fraction of price; oracle confidence intervals wider than this are rejected */
 		confidenceIntervalMaxSize: BN;

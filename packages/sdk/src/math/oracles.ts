@@ -4,6 +4,7 @@ import {
 	OracleGuardRails,
 	OracleSource,
 	OracleValidity,
+	PerpOperation,
 	PerpMarketAccount,
 	SpotMarketAccount,
 	isOneOfVariant,
@@ -13,16 +14,36 @@ import { OraclePriceData } from '../oracles/types';
 import {
 	BID_ASK_SPREAD_PRECISION,
 	MARGIN_PRECISION,
-	MM_ORACLE_MIN_SLOT_GAP,
+	MM_ORACLE_MIN_WRITE_GAP,
 	ONE,
 	ZERO,
 	FIVE_MINUTE,
 	PERCENTAGE_PRECISION,
-	FIVE,
 	TEN,
 } from '../constants/numericConstants';
 import { assert } from '../assert/assert';
 import { BN } from '../isomorphic/anchor';
+import {
+	Millis,
+	SlotDurationState,
+	STORED_UNIT_MS,
+	activeSlotDurationFromState,
+	elapsedMillisFromSlotDelta,
+	millis,
+	millisFromStoredUnits,
+	millisToSlots,
+	millisToSlotsCeil,
+} from './time';
+import { isOperationPaused } from './exchangeStatus';
+
+/**
+ * Default SDK-only allowance subtracted from a raw oracle delay to absorb normal
+ * reporting lag. A wall-clock duration, expressed in actual slots at the live
+ * slot duration, so the allowance does not shrink as slots get faster. The
+ * program has no equivalent subtraction, so this only ever makes the SDK's
+ * verdict more permissive than the chain's, by a constant amount of time.
+ */
+export const ORACLE_STALENESS_BUFFER = millis(5 * STORED_UNIT_MS);
 
 /**
  * Computes a generic sanity band around the oracle price, sized by the gap between the
@@ -89,11 +110,14 @@ export function getMaxConfidenceIntervalMultiplier(
  * @param oraclePriceData Oracle reading to validate (`price`/`confidence` PRICE_PRECISION 1e6, `slot`).
  * @param oracleGuardRails Protocol-wide validity thresholds (`state.oracleGuardRails`).
  * @param slot Current slot, used to compute oracle delay.
- * @param oracleStalenessBuffer Extra slots subtracted from the raw oracle delay before staleness checks (default 5) to absorb normal reporting lag.
+ * @param oracleStalenessBuffer Slots subtracted from the raw oracle delay before staleness checks. Omit for `ORACLE_STALENESS_BUFFER` (2s of wall clock) converted at the live slot duration.
  * @param isMmSourcedPrice Whether `oraclePriceData` carries an MM-oracle-sourced price. Only
  * affects the unset (`oracleSlotDelayOverride < 0`) immediate-fill threshold, which resolves to
- * `MM_ORACLE_MIN_SLOT_GAP` for an MM-sourced price and to zero for an exchange-sourced one,
+ * `MM_ORACLE_MIN_WRITE_GAP` for an MM-sourced price and to zero for an exchange-sourced one,
  * mirroring `oracle_validity`'s `immediate_price_is_mm_sourced`.
+ * @param slotDurationState The `State` account (or its slot duration fields). The oracle age
+ * is integrated per slot duration regime and compared against the wall clock staleness
+ * thresholds, mirroring `oracle_validity`.
  * @returns The most severe `OracleValidity` classification that applies.
  */
 export function getOracleValidity(
@@ -101,9 +125,16 @@ export function getOracleValidity(
 	oraclePriceData: OraclePriceData,
 	oracleGuardRails: OracleGuardRails,
 	slot: BN,
-	oracleStalenessBuffer = FIVE,
-	isMmSourcedPrice = false
+	oracleStalenessBuffer?: BN,
+	isMmSourcedPrice = false,
+	slotDurationState: SlotDurationState = {}
 ): OracleValidity {
+	const stalenessBuffer =
+		oracleStalenessBuffer ??
+		millisToSlots(
+			ORACLE_STALENESS_BUFFER,
+			activeSlotDurationFromState(slotDurationState, slot)
+		);
 	const isNonPositive = oraclePriceData.price.lte(ZERO);
 	const isTooVolatile = BN.max(
 		oraclePriceData.price,
@@ -129,42 +160,58 @@ export function getOracleValidity(
 		)
 	);
 
-	const oracleDelay = slot.sub(oraclePriceData.slot).sub(oracleStalenessBuffer);
+	// The buffered oracle delay as wall clock age, integrated per slot duration
+	// regime (mirrors `oracle_validity`'s `oracle_age`).
+	const oracleAge = elapsedMillisFromSlotDelta(
+		slotDurationState,
+		BN.max(slot.sub(oraclePriceData.slot).sub(stalenessBuffer), ZERO),
+		slot
+	);
 
 	// Mirrors `math::oracle::oracle_validity`. `0` is the explicit "never allow
 	// immediate AMM fills" sentinel. A negative override means unset, and its
-	// resolution is source-aware: MM_ORACLE_MIN_SLOT_GAP for an MM-oracle-sourced
+	// resolution is source-aware: MM_ORACLE_MIN_WRITE_GAP for an MM-oracle-sourced
 	// price (the program will not accept MM-oracle writes closer together than
 	// that, so a tighter threshold could never be satisfied) and the strict zero
 	// threshold for an exchange-sourced price, which can be same-slot fresh.
 	let isStaleForAmmImmediate = true;
 	if (market.oracleSlotDelayOverride < 0) {
-		isStaleForAmmImmediate = oracleDelay.gt(
-			isMmSourcedPrice ? MM_ORACLE_MIN_SLOT_GAP : ZERO
-		);
+		const unsetThreshold = isMmSourcedPrice
+			? elapsedMillisFromSlotDelta(
+					slotDurationState,
+					millisToSlotsCeil(
+						MM_ORACLE_MIN_WRITE_GAP,
+						activeSlotDurationFromState(slotDurationState, slot)
+					),
+					slot
+			  )
+			: (ZERO as Millis);
+		isStaleForAmmImmediate = oracleAge.gt(unsetThreshold);
 	} else if (market.oracleSlotDelayOverride != 0) {
-		isStaleForAmmImmediate = oracleDelay.gt(
-			new BN(market.oracleSlotDelayOverride)
+		isStaleForAmmImmediate = oracleAge.gt(
+			millisFromStoredUnits(market.oracleSlotDelayOverride)
 		);
 	}
 
 	let isStaleForAmmLowRisk = false;
 	if (market.oracleLowRiskSlotDelayOverride != 0) {
-		isStaleForAmmLowRisk = oracleDelay.gt(
-			BN.max(new BN(market.oracleLowRiskSlotDelayOverride), ZERO)
+		isStaleForAmmLowRisk = oracleAge.gt(
+			millisFromStoredUnits(Math.max(market.oracleLowRiskSlotDelayOverride, 0))
 		);
 	} else {
-		isStaleForAmmLowRisk = oracleDelay.gt(
-			oracleGuardRails.validity.slotsBeforeStaleForAmm
+		isStaleForAmmLowRisk = oracleAge.gt(
+			millisFromStoredUnits(oracleGuardRails.validity.slotsBeforeStaleForAmm)
 		);
 	}
 
-	let isStaleForMargin = oracleDelay.gt(
-		new BN(oracleGuardRails.validity.slotsBeforeStaleForMargin)
+	let isStaleForMargin = oracleAge.gt(
+		millisFromStoredUnits(oracleGuardRails.validity.slotsBeforeStaleForMargin)
 	);
 	if (isVariant(market.oracleSource, 'pythLazerStableCoin')) {
-		isStaleForMargin = oracleDelay.gt(
-			new BN(oracleGuardRails.validity.slotsBeforeStaleForMargin).muln(3)
+		isStaleForMargin = oracleAge.gt(
+			millisFromStoredUnits(
+				oracleGuardRails.validity.slotsBeforeStaleForMargin
+			).muln(3)
 		);
 	}
 
@@ -198,13 +245,15 @@ export function getOracleValidity(
  * @param oraclePriceData Oracle reading to validate (`price`/`confidence` PRICE_PRECISION 1e6).
  * @param oracleGuardRails Protocol-wide validity thresholds.
  * @param slot Current slot, used to compute oracle staleness.
+ * @param slotDuration Current slot duration (`slotDurationFromState(state.slotDurationMs)`); staleness windows convert to actual slots through it.
  * @returns `true` if the oracle is valid for an AMM-only fill.
  */
 export function isOracleValid(
 	market: PerpMarketAccount,
 	oraclePriceData: OraclePriceData,
 	oracleGuardRails: OracleGuardRails,
-	slot: number
+	slot: number,
+	slotDurationState: SlotDurationState = {}
 ): boolean {
 	// checks if oracle is valid for an AMM only fill
 
@@ -229,9 +278,11 @@ export function isOracleValid(
 			)
 		);
 
-	const oracleIsStale = new BN(slot)
-		.sub(oraclePriceData.slot)
-		.gt(oracleGuardRails.validity.slotsBeforeStaleForAmm);
+	const oracleIsStale = elapsedMillisFromSlotDelta(
+		slotDurationState,
+		BN.max(new BN(slot).sub(oraclePriceData.slot), ZERO),
+		new BN(slot)
+	).gt(millisFromStoredUnits(oracleGuardRails.validity.slotsBeforeStaleForAmm));
 
 	return !(
 		!oraclePriceData.hasSufficientNumberOfDataPoints ||
@@ -290,6 +341,65 @@ export function isMarkOracleTooDivergent(
 		PERCENTAGE_PRECISION.div(TEN)
 	);
 	return priceSpreadPct.abs().gt(maxDivergence);
+}
+
+/**
+ * Predict whether the program will block a funding update, mirroring
+ * `math::oracle::block_operation`. Funding accepts stale/insufficient oracle
+ * readings but rejects non-positive, too-volatile, or too-uncertain prices; it
+ * also blocks on mark/TWAP divergence, a paused market, or an AMM that has not
+ * updated for more than 40% of the funding period.
+ */
+export function blockOperation(
+	market: PerpMarketAccount,
+	oraclePriceData: OraclePriceData,
+	oracleGuardRails: OracleGuardRails,
+	reservePrice: BN,
+	currentSlot: BN,
+	slotDurationState: SlotDurationState = {}
+): boolean {
+	const validity = getOracleValidity(
+		market,
+		oraclePriceData,
+		oracleGuardRails,
+		currentSlot,
+		ZERO,
+		false,
+		slotDurationState
+	);
+	const oracleInvalidForFunding =
+		validity === OracleValidity.NonPositive ||
+		validity === OracleValidity.TooVolatile ||
+		validity === OracleValidity.TooUncertain;
+
+	const oracleTwap5Min =
+		market.marketStats.historicalOracleData.lastOraclePriceTwap5Min;
+	const markSpreadPct = reservePrice
+		.sub(oracleTwap5Min)
+		.mul(BID_ASK_SPREAD_PRECISION)
+		.div(reservePrice);
+	const markTooDivergent = isMarkOracleTooDivergent(
+		markSpreadPct,
+		oracleGuardRails
+	);
+
+	const slotsSinceAmmUpdate = BN.max(
+		currentSlot.sub(market.amm.lastUpdateSlot),
+		ZERO
+	);
+	const ammStaleMs = elapsedMillisFromSlotDelta(
+		slotDurationState,
+		slotsSinceAmmUpdate,
+		currentSlot
+	);
+	const staleLimitMs = market.marketStats.fundingPeriod.muln(400);
+
+	return (
+		ammStaleMs.gt(staleLimitMs) ||
+		oracleInvalidForFunding ||
+		markTooDivergent ||
+		isOperationPaused(market.pausedOperations, PerpOperation.UPDATE_FUNDING)
+	);
 }
 
 /**
@@ -527,7 +637,8 @@ export function getSpotMaxConfidenceIntervalMultiplier(
  * @param oraclePriceData Oracle reading to validate (`price`/`confidence` PRICE_PRECISION 1e6, `slot`).
  * @param oracleGuardRails Protocol-wide validity thresholds (`state.oracleGuardRails`).
  * @param slot Current slot, used to compute oracle delay.
- * @param oracleStalenessBuffer Extra slots subtracted from the raw oracle delay (default 5).
+ * @param oracleStalenessBuffer Slots subtracted from the raw oracle delay. Omit for `ORACLE_STALENESS_BUFFER` (2s of wall clock) converted at the live slot duration.
+ * @param slotDurationState The `State` account (or its slot duration fields); the oracle age is integrated per slot duration regime.
  * @returns The most severe `MarginCalc`-relevant `OracleValidity` that applies.
  */
 export function getSpotOracleValidity(
@@ -535,8 +646,15 @@ export function getSpotOracleValidity(
 	oraclePriceData: OraclePriceData,
 	oracleGuardRails: OracleGuardRails,
 	slot: BN,
-	oracleStalenessBuffer = FIVE
+	oracleStalenessBuffer?: BN,
+	slotDurationState: SlotDurationState = {}
 ): OracleValidity {
+	const stalenessBuffer =
+		oracleStalenessBuffer ??
+		millisToSlots(
+			ORACLE_STALENESS_BUFFER,
+			activeSlotDurationFromState(slotDurationState, slot)
+		);
 	if (oraclePriceData.price.lte(ZERO)) {
 		return OracleValidity.NonPositive;
 	}
@@ -561,12 +679,18 @@ export function getSpotOracleValidity(
 		return OracleValidity.TooUncertain;
 	}
 
-	const oracleDelay = slot.sub(oraclePriceData.slot).sub(oracleStalenessBuffer);
-	let staleSlots = new BN(oracleGuardRails.validity.slotsBeforeStaleForMargin);
+	const oracleAge = elapsedMillisFromSlotDelta(
+		slotDurationState,
+		BN.max(slot.sub(oraclePriceData.slot).sub(stalenessBuffer), ZERO),
+		slot
+	);
+	let staleThreshold = millisFromStoredUnits(
+		oracleGuardRails.validity.slotsBeforeStaleForMargin
+	);
 	if (isVariant(spotMarket.oracleSource, 'pythLazerStableCoin')) {
-		staleSlots = staleSlots.muln(3);
+		staleThreshold = staleThreshold.muln(3) as Millis;
 	}
-	if (oracleDelay.gt(staleSlots)) {
+	if (oracleAge.gt(staleThreshold)) {
 		return OracleValidity.StaleForMargin;
 	}
 

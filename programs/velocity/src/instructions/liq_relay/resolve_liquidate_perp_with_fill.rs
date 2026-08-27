@@ -75,6 +75,7 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
             &MarketSet::new(),
             &MarketSet::new(),
             clock.slot,
+            state.slot_clock(),
             Some(state.oracle_guard_rails),
         )?;
 

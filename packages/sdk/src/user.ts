@@ -15,6 +15,7 @@ import { PublicKey } from '@solana/web3.js';
 import { EventEmitter } from 'events';
 import StrictEventEmitter from 'strict-event-emitter-types';
 import { VelocityClient } from './velocityClient';
+import { millisFromSecs } from './math/time';
 import {
 	HealthComponent,
 	HealthComponents,
@@ -56,6 +57,8 @@ import {
 	TWO,
 	ZERO,
 	ACCOUNT_AGE_DELETION_CUTOFF_SECONDS,
+	VIP_FEE_TIER_ONE_VOLUME_QUOTE,
+	VIP_FEE_TIER_TWO_VOLUME_QUOTE,
 } from './constants/numericConstants';
 import {
 	DataAndSlot,
@@ -125,6 +128,7 @@ import {
 	getSpotOracleValidity,
 	isOracleValidForMarginCalc,
 } from './math/oracles';
+import { elapsedMillis, SlotDurationState } from './math/time';
 import { getPerpMarketTierNumber, getSpotMarketTierNumber } from './math/tiers';
 import { StrictOraclePrice } from './oracles/strictOraclePrice';
 
@@ -1988,7 +1992,10 @@ export class User {
 	public getPositionEstimatedExitPriceAndPnl(
 		position: PerpPosition,
 		amountToClose?: BN,
-		useAMMClose = false
+		useAMMClose = false,
+		// live chain slot: applies a staged slot-duration switch to the AMM-close
+		// spread-reserve smoothing and MM-oracle validity; omit for the baseline
+		slot?: number
 	): [BN, BN] {
 		const market = this.velocityClient.getPerpMarketAccountOrThrow(
 			position.marketIndex
@@ -1997,7 +2004,8 @@ export class User {
 		const entryPrice = calculateEntryPrice(position);
 
 		const oraclePriceData = this.getMMOracleDataForPerpMarket(
-			position.marketIndex
+			position.marketIndex,
+			slot
 		);
 
 		if (amountToClose) {
@@ -2015,10 +2023,17 @@ export class User {
 		let baseAssetValue: BN;
 
 		if (useAMMClose) {
+			const latestSlot = slot !== undefined ? new BN(slot) : undefined;
+			const slotDuration =
+				slot !== undefined ? this.velocityClient.getStateAccount() : undefined;
 			baseAssetValue = calculateBaseAssetValue(
 				market,
 				position,
-				oraclePriceData
+				oraclePriceData,
+				true,
+				false,
+				latestSlot,
+				slotDuration
 			);
 		} else {
 			baseAssetValue = calculateBaseAssetValueWithOracle(
@@ -2322,8 +2337,8 @@ export class User {
 	 * @returns Value and verdict, QUOTE_PRECISION.
 	 */
 	getFloorNetEquity(slot?: BN): FloorNetEquity {
-		const oracleGuardRails =
-			this.velocityClient.getStateAccount().oracleGuardRails;
+		const stateAccount = this.velocityClient.getStateAccount();
+		const oracleGuardRails = stateAccount.oracleGuardRails;
 		const userAccount = this.getUserAccountOrThrow();
 
 		let value = ZERO;
@@ -2346,7 +2361,9 @@ export class User {
 							spotMarket,
 							oracleData,
 							oracleGuardRails,
-							slot
+							slot,
+							undefined,
+							stateAccount
 						)
 				  )
 				: true;
@@ -2387,7 +2404,9 @@ export class User {
 							quoteSpotMarket,
 							quoteOracleData,
 							oracleGuardRails,
-							slot
+							slot,
+							undefined,
+							stateAccount
 						)
 				  )
 				: true;
@@ -2412,7 +2431,15 @@ export class User {
 			);
 			const oracleValid = slot
 				? isOracleValidForMarginCalc(
-						getOracleValidity(market, oracleData, oracleGuardRails, slot)
+						getOracleValidity(
+							market,
+							oracleData,
+							oracleGuardRails,
+							slot,
+							undefined,
+							undefined,
+							stateAccount
+						)
 				  )
 				: true;
 
@@ -2452,8 +2479,8 @@ export class User {
 	 * @returns Upper bound and provability, QUOTE_PRECISION.
 	 */
 	getTripNetEquity(slot?: BN): TripNetEquity {
-		const oracleGuardRails =
-			this.velocityClient.getStateAccount().oracleGuardRails;
+		const stateAccount = this.velocityClient.getStateAccount();
+		const oracleGuardRails = stateAccount.oracleGuardRails;
 		const userAccount = this.getUserAccountOrThrow();
 
 		const unprovable: TripNetEquity = {
@@ -2480,7 +2507,9 @@ export class User {
 							spotMarket,
 							oracleData,
 							oracleGuardRails,
-							slot
+							slot,
+							undefined,
+							stateAccount
 						)
 				  )
 				: true;
@@ -2551,7 +2580,9 @@ export class User {
 							quoteSpotMarket,
 							quoteOracleData,
 							oracleGuardRails,
-							slot
+							slot,
+							undefined,
+							stateAccount
 						)
 				  )
 				: true;
@@ -2581,7 +2612,15 @@ export class User {
 				settled ||
 				(slot
 					? isOracleValidForMarginCalc(
-							getOracleValidity(market, oracleData, oracleGuardRails, slot)
+							getOracleValidity(
+								market,
+								oracleData,
+								oracleGuardRails,
+								slot,
+								undefined,
+								undefined,
+								stateAccount
+							)
 					  )
 					: true);
 
@@ -4497,8 +4536,8 @@ export class User {
 			);
 
 			const volumeThresholds = [
-				new BN(5_000_000).mul(QUOTE_PRECISION),
-				new BN(80_000_000).mul(QUOTE_PRECISION),
+				VIP_FEE_TIER_ONE_VOLUME_QUOTE,
+				VIP_FEE_TIER_TWO_VOLUME_QUOTE,
 			];
 
 			let feeTierIndex = volumeThresholds.length;
@@ -4849,12 +4888,18 @@ export class User {
 	 * Determines whether the user can be marked idle (excluded from userMap
 	 * subscriptions by default, and skipped by most keeper crank passes) as of
 	 * `slot`. Requires: not already idle; inactive for the required window
-	 * since `lastActiveSlot` (1 hour / 9,000 slots if equity is under $1,000,
-	 * otherwise 1 week / 1,512,000 slots); not currently being liquidated; and
+	 * since `lastActiveSlot` (~1 hour if equity is under $1,000, otherwise
+	 * ~1 week; thresholds are wall-clock and the measured slot delta is
+	 * converted to ms, mirroring `validate_user_is_idle`); not currently being
+	 * liquidated; and
 	 * no open perp positions, borrows, spot open orders, or open orders of any kind.
 	 * @param slot Current slot to evaluate inactivity against.
+	 * @param slotDurationState The `State` account (or its slot duration fields); inactivity is integrated per slot duration regime.
 	 */
-	public canMakeIdle(slot: BN): boolean {
+	public canMakeIdle(
+		slot: BN,
+		slotDurationState: SlotDurationState = {}
+	): boolean {
 		const userAccount = this.getUserAccountOrThrow();
 		if (userAccount.idle) {
 			return false;
@@ -4864,16 +4909,17 @@ export class User {
 			this.getSpotMarketAssetAndLiabilityValue();
 		const equity = totalAssetValue.sub(totalLiabilityValue);
 
-		let slotsBeforeIdle: BN;
-		if (equity.lt(QUOTE_PRECISION.muln(1000))) {
-			slotsBeforeIdle = new BN(9000); // 1 hour
-		} else {
-			slotsBeforeIdle = new BN(1512000); // 1 week
-		}
+		const idleAfter = equity.lt(QUOTE_PRECISION.muln(1000))
+			? millisFromSecs(3_600) // 1 hour
+			: millisFromSecs(604_800); // 1 week
 
 		const userLastActiveSlot = userAccount.lastActiveSlot;
-		const slotsSinceLastActive = slot.sub(userLastActiveSlot);
-		if (slotsSinceLastActive.lt(slotsBeforeIdle)) {
+		const timeSinceLastActive = elapsedMillis(
+			slotDurationState,
+			userLastActiveSlot,
+			slot
+		);
+		if (timeSinceLastActive.lt(idleAfter)) {
 			return false;
 		}
 
@@ -5369,8 +5415,14 @@ export class User {
 		).sub(currentPerpPositionValueUSDC);
 	}
 
-	private getMMOracleDataForPerpMarket(marketIndex: number): MMOraclePriceData {
-		return this.velocityClient.getMMOracleDataForPerpMarket(marketIndex);
+	private getMMOracleDataForPerpMarket(
+		marketIndex: number,
+		currentSlot?: number
+	): MMOraclePriceData {
+		return this.velocityClient.getMMOracleDataForPerpMarket(
+			marketIndex,
+			currentSlot
+		);
 	}
 
 	private getOracleDataForPerpMarket(marketIndex: number): OraclePriceData {

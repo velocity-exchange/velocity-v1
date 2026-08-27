@@ -13,7 +13,7 @@ use {
             DashboardState, DashboardStateRef, HighRiskUser, MarginStatus, Metrics,
             OraclePriceInfo, UserMarginStatus,
         },
-        util::{PythPriceUpdate, TxIntent},
+        util::{preview_pyth_lazer_oracle, PerpFillFallback, PythPriceUpdate, TxIntent},
         Config, UseMarkets,
     },
     anchor_lang::Discriminator,
@@ -28,7 +28,7 @@ use {
     },
     tokio::sync::mpsc::error::TryRecvError,
     velocity_rs::{
-        dlob::{DLOBNotifier, DLOB},
+        dlob::{DLOBNotifier, L3Order, DLOB},
         grpc::{
             grpc_subscriber::{AccountFilter, GrpcConnectionOpts},
             TransactionUpdate,
@@ -44,6 +44,13 @@ use {
             tiers::{perp_tier_is_as_safe_as, AssetTierExt, ContractTierExt},
         },
         priority_fee_subscriber::PriorityFeeSubscriber,
+        program::math::{
+            oracle::{
+                is_oracle_valid_for_action, oracle_validity, LogMode, OracleValidity,
+                VelocityAction,
+            },
+            time::{Millis, SlotDuration},
+        },
         titan::{self, TitanSwapApi},
         types::{
             accounts::{PerpMarket, SpotMarket, User},
@@ -55,8 +62,9 @@ use {
     },
 };
 
-/// min slots between successive liquidation attempts on same user
-const LIQUIDATION_SLOT_RATE_LIMIT: u64 = 5; // ~2s
+/// min wall-clock time between successive liquidation attempts on same user
+/// (expressed in actual slots at the current slot duration)
+const LIQUIDATION_RATE_LIMIT: Millis = Millis::from_secs(2);
 
 /// Maximum time allowed for a liquidation attempt in milliseconds
 const LIQUIDATION_DEADLINE_MS: u64 = 1_000;
@@ -128,8 +136,9 @@ impl LiquidationAttemptTracker {
 /// Threshold for considering a user high-risk: free margin < 10% of margin requirement
 const HIGH_RISK_FREE_MARGIN_RATIO: f64 = 0.1;
 
-/// Maximum age for oracle prices in slots before considering stale (~20 seconds)
-const MAX_ORACLE_AGE_SLOTS: u64 = 50;
+/// Maximum oracle price age before considering stale (~20s, expressed in
+/// actual slots at the current slot duration)
+const MAX_ORACLE_AGE: Millis = Millis::from_secs(20);
 /// Maximum age for Pyth prices in milliseconds before considering stale
 const MAX_PYTH_AGE_MS: u64 = 5000;
 
@@ -175,14 +184,16 @@ fn validate_data_freshness(
     user_meta: &UserAccountMetadata,
     oracle_prices: &HashMap<MarketId, OraclePriceMetadata>,
     current_slot: u64,
+    slot_duration: SlotDuration,
 ) -> Result<(), StalenessError> {
+    let max_oracle_age_slots = MAX_ORACLE_AGE.to_slots(slot_duration);
     // Check oracle prices for all markets user has positions in
     for pos in &user_meta.user.perp_positions {
         if pos.base_asset_amount != 0 {
             let market_id = MarketId::perp(pos.market_index);
             if let Some(oracle_meta) = oracle_prices.get(&market_id) {
                 let oracle_age_slots = current_slot.saturating_sub(oracle_meta.last_updated_slot);
-                if oracle_age_slots > MAX_ORACLE_AGE_SLOTS {
+                if oracle_age_slots > max_oracle_age_slots {
                     return Err(StalenessError::OraclePriceStale {
                         market: market_id,
                         age_slots: oracle_age_slots,
@@ -197,7 +208,7 @@ fn validate_data_freshness(
             let market_id = MarketId::spot(pos.market_index);
             if let Some(oracle_meta) = oracle_prices.get(&market_id) {
                 let oracle_age_slots = current_slot.saturating_sub(oracle_meta.last_updated_slot);
-                if oracle_age_slots > MAX_ORACLE_AGE_SLOTS {
+                if oracle_age_slots > max_oracle_age_slots {
                     return Err(StalenessError::OraclePriceStale {
                         market: market_id,
                         age_slots: oracle_age_slots,
@@ -333,7 +344,8 @@ async fn update_dashboard_state(
     for (market_id, oracle_meta) in oracle_prices {
         let age_slots = current_slot.saturating_sub(oracle_meta.last_updated_slot);
         let age_ms = now_ms.saturating_sub(oracle_meta.last_updated_timestamp_ms);
-        let is_stale = age_slots > MAX_ORACLE_AGE_SLOTS;
+        let is_stale = age_slots
+            > MAX_ORACLE_AGE.to_slots(crate::util::client_slot_duration(velocity, current_slot));
 
         oracle_price_infos.push(OraclePriceInfo {
             market_type: if market_id.is_perp() {
@@ -439,7 +451,7 @@ pub trait LiquidationStrategy {
         priority_fee: u64,
         cu_limit: u32,
         slot: u64,
-        pyth_price_update: Option<PythPriceUpdate>,
+        pyth_price_updates: BTreeMap<u16, PythPriceUpdate>,
         status: UserMarginStatus,
     ) -> futures_util::future::BoxFuture<'a, LiquidationOutcome>;
 }
@@ -486,6 +498,10 @@ pub struct LiquidatorBot {
     // Map(Signature,(collateral, ts))
     tx_sig_to_collateral: Arc<DashMap<Signature, (u128, u64)>>,
     free_collateral_per_subaccount: Arc<DashMap<Pubkey, u128>>,
+    /// Live slot duration (ms) shared with the liquidation worker so its rate
+    /// limiter re-paces on a mid-run gate switch without a restart; updated by
+    /// the main loop whenever it refreshes its own `slot_duration`.
+    liquidation_slot_duration_ms: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl LiquidatorBot {
@@ -570,6 +586,8 @@ impl LiquidatorBot {
         };
 
         let tx_sig_to_collateral: Arc<DashMap<Signature, (u128, u64)>> = Arc::new(DashMap::new());
+        let perp_fill_fallbacks: Arc<DashMap<(Pubkey, u16), PerpFillFallback>> =
+            Arc::new(DashMap::new());
 
         let tx_worker = TxWorker::new(
             velocity.clone(),
@@ -578,6 +596,7 @@ impl LiquidatorBot {
             Some(Arc::clone(&txs_in_flight)),
             Some(Arc::clone(&tx_sig_to_collateral)),
             Some(Arc::clone(&free_collateral_per_subaccount)),
+            Some(Arc::clone(&perp_fill_fallbacks)),
         );
         let rt = tokio::runtime::Handle::current();
         let tx_sender = tx_worker.run(rt);
@@ -648,6 +667,13 @@ impl LiquidatorBot {
 
         // start liquidation worker
         let (liq_tx, liq_rx) = tokio::sync::mpsc::channel::<LiquidationRequest>(102400);
+        // Live slot duration shared with the worker; seeded from the real chain
+        // slot so a restart after a gate switch re-paces immediately, then kept
+        // current by the main loop (see `run`).
+        let startup_slot = velocity.get_slot().await.unwrap_or(0);
+        let liquidation_slot_duration_ms = Arc::new(std::sync::atomic::AtomicU64::new(
+            crate::util::client_slot_duration(&velocity, startup_slot).as_ms(),
+        ));
         spawn_liquidation_worker(
             tx_sender.clone(),
             Arc::new(PrimaryLiquidationStrategy {
@@ -660,11 +686,13 @@ impl LiquidatorBot {
                 txs_in_flight: Arc::clone(&txs_in_flight),
                 tx_sig_to_collateral: Arc::clone(&tx_sig_to_collateral),
                 free_collateral_per_subaccount: Arc::clone(&free_collateral_per_subaccount),
+                perp_fill_fallbacks,
             }),
             liq_rx,
             cu_limit,
             Arc::clone(&priority_fee_subscriber),
             Arc::clone(&metrics),
+            Arc::clone(&liquidation_slot_duration_ms),
         );
 
         log::info!(target: TARGET, "spawned liquidation worker");
@@ -711,6 +739,7 @@ impl LiquidatorBot {
             txs_in_flight,
             tx_sig_to_collateral,
             free_collateral_per_subaccount,
+            liquidation_slot_duration_ms,
         }
     }
 
@@ -727,6 +756,15 @@ impl LiquidatorBot {
             .state_account()
             .map(|x| x.liquidation_margin_buffer_ratio)
             .expect("State has liquidation_margin_buffer_ratio");
+        // refreshed on the collateral-refresh cadence below, so a mid-run slot
+        // duration flip is picked up without a bot restart
+        // seed with the real chain slot so a restart after a gate switch
+        // reflects it immediately, not only after the first refresh below
+        let startup_slot = velocity.get_slot().await.unwrap_or(0);
+        let mut slot_duration = crate::util::client_slot_duration(velocity, startup_slot);
+        // keep the worker's rate limiter in sync with the resolved duration
+        self.liquidation_slot_duration_ms
+            .store(slot_duration.as_ms(), std::sync::atomic::Ordering::Relaxed);
 
         const RECHECK_CYCLE_INTERVAL: u32 = 1024;
         /// Max wall-clock time between full user sweeps; the cycle-count trigger
@@ -877,6 +915,13 @@ impl LiquidatorBot {
                             >= COLLATERAL_REFRESH_INTERVAL_MS
                         {
                             last_collateral_refresh_ms = now_ms;
+
+                            // Pick up a mid-run slot-duration flip
+                            slot_duration =
+                                crate::util::client_slot_duration(velocity, update_slot);
+                            // re-pace the worker's rate limiter on the flip
+                            self.liquidation_slot_duration_ms
+                                .store(slot_duration.as_ms(), std::sync::atomic::Ordering::Relaxed);
 
                             // Update collaterals
                             let new_collateral = get_collateral_info_per_subaccount(
@@ -1034,7 +1079,12 @@ impl LiquidatorBot {
                         // Don't act on stale oracle data: a liquidation decision made off a
                         // dead price feed is more likely wrong than late.
                         if let Err(StalenessError::OraclePriceStale { market, age_slots }) =
-                            validate_data_freshness(user_meta, &oracle_prices, current_slot)
+                            validate_data_freshness(
+                                user_meta,
+                                &oracle_prices,
+                                current_slot,
+                                slot_duration,
+                            )
                         {
                             log::warn!(
                                 target: TARGET,
@@ -1068,13 +1118,13 @@ impl LiquidatorBot {
 
                 // Send liquidations outside the loop
                 for (pubkey, user, status) in liquidatable_users {
-                    let pyth_price_update = freshest_pyth_for_user(&user, &pyth_perp_prices);
+                    let pyth_price_updates = fresh_pyth_updates_for_user(&user, &pyth_perp_prices);
                     send_liquidation(
                         &self.liq_tx,
                         *pubkey,
                         user,
                         current_slot,
-                        pyth_price_update,
+                        pyth_price_updates,
                         status,
                     );
                 }
@@ -1091,7 +1141,7 @@ impl LiquidatorBot {
                     if let Some(user_meta) = users.get(pubkey) {
                         // With a stale oracle the margin picture is unreliable — keep the
                         // user under watch rather than dropping them.
-                        if validate_data_freshness(user_meta, &oracle_prices, current_slot)
+                        if validate_data_freshness(user_meta, &oracle_prices, current_slot, slot_duration)
                             .is_err()
                         {
                             return true;
@@ -1146,7 +1196,14 @@ impl LiquidatorBot {
                     }
 
                     // Don't act on stale oracle data (see the high-risk scan above)
-                    if validate_data_freshness(user_meta, &oracle_prices, current_slot).is_err() {
+                    if validate_data_freshness(
+                        user_meta,
+                        &oracle_prices,
+                        current_slot,
+                        slot_duration,
+                    )
+                    .is_err()
+                    {
                         continue;
                     }
 
@@ -1178,14 +1235,14 @@ impl LiquidatorBot {
                             margin_info.margin_requirement,
                         );
 
-                        let pyth_price_update =
-                            freshest_pyth_for_user(&user_meta.user, &pyth_perp_prices);
+                        let pyth_price_updates =
+                            fresh_pyth_updates_for_user(&user_meta.user, &pyth_perp_prices);
                         send_liquidation(
                             &self.liq_tx,
                             *pubkey,
                             user_meta.user.clone(),
                             current_slot,
-                            pyth_price_update,
+                            pyth_price_updates,
                             status,
                         );
                     } else if status.is_at_risk() {
@@ -1216,36 +1273,36 @@ struct LiquidationRequest {
     slot: u64,
     /// wall-clock time the request was enqueued (ms)
     timestamp_ms: u64,
-    /// fresh pyth price for the largest perp position, if available
-    pyth_price_update: Option<PythPriceUpdate>,
+    /// fresh pyth prices for the user's perp markets, keyed by market index
+    pyth_price_updates: BTreeMap<u16, PythPriceUpdate>,
     status: UserMarginStatus,
 }
 
-/// Fresh pyth price for the user's largest (by absolute quote notional) perp position, if any
-fn freshest_pyth_for_user(
+/// Fresh pyth prices for every perp market the user holds a position in,
+/// keyed by market index. Carried per market so each position the strategy
+/// selects (an isolated position is not necessarily the largest one) can ship
+/// its own market's update.
+fn fresh_pyth_updates_for_user(
     user: &User,
     pyth_perp_prices: &BTreeMap<u16, PythPriceUpdate>,
-) -> Option<PythPriceUpdate> {
+) -> BTreeMap<u16, PythPriceUpdate> {
     user.perp_positions
         .iter()
         .filter(|p| p.base_asset_amount != 0)
-        .max_by_key(|p| p.quote_asset_amount.unsigned_abs())
-        .and_then(|p| {
-            pyth_perp_prices
-                .get(&p.market_index)
-                .and_then(|pyth_update| {
-                    if validate_pyth_price_freshness(pyth_update).is_ok() {
-                        Some(pyth_update.clone())
-                    } else {
-                        log::debug!(
-                            target: TARGET,
-                            "skipping stale pyth price: market={}",
-                            p.market_index
-                        );
-                        None
-                    }
-                })
+        .filter_map(|p| {
+            let pyth_update = pyth_perp_prices.get(&p.market_index)?;
+            if validate_pyth_price_freshness(pyth_update).is_ok() {
+                Some((p.market_index, pyth_update.clone()))
+            } else {
+                log::debug!(
+                    target: TARGET,
+                    "skipping stale pyth price: market={}",
+                    p.market_index
+                );
+                None
+            }
         })
+        .collect()
 }
 
 /// Forward a liquidatable user to the liquidation worker (non-blocking)
@@ -1254,7 +1311,7 @@ fn send_liquidation(
     pubkey: Pubkey,
     user: User,
     slot: u64,
-    pyth_price_update: Option<PythPriceUpdate>,
+    pyth_price_updates: BTreeMap<u16, PythPriceUpdate>,
     status: UserMarginStatus,
 ) {
     match liq_tx.try_send(LiquidationRequest {
@@ -1262,7 +1319,7 @@ fn send_liquidation(
         user,
         slot,
         timestamp_ms: current_time_millis(),
-        pyth_price_update,
+        pyth_price_updates,
         status,
     }) {
         Ok(()) => {}
@@ -1468,6 +1525,9 @@ fn on_slot_update_fn(
     let market_ids: Vec<MarketId> = market_ids.to_vec();
     let consecutive_failures = std::sync::atomic::AtomicU32::new(0);
     move |new_slot| {
+        // keep the DLOB's slot clock in sync with `State` (no-op unless an
+        // IBRL transition was synchronized since the last slot)
+        dlob_notifier.slot_clock_update(velocity.slot_clock());
         for market in market_ids.iter() {
             // tolerate transient failures; panic (=> service restart) if persistent
             match velocity.try_get_mmoracle_for_perp_market(market.index(), new_slot) {
@@ -1657,6 +1717,7 @@ fn spawn_liquidation_worker(
     cu_limit: u32,
     priority_fee_subscriber: Arc<PriorityFeeSubscriber>,
     metrics: Arc<Metrics>,
+    slot_duration_ms: Arc<std::sync::atomic::AtomicU64>,
 ) {
     let attempt_tracker = Arc::new(DashMap::<Pubkey, LiquidationAttemptTracker>::new());
 
@@ -1671,10 +1732,17 @@ fn spawn_liquidation_worker(
             user: user_account,
             slot,
             timestamp_ms,
-            pyth_price_update,
+            pyth_price_updates,
             status,
         }) = liq_rx.recv().await
         {
+            // wall-clock rate limit expressed in actual slots, at the live slot
+            // duration (kept current by the main loop) so a mid-run gate switch
+            // re-paces without a restart
+            let liquidation_slot_rate_limit =
+                LIQUIDATION_RATE_LIMIT.to_slots(SlotDuration::from_state_ms(
+                    slot_duration_ms.load(std::sync::atomic::Ordering::Relaxed) as u16,
+                ));
             // Drop entries older than 1 second to handle backpressure
             let now = current_time_millis();
             if now.saturating_sub(timestamp_ms) > MAX_LIQUIDATION_AGE_MS {
@@ -1692,7 +1760,7 @@ fn spawn_liquidation_worker(
             // Check slot-based rate limit AND failure-based cooldown
             if let Some(tracker) = attempt_tracker.get(&liquidatee) {
                 // Basic slot rate limit
-                if slot.abs_diff(tracker.last_attempt_slot) < LIQUIDATION_SLOT_RATE_LIMIT {
+                if slot.abs_diff(tracker.last_attempt_slot) < liquidation_slot_rate_limit {
                     log::debug!(target: TARGET, "rate limited liquidation for {:?} (current: {})", liquidatee, slot);
                     continue;
                 }
@@ -1755,7 +1823,7 @@ fn spawn_liquidation_worker(
                         pf,
                         cu_limit,
                         slot,
-                        pyth_price_update,
+                        pyth_price_updates,
                         status,
                     ),
                 )
@@ -1839,6 +1907,53 @@ struct PositionInfo {
     quote_amount: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PerpOracleRoutePolicy {
+    safe_match_allowed: bool,
+    exchange_match_allowed: bool,
+    liquidation_allowed: bool,
+    uses_pyth_update: bool,
+}
+
+/// Takeover routings a fallback marker may drive before it is dropped.
+const PERP_FILL_FALLBACK_MAX_ATTEMPTS: u32 = 3;
+/// Lifetime of a fallback marker; a marker this old describes a book and an
+/// oracle state that no longer exist.
+const PERP_FILL_FALLBACK_EXPIRY_MS: u64 = 30_000;
+
+/// Whether a pending fill-failed fallback should force the takeover route.
+/// The marker is NOT removed here: a takeover can still die between this
+/// decision and the send (no eligible subaccount, account-load failure,
+/// `send_tx` returning None), and consuming the one-shot signal on those
+/// paths sent the next pass back to the maker route that already failed
+/// onchain. The marker is removed when the forced takeover's tx is actually
+/// sent, and expires here after `PERP_FILL_FALLBACK_MAX_ATTEMPTS` routings
+/// or `PERP_FILL_FALLBACK_EXPIRY_MS`, so it cannot become permanent.
+fn peek_perp_fill_fallback(
+    fallbacks: &DashMap<(Pubkey, u16), PerpFillFallback>,
+    key: (Pubkey, u16),
+    liquidation_allowed: bool,
+    collateral_available: u128,
+    collateral_required: u128,
+    now_ms: u64,
+) -> bool {
+    let Some(mut entry) = fallbacks.get_mut(&key) else {
+        return false;
+    };
+    if now_ms.saturating_sub(entry.recorded_ms) > PERP_FILL_FALLBACK_EXPIRY_MS
+        || entry.attempts >= PERP_FILL_FALLBACK_MAX_ATTEMPTS
+    {
+        drop(entry);
+        fallbacks.remove(&key);
+        return false;
+    }
+    if !liquidation_allowed || collateral_available < collateral_required {
+        return false;
+    }
+    entry.attempts += 1;
+    true
+}
+
 /// Primary liquidation strategy
 pub struct PrimaryLiquidationStrategy {
     pub velocity: VelocityClient,
@@ -1851,23 +1966,170 @@ pub struct PrimaryLiquidationStrategy {
     // Map(Signature,(collateral, ts))
     pub tx_sig_to_collateral: Arc<DashMap<Signature, (u128, u64)>>,
     pub free_collateral_per_subaccount: Arc<DashMap<Pubkey, u128>>,
+    pub perp_fill_fallbacks: Arc<DashMap<(Pubkey, u16), PerpFillFallback>>,
 }
 
 impl PrimaryLiquidationStrategy {
-    /// Liquidation policy: prefer filling against resting maker orders; fall back to a
-    /// collateral-funded takeover when the book is empty; skip when neither is possible.
+    /// Prefer a valid maker fill, then use collateral takeover.
     fn decide_perp_method(
         collateral_available: u128,
         collateral_required: u128,
         has_makers: bool,
+        match_allowed: bool,
+        liquidation_allowed: bool,
+        force_takeover: bool,
     ) -> LiquidationType {
-        if has_makers {
+        if force_takeover {
+            if liquidation_allowed && collateral_available >= collateral_required {
+                return LiquidationType::PerpTakeover;
+            }
+            return LiquidationType::Skip;
+        }
+        if match_allowed && has_makers {
             LiquidationType::PerpWithFill
-        } else if collateral_available >= collateral_required {
+        } else if liquidation_allowed && collateral_available >= collateral_required {
             LiquidationType::PerpTakeover
         } else {
             LiquidationType::Skip
         }
+    }
+
+    fn route_policy_from_validities(
+        exchange_validity: OracleValidity,
+        safe_validity: OracleValidity,
+        uses_pyth_update: bool,
+    ) -> Option<PerpOracleRoutePolicy> {
+        Some(PerpOracleRoutePolicy {
+            safe_match_allowed: is_oracle_valid_for_action(
+                safe_validity,
+                Some(VelocityAction::FillOrderMatch),
+            )
+            .ok()?,
+            exchange_match_allowed: is_oracle_valid_for_action(
+                exchange_validity,
+                Some(VelocityAction::FillOrderMatch),
+            )
+            .ok()?,
+            // liquidate_perp validates the selected safe/MM oracle onchain
+            // (`update_amm_and_check_validity` under `VelocityAction::Liquidate`),
+            // so takeover eligibility must read the same view; raw exchange
+            // validity stays a separate signal for floored DLOB filtering
+            liquidation_allowed: is_oracle_valid_for_action(
+                safe_validity,
+                Some(VelocityAction::Liquidate),
+            )
+            .ok()?,
+            uses_pyth_update,
+        })
+    }
+
+    fn perp_oracle_route_policy(
+        velocity: &VelocityClient,
+        market_index: u16,
+        slot: u64,
+        pyth_price_update: Option<&PythPriceUpdate>,
+    ) -> Option<PerpOracleRoutePolicy> {
+        let market = velocity.try_get_perp_market_account(market_index).ok()?;
+        let state = velocity.state_account().ok()?;
+        let oracle = velocity.try_get_oracle_price_data_and_slot(MarketId::perp(market_index))?;
+        let mut exchange_oracle = oracle.data;
+        let elapsed_slots = slot.saturating_sub(oracle.slot);
+        exchange_oracle.delay = exchange_oracle
+            .delay
+            .saturating_add(i64::try_from(elapsed_slots).unwrap_or(i64::MAX));
+
+        // Model the update the tx would actually post. The program accepts a
+        // post on feed-timestamp freshness alone (a same-price message still
+        // refreshes staleness), so the preview keys on freshness too, and the
+        // previewed oracle is parsed from the retained signed message with
+        // the same confidence the program would store, not fabricated from
+        // the scaled price.
+        let previewed_oracle = pyth_price_update
+            .filter(|update| {
+                update.market_type == MarketType::Perp && update.market_id == market_index
+            })
+            .and_then(|update| preview_pyth_lazer_oracle(update, &market.oracle_source));
+        let uses_pyth_update = previewed_oracle.as_ref().is_some_and(|preview| {
+            match (preview.sequence_id, exchange_oracle.sequence_id) {
+                (Some(next), Some(current)) => next > current,
+                (Some(_), None) => true,
+                (None, _) => false,
+            }
+        });
+        if uses_pyth_update {
+            exchange_oracle = previewed_oracle?;
+        }
+
+        let validity_guard_rails: velocity_rs::program::state::state::ValidityGuardRails =
+            unsafe { std::mem::transmute_copy(&state.oracle_guard_rails.validity) };
+        let slot_clock = velocity.slot_clock();
+        let exchange_validity = oracle_validity(
+            MarketType::Perp,
+            market.market_index,
+            market
+                .market_stats
+                .historical_oracle_data
+                .last_oracle_price_twap,
+            &exchange_oracle,
+            &validity_guard_rails,
+            market.get_max_confidence_interval_multiplier().ok()?,
+            &market.oracle_source,
+            LogMode::ExchangeOracle,
+            market.oracle_slot_delay_override,
+            false,
+            market.oracle_low_risk_slot_delay_override,
+            slot,
+            slot_clock,
+        )
+        .ok()?;
+
+        let mm_oracle = market
+            .get_mm_oracle_price_data(exchange_oracle, slot, &validity_guard_rails, slot_clock)
+            .ok()?;
+        let safe_oracle = mm_oracle.get_safe_oracle_price_data();
+        let safe_validity = oracle_validity(
+            MarketType::Perp,
+            market.market_index,
+            market
+                .market_stats
+                .historical_oracle_data
+                .last_oracle_price_twap,
+            &safe_oracle,
+            &validity_guard_rails,
+            market.get_max_confidence_interval_multiplier().ok()?,
+            &market.oracle_source,
+            LogMode::SafeMMOracle,
+            market.oracle_slot_delay_override,
+            mm_oracle.is_safe_price_mm_sourced(),
+            market.oracle_low_risk_slot_delay_override,
+            slot,
+            slot_clock,
+        )
+        .ok()?;
+
+        Self::route_policy_from_validities(exchange_validity, safe_validity, uses_pyth_update)
+    }
+
+    /// Whether the liquidatee can participate in a DLOB match at all under
+    /// the current oracle policy. Maker-level eligibility is applied per
+    /// maker inside [`Self::find_top_makers`].
+    fn match_participation_allowed(liquidatee: &User, policy: PerpOracleRoutePolicy) -> bool {
+        policy.safe_match_allowed && (liquidatee.equity_floor == 0 || policy.exchange_match_allowed)
+    }
+
+    /// Whether one maker can take the other side of a floored-participant
+    /// match: a floored maker needs the raw exchange oracle valid for the
+    /// match policy, an unfloored maker always can.
+    fn maker_matchable(maker: &User, exchange_match_allowed: bool) -> bool {
+        maker.equity_floor == 0 || exchange_match_allowed
+    }
+
+    /// The book side whose resting orders can fill the liquidation: the
+    /// liquidation order is the position's opposite (closing a long places a
+    /// short taker order), so a long liquidatee fills against resting bids
+    /// and a short one against resting asks.
+    fn liquidation_makers_are_bids(base_asset_amount: i64) -> bool {
+        base_asset_amount >= 0
     }
 
     fn decide_liquidation_type(
@@ -2342,12 +2604,42 @@ impl PrimaryLiquidationStrategy {
     }
 
     /// Find top makers for a perp position
+    /// Scan one side of the book until three loaded, unique, eligible makers
+    /// are collected. Eligibility is applied during the scan, not after a
+    /// cap: a prefix of duplicate, unloadable or floored-ineligible entries
+    /// must not hide an eligible maker further down the book.
+    fn collect_top_makers(
+        velocity: &VelocityClient,
+        orders: impl Iterator<Item = L3Order>,
+        exchange_match_allowed: bool,
+    ) -> Vec<User> {
+        let mut seen = HashSet::new();
+        let mut makers: Vec<User> = Vec::with_capacity(3);
+        for order in orders {
+            if !order.is_maker() || !seen.insert(order.user) {
+                continue;
+            }
+            let Ok(maker) = velocity.try_get_account::<User>(&order.user) else {
+                continue;
+            };
+            if !Self::maker_matchable(&maker, exchange_match_allowed) {
+                continue;
+            }
+            makers.push(maker);
+            if makers.len() == 3 {
+                break;
+            }
+        }
+        makers
+    }
+
     fn find_top_makers(
         velocity: &VelocityClient,
         dlob: &'static DLOB,
         market_state: Arc<RwLock<MarketState>>,
         market_index: u16,
         base_asset_amount: i64,
+        exchange_match_allowed: bool,
     ) -> Option<Vec<User>> {
         let l3_book = dlob.get_l3_snapshot_safe(market_index, MarketType::Perp)?;
 
@@ -2359,35 +2651,23 @@ impl PrimaryLiquidationStrategy {
             }
         };
 
-        let maker_pubkeys: Vec<Pubkey> = if base_asset_amount >= 0 {
-            // only want maker orders so don't pass vamm or trigger price
-            l3_book
-                .asks(Some(oracle_price), None, None)
-                .filter(|o| o.is_maker())
-                .map(|m| m.user)
-                .take(3)
-                .collect()
+        // only want maker orders so don't pass vamm or trigger price
+        let makers = if Self::liquidation_makers_are_bids(base_asset_amount) {
+            Self::collect_top_makers(
+                velocity,
+                l3_book.bids(Some(oracle_price), None, None),
+                exchange_match_allowed,
+            )
         } else {
-            l3_book
-                .bids(Some(oracle_price), None, None)
-                .filter(|o| o.is_maker())
-                .map(|m| m.user)
-                .take(3)
-                .collect()
+            Self::collect_top_makers(
+                velocity,
+                l3_book.asks(Some(oracle_price), None, None),
+                exchange_match_allowed,
+            )
         };
 
-        if maker_pubkeys.is_empty() {
-            log::warn!(target: TARGET, "no makers found. market={}", market_index);
-            return None;
-        }
-
-        let makers: Vec<User> = maker_pubkeys
-            .iter()
-            .filter_map(|p| velocity.try_get_account::<User>(p).ok())
-            .collect();
-
         if makers.is_empty() {
-            log::warn!(target: TARGET, "no maker accounts. market={}", market_index);
+            log::warn!(target: TARGET, "no eligible makers found. market={}", market_index);
             return None;
         }
 
@@ -2574,6 +2854,152 @@ impl PrimaryLiquidationStrategy {
         }
     }
 
+    async fn try_liquidate_perp_position(
+        &self,
+        velocity: &VelocityClient,
+        dlob: &'static DLOB,
+        market_state: Arc<RwLock<MarketState>>,
+        metrics: Arc<Metrics>,
+        subaccounts: &[Pubkey],
+        liquidatee: Pubkey,
+        user_account: &User,
+        position: &PerpPosition,
+        kind: &'static str,
+        tx_sender: TxSender,
+        priority_fee: u64,
+        cu_limit: u32,
+        slot: u64,
+        pyth_price_update: Option<PythPriceUpdate>,
+    ) -> LiquidationOutcome {
+        let Some(match_subaccount) = subaccounts.first() else {
+            return LiquidationOutcome::Skipped("no_subaccount");
+        };
+        let Some(policy) = Self::perp_oracle_route_policy(
+            velocity,
+            position.market_index,
+            slot,
+            pyth_price_update.as_ref(),
+        ) else {
+            return LiquidationOutcome::Skipped("invalid_oracle");
+        };
+        let Some(collateral_required) = Self::calculate_perp_collateral_requirement(
+            Arc::clone(&market_state),
+            position.market_index,
+            position.base_asset_amount,
+        ) else {
+            return LiquidationOutcome::Skipped("collateral_calc_failed");
+        };
+
+        let free_collateral = subaccounts
+            .iter()
+            .filter_map(|subaccount| {
+                self.free_collateral_per_subaccount
+                    .get(subaccount)
+                    .map(|value| *value)
+            })
+            .max()
+            .unwrap_or(0);
+        let makers = if Self::match_participation_allowed(user_account, policy) {
+            Self::find_top_makers(
+                velocity,
+                dlob,
+                Arc::clone(&market_state),
+                position.market_index,
+                position.base_asset_amount,
+                policy.exchange_match_allowed,
+            )
+        } else {
+            None
+        };
+        let fallback_key = (liquidatee, position.market_index);
+        let force_takeover = peek_perp_fill_fallback(
+            &self.perp_fill_fallbacks,
+            fallback_key,
+            policy.liquidation_allowed,
+            free_collateral,
+            collateral_required,
+            current_time_millis(),
+        );
+        let method = Self::decide_perp_method(
+            free_collateral,
+            collateral_required,
+            makers.is_some(),
+            policy.safe_match_allowed,
+            policy.liquidation_allowed,
+            force_takeover,
+        );
+        let pyth_update = pyth_price_update.filter(|_| policy.uses_pyth_update);
+
+        metrics
+            .liquidation_attempts
+            .with_label_values(&["perp"])
+            .inc();
+        log::info!(
+            target: TARGET,
+            "attempting liquidation: kind={kind} liquidatee={liquidatee:?} market={} method={method:?} force_takeover={force_takeover} slot={slot}",
+            position.market_index,
+        );
+
+        let outcome = match method {
+            LiquidationType::PerpWithFill => {
+                let Some(makers) = makers else {
+                    return LiquidationOutcome::Skipped("no_makers");
+                };
+                Self::try_liquidate_with_match(
+                    velocity,
+                    position.market_index,
+                    *match_subaccount,
+                    liquidatee,
+                    makers.as_slice(),
+                    tx_sender,
+                    priority_fee,
+                    cu_limit,
+                    slot,
+                    pyth_update,
+                )
+                .await
+            }
+            LiquidationType::PerpTakeover => {
+                let Some(subaccount) = Self::find_best_subaccount_for_liquidation(
+                    velocity,
+                    subaccounts,
+                    true,
+                    false,
+                    &self.free_collateral_per_subaccount,
+                    collateral_required,
+                ) else {
+                    return LiquidationOutcome::Skipped("no_subaccount_for_takeover");
+                };
+                self.try_liquidate_with_collateral(
+                    velocity,
+                    position.market_index,
+                    subaccount,
+                    liquidatee,
+                    position.base_asset_amount.unsigned_abs(),
+                    collateral_required,
+                    tx_sender,
+                    priority_fee,
+                    cu_limit,
+                    slot,
+                    pyth_update,
+                )
+                .await
+            }
+            _ if !policy.liquidation_allowed && makers.is_none() => {
+                LiquidationOutcome::Skipped("oracle_not_eligible")
+            }
+            _ => LiquidationOutcome::Skipped("no_eligible_route"),
+        };
+
+        // the fallback marker is one-shot against a *sent* takeover, not
+        // against the decision to route one; see `peek_perp_fill_fallback`
+        if force_takeover && outcome.is_sent() {
+            self.perp_fill_fallbacks.remove(&fallback_key);
+        }
+
+        outcome
+    }
+
     /// Attempt perp liquidation with order matching or collateral
     async fn liquidate_perp(
         &self,
@@ -2588,78 +3014,39 @@ impl PrimaryLiquidationStrategy {
         priority_fee: u64,
         cu_limit: u32,
         slot: u64,
-        pyth_price_update: Option<PythPriceUpdate>,
+        pyth_price_updates: &BTreeMap<u16, PythPriceUpdate>,
         status: &UserMarginStatus,
     ) -> LiquidationOutcome {
-        let Some(subaccount) = subaccounts.first() else {
-            log::warn!(target: TARGET, "no subaccount configured");
-            return LiquidationOutcome::Skipped("no_subaccount");
-        };
-
-        // Check isolated liquidations first. A failure on one isolated market must not
-        // block the remaining isolated markets or the cross-margin check below.
         let mut last_skip: Option<&'static str> = None;
         for (market_index, iso_status) in &status.isolated {
             if *iso_status != MarginStatus::Liquidatable {
                 continue;
             }
-            let Some(pos) = user_account.perp_positions.iter().find(|p| {
-                p.market_index == *market_index && p.isolated_position_scaled_balance != 0
+            let Some(position) = user_account.perp_positions.iter().find(|position| {
+                position.market_index == *market_index
+                    && position.isolated_position_scaled_balance != 0
             }) else {
                 continue;
             };
 
-            metrics
-                .liquidation_attempts
-                .with_label_values(&["perp"])
-                .inc();
-
-            let oracle_price = {
-                let state = market_state.read().unwrap();
-                match state.get_perp_oracle_price(pos.market_index) {
-                    Some(data) if data.price > 0 => data.price as u64,
-                    _ => {
-                        log::warn!(target: TARGET, "invalid oracle price for market {}, skipping isolated liquidation", pos.market_index);
-                        last_skip = Some("invalid_oracle");
-                        continue;
-                    }
-                }
-            };
-
-            log::info!(
-                target: TARGET,
-                "attempting liquidation: kind=perp_isolated liquidatee={liquidatee:?} market={market_index} base_asset_amount={} oracle_price={oracle_price} slot={slot}",
-                pos.base_asset_amount,
-            );
-
-            let Some(makers) = Self::find_top_makers(
-                velocity,
-                dlob,
-                Arc::clone(&market_state),
-                *market_index,
-                pos.base_asset_amount,
-            ) else {
-                last_skip = Some("no_makers");
-                continue;
-            };
-
-            let pyth_update = pyth_price_update
-                .clone()
-                .filter(|update| update.price != oracle_price);
-
-            let outcome = Self::try_liquidate_with_match(
-                velocity,
-                *market_index,
-                *subaccount,
-                liquidatee,
-                makers.as_slice(),
-                tx_sender.clone(),
-                priority_fee,
-                cu_limit,
-                slot,
-                pyth_update,
-            )
-            .await;
+            let outcome = self
+                .try_liquidate_perp_position(
+                    velocity,
+                    dlob,
+                    Arc::clone(&market_state),
+                    Arc::clone(&metrics),
+                    subaccounts,
+                    liquidatee,
+                    &user_account,
+                    position,
+                    "perp_isolated",
+                    tx_sender.clone(),
+                    priority_fee,
+                    cu_limit,
+                    slot,
+                    pyth_price_updates.get(market_index).cloned(),
+                )
+                .await;
             if outcome.is_sent() {
                 return outcome;
             }
@@ -2685,140 +3072,23 @@ impl PrimaryLiquidationStrategy {
             return LiquidationOutcome::Skipped("no_perp_positions");
         };
 
-        // Get oracle price once, up front, so the liquidation attempt event below
-        // carries the price that drove it (and we bail early on an invalid oracle).
-        let oracle_price = {
-            let state = market_state.read().unwrap();
-            match state.get_perp_oracle_price(pos.market_index) {
-                Some(data) if data.price > 0 => data.price as u64,
-                _ => {
-                    log::warn!(target: TARGET, "invalid oracle price for market {}, skipping liquidation", pos.market_index);
-                    return LiquidationOutcome::Skipped("invalid_oracle");
-                }
-            }
-        };
-
-        log::info!(
-            target: TARGET,
-            "attempting liquidation: kind=perp_cross liquidatee={liquidatee:?} market={} base_asset_amount={} quote_asset_amount={} oracle_price={oracle_price} slot={slot}",
-            pos.market_index,
-            pos.base_asset_amount,
-            pos.quote_asset_amount,
-        );
-
-        // Calculate collateral required
-        let Some(collateral_required) = Self::calculate_perp_collateral_requirement(
-            Arc::clone(&market_state),
-            pos.market_index,
-            pos.base_asset_amount,
-        ) else {
-            log::warn!(target: TARGET, "failed to calculate collateral requirement for market {}", pos.market_index);
-            return LiquidationOutcome::Skipped("collateral_calc_failed");
-        };
-
-        // Check available collateral. Copy the value out — holding the DashMap guard
-        // across the awaits below deadlocks against the get_mut in
-        // try_liquidate_with_collateral.
-        let free_collateral: u128 = match self.free_collateral_per_subaccount.get(subaccount) {
-            Some(fc) => *fc,
-            None => {
-                log::warn!(target: TARGET, "no free collateral for keeper subaccount");
-                return LiquidationOutcome::Skipped("no_free_collateral");
-            }
-        };
-
-        // Find makers and decide method
-        let makers = Self::find_top_makers(
+        self.try_liquidate_perp_position(
             velocity,
             dlob,
-            Arc::clone(&market_state),
-            pos.market_index,
-            pos.base_asset_amount,
-        );
-
-        let pyth_update = pyth_price_update.filter(|update| update.price != oracle_price);
-
-        let method =
-            Self::decide_perp_method(free_collateral, collateral_required, makers.is_some());
-
-        metrics
-            .liquidation_attempts
-            .with_label_values(&["perp"])
-            .inc();
-
-        match method {
-            LiquidationType::PerpWithFill => {
-                let Some(makers) = makers else {
-                    return LiquidationOutcome::Skipped("no_makers");
-                };
-                Self::try_liquidate_with_match(
-                    velocity,
-                    pos.market_index,
-                    *subaccount,
-                    liquidatee,
-                    makers.as_slice(),
-                    tx_sender,
-                    priority_fee,
-                    cu_limit,
-                    slot,
-                    pyth_update,
-                )
-                .await
-            }
-            LiquidationType::PerpTakeover => {
-                let Some(subaccount) = Self::find_best_subaccount_for_liquidation(
-                    velocity,
-                    subaccounts,
-                    true,
-                    false,
-                    &self.free_collateral_per_subaccount,
-                    collateral_required,
-                ) else {
-                    log::warn!(target: TARGET, "no subaccount available for takeover");
-                    return LiquidationOutcome::Skipped("no_subaccount_for_takeover");
-                };
-
-                let free_collateral: u128 =
-                    match self.free_collateral_per_subaccount.get(&subaccount) {
-                        Some(fc) => *fc,
-                        None => {
-                            log::warn!(target: TARGET, "no free collateral for subaccount");
-                            return LiquidationOutcome::Skipped("no_free_collateral");
-                        }
-                    };
-
-                let base_amount_to_liquidate = if free_collateral >= collateral_required {
-                    pos.base_asset_amount.unsigned_abs()
-                } else {
-                    let scaled_collateral = (free_collateral as f64 * 0.9) as u128;
-                    let scale_factor = scaled_collateral as f64 / collateral_required as f64;
-                    (pos.base_asset_amount.unsigned_abs() as f64 * scale_factor) as u64
-                };
-
-                self.try_liquidate_with_collateral(
-                    velocity,
-                    pos.market_index,
-                    subaccount,
-                    liquidatee,
-                    base_amount_to_liquidate,
-                    collateral_required,
-                    tx_sender,
-                    priority_fee,
-                    cu_limit,
-                    slot,
-                    pyth_update,
-                )
-                .await
-            }
-            _ => {
-                log::info!(
-                    target: TARGET,
-                    "skipping liquidation: reason=no_makers_insufficient_collateral liquidatee={liquidatee:?} market={} collateral_required={collateral_required} free_collateral={free_collateral}",
-                    pos.market_index,
-                );
-                LiquidationOutcome::Skipped("no_makers_insufficient_collateral")
-            }
-        }
+            market_state,
+            metrics,
+            subaccounts,
+            liquidatee,
+            &user_account,
+            pos,
+            "perp_cross",
+            tx_sender,
+            priority_fee,
+            cu_limit,
+            slot,
+            pyth_price_updates.get(&pos.market_index).cloned(),
+        )
+        .await
     }
 
     /// Attempt spot liquidation with Jupiter swap
@@ -3505,7 +3775,7 @@ impl LiquidationStrategy for PrimaryLiquidationStrategy {
         priority_fee: u64,
         cu_limit: u32,
         slot: u64,
-        pyth_price_update: Option<PythPriceUpdate>,
+        pyth_price_updates: BTreeMap<u16, PythPriceUpdate>,
         status: UserMarginStatus,
     ) -> futures_util::future::BoxFuture<'a, LiquidationOutcome> {
         let perp_positions = Self::get_perp_positions_info(
@@ -3543,7 +3813,7 @@ impl LiquidationStrategy for PrimaryLiquidationStrategy {
                     priority_fee,
                     cu_limit,
                     slot,
-                    pyth_price_update,
+                    &pyth_price_updates,
                     &status,
                 )
                 .await
@@ -3588,7 +3858,7 @@ impl LiquidationStrategy for PrimaryLiquidationStrategy {
                         priority_fee,
                         cu_limit,
                         slot,
-                        pyth_price_update,
+                        &pyth_price_updates,
                         &status,
                     )
                     .await
@@ -3616,6 +3886,9 @@ impl LiquidationStrategy for PrimaryLiquidationStrategy {
                     let Some(asset) = asset else {
                         return LiquidationOutcome::Skipped("no_asset_for_perp_pnl_for_deposit");
                     };
+                    // the perp market in this route is the liability side
+                    let pyth_price_update =
+                        pyth_price_updates.get(&liability.market_index).cloned();
                     self.liquidate_perp_pnl_for_deposit(
                         &self.velocity,
                         Arc::clone(&self.market_state),
@@ -3635,6 +3908,8 @@ impl LiquidationStrategy for PrimaryLiquidationStrategy {
                     let Some(asset) = asset else {
                         return LiquidationOutcome::Skipped("no_asset_for_borrow_for_perp_pnl");
                     };
+                    // the perp market in this route is the asset side
+                    let pyth_price_update = pyth_price_updates.get(&asset.market_index).cloned();
                     self.liquidate_borrow_for_perp_pnl(
                         &self.velocity,
                         Arc::clone(&self.market_state),
@@ -3795,20 +4070,219 @@ mod tests {
 
     #[test]
     fn decide_perp_method_prefers_fill_falls_back_to_takeover() {
-        // regression: method was hardcoded to PerpWithFill and the caller
-        // unwrapped a None makers list, panicking on an empty book
         assert_eq!(
-            PrimaryLiquidationStrategy::decide_perp_method(0, 100, true),
+            PrimaryLiquidationStrategy::decide_perp_method(0, 100, true, true, true, false),
             LiquidationType::PerpWithFill
         );
         assert_eq!(
-            PrimaryLiquidationStrategy::decide_perp_method(100, 100, false),
+            PrimaryLiquidationStrategy::decide_perp_method(100, 100, true, false, true, false),
             LiquidationType::PerpTakeover
         );
         assert_eq!(
-            PrimaryLiquidationStrategy::decide_perp_method(99, 100, false),
+            PrimaryLiquidationStrategy::decide_perp_method(99, 100, true, false, true, false),
             LiquidationType::Skip
         );
+        assert_eq!(
+            PrimaryLiquidationStrategy::decide_perp_method(100, 100, true, true, true, true),
+            LiquidationType::PerpTakeover
+        );
+    }
+
+    #[test]
+    fn perp_fill_fallback_survives_failed_routings() {
+        let fallbacks = DashMap::new();
+        let key = (Pubkey::new_unique(), 7);
+        let now = 1_000_u64;
+        let marker = PerpFillFallback {
+            recorded_ms: now,
+            attempts: 0,
+        };
+
+        // gates failing must not consume the one-shot signal
+        fallbacks.insert(key, marker);
+        assert!(!peek_perp_fill_fallback(
+            &fallbacks, key, true, 99, 100, now
+        ));
+        assert!(fallbacks.contains_key(&key));
+        assert!(!peek_perp_fill_fallback(
+            &fallbacks, key, false, 100, 100, now
+        ));
+        assert!(fallbacks.contains_key(&key));
+
+        // a passing peek routes the takeover but keeps the marker: the send
+        // can still fail, and the next pass must not fall back to the maker
+        // route that already failed onchain
+        assert!(peek_perp_fill_fallback(
+            &fallbacks, key, true, 100, 100, now
+        ));
+        assert!(fallbacks.contains_key(&key));
+        assert_eq!(fallbacks.get(&key).unwrap().attempts, 1);
+    }
+
+    #[test]
+    fn perp_fill_fallback_is_bounded() {
+        let fallbacks = DashMap::new();
+        let key = (Pubkey::new_unique(), 7);
+        let now = 1_000_u64;
+
+        // attempts cap
+        fallbacks.insert(
+            key,
+            PerpFillFallback {
+                recorded_ms: now,
+                attempts: 0,
+            },
+        );
+        for _ in 0..PERP_FILL_FALLBACK_MAX_ATTEMPTS {
+            assert!(peek_perp_fill_fallback(
+                &fallbacks, key, true, 100, 100, now
+            ));
+        }
+        assert!(!peek_perp_fill_fallback(
+            &fallbacks, key, true, 100, 100, now
+        ));
+        assert!(!fallbacks.contains_key(&key), "capped marker is dropped");
+
+        // wall-clock expiry
+        fallbacks.insert(
+            key,
+            PerpFillFallback {
+                recorded_ms: now,
+                attempts: 0,
+            },
+        );
+        assert!(!peek_perp_fill_fallback(
+            &fallbacks,
+            key,
+            true,
+            100,
+            100,
+            now + PERP_FILL_FALLBACK_EXPIRY_MS + 1,
+        ));
+        assert!(!fallbacks.contains_key(&key), "expired marker is dropped");
+    }
+
+    #[test]
+    fn oracle_policy_uses_takeover_when_matching_is_not_allowed() {
+        let policy = PrimaryLiquidationStrategy::route_policy_from_validities(
+            OracleValidity::TooUncertain,
+            OracleValidity::TooUncertain,
+            false,
+        )
+        .unwrap();
+
+        assert!(!policy.safe_match_allowed);
+        assert!(!policy.exchange_match_allowed);
+        assert!(policy.liquidation_allowed);
+        assert_eq!(
+            PrimaryLiquidationStrategy::decide_perp_method(
+                100,
+                100,
+                true,
+                policy.exchange_match_allowed,
+                policy.liquidation_allowed,
+                false,
+            ),
+            LiquidationType::PerpTakeover
+        );
+    }
+
+    #[test]
+    fn oracle_policy_skips_when_liquidation_is_not_allowed() {
+        // liquidation eligibility reads the safe/MM oracle, the view
+        // liquidate_perp validates onchain
+        for validity in [OracleValidity::NonPositive, OracleValidity::TooVolatile] {
+            let policy = PrimaryLiquidationStrategy::route_policy_from_validities(
+                OracleValidity::Valid,
+                validity,
+                false,
+            )
+            .unwrap();
+
+            assert!(!policy.liquidation_allowed);
+            assert_eq!(
+                PrimaryLiquidationStrategy::decide_perp_method(
+                    100,
+                    100,
+                    false,
+                    policy.safe_match_allowed,
+                    policy.liquidation_allowed,
+                    false,
+                ),
+                LiquidationType::Skip
+            );
+        }
+    }
+
+    #[test]
+    fn takeover_eligibility_follows_safe_validity_not_exchange() {
+        // a fresh MM price can keep the safe oracle valid while the raw
+        // exchange oracle is not; the program accepts the takeover in that
+        // state, so the keeper must not skip it
+        let policy = PrimaryLiquidationStrategy::route_policy_from_validities(
+            OracleValidity::TooVolatile,
+            OracleValidity::Valid,
+            false,
+        )
+        .unwrap();
+        assert!(policy.liquidation_allowed);
+        assert!(!policy.exchange_match_allowed);
+
+        // the reverse disagreement is rejected onchain, so it must skip
+        let policy = PrimaryLiquidationStrategy::route_policy_from_validities(
+            OracleValidity::Valid,
+            OracleValidity::TooVolatile,
+            false,
+        )
+        .unwrap();
+        assert!(!policy.liquidation_allowed);
+    }
+
+    #[test]
+    fn invalid_exchange_oracle_excludes_floored_match_participants() {
+        let policy = PrimaryLiquidationStrategy::route_policy_from_validities(
+            OracleValidity::TooUncertain,
+            OracleValidity::Valid,
+            false,
+        )
+        .unwrap();
+        let mut liquidatee = User::default();
+        let mut floored_maker = User::default();
+        floored_maker.equity_floor = 1;
+        let regular_maker = User::default();
+
+        liquidatee.equity_floor = 1;
+        assert!(!PrimaryLiquidationStrategy::match_participation_allowed(
+            &liquidatee,
+            policy
+        ));
+
+        liquidatee.equity_floor = 0;
+        assert!(PrimaryLiquidationStrategy::match_participation_allowed(
+            &liquidatee,
+            policy
+        ));
+        assert!(!PrimaryLiquidationStrategy::maker_matchable(
+            &floored_maker,
+            policy.exchange_match_allowed
+        ));
+        assert!(PrimaryLiquidationStrategy::maker_matchable(
+            &regular_maker,
+            policy.exchange_match_allowed
+        ));
+    }
+
+    #[test]
+    fn liquidation_makers_come_from_the_opposite_book_side() {
+        // the liquidation order is the position's opposite
+        // (`get_liquidation_order_params` uses `existing_direction.opposite()`):
+        // closing a long places a short taker order, which fills against bids
+        assert!(PrimaryLiquidationStrategy::liquidation_makers_are_bids(
+            1_000
+        ));
+        assert!(!PrimaryLiquidationStrategy::liquidation_makers_are_bids(
+            -1_000
+        ));
     }
 
     #[test]
@@ -3856,7 +4330,7 @@ mod tests {
     }
 
     #[test]
-    fn freshest_pyth_follows_largest_position() {
+    fn pyth_updates_are_carried_per_market() {
         use pyth_lazer_protocol::router::TimestampUs;
 
         let mut user = User::default();
@@ -3869,7 +4343,7 @@ mod tests {
 
         let now_us = current_time_millis() * 1_000;
         let mut prices = BTreeMap::new();
-        for market_id in [0u16, 1] {
+        for market_id in [0u16, 1, 9] {
             prices.insert(
                 market_id,
                 PythPriceUpdate {
@@ -3883,14 +4357,21 @@ mod tests {
             );
         }
 
-        let update = freshest_pyth_for_user(&user, &prices).expect("fresh price");
-        assert_eq!(update.market_id, 1);
+        // one update per held market, so each selected position (isolated
+        // ones included) ships its own market's price; markets the user does
+        // not hold are not carried
+        let updates = fresh_pyth_updates_for_user(&user, &prices);
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates.get(&0).unwrap().market_id, 0);
+        assert_eq!(updates.get(&1).unwrap().market_id, 1);
 
-        // stale price is not used
+        // a stale market drops out individually, the fresh one stays
         let mut stale = prices.get(&1).unwrap().clone();
         stale.ts = TimestampUs(now_us - (MAX_PYTH_AGE_MS + 1_000) * 1_000);
         prices.insert(1, stale);
-        assert!(freshest_pyth_for_user(&user, &prices).is_none());
+        let updates = fresh_pyth_updates_for_user(&user, &prices);
+        assert_eq!(updates.len(), 1);
+        assert!(updates.contains_key(&0));
     }
 
     #[test]

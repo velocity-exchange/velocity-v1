@@ -1,5 +1,206 @@
 # @velocity-exchange/vaults-sdk
 
+## 0.1.23
+
+### Patch Changes
+
+- Updated dependencies [[`079d579`](https://github.com/velocity-exchange/velocity-v1/commit/079d579d4fac0f3402a4a9f8fb1aeccf21ac32ba)]:
+  - @velocity-exchange/sdk@0.17.0
+
+## 0.1.22
+
+### Patch Changes
+
+- [#446](https://github.com/velocity-exchange/velocity-v1/pull/446) [`823724e`](https://github.com/velocity-exchange/velocity-v1/commit/823724e4a8ea0d34b5a79883512eec9cb40b6123) Thanks [@0xahzam](https://github.com/0xahzam)! - Extend perp and spot market accounts with reserved padding and retire the unused spot fee pool field.
+
+- Updated dependencies [[`ce01885`](https://github.com/velocity-exchange/velocity-v1/commit/ce0188563670520bfcddb689866e37c1fa19ed00), [`823724e`](https://github.com/velocity-exchange/velocity-v1/commit/823724e4a8ea0d34b5a79883512eec9cb40b6123)]:
+  - @velocity-exchange/sdk@0.16.0
+
+## 0.1.21
+
+### Patch Changes
+
+- Updated dependencies [[`d3824be`](https://github.com/velocity-exchange/velocity-v1/commit/d3824be0f2261e709477e8a1aceedcd11da842c5), [`fe0adbd`](https://github.com/velocity-exchange/velocity-v1/commit/fe0adbd72d77eefaada569292bca2f5baf1e1e58)]:
+  - @velocity-exchange/sdk@0.15.0
+
+## 0.1.20
+
+### Patch Changes
+
+- [#390](https://github.com/velocity-exchange/velocity-v1/pull/390) [`a6bffcb`](https://github.com/velocity-exchange/velocity-v1/commit/a6bffcb20a909f98552ef8f3adee8b5665e4257a) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - `addInsuranceFundStake`'s `amount` is now an upper bound rather than the staked amount. IF shares are
+  indivisible, so the program transfers only the portion of the request that prices to whole shares and
+  leaves the remainder — always less than one share price — in the token account.
+
+  This completes the fix for the zero-shares High finding. Rejecting only the zero-share case bounded
+  the loss instead of removing it: a request worth 1.5 shares minted 1 and donated the other half to
+  existing shareholders, and because the share price is set off a donation-inflatable vault balance, an
+  attacker could pick that fraction. Pricing the deposit exactly (shares floored, their cost ceiled, so
+  the fund never sells a share below price) caps the residual at one token unit and makes the donation
+  unprofitable.
+
+  `IFDepositMintsZeroShares` (6360) now means the request was below the price of a single share. Read
+  the staked amount from `InsuranceFundStakeRecord.amount` instead of assuming it equals the requested
+  amount; with `fromSubaccount`, any remainder lands in the wallet's token account rather than returning
+  to the sub-account.
+
+  `VaultClient.addToInsuranceFundStake` inherits the same rule with one difference: the vaults program
+  stakes the whole balance of the vault's IF token account, so a remainder from an earlier add is folded
+  in and the staked amount can exceed `amount`.
+
+- [#366](https://github.com/velocity-exchange/velocity-v1/pull/366) [`4227e3e`](https://github.com/velocity-exchange/velocity-v1/commit/4227e3e6fe3805cd0986f81ca6cc4a7513c0c460) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - `cancel_request_remove_insurance_fund_stake` now settles any already-due revenue into the insurance
+  fund vault before pricing the cancel's forfeiture (OtterSec #141). Previously a staker could order
+  their signed cancel ahead of an already-due signerless settle, make the restake price against a stale
+  vault, burn no shares, and keep revenue the anti-free-option rule assigns to the remaining stakers.
+
+  **ABI change — the account list is reordered, not just appended.** The instruction now takes `state`
+  (prepended), plus `spot_market_vault`, `velocity_signer` and `token_program`, matching
+  `request_remove_insurance_fund_stake`. Both SDKs pass them for you
+  (`VelocityClient.cancelRequestRemoveInsuranceFundStake`, `VaultClient.getCancelRequestRemoveInsuranceFundStakeIx`),
+  so SDK callers need no change; anyone building the instruction manually must rebuild the account list.
+  The `vaults` program's CPI wrapper gained the matching accounts.
+
+- [#425](https://github.com/velocity-exchange/velocity-v1/pull/425) [`e8a894c`](https://github.com/velocity-exchange/velocity-v1/commit/e8a894c90edd03814330206b8f666591be72a774) Thanks [@0xahzam](https://github.com/0xahzam)! - Correct the slot-duration scaling in the off-chain mirrors and the staged-switch setter.
+
+  - `activeSlotDurationFromState` is now applied wherever the Rust SDK, the swift server, and
+    the account-list builder previously read the raw `State.slotDurationMs` base field. That
+    field lags a staged switch until the following gate is staged, so the mirrors sized oracle
+    staleness windows, the signed-order age limit, and the auction band check off the
+    pre-switch duration.
+  - `update_state_slot_duration_ms` commits an already-effective promotion when the gate
+    schedule is exhausted instead of reverting it, so the base field never stays a step behind
+    the live value. After the final 200ms switch, operators finalize the raw base field with one
+    additional `set-slot-duration-ms 200` transaction.
+  - Reference-price-offset smoothing accrues its budget per elapsed millisecond instead of per
+    whole 400ms period. Flooring to whole periods zeroed the budget for any crank gap under
+    400ms, which pinned the step to the minimum and made convergence slower the more often a
+    market was cranked.
+  - `math/time.ts` imports `BN` from the isomorphic entry point, keeping Anchor out of the
+    browser bundle.
+  - The SDK's oracle staleness allowance is a wall-clock duration rather than a fixed five
+    slots.
+  - Three velocity/jit-proxy instructions and three vaults instructions now take velocity's
+    `State` so their oracle windows match the rest of the protocol. Hand-built transactions
+    must add the account; the SDKs and CLI fill it in.
+  - `velocity-admin exchange set-slot-duration-ms` previews the live duration instead of the
+    base field.
+  - `pythLazerCranker`'s post ceiling is a fixed wall-clock interval again, so the post rate
+    does not double at each gate.
+
+- [#372](https://github.com/velocity-exchange/velocity-v1/pull/372) [`76a7f0d`](https://github.com/velocity-exchange/velocity-v1/commit/76a7f0d9532e57e845c90f41187ba2a5986327b1) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - `tokenizeShares` now fails with `InvalidTokenization` while the tokenized depositor's pooled value
+  is below its pooled cost basis.
+
+  A tokenized depositor carries one cost basis for every holder of its mint, and the profit-share fee
+  is collected by shrinking the pool's shares — so it dilutes every token equally regardless of who
+  accrued the loss. Minting into an under-water pool therefore handed the newcomer a slice of the
+  existing holders' loss shelter (OtterSec #140). Clients should surface the new failure and can
+  preflight it by comparing the depositor's value against `netDeposits + cumulativeProfitShareAmount`.
+
+  Redeeming is unaffected — existing holders can always exit — but a pool that has been under water
+  stays closed to _new_ tokenizations until the vault recovers past the pooled high-water mark.
+
+  No SDK API change.
+
+- [#371](https://github.com/velocity-exchange/velocity-v1/pull/371) [`bf83c36`](https://github.com/velocity-exchange/velocity-v1/commit/bf83c368e9921accdeeeb926433c2490c0124c4a) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - Every vault instruction that snapshots NAV now CPIs velocity's
+  `update_spot_market_cumulative_interest` for the vault's denomination spot market **before** pricing
+  shares (OtterSec #136, #137). `Vault::calculate_equity` values the vault's velocity deposit off the
+  market's _stored_ `cumulative_deposit_interest`; only velocity may write that account, so the vaults
+  program has to refresh it by CPI. Previously `deposit` refreshed it only afterwards (as a side effect
+  of the deposit CPI), so an entrant minted shares against a stale index and captured part of the lender
+  interest the incumbents had already earned; the withdraw-request and cancel paths never refreshed at
+  all, leaking pre-request interest to the remaining shareholders and letting request-window interest
+  escape the cancellation share-forfeiture rule.
+
+  **ABI change — 19 instructions gained accounts (appended, nothing reordered or removed).** The new
+  accounts are `velocity_spot_market` (writable, PDA-pinned to `vault.spot_market_index`),
+  `velocity_oracle`, and — where the instruction did not already have them — `velocity_spot_market_vault`,
+  `velocity_state` and `velocity_program`:
+
+  `deposit`, `manager_deposit`, `withdraw`, `manager_withdraw`, `protocol_withdraw`, `force_withdraw`,
+  `request_withdraw`, `manager_request_withdraw`, `protocol_request_withdraw`, `cancel_request_withdraw`,
+  `manger_cancel_withdraw_request`, `protocol_cancel_withdraw_request`, `apply_rebase`,
+  `apply_rebase_tokenized_depositor`, `apply_profit_share`, `tokenize_shares`, `redeem_tokens`,
+  `transfer_vault_depositor_shares`, `liquidate`.
+
+  `VaultClient` fills all of them in, so callers that build instructions through the SDK need no change.
+  Anyone hand-rolling account lists must append them — and must pass `velocity_spot_market` /
+  `velocity_spot_market_vault` **explicitly**: their seeds derive from a field of the `vault` account and
+  Anchor's TypeScript PDA resolver does not resolve that, it silently substitutes the default pubkey.
+
+  Behavioral note: because the refresh runs inside velocity, these instructions now also inherit
+  velocity's `exchange_not_paused` / `spot_market_valid` / spot-market-vault-solvency checks. A paused
+  exchange or a delisted denomination market now blocks withdraw-request and cancel too, not just the
+  paths that already CPI'd `deposit`/`withdraw`.
+
+- [#405](https://github.com/velocity-exchange/velocity-v1/pull/405) [`fabc75c`](https://github.com/velocity-exchange/velocity-v1/commit/fabc75ce6daeb7faf75909ceacaac8ffac257bad) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - **`force_delete_user` could never succeed.** The handler bound `State` with a shared `load()` at the
+  top and called `load_mut()` at the bottom. `Ref` implements `Drop`, so the first borrow lived to the
+  end of the scope and the shadowing `let` did not end it. Every call reverted with
+  `AccountBorrowFailed` — after the account's deposits had already moved to the keeper. Nothing
+  covered the success path, so the revert went unnoticed. The borrow is now released explicitly, and
+  `tests/velocity/equityFloorOracle.ts` covers the success path.
+
+  Every vault instruction that snapshots NAV now books the lending interest of **every** spot market
+  that prices the vault's equity, not just the denomination market.
+
+  `Vault::calculate_equity` delegates to velocity's `calculate_user_equity`, which converts every held
+  spot position through that position's own market's cumulative index. Refreshing one market left the
+  rest priced off whatever index the last unrelated crank had written. For a borrow the sign flips: a
+  stale `cumulative_borrow_interest` understates the liability, so NAV reads high and a withdrawer is
+  overpaid out of the vault rather than out of another depositor.
+
+  **New velocity instruction `refresh_spot_market_interest`.** It books up to sixteen spot markets in
+  one call. Accounts: `state`, plus the markets as writable accounts in remaining accounts. Argument:
+  `market_indexes: Vec<u16>`. Permissionless, like the single-market
+  `update_spot_market_cumulative_interest` crank beside it, which is unchanged and stays the crank
+  that keeps a spot market's oracle EMA fresh. SDK: `VelocityClient.refreshSpotMarketInterest` and
+  `refreshSpotMarketInterestIx`.
+
+  **The refresh passes no oracle.** `calculate_equity` gates the denomination oracle on
+  `is_oracle_valid_for_action(MarginCalc)`, whose `TooVolatile` arm measures the live price against
+  `last_oracle_price_twap`. The previous refresh advanced that TWAP toward the live price immediately
+  before the check read it.
+
+  **A delisted denomination market no longer blocks every vault instruction.** The refresh carries no
+  `spot_market_valid` guard, so the paths that move no tokens keep working: `request_withdraw`,
+  `cancel_withdraw_request`, `apply_rebase`, `apply_profit_share` and `liquidate`. Delisting is a
+  terminal state, so the previous behavior had no recovery at all. The token-moving paths
+  (`withdraw`, `force_withdraw`, `manager_withdraw`) still fail, because velocity's own withdraw
+  admits only `Active`, `ReduceOnly` and `Settlement` — that gate is unchanged and out of scope here.
+  Nothing about delisted markets changes: `deposit`, `force_delete_user` and `resolve_spot_bankruptcy`
+  already book interest on one.
+
+  **Isolated perp positions are covered too.** Such a position holds collateral that prices through
+  its perp market's quote spot market, which the position itself does not name. The market list picks
+  those up from the perp market accounts already present for the equity walk, and does that walk only
+  when the user holds an isolated position, so an ordinary vault pays nothing for it.
+
+  **ABI change — 20 instructions, accounts removed.** `velocity_spot_market` and `velocity_oracle` are
+  removed from all of them, and `velocity_spot_market_vault` from the thirteen that do not need it for
+  a deposit or withdraw CPI of their own. Each keeps `velocity_state` and `velocity_program`.
+  `manager_update_fees` joins the list, because installing a matured fee update snapshots NAV.
+  Affected: `deposit`, `manager_deposit`, `withdraw`, `manager_withdraw`, `protocol_withdraw`,
+  `force_withdraw`, `request_withdraw`, `manager_request_withdraw`, `protocol_request_withdraw`,
+  `cancel_withdraw_request`, `manager_cancel_withdraw_request`, `protocol_cancel_withdraw_request`,
+  `apply_rebase`, `apply_rebase_tokenized_depositor`, `apply_profit_share`, `tokenize_shares`,
+  `redeem_tokens`, `transfer_vault_depositor_shares`, `liquidate`, `manager_update_fees`.
+
+  `VaultClient` builds every affected instruction, so SDK callers need no change. Anyone hand-rolling
+  account lists must drop the removed accounts and must mark every spot market in the remaining
+  accounts writable — velocity fails the load with `SpotMarketWrongMutability` when it is asked to
+  refresh a market it was handed read-only.
+
+- [#403](https://github.com/velocity-exchange/velocity-v1/pull/403) [`dbe7f37`](https://github.com/velocity-exchange/velocity-v1/commit/dbe7f370993bb36cd2ec24748ece9a373b29a887) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - Grandfather the vaults fee policy per depositor, and settle the management fee before a rate change.
+
+  Follow-up to the earlier `vaults-fee-rebase-hardening` release, replacing its OtterSec #98 fix. That fix stamped `last_fee_update_ts` to the activation instant, which forfeited the manager's pre-activation accrual and did nothing for profit share or the hurdle rate. Both are priced off a depositor's high-water mark rather than a clock, so no timestamp can slice them.
+
+  **Management fee.** `apply_fee` now accrues the closing interval at the policy in force while it accrued, stamps `last_fee_update_ts`, and only then installs a matured update. `try_update_vault_fees` rejects an install on an unsettled vault, which makes `apply_fee` the single installer. The window between maturity and the first vault interaction is charged at the old rate. `managerUpdateFees` therefore settles through `apply_fee` instead of writing the new policy directly, so it takes a `velocityUser` account plus the spot market and its oracle in `remainingAccounts`. `getManagerUpdateFeesIx` passes them; protocol vaults still append `VaultProtocol`.
+
+  **Profit share and hurdle rate.** `VaultDepositor` and `TokenizedVaultDepositor` gain `profitShareAtBasis` and `hurdleRateAtBasis`, which record the policy in force when the high-water mark was last set. Gain above that mark is priced at `min(vault.profitShare, profitShareAtBasis)` and sheltered by `max(vault.hurdleRate, hurdleRateAtBasis)`. A raised profit share or a lowered hurdle therefore never prices gain that was earned before it, and a policy that is better for the depositor still applies at once. A realization that leaves no unpriced gain advances both stamps to the live policy, so a manager moves depositors onto a new policy with `applyProfitShare`, which realizes their gain at the old policy first.
+
+  Both new fields come from trailing padding, so `VaultDepositor` and `TokenizedVaultDepositor` keep their existing size. The IDL adds those fields and the `velocityUser` account. No error-code change.
+
+- Updated dependencies [[`4124e93`](https://github.com/velocity-exchange/velocity-v1/commit/4124e9313dd70610a705817570bd9e428c8dea85), [`74786b4`](https://github.com/velocity-exchange/velocity-v1/commit/74786b44c1009369c98d920b10d8f322a2214e26), [`1004b31`](https://github.com/velocity-exchange/velocity-v1/commit/1004b31a45f0da9cf8faed18c5c82f2351730c75), [`48e9301`](https://github.com/velocity-exchange/velocity-v1/commit/48e930147f8110454ef83f13f27a8ce8b921791a), [`01a7131`](https://github.com/velocity-exchange/velocity-v1/commit/01a71316b0327acd32be6e90686edd296e592af6), [`7ee2feb`](https://github.com/velocity-exchange/velocity-v1/commit/7ee2febf9c4bfe9cb0e7361828a1aad087216df7), [`94bb6ce`](https://github.com/velocity-exchange/velocity-v1/commit/94bb6ce94aad1981e4ee7910a85ab9ffbfe1d7c3), [`b7b5ae8`](https://github.com/velocity-exchange/velocity-v1/commit/b7b5ae80040b66651e6553d16354cbd075113cbb), [`06fac9e`](https://github.com/velocity-exchange/velocity-v1/commit/06fac9ed1584d51a6599dfb673977c0a4626c943), [`4e29bc0`](https://github.com/velocity-exchange/velocity-v1/commit/4e29bc0f131ad278450042e2554fd64bac4315ee), [`02078e6`](https://github.com/velocity-exchange/velocity-v1/commit/02078e625eb89c3fd5798af8d07693a21268a30e), [`77499bb`](https://github.com/velocity-exchange/velocity-v1/commit/77499bb3c0644730d5d48e6e3b331988cc5c2b02), [`fccd4f6`](https://github.com/velocity-exchange/velocity-v1/commit/fccd4f63d7522eca86d79aa8ec93092af2b63b7f), [`a6bffcb`](https://github.com/velocity-exchange/velocity-v1/commit/a6bffcb20a909f98552ef8f3adee8b5665e4257a), [`4227e3e`](https://github.com/velocity-exchange/velocity-v1/commit/4227e3e6fe3805cd0986f81ca6cc4a7513c0c460), [`4872b4f`](https://github.com/velocity-exchange/velocity-v1/commit/4872b4f49942c0f2ef830d10214ac26f46464c38), [`aaec40f`](https://github.com/velocity-exchange/velocity-v1/commit/aaec40fe81268dcc5922f8bbdb1301ea635a6dfd), [`b808fbb`](https://github.com/velocity-exchange/velocity-v1/commit/b808fbb90c4fea6bc597929203b25b6b9cf415d5), [`a6bd667`](https://github.com/velocity-exchange/velocity-v1/commit/a6bd667c28c3216ac213556d160aaea8e459191f), [`d3ef5e5`](https://github.com/velocity-exchange/velocity-v1/commit/d3ef5e5ed17e0ac51e8b8eb2fd039c381e2cff30), [`15db231`](https://github.com/velocity-exchange/velocity-v1/commit/15db231101dd2ac6ed3a94d63d0b41e5acecceb3), [`ede187b`](https://github.com/velocity-exchange/velocity-v1/commit/ede187be1060f4790f03f459733e0485096aaf69), [`1b81121`](https://github.com/velocity-exchange/velocity-v1/commit/1b8112143db861aab3507df64028911285425827), [`1a6af18`](https://github.com/velocity-exchange/velocity-v1/commit/1a6af1819be7822e56009e444d82c7a2fa84aed9), [`ae71278`](https://github.com/velocity-exchange/velocity-v1/commit/ae7127876ef98465ab53d611ee3447db73b224a2), [`4d0946b`](https://github.com/velocity-exchange/velocity-v1/commit/4d0946b70b336cf71cfcdca202a47dc9d8c81e05), [`e8a894c`](https://github.com/velocity-exchange/velocity-v1/commit/e8a894c90edd03814330206b8f666591be72a774), [`193c357`](https://github.com/velocity-exchange/velocity-v1/commit/193c35720365eefac9bfe9fbf1b241cf809029ff), [`dbea9aa`](https://github.com/velocity-exchange/velocity-v1/commit/dbea9aae45f27f8800cc80480443974ce68c031d), [`64301e1`](https://github.com/velocity-exchange/velocity-v1/commit/64301e1f19257152bf3c51174f4549dfbbdc9009), [`6e34ce3`](https://github.com/velocity-exchange/velocity-v1/commit/6e34ce3a14292eb4f6ceecfc67cde2e15590bd35), [`fabc75c`](https://github.com/velocity-exchange/velocity-v1/commit/fabc75ce6daeb7faf75909ceacaac8ffac257bad), [`98e787d`](https://github.com/velocity-exchange/velocity-v1/commit/98e787decb6153bacf6ec7f25e867cdcf217b413)]:
+  - @velocity-exchange/sdk@0.14.0
+
 ## 0.1.19
 
 ### Patch Changes

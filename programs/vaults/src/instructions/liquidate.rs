@@ -46,6 +46,7 @@ pub fn liquidate<'info>(ctx: Context<'info, Liquidate<'info>>) -> Result<()> {
         Some(vault.spot_market_index),
         vp.is_some(),
         false,
+        &ctx.accounts.velocity_state,
     )?;
 
     // 1. Check the vault depositor has waited the redeem period

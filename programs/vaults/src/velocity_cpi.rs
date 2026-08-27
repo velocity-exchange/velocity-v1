@@ -29,6 +29,7 @@ use {
 pub fn spot_markets_that_price_equity<'info>(
     vault: &Vault,
     user: &User,
+    velocity_state: &AccountInfo<'info>,
     remaining_accounts: &'info [AccountInfo<'info>],
     slot: u64,
 ) -> Result<Vec<u16>> {
@@ -51,6 +52,8 @@ pub fn spot_markets_that_price_equity<'info>(
         .collect();
 
     if !isolated_perp_market_indexes.is_empty() {
+        let slot_clock =
+            velocity::state::state::State::slot_clock_from_account_info(velocity_state)?;
         let AccountMaps {
             perp_market_map, ..
         } = load_maps(
@@ -58,6 +61,7 @@ pub fn spot_markets_that_price_equity<'info>(
             &BTreeSet::new(),
             &BTreeSet::new(),
             slot,
+            slot_clock,
             None,
         )?;
 

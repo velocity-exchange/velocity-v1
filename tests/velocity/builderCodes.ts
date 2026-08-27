@@ -2096,6 +2096,16 @@ describe('builder codes', () => {
 			userClient.wallet.publicKey
 		);
 		const keysBefore = ix.keys.length;
+		// The escrow opens the trailing revenue-share group, and only the referrer's
+		// readonly UserStats may follow it. Pinning the position (not just the count) is
+		// what catches a layout change that buries the escrow mid-list or appends
+		// something unexpected behind it.
+		const escrowIdx = ix.keys.findIndex((k) => k.pubkey.equals(escrowPk));
+		assert(escrowIdx !== -1, 'escrow account should have been appended');
+		assert(
+			escrowIdx >= keysBefore - 2,
+			'escrow account should sit in the trailing revenue-share group'
+		);
 		ix.keys = ix.keys.filter((k) => !k.pubkey.equals(escrowPk));
 		assert(
 			ix.keys.length === keysBefore - 1,
@@ -2305,6 +2315,16 @@ describe('builder codes', () => {
 			userClient.wallet.publicKey
 		);
 		const keysBefore = ix.keys.length;
+		// The escrow opens the trailing revenue-share group, and only the referrer's
+		// readonly UserStats may follow it. Pinning the position (not just the count) is
+		// what catches a layout change that buries the escrow mid-list or appends
+		// something unexpected behind it.
+		const escrowIdx = ix.keys.findIndex((k) => k.pubkey.equals(escrowPk));
+		assert(escrowIdx !== -1, 'escrow account should have been appended');
+		assert(
+			escrowIdx >= keysBefore - 2,
+			'escrow account should sit in the trailing revenue-share group'
+		);
 		ix.keys = ix.keys.filter((k) => !k.pubkey.equals(escrowPk));
 		assert(
 			ix.keys.length === keysBefore - 1,

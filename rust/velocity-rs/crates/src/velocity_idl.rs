@@ -1406,6 +1406,14 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for SyncLiqConditions {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct SyncStateSlotDuration {}
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for SyncStateSlotDuration {
+        const DISCRIMINATOR: &[u8] = &[144, 123, 176, 126, 81, 180, 87, 131];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for SyncStateSlotDuration {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct SyncTriggerConditions {}
     #[automatically_derived]
     impl anchor_lang::Discriminator for SyncTriggerConditions {
@@ -2735,6 +2743,16 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for UpdateTransactionFeeRails {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct UpdateUserAcceleratedReferralStatus {
+        pub accelerated: bool,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateUserAcceleratedReferralStatus {
+        const DISCRIMINATOR: &[u8] = &[109, 217, 221, 89, 216, 127, 12, 120];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateUserAcceleratedReferralStatus {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct UpdateUserAllowDelegateTransfer {
         pub allow_delegate_transfer: bool,
     }
@@ -3273,6 +3291,44 @@ pub mod types {
         pub funding_bias_sensitivity: u8,
         #[serde(skip)]
         pub padding_post_amm: Padding<2>,
+    }
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub enum AcceleratedReferralStatusChange {
+        #[default]
+        AdminGrant,
+        AdminRevoke,
+        AutoEnrollment,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct AcceleratedReferralStatusChangedRecord {
+        pub ts: i64,
+        pub authority: Pubkey,
+        pub previous_status: u8,
+        pub new_status: u8,
+        pub action: AcceleratedReferralStatusChange,
     }
     #[repr(C)]
     #[derive(
@@ -5198,6 +5254,8 @@ pub mod types {
         pub amm: AMM,
         pub hedge_config: HedgeConfig,
         pub clob_quoter: Pubkey,
+        #[serde(skip)]
+        pub _padding_future: Padding<224>,
     }
     #[repr(C)]
     #[derive(
@@ -6166,7 +6224,8 @@ pub mod types {
         pub total_social_loss: u128,
         pub total_quote_social_loss: u128,
         pub revenue_pool: PoolBalance,
-        pub spot_fee_pool: PoolBalance,
+        #[serde(skip)]
+        pub padding_former_spot_fee_pool: Padding<32>,
         pub historical_oracle_data: HistoricalOracleData,
         pub historical_index_data: HistoricalIndexData,
         pub withdraw_guard_threshold: u64,
@@ -6218,6 +6277,8 @@ pub mod types {
         pub protocol_liquidation_fee: u32,
         pub protocol_fee_factor: u32,
         pub if_last_settle_vault_amount: u64,
+        #[serde(skip)]
+        pub _padding_future: Padding<256>,
     }
     #[repr(C)]
     #[derive(
@@ -6344,14 +6405,19 @@ pub mod types {
         pub hot_fee_withdraw: Pubkey,
         pub hot_account_extension: Pubkey,
         pub promo_fee_tier: u8,
+        pub slot_duration_ms: u16,
+        pub pending_slot_duration_ms: u16,
+        pub slot_duration_pad: [u8; 2],
+        pub slot_duration_effective_slot: u64,
+        pub slot_duration_transition_slots: [u64; 4],
         pub hot_flow_authority: Pubkey,
-        #[serde(skip)]
-        pub padding_0: Padding<2>,
         pub transaction_fee_rails: TransactionFeeRails,
         pub liquidation_crank_reimbursement_bps: u16,
         pub sol_spot_market_index: u16,
         #[serde(skip)]
-        pub padding: Padding<184>,
+        pub padding_0: Padding<2>,
+        #[serde(skip)]
+        pub padding: Padding<146>,
     }
     #[repr(C)]
     #[derive(
@@ -6727,8 +6793,9 @@ pub mod types {
         pub padding1: Padding<9>,
         pub delegate_permissions: u8,
         pub equity_breaker_tripped: u8,
+        pub accelerated_referral_status: u8,
         #[serde(skip)]
-        pub padding: Padding<62>,
+        pub padding: Padding<61>,
     }
     #[repr(C)]
     #[derive(
@@ -7386,6 +7453,8 @@ pub mod accounts {
         pub amm: AMM,
         pub hedge_config: HedgeConfig,
         pub clob_quoter: Pubkey,
+        #[serde(skip)]
+        pub _padding_future: Padding<224>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for PerpMarket {
@@ -8082,7 +8151,8 @@ pub mod accounts {
         pub total_social_loss: u128,
         pub total_quote_social_loss: u128,
         pub revenue_pool: PoolBalance,
-        pub spot_fee_pool: PoolBalance,
+        #[serde(skip)]
+        pub padding_former_spot_fee_pool: Padding<32>,
         pub historical_oracle_data: HistoricalOracleData,
         pub historical_index_data: HistoricalIndexData,
         pub withdraw_guard_threshold: u64,
@@ -8134,6 +8204,8 @@ pub mod accounts {
         pub protocol_liquidation_fee: u32,
         pub protocol_fee_factor: u32,
         pub if_last_settle_vault_amount: u64,
+        #[serde(skip)]
+        pub _padding_future: Padding<256>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for SpotMarket {
@@ -8231,14 +8303,19 @@ pub mod accounts {
         pub hot_fee_withdraw: Pubkey,
         pub hot_account_extension: Pubkey,
         pub promo_fee_tier: u8,
+        pub slot_duration_ms: u16,
+        pub pending_slot_duration_ms: u16,
+        pub slot_duration_pad: [u8; 2],
+        pub slot_duration_effective_slot: u64,
+        pub slot_duration_transition_slots: [u64; 4],
         pub hot_flow_authority: Pubkey,
-        #[serde(skip)]
-        pub padding_0: Padding<2>,
         pub transaction_fee_rails: TransactionFeeRails,
         pub liquidation_crank_reimbursement_bps: u16,
         pub sol_spot_market_index: u16,
         #[serde(skip)]
-        pub padding: Padding<184>,
+        pub padding_0: Padding<2>,
+        #[serde(skip)]
+        pub padding: Padding<146>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for State {
@@ -8461,8 +8538,9 @@ pub mod accounts {
         pub padding1: Padding<9>,
         pub delegate_permissions: u8,
         pub equity_breaker_tripped: u8,
+        pub accelerated_referral_status: u8,
         #[serde(skip)]
-        pub padding: Padding<62>,
+        pub padding: Padding<61>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UserStats {
@@ -20063,6 +20141,70 @@ pub mod accounts {
     }
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct SyncStateSlotDuration {
+        pub state: Pubkey,
+        pub feature_gate: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for SyncStateSlotDuration {
+        const DISCRIMINATOR: &[u8] = &[89, 141, 244, 205, 139, 224, 199, 97];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for SyncStateSlotDuration {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for SyncStateSlotDuration {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for SyncStateSlotDuration {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for SyncStateSlotDuration {}
+    #[automatically_derived]
+    impl ToAccountMetas for SyncStateSlotDuration {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.feature_gate,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for SyncStateSlotDuration {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for SyncStateSlotDuration {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct SyncTriggerConditions {
         pub payer: Pubkey,
         pub user: Pubkey,
@@ -29454,6 +29596,76 @@ pub mod accounts {
     }
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct UpdateUserAcceleratedReferralStatus {
+        pub admin: Pubkey,
+        pub state: Pubkey,
+        pub user_stats: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for UpdateUserAcceleratedReferralStatus {
+        const DISCRIMINATOR: &[u8] = &[102, 147, 157, 81, 204, 101, 190, 121];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for UpdateUserAcceleratedReferralStatus {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for UpdateUserAcceleratedReferralStatus {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for UpdateUserAcceleratedReferralStatus {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for UpdateUserAcceleratedReferralStatus {}
+    #[automatically_derived]
+    impl ToAccountMetas for UpdateUserAcceleratedReferralStatus {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.admin,
+                    is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.user_stats,
+                    is_signer: false,
+                    is_writable: true,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for UpdateUserAcceleratedReferralStatus {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for UpdateUserAcceleratedReferralStatus {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct UpdateUserAllowDelegateTransfer {
         pub user_stats: Pubkey,
         pub authority: Pubkey,
@@ -29795,6 +30007,7 @@ pub mod accounts {
     pub struct UpdateUserMarginTradingEnabled {
         pub user: Pubkey,
         pub authority: Pubkey,
+        pub state: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdateUserMarginTradingEnabled {
@@ -29820,6 +30033,11 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.authority,
                     is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
                     is_writable: false,
                 },
             ]
@@ -29987,6 +30205,7 @@ pub mod accounts {
     pub struct UpdateUserPoolId {
         pub user: Pubkey,
         pub authority: Pubkey,
+        pub state: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdateUserPoolId {
@@ -30012,6 +30231,11 @@ pub mod accounts {
                 AccountMeta {
                     pubkey: self.authority,
                     is_signer: true,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.state,
+                    is_signer: false,
                     is_writable: false,
                 },
             ]
@@ -32430,6 +32654,15 @@ pub mod errors {
 pub mod events {
     #![doc = r" IDL event types"]
     use super::{types::*, *};
+    #[derive(Clone, Debug, PartialEq, Default)]
+    #[event]
+    pub struct AcceleratedReferralStatusChangedRecord {
+        pub ts: i64,
+        pub authority: Pubkey,
+        pub previous_status: u8,
+        pub new_status: u8,
+        pub action: AcceleratedReferralStatusChange,
+    }
     #[derive(Clone, Debug, PartialEq, Default)]
     #[event]
     pub struct AmmCurveChanged {

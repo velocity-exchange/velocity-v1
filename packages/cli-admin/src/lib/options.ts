@@ -46,3 +46,13 @@ export function readGlobalOpts(cmd: Command): GlobalOpts {
 		multisig: opts.multisig as string | undefined,
 	};
 }
+
+export function parseBoolean(value: string, name: string): boolean {
+	if (value === 'true') {
+		return true;
+	}
+	if (value === 'false') {
+		return false;
+	}
+	throw new Error(`${name} must be "true" or "false", got "${value}"`);
+}

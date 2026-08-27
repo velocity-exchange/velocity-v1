@@ -7,6 +7,26 @@ import {
 } from '@solana/web3.js';
 import * as multisig from '@sqds/multisig';
 
+/**
+ * The authority that will actually sign a dispatched instruction: the Squads
+ * vault PDA when going through `--multisig`, otherwise the local wallet. Pass
+ * this as the `admin` account on instruction builders so the listed authority
+ * matches the signer — the on-chain `check_warm`/`check_cold` guard then
+ * validates it. Without this, a builder that defaults to a fixed role (e.g.
+ * warm admin) produces an instruction the actual signer cannot satisfy.
+ */
+export function resolveAdminAuthority(
+	provider: AnchorProvider,
+	multisigPda: PublicKey | undefined,
+	vaultIndex = 0
+): PublicKey {
+	if (!multisigPda) {
+		return provider.wallet.publicKey;
+	}
+	const [vaultPda] = multisig.getVaultPda({ multisigPda, index: vaultIndex });
+	return vaultPda;
+}
+
 export type DispatchResult =
 	| { kind: 'sent'; signature: string }
 	| {

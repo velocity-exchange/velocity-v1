@@ -1,3 +1,4 @@
+use program::math::time::SlotClock;
 use solana_pubkey::Pubkey;
 
 use crate::{
@@ -3885,7 +3886,8 @@ fn market_order_get_price_same_start_end_price() {
         };
 
         // Test at start of auction (slot = start_slot)
-        let price_at_start = order.get_price(start_slot, oracle_price, tick_size);
+        let price_at_start =
+            order.get_price(start_slot, oracle_price, tick_size, SlotClock::baseline());
         assert_eq!(
             price_at_start,
             Some(auction_price as u64),
@@ -3894,7 +3896,12 @@ fn market_order_get_price_same_start_end_price() {
         );
 
         // Test during auction (slot = start_slot + 5)
-        let price_during = order.get_price(start_slot + 5, oracle_price, tick_size);
+        let price_during = order.get_price(
+            start_slot + 5,
+            oracle_price,
+            tick_size,
+            SlotClock::baseline(),
+        );
         assert_eq!(
             price_during,
             Some(auction_price as u64),
@@ -3903,7 +3910,12 @@ fn market_order_get_price_same_start_end_price() {
         );
 
         // Test at end of auction (slot = start_slot + duration)
-        let price_at_end = order.get_price(start_slot + duration as u64, oracle_price, tick_size);
+        let price_at_end = order.get_price(
+            start_slot + duration as u64,
+            oracle_price,
+            tick_size,
+            SlotClock::baseline(),
+        );
         assert_eq!(
             price_at_end,
             Some(auction_price as u64),
@@ -3912,8 +3924,12 @@ fn market_order_get_price_same_start_end_price() {
         );
 
         // Test after auction (slot = start_slot + duration + 1)
-        let price_after =
-            order.get_price(start_slot + duration as u64 + 1, oracle_price, tick_size);
+        let price_after = order.get_price(
+            start_slot + duration as u64 + 1,
+            oracle_price,
+            tick_size,
+            SlotClock::baseline(),
+        );
         // After auction, if price is 0, it returns None, otherwise returns price
         // Since we set price = 0, it should return None
         assert_eq!(
@@ -4041,7 +4057,7 @@ fn dlob_oracle_order_negative_offset_prices_post_auction() {
     };
 
     // post auction: limit = oracle + offset, standardized (Long rounds down to tick)
-    let price = order.get_price(200, oracle_price, tick_size);
+    let price = order.get_price(200, oracle_price, tick_size, SlotClock::baseline());
     assert_eq!(price, Some(99_750));
 
     // offset-less order falls back to vamm pricing
@@ -4049,7 +4065,10 @@ fn dlob_oracle_order_negative_offset_prices_post_auction() {
         oracle_price_offset: 0,
         ..order.clone()
     };
-    assert_eq!(no_offset.get_price(200, oracle_price, tick_size), None);
+    assert_eq!(
+        no_offset.get_price(200, oracle_price, tick_size, SlotClock::baseline()),
+        None
+    );
 
     // positive offset unchanged
     let pos_offset = OracleOrder {
@@ -4058,7 +4077,7 @@ fn dlob_oracle_order_negative_offset_prices_post_auction() {
         ..order
     };
     assert_eq!(
-        pos_offset.get_price(200, oracle_price, tick_size),
+        pos_offset.get_price(200, oracle_price, tick_size, SlotClock::baseline()),
         Some(100_250)
     );
 }
@@ -4444,9 +4463,14 @@ fn dlob_vamm_taker_candidate_requires_fill_path_quote() {
         has_sufficient_number_of_data_points: true,
         sequence_id: None,
     };
-    let cached_market =
-        project_perp_market_for_quoting(btc_market_fixture(), stale_oracle, &rails, slot - 50)
-            .unwrap();
+    let cached_market = project_perp_market_for_quoting(
+        btc_market_fixture(),
+        stale_oracle,
+        &rails,
+        slot - 50,
+        SlotClock::baseline(),
+    )
+    .unwrap();
 
     // Oracle has since moved above the cached curve, mirroring the incident: the
     // program's fill-time quote snaps to the new oracle and re-derives spreads,
@@ -4458,8 +4482,14 @@ fn dlob_vamm_taker_candidate_requires_fill_path_quote() {
         has_sufficient_number_of_data_points: true,
         sequence_id: None,
     };
-    let projected =
-        project_perp_market_for_quoting(cached_market, exchange_oracle, &rails, slot).unwrap();
+    let projected = project_perp_market_for_quoting(
+        cached_market,
+        exchange_oracle,
+        &rails,
+        slot,
+        SlotClock::baseline(),
+    )
+    .unwrap();
 
     let vamm_ask = |m: &PerpMarket| {
         let reserve_price = m.amm.reserve_price().unwrap();
@@ -4576,7 +4606,10 @@ fn dlob_vamm_taker_candidate_requires_fill_path_quote() {
 fn post_trigger_price_mirrors_program_trigger_auction_params() {
     use crate::dlob::types::{L3Order, TriggerL3Order};
     use program::{
-        math::auction::{calculate_auction_params_for_trigger_order, calculate_auction_price},
+        math::{
+            auction::{calculate_auction_params_for_trigger_order, calculate_auction_price},
+            time::{Millis, SlotDuration},
+        },
         state::{
             oracle::OraclePriceData,
             user::{Order as VelocityOrder, OrderBitFlag},
@@ -4648,7 +4681,7 @@ fn post_trigger_price_mirrors_program_trigger_auction_params() {
             has_sufficient_number_of_data_points: true,
             sequence_id: None,
         },
-        20, // the program's hardcoded min duration in `controller::orders::trigger_order`
+        20, // ~8s in wall clock 400ms units
         Some(&market),
     )
     .unwrap();
@@ -4661,12 +4694,27 @@ fn post_trigger_price_mirrors_program_trigger_auction_params() {
         slot,
         market.order_tick_size,
         Some(oracle_price as i64),
+        SlotClock::baseline(),
     )
     .unwrap();
     assert_eq!(
         got, expected,
         "trigger-market post-trigger price must mirror the on-chain trigger recipe"
     );
+
+    // Trigger and fill are simulated at the same slot, so the returned price is
+    // the auction start price on any clock: the duration is wall clock 400ms
+    // units and progress is zero, so a fully-200ms clock changes nothing.
+    let fast_clock = SlotClock::from_state_fields([1, 1, 1, 1], 0, 0, 0);
+    let fast_price = calculate_auction_price(
+        &expected_order,
+        slot,
+        market.order_tick_size,
+        Some(oracle_price as i64),
+        fast_clock,
+    )
+    .unwrap();
+    assert_eq!(fast_price, expected);
 }
 
 #[test]

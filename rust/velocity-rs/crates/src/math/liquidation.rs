@@ -2,6 +2,7 @@
 //! liquidation and margin helpers
 //!
 
+use program::math::time::{Millis, SlotClock};
 use std::ops::Neg;
 
 use super::get_oracle_normalization_factor;
@@ -333,7 +334,8 @@ pub fn calculate_max_pct_to_liquidate(
     margin_shortage: u128,
     slot: u64,
     initial_pct_to_liquidate: u128,
-    liquidation_duration: u128,
+    liquidation_duration: Millis,
+    slot_clock: SlotClock,
 ) -> SdkResult<u128> {
     // if margin shortage is tiny, accelerate liquidation
     if margin_shortage < 50 * QUOTE_PRECISION {
@@ -343,12 +345,20 @@ pub fn calculate_max_pct_to_liquidate(
     if slot < user.last_active_slot {
         return Err(SdkError::MathError("slot < user.last_active_slot"));
     }
-    let slots_elapsed = slot - user.last_active_slot;
+    // ratio of elapsed wall clock time to the liquidation window, integrated
+    // per slot duration regime (mirrors the program's
+    // calculate_max_pct_to_liquidate); identity at 400ms. Taking `Millis`
+    // keeps the legacy storage encoding at the account boundary instead of
+    // making this arithmetic helper guess what a bare integer means.
+    let elapsed_ms = slot_clock.elapsed(user.last_active_slot, slot).as_ms();
+    let duration_ms = liquidation_duration.as_ms();
 
-    let pct_freeable = slots_elapsed as u128 * LIQUIDATION_PCT_PRECISION
-        .checked_div(liquidation_duration) // ~ 1 minute if per slot is 400ms
-        .unwrap_or(LIQUIDATION_PCT_PRECISION) // if divide by zero, default to 100%
-        + initial_pct_to_liquidate
+    let ramp = (elapsed_ms as u128)
+        .saturating_mul(LIQUIDATION_PCT_PRECISION)
+        .checked_div(duration_ms as u128) // ~1 minute at the onchain default
+        .unwrap_or(LIQUIDATION_PCT_PRECISION); // if divide by zero, default to 100%
+    let pct_freeable = ramp
+        .saturating_add(initial_pct_to_liquidate)
         .min(LIQUIDATION_PCT_PRECISION);
 
     let total_margin_shortage = margin_shortage + user.liquidation_margin_freed as u128;

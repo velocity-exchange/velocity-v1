@@ -1,5 +1,125 @@
 # @velocity-exchange/admin-cli
 
+## 0.12.1
+
+### Patch Changes
+
+- Updated dependencies [[`079d579`](https://github.com/velocity-exchange/velocity-v1/commit/079d579d4fac0f3402a4a9f8fb1aeccf21ac32ba)]:
+  - @velocity-exchange/sdk@0.17.0
+
+## 0.12.0
+
+### Minor Changes
+
+- [#447](https://github.com/velocity-exchange/velocity-v1/pull/447) [`ce01885`](https://github.com/velocity-exchange/velocity-v1/commit/ce0188563670520bfcddb689866e37c1fa19ed00) Thanks [@0xahzam](https://github.com/0xahzam)! - Slot-duration transition archive and permissionless sync. `StateAccount` gains `slotDurationTransitionSlots` (first slot of each IBRL regime); `activeSlotDurationFromState` consults the archive first, and new `elapsedMillis` / `elapsedMillisFromSlotDelta` integrate elapsed intervals per slot-duration regime, mirroring the program's `SlotClock`. Program mirrors that measure elapsed time (`getOracleValidity`, `isOracleValid`, `getSpotOracleValidity`, `blockOperation`, `getLiquidationFee`, `calculateMaxPctToLiquidate`, `User.canMakeIdle`) now take a trailing `SlotDurationState` (the decoded `State`) instead of a `SlotDurationMs`. Forward deadlines, MM-oracle gates, and vAMM spread smoothing also use the transition archive instead of one endpoint duration. The admin instruction `updateStateSlotDurationMs` was replaced by the permissionless `syncStateSlotDuration` (`AdminClient.syncStateSlotDuration` / `getSyncStateSlotDurationIx`; `IBRL_FEATURE_WARMUP_SLOTS` removed, the effective slot now derives onchain from the `EpochSchedule` sysvar). CLI: `exchange set-slot-duration-ms` is now `exchange sync-slot-duration`. Auction durations (`Order.auctionDuration`, `OrderParams.auctionDuration`) now mean wall-clock 400ms units instead of live slots (identical raw values at the 400ms baseline); auction mirrors (`isAuctionComplete`, `getAuctionPrice*`, `getLimitPrice`, `hasLimitPrice`, `hasAuctionPrice`, `isRestingLimitOrder`, `DLOBNode.getPrice`) take a trailing optional `SlotDurationState`, and `DLOB.slotDurationState` carries it for book math. When converting an auction duration from ms, divide by 400 (ceil), not by the live slot duration.
+
+### Patch Changes
+
+- Updated dependencies [[`ce01885`](https://github.com/velocity-exchange/velocity-v1/commit/ce0188563670520bfcddb689866e37c1fa19ed00), [`823724e`](https://github.com/velocity-exchange/velocity-v1/commit/823724e4a8ea0d34b5a79883512eec9cb40b6123)]:
+  - @velocity-exchange/sdk@0.16.0
+
+## 0.11.1
+
+### Patch Changes
+
+- Updated dependencies [[`d3824be`](https://github.com/velocity-exchange/velocity-v1/commit/d3824be0f2261e709477e8a1aceedcd11da842c5), [`fe0adbd`](https://github.com/velocity-exchange/velocity-v1/commit/fe0adbd72d77eefaada569292bca2f5baf1e1e58)]:
+  - @velocity-exchange/sdk@0.15.0
+
+## 0.11.0
+
+### Minor Changes
+
+- [#429](https://github.com/velocity-exchange/velocity-v1/pull/429) [`4124e93`](https://github.com/velocity-exchange/velocity-v1/commit/4124e9313dd70610a705817570bd9e428c8dea85) Thanks [@0xahzam](https://github.com/0xahzam)! - Referrer rewards split into a Standard and an Accelerated rate. Standard stays per-fee-tier
+  (`FeeTier.referrerRewardNumerator`, whose fresh default drops from 15% to 10%); Accelerated is
+  the fixed `ACCELERATED_REFERRER_REWARD_PERCENT` constant, independent of the tier. The referee
+  discount keeps reading the fee tier. `UserStatsAccount.acceleratedReferralStatus` mirrors the
+  new onchain field, with the `AcceleratedReferralStatus` flags, the
+  `AcceleratedReferralStatusChange` action enum, and the
+  `AcceleratedReferralStatusChangedRecord` event (subscribed by default). `AdminClient` gains
+  `updateUserAcceleratedReferralStatus`, wrapped by the admin CLI as
+  `user set-accelerated-referral` alongside `fees set-referral-rate`. Automatic enrollment is
+  gated by a beta-scoped program constant rather than a state field, so there is no client
+  surface to toggle it.
+
+  Fill instruction builders now append the referred taker's referrer `UserStats` (readonly) after
+  the taker's `RevenueShareEscrow`, which is what selects the Accelerated rate. The account is
+  optional onchain, so a client that omits it still fills at the Standard rate.
+  `getFillPerpOrderIx` takes a new trailing `takerReferrer` argument and `ReferrerMap` exposes
+  `getReferrerAuthority`; passing the referrer keeps the fill path free of an extra `UserStats`
+  fetch.
+
+- [#388](https://github.com/velocity-exchange/velocity-v1/pull/388) [`77499bb`](https://github.com/velocity-exchange/velocity-v1/commit/77499bb3c0644730d5d48e6e3b331988cc5c2b02) Thanks [@0xahzam](https://github.com/0xahzam)! - Rework the perp fee schedule. Fee tiers cut from 6 to 3 (Regular / VIP 1 / VIP 2) with new 30d-volume thresholds ($5M / $80M) and new defaults (4/3/2bps taker, flat -0.25bp maker rebate); `getUserFeeTier` mirrors the new thresholds, projects the rolling-volume decay to now (demotion tracks the live trailing window), and applies the new promotional tier floor. New onchain knobs with SDK/CLI surface: per-market additive taker-fee surcharge (`PerpMarketAccount.takerFeeAddonTenthBps`, unsigned, applied by `getMarketFees` before `feeAdjustment`; `AdminClient.updatePerpMarketTakerFeeAddon`, `velocity-admin fees set-taker-addon`) and the promo fee-tier floor (`StateAccount.promoFeeTier`, effective tier = max(volume tier, promo tier), 0 = off; `AdminClient.updatePromoFeeTier`, `velocity-admin fees set-promo-tier`).
+
+- [#392](https://github.com/velocity-exchange/velocity-v1/pull/392) [`4d0946b`](https://github.com/velocity-exchange/velocity-v1/commit/4d0946b70b336cf71cfcdca202a47dc9d8c81e05) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - Accrued builder/referrer revenue share can now be collected without the escrow owner's participation, and is paid out rather than written off when a market is delisted.
+
+  `settleRevenueShare` / `getSettleRevenueShareIx` wrap the new permissionless `settle_revenue_share` instruction, which settles one escrow's rows for one perp market out of that market's pnl pool. Previously the only payer ran inside `settlePNL` and only when that settle actually moved PnL, so once an escrow owner flattened and stopped trading a market their beneficiaries' fees were stranded and the market's `pendingRevenueShare` kept reserving pnl-pool value against a claim nobody could settle.
+
+  `forfeitRevenueShareOrder` / `getForfeitRevenueShareOrderIx` wrap `forfeit_revenue_share_order`, which writes off a row of a market in settlement or delisted that provably cannot be paid — the beneficiary has no payout account, the wound-down pool cannot cover it, or it names no reachable beneficiary. Anything still payable is rejected with `RevenueShareOrderNotForfeitable` (6373).
+
+  Delisting a market now requires that revenue share to have been resolved: `settle_expired_market_pools_to_revenue_pool` rejects with `UnsettledRevenueShareOnDelist` (6372) while `pendingRevenueShare` is non-zero. There is no time-based escape, because between the two instructions above every row is terminally resolvable. A delisted market therefore always reports `pendingRevenueShare` as zero, and consumers must not treat a delisted market's counter as an outstanding liability.
+
+  `RevenueShareEscrowMap.getEscrowsOwingRevenueShare(marketIndex)` returns the escrows still owed on a market — the work list to clear before delisting. `calculateRevenueShareSweepAvailable`, `calculateBankruptcyIfTrancheReservation` and `calculateBankruptcyIfFloor` (`math/market`) mirror the reservation the on-chain sweep applies, so a keeper can predict whether a call will pay before sending it.
+
+  CLI: new `velocity-admin fees settle-revenue-share <market> [escrowAuthority]`, with `--all` to scan a market, settle every escrow still owed, and forfeit any stragglers that cannot be paid.
+
+- [#425](https://github.com/velocity-exchange/velocity-v1/pull/425) [`193c357`](https://github.com/velocity-exchange/velocity-v1/commit/193c35720365eefac9bfe9fbf1b241cf809029ff) Thanks [@0xahzam](https://github.com/0xahzam)! - Slot-duration scaling for the Solana slot-time reduction (400 -> 350 -> 300 -> 250 -> 200ms feature gates). New `State` fields `slotDurationMs` (0 = unset = 400ms baseline), `pendingSlotDurationMs`, and `slotDurationEffectiveSlot`, plus the `updateStateSlotDurationMs` admin instruction. The instruction _stages_ the next value during the target IBRL gate's warmup: it accepts only the exact next value on the 400 -> 350 -> 300 -> 250 -> 200 schedule, reads the switch slot from the gate's feature account (passed as a remaining account; the account activation slot is exposed one epoch ahead), and records it as `pendingSlotDurationMs` + `slotDurationEffectiveSlot`. `State` then switches itself at that slot in lockstep with the chain, no second transaction. `updateStateSlotDurationMs`/`getUpdateStateSlotDurationMsIx` fill in the feature account automatically and take an optional explicit `admin` pubkey (default `warmAdmin` when set else `coldAdmin`). Resolve the live value with the new `activeSlotDurationFromState(state, currentSlot)` (the base-only `slotDurationFromState` still exists). Onchain duration arithmetic uses `Millis`; compact account fields use the new transparent `StoredSlotDuration<T, SLOT_MS>`, which preserves `T`'s wire width while recording the slot length assumed by that encoding (the IDL remains primitive-compatible). TypeScript exports branded `Millis`/`SlotDurationMs` with `slotDurationFromState`/`activeSlotDurationFromState`/`millisToSlots`/`millisToSlotsCeil`/`millisFromSlots`/`millisFromStoredUnits`/`divPeriods` (plus number-domain `msToSlotsNum`/`msToSlotsCeilNum`/`slotsToMsNum`), mirroring the onchain `math::time`. `getOracleValidity`, `isOracleValid`, `getSpotOracleValidity`, and `User.canMakeIdle` take an optional trailing `SlotDurationMs` (default the 400ms baseline); `getVammL2Generator` takes a required `slotDuration`; `calculateBidPrice`/`calculateAskPrice`/`calculateUpdatedAMMSpreadReserves`/`calculateTradeSlippage`/`calculateTradeAcquiredAmounts`/`calculateTargetPriceTrade`/`calculateBaseAssetValue` take an optional trailing `slotDuration` (default the 400ms baseline); `VelocityClient.getMMOracleDataForPerpMarket` takes an optional trailing `currentSlot` (pass a live slot for correct post-transition validity); `calculateMaxPctToLiquidate` takes its ramp length as `Millis` (decode the stored field with `millisFromStoredUnits`). New `getLiquidationFee` and `blockOperation` helpers mirror the program's duration-aware liquidation-fee and funding-block decisions. Force-close perp auctions now convert their legacy 32-second duration through the live slot length instead of hardcoding 80 slots. Renames: `IDLE_TIME_SLOTS` -> `IDLE_TIME` (Millis), `MM_ORACLE_MIN_SLOT_GAP` -> `MM_ORACLE_MIN_WRITE_GAP` (Millis), `MM_ORACLE_MAX_SOURCE_AGE_SLOTS` -> `MM_ORACLE_MAX_SOURCE_AGE` (Millis). `SLOT_TIME_ESTIMATE_MS` is deprecated. Admin CLI gains `exchange set-slot-duration-ms` (validates an exact integer, prints current -> new, previews the target IBRL gate's activation/effective slots from the on-chain feature account, and dispatches under the correct authority for direct or `--multisig` use). New SDK exports `getIbrlFeatureGate(slotDurationMs)` and `IBRL_FEATURE_WARMUP_SLOTS` support that preview.
+
+  VLP constituent initialization and updates now reject oracle-staleness thresholds above 1,000,000 historical 400ms units, matching the defensive margin-oracle ceiling.
+
+- [#387](https://github.com/velocity-exchange/velocity-v1/pull/387) [`6e34ce3`](https://github.com/velocity-exchange/velocity-v1/commit/6e34ce3a14292eb4f6ceecfc67cde2e15590bd35) Thanks [@0xahzam](https://github.com/0xahzam)! - Add the vAMM maker rebate feature flag. New onchain `FeatureBitFlags::VammMakerRebate` (bit 8, off by default): when enabled, the vAMM earns the maker rebate on fills it makes against a taker, carved off the taker-fee remainder before the protocol/IF/AMM split and folded into the AMM's fee provision. The taker's fee is unchanged; only the distribution shifts. SDK: `FeatureBitFlags.VAMM_MAKER_REBATE`, `AdminClient.updateFeatureBitFlagsVammMakerRebate` / `getUpdateFeatureBitFlagsVammMakerRebateIx`. Admin CLI: `velocity-admin feature-flags vamm-maker-rebate <true|false>`.
+
+### Patch Changes
+
+- [#397](https://github.com/velocity-exchange/velocity-v1/pull/397) [`1004b31`](https://github.com/velocity-exchange/velocity-v1/commit/1004b31a45f0da9cf8faed18c5c82f2351730c75) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - `PerpMarketAccount.pendingBankruptcyClaims` mirrors the new per-market counter of unresolved
+  bankrupt quote debts. While it is above zero the program's fee sweep withholds the whole
+  `feeLedger.pendingIfFee`, so a permissionless sweep cannot drain the bankruptcy first-loss tranche
+  between the latch and the resolution. `PositionFlag.BankruptcyClaim` marks the position whose debt
+  is counted. `AdminClient.settleExpiredMarketPoolsToRevenuePool` now fails while that counter is above
+  zero, because the delist sweep bypasses the floor; resolve every bankruptcy in the market
+  first.
+
+  `bankruptcyIfFloorPct` changes meaning: `0` now selects `DEFAULT_BANKRUPTCY_IF_FLOOR_PCT` (10 bps),
+  which is what a market written before the field existed reads, and the new
+  `BANKRUPTCY_IF_FLOOR_DISABLED` sentinel turns the standing floor off. Callers that passed `0` to
+  `AdminClient.updatePerpMarketBankruptcyIfFloorPct` to disable the floor must pass the sentinel
+  instead. The admin CLI accepts `perp-market set-bankruptcy-if-floor <market> disabled`.
+
+- [#355](https://github.com/velocity-exchange/velocity-v1/pull/355) [`b7b5ae8`](https://github.com/velocity-exchange/velocity-v1/commit/b7b5ae80040b66651e6553d16354cbd075113cbb) Thanks [@0xahzam](https://github.com/0xahzam)! - Harden the equity breaker recovery path. Cure transfers: `transferDepositByDelegate` with a zero floor delta into a subaccount below its buffered floor now passes onchain while the breaker is tripped, so a breach can be topped up from internal surplus instead of requiring fresh deposits; `EquityFloorManager` gains `planCureTransfers()` and `cureBreaches()` (plus the pure `planCureMoves`) to plan and submit those transfers, deepest breach first, without drawing any donor below its own buffered floor. Self-verifying reset: `resetEquityFloorBreaker` now carries every live subaccount of the authority (count pinned by `UserStats.numberOfSubAccounts`) plus their markets and oracles, and reverts with the new `InvalidEquityBreakerReset` (6368) unless every floored subaccount clears its floor + buffer at execution time, so a stale approval fails instead of unfreezing a breached authority; `AdminClient.resetEquityFloorBreaker`/`getResetEquityFloorBreakerIx` build the account set automatically, with an optional `userAccounts` override for connections without `getProgramAccounts`. Neither path clears the flag automatically; the admin reset remains the only unfreeze.
+
+- [#386](https://github.com/velocity-exchange/velocity-v1/pull/386) [`4e29bc0`](https://github.com/velocity-exchange/velocity-v1/commit/4e29bc0f131ad278450042e2554fd64bac4315ee) Thanks [@0xahzam](https://github.com/0xahzam)! - `user equity-floor-status` reads the fail-closed floor metric (`getFloorNetEquity`) and reports "invalid oracle: floor gates blocked" instead of describing the removed lower bound.
+
+- [#380](https://github.com/velocity-exchange/velocity-v1/pull/380) [`ff3b884`](https://github.com/velocity-exchange/velocity-v1/commit/ff3b8841df91275b6bbace2bf5449b8457d38e95) Thanks [@ChewingGlass](https://github.com/ChewingGlass)! - `user equity-floor-status` now reports net equity, the quantity every onchain floor gate compares, instead of the initial-margin total collateral (which never subtracts spot borrows and applies asset weights). It reads the lower equity bound at the current slot and appends a stale-oracle note when any oracle is invalid, so the printed figure is not mistaken for exact.
+
+- [#425](https://github.com/velocity-exchange/velocity-v1/pull/425) [`e8a894c`](https://github.com/velocity-exchange/velocity-v1/commit/e8a894c90edd03814330206b8f666591be72a774) Thanks [@0xahzam](https://github.com/0xahzam)! - Correct the slot-duration scaling in the off-chain mirrors and the staged-switch setter.
+
+  - `activeSlotDurationFromState` is now applied wherever the Rust SDK, the swift server, and
+    the account-list builder previously read the raw `State.slotDurationMs` base field. That
+    field lags a staged switch until the following gate is staged, so the mirrors sized oracle
+    staleness windows, the signed-order age limit, and the auction band check off the
+    pre-switch duration.
+  - `update_state_slot_duration_ms` commits an already-effective promotion when the gate
+    schedule is exhausted instead of reverting it, so the base field never stays a step behind
+    the live value. After the final 200ms switch, operators finalize the raw base field with one
+    additional `set-slot-duration-ms 200` transaction.
+  - Reference-price-offset smoothing accrues its budget per elapsed millisecond instead of per
+    whole 400ms period. Flooring to whole periods zeroed the budget for any crank gap under
+    400ms, which pinned the step to the minimum and made convergence slower the more often a
+    market was cranked.
+  - `math/time.ts` imports `BN` from the isomorphic entry point, keeping Anchor out of the
+    browser bundle.
+  - The SDK's oracle staleness allowance is a wall-clock duration rather than a fixed five
+    slots.
+  - Three velocity/jit-proxy instructions and three vaults instructions now take velocity's
+    `State` so their oracle windows match the rest of the protocol. Hand-built transactions
+    must add the account; the SDKs and CLI fill it in.
+  - `velocity-admin exchange set-slot-duration-ms` previews the live duration instead of the
+    base field.
+  - `pythLazerCranker`'s post ceiling is a fixed wall-clock interval again, so the post rate
+    does not double at each gate.
+
+- Updated dependencies [[`4124e93`](https://github.com/velocity-exchange/velocity-v1/commit/4124e9313dd70610a705817570bd9e428c8dea85), [`74786b4`](https://github.com/velocity-exchange/velocity-v1/commit/74786b44c1009369c98d920b10d8f322a2214e26), [`1004b31`](https://github.com/velocity-exchange/velocity-v1/commit/1004b31a45f0da9cf8faed18c5c82f2351730c75), [`48e9301`](https://github.com/velocity-exchange/velocity-v1/commit/48e930147f8110454ef83f13f27a8ce8b921791a), [`01a7131`](https://github.com/velocity-exchange/velocity-v1/commit/01a71316b0327acd32be6e90686edd296e592af6), [`7ee2feb`](https://github.com/velocity-exchange/velocity-v1/commit/7ee2febf9c4bfe9cb0e7361828a1aad087216df7), [`94bb6ce`](https://github.com/velocity-exchange/velocity-v1/commit/94bb6ce94aad1981e4ee7910a85ab9ffbfe1d7c3), [`b7b5ae8`](https://github.com/velocity-exchange/velocity-v1/commit/b7b5ae80040b66651e6553d16354cbd075113cbb), [`06fac9e`](https://github.com/velocity-exchange/velocity-v1/commit/06fac9ed1584d51a6599dfb673977c0a4626c943), [`4e29bc0`](https://github.com/velocity-exchange/velocity-v1/commit/4e29bc0f131ad278450042e2554fd64bac4315ee), [`02078e6`](https://github.com/velocity-exchange/velocity-v1/commit/02078e625eb89c3fd5798af8d07693a21268a30e), [`77499bb`](https://github.com/velocity-exchange/velocity-v1/commit/77499bb3c0644730d5d48e6e3b331988cc5c2b02), [`fccd4f6`](https://github.com/velocity-exchange/velocity-v1/commit/fccd4f63d7522eca86d79aa8ec93092af2b63b7f), [`a6bffcb`](https://github.com/velocity-exchange/velocity-v1/commit/a6bffcb20a909f98552ef8f3adee8b5665e4257a), [`4227e3e`](https://github.com/velocity-exchange/velocity-v1/commit/4227e3e6fe3805cd0986f81ca6cc4a7513c0c460), [`4872b4f`](https://github.com/velocity-exchange/velocity-v1/commit/4872b4f49942c0f2ef830d10214ac26f46464c38), [`aaec40f`](https://github.com/velocity-exchange/velocity-v1/commit/aaec40fe81268dcc5922f8bbdb1301ea635a6dfd), [`b808fbb`](https://github.com/velocity-exchange/velocity-v1/commit/b808fbb90c4fea6bc597929203b25b6b9cf415d5), [`a6bd667`](https://github.com/velocity-exchange/velocity-v1/commit/a6bd667c28c3216ac213556d160aaea8e459191f), [`d3ef5e5`](https://github.com/velocity-exchange/velocity-v1/commit/d3ef5e5ed17e0ac51e8b8eb2fd039c381e2cff30), [`15db231`](https://github.com/velocity-exchange/velocity-v1/commit/15db231101dd2ac6ed3a94d63d0b41e5acecceb3), [`ede187b`](https://github.com/velocity-exchange/velocity-v1/commit/ede187be1060f4790f03f459733e0485096aaf69), [`1b81121`](https://github.com/velocity-exchange/velocity-v1/commit/1b8112143db861aab3507df64028911285425827), [`1a6af18`](https://github.com/velocity-exchange/velocity-v1/commit/1a6af1819be7822e56009e444d82c7a2fa84aed9), [`ae71278`](https://github.com/velocity-exchange/velocity-v1/commit/ae7127876ef98465ab53d611ee3447db73b224a2), [`4d0946b`](https://github.com/velocity-exchange/velocity-v1/commit/4d0946b70b336cf71cfcdca202a47dc9d8c81e05), [`e8a894c`](https://github.com/velocity-exchange/velocity-v1/commit/e8a894c90edd03814330206b8f666591be72a774), [`193c357`](https://github.com/velocity-exchange/velocity-v1/commit/193c35720365eefac9bfe9fbf1b241cf809029ff), [`dbea9aa`](https://github.com/velocity-exchange/velocity-v1/commit/dbea9aae45f27f8800cc80480443974ce68c031d), [`64301e1`](https://github.com/velocity-exchange/velocity-v1/commit/64301e1f19257152bf3c51174f4549dfbbdc9009), [`6e34ce3`](https://github.com/velocity-exchange/velocity-v1/commit/6e34ce3a14292eb4f6ceecfc67cde2e15590bd35), [`fabc75c`](https://github.com/velocity-exchange/velocity-v1/commit/fabc75ce6daeb7faf75909ceacaac8ffac257bad), [`98e787d`](https://github.com/velocity-exchange/velocity-v1/commit/98e787decb6153bacf6ec7f25e867cdcf217b413)]:
+  - @velocity-exchange/sdk@0.14.0
+
 ## 0.10.2
 
 ### Patch Changes

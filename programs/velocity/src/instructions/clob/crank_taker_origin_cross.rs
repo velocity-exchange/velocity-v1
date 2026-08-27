@@ -319,6 +319,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         &get_writable_perp_market_set(market_index),
         &MarketSet::new(),
         clock.slot,
+        state.slot_clock(),
         Some(state.oracle_guard_rails),
     )?;
     let (makers_and_referrer, makers_and_referrer_stats) =

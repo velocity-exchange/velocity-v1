@@ -1,5 +1,6 @@
 //! Velocity SDK
 
+use program::math::time::{SlotClock, SlotDuration};
 use std::{
     borrow::Cow,
     collections::BTreeSet,
@@ -103,6 +104,25 @@ pub mod slot_subscriber;
 pub mod usermap;
 
 pub mod dlob;
+
+/// Full slot clock from an already read `State`, including every synchronized
+/// IBRL transition. Mirrors the program's `State::slot_clock`. Prefer this over
+/// the raw `State.slot_duration_ms` field, which lags the live duration until
+/// the matching transition is synchronized.
+pub fn slot_clock_from_state(state: &State) -> SlotClock {
+    SlotClock::from_state_fields(
+        state.slot_duration_transition_slots,
+        state.slot_duration_ms,
+        state.pending_slot_duration_ms,
+        state.slot_duration_effective_slot,
+    )
+}
+
+/// Live slot duration at `now_slot`, from an already read `State`. Thin wrapper
+/// over [`slot_clock_from_state`].
+pub fn slot_duration_from_state(state: &State, now_slot: Slot) -> SlotDuration {
+    slot_clock_from_state(state).slot_duration_at(now_slot)
+}
 
 /// VelocityClient
 ///
@@ -1050,6 +1070,25 @@ impl VelocityClient {
     /// * `market_index` - perp market index
     /// * `current_slot` - current solana slot
     ///
+    /// The live slot duration at `now_slot`, applying a staged switch once its
+    /// effective slot has passed. Mirrors the program's
+    /// `State::active_slot_duration_ms`. The raw `State.slot_duration_ms` field
+    /// lags a staged switch for as long as the gate after it is unstaged, so
+    /// resolve through here rather than reading that field. Falls back to the
+    /// 400ms baseline when `State` is not cached.
+    pub fn slot_duration_at(&self, now_slot: Slot) -> SlotDuration {
+        self.slot_clock().slot_duration_at(now_slot)
+    }
+
+    /// The full slot clock from the cached `State`, including every
+    /// synchronized IBRL transition (see [`slot_clock_from_state`]). Falls back
+    /// to the 400ms baseline when `State` is not cached.
+    pub fn slot_clock(&self) -> SlotClock {
+        self.state_account()
+            .map(|s| slot_clock_from_state(&s))
+            .unwrap_or(SlotClock::baseline())
+    }
+
     pub fn try_get_mmoracle_for_perp_market(
         &self,
         market_index: u16,
@@ -1059,15 +1098,21 @@ impl VelocityClient {
             .try_get_oracle_price_data_and_slot(MarketId::perp(market_index))
             .ok_or(SdkError::InvalidOracle)?;
         let perp_market = self.try_get_perp_market_account(market_index)?;
-        let oracle_validity_guard_rails = self.state_account().unwrap().oracle_guard_rails.validity;
+        // One `State` read serves both the guard rails and the slot duration:
+        // `state_account()` Borsh-deserializes the whole account, and this is a
+        // per-fill-decision path.
+        let state = self.state_account()?;
+        let oracle_validity_guard_rails = state.oracle_guard_rails.validity;
 
         let velocity_validity_guard_rails: program::state::state::ValidityGuardRails =
             unsafe { std::mem::transmute_copy::<_, _>(&oracle_validity_guard_rails) };
+        let slot_clock = slot_clock_from_state(&state);
         perp_market
             .get_mm_oracle_price_data(
                 oracle_data.data,
                 current_slot,
                 &velocity_validity_guard_rails,
+                slot_clock,
             )
             .map(|x| x.get_safe_oracle_price_data())
             .map_err(|e| SdkError::Anchor(Box::new(e.into())))
@@ -1097,7 +1142,9 @@ impl VelocityClient {
             .try_get_oracle_price_data_and_slot(MarketId::perp(market_index))
             .ok_or(SdkError::InvalidOracle)?;
         let mut perp_market = self.try_get_perp_market_account(market_index)?;
-        let oracle_validity_guard_rails = self.state_account().unwrap().oracle_guard_rails.validity;
+        // One `State` read serves both the guard rails and the slot duration.
+        let state = self.state_account()?;
+        let oracle_validity_guard_rails = state.oracle_guard_rails.validity;
         let velocity_validity_guard_rails: program::state::state::ValidityGuardRails =
             unsafe { std::mem::transmute_copy::<_, _>(&oracle_validity_guard_rails) };
 
@@ -1112,6 +1159,7 @@ impl VelocityClient {
             exchange_oracle,
             &velocity_validity_guard_rails,
             slot,
+            slot_clock_from_state(&state),
         )
     }
 
@@ -2570,7 +2618,7 @@ impl<'a> TransactionBuilder<'a> {
     /// * `order` - the order to place
     /// * `taker_info` - taker account address and data
     /// * `taker_order_id` - the id of the taker's order to match with
-    /// * `referrer` - pubkey of the taker's referrer account, if any
+    /// * `referrer` - authority of the taker's referrer, if any
     pub fn place_and_make(
         mut self,
         order: OrderParams,
@@ -2608,12 +2656,26 @@ impl<'a> TransactionBuilder<'a> {
             accounts.push(AccountMeta::new(*high_leverage_mode_account(), false));
         }
 
-        if let Some(referrer) = referrer {
+        // A taker order missing from the supplied account (a stale cache, or an order that has
+        // not landed yet) is treated as carrying a builder, so the escrow is attached rather
+        // than omitted. Attaching one that is not needed is harmless: the program peeks at the
+        // account and ignores anything that is not an initialized escrow.
+        let taker_order_has_builder = taker_account
+            .orders
+            .iter()
+            .find(|order| order.order_id == taker_order_id)
+            .is_none_or(|order| order.has_builder());
+        if taker_order_has_builder || referrer.is_some() {
             accounts.push(AccountMeta::new(
-                Wallet::derive_stats_account(&referrer),
+                derive_revenue_share_escrow(&taker_account.authority),
                 false,
             ));
-            accounts.push(AccountMeta::new(referrer, false));
+            if let Some(referrer) = referrer {
+                accounts.push(AccountMeta::new_readonly(
+                    Wallet::derive_stats_account(&referrer),
+                    false,
+                ));
+            }
         }
 
         let ix = Instruction {
@@ -2633,7 +2695,7 @@ impl<'a> TransactionBuilder<'a> {
     ///
     /// * `order` - the order to place
     /// * `maker_info` - pubkey of the maker/counter-party(s) to take against and account data
-    /// * `referrer` - pubkey of the maker's referrer account, if any
+    /// * `referrer` - authority of the placing taker's referrer, if any
     pub fn place_and_take(
         mut self,
         order: OrderParams,
@@ -2673,16 +2735,6 @@ impl<'a> TransactionBuilder<'a> {
             accounts.push(AccountMeta::new(*high_leverage_mode_account(), false));
         }
 
-        // if referrer is maker don't add account again
-        if referrer.is_some_and(|r| !maker_info.iter().any(|(m, _)| *m == r)) {
-            let referrer = referrer.unwrap();
-            accounts.push(AccountMeta::new(
-                Wallet::derive_stats_account(&referrer),
-                false,
-            ));
-            accounts.push(AccountMeta::new(referrer, false));
-        }
-
         for (maker, maker_account) in maker_info {
             accounts.push(AccountMeta::new(*maker, false));
             accounts.push(AccountMeta::new(
@@ -2691,7 +2743,21 @@ impl<'a> TransactionBuilder<'a> {
             ));
         }
 
-        let _ = is_perp;
+        let order_has_builder =
+            order.builder_idx.is_some() && order.builder_fee_tenth_bps.is_some();
+        if order_has_builder || referrer.is_some() {
+            accounts.push(AccountMeta::new(
+                derive_revenue_share_escrow(&self.owner()),
+                false,
+            ));
+            if let Some(referrer) = referrer {
+                accounts.push(AccountMeta::new_readonly(
+                    Wallet::derive_stats_account(&referrer),
+                    false,
+                ));
+            }
+        }
+
         let ix = Instruction {
             program_id: constants::PROGRAM_ID,
             accounts,
@@ -2710,7 +2776,7 @@ impl<'a> TransactionBuilder<'a> {
     /// * `maker_order` - order params defined by the maker, e.g. partial or full fill
     /// * `signed_order_info` - the signed swift order info (i.e from taker)
     /// * `taker_account` - taker account data
-    /// * `taker_account_referrer` - taker account referrer key
+    /// * `taker_account_referrer` - authority of the taker's referrer
     ///
     pub fn place_and_make_swift_order(
         mut self,
@@ -2747,19 +2813,17 @@ impl<'a> TransactionBuilder<'a> {
                 .chain(self.force_markets.writeable.iter()),
         );
 
-        if taker_account_referrer != &DEFAULT_PUBKEY {
-            accounts.push(AccountMeta::new(*taker_account_referrer, false));
-            accounts.push(AccountMeta::new(
-                Wallet::derive_stats_account(taker_account_referrer),
-                false,
-            ));
-        }
-
-        if signed_order_info.has_builder() {
+        if signed_order_info.has_builder() || taker_account_referrer != &DEFAULT_PUBKEY {
             accounts.push(AccountMeta::new(
                 derive_revenue_share_escrow(&taker_account.authority),
                 false,
             ));
+            if taker_account_referrer != &DEFAULT_PUBKEY {
+                accounts.push(AccountMeta::new_readonly(
+                    Wallet::derive_stats_account(taker_account_referrer),
+                    false,
+                ));
+            }
         }
 
         self.ixs.push(Instruction {
@@ -3570,14 +3634,7 @@ impl<'a> TransactionBuilder<'a> {
             ]);
         }
 
-        if taker_stats.is_referred() {
-            accounts.extend([
-                AccountMeta::new(Wallet::derive_user_account(&taker_stats.referrer, 0), false),
-                AccountMeta::new(Wallet::derive_stats_account(&taker_stats.referrer), false),
-            ]);
-        }
-
-        // The on-chain FillPerpOrder (programs/velocity/src/controller/orders.rs)
+        // The onchain FillPerpOrder (programs/velocity/src/controller/orders.rs)
         // requires the taker's RevenueShareEscrow in two independent cases: the
         // order carries a builder code, OR the taker is referred (their escrow was
         // initialized with a referrer, i.e. the `BuilderReferral` status bit).
@@ -3597,7 +3654,13 @@ impl<'a> TransactionBuilder<'a> {
             accounts.push(AccountMeta::new(
                 derive_revenue_share_escrow(&taker_account.authority),
                 false,
-            ))
+            ));
+            if taker_stats.has_builder_referral() {
+                accounts.push(AccountMeta::new_readonly(
+                    Wallet::derive_stats_account(&taker_stats.referrer),
+                    false,
+                ));
+            }
         }
 
         let ix = Instruction {
@@ -4717,7 +4780,7 @@ mod tests {
     /// Regression: a fill of a *referred* taker's order (their RevenueShareEscrow
     /// was initialized with a referrer -> `BuilderReferral` status bit) must attach
     /// the escrow account even when the order itself carries no builder code, or the
-    /// on-chain `FillPerpOrder` reverts with `UnableToLoadRevenueShareAccount`.
+    /// onchain `FillPerpOrder` reverts with `UnableToLoadRevenueShareAccount`.
     #[test]
     fn fill_perp_order_attaches_escrow_for_referred_taker() {
         let program_data = ProgramData::new(
@@ -4739,6 +4802,7 @@ mod tests {
         // Referred taker (BuilderReferral bit set): escrow MUST be attached even
         // though the order has no builder. This is the regressed case.
         let mut referred_stats = UserStats::default();
+        referred_stats.referrer = Pubkey::new_unique();
         referred_stats.referrer_status = 0b0000_0100;
         assert!(referred_stats.has_builder_referral());
         let tx = TransactionBuilder::new(&program_data, filler, Cow::Owned(User::default()), false)
@@ -4757,6 +4821,11 @@ mod tests {
         assert!(
             tx.static_account_keys().contains(&escrow),
             "referred taker's fill must include the RevenueShareEscrow account"
+        );
+        assert!(
+            tx.static_account_keys()
+                .contains(&Wallet::derive_stats_account(&referred_stats.referrer)),
+            "referred taker's fill must include the referrer's UserStats account"
         );
 
         // Control: not referred and order has no builder -> escrow omitted.

@@ -152,6 +152,7 @@ mod tests {
                 &amm_inventory_and_price,
                 constituents_indexes_and_decimals_and_prices.as_mut_slice(),
                 slot,
+                SlotClock::baseline(),
             )
             .unwrap();
 
@@ -241,6 +242,7 @@ mod tests {
                 &amm_inventory_and_prices,
                 constituents_indexes_and_decimals_and_prices.as_mut_slice(),
                 slot,
+                SlotClock::baseline(),
             )
             .unwrap();
 
@@ -316,7 +318,8 @@ mod tests {
                 &mapping_zc,
                 &amm_inventory_and_prices,
                 constituents_indexes_and_decimals_and_prices.as_mut_slice(),
-                4040404040440404404, // far future slot
+                4040404040440404404,
+                SlotClock::baseline(),
             )
             .unwrap();
 
@@ -342,6 +345,7 @@ mod tests {
                 &amm_inventory_and_prices,
                 constituents_indexes_and_decimals_and_prices.as_mut_slice(),
                 slot,
+                SlotClock::baseline(),
             )
             .unwrap();
         assert_eq!(target_zc_mut.get(0).last_oracle_slot, slot); // still not updated
@@ -430,6 +434,7 @@ mod tests {
                 &amm_inventory_and_prices,
                 constituents_indexes_and_decimals_and_prices.as_mut_slice(),
                 slot,
+                SlotClock::baseline(),
             )
             .unwrap();
 
@@ -517,6 +522,7 @@ mod tests {
                 &amm_inventory_and_prices,
                 constituents_indexes_and_decimals_and_prices.as_mut_slice(),
                 slot,
+                SlotClock::baseline(),
             )
             .unwrap();
 
@@ -657,6 +663,8 @@ mod swap_tests {
                 500_000,
                 in_amount.cast::<u128>().unwrap(),
                 0,
+                1_000_000,
+                SlotClock::baseline(),
             )
             .unwrap();
         assert_eq!(in_amount, expected_in_amount);
@@ -867,8 +875,10 @@ mod swap_tests {
                 &constituent,
                 in_amount,
                 &oracle,
-                PERCENTAGE_PRECISION_I64, // 100% target weight, to minimize fee for this test
+                PERCENTAGE_PRECISION_I64,
                 dlp_total_supply,
+                1_000_000,
+                SlotClock::baseline(),
             )
             .unwrap();
 
@@ -1059,8 +1069,10 @@ mod swap_tests {
                 &constituent,
                 lp_burn_amount,
                 &oracle,
-                PERCENTAGE_PRECISION_I64, // 100% target weight, to minimize fee for this test
+                PERCENTAGE_PRECISION_I64,
                 dlp_total_supply,
+                1_000_000,
+                SlotClock::baseline(),
             )
             .unwrap();
 
@@ -1321,6 +1333,8 @@ mod swap_tests {
                 out_target_weight,
                 in_amount.cast::<u128>().unwrap(),
                 0,
+                1_000_000,
+                SlotClock::baseline(),
             )
             .unwrap();
 
@@ -1670,7 +1684,9 @@ mod swap_fee_tests {
         };
 
         // Even a small delay in the position incurs a larger fee
-        let uncertainty_fee = lp_pool.get_target_uncertainty_fees(1, 0).unwrap();
+        let uncertainty_fee = lp_pool
+            .get_target_uncertainty_fees(1, 0, 1_000_000, SlotClock::baseline())
+            .unwrap();
         assert_eq!(
             uncertainty_fee,
             PERCENTAGE_PRECISION_I128 / 10000i128
@@ -2440,7 +2456,7 @@ mod update_aum_tests {
             last_oracle_slot: 100,
             decimals: 6,
             vault_token_balance: usdc_balance,
-            oracle_staleness_threshold: 10,
+            oracle_staleness_threshold: legacy_slot_duration_u64(10),
             ..Constituent::default()
         };
         create_anchor_account_info!(constituent_usdc, Constituent, constituent_usdc_account_info);
@@ -2453,7 +2469,7 @@ mod update_aum_tests {
             last_oracle_slot: 100,
             decimals: 9,
             vault_token_balance: sol_balance,
-            oracle_staleness_threshold: 10,
+            oracle_staleness_threshold: legacy_slot_duration_u64(10),
             ..Constituent::default()
         };
         create_anchor_account_info!(constituent_sol, Constituent, constituent_sol_account_info);
@@ -2466,7 +2482,7 @@ mod update_aum_tests {
             last_oracle_slot: 100,
             decimals: 8,
             vault_token_balance: btc_balance,
-            oracle_staleness_threshold: 10,
+            oracle_staleness_threshold: legacy_slot_duration_u64(10),
             ..Constituent::default()
         };
         create_anchor_account_info!(constituent_btc, Constituent, constituent_btc_account_info);
@@ -2479,7 +2495,7 @@ mod update_aum_tests {
             last_oracle_slot: 100,
             decimals: 5,
             vault_token_balance: bonk_balance,
-            oracle_staleness_threshold: 10,
+            oracle_staleness_threshold: legacy_slot_duration_u64(10),
             ..Constituent::default()
         };
         create_anchor_account_info!(constituent_bonk, Constituent, constituent_bonk_account_info);
@@ -2606,7 +2622,8 @@ mod update_aum_tests {
             bonk_oracle_account_info.clone(),
         ];
         let mut oracle_iter = oracle_accounts.iter().peekable();
-        let mut oracle_map = OracleMap::load(&mut oracle_iter, 101, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load(&mut oracle_iter, 101, SlotClock::baseline(), None).unwrap();
 
         msg!(
             "oracle map entry 0 {:?}",
@@ -2772,9 +2789,12 @@ mod update_constituent_target_base_for_derivatives_tests {
         super::super::update_constituent_target_base_for_derivatives,
         crate::{
             create_anchor_account_info,
-            math::constants::{
-                PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U64, PRICE_PRECISION_I64,
-                QUOTE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
+            math::{
+                constants::{
+                    PERCENTAGE_PRECISION_I64, PERCENTAGE_PRECISION_U64, PRICE_PRECISION_I64,
+                    QUOTE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION,
+                },
+                time::SlotClock,
             },
             state::{
                 oracle::{HistoricalOracleData, OracleSource},
@@ -3030,7 +3050,8 @@ mod update_constituent_target_base_for_derivatives_tests {
             derivative3_oracle_account_info.clone(),
         ];
         let mut oracle_iter = oracle_accounts.iter().peekable();
-        let mut oracle_map = OracleMap::load(&mut oracle_iter, 101, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load(&mut oracle_iter, 101, SlotClock::baseline(), None).unwrap();
 
         // Create constituent target base
         let num_constituents = 4; // Fixed: parent + 3 derivatives
@@ -3315,7 +3336,8 @@ mod update_constituent_target_base_for_derivatives_tests {
             derivative_oracle_account_info.clone(),
         ];
         let mut oracle_iter = oracle_accounts.iter().peekable();
-        let mut oracle_map = OracleMap::load(&mut oracle_iter, 101, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load(&mut oracle_iter, 101, SlotClock::baseline(), None).unwrap();
 
         // Create constituent target base
         let target_fixed = RefCell::new(ConstituentTargetBaseFixed {
@@ -3604,7 +3626,8 @@ mod update_constituent_target_base_for_derivatives_tests {
             derivative_oracle_account_info.clone(),
         ];
         let mut oracle_iter = oracle_accounts.iter().peekable();
-        let mut oracle_map = OracleMap::load(&mut oracle_iter, 101, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load(&mut oracle_iter, 101, SlotClock::baseline(), None).unwrap();
 
         let target_fixed = RefCell::new(ConstituentTargetBaseFixed {
             len: 2,
@@ -3835,7 +3858,8 @@ mod update_constituent_target_base_for_derivatives_tests {
             derivative2_oracle_account_info.clone(),
         ];
         let mut oracle_iter = oracle_accounts.iter().peekable();
-        let mut oracle_map = OracleMap::load(&mut oracle_iter, 101, None).unwrap();
+        let mut oracle_map =
+            OracleMap::load(&mut oracle_iter, 101, SlotClock::baseline(), None).unwrap();
 
         let target_fixed = RefCell::new(ConstituentTargetBaseFixed {
             len: 3,

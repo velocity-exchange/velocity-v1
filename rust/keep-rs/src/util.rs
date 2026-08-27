@@ -2,7 +2,7 @@ use {
     futures_util::StreamExt,
     pyth_lazer_client::AnyResponse,
     pyth_lazer_protocol::{
-        message::Message,
+        message::{Message, SolanaMessage},
         payload::{PayloadData, PayloadPropertyValue},
         router::{
             Channel, DeliveryFormat, FixedRate, Format, JsonBinaryEncoding, PriceFeedId,
@@ -21,10 +21,19 @@ use {
             pyth_lazer_feed_id_to_spot_market_index, spot_market_index_to_pyth_lazer_feed_id,
         },
         dlob::{L3Order, MakerCrosses},
-        types::{MarketId, MarketType},
+        math::constants::PRICE_PRECISION,
+        program::math::time::{Millis, SlotClock, SlotDuration},
+        types::{MarketId, MarketType, OraclePriceData, OracleSource},
         Pubkey,
     },
 };
+
+/// Live slot duration at `now_slot` from the client's cached `State`, resolved
+/// through the full slot clock (transition archive first, legacy staging fields
+/// as fallback); the 400ms baseline when State is not yet subscribed.
+pub fn client_slot_duration(velocity: &velocity_rs::VelocityClient, now_slot: u64) -> SlotDuration {
+    velocity.slot_duration_at(now_slot)
+}
 
 pub struct OrderSlotLimiter<const N: usize> {
     slots: [Vec<u32>; N],
@@ -454,37 +463,47 @@ impl<const N: usize> PendingTxs<N> {
     }
 }
 
-/// Max age (in slots) of a swift signed message before the program refuses to place it.
+/// Max age of a swift signed message before the program refuses to place it
+/// (~200s, expressed in actual slots at the current slot duration).
 ///
-/// Mirrors the `order_slot < clock.slot.saturating_sub(500)` gate in
-/// `place_signed_msg_taker_order` (programs/velocity/src/instructions/keeper.rs).
-pub const SWIFT_SIGNED_MSG_MAX_SLOT_AGE: u64 = 500;
+/// Mirrors the staleness gate in `place_signed_msg_taker_order`
+/// (programs/velocity/src/instructions/keeper.rs).
+pub const SWIFT_SIGNED_MSG_MAX_AGE: Millis = Millis::from_secs(200);
 
 /// Returns true if a swift (signed-message) order can no longer be usefully *placed* on-chain,
 /// so the bot shouldn't spend a tx trying.
 ///
 /// The two slot gates mirror `place_signed_msg_taker_order` exactly:
-/// - **signed-message staleness**: program rejects when `order_slot < current_slot - 500`
+/// - **signed message staleness**: the program rejects once the order's
+///   wall clock age (integrated per slot duration regime) exceeds ~200s
 /// - **placement deadline**: program silently no-ops once `max_slot < current_slot`, where
-///   `max_slot = order_slot + auction_duration` (identical formula for limit & market orders)
+///   `max_slot` is the first slot reaching the auction duration across all
+///   known slot-duration transitions (identical formula for limit & market orders)
 ///
 /// The `max_ts` check is an *additional* client-side guard (the program does not gate placement
 /// on `max_ts`): an order whose `max_ts` has passed is already dead, so placing it would waste a
-/// tx. Note `auction_duration` is a `u8` (≤ 255), so the placement deadline always binds before
-/// the 500-slot staleness window; both are checked for completeness/robustness.
+/// tx. Note `auction_duration` is a `u8` (≤ 255 units ≈ 102s), so the placement deadline always
+/// binds before the ~200s staleness window; both are checked for completeness/robustness.
 pub fn swift_placement_expired(
     order_slot: u64,
     auction_duration: u8,
     max_ts: i64,
     current_slot: u64,
     now_ts: i64,
+    slot_clock: SlotClock,
 ) -> bool {
+    if order_slot > current_slot {
+        return true;
+    }
     // signed message too old for the program to accept
-    if current_slot > order_slot.saturating_add(SWIFT_SIGNED_MSG_MAX_SLOT_AGE) {
+    if slot_clock.elapsed(order_slot, current_slot) > SWIFT_SIGNED_MSG_MAX_AGE {
         return true;
     }
     // placement deadline: program no-ops once max_slot < current_slot
-    let max_slot = order_slot.saturating_add(auction_duration as u64);
+    let max_slot = slot_clock.slot_at_or_after_duration(
+        order_slot,
+        Millis::from_stored_units(auction_duration as u64),
+    );
     if current_slot > max_slot {
         return true;
     }
@@ -504,6 +523,123 @@ pub struct PythPriceUpdate {
     // original pyth message
     pub message: Vec<u8>,
     pub ts: TimestampUs,
+}
+
+/// One-shot marker recorded when a liquidate-with-fill tx fails onchain with
+/// `LiquidationOrderFailedToFill`, telling the liquidator to route the next
+/// attempt on that (liquidatee, market) straight to a collateral takeover.
+/// The marker survives until a takeover tx is actually sent; `attempts`
+/// counts takeover routings it has driven and `recorded_ms` bounds its
+/// lifetime, so a takeover path that keeps failing before send cannot pin
+/// the marker forever.
+#[derive(Clone, Copy, Debug)]
+pub struct PerpFillFallback {
+    pub recorded_ms: u64,
+    pub attempts: u32,
+}
+
+/// The oracle state `update_pyth_lazer_oracle` would persist for `update`,
+/// read back the way `get_pyth_price` reads it, with `delay: 0` since the
+/// posting tx stamps the current slot. Mirrors the program end to end:
+/// confidence is the widest of the 20bps floor, the bid/ask distance and the
+/// signed confidence property (`calculate_lazer_conf`), price and confidence
+/// scale by the feed exponent and the source multiple, and a stablecoin
+/// source snaps to $1 inside the tighter of 5bps and the confidence
+/// (`get_pyth_stable_coin_price`). Returns `None` when the retained message
+/// does not parse or does not carry the update's feed.
+pub fn preview_pyth_lazer_oracle(
+    update: &PythPriceUpdate,
+    oracle_source: &OracleSource,
+) -> Option<OraclePriceData> {
+    let message = SolanaMessage::deserialize_slice(&update.message).ok()?;
+    let data = PayloadData::deserialize_slice_le(&message.payload).ok()?;
+    let feed = data
+        .feeds
+        .iter()
+        .find(|feed| feed.feed_id.0 == update.feed_id)?;
+
+    let mut price: Option<i64> = None;
+    let mut best_bid: Option<i64> = None;
+    let mut best_ask: Option<i64> = None;
+    let mut exponent: Option<i16> = None;
+    let mut signed_confidence: Option<i64> = None;
+    let mut feed_ts_us: Option<u64> = None;
+
+    for property in &feed.properties {
+        match property {
+            PayloadPropertyValue::Price(value) => price = value.map(|p| p.0.get()),
+            PayloadPropertyValue::BestBidPrice(value) => best_bid = value.map(|p| p.0.get()),
+            PayloadPropertyValue::BestAskPrice(value) => best_ask = value.map(|p| p.0.get()),
+            PayloadPropertyValue::Exponent(exp) => exponent = Some(*exp),
+            PayloadPropertyValue::Confidence(value) => signed_confidence = value.map(|p| p.0.get()),
+            PayloadPropertyValue::FeedUpdateTimestamp(ts) => feed_ts_us = ts.map(|t| t.0),
+            _ => {}
+        }
+    }
+
+    let price = price.filter(|p| *p != 0)?;
+    let exponent = exponent?;
+
+    // widest-of-three confidence, as `calculate_lazer_conf` stores it
+    let mut conf = price / 500;
+    if let (Some(bid), Some(ask)) = (best_bid, best_ask) {
+        let spread = i128::from(ask)
+            .saturating_sub(i128::from(bid))
+            .abs()
+            .min(i64::MAX.into()) as i64;
+        conf = conf.max(spread);
+    }
+    if let Some(signed_confidence) = signed_confidence {
+        conf = conf.max(signed_confidence);
+    }
+
+    // scale mantissas to PRICE_PRECISION, as `get_pyth_price` reads them
+    let multiple = match oracle_source {
+        OracleSource::PythLazer | OracleSource::PythLazerStableCoin => 1u128,
+        OracleSource::PythLazer1K => 1_000,
+        OracleSource::PythLazer1M => 1_000_000,
+        _ => return None,
+    };
+    let precision = 10_u128.checked_pow(u32::from(exponent.unsigned_abs()))?;
+    if precision <= multiple {
+        return None;
+    }
+    let precision = precision / multiple;
+    let (scale_mult, scale_div) = if precision > PRICE_PRECISION {
+        (1u128, precision / PRICE_PRECISION)
+    } else {
+        (PRICE_PRECISION / precision, 1u128)
+    };
+
+    let mut price_scaled = i64::try_from(
+        i128::from(price)
+            .checked_mul(scale_mult as i128)?
+            .checked_div(scale_div as i128)?,
+    )
+    .ok()?;
+    let conf_scaled = u64::try_from(
+        u128::from(conf.unsigned_abs())
+            .checked_mul(scale_mult)?
+            .checked_div(scale_div)?,
+    )
+    .ok()?;
+
+    if matches!(oracle_source, OracleSource::PythLazerStableCoin) {
+        let five_bps = 500_i64;
+        if (price_scaled - PRICE_PRECISION as i64).abs()
+            <= five_bps.min(i64::try_from(conf_scaled).unwrap_or(i64::MAX))
+        {
+            price_scaled = PRICE_PRECISION as i64;
+        }
+    }
+
+    Some(OraclePriceData {
+        price: price_scaled,
+        confidence: conf_scaled,
+        delay: 0,
+        has_sufficient_number_of_data_points: true,
+        sequence_id: feed_ts_us,
+    })
 }
 
 /// Tolerated forward clock skew before a future-dated feed timestamp is treated as invalid —
@@ -818,12 +954,123 @@ pub fn subscribe_price_feeds(
 mod tests {
     use {
         super::{
-            pyth_update_is_fresh, swift_placement_expired, OrderSlotLimiter, PendingTxMeta,
-            PendingTxs, Pubkey, TxIntent,
+            preview_pyth_lazer_oracle, pyth_update_is_fresh, swift_placement_expired,
+            OrderSlotLimiter, PendingTxMeta, PendingTxs, Pubkey, PythPriceUpdate, TxIntent,
         },
-        pyth_lazer_protocol::router::TimestampUs,
+        pyth_lazer_protocol::{
+            message::SolanaMessage,
+            payload::{PayloadData, PayloadFeedData, PayloadPropertyValue},
+            router::{ChannelId, Price, PriceFeedId, TimestampUs},
+        },
         solana_sdk::signature::Signature,
+        std::num::NonZeroI64,
+        velocity_rs::{
+            program::math::time::SlotClock,
+            types::{MarketType, OracleSource},
+        },
     };
+
+    /// One lazer solana envelope carrying a single feed with the given
+    /// properties, retained the way `subscribe_price_feeds` retains it.
+    fn lazer_message(feed_id: u32, properties: Vec<PayloadPropertyValue>) -> Vec<u8> {
+        let payload = PayloadData {
+            timestamp_us: TimestampUs(0),
+            channel_id: ChannelId(1),
+            feeds: vec![PayloadFeedData {
+                feed_id: PriceFeedId(feed_id),
+                properties,
+            }],
+        };
+        let mut payload_buf = Vec::new();
+        payload
+            .serialize::<byteorder::LE>(&mut payload_buf)
+            .unwrap();
+        let message = SolanaMessage {
+            payload: payload_buf,
+            signature: [0u8; 64],
+            public_key: [0u8; 32],
+        };
+        let mut buf = Vec::new();
+        message.serialize(&mut buf).unwrap();
+        buf
+    }
+
+    fn price(mantissa: i64) -> Option<Price> {
+        Some(Price(NonZeroI64::new(mantissa).unwrap()))
+    }
+
+    #[test]
+    fn lazer_preview_matches_program_post_semantics() {
+        // mantissas at exponent -8; PRICE_PRECISION is 1e6, so the read path
+        // divides by 100
+        let mantissa = 100_00000000_i64;
+        let feed_ts = 1_700_000_000_000_000_u64;
+        let message = lazer_message(
+            5,
+            vec![
+                PayloadPropertyValue::Price(price(mantissa)),
+                PayloadPropertyValue::BestBidPrice(price(mantissa - 300_000_000)),
+                PayloadPropertyValue::BestAskPrice(price(mantissa + 300_000_000)),
+                PayloadPropertyValue::Exponent(-8),
+                PayloadPropertyValue::Confidence(price(mantissa / 1000)),
+                PayloadPropertyValue::FeedUpdateTimestamp(Some(TimestampUs(feed_ts))),
+            ],
+        );
+        let update = PythPriceUpdate {
+            market_type: MarketType::Perp,
+            market_id: 0,
+            feed_id: 5,
+            price: 100_000_000,
+            message,
+            ts: TimestampUs(feed_ts),
+        };
+
+        let preview = preview_pyth_lazer_oracle(&update, &OracleSource::PythLazer).unwrap();
+        assert_eq!(preview.price, 100_000_000); // $100 at 1e6 precision
+                                                // the bid/ask spread (600_000_000 raw) is the widest of the three
+                                                // confidence signals; scaled by 100 like the price
+        assert_eq!(preview.confidence, 6_000_000);
+        assert_eq!(preview.delay, 0);
+        assert_eq!(preview.sequence_id, Some(feed_ts));
+
+        // signed confidence wins when it is widest
+        let message = lazer_message(
+            5,
+            vec![
+                PayloadPropertyValue::Price(price(mantissa)),
+                PayloadPropertyValue::Exponent(-8),
+                PayloadPropertyValue::Confidence(price(mantissa / 10)),
+                PayloadPropertyValue::FeedUpdateTimestamp(Some(TimestampUs(feed_ts))),
+            ],
+        );
+        let update = PythPriceUpdate { message, ..update };
+        let preview = preview_pyth_lazer_oracle(&update, &OracleSource::PythLazer).unwrap();
+        assert_eq!(preview.confidence, 10_000_000);
+
+        // no properties beyond price: the 20bps floor stands
+        let message = lazer_message(
+            5,
+            vec![
+                PayloadPropertyValue::Price(price(mantissa)),
+                PayloadPropertyValue::Exponent(-8),
+                PayloadPropertyValue::FeedUpdateTimestamp(Some(TimestampUs(feed_ts))),
+            ],
+        );
+        let update = PythPriceUpdate { message, ..update };
+        let preview = preview_pyth_lazer_oracle(&update, &OracleSource::PythLazer).unwrap();
+        assert_eq!(preview.confidence, 200_000);
+
+        // a message without the update's feed does not preview
+        let message = lazer_message(
+            6,
+            vec![
+                PayloadPropertyValue::Price(price(mantissa)),
+                PayloadPropertyValue::Exponent(-8),
+            ],
+        );
+        let update = PythPriceUpdate { message, ..update };
+        assert!(preview_pyth_lazer_oracle(&update, &OracleSource::PythLazer).is_none());
+    }
 
     #[test]
     fn pending_txs_confirm_consumes_entry() {
@@ -850,27 +1097,90 @@ mod tests {
         // `auction_duration` is a u8 (<=255), so the placement deadline
         // (order_slot + auction_duration) always binds before the 500-slot signed-message
         // window. The order is unplaceable one slot past the deadline, well before slot 500.
-        assert!(!swift_placement_expired(0, 255, 0, 255, 0));
-        assert!(swift_placement_expired(0, 255, 0, 256, 0));
+        assert!(!swift_placement_expired(
+            0,
+            255,
+            0,
+            255,
+            0,
+            SlotClock::baseline()
+        ));
+        assert!(swift_placement_expired(
+            0,
+            255,
+            0,
+            256,
+            0,
+            SlotClock::baseline()
+        ));
     }
 
     #[test]
     fn swift_expiry_placement_deadline() {
         // max_slot = order_slot + auction_duration = 130. Program rejects once max_slot < slot.
-        assert!(!swift_placement_expired(100, 30, 0, 130, 0)); // exactly at deadline: still placeable
-        assert!(swift_placement_expired(100, 30, 0, 131, 0)); // one past: gone
-                                                              // Zero auction duration (limit order default): only placeable in the signing slot.
-        assert!(!swift_placement_expired(100, 0, 0, 100, 0));
-        assert!(swift_placement_expired(100, 0, 0, 101, 0));
+        assert!(!swift_placement_expired(
+            100,
+            30,
+            0,
+            130,
+            0,
+            SlotClock::baseline()
+        )); // exactly at deadline: still placeable
+        assert!(swift_placement_expired(
+            100,
+            30,
+            0,
+            131,
+            0,
+            SlotClock::baseline()
+        )); // one past: gone
+            // Zero auction duration (limit order default): only placeable in the signing slot.
+        assert!(!swift_placement_expired(
+            100,
+            0,
+            0,
+            100,
+            0,
+            SlotClock::baseline()
+        ));
+        assert!(swift_placement_expired(
+            100,
+            0,
+            0,
+            101,
+            0,
+            SlotClock::baseline()
+        ));
     }
 
     #[test]
     fn swift_expiry_max_ts() {
         // max_ts == 0 disables the ts check.
-        assert!(!swift_placement_expired(100, 200, 0, 100, i64::MAX));
+        assert!(!swift_placement_expired(
+            100,
+            200,
+            0,
+            100,
+            i64::MAX,
+            SlotClock::baseline()
+        ));
         // now == max_ts is still valid; now > max_ts expires.
-        assert!(!swift_placement_expired(100, 200, 5_000, 100, 5_000));
-        assert!(swift_placement_expired(100, 200, 5_000, 100, 5_001));
+        assert!(!swift_placement_expired(
+            100,
+            200,
+            5_000,
+            100,
+            5_000,
+            SlotClock::baseline()
+        ));
+        assert!(swift_placement_expired(
+            100,
+            200,
+            5_000,
+            100,
+            5_001,
+            SlotClock::baseline()
+        ));
     }
 
     #[test]

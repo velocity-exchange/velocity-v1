@@ -1,7 +1,10 @@
 use {
     crate::{
         error::{ErrorCode, VelocityResult},
-        math::safe_unwrap::SafeUnwrap,
+        math::{
+            safe_unwrap::SafeUnwrap,
+            time::{Millis, SlotClock},
+        },
         msg,
         state::traits::Size,
         validate, ID,
@@ -20,7 +23,9 @@ use {
 
 pub const SIGNED_MSG_PDA_SEED: &str = "SIGNED_MSG";
 pub const SIGNED_MSG_WS_PDA_SEED: &str = "SIGNED_MSG_WS";
-pub const SIGNED_MSG_SLOT_EVICTION_BUFFER: u64 = 10;
+/// Grace past `max_slot` before a signed-msg order id is prunable (~4s),
+/// expressed in actual slots at the read site.
+pub const SIGNED_MSG_EVICTION_BUFFER: Millis = Millis::from_ms(4_000);
 
 mod tests;
 
@@ -137,18 +142,16 @@ impl<'a> SignedMsgUserOrdersZeroCopyMut<'a> {
         &mut self,
         signed_msg_order_id: SignedMsgOrderId,
         current_slot: u64,
+        slot_clock: SlotClock,
     ) -> bool {
         let mut uuid_exists = false;
         for i in 0..self.len() {
             let existing_signed_msg_order_id = self.get_mut(i);
-            if existing_signed_msg_order_id.uuid == signed_msg_order_id.uuid
-                && existing_signed_msg_order_id.max_slot + SIGNED_MSG_SLOT_EVICTION_BUFFER
-                    >= current_slot
-            {
+            let expired = slot_clock.elapsed(existing_signed_msg_order_id.max_slot, current_slot)
+                > SIGNED_MSG_EVICTION_BUFFER;
+            if existing_signed_msg_order_id.uuid == signed_msg_order_id.uuid && !expired {
                 uuid_exists = true;
-            } else if existing_signed_msg_order_id.max_slot + SIGNED_MSG_SLOT_EVICTION_BUFFER
-                < current_slot
-            {
+            } else if expired {
                 existing_signed_msg_order_id.uuid = [0; 8];
                 existing_signed_msg_order_id.max_slot = 0;
                 existing_signed_msg_order_id.order_id = 0;

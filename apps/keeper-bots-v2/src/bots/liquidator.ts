@@ -25,6 +25,7 @@ import {
 	calculateClaimablePnl,
 	isOperationPaused,
 	PerpOperation,
+	standardizeBaseAssetAmount,
 } from '@velocity-exchange/sdk';
 
 import { PrometheusExporter } from '@opentelemetry/exporter-prometheus';
@@ -68,6 +69,7 @@ import { LiquidatorDerisk } from './liquidatorDerisk';
 const errorCodesToSuppress = [
 	6004, // Error Number: 6004. Error Message: Sufficient collateral.
 	6010, // Error Number: 6010. Error Message: User Has No Position In Market.
+	6122, // Error Number: 6122. Error Message: Invalid Base Asset Amount For Liquidate Perp.
 ];
 
 const LIQUIDATE_THROTTLE_BACKOFF = 5000; // the time to wait before trying to liquidate a throttled user again
@@ -219,8 +221,8 @@ export class LiquidatorBot implements Bot {
 			this.liquidatorConfig.maxSlippageBps =
 				this.liquidatorConfig.maxSlippagePct!;
 		}
-		if (this.liquidatorConfig.deriskAuctionDurationSlots === undefined) {
-			this.liquidatorConfig.deriskAuctionDurationSlots = 100;
+		if (this.liquidatorConfig.deriskAuctionDurationMs === undefined) {
+			this.liquidatorConfig.deriskAuctionDurationMs = 40_000;
 		}
 
 		if (this.liquidatorConfig.spotDustValueThreshold !== undefined) {
@@ -549,19 +551,22 @@ export class LiquidatorBot implements Bot {
 
 	/**
 	 * Deposits idle wallet token balances into liquidation subaccounts that
-	 * have no free collateral. A liquidator with zero free collateral sizes
-	 * every liquidation at zero (maxPositionTakeoverPctOfCollateral of 0 is 0)
-	 * and each attempt fails on-chain with InvalidLiquidation, so funds left
-	 * sitting in the authority wallet are dead weight. For each subaccount with
-	 * no free collateral, sweep the wallet's full ATA balance of every spot
-	 * market mapped to it. Disable with `disableAutoDeposit`.
+	 * cannot size a liquidation. A subaccount needs enough free collateral to
+	 * buy one step of the perp markets it liquidates. Below that amount it
+	 * sizes every liquidation under the step size, and the bot skips it. A
+	 * small balance is as unusable as no balance, because the subaccount never
+	 * fills a liquidation and never grows the balance. For each such
+	 * subaccount, sweep the wallet's full ATA balance of every spot market
+	 * mapped to it. Disable with `disableAutoDeposit`.
 	 */
 	private async autoDepositIdleWalletFunds(): Promise<void> {
 		for (const subAccountId of this.allSubaccounts) {
 			const freeCollateral = this.velocityClient
 				.getUser(subAccountId)
 				.getFreeCollateral('Initial');
-			if (freeCollateral.gt(ZERO)) {
+			if (
+				freeCollateral.gt(this.minFreeCollateralForSubAccount(subAccountId))
+			) {
 				continue;
 			}
 
@@ -614,7 +619,7 @@ export class LiquidatorBot implements Bot {
 					);
 					const msg = `[${
 						this.name
-					}]: subaccount ${subAccountId} has no free collateral, auto-deposited wallet balance ${walletBalance.toString()} into spot market ${marketIndex}. tx: ${txSig}`;
+					}]: subaccount ${subAccountId} cannot size a liquidation, auto-deposited wallet balance ${walletBalance.toString()} into spot market ${marketIndex}. tx: ${txSig}`;
 					logger.info(msg);
 					webhookMessage(msg);
 				} catch (e) {
@@ -738,11 +743,26 @@ export class LiquidatorBot implements Bot {
 		}
 	}
 
+	/**
+	 * Sizes the perp liquidation for one endangered position.
+	 *
+	 * The program rounds the amount down to the market step size. It then
+	 * refuses a zero amount with InvalidBaseAssetAmountForLiquidatePerp. This
+	 * function standardizes the size for the same step. A size below one step
+	 * becomes zero, and the caller skips a transaction that must fail.
+	 */
 	private calculateBaseAmountToLiquidate(liquidateePosition: PerpPosition): BN {
 		const liquidatorUser = this.getLiquidatorUserForPerpMarket(
 			liquidateePosition.marketIndex
 		);
 		if (!liquidatorUser) {
+			return ZERO;
+		}
+
+		const perpMarket = this.velocityClient.getPerpMarketAccount(
+			liquidateePosition.marketIndex
+		);
+		if (!perpMarket) {
 			return ZERO;
 		}
 
@@ -760,13 +780,47 @@ export class LiquidatorBot implements Bot {
 				.mul(this.maxPositionTakeoverPctOfCollateralDenom)
 		);
 
-		if (
-			baseAssetAmountToLiquidate.gt(liquidateePosition.baseAssetAmount.abs())
-		) {
-			return liquidateePosition.baseAssetAmount.abs();
-		} else {
-			return baseAssetAmountToLiquidate;
+		const liquidateeBaseAssetAmount = liquidateePosition.baseAssetAmount.abs();
+		return standardizeBaseAssetAmount(
+			BN.min(baseAssetAmountToLiquidate, liquidateeBaseAssetAmount),
+			perpMarket.orderStepSize
+		);
+	}
+
+	/**
+	 * The free collateral that a subaccount needs to size one liquidation. The
+	 * value is the step notional of the largest perp market that it
+	 * liquidates. The bot spends at most maxPositionTakeoverPctOfCollateral of
+	 * free collateral per liquidation. The notional is divided by that
+	 * fraction.
+	 */
+	private minFreeCollateralForSubAccount(subAccountId: number): BN {
+		if (this.maxPositionTakeoverPctOfCollateralNum.lte(ZERO)) {
+			return ZERO;
 		}
+
+		let minFreeCollateral = ZERO;
+		for (const [
+			marketIndex,
+			mappedSubAccount,
+		] of this.perpMarketToSubAccount.entries()) {
+			if (mappedSubAccount !== subAccountId) {
+				continue;
+			}
+			const perpMarket = this.velocityClient.getPerpMarketAccount(marketIndex);
+			if (!perpMarket) {
+				continue;
+			}
+			const oraclePrice =
+				this.velocityClient.getOracleDataForPerpMarket(marketIndex).price;
+			const stepNotional = perpMarket.orderStepSize
+				.mul(oraclePrice)
+				.mul(this.maxPositionTakeoverPctOfCollateralDenom)
+				.div(BASE_PRECISION)
+				.div(this.maxPositionTakeoverPctOfCollateralNum);
+			minFreeCollateral = BN.max(minFreeCollateral, stepNotional);
+		}
+		return minFreeCollateral;
 	}
 
 	/**
@@ -1796,6 +1850,14 @@ export class LiquidatorBot implements Bot {
 						if (sent) {
 							liquidatePerpSent++;
 						}
+					} else if (!liquidateePosition.baseAssetAmount.isZero()) {
+						// The size is below the market step size. The program
+						// rejects such a size. Throttle the user until the
+						// liquidator subaccount holds more collateral.
+						logger.warn(
+							`[${this.name}]: subaccount ${subAccountToLiqPerp} cannot size a liquidation of ${userKey} on perp market ${liquidateePosition.marketIndex} above the step size`
+						);
+						this.throttledUsers.set(userKey, Date.now());
 					}
 				}
 

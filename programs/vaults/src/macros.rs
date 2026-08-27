@@ -54,6 +54,7 @@ macro_rules! refresh_velocity_spot_market {
             $crate::velocity_cpi::spot_markets_that_price_equity(
                 &vault,
                 &user,
+                &$ctx.accounts.velocity_state.to_account_info(),
                 $ctx.remaining_accounts,
                 anchor_lang::prelude::Clock::get()?.slot,
             )?

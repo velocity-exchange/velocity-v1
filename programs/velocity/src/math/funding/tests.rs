@@ -1,3 +1,4 @@
+use crate::math::time::SlotClock;
 // use crate::create_anchor_account_info;
 use {
     crate::{
@@ -11,6 +12,7 @@ use {
             funding::*,
             helpers::on_the_hour_update,
             oracle::{block_operation, OracleValidity},
+            time::legacy_slot_duration_i64,
         },
         state::{
             oracle::{HistoricalOracleData, MMOraclePriceData},
@@ -325,8 +327,8 @@ fn max_funding_rates() {
     let state = State {
         oracle_guard_rails: OracleGuardRails {
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,     // 5s
-                slots_before_stale_for_margin: 120, // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },
@@ -344,7 +346,8 @@ fn max_funding_rates() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+    let mut oracle_map =
+        OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
     let mut market = PerpMarket {
         market_index: 0,
         amm: AMM {
@@ -431,8 +434,8 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
     let state = State {
         oracle_guard_rails: OracleGuardRails {
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,     // 5s
-                slots_before_stale_for_margin: 120, // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },
@@ -454,7 +457,8 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+    let mut oracle_map =
+        OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
     let market = PerpMarket {
         market_index: 0,
@@ -491,12 +495,18 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
 
     let oracle_price_data = *oracle_map.get_price_data(&market.oracle_id()).unwrap();
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            SlotClock::baseline(),
+        )
         .unwrap();
     let validity = crate::vlp::amm::refresh::compute_amm_refresh_validity(
         &market,
         &mm_oracle_price_data,
         &state,
+        slot,
     )
     .unwrap();
     assert_eq!(validity, Some(OracleValidity::TooVolatile));
@@ -508,6 +518,7 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
         &state.oracle_guard_rails,
         reserve_price,
         slot,
+        SlotClock::baseline(),
     )
     .unwrap());
 
@@ -515,7 +526,13 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
     // very same oracle now passes the very same gate.
     let mut unfixed = market;
     unfixed
-        .update_oracle_derived_stats(&mm_oracle_price_data, validity, now, slot)
+        .update_oracle_derived_stats(
+            &mm_oracle_price_data,
+            validity,
+            now,
+            slot,
+            SlotClock::baseline(),
+        )
         .unwrap();
     assert_eq!(
         unfixed
@@ -531,6 +548,7 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
             &state.oracle_guard_rails,
             unfixed.amm.reserve_price().unwrap(),
             slot,
+            SlotClock::baseline(),
         )
         .unwrap(),
         "the pre-fix ordering is expected to clear its own gate — if this trips, \
@@ -541,7 +559,7 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
     // too-volatile oracle stays blocked.
     let mut fixed = market;
     fixed
-        .refresh_amm_quote_state(&mm_oracle_price_data, validity, slot)
+        .refresh_amm_quote_state(&mm_oracle_price_data, validity, slot, SlotClock::baseline())
         .unwrap();
     let historical = fixed.market_stats.historical_oracle_data;
     assert_eq!(
@@ -559,6 +577,7 @@ fn funding_gate_not_cleared_by_own_twap_refresh() {
         &state.oracle_guard_rails,
         fixed.amm.reserve_price().unwrap(),
         slot,
+        SlotClock::baseline(),
     )
     .unwrap());
     // ...and it still performed its own half: `last_oracle_valid` is stamped
@@ -574,8 +593,8 @@ fn unsettled_funding_pnl() {
     let state = State {
         oracle_guard_rails: OracleGuardRails {
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,     // 5s
-                slots_before_stale_for_margin: 120, // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },
@@ -593,7 +612,8 @@ fn unsettled_funding_pnl() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+    let mut oracle_map =
+        OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
     let mut market = PerpMarket {
         market_index: 0,
         amm: AMM {
@@ -660,6 +680,7 @@ fn unsettled_funding_pnl() {
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
         slot,
+        SlotClock::baseline(),
     )
     .unwrap();
     assert_eq!(block_funding_rate_update, true);
@@ -687,6 +708,7 @@ fn unsettled_funding_pnl() {
         &state.oracle_guard_rails,
         market.amm.reserve_price().unwrap(),
         slot,
+        SlotClock::baseline(),
     )
     .unwrap();
     assert_eq!(block_funding_rate_update, false);
@@ -1048,8 +1070,8 @@ fn funding_after_a_long_mark_twap_gap_charges_the_offset_alone() {
     let state = State {
         oracle_guard_rails: OracleGuardRails {
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,
-                slots_before_stale_for_margin: 120,
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10),
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120),
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },
@@ -1110,7 +1132,8 @@ fn funding_after_a_long_mark_twap_gap_charges_the_offset_alone() {
     let amm_quote = market.amm.reserve_price().unwrap();
     assert_ne!(amm_quote, PRICE_PRECISION_U64);
 
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+    let mut oracle_map =
+        OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
     assert!(update_funding_rate(
         0,
         &mut market,
@@ -1123,7 +1146,8 @@ fn funding_after_a_long_mark_twap_gap_charges_the_offset_alone() {
     )
     .unwrap());
 
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+    let mut oracle_map =
+        OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
     assert!(update_funding_rate(
         0,
         &mut control,

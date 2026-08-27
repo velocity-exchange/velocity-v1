@@ -95,6 +95,33 @@ import { calculateAmmReservesAfterSwap, getSwapDirection } from './math/amm';
 import { JupiterClient, JupiterSwapQuote } from './jupiter/jupiterClient';
 import { SwapMode } from './swap/UnifiedSwapClient';
 
+/**
+ * The IBRL feature gate whose activation drops the slot to each target duration.
+ * `syncStateSlotDuration` passes the matching account so the program can read
+ * its activation slot, derive the effective slot from the cluster
+ * `EpochSchedule` (first slot of the epoch after the activation epoch,
+ * mirroring Agave), and record it in `State.slotDurationTransitionSlots`.
+ * Mirrors `ibrl_feature_gate` in the program.
+ */
+const IBRL_FEATURE_GATES: Record<number, PublicKey> = {
+	350: new PublicKey('iBRL5RuWhw4yqaAZu96RUULHckHTZAoe2b77qaV38JZ'),
+	300: new PublicKey('iBRLL3k18HST852F1Mf3Lv83waTNQmmqvKDxvYGwQFL'),
+	250: new PublicKey('iBRLMc81UjRa8fn8A6eE8bJTnRbgQoPTynM51akENCV'),
+	200: new PublicKey('iBRLjhJnkmDZgNoZRDMW11d8ZV7HvsL3vAyRjZB5npW'),
+};
+
+/**
+ * The IBRL feature-gate account whose activation drops the slot to
+ * `slotDurationMs`, or `undefined` for the 400ms baseline / a non-schedule
+ * value. Mirrors `ibrl_feature_gate` in the program; exposed so tooling can read
+ * the account's activation slot and preview the effective (switch) slot.
+ */
+export function getIbrlFeatureGate(
+	slotDurationMs: number
+): PublicKey | undefined {
+	return IBRL_FEATURE_GATES[slotDurationMs];
+}
+
 export class AdminClient extends VelocityClient {
 	/**
 	 * Creates the protocol's singleton `State` account (one-time setup). Fails client-side
@@ -1378,12 +1405,18 @@ export class AdminClient extends VelocityClient {
 	): Promise<TransactionInstruction> {
 		const perpMarket = this.getPerpMarketAccountOrThrow(perpMarketIndex);
 
+		// live chain slot so the target-price trade sizes against the AMM's
+		// current-slot spread smoothing / MM-oracle validity across a gate switch
+		const currentSlot = await this.connection.getSlot();
 		const [direction, tradeSize, _] = calculateTargetPriceTrade(
 			perpMarket,
 			targetPrice,
 			new BN(1000),
 			'quote',
-			this.getMMOracleDataForPerpMarket(perpMarketIndex)
+			this.getMMOracleDataForPerpMarket(perpMarketIndex, currentSlot),
+			true,
+			new BN(currentSlot),
+			this.getStateAccount()
 		);
 
 		const [newQuoteAssetAmount, newBaseAssetAmount] =
@@ -2505,13 +2538,16 @@ export class AdminClient extends VelocityClient {
 	 * @returns The unsigned `updatePerpFeeStructure` instruction.
 	 */
 	public async getUpdatePerpFeeStructureIx(
-		feeStructure: FeeStructure
+		feeStructure: FeeStructure,
+		admin?: PublicKey
 	): Promise<TransactionInstruction> {
 		return this.program.instruction.updatePerpFeeStructure(feeStructure, {
 			accounts: {
-				admin: this.isSubscribed
-					? this.getStateAccount().coldAdmin
-					: this.wallet.publicKey,
+				admin:
+					admin ??
+					(this.isSubscribed
+						? this.getStateAccount().coldAdmin
+						: this.wallet.publicKey),
 				state: await this.getStatePublicKey(),
 			},
 		});
@@ -2603,7 +2639,7 @@ export class AdminClient extends VelocityClient {
 	 * Sets how many slots it takes for a liquidation's max-closeable fraction to ramp
 	 * from `initialPctToLiquidate` up to 100% (see `updateInitialPctToLiquidate`).
 	 * Requires warm admin (`check_warm`).
-	 * @param liquidationDuration - Ramp duration, slots (comment in `calculate_max_pct_to_liquidate` notes ~150 slots ≈ 1 minute at 400ms/slot).
+	 * @param liquidationDuration - Ramp duration, stored in legacy 400ms units (decode with `millisFromStoredUnits`; ~150 ≈ 1 minute).
 	 * @returns Transaction signature.
 	 */
 	public async updateLiquidationDuration(
@@ -2767,6 +2803,55 @@ export class AdminClient extends VelocityClient {
 				},
 			}
 		);
+	}
+
+	/**
+	 * Synchronizes one IBRL slot duration transition (400 -> 350 -> 300 -> 250 ->
+	 * 200) from its feature gate account. Permissionless: any signer may crank it;
+	 * the program validates the feature account (key, owner, activation) and
+	 * derives the effective slot from the cluster `EpochSchedule` itself, then
+	 * records it in `State.slotDurationTransitionSlots`. Idempotent per gate.
+	 * @param slotDurationMs - Target slot duration in milliseconds (selects the gate).
+	 * @returns Transaction signature.
+	 */
+	public async syncStateSlotDuration(
+		slotDurationMs: number
+	): Promise<TransactionSignature> {
+		const syncStateSlotDurationIx = await this.getSyncStateSlotDurationIx(
+			slotDurationMs
+		);
+
+		const tx = await this.buildTransaction(syncStateSlotDurationIx);
+
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+
+		return txSig;
+	}
+
+	/**
+	 * Builds the `syncStateSlotDuration` instruction without sending it. See
+	 * `syncStateSlotDuration`. Passes the IBRL feature gate account for the
+	 * target duration; the program verifies it is activated and derives the
+	 * effective slot from the `EpochSchedule` sysvar.
+	 * @returns The unsigned `syncStateSlotDuration` instruction.
+	 */
+	public async getSyncStateSlotDurationIx(
+		slotDurationMs: number
+	): Promise<TransactionInstruction> {
+		const featureGate = IBRL_FEATURE_GATES[slotDurationMs];
+		if (!featureGate) {
+			throw new Error(
+				`no IBRL feature gate for slotDurationMs=${slotDurationMs}; expected one of ${Object.keys(
+					IBRL_FEATURE_GATES
+				).join(', ')}`
+			);
+		}
+		return await this.program.instruction.syncStateSlotDuration({
+			accounts: {
+				state: await this.getStatePublicKey(),
+				featureGate,
+			},
+		});
 	}
 
 	/**
@@ -4549,7 +4634,8 @@ export class AdminClient extends VelocityClient {
 	 * Sets the protocol-wide default minimum perp-order auction duration
 	 * (`state.minPerpAuctionDuration`) — orders placed without an explicit longer
 	 * auction fall back to this floor. Requires warm admin (`check_warm`).
-	 * @param minDuration - Minimum auction duration, slots.
+	 * @param minDuration - Minimum auction duration in legacy 400ms units
+	 * (for example, 10 means 4 seconds).
 	 * @returns Transaction signature.
 	 */
 	public async updatePerpAuctionDuration(
@@ -4589,7 +4675,7 @@ export class AdminClient extends VelocityClient {
 	/**
 	 * Sets the protocol-wide default spot-order auction duration
 	 * (`state.defaultSpotAuctionDuration`). Requires warm admin (`check_warm`).
-	 * @param defaultAuctionDuration - Default auction duration, slots.
+	 * @param defaultAuctionDuration - Default auction duration in fixed 400ms units.
 	 * @returns Transaction signature.
 	 */
 	public async updateSpotAuctionDuration(
@@ -5115,6 +5201,41 @@ export class AdminClient extends VelocityClient {
 				state: await this.getStatePublicKey(),
 			},
 		});
+	}
+
+	/** Permanently grants or explicitly revokes one authority's Accelerated referral status. Requires warm or cold admin. */
+	public async updateUserAcceleratedReferralStatus(
+		userAuthority: PublicKey,
+		accelerated: boolean
+	): Promise<TransactionSignature> {
+		const ix = await this.getUpdateUserAcceleratedReferralStatusIx(
+			userAuthority,
+			accelerated
+		);
+		const tx = await this.buildTransaction(ix);
+		const { txSig } = await this.sendTransaction(tx, [], this.opts);
+		return txSig;
+	}
+
+	/** Builds `updateUserAcceleratedReferralStatus` without sending it. */
+	public async getUpdateUserAcceleratedReferralStatusIx(
+		userAuthority: PublicKey,
+		accelerated: boolean,
+		admin: PublicKey = this.wallet.publicKey
+	): Promise<TransactionInstruction> {
+		return await this.program.instruction.updateUserAcceleratedReferralStatus(
+			accelerated,
+			{
+				accounts: {
+					admin,
+					state: await this.getStatePublicKey(),
+					userStats: getUserStatsAccountPublicKey(
+						this.program.programId,
+						userAuthority
+					),
+				},
+			}
+		);
 	}
 
 	/**

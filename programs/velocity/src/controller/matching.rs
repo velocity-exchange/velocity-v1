@@ -242,6 +242,7 @@ mod tests {
     use {
         super::*,
         crate::{
+            math::time::SlotClock,
             state::{
                 oracle::OraclePriceData,
                 perp_market::MarketStats,
@@ -268,6 +269,7 @@ mod tests {
             tick,
             step_size: 1,
             slot: 0,
+            slot_clock: SlotClock::baseline(),
             base_precision: 1,
             market_status: crate::state::market_status::MarketStatus::default(),
             market_config: 0,

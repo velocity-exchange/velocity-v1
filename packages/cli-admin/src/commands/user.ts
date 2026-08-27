@@ -12,13 +12,65 @@ import {
 function fmtQuote(value: BN): string {
 	return (Number(value.toString()) / 1e6).toFixed(2);
 }
-import { readGlobalOpts, withGlobalOptions } from '../lib/options';
+import {
+	parseBoolean,
+	readGlobalOpts,
+	withGlobalOptions,
+} from '../lib/options';
 import { buildAdminClient, buildProvider } from '../lib/provider';
-import { reportDispatch, reportDryRun, sendOrPropose } from '../lib/squads';
+import {
+	reportDispatch,
+	reportDryRun,
+	resolveAdminAuthority,
+	sendOrPropose,
+} from '../lib/squads';
 import { deriveAssociatedTokenAccount, resolveAuthority } from '../lib/userOps';
 
 export function registerUser(parent: Command): void {
 	const user = parent.command('user').description('Per-user admin actions.');
+
+	withGlobalOptions(
+		user
+			.command('set-accelerated-referral <authority> <accelerated>')
+			.description(
+				'Grant or revoke permanent Accelerated referral status for one authority. Warm or cold admin. <accelerated> is true or false.'
+			)
+	).action(
+		async (
+			authorityArg: string,
+			acceleratedArg: string,
+			_flags,
+			cmd: Command
+		) => {
+			const authority = new PublicKey(authorityArg);
+			const accelerated = parseBoolean(acceleratedArg, 'accelerated');
+			const opts = readGlobalOpts(cmd);
+			const provider = buildProvider(opts);
+			const client = await buildAdminClient(opts);
+			try {
+				const multisigPda = opts.multisig
+					? new PublicKey(opts.multisig)
+					: undefined;
+				const ix = await client.getUpdateUserAcceleratedReferralStatusIx(
+					authority,
+					accelerated,
+					resolveAdminAuthority(provider, multisigPda)
+				);
+				const result = await sendOrPropose(
+					provider,
+					[ix],
+					multisigPda,
+					'velocity-admin user set-accelerated-referral'
+				);
+				reportDispatch(
+					`Accelerated referral ${authority.toBase58()} = ${accelerated}`,
+					result
+				);
+			} finally {
+				await client.unsubscribe();
+			}
+		}
+	);
 
 	withGlobalOptions(
 		user

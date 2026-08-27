@@ -8590,7 +8590,10 @@ export type Velocity = {
           }
         },
         {
-          "name": "oracle"
+          "name": "oracle",
+          "relations": [
+            "perpMarket"
+          ]
         }
       ],
       "args": [
@@ -11215,6 +11218,55 @@ export type Velocity = {
       ]
     },
     {
+      "name": "syncStateSlotDuration",
+      "discriminator": [
+        144,
+        123,
+        176,
+        126,
+        81,
+        180,
+        87,
+        131
+      ],
+      "accounts": [
+        {
+          "name": "state",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  101,
+                  108,
+                  111,
+                  99,
+                  105,
+                  116,
+                  121,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "featureGate",
+          "docs": [
+            "serialized activation state is validated by the handler."
+          ]
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "syncTriggerConditions",
       "docs": [
         "Rewrite only the trigger half of a user's condition block. Prefer",
@@ -13809,7 +13861,10 @@ export type Velocity = {
           }
         },
         {
-          "name": "oracle"
+          "name": "oracle",
+          "relations": [
+            "perpMarket"
+          ]
         }
       ],
       "args": [
@@ -16866,6 +16921,38 @@ export type Velocity = {
       ]
     },
     {
+      "name": "updateUserAcceleratedReferralStatus",
+      "discriminator": [
+        109,
+        217,
+        221,
+        89,
+        216,
+        127,
+        12,
+        120
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true
+        },
+        {
+          "name": "state"
+        },
+        {
+          "name": "userStats",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "accelerated",
+          "type": "bool"
+        }
+      ]
+    },
+    {
       "name": "updateUserAllowDelegateTransfer",
       "discriminator": [
         235,
@@ -17136,6 +17223,38 @@ export type Velocity = {
         {
           "name": "authority",
           "signer": true
+        },
+        {
+          "name": "state",
+          "docs": [
+            "Read only for the live slot duration. The seed constraint both locks",
+            "the account to the singleton `State` and lets clients resolve it from",
+            "the IDL, so callers that built this instruction before the account",
+            "existed keep working."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  101,
+                  108,
+                  111,
+                  99,
+                  105,
+                  116,
+                  121,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -17286,6 +17405,38 @@ export type Velocity = {
         {
           "name": "authority",
           "signer": true
+        },
+        {
+          "name": "state",
+          "docs": [
+            "Read only for the live slot duration. The seed constraint both locks",
+            "the account to the singleton `State` and lets clients resolve it from",
+            "the IDL, so callers that built this instruction before the account",
+            "existed keep working."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  118,
+                  101,
+                  108,
+                  111,
+                  99,
+                  105,
+                  116,
+                  121,
+                  95,
+                  115,
+                  116,
+                  97,
+                  116,
+                  101
+                ]
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -19133,6 +19284,19 @@ export type Velocity = {
     }
   ],
   "events": [
+    {
+      "name": "acceleratedReferralStatusChangedRecord",
+      "discriminator": [
+        95,
+        227,
+        167,
+        93,
+        152,
+        42,
+        2,
+        91
+      ]
+    },
     {
       "name": "ammCurveChanged",
       "discriminator": [
@@ -21827,6 +21991,63 @@ export type Velocity = {
       }
     },
     {
+      "name": "acceleratedReferralStatusChange",
+      "docs": [
+        "Consumers decode `action` by discriminant, so the order is ABI. `AutoEnrollment` is last",
+        "because it is deleted with `ACCELERATED_REFERRAL_ENROLLMENT_ENABLED`; removing a trailing",
+        "variant leaves the admin discriminants where they are."
+      ],
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "adminGrant"
+          },
+          {
+            "name": "adminRevoke"
+          },
+          {
+            "name": "autoEnrollment"
+          }
+        ]
+      }
+    },
+    {
+      "name": "acceleratedReferralStatusChangedRecord",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ts",
+            "docs": [
+              "unix_timestamp of action"
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "previousStatus",
+            "type": "u8"
+          },
+          {
+            "name": "newStatus",
+            "type": "u8"
+          },
+          {
+            "name": "action",
+            "type": {
+              "defined": {
+                "name": "acceleratedReferralStatusChange"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
       "name": "addAmmConstituentMappingDatum",
       "type": {
         "kind": "struct",
@@ -22613,7 +22834,8 @@ export type Velocity = {
           {
             "name": "oracleStalenessThreshold",
             "docs": [
-              "Delay allowed for valid AUM calculation"
+              "Delay allowed for valid AUM calculation, encoded in historical 400ms",
+              "slot quanta while remaining a one-word onchain field."
             ],
             "type": "u64"
           },
@@ -24636,10 +24858,21 @@ export type Velocity = {
           },
           {
             "name": "targetOracleDelayFeeBpsPer10Slots",
+            "docs": [
+              "Bps of fee charged per 10 whole 400ms periods of oracle delay past the",
+              "staleness threshold, so one step is 4 seconds of wall clock. The `_slots`",
+              "suffix is the historical name from when a slot was 400ms; `step_fee`",
+              "receives period counts, so the rate no longer scales with slot time.",
+              "Renaming the field would change the IDL, so the unit lives here."
+            ],
             "type": "u8"
           },
           {
             "name": "targetPositionDelayFeeBpsPer10Slots",
+            "docs": [
+              "Bps of fee charged per 10 whole 400ms periods of position delay past the",
+              "staleness threshold. Same units as the oracle sibling above."
+            ],
             "type": "u8"
           },
           {
@@ -25962,14 +26195,18 @@ export type Velocity = {
           {
             "name": "auctionDuration",
             "docs": [
-              "How many slots the auction lasts"
+              "Auction length in wall clock 400ms units (one slot at the 400ms",
+              "baseline, where the raw value is identical to the historical slot",
+              "count). Progress compares `SlotClock::elapsed` against this value's",
+              "wall clock length, so the ramp holds at every slot duration and the",
+              "u8 keeps the full historical 72s range."
             ],
             "type": "u8"
           },
           {
             "name": "postedSlotTail",
             "docs": [
-              "Last 8 bits of the slot the order was posted on-chain (not order slot for signed msg orders)"
+              "Last 8 bits of the slot the order was posted onchain (not order slot for signed msg orders)"
             ],
             "type": "u8"
           },
@@ -27336,10 +27573,10 @@ export type Velocity = {
           {
             "name": "oracleSlotDelayOverride",
             "docs": [
-              "Max oracle delay, in slots, tolerated by immediate (JIT / auction-skipping)",
+              "Max oracle delay (legacy 400ms units) tolerated by immediate (JIT / auction-skipping)",
               "AMM fills. Positive is an explicit threshold. `0` disables immediate AMM",
               "fills entirely. Negative (the init default, `-1`) means unset, which",
-              "resolves by price source: `MM_ORACLE_MIN_SLOT_GAP` for an MM-oracle-sourced",
+              "resolves by price source: `MM_ORACLE_MIN_WRITE_GAP` for an MM-oracle-sourced",
               "price (the tightest window the crank can satisfy, since the program refuses",
               "MM-oracle writes closer together than that) and `0` for an exchange-oracle",
               "price, which can be same-slot fresh. See `math::oracle::oracle_validity`."
@@ -27349,8 +27586,8 @@ export type Velocity = {
           {
             "name": "oracleLowRiskSlotDelayOverride",
             "docs": [
-              "the override for the state.min_perp_auction_duration",
-              "0 is no override, -1 is disable speed bump, 1-100 is literal speed bump"
+              "Low-risk oracle delay override (legacy 400ms units): 0 = unset (use the",
+              "guard rail), otherwise a literal threshold. See `math::time::DelayOverride`."
             ],
             "type": "i8"
           },
@@ -27452,9 +27689,24 @@ export type Velocity = {
               "the mandatory-baseline rule: a route can't exclude the public book.",
               "A dead entry (deactivated/unapproved) still has to be passed but is",
               "skipped at quote time, so killing the book never bricks fills.",
-              "`Pubkey::default()` = no CLOB requirement."
+              "`Pubkey::default()` = no CLOB requirement. Carved out of master's",
+              "reserved tail padding, so it keeps that account size."
             ],
             "type": "pubkey"
+          },
+          {
+            "name": "paddingFuture",
+            "docs": [
+              "Reserved for future fields (master's tail reservation, less the 32",
+              "bytes `clob_quoter` took). Existing accounts must be extended before",
+              "the program loads them with this layout."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                224
+              ]
+            }
           }
         ]
       }
@@ -29942,15 +30194,16 @@ export type Velocity = {
             }
           },
           {
-            "name": "spotFeePool",
+            "name": "paddingFormerSpotFeePool",
             "docs": [
-              "The fees collected from swaps between this market and the quote market",
-              "Is settled to the quote markets revenue pool"
+              "Reserved bytes from the retired spot fee pool. Spot swaps do not charge",
+              "a fee and the pool has never been used."
             ],
             "type": {
-              "defined": {
-                "name": "poolBalance"
-              }
+              "array": [
+                "u8",
+                32
+              ]
             }
           },
           {
@@ -30361,31 +30614,47 @@ export type Velocity = {
           {
             "name": "ifLastSettleVaultAmount",
             "docs": [
-              "Donation-proof accounted balance of the insurance-fund vault. It is moved",
-              "by the same signed delta as the real SPL vault on *every* instruction that",
-              "moves the vault, so it stays a faithful shadow of the vault minus raw",
-              "donations. Inflows grow it: staker deposits (`add_insurance_fund_stake`)",
-              "and settled revenue (`settle_revenue_to_insurance_fund`). Outflows/draws",
-              "shrink it (saturating at 0): staker withdrawals",
-              "(`remove_insurance_fund_stake`) and every IF draw that covers a loss —",
-              "`resolve_perp_pnl_deficit`, `resolve_perp_bankruptcy`,",
-              "`resolve_spot_bankruptcy`. The one movement deliberately *excluded* is a",
-              "raw SPL transfer straight into the vault: it runs no instruction, so it",
-              "never enters this balance — that is exactly the donation the shadow must",
-              "not see. Consumed by the per-period revenue-settle APR cap in",
-              "`settle_revenue_to_insurance_fund`, sized off `min(live_if_vault, this)`,",
-              "so a donation spiked into the live vault right before a settle cannot",
-              "inflate the cap while legitimate stakes and real settled revenue (which",
-              "this balance tracks) still do. (The unstake-cancel share forfeiture is",
-              "donation-proofed differently — by withdraw-and-restake at the active share",
-              "price — and does *not* read this field.) Repurposed from trailing padding —",
-              "layout/size unchanged; `0` means \"uninitialized\" (existing account",
-              "pre-upgrade, or an accounted balance legitimately drained to empty — an",
-              "empty IF vault has no user shares, so this is safe), and is seeded from the",
-              "live balance on the next add/settle and treated as \"fall back to live\" by",
-              "the consumers."
+              "Lowest insurance-fund vault balance since the end of the last revenue",
+              "settle. `settle_revenue_to_insurance_fund` starts each period by writing",
+              "the live vault balance plus the amount that settle transfers in, and",
+              "`record_insurance_fund_outflow` lowers it on every path that moves tokens",
+              "out of the vault: `remove_insurance_fund_stake`,",
+              "`resolve_perp_pnl_deficit`, `resolve_perp_bankruptcy`, and",
+              "`resolve_spot_bankruptcy`. A transfer into the vault never raises it, so",
+              "it lags the live vault by up to one `revenue_settle_period`.",
+              "",
+              "The per-period revenue-settle APR cap is sized off",
+              "`min(live_if_vault, this)`, so it counts only capital the fund held for",
+              "the whole period. A donation spiked into the live vault right before a",
+              "settle is absent from this field and cannot lift the cap. Tracking the",
+              "running minimum is what closes the same trick after a dip: a loss draw",
+              "takes the vault to 100, a donation puts it back to 1000, and a plain",
+              "end-of-period snapshot would read 1000 again. A donation that does",
+              "survive a full period counts, and correctly so — by then it belongs to",
+              "the stakers pro rata, so the fund really is that large.",
+              "",
+              "`0` means the market never settled revenue, or settled while the vault",
+              "was empty. Both give a cap base of `0` for one period and then self-heal,",
+              "because the settle that reads `0` still writes the new period's balance.",
+              "",
+              "(The unstake-cancel share forfeiture is donation-proofed differently — by",
+              "withdraw-and-restake at the active share price — and does *not* read this",
+              "field.) Repurposed from trailing padding — layout and size are unchanged."
             ],
             "type": "u64"
+          },
+          {
+            "name": "paddingFuture",
+            "docs": [
+              "Reserved for future fields. Existing accounts must be extended before",
+              "the program loads them with this layout."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                256
+              ]
+            }
           }
         ]
       }
@@ -30571,7 +30840,7 @@ export type Velocity = {
           {
             "name": "pauseAdmin",
             "docs": [
-              "Emergency-pause authority. No on-chain timelock — intended to live behind a",
+              "Emergency pause authority. No onchain timelock — intended to live behind a",
               "fast-acting multisig that can flip pause flags without delay. May only *add*",
               "pause bits (never clear them); cold/warm retain full pause + unpause power.",
               "`Pubkey::default()` means unassigned (only cold/warm can pause)."
@@ -30692,14 +30961,27 @@ export type Velocity = {
           },
           {
             "name": "minPerpAuctionDuration",
+            "docs": [
+              "Compact wall-clock duration encoded in historical 400ms slot quanta."
+            ],
             "type": "u8"
           },
           {
             "name": "defaultMarketOrderTimeInForce",
+            "docs": [
+              "Default time-in-force for market orders, in seconds. `Order.max_ts` is a",
+              "unix timestamp, so this never converts through the slot length and stays",
+              "a raw integer. It currently has no onchain reader."
+            ],
             "type": "u8"
           },
           {
             "name": "defaultSpotAuctionDuration",
+            "docs": [
+              "An actual slot-count setting, not a wall-clock duration. It currently has",
+              "no onchain reader (spot DLOB trading is disabled), so it intentionally",
+              "remains raw rather than using `StoredSlotDuration`."
+            ],
             "type": "u8"
           },
           {
@@ -30708,6 +30990,9 @@ export type Velocity = {
           },
           {
             "name": "liquidationDuration",
+            "docs": [
+              "Compact wall-clock duration encoded in historical 400ms slot quanta."
+            ],
             "type": "u8"
           },
           {
@@ -30791,6 +31076,68 @@ export type Velocity = {
             "type": "u8"
           },
           {
+            "name": "slotDurationMs",
+            "docs": [
+              "Legacy current slot duration field in milliseconds, kept coherent by",
+              "the permissionless sync as the IBRL feature gates activate",
+              "(400 -> 350 -> 300 -> 250 -> 200). `0` means unset (what pre upgrade",
+              "accounts read out of former padding) and is interpreted as the 400ms",
+              "baseline. Never read this field directly, use [`State::slot_clock`] /",
+              "[`State::slot_duration`]; once any `slot_duration_transition_slots`",
+              "entry is set the archive is authoritative over this field."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "pendingSlotDurationMs",
+            "docs": [
+              "Legacy staged next slot duration in ms, kept coherent by the",
+              "permissionless sync for older readers. `0` means nothing is staged. Once",
+              "`slot_duration_effective_slot` is reached, the legacy resolution returns",
+              "this value instead of `slot_duration_ms`. Superseded by the transition",
+              "archive."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "slotDurationPad",
+            "docs": [
+              "Explicit padding so `slot_duration_effective_slot` (u64) lands on its",
+              "8-byte alignment with no *implicit* padding (see the alignment invariant)."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                2
+              ]
+            }
+          },
+          {
+            "name": "slotDurationEffectiveSlot",
+            "docs": [
+              "Slot at which `pending_slot_duration_ms` takes effect: the first slot of",
+              "the epoch after the target gate's activation epoch, derived from the",
+              "`EpochSchedule` sysvar at sync time. `0` when nothing is staged."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "slotDurationTransitionSlots",
+            "docs": [
+              "First slot of each post baseline IBRL regime, ordered as",
+              "`[350ms, 300ms, 250ms, 200ms]`. Zero means that transition has not been",
+              "synchronized yet. These anchors let elapsed time math integrate an",
+              "interval piecewise instead of multiplying its whole slot delta by the",
+              "duration at one endpoint."
+            ],
+            "type": {
+              "array": [
+                "u64",
+                4
+              ]
+            }
+          },
+          {
             "name": "hotFlowAuthority",
             "docs": [
               "The retail-flow attestation key (swift's). Not a signer of any admin",
@@ -30804,26 +31151,13 @@ export type Velocity = {
             "type": "pubkey"
           },
           {
-            "name": "padding0",
-            "docs": [
-              "Alignment slack ahead of `transaction_fee_rails`, taken out of the",
-              "former padding: the tail's offset is odd by two and the rails hold",
-              "`u32`s."
-            ],
-            "type": {
-              "array": [
-                "u8",
-                2
-              ]
-            }
-          },
-          {
             "name": "transactionFeeRails",
             "docs": [
               "What one transaction costs the account that sends it, as the network",
               "prices it now. Every relay crank payment is derived from this, so a",
               "change to the network's fee model is one write here instead of a",
-              "re-price of every market."
+              "re-price of every market. Holds `u32`s, so it lands 4-aligned right",
+              "after `hot_flow_authority` (offset 1576) with no alignment slack ahead."
             ],
             "type": {
               "defined": {
@@ -30867,11 +31201,30 @@ export type Velocity = {
             "type": "u16"
           },
           {
-            "name": "padding",
+            "name": "padding0",
+            "docs": [
+              "Trailing filler after the branch's fee-rails fields. Vestigial: the",
+              "rails already sit 4-aligned behind `hot_flow_authority`, so no slack is",
+              "needed ahead of them."
+            ],
             "type": {
               "array": [
                 "u8",
-                184
+                2
+              ]
+            }
+          },
+          {
+            "name": "padding",
+            "docs": [
+              "Former padding, now sized so the branch's fee-rails fields and master's",
+              "slot-duration archive both fit while `size_of::<State>()` stays 1744 on",
+              "x86_64 (u128 align 16) and SBF (u128 align 8). The offsets below pin it."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                146
               ]
             }
           }
@@ -32010,11 +32363,21 @@ export type Velocity = {
             "type": "u8"
           },
           {
+            "name": "acceleratedReferralStatus",
+            "docs": [
+              "Persistent referral reward status. See [`AcceleratedReferralStatus`]. Kept",
+              "separate from `referrer_status`, which describes whether this authority",
+              "refers or was referred by somebody else. Carved out of former padding so",
+              "preupgrade accounts read `0` (standard, automatic enrollment allowed)."
+            ],
+            "type": "u8"
+          },
+          {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                62
+                61
               ]
             }
           }
@@ -32031,10 +32394,16 @@ export type Velocity = {
         "fields": [
           {
             "name": "slotsBeforeStaleForAmm",
+            "docs": [
+              "Compact wall-clock duration encoded in historical 400ms slot quanta."
+            ],
             "type": "i64"
           },
           {
             "name": "slotsBeforeStaleForMargin",
+            "docs": [
+              "Compact wall-clock duration encoded in historical 400ms slot quanta."
+            ],
             "type": "i64"
           },
           {

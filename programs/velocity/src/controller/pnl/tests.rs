@@ -16,6 +16,7 @@ use {
                 meets_maintenance_margin_requirement,
                 meets_settle_pnl_maintenance_margin_requirement,
             },
+            time::{legacy_slot_duration_i64, SlotClock},
         },
         state::{
             market_status::MarketStatus,
@@ -50,8 +51,8 @@ pub fn user_no_position() {
     let state = State {
         oracle_guard_rails: OracleGuardRails {
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,     // 5s
-                slots_before_stale_for_margin: 120, // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },
@@ -69,7 +70,13 @@ pub fn user_no_position() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+    let mut oracle_map = OracleMap::load_one(
+        &oracle_account_info,
+        clock.slot,
+        SlotClock::baseline(),
+        None,
+    )
+    .unwrap();
 
     let mut market = PerpMarket {
         amm: AMM {
@@ -167,8 +174,8 @@ pub fn user_does_not_meet_maintenance_requirement() {
     let state = State {
         oracle_guard_rails: OracleGuardRails {
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,     // 5s
-                slots_before_stale_for_margin: 120, // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },
@@ -186,7 +193,13 @@ pub fn user_does_not_meet_maintenance_requirement() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+    let mut oracle_map = OracleMap::load_one(
+        &oracle_account_info,
+        clock.slot,
+        SlotClock::baseline(),
+        None,
+    )
+    .unwrap();
 
     let mut market = PerpMarket {
         amm: AMM {
@@ -291,8 +304,8 @@ pub fn user_does_not_meet_strict_maintenance_requirement() {
     let state = State {
         oracle_guard_rails: OracleGuardRails {
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,     // 5s
-                slots_before_stale_for_margin: 120, // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },
@@ -310,7 +323,13 @@ pub fn user_does_not_meet_strict_maintenance_requirement() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+    let mut oracle_map = OracleMap::load_one(
+        &oracle_account_info,
+        clock.slot,
+        SlotClock::baseline(),
+        None,
+    )
+    .unwrap();
 
     let mut market = PerpMarket {
         amm: AMM {
@@ -433,8 +452,8 @@ pub fn user_unsettled_negative_pnl() {
     let state = State {
         oracle_guard_rails: OracleGuardRails {
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,     // 5s
-                slots_before_stale_for_margin: 120, // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },
@@ -451,7 +470,13 @@ pub fn user_unsettled_negative_pnl() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+    let mut oracle_map = OracleMap::load_one(
+        &oracle_account_info,
+        clock.slot,
+        SlotClock::baseline(),
+        None,
+    )
+    .unwrap();
 
     let mut market = PerpMarket {
         amm: AMM {
@@ -569,8 +594,8 @@ pub fn user_unsettled_positive_pnl_more_than_pool() {
     let state = State {
         oracle_guard_rails: OracleGuardRails {
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,     // 5s
-                slots_before_stale_for_margin: 120, // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },
@@ -587,7 +612,13 @@ pub fn user_unsettled_positive_pnl_more_than_pool() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+    let mut oracle_map = OracleMap::load_one(
+        &oracle_account_info,
+        clock.slot,
+        SlotClock::baseline(),
+        None,
+    )
+    .unwrap();
 
     let mut market = PerpMarket {
         amm: AMM {
@@ -703,8 +734,8 @@ pub fn user_unsettled_positive_pnl_less_than_pool() {
     let state = State {
         oracle_guard_rails: OracleGuardRails {
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,     // 5s
-                slots_before_stale_for_margin: 120, // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },
@@ -721,7 +752,13 @@ pub fn user_unsettled_positive_pnl_less_than_pool() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+    let mut oracle_map = OracleMap::load_one(
+        &oracle_account_info,
+        clock.slot,
+        SlotClock::baseline(),
+        None,
+    )
+    .unwrap();
 
     let mut market = PerpMarket {
         amm: AMM {
@@ -840,8 +877,8 @@ pub fn market_fee_pool_receives_portion() {
     let state = State {
         oracle_guard_rails: OracleGuardRails {
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,     // 5s
-                slots_before_stale_for_margin: 120, // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },
@@ -858,7 +895,8 @@ pub fn market_fee_pool_receives_portion() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+    let mut oracle_map =
+        OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
     let mut market = PerpMarket {
         amm: AMM {
@@ -978,8 +1016,8 @@ pub fn market_fee_pool_pays_back_to_pnl_pool() {
     let state = State {
         oracle_guard_rails: OracleGuardRails {
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,     // 5s
-                slots_before_stale_for_margin: 120, // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },
@@ -996,7 +1034,13 @@ pub fn market_fee_pool_pays_back_to_pnl_pool() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+    let mut oracle_map = OracleMap::load_one(
+        &oracle_account_info,
+        clock.slot,
+        SlotClock::baseline(),
+        None,
+    )
+    .unwrap();
 
     let mut market = PerpMarket {
         amm: AMM {
@@ -1121,8 +1165,8 @@ pub fn user_long_positive_unrealized_pnl_up_to_max_positive_pnl() {
     let state = State {
         oracle_guard_rails: OracleGuardRails {
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,     // 5s
-                slots_before_stale_for_margin: 120, // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },
@@ -1139,7 +1183,13 @@ pub fn user_long_positive_unrealized_pnl_up_to_max_positive_pnl() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+    let mut oracle_map = OracleMap::load_one(
+        &oracle_account_info,
+        clock.slot,
+        SlotClock::baseline(),
+        None,
+    )
+    .unwrap();
 
     let mut market = PerpMarket {
         amm: AMM {
@@ -1258,8 +1308,8 @@ pub fn user_long_positive_unrealized_pnl_up_to_max_positive_pnl_price_breached()
     let state = State {
         oracle_guard_rails: OracleGuardRails {
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,     // 5s
-                slots_before_stale_for_margin: 120, // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },
@@ -1276,7 +1326,13 @@ pub fn user_long_positive_unrealized_pnl_up_to_max_positive_pnl_price_breached()
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+    let mut oracle_map = OracleMap::load_one(
+        &oracle_account_info,
+        clock.slot,
+        SlotClock::baseline(),
+        None,
+    )
+    .unwrap();
 
     let mut market = PerpMarket {
         amm: AMM {
@@ -1392,8 +1448,8 @@ pub fn user_long_negative_unrealized_pnl() {
     let state = State {
         oracle_guard_rails: OracleGuardRails {
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,     // 5s
-                slots_before_stale_for_margin: 120, // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },
@@ -1410,7 +1466,13 @@ pub fn user_long_negative_unrealized_pnl() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+    let mut oracle_map = OracleMap::load_one(
+        &oracle_account_info,
+        clock.slot,
+        SlotClock::baseline(),
+        None,
+    )
+    .unwrap();
 
     let mut market = PerpMarket {
         amm: AMM {
@@ -1529,8 +1591,8 @@ pub fn user_short_positive_unrealized_pnl_up_to_max_positive_pnl() {
     let state = State {
         oracle_guard_rails: OracleGuardRails {
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,     // 5s
-                slots_before_stale_for_margin: 120, // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },
@@ -1547,7 +1609,13 @@ pub fn user_short_positive_unrealized_pnl_up_to_max_positive_pnl() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+    let mut oracle_map = OracleMap::load_one(
+        &oracle_account_info,
+        clock.slot,
+        SlotClock::baseline(),
+        None,
+    )
+    .unwrap();
 
     let mut market = PerpMarket {
         amm: AMM {
@@ -1666,8 +1734,8 @@ pub fn user_short_negative_unrealized_pnl() {
     let state = State {
         oracle_guard_rails: OracleGuardRails {
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,     // 5s
-                slots_before_stale_for_margin: 120, // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },
@@ -1684,7 +1752,13 @@ pub fn user_short_negative_unrealized_pnl() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+    let mut oracle_map = OracleMap::load_one(
+        &oracle_account_info,
+        clock.slot,
+        SlotClock::baseline(),
+        None,
+    )
+    .unwrap();
 
     let mut market = PerpMarket {
         amm: AMM {
@@ -1803,8 +1877,8 @@ pub fn user_invalid_oracle_position() {
     let state = State {
         oracle_guard_rails: OracleGuardRails {
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,     // 5s
-                slots_before_stale_for_margin: 120, // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },
@@ -1822,7 +1896,13 @@ pub fn user_invalid_oracle_position() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+    let mut oracle_map = OracleMap::load_one(
+        &oracle_account_info,
+        clock.slot,
+        SlotClock::baseline(),
+        None,
+    )
+    .unwrap();
 
     let mut market = PerpMarket {
         amm: AMM {
@@ -2120,8 +2200,8 @@ pub fn isolated_perp_position_negative_pnl() {
     let state = State {
         oracle_guard_rails: OracleGuardRails {
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,     // 5s
-                slots_before_stale_for_margin: 120, // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },
@@ -2138,7 +2218,13 @@ pub fn isolated_perp_position_negative_pnl() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+    let mut oracle_map = OracleMap::load_one(
+        &oracle_account_info,
+        clock.slot,
+        SlotClock::baseline(),
+        None,
+    )
+    .unwrap();
 
     let mut market = PerpMarket {
         amm: AMM {
@@ -2253,8 +2339,8 @@ pub fn isolated_perp_position_user_unsettled_positive_pnl_less_than_pool() {
     let state = State {
         oracle_guard_rails: OracleGuardRails {
             validity: ValidityGuardRails {
-                slots_before_stale_for_amm: 10,     // 5s
-                slots_before_stale_for_margin: 120, // 60s
+                slots_before_stale_for_amm: legacy_slot_duration_i64(10), // 4s
+                slots_before_stale_for_margin: legacy_slot_duration_i64(120), // 48s
                 confidence_interval_max_size: 1000,
                 too_volatile_ratio: 5,
             },
@@ -2271,7 +2357,13 @@ pub fn isolated_perp_position_user_unsettled_positive_pnl_less_than_pool() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+    let mut oracle_map = OracleMap::load_one(
+        &oracle_account_info,
+        clock.slot,
+        SlotClock::baseline(),
+        None,
+    )
+    .unwrap();
 
     let mut market = PerpMarket {
         amm: AMM {

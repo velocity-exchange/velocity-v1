@@ -35,6 +35,7 @@ use {
             orders::*,
             safe_math::SafeMath,
             safe_unwrap::SafeUnwrap,
+            time::{legacy_slot_duration_u8_raw, Millis, SlotClock},
         },
         print_error,
         state::{
@@ -256,15 +257,23 @@ pub fn place_perp_order(
         &params,
         oracle_price_data,
         market.order_tick_size,
-        state.min_perp_auction_duration,
+        // the stored min is already in the auction's wall clock 400ms units
+        legacy_slot_duration_u8_raw(state.min_perp_auction_duration),
     )?;
 
     let max_ts = match params.max_ts {
         Some(max_ts) => max_ts,
         None => match params.order_type {
+            // default TIF: at least 30s, else the auction's wall-clock length
+            // plus a quarter again plus 10s of pad, so the default always
+            // outlives the auction. The /800 reproduces the historical
+            // `auction_duration_slots / 2 + 10` exactly (a 400ms unit is one
+            // historical slot, so units/2 == ms/800).
             OrderType::Market | OrderType::Oracle => now.safe_add(
                 30_i64.max(
-                    (auction_duration.safe_div(2)?)
+                    Millis::from_stored_units(auction_duration as u64)
+                        .as_ms()
+                        .safe_div(800)?
                         .cast::<i64>()?
                         .safe_add(10_i64)?,
                 ),
@@ -352,7 +361,13 @@ pub fn place_perp_order(
     };
 
     let valid_oracle_price = Some(oracle_price_data.price);
-    match validate_order(&new_order, market, valid_oracle_price, slot) {
+    match validate_order(
+        &new_order,
+        market,
+        valid_oracle_price,
+        slot,
+        state.slot_clock(),
+    ) {
         Ok(()) => {}
         Err(ErrorCode::PlacePostOnlyLimitFailure)
             if params.post_only == PostOnlyParam::TryPostOnly =>
@@ -1064,6 +1079,7 @@ pub fn fill_perp_order(
     clock: &Clock,
     fill_mode: FillMode,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
+    referrer_is_accelerated: bool,
 ) -> VelocityResult<(u64, u64)> {
     let mut no_externals = crate::state::prop_amm::NoExternalQuoters;
     let mut router_inputs = crate::math::router::RouterFillInputs {
@@ -1091,6 +1107,7 @@ pub fn fill_perp_order(
         fill_mode,
         &mut router_inputs,
         rev_share_escrow,
+        referrer_is_accelerated,
     )
 }
 
@@ -1114,6 +1131,7 @@ pub fn fill_perp_order_with_router(
     fill_mode: FillMode,
     router: &mut crate::math::router::RouterFillInputs,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
+    referrer_is_accelerated: bool,
 ) -> VelocityResult<(u64, u64)> {
     let now = clock.unix_timestamp;
     let slot = clock.slot;
@@ -1239,6 +1257,7 @@ pub fn fill_perp_order_with_router(
     }
 
     let safe_oracle_validity: OracleValidity;
+    let exchange_oracle_validity: OracleValidity;
     let oracle_price: i64;
     let oracle_twap_5min: i64;
     let user_can_skip_duration: bool;
@@ -1255,10 +1274,29 @@ pub fn fill_perp_order_with_router(
         )?;
 
         let oracle_price_data = oracle_map.get_price_data(&market.oracle_id())?;
+        exchange_oracle_validity = oracle_validity(
+            MarketType::Perp,
+            market.market_index,
+            market
+                .market_stats
+                .historical_oracle_data
+                .last_oracle_price_twap,
+            oracle_price_data,
+            &state.oracle_guard_rails.validity,
+            market.get_max_confidence_interval_multiplier()?,
+            &market.oracle_source,
+            oracle::LogMode::ExchangeOracle,
+            market.oracle_slot_delay_override,
+            false,
+            market.oracle_low_risk_slot_delay_override,
+            slot,
+            state.slot_clock(),
+        )?;
         let mm_oracle_price_data = market.get_mm_oracle_price_data(
             *oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
+            state.slot_clock(),
         )?;
         let safe_oracle_price_data = mm_oracle_price_data.get_safe_oracle_price_data();
         safe_oracle_validity = oracle_validity(
@@ -1276,6 +1314,8 @@ pub fn fill_perp_order_with_router(
             market.oracle_slot_delay_override,
             mm_oracle_price_data.is_safe_price_mm_sourced(),
             market.oracle_low_risk_slot_delay_override,
+            slot,
+            state.slot_clock(),
         )?;
 
         user_can_skip_duration = user.can_skip_auction_duration(user_stats, order_reduce_only)?;
@@ -1288,11 +1328,10 @@ pub fn fill_perp_order_with_router(
             user_can_skip_duration,
             &mm_oracle_price_data,
         )?;
-        oracle_stale_for_margin = mm_oracle_price_data.get_delay()
-            > state
-                .oracle_guard_rails
-                .validity
-                .slots_before_stale_for_margin;
+        oracle_stale_for_margin = state
+            .slot_clock()
+            .elapsed_slot_delta(mm_oracle_price_data.get_delay().max(0) as u64, slot)
+            > state.oracle_guard_rails.validity.stale_for_margin_ms();
 
         // No AMM mutation here — the fulfillment pass constructs an
         // `AmmQuoter` and calls `refresh` before quoting, which is the sole
@@ -1305,6 +1344,8 @@ pub fn fill_perp_order_with_router(
                 market,
                 &mm_oracle_price_data,
                 &state.oracle_guard_rails.validity,
+                slot,
+                state.slot_clock(),
             )?;
 
         // Snapshot the 5-minute oracle TWAP *before* the refresh below advances
@@ -1328,6 +1369,7 @@ pub fn fill_perp_order_with_router(
             amm_refresh_validity,
             now,
             slot,
+            state.slot_clock(),
         )?;
 
         oracle_price = mm_oracle_price_data.get_price();
@@ -1351,8 +1393,12 @@ pub fn fill_perp_order_with_router(
     // only decides whether oracle-relative limit prices resolve), so without
     // this a match could execute while every other consumer of the oracle
     // refuses it.
-    let match_fills_allowed =
+    let safe_match_fills_allowed =
         is_oracle_valid_for_action(safe_oracle_validity, Some(VelocityAction::FillOrderMatch))?;
+    let exchange_match_fills_allowed = is_oracle_valid_for_action(
+        exchange_oracle_validity,
+        Some(VelocityAction::FillOrderMatch),
+    )?;
 
     let is_filler_taker = user_key == filler_key;
     let is_filler_maker = makers_and_referrer.0.contains_key(&filler_key);
@@ -1386,6 +1432,7 @@ pub fn fill_perp_order_with_router(
         &filler_key,
         state.perp_fee_structure.flat_filler_fee,
         oracle_price,
+        exchange_match_fills_allowed,
         jit_maker_order_id,
         now,
         slot,
@@ -1394,10 +1441,14 @@ pub fn fill_perp_order_with_router(
     // Runs after `get_maker_orders_info` so its expired-maker-order cleanup
     // still happens; only the matching itself is withheld. AMM fills keep
     // their own gates.
-    if !match_fills_allowed && !maker_orders_info.is_empty() {
+    let taker_can_match =
+        can_floored_user_match_with_exchange_oracle(user, exchange_match_fills_allowed);
+    if (!safe_match_fills_allowed || !taker_can_match) && !maker_orders_info.is_empty() {
         msg!(
-            "Perp market = {} oracle not valid for match fills",
-            market_index
+            "Perp market = {} oracle not valid for match fills (safe={}, taker_exchange={})",
+            market_index,
+            safe_match_fills_allowed,
+            taker_can_match,
         );
         maker_orders_info.clear();
     }
@@ -1490,6 +1541,7 @@ pub fn fill_perp_order_with_router(
         oracle_stale_for_margin,
         router,
         rev_share_escrow,
+        referrer_is_accelerated,
         state.vamm_maker_rebate_enabled(),
         state.promo_fee_tier,
     )?;
@@ -1688,6 +1740,7 @@ fn get_maker_orders_info(
     filler_key: &Pubkey,
     filler_reward: u64,
     oracle_price: i64,
+    exchange_match_fills_allowed: bool,
     jit_maker_order_id: Option<u32>,
     now: i64,
     slot: u64,
@@ -1716,6 +1769,7 @@ fn get_maker_orders_info(
             Some(oracle_price),
             slot,
             market.order_tick_size,
+            oracle_map.slot_clock,
         )?;
 
         if maker_order_price_and_indexes.is_empty() {
@@ -1746,14 +1800,20 @@ fn get_maker_orders_info(
         // its oracles recover), its provably reducing orders stay matchable
         // (the gate exempts them). Computed once per maker; free when no
         // floor is set.
-        let maker_floor_unverifiable = match calculate_net_equity_for_floor(
-            &maker,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
-        )? {
-            Some(net_equity) => !net_equity.all_oracles_valid,
-            None => false,
+        let maker_can_match =
+            can_floored_user_match_with_exchange_oracle(&maker, exchange_match_fills_allowed);
+        let maker_floor_unverifiable = if maker_can_match {
+            match calculate_net_equity_for_floor(
+                &maker,
+                perp_market_map,
+                spot_market_map,
+                oracle_map,
+            )? {
+                Some(net_equity) => !net_equity.all_oracles_valid,
+                None => false,
+            }
+        } else {
+            false
         };
 
         // Candidates of an unverifiable floored maker that survive the
@@ -1767,7 +1827,7 @@ fn get_maker_orders_info(
             let maker_order_price = *maker_order_price;
 
             let maker_order = &maker.orders[maker_order_index];
-            if !is_maker_for_taker(maker_order, taker_order, slot)? {
+            if !is_maker_for_taker(maker_order, taker_order, slot, oracle_map.slot_clock)? {
                 continue;
             }
 
@@ -1854,6 +1914,14 @@ fn get_maker_orders_info(
             // the candidates are judged together after the loop, so the
             // reducing budget goes to the best-priced orders instead of the
             // lowest order slots.
+            // A selected MM oracle may be fresh enough to quote while the raw
+            // exchange oracle used by the equity floor is not valid for margin.
+            // Keep cleanup above live, but do not let a floored maker execute a
+            // DLOB leg when its floor check cannot use the exchange oracle.
+            if !maker_can_match {
+                continue;
+            }
+
             if maker_floor_unverifiable {
                 let unfilled = maker.orders[maker_order_index]
                     .get_base_asset_amount_unfilled(Some(existing_base_asset_amount))?;
@@ -1868,7 +1936,7 @@ fn get_maker_orders_info(
             );
         }
 
-        if maker_floor_unverifiable {
+        if maker_can_match && maker_floor_unverifiable {
             let resting_base_asset_amount = maker
                 .get_perp_position(taker_order.market_index)
                 .map(|position| position.base_asset_amount)
@@ -1889,6 +1957,19 @@ fn get_maker_orders_info(
     }
 
     Ok(maker_orders_info)
+}
+
+/// The exchange oracle is the canonical valuation source for the equity floor.
+/// An MM oracle may still quote the AMM, but it cannot authorize a floored user
+/// to participate in a DLOB match while the exchange oracle is invalid for the
+/// match/margin policy.
+/// This rule only applies to DLOB matches. Existing AMM gates remain unchanged.
+#[inline(always)]
+fn can_floored_user_match_with_exchange_oracle(
+    user: &User,
+    exchange_match_fills_allowed: bool,
+) -> bool {
+    user.equity_floor == 0 || exchange_match_fills_allowed
 }
 
 /// The subset of an unverifiable floored maker's candidate orders
@@ -2023,6 +2104,7 @@ fn get_builder_escrow_info(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn fulfill_perp_order(
     user: &mut User,
     user_order_index: usize,
@@ -2049,6 +2131,7 @@ fn fulfill_perp_order(
     // normal — that is a fill against the vAMM and the passed DLOB makers.
     router: &mut crate::math::router::RouterFillInputs,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
+    referrer_is_accelerated: bool,
     vamm_maker_rebate: bool,
     promo_fee_tier: u8,
 ) -> VelocityResult<(u64, u64)> {
@@ -2057,6 +2140,42 @@ fn fulfill_perp_order(
     let user_order_position_decreasing =
         determine_if_user_order_is_position_decreasing(user, market_index, user_order_index)?;
     let user_is_isolated_position = user.get_perp_position(market_index)?.is_isolated();
+
+    // A risk-increasing taker whose floor cannot be verified would execute
+    // its fulfillment legs and then revert at the buffered-floor gate below:
+    // `validate_clears_buffered_floor` fails closed on any invalid oracle in
+    // the taker's portfolio, related to this market or not, and by then the
+    // legs have executed. A floored maker with the same defect is pruned in
+    // `get_maker_orders_info`; the taker had no counterpart, so its visible
+    // order made every fill attempt revert deterministically for the length
+    // of the outage. Withhold the whole fill instead (the match and AMM
+    // legs both end at that gate) and leave the order resting until its
+    // oracles recover. Runs after the caller's expired/reduce-only cleanup,
+    // which is unaffected. Reducing orders are exempt at the gate and stay
+    // fillable; `user_order_position_decreasing` decides both. A liquidation
+    // fill skips the gate, so it must skip this precheck too.
+    if user.equity_floor > 0 && !fill_mode.is_liquidation() && !user_order_position_decreasing {
+        let taker_floor_unverifiable = match calculate_net_equity_for_floor(
+            user,
+            perp_market_map,
+            spot_market_map,
+            oracle_map,
+        )? {
+            Some(net_equity) => !net_equity.all_oracles_valid,
+            None => false,
+        };
+
+        if taker_floor_unverifiable {
+            msg!(
+                "taker {} equity floor unverifiable (invalid oracle in portfolio), withholding fill",
+                user_key
+            );
+            if let Some(filler) = filler.as_deref_mut() {
+                filler.update_last_active_slot(slot);
+            }
+            return Ok((0, 0));
+        }
+    }
 
     // A builder fee is an additive debit on the taker (the fill debits
     // `user_fee + builder_fee`) that the builder later claims into its own
@@ -2122,6 +2241,7 @@ fn fulfill_perp_order(
         valid_oracle_price,
         slot,
         perp_market.order_tick_size,
+        oracle_map.slot_clock,
     )?;
     let perp_market_oi_before = perp_market.get_open_interest();
     drop(perp_market);
@@ -2150,6 +2270,7 @@ fn fulfill_perp_order(
         fill_mode.is_liquidation(),
         router,
         rev_share_escrow,
+        referrer_is_accelerated,
         vamm_maker_rebate,
         promo_fee_tier,
         builder_fee_allowed,
@@ -2514,6 +2635,17 @@ fn fulfill_perp_order_post_checks(
                 )?;
             }
         }
+
+        if maker.authority != user.authority {
+            let mut maker_stats = makers_and_referrer_stats.get_ref_mut(&maker.authority)?;
+            maker_stats.try_auto_enroll_accelerated_referral_and_emit(now);
+        }
+    }
+
+    // On a liquidation fill the taker seat is the liquidatee, who did not place the fill, so
+    // it does not enroll. The maker seat above is unaffected.
+    if base_asset_amount != 0 && !is_liquidation {
+        user_stats.try_auto_enroll_accelerated_referral_and_emit(now);
     }
 
     if oracle_stale_for_margin {
@@ -2698,6 +2830,7 @@ fn settle_amm_house_fill(
     filler_stats: &mut Option<&mut UserStats>,
     filler_key: &Pubkey,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
+    referrer_is_accelerated: bool,
     fee_structure: &FeeStructure,
     oracle_map: &mut OracleMap,
     now: i64,
@@ -2710,6 +2843,7 @@ fn settle_amm_house_fill(
     // per-fill allowance the legs draw down rather than one each.
     filler_reward_paid: &mut u64,
 ) -> VelocityResult<(u64, u64)> {
+    let slot_clock = oracle_map.slot_clock;
     // For sole-AMM steps with a post_only taker, override the
     // fill's quote at the order's limit price (the taker, acting
     // as maker, transacts at limit; the AMM captures the curve
@@ -2762,6 +2896,7 @@ fn settle_amm_house_fill(
         slot,
         reward_filler,
         reward_referrer,
+        referrer_is_accelerated,
         taker_surplus,
         order_post_only,
         market.fee_adjustment,
@@ -2770,6 +2905,7 @@ fn settle_amm_house_fill(
         market.taker_fee_addon_tenth_bps,
         now,
         promo_fee_tier,
+        slot_clock,
         *filler_reward_paid,
     )?;
     *filler_reward_paid = filler_reward_paid.saturating_add(filler_reward);
@@ -3003,6 +3139,7 @@ fn settle_dlob_match_fill(
     filler_stats: &mut Option<&mut UserStats>,
     filler_key: &Pubkey,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
+    referrer_is_accelerated: bool,
     fee_structure: &FeeStructure,
     oracle_map: &mut OracleMap,
     is_liquidation: bool,
@@ -3015,6 +3152,7 @@ fn settle_dlob_match_fill(
     // per-fill allowance the legs draw down rather than one each.
     filler_reward_paid: &mut u64,
 ) -> VelocityResult<(u64, u64, u64)> {
+    let slot_clock = oracle_map.slot_clock;
     // DlobMatch fills only land from a Match step, which always
     // populates `match_maker_price`.
     let match_maker_price = match_maker_price.ok_or_else(print_error!(ErrorCode::DefaultError))?;
@@ -3124,12 +3262,14 @@ fn settle_dlob_match_fill(
         slot,
         filler_multiplier,
         reward_referrer,
+        referrer_is_accelerated,
         &MarketType::Perp,
         market.fee_adjustment,
         builder_order_fee_bps,
         market.taker_fee_addon_tenth_bps,
         now,
         promo_fee_tier,
+        slot_clock,
         *filler_reward_paid,
     )?;
     *filler_reward_paid = filler_reward_paid.saturating_add(filler_reward);
@@ -3365,6 +3505,7 @@ fn settle_external_match_fill(
     filler_stats: &mut Option<&mut UserStats>,
     filler_key: &Pubkey,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
+    referrer_is_accelerated: bool,
     fee_structure: &FeeStructure,
     oracle_map: &mut OracleMap,
     is_liquidation: bool,
@@ -3466,12 +3607,14 @@ fn settle_external_match_fill(
         slot,
         filler_multiplier,
         reward_referrer,
+        referrer_is_accelerated,
         &MarketType::Perp,
         market.fee_adjustment,
         builder_order_fee_bps,
         market.taker_fee_addon_tenth_bps,
         now,
         promo_fee_tier,
+        oracle_map.slot_clock,
         *filler_reward_paid,
     )?;
     *filler_reward_paid = filler_reward_paid.saturating_add(filler_reward);
@@ -3687,6 +3830,7 @@ fn fulfill_perp_order_router_pass(
     is_liquidation: bool,
     router: &mut crate::math::router::RouterFillInputs,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
+    referrer_is_accelerated: bool,
     vamm_maker_rebate: bool,
     promo_fee_tier: u8,
     // False when the taker does not meet initial margin. The fill proceeds and
@@ -3853,7 +3997,7 @@ fn fulfill_perp_order_router_pass(
     // ---- Oracle context + AMM refresh (shared with the quote view). ----
     let oracle_pd = *oracle_map.get_price_data(&market.oracle_id())?;
     let oracle_price = oracle_pd.price;
-    let quote_inputs = QuoteInputs::load(&market, oracle_pd, slot, validity_guard_rails)?;
+    let quote_inputs = QuoteInputs::load(&market, oracle_pd, slot, validity_guard_rails, oracle_map.slot_clock)?;
     let sanitize_clamp_denom = quote_inputs.sanitize_clamp_denominator;
     let order_tick_size = quote_inputs.tick_size;
     let order_step_size = quote_inputs.step_size;
@@ -4083,6 +4227,7 @@ fn fulfill_perp_order_router_pass(
         tick: order_tick_size,
         step_size: order_step_size,
         slot,
+        slot_clock: oracle_map.slot_clock,
         base_precision: BASE_PRECISION_U64,
         market_status: MarketStatus::default(),
         market_config: 0,
@@ -4167,6 +4312,7 @@ fn fulfill_perp_order_router_pass(
             filler_stats,
             filler_key,
             rev_share_escrow,
+            referrer_is_accelerated,
             fee_structure,
             oracle_map,
             is_liquidation,
@@ -4243,6 +4389,7 @@ fn fulfill_perp_order_router_pass(
             filler_stats,
             filler_key,
             rev_share_escrow,
+            referrer_is_accelerated,
             fee_structure,
             oracle_map,
             now,
@@ -4400,6 +4547,7 @@ fn fulfill_perp_order_router_pass(
                 filler_stats,
                 filler_key,
                 rev_share_escrow,
+                referrer_is_accelerated,
                 fee_structure,
                 oracle_map,
                 is_liquidation,
@@ -4766,6 +4914,7 @@ pub fn cross_match(
             *oracle_price_data,
             slot,
             &state.oracle_guard_rails.validity,
+            state.slot_clock(),
         )?;
         let safe_oracle_price_data = mm_oracle_price_data.get_safe_oracle_price_data();
         let safe_oracle_validity = oracle::oracle_validity(
@@ -4783,6 +4932,8 @@ pub fn cross_match(
             market.oracle_slot_delay_override,
             mm_oracle_price_data.is_safe_price_mm_sourced(),
             market.oracle_low_risk_slot_delay_override,
+            clock.slot,
+            state.slot_clock(),
         )?;
         validate!(
             is_oracle_valid_for_action(safe_oracle_validity, Some(VelocityAction::FillOrderMatch))?,
@@ -4791,11 +4942,10 @@ pub fn cross_match(
         )?;
         let oracle_price = mm_oracle_price_data.get_price();
         validate_market_within_price_band(market, state, oracle_price)?;
-        let oracle_stale_for_margin = mm_oracle_price_data.get_delay()
-            > state
-                .oracle_guard_rails
-                .validity
-                .slots_before_stale_for_margin;
+        let oracle_stale_for_margin = state
+            .slot_clock()
+            .elapsed_slot_delta(mm_oracle_price_data.get_delay().max(0) as u64, slot)
+            > state.oracle_guard_rails.validity.stale_for_margin_ms();
         (
             oracle_price,
             oracle_stale_for_margin,
@@ -5031,6 +5181,7 @@ pub fn cross_match(
                 &mut none_filler_stats,
                 &taker_key,
                 &mut no_escrow,
+                false,
                 &state.perp_fee_structure,
                 oracle_map,
                 false,
@@ -5266,6 +5417,7 @@ pub fn price_taker_origin_cross(
             *oracle_price_data,
             clock.slot,
             &state.oracle_guard_rails.validity,
+            state.slot_clock(),
         )?;
         let safe_oracle_price_data = mm_oracle_price_data.get_safe_oracle_price_data();
         let safe_oracle_validity = oracle::oracle_validity(
@@ -5283,6 +5435,8 @@ pub fn price_taker_origin_cross(
             market.oracle_slot_delay_override,
             mm_oracle_price_data.is_safe_price_mm_sourced(),
             market.oracle_low_risk_slot_delay_override,
+            clock.slot,
+            state.slot_clock(),
         )?;
         validate!(
             is_oracle_valid_for_action(safe_oracle_validity, Some(VelocityAction::FillOrderMatch))?,
@@ -5293,11 +5447,10 @@ pub fn price_taker_origin_cross(
         validate_market_within_price_band(market, state, oracle_price)?;
         (
             oracle_price,
-            mm_oracle_price_data.get_delay()
-                > state
-                    .oracle_guard_rails
-                    .validity
-                    .slots_before_stale_for_margin,
+            state
+                .slot_clock()
+                .elapsed_slot_delta(mm_oracle_price_data.get_delay().max(0) as u64, clock.slot)
+                > state.oracle_guard_rails.validity.stale_for_margin_ms(),
             market.get_open_interest(),
             market.fee_adjustment,
             market.taker_fee_addon_tenth_bps,
@@ -5322,6 +5475,7 @@ pub fn price_taker_origin_cross(
         taker_fee_addon,
         order_slot,
         clock.slot,
+        state.slot_clock(),
         calculate_filler_multiplier_for_matched_orders(
             counterparty_price,
             taker_direction.opposite(),
@@ -5697,6 +5851,7 @@ pub fn settle_taker_origin_cross(
         &mut none_filler_stats,
         &filler_key,
         &mut no_escrow,
+        false,
         &state.perp_fee_structure,
         oracle_map,
         false,
@@ -5987,8 +6142,12 @@ pub fn trigger_order(
             &mut user.orders[order_index],
             oracle_price_data,
             slot,
-            20,
+            // ~8s minimum, in wall clock 400ms units
+            Millis::from_secs(8)
+                .div_periods(Millis::UNIT)
+                .min(u8::MAX as u64) as u8,
             Some(&perp_market),
+            state.slot_clock(),
         )?;
 
         if user.orders[order_index].has_auction() {
@@ -6160,6 +6319,7 @@ fn update_trigger_order_params(
     slot: u64,
     min_auction_duration: u8,
     perp_market: Option<&PerpMarket>,
+    slot_clock: SlotClock,
 ) -> VelocityResult {
     order.trigger_condition = match order.trigger_condition {
         OrderTriggerCondition::Above => OrderTriggerCondition::TriggeredAbove,
@@ -6169,7 +6329,10 @@ fn update_trigger_order_params(
         }
     };
 
-    if slot.saturating_sub(order.slot) > 150 && order.reduce_only {
+    // ~60s: a reduce-only trigger left resting this long is flagged safe for
+    // the relaxed oracle delay gate. Rest time is integrated per
+    // slot duration regime.
+    if slot_clock.elapsed(order.slot, slot) > Millis::from_secs(60) && order.reduce_only {
         order.add_bit_flag(OrderBitFlag::SafeTriggerOrder);
     }
 

@@ -55,6 +55,10 @@ mod size {
         // around it must not move for existing on-chain accounts to stay valid.
         assert_eq!(std::mem::offset_of!(UserStats, padding1), 159);
         assert_eq!(std::mem::offset_of!(UserStats, delegate_permissions), 168);
+        assert_eq!(
+            std::mem::offset_of!(UserStats, accelerated_referral_status),
+            170
+        );
     }
 
     #[test]
@@ -152,6 +156,46 @@ mod native_instruction_offsets {
             1374,
             "State::feature_bit_flags offset changed — update handle_update_mm_oracle_native"
         );
+    }
+
+    /// The native MM-oracle handlers read the live slot duration straight from
+    /// account bytes: `slot_duration_ms` at 1506..1508, `pending_slot_duration_ms`
+    /// at 1508..1510, and `slot_duration_effective_slot` at 1512..1520. If any of
+    /// these move, update `read_native_state_slot_duration` (and its
+    /// `STATE_*_OFFSET` constants) to match.
+    #[test]
+    fn state_slot_duration_offsets() {
+        assert_eq!(
+            std::mem::offset_of!(State, slot_duration_ms) + DISC,
+            1506,
+            "State::slot_duration_ms offset changed — update read_native_state_slot_duration"
+        );
+        assert_eq!(
+            std::mem::offset_of!(State, pending_slot_duration_ms) + DISC,
+            1508,
+            "State::pending_slot_duration_ms offset changed — update read_native_state_slot_duration"
+        );
+        assert_eq!(
+            std::mem::offset_of!(State, slot_duration_effective_slot) + DISC,
+            1512,
+            "State::slot_duration_effective_slot offset changed — update read_native_state_slot_duration"
+        );
+    }
+
+    /// A staged switch takes effect exactly at its effective slot and not before;
+    /// with nothing staged the base value always holds. Same logic the native
+    /// reader mirrors byte-for-byte.
+    #[test]
+    fn active_slot_duration_switches_at_effective_slot() {
+        let mut state = State::default();
+        state.slot_duration_ms = 350;
+        state.pending_slot_duration_ms = 300;
+        state.slot_duration_effective_slot = 1_000;
+        assert_eq!(state.active_slot_duration_ms(999), 350); // before: base
+        assert_eq!(state.active_slot_duration_ms(1_000), 300); // at boundary: pending
+        assert_eq!(state.active_slot_duration_ms(5_000), 300); // after: pending
+        state.pending_slot_duration_ms = 0; // nothing staged
+        assert_eq!(state.active_slot_duration_ms(5_000), 350);
     }
 
     /// State.hot_mm_oracle_crank is read at bytes 360..392 by the MM-oracle handler.

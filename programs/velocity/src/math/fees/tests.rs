@@ -3,6 +3,7 @@ mod calculate_fee_for_taker_and_maker {
         math::{
             constants::QUOTE_PRECISION_U64,
             fees::{calculate_fee_for_fulfillment_with_match, FillFees},
+            time::SlotClock,
         },
         state::{
             state::FeeStructure,
@@ -35,12 +36,14 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             false,
+            false,
             &MarketType::Perp,
             0,
             None,
             0,
             0,
             0,
+            SlotClock::baseline(),
             0,
         )
         .unwrap();
@@ -86,12 +89,14 @@ mod calculate_fee_for_taker_and_maker {
             0,
             1,
             false,
+            false,
             &MarketType::Perp,
             0,
             None,
             0,
             0,
             0,
+            SlotClock::baseline(),
             0,
         )
         .unwrap();
@@ -136,12 +141,14 @@ mod calculate_fee_for_taker_and_maker {
             0,
             1,
             false,
+            false,
             &MarketType::Perp,
             0,
             None,
             0,
             0,
             0,
+            SlotClock::baseline(),
             0,
         )
         .unwrap();
@@ -186,12 +193,14 @@ mod calculate_fee_for_taker_and_maker {
             60,
             1,
             false,
+            false,
             &MarketType::Perp,
             0,
             None,
             0,
             0,
             0,
+            SlotClock::baseline(),
             0,
         )
         .unwrap();
@@ -234,12 +243,14 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             true,
+            false,
             &MarketType::Perp,
             0,
             None,
             0,
             0,
             0,
+            SlotClock::baseline(),
             0,
         )
         .unwrap();
@@ -252,6 +263,36 @@ mod calculate_fee_for_taker_and_maker {
         assert_eq!(filler_reward, 0);
         assert_eq!(referrer_reward, 10000);
         assert_eq!(referee_discount, 10000);
+    }
+
+    #[test]
+    fn accelerated_referrer_gets_fixed_reward_without_changing_referee_discount() {
+        let mut maker_stats = UserStats::default();
+        let mut fee_structure = FeeStructure::test_default();
+        fee_structure.fee_tiers[0].referrer_reward_numerator = 7;
+        let fees = calculate_fee_for_fulfillment_with_match(
+            &UserStats::default(),
+            &Some(&mut maker_stats),
+            100 * QUOTE_PRECISION_U64,
+            &fee_structure,
+            0,
+            0,
+            0,
+            true,
+            true,
+            &MarketType::Perp,
+            0,
+            None,
+            0,
+            0,
+            0,
+            SlotClock::baseline(),
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(fees.referrer_reward, 20000);
+        assert_eq!(fees.referee_discount, 10000);
     }
 
     #[test]
@@ -279,12 +320,14 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             false,
+            false,
             &MarketType::Perp,
             -50,
             None,
             0,
             0,
             0,
+            SlotClock::baseline(),
             0,
         )
         .unwrap();
@@ -317,12 +360,14 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             false,
+            false,
             &MarketType::Perp,
             50,
             None,
             0,
             0,
             0,
+            SlotClock::baseline(),
             0,
         )
         .unwrap();
@@ -356,12 +401,14 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             true,
+            false,
             &MarketType::Perp,
             -50,
             None,
             0,
             0,
             0,
+            SlotClock::baseline(),
             0,
         )
         .unwrap();
@@ -395,12 +442,14 @@ mod calculate_fee_for_taker_and_maker {
             0,
             1,
             true,
+            false,
             &MarketType::Perp,
             -50,
             None,
             0,
             0,
             0,
+            SlotClock::baseline(),
             0,
         )
         .unwrap();
@@ -440,12 +489,14 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             false,
+            false,
             &MarketType::Perp,
             -100,
             None,
             0,
             0,
             0,
+            SlotClock::baseline(),
             0,
         )
         .unwrap();
@@ -478,12 +529,14 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             false,
+            false,
             &MarketType::Perp,
             -100,
             None,
             0,
             0,
             0,
+            SlotClock::baseline(),
             0,
         )
         .unwrap();
@@ -516,12 +569,14 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             false,
+            false,
             &MarketType::Perp,
             -100,
             None,
             0,
             0,
             0,
+            SlotClock::baseline(),
             0,
         )
         .unwrap();
@@ -555,12 +610,14 @@ mod calculate_fee_for_taker_and_maker {
             0,
             0,
             true,
+            false,
             &MarketType::Perp,
             -100,
             None,
             0,
             0,
             0,
+            SlotClock::baseline(),
             0,
         )
         .unwrap();
@@ -594,12 +651,14 @@ mod calculate_fee_for_taker_and_maker {
             0,
             1,
             true,
+            false,
             &MarketType::Perp,
             -100,
             None,
             0,
             0,
             0,
+            SlotClock::baseline(),
             0,
         )
         .unwrap();
@@ -623,6 +682,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
                 calculate_fee_for_fulfillment_with_amm, calculate_fee_for_fulfillment_with_match,
                 FillFees,
             },
+            time::SlotClock,
         },
         state::{
             state::FeeStructure,
@@ -655,6 +715,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             60,
             false,
             true,
+            false,
             0,
             false,
             0,
@@ -663,6 +724,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             0,
             0,
             0,
+            SlotClock::baseline(),
             0,
         )
         .unwrap();
@@ -677,6 +739,36 @@ mod calculate_fee_for_order_fulfill_against_amm {
         assert_eq!(filler_reward, 0);
         assert_eq!(referrer_reward, 10000);
         assert_eq!(referee_discount, 10000);
+    }
+
+    #[test]
+    fn accelerated_referrer_gets_fixed_reward_without_changing_referee_discount() {
+        let mut fee_structure = FeeStructure::test_default();
+        fee_structure.fee_tiers[0].referrer_reward_numerator = 7;
+        let fees = calculate_fee_for_fulfillment_with_amm(
+            &UserStats::default(),
+            100 * QUOTE_PRECISION_U64,
+            &fee_structure,
+            0,
+            60,
+            false,
+            true,
+            true,
+            0,
+            false,
+            0,
+            None,
+            false,
+            0,
+            0,
+            0,
+            SlotClock::baseline(),
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(fees.referrer_reward, 20000);
+        assert_eq!(fees.referee_discount, 10000);
     }
 
     #[test]
@@ -702,6 +794,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             60,
             false,
             false,
+            false,
             0,
             false,
             -50,
@@ -710,6 +803,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             0,
             0,
             0,
+            SlotClock::baseline(),
             0,
         )
         .unwrap();
@@ -737,6 +831,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             60,
             false,
             false,
+            false,
             0,
             false,
             50,
@@ -745,6 +840,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             0,
             0,
             0,
+            SlotClock::baseline(),
             0,
         )
         .unwrap();
@@ -773,6 +869,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             60,
             false,
             true,
+            false,
             0,
             false,
             -50,
@@ -781,6 +878,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             0,
             0,
             0,
+            SlotClock::baseline(),
             0,
         )
         .unwrap();
@@ -809,6 +907,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             60,
             true,
             true,
+            false,
             0,
             false,
             -50,
@@ -817,6 +916,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             0,
             0,
             0,
+            SlotClock::baseline(),
             0,
         )
         .unwrap();
@@ -849,6 +949,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             60,
             false,
             false,
+            false,
             0,
             false,
             0,
@@ -857,6 +958,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             15,
             0,
             0,
+            SlotClock::baseline(),
             0,
         )
         .unwrap();
@@ -873,6 +975,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             60,
             false,
             false,
+            false,
             0,
             false,
             -50,
@@ -881,6 +984,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             15,
             0,
             0,
+            SlotClock::baseline(),
             0,
         )
         .unwrap();
@@ -904,12 +1008,14 @@ mod calculate_fee_for_order_fulfill_against_amm {
             60,
             0,
             false,
+            false,
             &MarketType::Perp,
             0,
             None,
             MAX_TAKER_FEE_ADDON_TENTH_BPS,
             0,
             0,
+            SlotClock::baseline(),
             0,
         )
         .unwrap();
@@ -944,6 +1050,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             60,
             false,
             false,
+            false,
             0,
             false,
             0,
@@ -952,6 +1059,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             0,
             0,
             0,
+            SlotClock::baseline(),
             0,
         )
         .unwrap();
@@ -984,6 +1092,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             60,
             false,
             false,
+            false,
             0,
             false,
             0,
@@ -992,6 +1101,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             0,
             0,
             0,
+            SlotClock::baseline(),
             0,
         )
         .unwrap();
@@ -1021,6 +1131,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             60,
             false,
             false,
+            false,
             0,
             false,
             0,
@@ -1029,6 +1140,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             0,
             0,
             0,
+            SlotClock::baseline(),
             0,
         )
         .unwrap();
@@ -1063,6 +1175,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             60,
             false,
             false,
+            false,
             0,
             false,
             0,
@@ -1071,6 +1184,7 @@ mod calculate_fee_for_order_fulfill_against_amm {
             0,
             0,
             0,
+            SlotClock::baseline(),
             0,
         )
         .unwrap();
@@ -1316,6 +1430,7 @@ mod taker_origin_cross_fee {
             0,
             0,
             1,
+            crate::math::time::SlotClock::baseline(),
             1_000,
             &fee_structure.filler_reward_structure,
         )
@@ -1437,6 +1552,7 @@ mod taker_origin_cross_fee {
             0,
             0,
             1,
+            crate::math::time::SlotClock::baseline(),
             1_000,
             &fee_structure.filler_reward_structure,
         )

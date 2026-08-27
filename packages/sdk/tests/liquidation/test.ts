@@ -6,6 +6,8 @@ import {
 	QUOTE_PRECISION,
 	LIQUIDATION_PCT_PRECISION,
 	calculateMaxPctToLiquidate,
+	getLiquidationFee,
+	millisFromStoredUnits,
 	calculatePerpIfFee,
 	calculateSpotIfFee,
 	calculateUserProtectiveAssetPrice,
@@ -20,7 +22,7 @@ describe('calculateMaxPctToLiquidate', () => {
 			new BN(1_000_000).mul(QUOTE_PRECISION), // huge margin shortage
 			new BN(0), // slot === lastActiveSlot, no time elapsed
 			new BN(0), // initialPctToLiquidate
-			new BN(1000), // liquidationDuration
+			millisFromStoredUnits(1000), // liquidationDuration
 			true // isIsolatedPosition
 		);
 
@@ -36,11 +38,61 @@ describe('calculateMaxPctToLiquidate', () => {
 			new BN(1000).mul(QUOTE_PRECISION), // margin shortage (above the 50 QUOTE_PRECISION floor)
 			new BN(100), // slot
 			new BN(0), // initialPctToLiquidate
-			new BN(1000) // liquidationDuration
+			millisFromStoredUnits(1000) // liquidationDuration
 		);
 
 		// slotsElapsed = 100, pctFreeable = 100 * 10000 / 1000 = 1000 (10%)
 		assert.isTrue(pct.eq(new BN(1000)));
+	});
+});
+
+describe('getLiquidationFee', () => {
+	it('matches elapsed wall-clock time at 400ms and 200ms', () => {
+		const baseFee = 20_000;
+		const maxFee = 50_000;
+		const baseline = getLiquidationFee(
+			baseFee,
+			maxFee,
+			new BN(0),
+			new BN(10_000),
+			{}
+		);
+		// a clock fully rolled out to 200ms since slot 1
+		const clock200 = {
+			slotDurationTransitionSlots: [new BN(1), new BN(1), new BN(1), new BN(1)],
+		};
+		const fast = getLiquidationFee(
+			baseFee,
+			maxFee,
+			new BN(1_000),
+			new BN(1_000 + 20_000),
+			clock200
+		);
+
+		assert.equal(baseline, 30_000);
+		assert.equal(fast, baseline);
+	});
+
+	it('integrates an interval spanning a slot-duration transition piecewise', () => {
+		// 350ms regime starts at slot 3_000; the interval covers 3000 slots at
+		// 400ms + 3000 at 350ms = 2_250_000ms = 5625 whole 400ms periods
+		const clock = {
+			slotDurationTransitionSlots: [
+				new BN(3_000),
+				new BN(0),
+				new BN(0),
+				new BN(0),
+			],
+		};
+		const fee = getLiquidationFee(0, 100_000, new BN(0), new BN(6_000), clock);
+		assert.equal(fee, 5_625);
+	});
+
+	it('saturates a current slot before the last-active slot like the program', () => {
+		assert.equal(
+			getLiquidationFee(20_000, 50_000, new BN(101), new BN(100)),
+			20_000
+		);
 	});
 });
 

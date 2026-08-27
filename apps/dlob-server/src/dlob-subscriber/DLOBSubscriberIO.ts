@@ -2,6 +2,8 @@ import {
 	BN,
 	DLOBSubscriber,
 	DLOBSubscriptionConfig,
+	msToSlotsNum,
+	activeSlotDurationFromState,
 	VelocityEnv,
 	L2OrderBookGenerator,
 	MarketType,
@@ -48,7 +50,9 @@ export type wsMarketArgs = {
 
 require('dotenv').config();
 
-const STALE_ORACLE_REMOVE_VAMM_THRESHOLD = 160;
+// ~64s of oracle staleness before the vAMM is dropped from the published book
+// (expressed in actual slots at the current slot duration)
+const STALE_ORACLE_REMOVE_VAMM_THRESHOLD_MS = 64_000;
 
 const INDICATIVE_QUOTES_PUBKEY = 'inDNdu3ML4vG5LNExqcwuCQtLcCU8KfK5YM2qYV3JJz';
 
@@ -150,7 +154,8 @@ export class DLOBSubscriberIO extends DLOBSubscriber {
 				if (this.indicativeQuotesRedisClient) {
 					const oraclePriceData = isVariant(marketArgs.marketType, 'perp')
 						? this.velocityClient.getMMOracleDataForPerpMarket(
-								marketArgs.marketIndex
+								marketArgs.marketIndex,
+								this.slotSource.getSlot()
 						  )
 						: this.velocityClient.getOracleDataForSpotMarket(
 								marketArgs.marketIndex
@@ -188,10 +193,12 @@ export class DLOBSubscriberIO extends DLOBSubscriber {
 							perpMarketAccount.amm,
 							perpMarketAccount.marketStats,
 							this.velocityClient.getMMOracleDataForPerpMarket(
-								marketArgs.marketIndex
+								marketArgs.marketIndex,
+								this.slotSource.getSlot()
 							),
 							true,
-							new BN(this.slotSource.getSlot())
+							new BN(this.slotSource.getSlot()),
+							this.velocityClient.getStateAccount()
 						);
 
 						bestBid =
@@ -351,7 +358,8 @@ export class DLOBSubscriberIO extends DLOBSubscriber {
 		const oracleData =
 			marketType === 'perp'
 				? this.velocityClient.getMMOracleDataForPerpMarket(
-						marketArgs.marketIndex
+						marketArgs.marketIndex,
+						this.slotSource.getSlot()
 				  )
 				: this.velocityClient.getOracleDataForSpotMarket(
 						marketArgs.marketIndex
@@ -366,7 +374,14 @@ export class DLOBSubscriberIO extends DLOBSubscriber {
 			);
 		let includeVamm = marketArgs.includeVamm;
 		if (
-			dlobSlot - oracleSlot.toNumber() > STALE_ORACLE_REMOVE_VAMM_THRESHOLD &&
+			dlobSlot - oracleSlot.toNumber() >
+				msToSlotsNum(
+					STALE_ORACLE_REMOVE_VAMM_THRESHOLD_MS,
+					activeSlotDurationFromState(
+						this.velocityClient.getStateAccount(),
+						new BN(dlobSlot)
+					)
+				) &&
 			!isPerpMarketAndPrelaunchMarket
 		) {
 			logger.info(

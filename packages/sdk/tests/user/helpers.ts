@@ -112,10 +112,23 @@ export async function makeMockUser(
 	mockUser.velocityClient.accountSubscriber.isSubscribed = true;
 	const getStateAccount = () =>
 		({
-			data: {
-				liquidationMarginBufferRatio: 1000,
+			liquidationMarginBufferRatio: 1000,
+			slotDurationMs: 0,
+			pendingSlotDurationMs: 0,
+			slotDurationEffectiveSlot: ZERO,
+			slotDurationTransitionSlots: [ZERO, ZERO, ZERO, ZERO],
+			oracleGuardRails: {
+				priceDivergence: {
+					markOraclePercentDivergence: ZERO,
+					oracleTwap5MinPercentDivergence: ZERO,
+				},
+				validity: {
+					slotsBeforeStaleForAmm: new BN(10),
+					slotsBeforeStaleForMargin: new BN(120),
+					confidenceIntervalMaxSize: new BN(20_000),
+					tooVolatileRatio: new BN(5),
+				},
 			},
-			slot: 0,
 		}) as any;
 	mockUser.velocityClient.getStateAccount = getStateAccount;
 

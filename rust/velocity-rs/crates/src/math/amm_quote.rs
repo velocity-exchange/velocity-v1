@@ -18,6 +18,7 @@
 //! vAMM-cross decisions against this projection.
 
 use program::{
+    math::time::SlotClock,
     state::{oracle::OraclePriceData, perp_market::PerpMarket, state::ValidityGuardRails},
     vlp::amm::{
         math::{
@@ -50,13 +51,19 @@ pub fn project_perp_market_for_quoting(
     exchange_oracle: OraclePriceData,
     guard_rails: &ValidityGuardRails,
     slot: u64,
+    slot_clock: SlotClock,
 ) -> SdkResult<PerpMarket> {
     let mm_oracle = perp_market
-        .get_mm_oracle_price_data(exchange_oracle, slot, guard_rails)
+        .get_mm_oracle_price_data(exchange_oracle, slot, guard_rails, slot_clock)
         .map_err(|e| SdkError::Anchor(Box::new(e.into())))?;
-    let validity =
-        compute_amm_refresh_validity_with_guard_rails(&perp_market, &mm_oracle, guard_rails)
-            .map_err(|e| SdkError::Anchor(Box::new(e.into())))?;
+    let validity = compute_amm_refresh_validity_with_guard_rails(
+        &perp_market,
+        &mm_oracle,
+        guard_rails,
+        slot,
+        slot_clock,
+    )
+    .map_err(|e| SdkError::Anchor(Box::new(e.into())))?;
 
     if perp_market.amm.last_update_slot < slot {
         let projection_inputs = ProjectionInputs {
@@ -80,6 +87,7 @@ pub fn project_perp_market_for_quoting(
         &mm_oracle,
         reserve_price,
         slot,
+        slot_clock,
     )
     .map_err(|e| SdkError::Anchor(Box::new(e.into())))?;
 
@@ -149,9 +157,10 @@ pub(crate) fn btc_market_fixture() -> PerpMarket {
 /// Mainnet-shaped oracle validity guard rails for tests.
 #[cfg(test)]
 pub(crate) fn validity_guard_rails_fixture() -> ValidityGuardRails {
+    use program::math::time::legacy_slot_duration_i64;
     ValidityGuardRails {
-        slots_before_stale_for_amm: 10,
-        slots_before_stale_for_margin: 120,
+        slots_before_stale_for_amm: legacy_slot_duration_i64(10),
+        slots_before_stale_for_margin: legacy_slot_duration_i64(120),
         confidence_interval_max_size: 20_000,
         too_volatile_ratio: 5,
     }

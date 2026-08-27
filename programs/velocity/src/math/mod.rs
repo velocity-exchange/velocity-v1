@@ -32,3 +32,4 @@ pub mod spot_balance;
 pub mod spot_swap;
 pub mod spot_withdraw;
 pub mod stats;
+pub mod time;

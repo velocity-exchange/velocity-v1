@@ -161,6 +161,7 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         clock.slot,
+        state.slot_clock(),
         Some(state.oracle_guard_rails),
     )?;
 

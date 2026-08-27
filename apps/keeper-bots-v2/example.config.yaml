@@ -172,8 +172,8 @@ botConfigs:
     # and also passed into jupiter when doing swaps.
     maxSlippageBps: 50
 
-    # duration of the derisk order's dutch auction
-    deriskAuctionDurationSlots: 100
+    # wall-clock duration of the jit auction for derisk orders, in ms
+    deriskAuctionDurationMs: 40000
 
     # Minimum deposit amount to try to liquidiate, per spot market, in lamports.
     # If null, or a spot market isn't here, it will liquidate any amount

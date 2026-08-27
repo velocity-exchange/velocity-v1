@@ -22,7 +22,7 @@ use {
         },
         msg,
         state::{
-            oracle::{get_prelaunch_price, OracleSource},
+            oracle::{get_prelaunch_price, load_pyth_push_price, OracleSource},
             perp_market::{MarketStats, PoolBalance},
             pyth_lazer_oracle::PythLazerOracle,
         },
@@ -843,7 +843,7 @@ impl AMM {
         let oracle_exponent: i32;
 
         if oracle_source.is_pyth_push_oracle() {
-            let price_data = pyth_client::cast::<pyth_client::Price>(pyth_price_data);
+            let price_data = load_pyth_push_price(pyth_price_data)?;
             oracle_price = price_data.agg.price;
             oracle_twap = price_data.twap.val;
             oracle_exponent = price_data.expo;

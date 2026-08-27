@@ -1,5 +1,6 @@
 use crate::{
     controller::position::{update_position_and_market, PositionDelta, PositionDirection},
+    math::time::SlotClock,
     state::{
         prop_amm::Direction,
         quoter::{QuoteContext, RouterQuoter},
@@ -28,6 +29,7 @@ fn run_amm_swap_for_test(
         tick: order_tick,
         step_size: 1,
         slot: 0,
+        slot_clock: SlotClock::baseline(),
         base_precision: BASE_PRECISION as u64,
         market_status: crate::state::market_status::MarketStatus::default(),
         market_config: 0,
@@ -297,7 +299,13 @@ fn amm_pred_expiry_price_yes_market_example() {
         PrelaunchOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock_slot, None).unwrap();
+    let mut oracle_map = OracleMap::load_one(
+        &oracle_account_info,
+        clock_slot,
+        SlotClock::baseline(),
+        None,
+    )
+    .unwrap();
 
     let mut spot_market = SpotMarket {
         market_index: 0,
@@ -419,7 +427,13 @@ fn amm_pred_expiry_price_market_example() {
         PrelaunchOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock_slot, None).unwrap();
+    let mut oracle_map = OracleMap::load_one(
+        &oracle_account_info,
+        clock_slot,
+        SlotClock::baseline(),
+        None,
+    )
+    .unwrap();
 
     let mut spot_market = SpotMarket {
         market_index: 0,
@@ -540,7 +554,13 @@ fn amm_pred_settle_market_example() {
         PrelaunchOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock_slot, None).unwrap();
+    let mut oracle_map = OracleMap::load_one(
+        &oracle_account_info,
+        clock_slot,
+        SlotClock::baseline(),
+        None,
+    )
+    .unwrap();
 
     let mut spot_market = SpotMarket {
         market_index: 0,
@@ -624,6 +644,7 @@ fn amm_pred_market_example() {
             oracle_price_data,
             clock_slot,
             &state.oracle_guard_rails.validity,
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -786,6 +807,7 @@ fn amm_ref_price_decay_tail_test() {
             oracle_price_data,
             clock_slot,
             &state.oracle_guard_rails.validity,
+            SlotClock::baseline(),
         )
         .unwrap();
     _update_amm(
@@ -819,6 +841,7 @@ fn amm_ref_price_decay_tail_test() {
                 oracle_price_data,
                 clock_slot,
                 &state.oracle_guard_rails.validity,
+                SlotClock::baseline(),
             )
             .unwrap();
 
@@ -844,6 +867,7 @@ fn amm_ref_price_decay_tail_test() {
             &mm_oracle_price_data,
             r,
             clock_slot,
+            SlotClock::baseline(),
         )
         .unwrap();
         offsets.push(perp_market.amm.reference_price_offset);
@@ -958,6 +982,7 @@ fn amm_ref_price_offset_decay_logic() {
             oracle_price_data,
             clock_slot,
             &state.oracle_guard_rails.validity,
+            SlotClock::baseline(),
         )
         .unwrap();
     _update_amm(
@@ -997,6 +1022,7 @@ fn amm_ref_price_offset_decay_logic() {
                 oracle_price_data,
                 clock_slot,
                 &state.oracle_guard_rails.validity,
+                SlotClock::baseline(),
             )
             .unwrap();
 
@@ -1021,6 +1047,7 @@ fn amm_ref_price_offset_decay_logic() {
             &mm_oracle_price_data,
             r,
             clock_slot,
+            SlotClock::baseline(),
         )
         .unwrap();
         offsets.push(perp_market.amm.reference_price_offset);
@@ -1138,6 +1165,7 @@ fn amm_negative_ref_price_offset_decay_logic() {
             oracle_price_data,
             clock_slot,
             &state.oracle_guard_rails.validity,
+            SlotClock::baseline(),
         )
         .unwrap();
     _update_amm(
@@ -1177,6 +1205,7 @@ fn amm_negative_ref_price_offset_decay_logic() {
                 oracle_price_data,
                 clock_slot,
                 &state.oracle_guard_rails.validity,
+                SlotClock::baseline(),
             )
             .unwrap();
 
@@ -1201,6 +1230,7 @@ fn amm_negative_ref_price_offset_decay_logic() {
             &mm_oracle_price_data,
             r,
             clock_slot,
+            SlotClock::baseline(),
         )
         .unwrap();
         offsets.push(perp_market.amm.reference_price_offset);
@@ -1327,6 +1357,7 @@ fn amm_perp_ref_offset() {
             oracle_price_data,
             clock_slot,
             &state.oracle_guard_rails.validity,
+            SlotClock::baseline(),
         )
         .unwrap();
     _update_amm(
@@ -1354,6 +1385,7 @@ fn amm_perp_ref_offset() {
             &mm_oracle_price_data,
             r,
             clock_slot,
+            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -1390,6 +1422,7 @@ fn amm_perp_ref_offset() {
             oracle_price_data,
             clock_slot,
             &state.oracle_guard_rails.validity,
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -1411,6 +1444,7 @@ fn amm_perp_ref_offset() {
             &mm_oracle_price_data,
             reserve_price_mm_offset,
             clock_slot,
+            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -1436,6 +1470,7 @@ fn amm_perp_ref_offset() {
             oracle_price_data,
             clock_slot,
             &state.oracle_guard_rails.validity,
+            SlotClock::baseline(),
         )
         .unwrap();
 
@@ -1451,6 +1486,7 @@ fn amm_perp_ref_offset() {
             &mm_oracle_price,
             reserve_price_mm_offset_3,
             clock_slot,
+            SlotClock::baseline(),
         )
         .unwrap();
     }
@@ -2424,7 +2460,7 @@ fn update_amm_near_boundary() {
     let slot = 234897842;
     let now = 1702120657;
     let mut oracle_map: OracleMap<'_> =
-        OracleMap::load_one(&jto_market_account_info, slot, None).unwrap();
+        OracleMap::load_one(&jto_market_account_info, slot, SlotClock::baseline(), None).unwrap();
 
     let mut perp_market = perp_market_loader.load_mut().unwrap();
     // Pre-LP-removal scenario: this market snapshot used to have an
@@ -2438,7 +2474,12 @@ fn update_amm_near_boundary() {
 
     let oracle_price_data = oracle_map.get_price_data(&perp_market.oracle_id()).unwrap();
     let mm_oracle_price_data = perp_market
-        .get_mm_oracle_price_data(*oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            *oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            SlotClock::baseline(),
+        )
         .unwrap();
 
     let state = State::default();
@@ -2479,7 +2520,8 @@ fn update_amm_near_boundary2() {
 
     let slot = 234919073;
     let now = 1702120657;
-    let mut oracle_map = OracleMap::load_one(&jto_market_account_info, slot, None).unwrap();
+    let mut oracle_map =
+        OracleMap::load_one(&jto_market_account_info, slot, SlotClock::baseline(), None).unwrap();
 
     // let perp_market_old = market_map.get_ref(&4).unwrap();
 
@@ -2489,7 +2531,12 @@ fn update_amm_near_boundary2() {
 
     let oracle_price_data = oracle_map.get_price_data(&perp_market.oracle_id()).unwrap();
     let mm_oracle_price_data = perp_market
-        .get_mm_oracle_price_data(*oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            *oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            SlotClock::baseline(),
+        )
         .unwrap();
     let state = State::default();
 
@@ -2532,7 +2579,8 @@ fn recenter_amm_1() {
 
     let slot = 234919073;
     let now = 1702120657;
-    let mut oracle_map = OracleMap::load_one(&jto_market_account_info, slot, None).unwrap();
+    let mut oracle_map =
+        OracleMap::load_one(&jto_market_account_info, slot, SlotClock::baseline(), None).unwrap();
 
     // let perp_market_old = market_map.get_ref(&4).unwrap();
 
@@ -2542,7 +2590,12 @@ fn recenter_amm_1() {
 
     let oracle_price_data = oracle_map.get_price_data(&perp_market.oracle_id()).unwrap();
     let mm_oracle_price_data = perp_market
-        .get_mm_oracle_price_data(*oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(
+            *oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            SlotClock::baseline(),
+        )
         .unwrap();
 
     let state = State::default();
@@ -2630,7 +2683,8 @@ fn recenter_amm_2() {
     //https://explorer.solana.com/block/243485436
     let slot = 243485436;
     let now = 1705963488;
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+    let mut oracle_map =
+        OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
     // let perp_market_old = market_map.get_ref(&4).unwrap();
 
@@ -2794,7 +2848,8 @@ fn test_move_amm() {
     //https://explorer.solana.com/block/243485436
     let slot = 243485436;
     let now = 1705963488;
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+    let mut oracle_map =
+        OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
     // let perp_market_old = market_map.get_ref(&4).unwrap();
 
@@ -2990,7 +3045,13 @@ fn settle_expired_market_prices_against_pnl_pool_only() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+    let mut oracle_map = OracleMap::load_one(
+        &oracle_account_info,
+        clock.slot,
+        SlotClock::baseline(),
+        None,
+    )
+    .unwrap();
 
     // tfmd (10) is far below the fee pool (500), so 490 tokens stay behind in the
     // fee pool and must not be priced as backing.
@@ -3225,7 +3286,13 @@ fn settle_expired_market_reserves_pending_revenue_share() {
         PythLazerOracle,
         oracle_account_info
     );
-    let mut oracle_map = OracleMap::load_one(&oracle_account_info, clock.slot, None).unwrap();
+    let mut oracle_map = OracleMap::load_one(
+        &oracle_account_info,
+        clock.slot,
+        SlotClock::baseline(),
+        None,
+    )
+    .unwrap();
 
     // $400 pool, of which $150 is already owed to builders/referrers, so only $250
     // actually backs winner claims. No fee-pool transfer in play (tfmd = 0), which

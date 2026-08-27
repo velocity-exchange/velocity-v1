@@ -10,6 +10,7 @@ use {
             },
             safe_math::SafeMath,
             safe_unwrap::SafeUnwrap,
+            time::Millis,
         },
         state::{
             events::OrderActionExplanation,
@@ -43,7 +44,7 @@ pub struct OrderParams {
     pub trigger_price: Option<u64>,
     pub trigger_condition: OrderTriggerCondition,
     pub oracle_price_offset: Option<i64>, // price offset from oracle for order
-    pub auction_duration: Option<u8>,     // specified in slots
+    pub auction_duration: Option<u8>,     // wall clock 400ms units (one slot at the 400ms baseline)
     pub auction_start_price: Option<i64>, // specified in price or oracle_price_offset
     pub auction_end_price: Option<i64>,   // specified in price or oracle_price_offset
     /// the index into the placing user's RevenueShareEscrow.approved_builders list, if this order
@@ -308,10 +309,14 @@ impl OrderParams {
             oracle_price.unsigned_abs(),
             perp_market.contract_tier,
         )?;
+        // ~4s of slop (in 400ms units) before overwriting a signed-msg duration
+        let duration_tolerance = Millis::from_secs(4)
+            .div_periods(Millis::UNIT)
+            .min(u8::MAX as u64) as u8;
         if auction_duration_before
             .unwrap_or(0)
             .abs_diff(new_auction_duration)
-            > 10
+            > duration_tolerance
             || !is_signed_msg
         {
             self.auction_duration = Some(
@@ -543,10 +548,14 @@ impl OrderParams {
             perp_market.contract_tier,
         )?;
 
+        // ~4s of slop (in 400ms units) before overwriting a signed-msg duration
+        let duration_tolerance = Millis::from_secs(4)
+            .div_periods(Millis::UNIT)
+            .min(u8::MAX as u64) as u8;
         if auction_duration_before
             .unwrap_or(0)
             .abs_diff(new_auction_duration)
-            > 10
+            > duration_tolerance
             || !is_signed_msg
         {
             self.auction_duration = Some(
@@ -767,7 +776,7 @@ impl OrderParams {
     /// TWAPs a caller can influence: `update_perp_bid_ask_twap` samples the book from
     /// caller-supplied `User` accounts, and past 50bps of fast/slow divergence this function uses
     /// `last_mark_price_twap_5min` alone. These offsets set the auction band for a THIRD PARTY's
-    /// forced close, so a moved TWAP prices a stranger's exit. `BID_ASK_TWAP_MIN_QUOTE_REST_SLOTS`
+    /// forced close, so a moved TWAP prices a stranger's exit. `BID_ASK_TWAP_MIN_QUOTE_REST`
     /// raises the cost of moving those TWAPs; this clamp bounds the damage if one still moves.
     ///
     /// The sibling `get_perp_baseline_start_end_price_offset` clamps its END buffer to the same tier
@@ -946,6 +955,11 @@ impl OrderParams {
     ) -> VelocityResult<OrderParams> {
         let (auction_start_price, auction_end_price) =
             OrderParams::get_perp_baseline_start_end_price_offset(market, direction_to_close, 1)?;
+        // ~32s in wall clock 400ms units
+        let auction_duration = Millis::from_secs(32)
+            .div_periods(Millis::UNIT)
+            .min(u8::MAX as u64)
+            .cast::<u8>()?;
 
         let params = OrderParams {
             market_type: MarketType::Perp,
@@ -956,7 +970,7 @@ impl OrderParams {
             reduce_only: true,
             auction_start_price: Some(auction_start_price),
             auction_end_price: Some(auction_end_price),
-            auction_duration: Some(80),
+            auction_duration: Some(auction_duration),
             oracle_price_offset: Some(auction_end_price.cast()?),
             ..OrderParams::default()
         };
@@ -1121,16 +1135,23 @@ fn get_auction_duration(
 ) -> VelocityResult<u8> {
     let percent_diff = price_diff.safe_mul(PERCENTAGE_PRECISION_U64)?.div(price);
 
-    let slots_per_pct = if contract_tier.is_as_safe_as_contract(&ContractTier::B) {
+    // duration granted per 1% of price diff; the step is the historical 400ms
+    // calibration (100 or 60 of them per 1%, i.e. 40s / 24s per 1%)
+    let steps_per_pct = if contract_tier.is_as_safe_as_contract(&ContractTier::B) {
         100
     } else {
         60
     };
 
+    // `Order.auction_duration` stores wall clock 400ms units, not live slots,
+    // so the value is independent of the slot duration and the u8 keeps the
+    // full historical range (max 180 units = 72s; the ceiling is 255 = 102s).
+    // Auction progress converts elapsed slots to wall clock through the
+    // `SlotClock` at fill time.
     Ok(percent_diff
-        .safe_mul(slots_per_pct)?
-        .safe_div_ceil(PERCENTAGE_PRECISION_U64 / 100)? // 1% = 40 slots
-        .clamp(1, 180) as u8) // 180 slots max
+        .safe_mul(steps_per_pct)?
+        .safe_div_ceil(PERCENTAGE_PRECISION_U64 / 100)?
+        .clamp(1, 180) as u8) // ~72s max
 }
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Debug, Eq, Default)]

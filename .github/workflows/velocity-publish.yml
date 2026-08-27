@@ -1,0 +1,95 @@
+# Push a tag `docker-<app>-v<version>` to build + push that app's image to ECR.
+# `<app>` is a key in docker-info.json (e.g. docker-dlob-server-v0.3.0,
+# docker-keeper-bots-v2-v1.4.2, docker-keep-rs-v2.1.0). The version is everything
+# after the LAST `-v`, so app keys may themselves contain `-v` (keeper-bots-v2).
+#
+# This file only routes the tag; ALL build/copy/sign mechanics (cosign keyless
+# signing by digest, digest-end-to-end prod copy, and the tagged-commit-must-
+# be-on-master gate) live in infrastructure-v3's publish-image.yml, called AT
+# MASTER — deliberately not vendored here: a tag-push runs this caller from
+# the tagged commit, so a branch could edit it, but only
+# publish-image.yml@refs/heads/master can mint the signature identity the
+# admission policy accepts, and that workflow rejects commits that aren't on
+# this repo's master.
+name: Publish Velocity ECR (docker tag)
+
+on:
+  push:
+    tags:
+      - 'docker-*'
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  route:
+    runs-on: ubuntu-latest
+    outputs:
+      app: ${{ steps.parse.outputs.app }}
+      version: ${{ steps.parse.outputs.version }}
+      lang: ${{ steps.parse.outputs.lang }}
+      path: ${{ steps.parse.outputs.path }}
+      scope: ${{ steps.parse.outputs.scope }}
+      out: ${{ steps.parse.outputs.out }}
+      start: ${{ steps.parse.outputs.start }}
+      bin: ${{ steps.parse.outputs.bin }}
+      ecr: ${{ steps.parse.outputs.ecr }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - id: parse
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          rest="${tag#docker-}"
+          app="${rest%-v*}"          # strip the trailing -v<version>
+          version="v${rest##*-v}"    # everything after the last -v
+          echo "Parsed app=$app version=$version from tag=$tag"
+          info=$(jq -e --arg a "$app" '.[$a]' docker-info.json) || { echo "::error::unknown app '$app' (no docker-info.json entry)"; exit 1; }
+          {
+            echo "app=$app"
+            echo "version=$version"
+            echo "lang=$(echo "$info" | jq -r '.lang')"
+            echo "path=$(echo "$info" | jq -r '.path')"
+            echo "scope=$(echo "$info" | jq -r '.scope // ""')"
+            echo "out=$(echo "$info" | jq -r '.out // "dist"')"
+            echo "start=$(echo "$info" | jq -r '.start // "dist/index.js"')"
+            echo "bin=$(echo "$info" | jq -r '.bin // ""')"
+            echo "ecr=$(echo "$info" | jq -r '.ecr')"
+          } >> "$GITHUB_OUTPUT"
+
+  build-ts:
+    needs: route
+    if: needs.route.outputs.lang == 'ts'
+    uses: velocity-exchange/infrastructure-v3/.github/workflows/publish-image.yml@master
+    with:
+      ecr_repository: ${{ needs.route.outputs.ecr }}
+      image_tag: ${{ needs.route.outputs.version }}
+      dockerfile: docker/ts-app.Dockerfile
+      runner: ubuntu-latest
+      # Same cache scope as main.yml's docker-images-ts job: a tag usually
+      # points at a commit main CI just built, and with an identical scope the
+      # whole build replays from the layer cache.
+      cache_scope: docker-ts-${{ needs.route.outputs.app }}
+      build_args: |
+        APP_PATH=${{ needs.route.outputs.path }}
+        APP_SCOPE=${{ needs.route.outputs.scope }}
+        APP_OUT=${{ needs.route.outputs.out }}
+        APP_START=${{ needs.route.outputs.start }}
+
+  build-rust:
+    needs: route
+    if: needs.route.outputs.lang == 'rust'
+    uses: velocity-exchange/infrastructure-v3/.github/workflows/publish-image.yml@master
+    with:
+      ecr_repository: ${{ needs.route.outputs.ecr }}
+      image_tag: ${{ needs.route.outputs.version }}
+      dockerfile: docker/rust-app.Dockerfile
+      runner: ubuntu-latest
+      # Keyed by bin, not app — same scope as main.yml's docker-images-rust
+      # job so the expensive `cargo build` layer replays from cache.
+      cache_scope: docker-rust-${{ needs.route.outputs.bin }}
+      build_args: |
+        APP_BIN=${{ needs.route.outputs.bin }}
+        GIT_SHA=${{ github.sha }}
+        BUILD_VERSION=${{ needs.route.outputs.version }}

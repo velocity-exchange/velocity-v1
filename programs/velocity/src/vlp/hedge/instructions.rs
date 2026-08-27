@@ -147,6 +147,7 @@ pub fn handle_update_constituent_target_base<'c: 'info, 'info>(
         &amm_inventories,
         constituent_indexes_and_decimals_and_prices.as_mut_slice(),
         slot,
+        ctx.accounts.state.load()?.slot_clock(),
     )?;
 
     Ok(())
@@ -171,6 +172,7 @@ pub fn handle_update_lp_pool_aum<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         slot,
+        state.slot_clock(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -309,6 +311,7 @@ pub fn handle_lp_pool_swap<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         slot,
+        state.slot_clock(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -410,6 +413,8 @@ pub fn handle_lp_pool_swap<'c: 'info, 'info>(
             in_constituent.constituent_index,
             out_constituent.constituent_index,
         )?,
+        slot,
+        state.slot_clock(),
     )?;
     msg!(
         "in_amount: {}, out_amount: {}, in_fee: {}, out_fee: {}",
@@ -548,6 +553,7 @@ pub fn handle_view_lp_pool_swap_fees<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         slot,
+        state.slot_clock(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -607,6 +613,8 @@ pub fn handle_view_lp_pool_swap_fees<'c: 'info, 'info>(
             in_constituent.constituent_index,
             out_constituent.constituent_index,
         )?,
+        slot,
+        state.slot_clock(),
     )?;
     msg!(
         "in_amount: {}, out_amount: {}, in_fee: {}, out_fee: {}",
@@ -676,6 +684,7 @@ pub fn handle_lp_pool_add_liquidity<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set_from_many(vec![in_market_index]),
         slot,
+        state.slot_clock(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -756,6 +765,8 @@ pub fn handle_lp_pool_add_liquidity<'c: 'info, 'info>(
             &in_oracle,
             in_target_weight,
             dlp_total_supply,
+            slot,
+            state.slot_clock(),
         )?;
     msg!(
         "lp_amount: {}, in_amount: {}, lp_fee_amount: {}, in_fee_amount: {}",
@@ -917,6 +928,7 @@ pub fn handle_view_lp_pool_add_liquidity_fees<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         slot,
+        state.slot_clock(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -972,6 +984,8 @@ pub fn handle_view_lp_pool_add_liquidity_fees<'c: 'info, 'info>(
             &in_oracle,
             in_target_weight,
             dlp_total_supply,
+            slot,
+            state.slot_clock(),
         )?;
     msg!(
         "lp_amount: {}, in_amount: {}, lp_fee_amount: {}, in_fee_amount: {}",
@@ -1056,6 +1070,7 @@ pub fn handle_lp_pool_remove_liquidity<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set_from_many(vec![out_market_index]),
         slot,
+        state.slot_clock(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -1124,6 +1139,8 @@ pub fn handle_lp_pool_remove_liquidity<'c: 'info, 'info>(
             &out_oracle,
             out_target_weight,
             dlp_total_supply,
+            slot,
+            state.slot_clock(),
         )?;
     msg!(
         "lp_burn_amount: {}, out_amount: {}, lp_fee_amount: {}, out_fee_amount: {}",
@@ -1324,6 +1341,7 @@ pub fn handle_view_lp_pool_remove_liquidity_fees<'c: 'info, 'info>(
         &MarketSet::new(),
         &get_writable_spot_market_set_from_many(vec![out_market_index]),
         slot,
+        state.slot_clock(),
         Some(state.oracle_guard_rails),
     )?;
 
@@ -1376,6 +1394,8 @@ pub fn handle_view_lp_pool_remove_liquidity_fees<'c: 'info, 'info>(
             &out_oracle,
             out_target_weight,
             dlp_total_supply,
+            slot,
+            state.slot_clock(),
         )?;
     msg!(
         "lp_burn_amount: {}, out_amount: {}, lp_fee_amount: {}, out_fee_amount: {}",
@@ -1399,6 +1419,7 @@ pub fn handle_update_constituent_oracle_info<'c: 'info, 'info>(
     let mut oracle_map = OracleMap::load_one(
         &ctx.accounts.oracle,
         clock.slot,
+        ctx.accounts.state.load()?.slot_clock(),
         Some(ctx.accounts.state.load()?.oracle_guard_rails),
     )?;
 
@@ -1424,6 +1445,7 @@ pub fn handle_deposit_to_program_vault<'c: 'info, 'info>(
     let mut oracle_map = OracleMap::load_one(
         &ctx.accounts.oracle,
         clock.slot,
+        ctx.accounts.state.load()?.slot_clock(),
         Some(ctx.accounts.state.load()?.oracle_guard_rails),
     )?;
     let remaining_accounts = &mut ctx.remaining_accounts.iter().peekable();
@@ -1556,6 +1578,7 @@ pub fn handle_withdraw_from_program_vault<'c: 'info, 'info>(
     let mut oracle_map = OracleMap::load_one(
         &ctx.accounts.oracle,
         clock.slot,
+        ctx.accounts.state.load()?.slot_clock(),
         Some(ctx.accounts.state.load()?.oracle_guard_rails),
     )?;
     let remaining_accounts = &mut ctx.remaining_accounts.iter().peekable();

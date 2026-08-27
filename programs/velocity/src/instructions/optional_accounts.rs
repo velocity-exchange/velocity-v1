@@ -4,7 +4,7 @@ use {
             ErrorCode::{self, UnableToLoadOracle},
             VelocityResult,
         },
-        math::safe_unwrap::SafeUnwrap,
+        math::{safe_unwrap::SafeUnwrap, time::SlotClock},
         msg,
         state::{
             load_ref::load_ref_mut,
@@ -48,9 +48,10 @@ pub fn load_maps<'a, 'b>(
     writable_perp_markets: &'b MarketSet,
     writable_spot_markets: &'b MarketSet,
     slot: u64,
+    slot_clock: SlotClock,
     oracle_guard_rails: Option<OracleGuardRails>,
 ) -> VelocityResult<AccountMaps<'a>> {
-    let oracle_map = OracleMap::load(account_info_iter, slot, oracle_guard_rails)?;
+    let oracle_map = OracleMap::load(account_info_iter, slot, slot_clock, oracle_guard_rails)?;
     let spot_market_map = SpotMarketMap::load(writable_spot_markets, account_info_iter)?;
     let perp_market_map = PerpMarketMap::load(writable_perp_markets, account_info_iter)?;
 
@@ -281,6 +282,54 @@ pub fn get_revenue_share_escrow_account<'a>(
     )?;
 
     Ok(Some(escrow))
+}
+
+/// Reads the referrer's `UserStats` immediately after a referred taker's
+/// `RevenueShareEscrow` in remaining accounts and returns its persistent Accelerated
+/// status. The account is intentionally readonly: popular referrers must not
+/// become writable lock hotspots on every referee fill.
+///
+/// The account is optional. It is consumed only when it is present, is a `UserStats`, and
+/// belongs to the escrow's referrer. Anything else leaves the iterator untouched and returns
+/// the standard rate, so a caller that omits it still fills. The account selects a reward
+/// rate and nothing else, so a missing one does not fail the fill.
+pub fn get_referrer_accelerated_status<'a>(
+    account_info_iter: &mut Peekable<Iter<'a, AccountInfo<'a>>>,
+    escrow: Option<&RevenueShareEscrowZeroCopyMut<'a>>,
+) -> VelocityResult<bool> {
+    let Some(referrer) = escrow.and_then(|escrow| escrow.get_referrer()) else {
+        return Ok(false);
+    };
+
+    let Some(account_info) = account_info_iter.peek() else {
+        return Ok(false);
+    };
+
+    // Check owner, discriminator and authority before consuming, so a non-matching account stays
+    // in the iterator for whichever group actually owns it.
+    if account_info.owner != &crate::ID || account_info.data_len() < 8 + 32 {
+        return Ok(false);
+    }
+
+    {
+        let borrowed_data = account_info.data.borrow();
+        if array_ref![&borrowed_data, 0, 8] != UserStats::DISCRIMINATOR {
+            return Ok(false);
+        }
+        if array_ref![&borrowed_data, 8, 32] != &referrer.to_bytes() {
+            return Ok(false);
+        }
+    }
+
+    let account_info = account_info_iter.next().safe_unwrap()?;
+
+    let referrer_stats: AccountLoader<UserStats> = AccountLoader::try_from(account_info)
+        .or(Err(ErrorCode::CouldNotDeserializeReferrerStats))?;
+    let referrer_stats = referrer_stats
+        .load()
+        .or(Err(ErrorCode::UnableToLoadUserStatsAccount))?;
+
+    Ok(referrer_stats.is_accelerated_referrer())
 }
 
 /// Loads `count` read-only `User` accounts of `escrow_authority` from the front of the

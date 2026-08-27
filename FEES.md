@@ -55,6 +55,18 @@ builder_fee = notional × fee_tenth_bps / 100_000   ADDED on top of taker_fee; p
   bankruptcy-clawback tranche.
 - DLOB matches split the same way; the AMM's provision is credited to its books
   (`apply_fill_fees`) and tokenized by the sweep.
+- Referral rewards come at two independent rates. Standard is the active fee tier's
+  `referrer_reward_numerator`, which a fresh deployment defaults to 10% of the referee's
+  taker fee (existing deployments keep whatever the tier already holds until
+  `update_perp_fee_structure` changes it); Accelerated is a fixed 20% that ignores the
+  tier. The referee discount remains 5% in both cases. Accelerated is a persistent flag on
+  `UserStats`. While the beta-scoped `ACCELERATED_REFERRAL_ENROLLMENT_ENABLED` constant is
+  true, creating a user account, filling a perp order as taker or maker, or completing a
+  swap grants it automatically; a liquidation does not grant it to the liquidatee. Ending
+  enrollment is a program upgrade, not a config change: flip the constant and delete the
+  branches that read it. The warm admin can grant or revoke per user at any time with
+  `update_user_accelerated_referral_status`, and a revoke blocks automatic reenrollment
+  until a later admin grant.
 - `calculate_fee_for_fulfillment_with_amm` / `_with_match`
   (`math/fees.rs`, `split_fee_remainder`).
 
@@ -300,8 +312,8 @@ flowchart LR
 | Lending carveouts | `controller/spot_balance.rs:update_spot_market_cumulative_interest`; `InsuranceFund.if_fee_factor`, `SpotMarket.protocol_fee_factor` |
 | IF bootstrap | `controller/insurance.rs` (`settle_revenue_to_insurance_fund`, `add_insurance_fund_stake`) |
 | Withdrawal | `instructions/protocol_fees/`; `State.protocol_fee_recipient_perp`/`_spot` + `hot_fee_withdraw`; `HotRole::FeeWithdraw` |
-| Admin setters | `update_perp/spot_market_liquidation_fee` (+protocol rate), `update_spot_market_if_factor` (if_fee_factor, protocol_fee_factor), `update_protocol_fee_recipient`, `update_perp/spot_fee_structure`, `update_perp_market_fee_pool_buffer_target` |
-| Event | `ProtocolFeeWithdrawRecord`; `protocol_fee` on liquidation records |
+| Admin setters | `update_perp/spot_market_liquidation_fee` (+protocol rate), `update_spot_market_if_factor` (if_fee_factor, protocol_fee_factor), `update_protocol_fee_recipient`, `update_perp/spot_fee_structure`, `update_perp_market_fee_pool_buffer_target`, `update_user_accelerated_referral_status` |
+| Event | `ProtocolFeeWithdrawRecord`, `AcceleratedReferralStatusChangedRecord`; `protocol_fee` on liquidation records |
 
 ---
 
@@ -317,7 +329,7 @@ Classifies every fee the protocol charges by destination: **protocol-retained re
 
 ## Differences from upstream Drift
 
-- **Spot trading charges no fee.** The swap fee is hardcoded to zero (`let fee = 0_u64;`, `instructions/user.rs:3949`), and there is no spot order-book fill path (`fulfill_spot_order` does not exist); spot trades route through `begin_swap`/`end_swap` and `lp_pool_swap`. `SpotMarket.total_spot_fee`, `spot_fee_pool`, and `total_swap_fee` are therefore inert.
+- **Spot trading charges no fee.** The swap fee is hardcoded to zero (`let fee = 0_u64;`, `instructions/user.rs:3949`), and there is no spot order-book fill path (`fulfill_spot_order` does not exist); spot trades route through `begin_swap`/`end_swap` and `lp_pool_swap`. `SpotMarket.total_spot_fee` and `total_swap_fee` are therefore inert. The unused `spot_fee_pool` slot is reserved padding.
 - **Perp taker fees are the only trading-fee revenue.**
 - **The AMM lives in `src/vlp/`** (the decoupled AMM). Its fee counters (`total_fee`, `total_mm_fee`, `total_fee_minus_distributions`, `total_fee_withdrawn`, `fee_pool`) are on `vlp/amm/state.rs`, not `PerpMarket`; `lp_fee_transfer_scalar` is now `HedgeConfig.fee_transfer_scalar` (`vlp/hedge/state.rs:80`).
 - **The protocol's automatic fee share is ½ of taker fees** (`SHARE_OF_FEES_ALLOCATED_TO_DRIFT = 1/2`, `math/constants.rs:111-112`). This bounds only the continuous revenue-pool sweep; AMM spread surplus and trading PnL are excluded from it and are realized at market wind-down instead (see [Protocol fee share](#protocol-fee-share-streaming-vs-wind-down)).

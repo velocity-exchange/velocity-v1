@@ -131,7 +131,7 @@ pub fn build_decorations(
         )
     })?;
     let mm_oracle_data = perp_market
-        .get_mm_oracle_price_data(oracle_data, clock_slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(oracle_data, clock_slot, &state.oracle_guard_rails.validity, state.slot_clock())
         .map_err(|e| anyhow!("mm oracle for market {}: {e:?}", perp_market.market_index))?
         .get_safe_oracle_price_data();
     Ok(Decorations {

@@ -34,17 +34,19 @@ use {
             constants::{
                 AMM_TIMES_PEG_TO_QUOTE_PRECISION_RATIO_I128, AMM_TO_QUOTE_PRECISION_RATIO_I128,
                 BID_ASK_SPREAD_PRECISION, BID_ASK_SPREAD_PRECISION_I128,
-                DEFAULT_LARGE_BID_ASK_FACTOR, DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT,
-                FUNDING_RATE_BUFFER, FUNDING_RATE_OFFSET_DENOMINATOR,
-                FUNDING_RATE_OFFSET_PERCENTAGE, MAX_BID_ASK_INVENTORY_SKEW_FACTOR, PEG_PRECISION,
-                PERCENTAGE_PRECISION, PERCENTAGE_PRECISION_I128, PRICE_PRECISION,
-                PRICE_PRECISION_I128, PRICE_PRECISION_I64, REF_PRICE_OFFSET_SMOOTHING_MIN_STEP,
-                REF_PRICE_OFFSET_SMOOTHING_PER_SLOT_BUDGET,
+                BID_ASK_SPREAD_PRECISION_I64, DEFAULT_LARGE_BID_ASK_FACTOR,
+                DEFAULT_REVENUE_SINCE_LAST_FUNDING_SPREAD_RETREAT, FUNDING_RATE_BUFFER,
+                FUNDING_RATE_OFFSET_DENOMINATOR, FUNDING_RATE_OFFSET_PERCENTAGE,
+                MAX_BID_ASK_INVENTORY_SKEW_FACTOR, PEG_PRECISION, PERCENTAGE_PRECISION,
+                PERCENTAGE_PRECISION_I128, PRICE_PRECISION, PRICE_PRECISION_I128,
+                PRICE_PRECISION_I64, REF_PRICE_OFFSET_SMOOTHING_MIN_STEP,
+                REF_PRICE_OFFSET_SMOOTHING_PER_PERIOD_BUDGET,
                 REF_PRICE_OFFSET_SMOOTHING_STEP_DIVISOR, SPREAD_CONF_DISCOUNT_DIVISOR,
                 SPREAD_CONF_FULL_WEIGHT_THRESHOLD, SPREAD_REVENUE_RETREAT_MAX_DIVISOR,
                 SPREAD_VOL_STD_DISCOUNT_DIVISOR,
             },
             safe_math::SafeMath,
+            time::{Millis, SlotClock},
         },
         msg,
         state::{
@@ -87,9 +89,16 @@ pub fn update_amm_quote_state(
     mm_oracle_price_data: &MMOraclePriceData,
     reserve_price: u64,
     slot: u64,
+    slot_clock: SlotClock,
 ) -> VelocityResult<()> {
-    let quote_state =
-        compute_quote_state(amm, market_stats, mm_oracle_price_data, reserve_price, slot)?;
+    let quote_state = compute_quote_state(
+        amm,
+        market_stats,
+        mm_oracle_price_data,
+        reserve_price,
+        slot,
+        slot_clock,
+    )?;
     commit_quote_state(amm, &quote_state, slot)?;
     validate_amm_quote_state(amm)
 }
@@ -122,6 +131,7 @@ fn compute_quote_state(
     mm_oracle_price_data: &MMOraclePriceData,
     reserve_price: u64,
     slot: u64,
+    slot_clock: SlotClock,
 ) -> VelocityResult<QuoteState> {
     // last_oracle_reserve_price_spread_pct
     let last_oracle_reserve_price_spread_pct =
@@ -226,18 +236,26 @@ fn compute_quote_state(
         && amm.curve_update_intensity > 100;
 
     let final_reference_price_offset = if do_reference_price_smooth {
-        let slots_passed = slot.saturating_sub(amm.last_spread_update_slot);
+        // The budget is calibrated per 400ms but accrues in proportion to the
+        // elapsed milliseconds, so the smoothing completes over the same wall
+        // clock at any slot duration. Counting whole 400ms periods instead would
+        // floor to zero for every gap under 400ms, which is what a
+        // consecutive-slot crank becomes once slots are faster than that; the
+        // step would then pin to the minimum and converge slower the more often
+        // the market is cranked.
+        let elapsed_ms = slot_clock.elapsed(amm.last_spread_update_slot, slot);
         let reference_price_delta = {
             let full_offset_delta = reference_price_offset
                 .cast::<i128>()?
                 .saturating_sub(last_reference_price_offset.cast::<i128>()?);
+            let budget = elapsed_ms
+                .as_ms()
+                .cast::<i128>()?
+                .safe_mul(REF_PRICE_OFFSET_SMOOTHING_PER_PERIOD_BUDGET)?
+                .safe_div(Millis::UNIT.as_ms().cast::<i128>()?)?;
             let raw = full_offset_delta
                 .abs()
-                .min(
-                    slots_passed
-                        .cast::<i128>()?
-                        .safe_mul(REF_PRICE_OFFSET_SMOOTHING_PER_SLOT_BUDGET)?,
-                )
+                .min(budget)
                 .safe_div(REF_PRICE_OFFSET_SMOOTHING_STEP_DIVISOR)?
                 .cast::<i32>()?;
 
@@ -398,13 +416,44 @@ fn inventory_increasing_side(base_asset_amount_with_amm: i128) -> Option<Positio
 /// The long/short spread under construction (BID_ASK_SPREAD_PRECISION per
 /// side). Owns the side-selection arithmetic so each mechanism in
 /// [`calculate_spread`] states which side it acts on exactly once.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct SpreadPair {
     long: u64,
     short: u64,
 }
 
 impl SpreadPair {
+    fn total(self) -> VelocityResult<u64> {
+        self.long.safe_add(self.short)
+    }
+
+    fn component_min(self, other: SpreadPair) -> SpreadPair {
+        SpreadPair {
+            long: self.long.min(other.long),
+            short: self.short.min(other.short),
+        }
+    }
+
+    fn checked_sub(self, other: SpreadPair) -> VelocityResult<SpreadPair> {
+        Ok(SpreadPair {
+            long: self.long.safe_sub(other.long)?,
+            short: self.short.safe_sub(other.short)?,
+        })
+    }
+
+    fn positive_delta_from(self, before: SpreadPair) -> SpreadPair {
+        SpreadPair {
+            long: self.long.saturating_sub(before.long),
+            short: self.short.saturating_sub(before.short),
+        }
+    }
+
+    fn add_pair(&mut self, other: SpreadPair) -> VelocityResult<()> {
+        self.long = self.long.safe_add(other.long)?;
+        self.short = self.short.safe_add(other.short)?;
+        Ok(())
+    }
+
     /// Element-wise max of the half base spread and the per-side vol
     /// spreads: `long = max(w_0/2, v_long)`, `short = max(w_0/2, v_short)`.
     fn from_floors(half_base_spread: u64, vol: (u64, u64)) -> Self {
@@ -552,6 +601,126 @@ impl SpreadPair {
     }
 }
 
+/// The final raw spread split by safety priority. Components sum exactly to
+/// `raw`: the known oracle gap has first claim on the ceiling, the minimum
+/// base/vol floor has second claim, directional inventory steering has third
+/// claim, and the residual common padding yields first when the quote is over
+/// budget.
+#[derive(Clone, Copy)]
+struct SpreadComponents {
+    // Tier 1: known oracle/vAMM mispricing. This receives ceiling room first
+    // and is compressed only when the divergence alone exceeds the ceiling.
+    divergence: SpreadPair,
+
+    // Tier 2: the minimum quote cushion, max(base / 2, volatility), per side.
+    // Keeping this ahead of steering prevents a saturated directional signal
+    // from quoting the healing side exactly at mid.
+    floor: SpreadPair,
+
+    // Tier 3: directional widening that discourages inventory-growing flow.
+    // This receives whatever room remains after divergence protection.
+    steering: SpreadPair,
+
+    // Tier 4: common protection above the minimum floor.
+    // This is the first layer sacrificed when the total quote is over budget.
+    padding: SpreadPair,
+}
+
+impl SpreadComponents {
+    /// Reconcile the recorded mechanism requirements against the final raw
+    /// spread. This keeps every uncapped quote byte-identical even when a
+    /// negative admin adjustment has already reduced the raw pair: divergence
+    /// claims what remains first, the minimum base/vol floor next, steering
+    /// after that, and padding is the residual.
+    fn from_raw(
+        raw: SpreadPair,
+        divergence_required: SpreadPair,
+        floor_required: SpreadPair,
+        steering_added: SpreadPair,
+    ) -> VelocityResult<Self> {
+        let divergence = raw.component_min(divergence_required);
+        let after_divergence = raw.checked_sub(divergence)?;
+        let floor = after_divergence.component_min(floor_required);
+        let after_floor = after_divergence.checked_sub(floor)?;
+        let steering = after_floor.component_min(steering_added);
+        let padding = after_floor.checked_sub(steering)?;
+
+        Ok(Self {
+            divergence,
+            floor,
+            steering,
+            padding,
+        })
+    }
+
+    fn raw(self) -> VelocityResult<SpreadPair> {
+        let mut raw = self.divergence;
+        raw.add_pair(self.floor)?;
+        raw.add_pair(self.steering)?;
+        raw.add_pair(self.padding)?;
+        Ok(raw)
+    }
+
+    /// Cap without mixing safety classes. A layer that only partly fits is
+    /// compressed proportionally within that one class; lower-priority layers
+    /// receive no room. The dynamic ceiling itself is deliberately unchanged.
+    fn cap_total_ordered(self, max_total: u64) -> VelocityResult<SpreadPair> {
+        let raw = self.raw()?;
+        if raw.total()? <= max_total {
+            return Ok(raw);
+        }
+
+        let mut result = SpreadPair::default();
+        let mut remaining = max_total;
+
+        // Safety order is intentional:
+        //   1. Divergence protection keeps its room first.
+        //   2. The per-side base/vol floor keeps quotes away from mid.
+        //   3. Inventory steering keeps the remaining room next.
+        //   4. Common padding above the floor receives only leftover room.
+        // If a tier only partly fits, it is compressed within that tier and
+        // every lower-priority tier receives zero.
+        for layer in [self.divergence, self.floor, self.steering, self.padding] {
+            if remaining == 0 {
+                break;
+            }
+
+            let allocated = layer.cap_total(remaining)?;
+            result.add_pair(allocated)?;
+            remaining = remaining.safe_sub(allocated.total()?)?;
+        }
+
+        validate!(
+            result.total()? <= max_total,
+            ErrorCode::InvalidAmmMaxSpreadDetected,
+            "ordered spread total({}) > max_spread({})",
+            result.total()?,
+            max_total,
+        )?;
+
+        Ok(result)
+    }
+}
+
+/// Pure known-mispricing requirement, excluding statistical padding. The
+/// latter stays in the lowest-priority bucket so stress cannot let volatility
+/// crowd directional steering out of the quote.
+fn divergence_requirement(last_oracle_reserve_price_spread_pct: i64) -> SpreadPair {
+    if last_oracle_reserve_price_spread_pct < 0 {
+        SpreadPair {
+            long: last_oracle_reserve_price_spread_pct.unsigned_abs(),
+            short: 0,
+        }
+    } else if last_oracle_reserve_price_spread_pct > 0 {
+        SpreadPair {
+            long: 0,
+            short: last_oracle_reserve_price_spread_pct.unsigned_abs(),
+        }
+    } else {
+        SpreadPair::default()
+    }
+}
+
 /// `MarketStats` scalars the spread math reads, copied out once per refresh.
 /// Same shape as `ProjectionInputs` in `repeg.rs`: in the future CPI
 /// architecture these are what Velocity sends into the AMM-program call, so
@@ -597,7 +766,8 @@ impl SpreadInputs {
 /// 5  + r              revenue retreat: full on loaded, half on other
 /// 6  x beta(f)        funding lean, loaded side, paying regime only
 /// 7  x tilt gain      amm_inventory_spread_adjustment (floored at base/vol)
-/// 8  CAP              total <= dynamic ceiling, proportional split
+/// 8  CAP              total <= dynamic ceiling; divergence, base/vol floor,
+///                     steering, then common padding
 /// -- caller (compute_quote_state), post-cap --
 /// 9  x bot knob       amm_spread_adjustment (crank's actuator)
 /// 10 offset           reference_price_offset shifts BOTH quotes
@@ -611,6 +781,12 @@ fn calculate_spread(
     reserve_price: u64,
     last_oracle_reserve_price_spread_pct: i64,
 ) -> VelocityResult<(u32, u32)> {
+    // Keep the raw divergence cached on the AMM for monitoring, but bound the
+    // value consumed by quote math so the dynamic ceiling and final spread can
+    // never exceed the protocol's legal 100% total solely due to divergence.
+    let quote_oracle_reserve_price_spread_pct = last_oracle_reserve_price_spread_pct
+        .clamp(-BID_ASK_SPREAD_PRECISION_I64, BID_ASK_SPREAD_PRECISION_I64);
+
     // 1: vol floor: per-side statistical padding v.
     let vol = calculate_long_short_vol_spread(
         inputs.last_oracle_conf_pct,
@@ -626,11 +802,12 @@ fn calculate_spread(
     let half_base_spread = (amm.base_spread / 2) as u64;
     let floors = SpreadPair::from_floors(half_base_spread, vol);
     let mut spread = floors;
+    let mut steering_added = SpreadPair::default();
 
     // w_max for step 8: dynamic ceiling; divergence and vol can raise it
     // above the admin max_spread.
     let max_target_spread = calculate_max_target_spread(
-        last_oracle_reserve_price_spread_pct,
+        quote_oracle_reserve_price_spread_pct,
         reserve_price,
         inputs.last_oracle_conf_pct,
         inputs.mark_std,
@@ -640,7 +817,7 @@ fn calculate_spread(
 
     // 2: oracle retreat: the side facing the divergence floors at
     // |gap| + v.
-    spread.apply_oracle_retreat(last_oracle_reserve_price_spread_pct, vol)?;
+    spread.apply_oracle_retreat(quote_oracle_reserve_price_spread_pct, vol)?;
 
     // 3: x sigma(q): inventory scale, loaded side only.
     let side = inventory_increasing_side(amm.base_asset_amount_with_amm);
@@ -656,7 +833,9 @@ fn calculate_spread(
         directional_spread,
         max_target_spread,
     )?;
+    let before_inventory_scale = spread;
     spread.scale(side, inventory_scale)?;
+    steering_added.add_pair(spread.positive_delta_from(before_inventory_scale))?;
 
     if amm.total_fee_minus_distributions <= 0 {
         // 4, empty-cushion branch: BOTH sides x 10, bounded by step 8.
@@ -671,7 +850,9 @@ fn calculate_spread(
             reserve_price,
             amm.total_fee_minus_distributions,
         )?;
+        let before_leverage_scale = spread;
         spread.scale(side, leverage_scale)?;
+        steering_added.add_pair(spread.positive_delta_from(before_leverage_scale))?;
     }
 
     // 5: + r: revenue retreat, full on loaded side, half on the other
@@ -682,7 +863,21 @@ fn calculate_spread(
         amm.net_revenue_since_last_funding,
     )?;
     if revenue_retreat != 0 {
-        spread.widen(side, revenue_retreat, revenue_retreat.safe_div(2)?)?;
+        let common_retreat = revenue_retreat.safe_div(2)?;
+        spread.widen(side, revenue_retreat, common_retreat)?;
+
+        // The common half is generic protection; only the extra loaded-side
+        // half contributes to the flow-steering difference.
+        let directional_retreat = revenue_retreat.safe_sub(common_retreat)?;
+        match side {
+            Some(PositionDirection::Long) => {
+                steering_added.long = steering_added.long.safe_add(directional_retreat)?;
+            }
+            Some(PositionDirection::Short) => {
+                steering_added.short = steering_added.short.safe_add(directional_retreat)?;
+            }
+            None => {}
+        }
     }
 
     // 6: x beta(f): funding lean, loaded side, paying regime only.
@@ -695,15 +890,29 @@ fn calculate_spread(
         amm.funding_bias_sensitivity,
     )?;
     if funding_bias_scale > BID_ASK_SPREAD_PRECISION {
+        let before_funding_bias = spread;
         spread.scale(side, funding_bias_scale)?;
+        steering_added.add_pair(spread.positive_delta_from(before_funding_bias))?;
     }
 
     // 7: x tilt gain: admin per-market adjustment, floored at base/vol.
     spread.apply_percent_adjustment(amm.amm_inventory_spread_adjustment, floors)?;
 
-    // 8: CAP: total <= w_max, proportional split (catches any
-    // beta/sigma/lambda blowup).
-    let capped = spread.cap_total(max_target_spread)?;
+    // 8: CAP: keep the existing dynamic ceiling but stop statistically-wide
+    // padding from proportionally squeezing the directional signal. The
+    // empty-cushion 10x branch retains its legacy proportional behavior until
+    // its separate graded redesign (design issue 3).
+    let capped = if amm.total_fee_minus_distributions <= 0 {
+        spread.cap_total(max_target_spread)?
+    } else {
+        SpreadComponents::from_raw(
+            spread,
+            divergence_requirement(last_oracle_reserve_price_spread_pct),
+            floors,
+            steering_added,
+        )?
+        .cap_total_ordered(max_target_spread)?
+    };
 
     Ok((capped.long.cast::<u32>()?, capped.short.cast::<u32>()?))
 }
@@ -753,15 +962,15 @@ pub fn cap_to_max_spread(
 ///   s   = (oracle_std + mark_std) / (2 * reserve_price)   (PERCENTAGE_PRECISION)
 ///   b   = max(conf, s / 4)                                 (vol base)
 ///   g_i = clamp(intensity_i / volume_24h, 0.01, 1)         (per-side factor)
-///   c   = conf            when conf > 25 bp
-///       = conf / 20       otherwise
+///   c   = conf * (1/20 + 19/20 * conf/25bp)  when conf < 25 bp
+///       = conf                                  otherwise
 ///   v_i = max(c, b * g_i)
 ///
 /// `conf` is `last_oracle_conf_pct` (PERCENTAGE_PRECISION of price). The
 /// 25 bp threshold is `SPREAD_CONF_FULL_WEIGHT_THRESHOLD`; below it the
-/// confidence contribution is discounted 20x (a step, not a ramp; see
-/// design issue 5). `volume_24h` is floored at 1 so the factors are
-/// defined on a fresh market.
+/// confidence weight ramps continuously from 1/20 at zero to full weight at
+/// the threshold. `volume_24h` is floored at 1 so the factors are defined on
+/// a fresh market.
 fn calculate_long_short_vol_spread(
     last_oracle_conf_pct: u64,
     reserve_price: u64,
@@ -797,12 +1006,7 @@ fn calculate_long_short_vol_spread(
     let long_vol_spread_factor = intensity_factor(long_intensity_volume)?;
     let short_vol_spread_factor = intensity_factor(short_intensity_volume)?;
 
-    // only consider confidence interval at full value when above 25 bps
-    let conf_component = if last_oracle_conf_pct > SPREAD_CONF_FULL_WEIGHT_THRESHOLD {
-        last_oracle_conf_pct
-    } else {
-        last_oracle_conf_pct.safe_div(SPREAD_CONF_DISCOUNT_DIVISOR)?
-    };
+    let conf_component = calculate_spread_conf_component(last_oracle_conf_pct)?;
 
     // v_i = max(c, b * g_i)
     let side_vol_spread = |factor: u128| -> VelocityResult<u64> {
@@ -819,6 +1023,23 @@ fn calculate_long_short_vol_spread(
         side_vol_spread(long_vol_spread_factor)?,
         side_vol_spread(short_vol_spread_factor)?,
     ))
+}
+
+/// Confidence contribution to the per-side volatility spread. Below the
+/// full-weight threshold, linearly interpolate its weight from 1/D at zero to
+/// 1 at the threshold, where D is `SPREAD_CONF_DISCOUNT_DIVISOR`.
+fn calculate_spread_conf_component(confidence_pct: u64) -> VelocityResult<u64> {
+    if confidence_pct >= SPREAD_CONF_FULL_WEIGHT_THRESHOLD {
+        return Ok(confidence_pct);
+    }
+
+    let threshold = SPREAD_CONF_FULL_WEIGHT_THRESHOLD;
+    let divisor = SPREAD_CONF_DISCOUNT_DIVISOR;
+    let ramp_weight = threshold.safe_add(divisor.safe_sub(1)?.safe_mul(confidence_pct)?)?;
+
+    Ok(confidence_pct
+        .safe_mul(ramp_weight)?
+        .safe_div(divisor.safe_mul(threshold)?)?)
 }
 
 /// Which side of the AMM's open liquidity the inventory ratio is measured
@@ -1046,9 +1267,9 @@ fn calculate_spread_revenue_retreat_amount(
 ///   w_max = max(max_spread, |divergence|, min(max(2*conf, std_pct), 100%))
 ///
 /// The admin `max_spread` is a floor of the ceiling, not a maximum: the
-/// oracle divergence and the vol baseline can raise it under stress. The
-/// vol/conf term is clipped at 100%; the divergence term is not (design
-/// issue 2).
+/// oracle divergence and the vol baseline can raise it under stress. Quote
+/// divergence and the vol/conf term are both clipped at 100% before this
+/// function is called.
 pub(crate) fn calculate_max_target_spread(
     last_oracle_reserve_price_spread_pct: i64,
     reserve_price: u64,
@@ -1215,10 +1436,9 @@ pub(crate) fn calculate_reference_price_offset(
 /// spread + reference offset directly instead of reading cached AMM fields
 /// (which were removed in the AMM-decoupling refactor).
 ///
-/// The signed half-spread `s = ±spread + offset` moves the quote reserve by
-/// `quote / floor(BID_ASK_SPREAD_PRECISION / (s / 2))` (the divisor
-/// quantization is the legacy behavior, see design issue 6) and the base
-/// reserve follows from the invariant `k = sqrt_k^2`.
+/// The signed composite spread `s = ±spread + offset` moves the quote reserve
+/// by exactly `quote * s / (2 * BID_ASK_SPREAD_PRECISION)` in reserve units;
+/// the base reserve follows from the invariant `k = sqrt_k^2`.
 pub(crate) fn compute_spread_reserves_for_direction(
     amm: &AMM,
     spread: u32,
@@ -1231,15 +1451,11 @@ pub(crate) fn compute_spread_reserves_for_direction(
         spread.cast::<i32>()?.safe_add(reference_price_offset)?
     };
 
-    let quote_asset_reserve_delta = if spread_with_offset.abs() > 1 {
-        let quote_reserve_divisor =
-            BID_ASK_SPREAD_PRECISION_I128 / (spread_with_offset / 2).cast::<i128>()?;
-        amm.quote_asset_reserve
-            .cast::<i128>()?
-            .safe_div(quote_reserve_divisor)?
-    } else {
-        0_i128
-    };
+    let quote_asset_reserve_delta = amm
+        .quote_asset_reserve
+        .cast::<i128>()?
+        .safe_mul(spread_with_offset.cast::<i128>()?)?
+        .safe_div(BID_ASK_SPREAD_PRECISION_I128.safe_mul(2)?)?;
 
     let quote_asset_reserve = if quote_asset_reserve_delta > 0 {
         amm.quote_asset_reserve

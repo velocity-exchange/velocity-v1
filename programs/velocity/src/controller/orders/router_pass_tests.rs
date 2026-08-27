@@ -3,6 +3,7 @@ use {
         math::{
             constants::ONE_BPS_DENOMINATOR,
             oracle::{self, oracle_validity},
+            time::{legacy_slot_duration_u8, SlotClock},
         },
         state::{
             fill_mode::FillMode,
@@ -68,7 +69,7 @@ fn get_user_keys() -> (Pubkey, Pubkey, Pubkey) {
 
 fn get_state(min_auction_duration: u8) -> State {
     State {
-        min_perp_auction_duration: min_auction_duration,
+        min_perp_auction_duration: legacy_slot_duration_u8(min_auction_duration),
         ..State::default()
     }
 }
@@ -84,7 +85,7 @@ pub fn get_amm_is_available(
     let state = get_state(min_auction_duration);
     let oracle_price_data = oracle_map.get_price_data(&market.oracle_id()).unwrap();
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(*oracle_price_data, slot, &state.oracle_guard_rails.validity)
+        .get_mm_oracle_price_data(*oracle_price_data, slot, &state.oracle_guard_rails.validity, SlotClock::baseline())
         .unwrap();
     let safe_oracle_price_data = mm_oracle_price_data.get_safe_oracle_price_data();
     let safe_oracle_validity = oracle_validity(
@@ -102,6 +103,8 @@ pub fn get_amm_is_available(
         market.oracle_slot_delay_override,
         mm_oracle_price_data.is_safe_price_mm_sourced(),
         market.oracle_low_risk_slot_delay_override,
+        slot,
+        SlotClock::baseline(),
     )
     .unwrap();
     market
@@ -166,7 +169,7 @@ pub mod amm_jit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -331,6 +334,7 @@ pub mod amm_jit {
             &mut router_inputs,
             &mut None,
             false,
+            false,
             0,
         )
         .unwrap();
@@ -431,7 +435,7 @@ pub mod amm_jit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -652,6 +656,7 @@ pub mod amm_jit {
             &mut router_inputs,
             &mut None,
             false,
+            false,
             0,
         )
         .unwrap();
@@ -772,7 +777,7 @@ pub mod amm_jit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -997,6 +1002,7 @@ pub mod amm_jit {
             &mut router_inputs,
             &mut None,
             false,
+            false,
             0,
         );
 
@@ -1075,7 +1081,7 @@ pub mod amm_jit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, None).unwrap();
+        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -1242,6 +1248,7 @@ pub mod amm_jit {
             false,
             &mut router_inputs,
             &mut None,
+            false,
             false,
             0,
         )

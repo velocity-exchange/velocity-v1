@@ -4,7 +4,7 @@ use crate::{
         casting::Cast,
         constants::{
             AMM_RESERVE_PRECISION_I128, BASE_PRECISION,
-            FUNDING_RATE_TO_QUOTE_PRECISION_PRECISION_RATIO, LIQUIDATION_FEE_INCREASE_PER_SLOT,
+            FUNDING_RATE_TO_QUOTE_PRECISION_PRECISION_RATIO, LIQUIDATION_FEE_INCREASE_PER_PERIOD,
             LIQUIDATION_FEE_PRECISION, LIQUIDATION_FEE_PRECISION_U128,
             LIQUIDATION_FEE_TO_MARGIN_PRECISION_RATIO, LIQUIDATION_PCT_PRECISION, PRICE_PRECISION,
             PRICE_TIMES_AMM_TO_QUOTE_PRECISION_RATIO, QUOTE_PRECISION, SPOT_WEIGHT_PRECISION_U128,
@@ -13,6 +13,7 @@ use crate::{
         safe_math::SafeMath,
         spot_balance::get_token_amount,
         spot_swap::calculate_swap_price,
+        time::{Millis, SlotClock},
     },
     msg,
     state::{
@@ -28,7 +29,8 @@ use crate::{
     validate, MarketType, OrderParams, PositionDirection,
 };
 
-pub const LIQUIDATION_FEE_ADJUST_GRACE_PERIOD_SLOTS: u64 = 1_500; // ~10 minutes
+/// Grace before the liquidation fee starts ramping (~10 minutes).
+pub const LIQUIDATION_FEE_ADJUST_GRACE_PERIOD: Millis = Millis::from_secs(600);
 
 #[cfg(test)]
 mod tests;
@@ -453,19 +455,24 @@ pub fn calculate_max_pct_to_liquidate(
     margin_shortage: u128,
     slot: u64,
     initial_pct_to_liquidate: u128,
-    liquidation_duration: u128,
+    liquidation_duration: Millis,
+    slot_clock: SlotClock,
 ) -> VelocityResult<u128> {
     // if margin shortage is tiny, accelerate liquidation
     if margin_shortage < 50 * QUOTE_PRECISION {
         return Ok(LIQUIDATION_PCT_PRECISION);
     }
 
-    let slots_elapsed = slot.safe_sub(user.last_active_slot)?;
+    // The ramp is the ratio of elapsed wall clock time to the configured
+    // liquidation window. Elapsed time is integrated per slot duration regime,
+    // so an interval spanning an IBRL transition ramps at the same wall clock
+    // rate on both sides. Identity with the historical slot ratio at 400ms.
+    let elapsed_ms = slot_clock.elapsed(user.last_active_slot, slot).as_ms();
+    let duration_ms = liquidation_duration.as_ms();
 
-    let pct_freeable = slots_elapsed
-        .cast::<u128>()?
+    let pct_freeable = (elapsed_ms as u128)
         .safe_mul(LIQUIDATION_PCT_PRECISION)?
-        .safe_div(liquidation_duration) // ~ 1 minute if per slot is 400ms
+        .safe_div(duration_ms as u128) // ~1 minute at the onchain default
         .unwrap_or(LIQUIDATION_PCT_PRECISION) // if divide by zero, default to 100%
         .safe_add(initial_pct_to_liquidate)?
         .min(LIQUIDATION_PCT_PRECISION);
@@ -620,15 +627,21 @@ pub fn get_liquidation_fee(
     max_liquidation_fee: u32,
     last_active_user_slot: u64,
     current_slot: u64,
+    slot_clock: SlotClock,
 ) -> VelocityResult<u32> {
-    let slots_elapsed = current_slot.safe_sub(last_active_user_slot)?;
-    if slots_elapsed < LIQUIDATION_FEE_ADJUST_GRACE_PERIOD_SLOTS {
+    // The fee ramps per whole 400ms period of elapsed time past the grace
+    // window (the rate's historical calibration). Floor on the period count:
+    // the fee escalates marginally later, favoring the user. Elapsed time is
+    // integrated per slot duration regime.
+    let elapsed = slot_clock.elapsed(last_active_user_slot, current_slot);
+    if elapsed < LIQUIDATION_FEE_ADJUST_GRACE_PERIOD {
         return Ok(base_liquidation_fee);
     }
 
     let liquidation_fee = base_liquidation_fee.saturating_add(
-        slots_elapsed
-            .safe_mul(LIQUIDATION_FEE_INCREASE_PER_SLOT.cast::<u64>()?)?
+        elapsed
+            .div_periods(Millis::UNIT)
+            .safe_mul(LIQUIDATION_FEE_INCREASE_PER_PERIOD.cast::<u64>()?)?
             .cast::<u32>()
             .unwrap_or(u32::MAX),
     );

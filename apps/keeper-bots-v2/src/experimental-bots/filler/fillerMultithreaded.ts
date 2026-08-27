@@ -31,6 +31,8 @@ import {
 	TxSigAndSlot,
 	UserAccount,
 	UserMap,
+	msToSlotsNum,
+	currentSlotDuration,
 } from '@velocity-exchange/sdk';
 import { FillerMultiThreadedConfig, GlobalConfig } from '../../config';
 import { JITO_METRIC_TYPES, BundleSender } from '../../bundleSender';
@@ -120,20 +122,21 @@ const logPrefix = '[Filler]';
 export type MakerNodeMap = Map<string, DLOBNode[]>;
 
 const FILL_ORDER_THROTTLE_BACKOFF = 1000; // the time to wait before trying to fill a throttled (error filling) node again
-// Attempt a given order at most once every this many slots. The DLOB builder
-// re-emits a still-fillable order every ~200ms; this paces re-attempts. Override
-// via FillerMultiThreadedConfig.fillAttemptSlotInterval.
-const DEFAULT_FILL_ATTEMPT_SLOT_INTERVAL_SLOTS = 5;
+// Attempt a given order at most once every this much wall-clock time
+// (expressed in actual slots at the current State.slotDurationMs). The DLOB
+// builder re-emits a still-fillable order every ~200ms; this paces
+// re-attempts. Override via FillerMultiThreadedConfig.fillAttemptIntervalMs.
+const DEFAULT_FILL_ATTEMPT_INTERVAL_MS = 2_000;
 
-// Validate `fillAttemptSlotInterval` config: only a finite, non-negative integer
-// is a meaningful slot count. Anything else (negative / fractional / NaN /
+// Validate `fillAttemptIntervalMs` config: only a finite, non-negative integer
+// is a meaningful interval. Anything else (negative / fractional / NaN /
 // Infinity) would silently break the pacing comparison in executeFillablePerpNodes
 // (e.g. a negative or NaN interval disables pacing entirely), so fall back to the
 // default and surface a warning. Omitted (undefined) is not an error — it takes
 // the default. Exported for unit testing.
-export function resolveFillAttemptSlotInterval(
+export function resolveFillAttemptIntervalMs(
 	raw: number | undefined,
-	defaultValue = DEFAULT_FILL_ATTEMPT_SLOT_INTERVAL_SLOTS
+	defaultValue = DEFAULT_FILL_ATTEMPT_INTERVAL_MS
 ): { value: number; warning?: string } {
 	if (raw === undefined) {
 		return { value: defaultValue };
@@ -141,13 +144,15 @@ export function resolveFillAttemptSlotInterval(
 	if (!Number.isInteger(raw) || raw < 0) {
 		return {
 			value: defaultValue,
-			warning: `invalid fillAttemptSlotInterval ${raw}; expected a non-negative integer, falling back to ${defaultValue}`,
+			warning: `invalid fillAttemptIntervalMs ${raw}; expected a non-negative integer, falling back to ${defaultValue}`,
 		};
 	}
 	return { value: raw };
 }
-// Backstop cap on attempts per order: ~30s market-order lifetime / ~2s (5-slot)
-// attempt interval.
+// Backstop cap on attempts per order: ~30s market-order lifetime / ~2s attempt
+// interval. Both sides hold their wall-clock meaning as slot time drops (the
+// program scales auction durations; the attempt interval is scaled here), so
+// the count needs no scaling.
 const MAX_FILL_ATTEMPTS_PER_ORDER = 15;
 // Bound the attempt map so it can't grow for the process lifetime; an order
 // lives at most one auction, so a short TTL reaps entries soon after.
@@ -174,8 +179,9 @@ const FILL_DECISION_DEDUPE_MAX = 20_000;
 // per bucket of this many slots instead. Whether a node crosses is the one
 // verdict that evolves as the Dutch auction ramps, and collapsing a ~30s auction
 // (~75 slots) to a single row would throw away exactly the signal the board is
-// read for. ~10 slots gives a handful of samples per order rather than ~150.
-const NO_CROSS_RESAMPLE_SLOTS = 10;
+// read for. ~4s buckets (expressed in actual slots) give a handful of samples
+// per order rather than ~150.
+const NO_CROSS_RESAMPLE_MS = 4_000;
 
 const THROTTLED_NODE_SIZE_TO_PRUNE = 10; // Size of throttled nodes to get to before pruning the map
 export const MAX_MAKERS_PER_FILL = 6; // max number of unique makers to include per fill
@@ -185,7 +191,8 @@ const MAX_POSITIONS_PER_USER = 8;
 export const SETTLE_POSITIVE_PNL_COOLDOWN_MS = 60_000;
 export const CONFIRM_TX_INTERVAL_MS = 5_000;
 const SIM_CU_ESTIMATE_MULTIPLIER = 3;
-const SLOTS_UNTIL_JITO_LEADER_TO_SEND = 4;
+// wall-clock lead to build+send before the jito leader window (~4 slots at 400ms)
+const JITO_LEADER_LEAD_MS = 1_600;
 export const TX_CONFIRMATION_BATCH_SIZE = 100;
 export const CACHED_BLOCKHASH_OFFSET = 5;
 const TX_COUNT_COOLDOWN_ON_BURST = 10; // send this many tx before resetting burst mode
@@ -341,7 +348,7 @@ export class FillerMultithreaded {
 		ttl: FILL_DECISION_DEDUPE_TTL_MS,
 		ttlResolution: 1000,
 	});
-	private fillAttemptSlotInterval: number;
+	private fillAttemptIntervalMs: number;
 	private blockhashSubscriber: BlockhashSubscriber;
 	private priorityFeeSubscriber: PriorityFeeSubscriber;
 
@@ -424,13 +431,13 @@ export class FillerMultithreaded {
 		this.marketIndexesFlattened = config.marketIndexes.flat();
 		this.bundleSender = bundleSender;
 		this.simulateTxForCUEstimate = config.simulateTxForCUEstimate ?? true;
-		const fillAttemptSlotInterval = resolveFillAttemptSlotInterval(
-			config.fillAttemptSlotInterval
+		const fillAttemptIntervalMs = resolveFillAttemptIntervalMs(
+			config.fillAttemptIntervalMs
 		);
-		if (fillAttemptSlotInterval.warning) {
-			logger.warn(`${logPrefix} ${fillAttemptSlotInterval.warning}`);
+		if (fillAttemptIntervalMs.warning) {
+			logger.warn(`${logPrefix} ${fillAttemptIntervalMs.warning}`);
 		}
-		this.fillAttemptSlotInterval = fillAttemptSlotInterval.value;
+		this.fillAttemptIntervalMs = fillAttemptIntervalMs.value;
 		if (globalConfig.txConfirmationEndpoint) {
 			this.txConfirmationConnection = new Connection(
 				globalConfig.txConfirmationEndpoint
@@ -1570,7 +1577,16 @@ export class FillerMultithreaded {
 			if (slotsUntilJito === undefined) {
 				return false;
 			}
-			return slotsUntilJito < SLOTS_UNTIL_JITO_LEADER_TO_SEND;
+			return (
+				slotsUntilJito <
+				msToSlotsNum(
+					JITO_LEADER_LEAD_MS,
+					currentSlotDuration(
+						this.velocityClient,
+						this.slotSubscriber.getSlot()
+					)
+				)
+			);
 		}
 		if (!this.bundleSender?.connected()) {
 			return false;
@@ -1681,7 +1697,7 @@ export class FillerMultithreaded {
 	 * concept is the same.
 	 *
 	 * Skips are emitted once per (order, reason), except `skip_no_cross` which is
-	 * re-sampled every NO_CROSS_RESAMPLE_SLOTS so the verdict's evolution across
+	 * re-sampled every NO_CROSS_RESAMPLE_MS so the verdict's evolution across
 	 * the auction survives. `sent` is emitted per attempt.
 	 *
 	 * `action` here is what the bot decided, not what the network did — `sent`
@@ -1702,7 +1718,16 @@ export class FillerMultithreaded {
 		if (action !== 'sent') {
 			const bucket =
 				action === 'skip_no_cross'
-					? `:${Math.floor(slot / NO_CROSS_RESAMPLE_SLOTS)}`
+					? `:${Math.floor(
+							slot /
+								msToSlotsNum(
+									NO_CROSS_RESAMPLE_MS,
+									currentSlotDuration(
+										this.velocityClient,
+										this.slotSubscriber.getSlot()
+									)
+								)
+					  )}`
 					: '';
 			const dedupeKey = `${getNodeToFillSignature(
 				nodeToFill
@@ -1855,9 +1880,11 @@ export class FillerMultithreaded {
 		}
 
 		const marketIndex = nodeToFill.node.order.marketIndex;
-		const mmOraclePriceData =
-			this.velocityClient.getMMOracleDataForPerpMarket(marketIndex);
 		const currentSlot = this.slotSubscriber.getSlot();
+		const mmOraclePriceData = this.velocityClient.getMMOracleDataForPerpMarket(
+			marketIndex,
+			currentSlot
+		);
 		// keep-rs reports the oracle's own `delay`; the TS filler's equivalent is
 		// how far the mm-oracle price it is about to gate on lags the current slot.
 		const oracleDelay = currentSlot - mmOraclePriceData.slot.toNumber();
@@ -1919,7 +1946,7 @@ export class FillerMultithreaded {
 	//   the reservation (send-error path, or SIGNED_MSG_FILL_IN_FLIGHT_TTL_MS) so
 	//   it can be retried while the order is still valid.
 	// - Non-signed nodes (including a signed order's on-chain node once placed)
-	//   keep retrying through the auction, paced to once per fillAttemptSlotInterval
+	//   keep retrying through the auction, paced to once per fillAttemptIntervalMs
 	//   slots so the fill lands as the Dutch auction ramps into a cross.
 	//
 	// Re-attempts are further bounded by the crossability and expiry filters in
@@ -1960,10 +1987,17 @@ export class FillerMultithreaded {
 				}
 			} else if (
 				prior !== undefined &&
-				currentSlot - prior.lastAttemptSlot < this.fillAttemptSlotInterval
+				currentSlot - prior.lastAttemptSlot <
+					msToSlotsNum(
+						this.fillAttemptIntervalMs,
+						currentSlotDuration(
+							this.velocityClient,
+							this.slotSubscriber.getSlot()
+						)
+					)
 			) {
 				// Pace non-signed re-attempts to at most once per
-				// fillAttemptSlotInterval slots.
+				// fillAttemptIntervalMs of wall-clock.
 				this.emitFillDecision(node, 'skip_attempt_interval', {
 					attempt: attempts,
 				});
@@ -2042,6 +2076,7 @@ export class FillerMultithreaded {
 				takerUserSlot,
 				referrerInfo,
 				takerIsReferred,
+				takerReferrer,
 				marketType,
 				takerStatsPubKey,
 				isSignedMsg,
@@ -2157,7 +2192,8 @@ export class FillerMultithreaded {
 					undefined, // fillerAuthority
 					undefined, // hasBuilderFee (derived from order bitflags)
 					undefined, // takerEscrow (referred case signalled below)
-					takerIsReferred
+					takerIsReferred,
+					takerReferrer
 				);
 				fillIxs.push(fillIx);
 
@@ -2413,6 +2449,7 @@ export class FillerMultithreaded {
 			isSignedMsg,
 			authority,
 			takerIsReferred,
+			takerReferrer,
 		} = await this.getNodeFillInfo(nodeToFill);
 
 		let removeLastIxPostSim = this.revertOnFailure && !isSignedMsg;
@@ -2495,7 +2532,8 @@ export class FillerMultithreaded {
 			undefined, // fillerAuthority
 			undefined, // hasBuilderFee (derived from order bitflags)
 			undefined, // takerEscrow (referred case signalled below)
-			takerIsReferred
+			takerIsReferred,
+			takerReferrer
 		);
 		fillIxs.push(fillIx);
 
@@ -3001,6 +3039,7 @@ export class FillerMultithreaded {
 		takerUserSlot: number;
 		referrerInfo: ReferrerInfo | undefined;
 		takerIsReferred: boolean;
+		takerReferrer: PublicKey | undefined;
 		marketType: MarketType;
 		isSignedMsg: boolean | undefined;
 		authority: PublicKey;
@@ -3097,6 +3136,10 @@ export class FillerMultithreaded {
 			);
 		}
 
+		// The same UserStats read backs the referrer authority, which the fill ix needs to
+		// derive the referrer's readonly UserStats. Passing it keeps the SDK from refetching.
+		const takerReferrer = this.referrerMap.getReferrerAuthority(takerAuthority);
+
 		return Promise.resolve({
 			makerInfos,
 			takerUserPubKey,
@@ -3108,6 +3151,7 @@ export class FillerMultithreaded {
 			takerUserSlot: this.slotSubscriber.getSlot(),
 			referrerInfo,
 			takerIsReferred,
+			takerReferrer,
 			marketType: nodeToFill.node.order!.marketType,
 			isSignedMsg: nodeToFill.node.isSignedMsg,
 			authority: new PublicKey(signingAuthority),

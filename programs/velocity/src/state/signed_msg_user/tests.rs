@@ -3,6 +3,7 @@ mod signed_msg_order_id_eviction {
     use {
         crate::{
             error::ErrorCode,
+            math::time::SlotClock,
             state::signed_msg_user::{
                 SignedMsgOrderId, SignedMsgUserOrdersFixed, SignedMsgUserOrdersZeroCopyMut,
             },
@@ -29,18 +30,27 @@ mod signed_msg_order_id_eviction {
         assert!(add_result.is_ok());
 
         assert_eq!(
-            signed_msg_user
-                .check_exists_and_prune_stale_signed_msg_order_ids(new_signed_msg_order_id, 11),
+            signed_msg_user.check_exists_and_prune_stale_signed_msg_order_ids(
+                new_signed_msg_order_id,
+                11,
+                SlotClock::baseline()
+            ),
             true
         );
         assert_eq!(
-            signed_msg_user
-                .check_exists_and_prune_stale_signed_msg_order_ids(new_signed_msg_order_id, 20),
+            signed_msg_user.check_exists_and_prune_stale_signed_msg_order_ids(
+                new_signed_msg_order_id,
+                20,
+                SlotClock::baseline()
+            ),
             true
         );
         assert_eq!(
-            signed_msg_user
-                .check_exists_and_prune_stale_signed_msg_order_ids(new_signed_msg_order_id, 30),
+            signed_msg_user.check_exists_and_prune_stale_signed_msg_order_ids(
+                new_signed_msg_order_id,
+                30,
+                SlotClock::baseline()
+            ),
             false
         );
 

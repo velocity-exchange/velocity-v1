@@ -36,6 +36,8 @@ import {
 	PositionDirection,
 	PerpMarkets,
 	MMOraclePriceData,
+	msToSlotsNum,
+	currentSlotDuration,
 } from '@velocity-exchange/sdk';
 import { Mutex, tryAcquire, E_ALREADY_LOCKED } from 'async-mutex';
 
@@ -114,7 +116,8 @@ const MAX_POSITIONS_PER_USER = 8;
 export const SETTLE_POSITIVE_PNL_COOLDOWN_MS = 60_000;
 export const CONFIRM_TX_INTERVAL_MS = 5_000;
 const SIM_CU_ESTIMATE_MULTIPLIER = 1.15;
-const SLOTS_UNTIL_JITO_LEADER_TO_SEND = 4;
+// wall-clock lead to build+send before the jito leader window (~4 slots at 400ms)
+const JITO_LEADER_LEAD_MS = 1_600;
 export const TX_CONFIRMATION_BATCH_SIZE = 100;
 export const TX_TIMEOUT_THRESHOLD_MS = 60_000; // tx considered stale after this time and give up confirming
 export const CONFIRM_TX_RATE_LIMIT_BACKOFF_MS = 5_000; // wait this long until trying to confirm tx again if rate limited
@@ -783,19 +786,24 @@ export class FillerBot extends TxThreaded implements Bot {
 	} {
 		const marketIndex = market.marketIndex;
 
-		const mmOraclePriceData =
-			this.velocityClient.getMMOracleDataForPerpMarket(marketIndex);
+		const mmOraclePriceData = this.velocityClient.getMMOracleDataForPerpMarket(
+			marketIndex,
+			this.slotSubscriber.getSlot()
+		);
 
 		const slot = new BN(this.slotSubscriber.getSlot());
+		const slotDurationState = this.velocityClient.getStateAccount();
 		const vAsk = calculateAskPrice(
 			market,
 			mmOraclePriceData as MMOraclePriceData,
-			slot
+			slot,
+			slotDurationState
 		);
 		const vBid = calculateBidPrice(
 			market,
 			mmOraclePriceData as MMOraclePriceData,
-			slot
+			slot,
+			slotDurationState
 		);
 
 		const fillSlot = this.getMaxSlot();
@@ -1013,6 +1021,7 @@ export class FillerBot extends TxThreaded implements Bot {
 		takerUserSlot: number;
 		referrerInfo: ReferrerInfo | undefined;
 		takerIsReferred: boolean;
+		takerReferrer: PublicKey | undefined;
 		marketType: MarketType;
 	}> {
 		const makerInfos: Array<DataAndSlot<MakerInfo>> = [];
@@ -1078,6 +1087,10 @@ export class FillerBot extends TxThreaded implements Bot {
 		const takerIsReferred = takerStatsAccount
 			? isBuilderReferral(takerStatsAccount)
 			: false;
+		// The fill ix needs the referrer authority to derive the referrer's readonly
+		// UserStats. It comes from the UserStats already loaded here, so passing it keeps
+		// the SDK from refetching.
+		const takerReferrer = takerStatsAccount?.referrer;
 
 		return Promise.resolve({
 			makerInfos,
@@ -1086,6 +1099,7 @@ export class FillerBot extends TxThreaded implements Bot {
 			takerUserSlot: takerUserAcct.slot,
 			referrerInfo,
 			takerIsReferred,
+			takerReferrer,
 			marketType: nodeToFill.node.order!.marketType,
 		});
 	}
@@ -1499,6 +1513,7 @@ export class FillerBot extends TxThreaded implements Bot {
 				takerUserPubKey,
 				takerUserSlot,
 				takerIsReferred,
+				takerReferrer,
 				marketType,
 			} = await this.getNodeFillInfo(nodeToFill);
 
@@ -1566,7 +1581,8 @@ export class FillerBot extends TxThreaded implements Bot {
 						undefined, // fillerAuthority
 						undefined, // hasBuilderFee (derived from order bitflags)
 						undefined, // takerEscrow (referred case signalled below)
-						takerIsReferred
+						takerIsReferred,
+						takerReferrer
 					)
 				);
 
@@ -1759,6 +1775,7 @@ export class FillerBot extends TxThreaded implements Bot {
 				takerUserSlot,
 				referrerInfo,
 				takerIsReferred,
+				takerReferrer,
 				marketType,
 			} = await this.getNodeFillInfo(nodeToFill);
 
@@ -1812,7 +1829,8 @@ export class FillerBot extends TxThreaded implements Bot {
 				undefined, // fillerAuthority
 				undefined, // hasBuilderFee (derived from order bitflags)
 				undefined, // takerEscrow (referred case signalled below)
-				takerIsReferred
+				takerIsReferred,
+				takerReferrer
 			);
 
 			if (!ix) {
@@ -2066,6 +2084,7 @@ export class FillerBot extends TxThreaded implements Bot {
 			// The taker of a triggered order can also be referred; the fill leg then
 			// requires their escrow (see getNodeFillInfo).
 			let takerIsReferred = false;
+			let takerReferrer: PublicKey | undefined;
 			try {
 				const takerUserPubKey = nodeToTrigger.node.userAccount.toString();
 				const takerUserAcct = await this.getUserAccountAndSlotFromMap(
@@ -2079,6 +2098,7 @@ export class FillerBot extends TxThreaded implements Bot {
 				takerIsReferred = userStatsAccount
 					? isBuilderReferral(userStatsAccount)
 					: false;
+				takerReferrer = userStatsAccount?.referrer;
 				logger.info(
 					`[Filler - executeTriggerablePerpNodes] Got referrerInfo: ${referrerInfo}`
 				);
@@ -2114,7 +2134,8 @@ export class FillerBot extends TxThreaded implements Bot {
 					undefined, // fillerAuthority
 					undefined, // hasBuilderFee (derived from order bitflags)
 					undefined, // takerEscrow (referred case signalled below)
-					takerIsReferred
+					takerIsReferred,
+					takerReferrer
 				);
 				ixs.push(fillIx);
 
@@ -2464,7 +2485,16 @@ export class FillerBot extends TxThreaded implements Bot {
 			if (slotsUntilJito === undefined) {
 				return false;
 			}
-			return slotsUntilJito < SLOTS_UNTIL_JITO_LEADER_TO_SEND;
+			return (
+				slotsUntilJito <
+				msToSlotsNum(
+					JITO_LEADER_LEAD_MS,
+					currentSlotDuration(
+						this.velocityClient,
+						this.slotSubscriber.getSlot()
+					)
+				)
+			);
 		}
 		if (!this.bundleSender?.connected()) {
 			return false;

@@ -1078,7 +1078,8 @@ const main = async (): Promise<void> => {
 				fetchFromRedis,
 				selectMostRecentBySlot,
 				redisFillQualityInfo,
-				apiVersion
+				apiVersion,
+				dlobProvider.getSlot()
 			);
 
 			if (!result.success) {

@@ -7,8 +7,9 @@ use {
             auction::{calculate_auction_price, is_auction_complete},
             casting::Cast,
             constants::{
-                OPEN_ORDER_MARGIN_REQUIREMENT, QUOTE_SPOT_MARKET_INDEX, SPOT_WEIGHT_PRECISION,
-                SPOT_WEIGHT_PRECISION_I128, THIRTY_DAY,
+                ACCELERATED_REFERRAL_ENROLLMENT_ENABLED, OPEN_ORDER_MARGIN_REQUIREMENT,
+                QUOTE_SPOT_MARKET_INDEX, SPOT_WEIGHT_PRECISION, SPOT_WEIGHT_PRECISION_I128,
+                THIRTY_DAY,
             },
             margin::{
                 calculate_margin_requirement_and_total_collateral_and_liability_info,
@@ -25,9 +26,11 @@ use {
                 get_signed_token_amount, get_strict_token_value, get_token_amount, get_token_value,
             },
             stats::calculate_rolling_sum,
+            time::SlotClock,
         },
         math_error, msg, safe_increment,
         state::{
+            events::{emit_accelerated_referral_status_changed, AcceleratedReferralStatusChange},
             margin_calculation::{MarginContext, MarginTypeConfig},
             oracle::StrictOraclePrice,
             oracle_map::OracleMap,
@@ -1609,9 +1612,13 @@ pub struct Order {
     pub immediate_or_cancel: bool,
     /// Whether the order is triggered above or below the trigger price. Only relevant for trigger orders
     pub trigger_condition: OrderTriggerCondition,
-    /// How many slots the auction lasts
+    /// Auction length in wall clock 400ms units (one slot at the 400ms
+    /// baseline, where the raw value is identical to the historical slot
+    /// count). Progress compares `SlotClock::elapsed` against this value's
+    /// wall clock length, so the ramp holds at every slot duration and the
+    /// u8 keeps the full historical 72s range.
     pub auction_duration: u8,
-    /// Last 8 bits of the slot the order was posted on-chain (not order slot for signed msg orders)
+    /// Last 8 bits of the slot the order was posted onchain (not order slot for signed msg orders)
     pub posted_slot_tail: u8,
     /// Bitflags for further classification
     /// 0: is_signed_message
@@ -1657,13 +1664,15 @@ impl Order {
         fallback_price: Option<u64>,
         slot: u64,
         tick_size: u64,
+        slot_clock: SlotClock,
     ) -> VelocityResult<Option<u64>> {
-        let price = if self.has_auction_price(self.slot, self.auction_duration, slot)? {
+        let price = if self.has_auction_price(self.slot, self.auction_duration, slot, slot_clock)? {
             Some(calculate_auction_price(
                 self,
                 slot,
                 tick_size,
                 valid_oracle_price,
+                slot_clock,
             )?)
         } else if self.has_oracle_price_offset() {
             let oracle_price = valid_oracle_price.ok_or_else(|| {
@@ -1697,8 +1706,15 @@ impl Order {
         fallback_price: Option<u64>,
         slot: u64,
         tick_size: u64,
+        slot_clock: SlotClock,
     ) -> VelocityResult<u64> {
-        match self.get_limit_price(valid_oracle_price, fallback_price, slot, tick_size)? {
+        match self.get_limit_price(
+            valid_oracle_price,
+            fallback_price,
+            slot,
+            tick_size,
+            slot_clock,
+        )? {
             Some(price) => Ok(price),
             None => {
                 let caller = Location::caller();
@@ -1712,14 +1728,14 @@ impl Order {
         }
     }
 
-    pub fn has_limit_price(self, slot: u64) -> VelocityResult<bool> {
+    pub fn has_limit_price(self, slot: u64, slot_clock: SlotClock) -> VelocityResult<bool> {
         Ok(self.price > 0
             || self.has_oracle_price_offset()
-            || !is_auction_complete(self.slot, self.auction_duration, slot)?)
+            || !is_auction_complete(self.slot, self.auction_duration, slot, slot_clock)?)
     }
 
-    pub fn is_auction_complete(self, slot: u64) -> VelocityResult<bool> {
-        is_auction_complete(self.slot, self.auction_duration, slot)
+    pub fn is_auction_complete(self, slot: u64, slot_clock: SlotClock) -> VelocityResult<bool> {
+        is_auction_complete(self.slot, self.auction_duration, slot, slot_clock)
     }
 
     pub fn has_auction(&self) -> bool {
@@ -1731,8 +1747,9 @@ impl Order {
         order_slot: u64,
         auction_duration: u8,
         slot: u64,
+        slot_clock: SlotClock,
     ) -> VelocityResult<bool> {
-        let auction_complete = is_auction_complete(order_slot, auction_duration, slot)?;
+        let auction_complete = is_auction_complete(order_slot, auction_duration, slot, slot_clock)?;
         let has_auction_prices = self.auction_start_price != 0 || self.auction_end_price != 0;
         Ok(!auction_complete && has_auction_prices)
     }
@@ -1836,12 +1853,12 @@ impl Order {
         matches!(self.order_type, OrderType::Limit | OrderType::TriggerLimit)
     }
 
-    pub fn is_resting_limit_order(&self, slot: u64) -> VelocityResult<bool> {
+    pub fn is_resting_limit_order(&self, slot: u64, slot_clock: SlotClock) -> VelocityResult<bool> {
         if !self.is_limit_order() {
             return Ok(false);
         }
 
-        Ok(self.post_only || self.is_auction_complete(slot)?)
+        Ok(self.post_only || self.is_auction_complete(slot, slot_clock)?)
     }
 
     pub fn is_signed_msg(&self) -> bool {
@@ -2099,7 +2116,12 @@ pub struct UserStats {
     /// While set, every subaccount of the authority rejects risk-increasing
     /// fills, withdrawals and transfers out. Cleared only by the warm admin.
     pub equity_breaker_tripped: u8,
-    pub padding: [u8; 62],
+    /// Persistent referral reward status. See [`AcceleratedReferralStatus`]. Kept
+    /// separate from `referrer_status`, which describes whether this authority
+    /// refers or was referred by somebody else. Carved out of former padding so
+    /// preupgrade accounts read `0` (standard, automatic enrollment allowed).
+    pub accelerated_referral_status: u8,
+    pub padding: [u8; 61],
 }
 
 impl Default for UserStats {
@@ -2123,7 +2145,8 @@ impl Default for UserStats {
             padding1: [0; 9],
             delegate_permissions: 0,
             equity_breaker_tripped: 0,
-            padding: [0; 62],
+            accelerated_referral_status: 0,
+            padding: [0; 61],
         }
     }
 }
@@ -2151,11 +2174,78 @@ impl ReferrerStatus {
     }
 }
 
+/// Flags stored in [`UserStats::accelerated_referral_status`]. Accelerated status and automatic enrollment
+/// blocking are independent so an admin downgrade remains effective while an
+/// enrollment campaign is still running or is reopened later.
+#[derive(Clone, Copy, BorshSerialize, BorshDeserialize, PartialEq, Debug, Eq)]
+#[borsh(use_discriminant = true)]
+#[repr(u8)]
+pub enum AcceleratedReferralStatus {
+    Accelerated = 0b00000001,
+    AutoEnrollmentBlocked = 0b00000010,
+}
+
 impl Size for UserStats {
     const SIZE: usize = 240;
 }
 
 impl UserStats {
+    pub fn is_accelerated_referrer(&self) -> bool {
+        self.accelerated_referral_status & AcceleratedReferralStatus::Accelerated as u8 != 0
+    }
+
+    pub fn is_accelerated_auto_enrollment_blocked(&self) -> bool {
+        self.accelerated_referral_status & AcceleratedReferralStatus::AutoEnrollmentBlocked as u8
+            != 0
+    }
+
+    /// Permanently grants Accelerated status when enrollment is enabled, unless an admin has
+    /// explicitly revoked and blocked automatic reenrollment. Returns whether
+    /// the stored status changed so callers emit exactly one transition event.
+    pub fn try_auto_enroll_accelerated_referral(&mut self, enrollment_enabled: bool) -> bool {
+        if !enrollment_enabled
+            || self.is_accelerated_referrer()
+            || self.is_accelerated_auto_enrollment_blocked()
+        {
+            return false;
+        }
+
+        self.accelerated_referral_status |= AcceleratedReferralStatus::Accelerated as u8;
+        true
+    }
+
+    /// `try_auto_enroll_accelerated_referral` plus the transition event, for the eligible
+    /// interactions (user initialization, perp fills, swaps) that all enroll the same way.
+    /// Reads `ACCELERATED_REFERRAL_ENROLLMENT_ENABLED` here so callers do not pass it down.
+    pub fn try_auto_enroll_accelerated_referral_and_emit(&mut self, now: i64) {
+        let previous_status = self.accelerated_referral_status;
+        if self.try_auto_enroll_accelerated_referral(ACCELERATED_REFERRAL_ENROLLMENT_ENABLED) {
+            emit_accelerated_referral_status_changed(
+                now,
+                self.authority,
+                previous_status,
+                self.accelerated_referral_status,
+                AcceleratedReferralStatusChange::AutoEnrollment,
+            );
+        }
+    }
+
+    /// Admin grants clear a prior enrollment block. Admin revocations set the
+    /// block so the next trade cannot immediately undo the downgrade.
+    pub fn set_accelerated_referral_by_admin(&mut self, accelerated: bool) -> bool {
+        let previous_status = self.accelerated_referral_status;
+        if accelerated {
+            self.accelerated_referral_status |= AcceleratedReferralStatus::Accelerated as u8;
+            self.accelerated_referral_status &=
+                !(AcceleratedReferralStatus::AutoEnrollmentBlocked as u8);
+        } else {
+            self.accelerated_referral_status &= !(AcceleratedReferralStatus::Accelerated as u8);
+            self.accelerated_referral_status |=
+                AcceleratedReferralStatus::AutoEnrollmentBlocked as u8;
+        }
+        self.accelerated_referral_status != previous_status
+    }
+
     pub fn update_allow_delegate_transfer(
         &mut self,
         allow_delegate_transfer: bool,

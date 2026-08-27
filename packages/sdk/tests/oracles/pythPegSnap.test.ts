@@ -13,6 +13,16 @@ describe('Pyth stablecoin peg-snap boundary', () => {
 	});
 
 	describe('PythClient', () => {
+		// `PythClient` reads the pyth v2 price account header before it decodes,
+		// so a stubbed decode still needs a buffer that carries one.
+		function pythPriceAccountBuffer(): Buffer {
+			const buffer = Buffer.alloc(3312);
+			buffer.writeUInt32LE(0xa1b2c3d4, 0);
+			buffer.writeUInt32LE(2, 4);
+			buffer.writeUInt32LE(3, 8);
+			return buffer;
+		}
+
 		function stubParsePriceData(priceAboveQuote: number, confidence: number) {
 			sinon.stub(pythClientLib, 'parsePriceData').returns({
 				exponent: -6,
@@ -30,16 +40,59 @@ describe('Pyth stablecoin peg-snap boundary', () => {
 			// spread == min(confidence, fiveBPS) == 500 exactly
 			stubParsePriceData(500, 1000);
 			const client = new PythClient({} as any, undefined, true);
-			const data = client.getOraclePriceDataFromBuffer(Buffer.alloc(1));
+			const data = client.getOraclePriceDataFromBuffer(pythPriceAccountBuffer());
 			assert(data.price.eq(QUOTE_PRECISION));
 		});
 
 		it('does not snap just past the confidence bound', () => {
 			stubParsePriceData(501, 1000);
 			const client = new PythClient({} as any, undefined, true);
-			const data = client.getOraclePriceDataFromBuffer(Buffer.alloc(1));
+			const data = client.getOraclePriceDataFromBuffer(pythPriceAccountBuffer());
 			assert(!data.price.eq(QUOTE_PRECISION));
 			assert(data.price.eq(QUOTE_PRECISION.add(new BN(501))));
+		});
+	});
+
+	describe('PythClient header check', () => {
+		it('rejects an account that is not a pyth price account', () => {
+			const client = new PythClient({} as any, undefined, true);
+			const buffer = Buffer.alloc(3312);
+			buffer.writeUInt32LE(0xa1b2c3d4, 0);
+			buffer.writeUInt32LE(2, 4);
+			buffer.writeUInt32LE(2, 8); // AccountType::Product
+			let threw = false;
+			try {
+				client.getOraclePriceDataFromBuffer(buffer);
+			} catch (_e) {
+				threw = true;
+			}
+			assert(threw);
+		});
+
+		it('rejects an account without the pyth magic', () => {
+			const client = new PythClient({} as any, undefined, true);
+			let threw = false;
+			try {
+				client.getOraclePriceDataFromBuffer(Buffer.alloc(3312));
+			} catch (_e) {
+				threw = true;
+			}
+			assert(threw);
+		});
+
+		it('rejects an account shorter than a price account', () => {
+			const client = new PythClient({} as any, undefined, true);
+			const buffer = Buffer.alloc(12);
+			buffer.writeUInt32LE(0xa1b2c3d4, 0);
+			buffer.writeUInt32LE(2, 4);
+			buffer.writeUInt32LE(3, 8);
+			let threw = false;
+			try {
+				client.getOraclePriceDataFromBuffer(buffer);
+			} catch (_e) {
+				threw = true;
+			}
+			assert(threw);
 		});
 	});
 

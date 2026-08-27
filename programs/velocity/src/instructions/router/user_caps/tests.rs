@@ -100,7 +100,7 @@ fn budget(case: Case) -> u64 {
     let oracle_key = Pubkey::from_str(AUTHORITY).unwrap();
     create_anchor_account_info!(oracle_price, &oracle_key, PythLazerOracle, oracle_info);
     let mut oracle_map =
-        crate::state::oracle_map::OracleMap::load_one(&oracle_info, slot, None).unwrap();
+        crate::state::oracle_map::OracleMap::load_one(&oracle_info, slot, crate::math::time::SlotClock::baseline(), None).unwrap();
 
     let mut market = PerpMarket {
         amm: AMM {

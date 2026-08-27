@@ -13,7 +13,10 @@
 use {
     crate::{
         error::VelocityResult,
-        math::margin::calculate_margin_requirement_and_total_collateral_and_liability_info as _calc_margin,
+        math::{
+            margin::calculate_margin_requirement_and_total_collateral_and_liability_info as _calc_margin,
+            time::SlotClock,
+        },
         state::{
             margin_calculation::{MarginCalculation, MarginContext},
             oracle::{get_oracle_price as _get_oracle_price, OraclePriceData, OracleSource},
@@ -223,6 +226,9 @@ pub struct VelocityAccounts {
     pub oracles: Vec<(Pubkey, OwnedAccount)>,
     pub latest_slot: u64,
     pub oracle_guard_rails: Option<OracleGuardRails>,
+    /// Cluster slot clock, built by the caller from the `State` account
+    /// (`State::slot_clock`). Default is the 400ms baseline.
+    pub slot_clock: SlotClock,
 }
 
 /// Fabricate an `AccountInfo` borrowing directly into `slot`'s
@@ -266,6 +272,7 @@ pub fn calculate_margin(
     let mut oracle_map = OracleMap::load(
         &mut oracle_infos.iter().peekable(),
         accounts.latest_slot,
+        accounts.slot_clock,
         accounts.oracle_guard_rails,
     )?;
 

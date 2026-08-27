@@ -11,6 +11,8 @@ import {
 	BASE_PRECISION,
 	Order,
 	PerpPosition,
+	msToSlotsNum,
+	currentSlotDuration,
 } from '@velocity-exchange/sdk';
 import { Mutex, tryAcquire, E_ALREADY_LOCKED } from 'async-mutex';
 
@@ -32,7 +34,9 @@ type State = {
 	openOrders: Map<number, Array<Order>>;
 };
 
-const MARKET_UPDATE_COOLDOWN_SLOTS = 30; // wait slots before updating market position
+// wait this long before updating market position (expressed in actual slots
+// at the current State.slotDurationMs)
+const MARKET_UPDATE_COOLDOWN_MS = 12_000;
 
 enum METRIC_TYPES {
 	sdk_call_duration_histogram = 'sdk_call_duration_histogram',
@@ -247,18 +251,34 @@ export class FloatingPerpMakerBot implements Bot {
 		const currSlot = this.slotSubscriber.currentSlot;
 		const marketIndex = marketAccount.marketIndex;
 		const nextUpdateSlot =
-			this.lastSlotMarketUpdated.get(marketIndex) ??
-			0 + MARKET_UPDATE_COOLDOWN_SLOTS;
+			(this.lastSlotMarketUpdated.get(marketIndex) ?? 0) +
+			msToSlotsNum(
+				MARKET_UPDATE_COOLDOWN_MS,
+				currentSlotDuration(this.velocityClient, this.slotSubscriber.getSlot())
+			);
 
 		if (nextUpdateSlot > currSlot) {
 			return;
 		}
 
 		const openOrders = this.agentState!.openOrders.get(marketIndex) || [];
-		const oracle =
-			this.velocityClient.getMMOracleDataForPerpMarket(marketIndex);
-		const vAsk = calculateAskPrice(marketAccount, oracle);
-		const vBid = calculateBidPrice(marketAccount, oracle);
+		const oracle = this.velocityClient.getMMOracleDataForPerpMarket(
+			marketIndex,
+			currSlot
+		);
+		const slotDurationState = this.velocityClient.getStateAccount();
+		const vAsk = calculateAskPrice(
+			marketAccount,
+			oracle,
+			new BN(currSlot),
+			slotDurationState
+		);
+		const vBid = calculateBidPrice(
+			marketAccount,
+			oracle,
+			new BN(currSlot),
+			slotDurationState
+		);
 
 		// cancel orders if not quoting both sides of the market
 		let placeNewOrders = openOrders.length === 0;

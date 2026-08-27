@@ -1,6 +1,6 @@
 {
 	"name": "@velocity-exchange/admin-cli",
-	"version": "0.10.2",
+	"version": "0.12.1",
 	"description": "Velocity v1 admin CLI: rotate authority keys, pause markets, and route operations through a Squads V4 multisig.",
 	"author": "velocity-exchange",
 	"repository": {
@@ -42,7 +42,7 @@
 	"dependencies": {
 		"@coral-xyz/anchor": "0.32.1",
 		"@velocity-exchange/sdk": "workspace:*",
-		"@solana/web3.js": "1.73.2",
+		"@solana/web3.js": "1.98.4",
 		"@sqds/multisig": "2.1.3",
 		"commander": "12.1.0"
 	},

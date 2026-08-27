@@ -1164,7 +1164,11 @@ mod calculate_spot_if_fee {
 
 mod calculate_max_pct_to_liquidate {
     use crate::{
-        math::liquidation::calculate_max_pct_to_liquidate, state::user::User,
+        math::{
+            liquidation::calculate_max_pct_to_liquidate,
+            time::{Millis, SlotClock},
+        },
+        state::user::User,
         LIQUIDATION_PCT_PRECISION, QUOTE_PRECISION,
     };
 
@@ -1178,16 +1182,56 @@ mod calculate_max_pct_to_liquidate {
             margin_shortage,
             1,
             LIQUIDATION_PCT_PRECISION / 10,
-            10,
+            Millis::from_stored_units(10),
+            SlotClock::baseline(),
         )
         .unwrap();
 
         assert_eq!(pct, LIQUIDATION_PCT_PRECISION);
     }
+
+    #[test]
+    fn same_wall_clock_progress_at_400_and_200_ms() {
+        let user = User::default();
+        let margin_shortage = 100 * QUOTE_PRECISION;
+        let initial = LIQUIDATION_PCT_PRECISION / 10;
+        let duration = Millis::from_secs(60);
+
+        let baseline = calculate_max_pct_to_liquidate(
+            &user,
+            margin_shortage,
+            75, // 30 seconds at 400ms
+            initial,
+            duration,
+            SlotClock::baseline(),
+        )
+        .unwrap();
+        // a clock fully rolled out to 200ms since slot 1
+        let clock_200 = SlotClock::from_state_fields([1, 1, 1, 1], 0, 0, 0);
+        let user_200 = User {
+            last_active_slot: 1_000,
+            ..User::default()
+        };
+        let fast = calculate_max_pct_to_liquidate(
+            &user_200,
+            margin_shortage,
+            1_000 + 150, // the same 30 seconds at 200ms
+            initial,
+            duration,
+            clock_200,
+        )
+        .unwrap();
+
+        assert_eq!(baseline, 6 * LIQUIDATION_PCT_PRECISION / 10);
+        assert_eq!(fast, baseline);
+    }
 }
 
 mod get_liquidation_fee {
-    use crate::{math::liquidation::get_liquidation_fee, LIQUIDATION_FEE_PRECISION};
+    use crate::{
+        math::{liquidation::get_liquidation_fee, time::SlotClock},
+        LIQUIDATION_FEE_PRECISION,
+    };
 
     #[test]
     fn test() {
@@ -1197,19 +1241,52 @@ mod get_liquidation_fee {
 
         // Huge slot difference
         let curr_slot: u64 = 100000;
-        let fee = get_liquidation_fee(base_liq_fee, max_liq_fee, user_slot, curr_slot).unwrap();
+        let fee = get_liquidation_fee(
+            base_liq_fee,
+            max_liq_fee,
+            user_slot,
+            curr_slot,
+            SlotClock::baseline(),
+        )
+        .unwrap();
         assert_eq!(fee, max_liq_fee);
 
         // Small slot difference within grace period
         let curr_slot: u64 = 10;
-        let fee = get_liquidation_fee(base_liq_fee, max_liq_fee, user_slot, curr_slot).unwrap();
+        let fee = get_liquidation_fee(
+            base_liq_fee,
+            max_liq_fee,
+            user_slot,
+            curr_slot,
+            SlotClock::baseline(),
+        )
+        .unwrap();
         assert_eq!(fee, base_liq_fee);
 
         // Successful increase
         let target_liq_fee: u32 = 3 * LIQUIDATION_FEE_PRECISION / 100;
         let curr_slot: u64 = 10000;
-        let fee = get_liquidation_fee(base_liq_fee, max_liq_fee, user_slot, curr_slot).unwrap();
+        let fee = get_liquidation_fee(
+            base_liq_fee,
+            max_liq_fee,
+            user_slot,
+            curr_slot,
+            SlotClock::baseline(),
+        )
+        .unwrap();
         assert_eq!(fee, target_liq_fee);
+
+        // The same elapsed wall-clock time at 200ms produces the same fee.
+        let clock_200 = SlotClock::from_state_fields([1, 1, 1, 1], 0, 0, 0);
+        let fast_fee = get_liquidation_fee(
+            base_liq_fee,
+            max_liq_fee,
+            1_000,
+            1_000 + curr_slot * 2,
+            clock_200,
+        )
+        .unwrap();
+        assert_eq!(fast_fee, target_liq_fee);
     }
 }
 

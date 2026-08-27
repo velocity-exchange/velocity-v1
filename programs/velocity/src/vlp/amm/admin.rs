@@ -105,6 +105,7 @@ pub fn handle_update_initial_amm_cache_info<'c: 'info, 'info>(
         &MarketSet::new(),
         &MarketSet::new(),
         Clock::get()?.slot,
+        state.slot_clock(),
         None,
     )?;
 
@@ -112,7 +113,12 @@ pub fn handle_update_initial_amm_cache_info<'c: 'info, 'info>(
     for (_, perp_market_loader) in perp_market_map.0 {
         let perp_market = perp_market_loader.load()?;
         let oracle_data = oracle_map.get_price_data(&perp_market.oracle_id())?;
-        let mm_oracle_data = perp_market.get_mm_oracle_price_data(*oracle_data, slot, &validity)?;
+        let mm_oracle_data = perp_market.get_mm_oracle_price_data(
+            *oracle_data,
+            slot,
+            &validity,
+            state.slot_clock(),
+        )?;
 
         amm_cache.update_perp_market_fields(&perp_market)?;
         amm_cache.update_oracle_info(
@@ -121,6 +127,7 @@ pub fn handle_update_initial_amm_cache_info<'c: 'info, 'info>(
             &mm_oracle_data,
             &perp_market,
             &state.oracle_guard_rails,
+            state.slot_clock(),
         )?;
     }
 
@@ -411,7 +418,6 @@ pub struct UpdatePerpMarketSummaryStatsParams {
 
 #[access_control(
     perp_market_valid(&ctx.accounts.perp_market)
-    valid_oracle_for_perp_market(&ctx.accounts.oracle, &ctx.accounts.perp_market)
 )]
 pub fn handle_update_perp_market_amm_summary_stats(
     ctx: Context<AdminUpdatePerpMarketAmmSummaryStats>,
@@ -591,6 +597,7 @@ pub fn handle_repeg_amm_curve(ctx: Context<RepegCurve>, new_peg_candidate: u128)
         new_peg_candidate,
         clock_slot,
         &oracle_validity_rails,
+        ctx.accounts.state.load()?.slot_clock(),
     )?;
 
     let peg_multiplier_after = perp_market.amm.peg_multiplier;
@@ -1460,19 +1467,25 @@ pub struct UpdateInitialAmmCacheInfo<'info> {
     pub amm_cache: Box<Account<'info, AmmCache>>,
 }
 
+/// Both handlers on this struct price the perp market from the oracle account
+/// the caller passes. `has_one` binds that account to the market, so a caller
+/// cannot substitute another feed and set the peg from it.
 #[derive(Accounts)]
 pub struct AdminUpdatePerpMarketAmmSummaryStats<'info> {
     #[account(constraint = check_hot(&admin.key(), &state, HotRole::AmmCrank)?)]
     pub admin: Signer<'info>,
     pub state: AccountLoader<'info, State>,
-    #[account(mut)]
+    #[account(
+        mut,
+        has_one = oracle @ ErrorCode::InvalidOracle,
+    )]
     pub perp_market: AccountLoader<'info, PerpMarket>,
     #[account(
         seeds = [b"spot_market", perp_market.load()?.quote_spot_market_index.to_le_bytes().as_ref()],
         bump,
     )]
     pub spot_market: AccountLoader<'info, SpotMarket>,
-    /// CHECK: checked in `admin_update_perp_market_summary_stats` ix constraint
+    /// CHECK: must be `perp_market.oracle` (enforced by `has_one` above)
     pub oracle: UncheckedAccount<'info>,
 }
 

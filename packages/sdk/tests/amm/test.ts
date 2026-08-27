@@ -1860,6 +1860,7 @@ describe('AMM Tests', () => {
 			mmOraclePriceData,
 			numOrders: 10,
 			now,
+			slotDurationState: {},
 			topOfBookQuoteAmounts: [],
 		});
 
@@ -1937,6 +1938,7 @@ describe('AMM Tests', () => {
 			mmOraclePriceData,
 			numOrders: 10,
 			now,
+			slotDurationState: {},
 			topOfBookQuoteAmounts: [],
 		});
 
@@ -2015,6 +2017,7 @@ describe('AMM Tests', () => {
 			mmOraclePriceData,
 			numOrders: 10,
 			now,
+			slotDurationState: {},
 			topOfBookQuoteAmounts: [
 				new BN(10).mul(QUOTE_PRECISION),
 				new BN(100).mul(QUOTE_PRECISION),
@@ -2097,6 +2100,7 @@ describe('AMM Tests', () => {
 			mmOraclePriceData,
 			numOrders: 10,
 			now,
+			slotDurationState: {},
 			topOfBookQuoteAmounts: [
 				new BN(10).mul(QUOTE_PRECISION),
 				new BN(100).mul(QUOTE_PRECISION),
@@ -2182,6 +2186,7 @@ describe('AMM Tests', () => {
 			mmOraclePriceData,
 			numOrders: 10,
 			now,
+			slotDurationState: {},
 			topOfBookQuoteAmounts: [
 				new BN(10).mul(QUOTE_PRECISION),
 				new BN(100).mul(QUOTE_PRECISION),
@@ -2265,6 +2270,7 @@ describe('AMM Tests', () => {
 			mmOraclePriceData,
 			numOrders: 10,
 			now,
+			slotDurationState: {},
 			topOfBookQuoteAmounts: [],
 		});
 

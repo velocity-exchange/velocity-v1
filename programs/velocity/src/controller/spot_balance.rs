@@ -18,6 +18,7 @@ use {
                 get_token_amount, split_deposit_interest, InterestAccumulated,
             },
             stats::{calculate_new_twap, calculate_weighted_average},
+            time::SlotClock,
         },
         msg,
         state::{
@@ -580,6 +581,8 @@ pub fn check_spot_oracle_validity(
     validity_guard_rails: &ValidityGuardRails,
     action: Option<VelocityAction>,
     log_mode: LogMode,
+    current_slot: u64,
+    slot_clock: SlotClock,
 ) -> VelocityResult<OracleValidity> {
     if spot_market.market_index == QUOTE_SPOT_MARKET_INDEX {
         return Ok(OracleValidity::Valid);
@@ -600,6 +603,8 @@ pub fn check_spot_oracle_validity(
         -1,
         false, // exchange-oracle price, never MM-sourced
         0,
+        current_slot,
+        slot_clock,
     )?;
 
     validate!(
@@ -628,6 +633,8 @@ pub fn update_spot_market_and_check_validity(
     now: i64,
     action: Option<VelocityAction>,
     funding_paused: bool,
+    current_slot: u64,
+    slot_clock: SlotClock,
 ) -> VelocityResult<SpotMarketOracleRefresh> {
     let pre_refresh_twap_5min = spot_market
         .historical_oracle_data
@@ -639,6 +646,8 @@ pub fn update_spot_market_and_check_validity(
         validity_guard_rails,
         action,
         LogMode::ExchangeOracle,
+        current_slot,
+        slot_clock,
     )?;
 
     // update spot market EMAs with new/current data

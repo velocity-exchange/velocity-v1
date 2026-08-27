@@ -59,6 +59,7 @@ pub fn deposit<'info>(ctx: Context<'info, Deposit<'info>>, amount: u64) -> Resul
         Some(spot_market_index),
         vp.is_some(),
         has_fee_update,
+        &ctx.accounts.velocity_state,
     )?;
 
     let vault_equity =

@@ -45,9 +45,12 @@ use {
     solana_signer::Signer,
     std::rc::Rc,
     velocity::{
-        math::constants::{
-            BASE_PRECISION, PEG_PRECISION, PRICE_PRECISION, QUOTE_PRECISION,
-            SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+        math::{
+            constants::{
+                BASE_PRECISION, PEG_PRECISION, PRICE_PRECISION, QUOTE_PRECISION,
+                SPOT_BALANCE_PRECISION, SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+            },
+            time::legacy_slot_duration_u8,
         },
         state::{
             market_status::MarketStatus,
@@ -203,7 +206,7 @@ fn build_state(signer: Pubkey, signer_nonce: u8) -> State {
     // Liquidation config used by liquidate_perp_pnl_for_deposit.
     s.liquidation_margin_buffer_ratio = 50; // 0.5%
     s.initial_pct_to_liquidate = 10_000; // 10% (PERCENTAGE-ish)
-    s.liquidation_duration = 150;
+    s.liquidation_duration = legacy_slot_duration_u8(150);
     s
 }
 
@@ -963,7 +966,6 @@ impl Fixture {
         };
         let mut backed: i128 = net_user_tokens;
         backed += pool_tokens(spot_market.revenue_pool.scaled_balance);
-        backed += pool_tokens(spot_market.spot_fee_pool.scaled_balance);
         if let Some(pm) = self.read_perp_market() {
             backed += pool_tokens(pm.pnl_pool.scaled_balance);
             backed += pool_tokens(pm.amm.fee_pool.scaled_balance);

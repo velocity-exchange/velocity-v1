@@ -31,6 +31,9 @@ import {
 	OrderParamsBitFlag,
 	PerpMarketAccount,
 	SpotMarketAccount,
+	elapsedMillis,
+	millisFromStoredUnits,
+	slotAtOrAfterDuration,
 } from '@velocity-exchange/sdk';
 import { Connection, PublicKey } from '@solana/web3.js';
 import dotenv from 'dotenv';
@@ -130,6 +133,13 @@ class DLOBBuilder {
 			`${logPrefix} Building DLOB with ${this.userAccountData.size} users`
 		);
 		const dlob = new DLOB();
+		try {
+			// auction wall clock math converts elapsed slots through the State
+			// slot clock; unsubscribed state falls back to the 400ms baseline
+			dlob.slotDurationState = this.velocityClient.getStateAccount();
+		} catch {
+			// not subscribed yet: keep the baseline
+		}
 		let counter = 0;
 		this.userAccountData.forEach((userAccount, pubkey) => {
 			userAccount.orders.forEach((order) => {
@@ -226,8 +236,12 @@ class DLOBBuilder {
 			orderData['signing_authority']
 		);
 
-		const maxSlot = signedMessage.slot.addn(
-			signedMsgOrderParams.auctionDuration ?? 0
+		const slotDurationState = this.velocityClient.getStateAccount();
+		// Mirrors the program's max_slot across every known future boundary.
+		const maxSlot = slotAtOrAfterDuration(
+			slotDurationState,
+			signedMessage.slot,
+			millisFromStoredUnits(signedMsgOrderParams.auctionDuration ?? 0)
 		);
 		if (maxSlot.toNumber() < this.slotSubscriber.getSlot()) {
 			logger.warn(
@@ -282,7 +296,14 @@ class DLOBBuilder {
 			takerUserPubkey.toString()
 		);
 
-		const ttl = (maxSlot.toNumber() - this.slotSubscriber.getSlot()) * 500;
+		// Cache TTL uses the same piecewise interval, with the historical 25% pad.
+		const ttl = Math.ceil(
+			elapsedMillis(
+				slotDurationState,
+				new BN(this.slotSubscriber.getSlot()),
+				maxSlot
+			).toNumber() * 1.25
+		);
 		this.signedMsgOrders.set(uuid, signedMsgOrderNode, {
 			ttl,
 		});
@@ -310,12 +331,14 @@ class DLOBBuilder {
 				fallbackBid = calculateBidPrice(
 					market,
 					mmOraclePriceData,
-					new BN(this.slotSubscriber.getSlot())
+					new BN(this.slotSubscriber.getSlot()),
+					this.velocityClient.getStateAccount()
 				);
 				fallbackAsk = calculateAskPrice(
 					market,
 					mmOraclePriceData,
-					new BN(this.slotSubscriber.getSlot())
+					new BN(this.slotSubscriber.getSlot()),
+					this.velocityClient.getStateAccount()
 				);
 			} else {
 				market = this.velocityClient.getSpotMarketAccount(marketIndex);

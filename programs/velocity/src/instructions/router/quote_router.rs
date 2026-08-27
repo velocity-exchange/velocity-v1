@@ -105,6 +105,7 @@ pub fn handle_quote_router<'c: 'info, 'info>(
         &get_writable_perp_market_set(market_index),
         &MarketSet::new(),
         clock.slot,
+        state.slot_clock(),
         Some(state.oracle_guard_rails),
     )?;
     let (makers, _maker_stats) = load_user_maps(remaining_accounts_iter, false)?;
@@ -316,6 +317,7 @@ pub fn handle_quote_router<'c: 'info, 'info>(
             Some(oracle_price.price),
             clock.slot,
             order_tick_size,
+            state.slot_clock(),
         )?;
         for (order_index, price) in found {
             let size =
@@ -356,6 +358,7 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                 oracle_price,
                 clock.slot,
                 &state.oracle_guard_rails.validity,
+                state.slot_clock(),
             )?
         };
         // Every book quoted above is already in the buffer, in fill order, so

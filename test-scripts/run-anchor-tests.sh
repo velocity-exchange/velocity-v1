@@ -151,6 +151,7 @@ test_files=(
   # whitelist.ts
   transferFeeAndPnlPool.ts
   protocolFees.ts
+  recenterAmmCrankOracle.ts
   specialUserAccount.ts
 )
 

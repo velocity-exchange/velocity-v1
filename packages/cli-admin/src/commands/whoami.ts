@@ -11,7 +11,7 @@ import { fetchStateAdmins } from '../lib/state';
  * `whoami` answers the question every authority bug starts with: which keys
  * does my signer actually hold on this cluster? It decodes the live State,
  * matches the signer against the cold/warm/pause admins and every hot role,
- * and — when a multisig is configured — reports membership and whether that
+ * and, when a multisig is configured, reports membership and whether that
  * squad's vault is itself a State admin.
  */
 export function registerWhoami(parent: Command): void {

@@ -36,7 +36,7 @@ export function withGlobalOptions(cmd: Command): Command {
 		)
 		.option(
 			'-m, --multisig <pubkey>',
-			'Squads V4 multisig PDA — wraps the action in a vault transaction proposal instead of sending directly (default: profile). Pass --no-multisig to force a direct send under a profile that proposes.'
+			'Squads V4 multisig PDA: wraps the action in a vault transaction proposal instead of sending directly (default: profile). Pass --no-multisig to force a direct send under a profile that proposes.'
 		)
 		.option(
 			'--no-multisig',
@@ -53,7 +53,7 @@ export function readGlobalOpts(cmd: Command): GlobalOpts {
 	const selected = resolveProfile(opts.profile as string | undefined);
 	const profile = selected?.profile;
 
-	// commander turns --no-multisig into `multisig: false` — an explicit
+	// commander turns --no-multisig into `multisig: false`: an explicit
 	// "send directly", overriding a profile's multisig.
 	const multisig =
 		opts.multisig === false
@@ -69,6 +69,7 @@ export function readGlobalOpts(cmd: Command): GlobalOpts {
 		url:
 			(opts.url as string) ??
 			profile?.url ??
+			selected?.sharedRpc ??
 			'https://api.mainnet-beta.solana.com',
 		keypair:
 			(opts.keypair as string) ??

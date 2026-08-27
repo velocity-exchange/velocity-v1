@@ -18,19 +18,24 @@ import { VelocityEnv } from '@velocity-exchange/sdk';
  */
 
 export type Profile = {
-	/** Solana RPC URL. */
-	url: string;
+	/**
+	 * Solana RPC URL. Optional: when unset, the shared `rpcs[env]` entry is
+	 * used, so one URL per cluster serves every profile on it.
+	 */
+	url?: string;
 	/** Path to the signer keypair JSON (~ expands). */
 	keypair: string;
-	/** Velocity env, decides program addresses. */
+	/** Velocity env, decides program addresses and the shared RPC. */
 	env: VelocityEnv;
-	/** Squads V4 multisig PDA — when set, actions dispatch as proposals. */
+	/** Squads V4 multisig PDA; when set, actions dispatch as proposals. */
 	multisig?: string;
 };
 
 export type CliConfig = {
 	version: 1;
 	default?: string;
+	/** Shared per-cluster RPC URLs, the fallback for profiles without `url`. */
+	rpcs?: Partial<Record<VelocityEnv, string>>;
 	profiles: Record<string, Profile>;
 };
 
@@ -53,12 +58,12 @@ export function loadConfig(): CliConfig {
 		parsed = JSON.parse(fs.readFileSync(p, 'utf-8'));
 	} catch (e) {
 		throw new Error(
-			`config ${p} is not valid JSON (${(e as Error).message}) — fix or delete it`
+			`config ${p} is not valid JSON (${(e as Error).message}); fix or delete it`
 		);
 	}
 	const cfg = parsed as CliConfig;
 	if (cfg.version !== 1 || typeof cfg.profiles !== 'object') {
-		throw new Error(`config ${p} has an unknown shape — expected version 1`);
+		throw new Error(`config ${p} has an unknown shape; expected version 1`);
 	}
 	return cfg;
 }
@@ -72,11 +77,13 @@ export function saveConfig(cfg: CliConfig): void {
 /**
  * The profile an invocation should use: `--profile` beats
  * `VELOCITY_ADMIN_PROFILE` beats the config's `default`. Returns undefined
- * when nothing selects a profile — flag-only usage stays fully supported.
+ * when nothing selects a profile; flag-only usage stays fully supported.
  */
 export function resolveProfile(flag: string | undefined): {
 	name: string;
 	profile: Profile;
+	/** The shared RPC for the profile's env, profile.url's fallback. */
+	sharedRpc?: string;
 } | null {
 	const cfg = loadConfig();
 	const name = flag ?? process.env.VELOCITY_ADMIN_PROFILE ?? cfg.default;
@@ -90,8 +97,15 @@ export function resolveProfile(flag: string | undefined): {
 			`unknown profile "${name}"` +
 				(known.length
 					? ` (configured: ${known.join(', ')})`
-					: ` — no profiles configured yet, run \`velocity-admin config init\``)
+					: `; no profiles configured yet, run \`velocity-admin config init\``)
 		);
 	}
-	return { name, profile };
+	const sharedRpc = cfg.rpcs?.[profile.env];
+	if (!profile.url && !sharedRpc) {
+		throw new Error(
+			`profile "${name}" has no url and no shared RPC for ${profile.env}; ` +
+				`set one with \`velocity-admin config set-rpc ${profile.env} <url>\``
+		);
+	}
+	return { name, profile, sharedRpc };
 }

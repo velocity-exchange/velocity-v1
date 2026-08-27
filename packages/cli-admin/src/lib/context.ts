@@ -6,7 +6,7 @@ import pc from 'picocolors';
  * Per-invocation run context: which cluster the RPC actually is (verified by
  * genesis hash, not by reading the URL), who signs, and how the action
  * dispatches. Announced once before any command does work, so every
- * invocation states its blast radius up front — and a mainnet direct send
+ * invocation states its blast radius up front, and a mainnet direct send
  * asks for confirmation unless `--yes`.
  *
  * Module-level singleton: the CLI is a single-command process, and threading
@@ -50,7 +50,7 @@ export async function detectCluster(connection: Connection): Promise<Cluster> {
  * announces itself.
  *
  * Env resolution: an env declared by the user (flag or profile) that
- * contradicts the RPC's genesis hash is fatal — the one mistake this tool
+ * contradicts the RPC's genesis hash is fatal; the one mistake this tool
  * must make impossible is "right command, wrong cluster". When env was never
  * declared (`envDeclared: false`, the legacy default), the detected cluster
  * IS the env, so flag-free invocations against devnet keep working.
@@ -71,7 +71,7 @@ export async function announceContext(
 	if (cluster !== 'unknown') {
 		if (args.envDeclared && cluster !== args.env) {
 			throw new Error(
-				`cluster mismatch: env says "${args.env}" but the RPC's genesis hash is ${cluster} — ` +
+				`cluster mismatch: env says "${args.env}" but the RPC's genesis hash is ${cluster}; ` +
 					`fix the profile/flags before anything is sent`
 			);
 		}
@@ -108,7 +108,7 @@ export async function announceContext(
 /**
  * Gate a mainnet direct send behind an interactive confirmation. No-op for
  * proposals (the multisig is the gate), for other clusters, with `--yes`, or
- * when stdin is not a TTY (scripts must not hang — `--yes` semantics are
+ * when stdin is not a TTY (scripts must not hang; `--yes` semantics are
  * implied by scripting).
  */
 export async function confirmMainnetDirect(memo: string): Promise<void> {
@@ -125,7 +125,7 @@ export async function confirmMainnetDirect(memo: string): Promise<void> {
 	const ok = await confirm({
 		message: `mainnet direct send (${memo}) signed by ${shorten(
 			ctx.signer
-		)} — proceed?`,
+		)}, proceed?`,
 	});
 	if (isCancel(ok) || !ok) {
 		throw new Error('aborted');

@@ -23,11 +23,11 @@ import { fetchStateAdmins } from '../lib/state';
 /**
  * Profile management: `config init` builds a profile interactively and
  * verifies every ingredient against the live cluster before writing anything
- * — the RPC by genesis hash, the keypair by loading it, the multisig by
- * deriving its vault and matching it against the on-chain State admins. A
+ * (the RPC by genesis hash, the keypair by loading it, the multisig by
+ * deriving its vault and matching it against the onchain State admins). A
  * profile that saves is a profile that works.
  *
- * Multisig addresses are kept in this per-user config only, on purpose —
+ * Multisig addresses are kept in this per-user config only, on purpose;
  * they are derivable on-chain but are not written into the repo.
  */
 
@@ -40,7 +40,9 @@ function unwrap<T>(value: T | symbol): T {
 	if (isCancel(value)) {
 		die('aborted, nothing saved');
 	}
-	return value as T;
+	// Pasted prompt input routinely carries stray whitespace; a trailing
+	// space in an RPC URL makes the connection fail with an opaque error.
+	return (typeof value === 'string' ? value.trim() : value) as T;
 }
 
 export function registerConfig(parent: Command): void {
@@ -71,32 +73,80 @@ export function registerConfig(parent: Command): void {
 			);
 			if (cfg.profiles[name]) {
 				const overwrite = unwrap(
-					await confirm({ message: `profile "${name}" exists — overwrite?` })
+					await confirm({ message: `profile "${name}" exists, overwrite?` })
 				);
 				if (!overwrite) {
 					die('aborted, nothing saved');
 				}
 			}
 
-			const url = unwrap(
-				await text({
-					message: 'RPC URL',
-					validate: (v) =>
-						v.startsWith('http') ? undefined : 'must be an http(s) URL',
+			const env = unwrap(
+				await select({
+					message: 'cluster',
+					options: [
+						{ value: 'devnet' as VelocityEnv, label: 'devnet' },
+						{ value: 'mainnet-beta' as VelocityEnv, label: 'mainnet-beta' },
+					],
 				})
 			);
+
+			// One RPC per cluster serves every profile on it; a profile only
+			// carries its own url when it deliberately deviates.
 			const s = spinner();
+			const shared = cfg.rpcs?.[env];
+			let url: string;
+			let profileUrl: string | undefined;
+			let saveShared = false;
+			const useShared =
+				shared !== undefined &&
+				unwrap(
+					await confirm({
+						message: `use the shared ${env} RPC (${shared.replace(
+							/\?.*$/,
+							''
+						)})?`,
+					})
+				);
+			if (useShared && shared) {
+				url = shared;
+			} else {
+				url = unwrap(
+					await text({
+						message: `RPC URL for ${env}`,
+						validate: (v) =>
+							v.startsWith('http') ? undefined : 'must be an http(s) URL',
+					})
+				);
+				saveShared = unwrap(
+					await confirm({
+						message: `save as the shared ${env} RPC (used by every profile without its own url)?`,
+					})
+				);
+				if (!saveShared) {
+					profileUrl = url;
+				}
+			}
 			s.start('checking RPC genesis hash');
 			const cluster = await detectCluster(new Connection(url, 'confirmed'));
 			if (cluster === 'unknown') {
+				// Re-fetch without the silent catch so the actual failure is shown.
+				let reason = 'unrecognized genesis hash';
+				try {
+					reason = `unrecognized genesis hash ${await new Connection(
+						url,
+						'confirmed'
+					).getGenesisHash()}`;
+				} catch (e) {
+					reason = (e as Error).message;
+				}
 				s.stop(pc.yellow('✗ could not resolve cluster from RPC'));
-				die('RPC unreachable or unknown genesis — fix the URL and retry');
+				die(`RPC check failed: ${reason}`);
+			}
+			if (cluster !== env) {
+				s.stop(pc.red(`✗ RPC is ${cluster}, not ${env}`));
+				die('RPC and cluster disagree, nothing saved');
 			}
 			s.stop(`RPC is ${pc.bold(cluster)} (genesis hash verified)`);
-			if (cluster !== 'mainnet-beta' && cluster !== 'devnet') {
-				die(`cluster ${cluster} is not a Velocity env`);
-			}
-			const env = cluster as VelocityEnv;
 
 			const keypair = unwrap(
 				await text({
@@ -119,12 +169,12 @@ export function registerConfig(parent: Command): void {
 					options: [
 						{
 							value: 'direct',
-							label: 'direct — sign and send with the keypair',
+							label: 'direct: sign and send with the keypair',
 						},
 						{
 							value: 'multisig',
 							label:
-								'multisig — wrap every action in a Squads V4 proposal',
+								'multisig: wrap every action in a Squads V4 proposal',
 						},
 					],
 				})
@@ -181,7 +231,7 @@ export function registerConfig(parent: Command): void {
 					const anyway = unwrap(
 						await confirm({
 							message:
-								'this squad cannot pass admin checks (fine for e.g. an upgrade-authority or treasury squad) — save anyway?',
+								'this squad cannot pass admin checks (fine for e.g. an upgrade-authority or treasury squad), save anyway?',
 						})
 					);
 					if (!anyway) {
@@ -190,7 +240,7 @@ export function registerConfig(parent: Command): void {
 				}
 			}
 
-			const profile: Profile = { url, keypair, env, multisig };
+			const profile: Profile = { url: profileUrl, keypair, env, multisig };
 			const makeDefault =
 				Object.keys(cfg.profiles).length === 0 ||
 				unwrap(
@@ -202,6 +252,7 @@ export function registerConfig(parent: Command): void {
 
 			const next: CliConfig = {
 				...cfg,
+				rpcs: saveShared ? { ...cfg.rpcs, [env]: url } : cfg.rpcs,
 				profiles: { ...cfg.profiles, [name]: profile },
 				default: makeDefault ? name : cfg.default,
 			};
@@ -215,15 +266,20 @@ export function registerConfig(parent: Command): void {
 
 	config
 		.command('list')
-		.description('List configured profiles.')
+		.description('List configured profiles and shared RPCs.')
 		.action(() => {
 			const cfg = loadConfig();
 			const names = Object.keys(cfg.profiles);
 			if (names.length === 0) {
 				console.log(
-					`no profiles configured (${configPath()}) — run \`velocity-admin config init\``
+					`no profiles configured (${configPath()}); run \`velocity-admin config init\``
 				);
 				return;
+			}
+			for (const [env, url] of Object.entries(cfg.rpcs ?? {})) {
+				console.log(
+					pc.dim(`shared rpc ${env.padEnd(12)} ${url.replace(/\?.*$/, '')}`)
+				);
 			}
 			for (const name of names) {
 				const p = cfg.profiles[name];
@@ -232,9 +288,31 @@ export function registerConfig(parent: Command): void {
 				console.log(
 					`${mark}${pc.bold(name.padEnd(16))} ${p.env.padEnd(12)} ${mode}`
 				);
-				console.log(pc.dim(`    rpc ${p.url.replace(/\?.*$/, '')}`));
+				if (p.url) {
+					console.log(pc.dim(`    rpc ${p.url.replace(/\?.*$/, '')} (own)`));
+				}
 				console.log(pc.dim(`    key ${p.keypair}`));
 			}
+		});
+
+	config
+		.command('set-rpc <env> <url>')
+		.description(
+			'Set the shared RPC for a cluster (devnet or mainnet-beta), used by every profile without its own url. Verifies the URL by genesis hash.'
+		)
+		.action(async (env: string, url: string) => {
+			if (env !== 'mainnet-beta' && env !== 'devnet') {
+				throw new Error(`unknown env "${env}" (expected mainnet-beta or devnet)`);
+			}
+			const cluster = await detectCluster(new Connection(url, 'confirmed'));
+			if (cluster !== env) {
+				throw new Error(
+					`RPC genesis hash says ${cluster}, not ${env}; nothing saved`
+				);
+			}
+			const cfg = loadConfig();
+			saveConfig({ ...cfg, rpcs: { ...cfg.rpcs, [env]: url } });
+			console.log(`shared ${env} RPC set (genesis hash verified)`);
 		});
 
 	config

@@ -33,7 +33,7 @@ export async function fetchStateAdmins(
 	const info = await connection.getAccountInfo(statePk);
 	if (!info) {
 		throw new Error(
-			`State account not found on this cluster for env "${env}" — wrong RPC or env`
+			`State account not found on this cluster for env "${env}"; wrong RPC or env`
 		);
 	}
 	const state = client.program.coder.accounts.decode('state', info.data) as {

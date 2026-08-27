@@ -21,7 +21,7 @@ velocity-admin --help
 ## Commands
 
 ```
-velocity-admin config init|list|set-default|remove   # connection profiles (see Profiles below)
+velocity-admin config init|list|set-rpc|set-default|remove   # connection profiles + shared RPCs (see Profiles below)
 velocity-admin whoami                                # which on-chain authorities the signer holds
 
 velocity-admin show config
@@ -167,8 +167,8 @@ The dispatcher does no PDA derivation — every account must be supplied.
 | `-u, --url <url>`         | profile, else `https://api.mainnet-beta.solana.com` |
 | `-k, --keypair <path>`    | profile, else `~/.config/solana/id.json`         |
 | `-e, --env <env>`         | profile, else detected from the RPC's genesis hash |
-| `-m, --multisig <pubkey>` | profile, else none — direct send (`--no-multisig` forces direct under a proposing profile) |
-| `-y, --yes`               | (unset — mainnet direct sends ask for confirmation) |
+| `-m, --multisig <pubkey>` | profile, else none: direct send (`--no-multisig` forces direct under a proposing profile) |
+| `-y, --yes`               | (unset; mainnet direct sends ask for confirmation) |
 
 ## Profiles
 
@@ -180,6 +180,7 @@ config, deliberately not in the repo.
 ```sh
 velocity-admin config init            # interactive; verifies everything against the live cluster
 velocity-admin config list
+velocity-admin config set-rpc <env> <url>   # shared per-cluster RPC, used by every profile without its own url
 velocity-admin config set-default <name>
 velocity-admin config remove <name>
 
@@ -187,9 +188,14 @@ velocity-admin -p mainnet-cold auth set-hot-admin accountExtension <pubkey>
 VELOCITY_ADMIN_PROFILE=devnet velocity-admin extend-account --type state --dry-run
 ```
 
+RPC URLs are shared per cluster (`rpcs` in the config): profiles normally
+carry no url of their own and inherit the shared one for their env, so
+rotating an RPC key is a single `config set-rpc`. A profile can still pin its
+own url to deviate.
+
 `config init` refuses to save anything it cannot verify: the RPC is
 classified by genesis hash (never by its URL), the keypair must load, and a
-multisig must exist on that cluster — its vault 0 is matched against the
+multisig must exist on that cluster; its vault 0 is matched against the
 live State admins and mismatches are called out.
 
 Explicit flags always override the profile. Every command that touches the

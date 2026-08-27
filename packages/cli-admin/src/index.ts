@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
+import { withGlobalOptions } from './lib/options';
 import { registerAccountExtension } from './commands/accountExtension';
 import { registerAuth } from './commands/auth';
 import { registerCall } from './commands/call';
@@ -40,6 +41,11 @@ program
 	.version('0.1.0')
 	.showHelpAfterError()
 	.showSuggestionAfterError();
+
+// Global connection options are declared on every leaf (see options.ts), but
+// also on the root so `velocity-admin -p <profile> <command...>` works;
+// users reasonably put the profile first. `optsWithGlobals` merges both.
+withGlobalOptions(program);
 
 registerConfig(program);
 registerWhoami(program);

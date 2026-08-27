@@ -89,7 +89,7 @@ export function registerMultisig(parent: Command): void {
 		ms
 			.command('proposals')
 			.description(
-				'List recent proposals on the multisig (from --multisig or the profile): status, approval count, and — for approved proposals — when the timelock allows execution.'
+				'List recent proposals on the multisig (from --multisig or the profile): status, approval count, and, for approved proposals, when the timelock allows execution.'
 			)
 			.option('--limit <n>', 'how many recent proposals to list', '10')
 	).action(async (_flags, cmd: Command) => {
@@ -114,7 +114,7 @@ export function registerMultisig(parent: Command): void {
 		const stale = Number(info.staleTransactionIndex);
 		const timeLock = Number(info.timeLock);
 		console.log(
-			`multisig ${multisigPda.toBase58()} — threshold ${
+			`multisig ${multisigPda.toBase58()}: threshold ${
 				info.threshold
 			}/${info.members.length}, timelock ${timeLock}s, ${latest} proposal(s) total`
 		);
@@ -138,7 +138,7 @@ export function registerMultisig(parent: Command): void {
 		accounts.forEach((acc, offset) => {
 			const index = latest - offset;
 			if (!acc) {
-				console.log(`  #${index}  (no proposal account — closed or vault tx only)`);
+				console.log(`  #${index}  (no proposal account: closed or vault tx only)`);
 				return;
 			}
 			const [proposal] = multisig.accounts.Proposal.fromAccountInfo(acc);
@@ -150,11 +150,11 @@ export function registerMultisig(parent: Command): void {
 				const executableAt = approvedAt + timeLock;
 				extra =
 					executableAt <= now
-						? ' — executable NOW'
-						: ` — executable in ${formatDuration(executableAt - now)}`;
+						? ', executable NOW'
+						: `, executable in ${formatDuration(executableAt - now)}`;
 			}
 			if (status === 'Active' && index <= stale) {
-				extra = ' — STALE (superseded, cannot execute)';
+				extra = ', STALE (superseded, cannot execute)';
 			}
 			console.log(`  #${index}  ${status.padEnd(9)} approvals ${approvals}${extra}`);
 		});

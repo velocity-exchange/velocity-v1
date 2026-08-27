@@ -5657,7 +5657,7 @@ pub mod types {
         PartialEq,
     )]
     pub struct QuoterCrossConditionsV0 {
-        pub relay: RelayBlock3x40,
+        pub relay: RelayBlock3x48,
         pub quoter: Pubkey,
         pub clob_quoter: Pubkey,
         pub clob_market: Pubkey,
@@ -5666,7 +5666,7 @@ pub mod types {
         pub market_index: u16,
         pub quote_spot_market_index: u16,
         #[serde(skip)]
-        pub padding: Padding<68>,
+        pub padding: Padding<60>,
     }
     #[derive(
         AnchorSerialize,
@@ -5785,8 +5785,8 @@ pub mod types {
         Debug,
         PartialEq,
     )]
-    pub struct RelayBlock3x40 {
-        pub bytes: ByteArray<1928>,
+    pub struct RelayBlock3x48 {
+        pub bytes: ByteArray<2192>,
     }
     #[repr(C)]
     #[derive(
@@ -6417,7 +6417,7 @@ pub mod types {
         #[serde(skip)]
         pub padding_0: Padding<2>,
         #[serde(skip)]
-        pub padding: Padding<146>,
+        pub padding: Padding<142>,
     }
     #[repr(C)]
     #[derive(
@@ -6547,6 +6547,7 @@ pub mod types {
         pub signature_lamports: u32,
         pub resource_fee_numerator: u32,
         pub resource_fee_denominator: u32,
+        pub max_priority_micro_lamports_per_cu: u32,
     }
     #[derive(
         AnchorSerialize,
@@ -7632,7 +7633,7 @@ pub mod accounts {
         PartialEq,
     )]
     pub struct QuoterCrossConditionsV0 {
-        pub relay: RelayBlock3x40,
+        pub relay: RelayBlock3x48,
         pub quoter: Pubkey,
         pub clob_quoter: Pubkey,
         pub clob_market: Pubkey,
@@ -7641,7 +7642,7 @@ pub mod accounts {
         pub market_index: u16,
         pub quote_spot_market_index: u16,
         #[serde(skip)]
-        pub padding: Padding<68>,
+        pub padding: Padding<60>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for QuoterCrossConditionsV0 {
@@ -8315,7 +8316,7 @@ pub mod accounts {
         #[serde(skip)]
         pub padding_0: Padding<2>,
         #[serde(skip)]
-        pub padding: Padding<146>,
+        pub padding: Padding<142>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for State {
@@ -32653,6 +32654,8 @@ pub mod errors {
         ReduceOnlyOrderCannotRestOnClob,
         # [msg ("User has orders resting on the CLOB; force_cancel_clob_orders must run before liquidation")]
         LiquidationConflictsWithClobOrders,
+        # [msg ("A clob order's max_ts is inside the expiry-escalation window and would farm the crank bonus")]
+        ClobOrderExpiryTooSoon,
     }
 }
 pub mod events {

@@ -21659,6 +21659,11 @@ export type Velocity = {
       "code": 6401,
       "name": "liquidationConflictsWithClobOrders",
       "msg": "User has orders resting on the CLOB; force_cancel_clob_orders must run before liquidation"
+    },
+    {
+      "code": 6402,
+      "name": "clobOrderExpiryTooSoon",
+      "msg": "A clob order's max_ts is inside the expiry-escalation window and would farm the crank bonus"
     }
   ],
   "types": [
@@ -28597,7 +28602,7 @@ export type Velocity = {
             ],
             "type": {
               "defined": {
-                "name": "relayBlock3x40",
+                "name": "relayBlock3x48",
                 "generics": [
                   {
                     "kind": "const",
@@ -28605,7 +28610,7 @@ export type Velocity = {
                   },
                   {
                     "kind": "const",
-                    "value": "40"
+                    "value": "48"
                   }
                 ]
               }
@@ -28654,7 +28659,7 @@ export type Velocity = {
           {
             "name": "padding",
             "docs": [
-              "Tail reserve: 4 bytes of alignment slack plus room for two more",
+              "Tail reserve: 3 bytes of alignment slack plus room for two more",
               "captured pubkeys, so a resolver that needs another fixed account can",
               "take it from here instead of forcing an `extend_account` migration on",
               "every attached quoter entry."
@@ -28662,7 +28667,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                68
+                60
               ]
             }
           }
@@ -28988,7 +28993,7 @@ export type Velocity = {
       }
     },
     {
-      "name": "relayBlock3x40",
+      "name": "relayBlock3x48",
       "docs": [
         "relay condition block (spec v0), 3 conditions, as one opaque wire region"
       ],
@@ -29004,7 +29009,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                1928
+                2192
               ]
             }
           }
@@ -31234,7 +31239,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                146
+                142
               ]
             }
           }
@@ -31555,6 +31560,21 @@ export type Velocity = {
             "name": "resourceFeeDenominator",
             "docs": [
               "Zero prices cost units at nothing."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "maxPriorityMicroLamportsPerCu",
+            "docs": [
+              "Ceiling on the compute-unit price a crank's priority fee is reimbursed",
+              "against, in micro-lamports per compute unit.",
+              "",
+              "A caller states its own compute-unit price, and a liquidation crank",
+              "repays the priority fee that price bought. Left unbounded, a caller",
+              "that also builds the block sets an arbitrary price, pays the fee to",
+              "itself, and bills the reservoir for it. This caps the per-unit price",
+              "the reservoir will match. Zero disables priority reimbursement, which",
+              "is the safe default until an admin sets a live ceiling."
             ],
             "type": "u32"
           }

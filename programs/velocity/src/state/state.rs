@@ -192,7 +192,7 @@ pub struct State {
     /// Former padding, now sized so the branch's fee-rails fields and master's
     /// slot-duration archive both fit while `size_of::<State>()` stays 1744 on
     /// x86_64 (u128 align 16) and SBF (u128 align 8). The offsets below pin it.
-    pub padding: [u8; 146],
+    pub padding: [u8; 142],
 }
 
 /// Purpose-specific hot role keys held on `State`. Each variant maps to one of the
@@ -306,7 +306,7 @@ impl Default for State {
             liquidation_crank_reimbursement_bps: 0,
             sol_spot_market_index: 0,
             padding_0: [0; 2],
-            padding: [0; 146],
+            padding: [0; 142],
         }
     }
 }
@@ -659,7 +659,7 @@ impl Size for State {
     // + slot_duration_effective_slot[8] + transition slots[32] (master's slot-duration
     // archive, offsets 1498..1544) + hot_flow_authority[32] + transaction_fee_rails[16]
     // + liquidation_crank_reimbursement_bps[2] + sol_spot_market_index[2] + padding_0[2]
-    // (the branch's fee-rails fields, offsets 1544..1598) + padding[146] = 1752 B.
+    // (the branch's fee-rails fields, offsets 1544..1598) + padding[142] = 1752 B.
     // hot_if_rebalance was removed with the if-rebalance machinery (its 32 B went into
     // the padding); protocol_fee_recipient_spot later took 32 B back out; solvency_status
     // took 1 B out of the padding; hot_account_extension took another 32 B out;
@@ -667,9 +667,10 @@ impl Size for State {
     // offset, so the u16 starts at the even byte right after it — no implicit padding,
     // pinned below); the staging fields (pending_slot_duration_ms[2] + slot_duration_pad[2]
     // + slot_duration_effective_slot[8] + transition slots[32]) took 44 B; then
-    // hot_flow_authority[32] + transaction_fee_rails[16] (4-aligned, no slack ahead) +
+    // hot_flow_authority[32] + transaction_fee_rails[20] (4-aligned, no slack ahead;
+    // grew 4 B for the priority-fee ceiling, taken from the padding, 146 -> 142) +
     // liquidation_crank_reimbursement_bps[2] + sol_spot_market_index[2] + padding_0[2]
-    // took 54 B. The padding absorbs the 8 formerly-implicit trailing bytes (State
+    // took 58 B. The padding absorbs the 8 formerly-implicit trailing bytes (State
     // contains a u128, align 16 on the host but 8 on SBF) so sizeof is target-independent.
     // SIZE stays constant and (SIZE - 8) % 16 == 0 holds (1744).
     const SIZE: usize = 1752;
@@ -700,6 +701,16 @@ pub struct TransactionFeeRails {
     pub resource_fee_numerator: u32,
     /// Zero prices cost units at nothing.
     pub resource_fee_denominator: u32,
+    /// Ceiling on the compute-unit price a crank's priority fee is reimbursed
+    /// against, in micro-lamports per compute unit.
+    ///
+    /// A caller states its own compute-unit price, and a liquidation crank
+    /// repays the priority fee that price bought. Left unbounded, a caller
+    /// that also builds the block sets an arbitrary price, pays the fee to
+    /// itself, and bills the reservoir for it. This caps the per-unit price
+    /// the reservoir will match. Zero disables priority reimbursement, which
+    /// is the safe default until an admin sets a live ceiling.
+    pub max_priority_micro_lamports_per_cu: u32,
 }
 
 impl TransactionFeeRails {
@@ -710,7 +721,15 @@ impl TransactionFeeRails {
         signature_lamports: 5_000,
         resource_fee_numerator: 0,
         resource_fee_denominator: 0,
+        max_priority_micro_lamports_per_cu: 0,
     };
+
+    /// The fixed lamports one transaction costs whatever it contains: the
+    /// inclusion fee plus one signature. A crank payment covers this once, so
+    /// a transaction batching many cranks amortizes it across them.
+    pub fn fixed_cost(&self) -> u64 {
+        u64::from(self.inclusion_lamports).saturating_add(u64::from(self.signature_lamports))
+    }
 
     /// Lamports a transaction of this shape costs whoever sends it.
     ///

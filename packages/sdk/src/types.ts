@@ -560,6 +560,8 @@ export type TransactionFeeRails = {
 	resourceFeeNumerator: number;
 	/** zero prices cost units at nothing */
 	resourceFeeDenominator: number;
+	/** ceiling on the compute-unit price a crank's priority fee is reimbursed against, in micro-lamports per compute unit; 0 disables priority reimbursement */
+	maxPriorityMicroLamportsPerCu: number;
 };
 
 /**

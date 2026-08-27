@@ -25,6 +25,7 @@ const FLAT_PER_SIGNATURE: TransactionFeeRails = {
 	signatureLamports: 5_000,
 	resourceFeeNumerator: 0,
 	resourceFeeDenominator: 0,
+	maxPriorityMicroLamportsPerCu: 0,
 };
 
 const UNITS: CrankCostUnitsV0 = {
@@ -51,6 +52,7 @@ describe('crank fee mirror', () => {
 			signatureLamports: 0,
 			resourceFeeNumerator: 1,
 			resourceFeeDenominator: 2,
+			maxPriorityMicroLamportsPerCu: 0,
 		};
 		const priced = deriveCrankPayments(rails, UNITS);
 		assert.equal(priced.removal, 2_500 + 15_000);
@@ -70,6 +72,7 @@ describe('crank fee mirror', () => {
 			signatureLamports: 0,
 			resourceFeeNumerator: 1,
 			resourceFeeDenominator: 10,
+			maxPriorityMicroLamportsPerCu: 0,
 		};
 		// A third of a lamport still costs one: a payment short by a lamport
 		// buys nothing.
@@ -81,6 +84,7 @@ describe('crank fee mirror', () => {
 			signatureLamports: 5_000,
 			resourceFeeNumerator: 1,
 			resourceFeeDenominator: 0,
+			maxPriorityMicroLamportsPerCu: 0,
 		};
 		assert.equal(transactionCost(off, 1_000_000, 2), 2_500 + 10_000);
 	});

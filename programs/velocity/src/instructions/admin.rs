@@ -176,14 +176,16 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         slot_duration_transition_slots: [0; 4],
         hot_flow_authority: Pubkey::default(),
         transaction_fee_rails: TransactionFeeRails::FLAT_PER_SIGNATURE,
-        // A fifth of a liquidation's value is the ceiling on what the
-        // protocol will spend getting it cranked; see the field's docs.
-        liquidation_crank_reimbursement_bps: 2_000,
+        // Five percent of a liquidation's value is the ceiling on what the
+        // protocol will spend getting it cranked; see the field's docs. Kept
+        // low so a keeper that also builds the block cannot bill much of the
+        // recovery back as its own priority fee.
+        liquidation_crank_reimbursement_bps: 500,
         // Set by the admin once a SOL spot market exists; until then the
         // liquidation crank pays its flat figure and nothing more.
         sol_spot_market_index: 0,
         padding_0: [0; 2],
-        padding: [0; 146],
+        padding: [0; 142],
     };
 
     Ok(())

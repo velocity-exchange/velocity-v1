@@ -109,6 +109,17 @@ pub const EXPIRY_ESCALATION_CEILING: u32 = 5_000;
 /// tightly.
 pub const LIQUIDATION_CRANK_REIMBURSED_UNITS: u32 = 400_000;
 
+/// Least filled quote value a liquidation crank must recover to earn its flat
+/// reservoir payment, in `QUOTE_PRECISION` (ten dollars).
+///
+/// The flat payment is paid once per crank, whatever it filled. Without a
+/// floor a keeper stages one liquidation as many tiny fills and collects the
+/// flat payment on each, draining the reservoir for work that recovered almost
+/// nothing. A crank that fills less than this still liquidates the position;
+/// it just does not draw the flat payment, so dust is cranked without paying
+/// to farm it.
+pub const LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE: u64 = 10_000_000;
+
 /// Cost units each of a market's cranks requests, one field per crank.
 ///
 /// Measured, not guessed: a turner simulates the crank and requests a compute
@@ -231,6 +242,19 @@ impl CrankPaymentsV0 {
             .unwrap_or(EXPIRY_ESCALATION_CEILING)
     }
 
+    /// True when a fresh order's `max_ts` sits inside the escalation window and
+    /// would let its owner farm the escalation bonus.
+    ///
+    /// Escalation pays a crank more the longer an order rests past its expiry.
+    /// An order placed already expired, or due within one escalation window,
+    /// reaches a paying escalation almost at once. A placement rejects such a
+    /// `max_ts`, so every expiring order must live at least one window before
+    /// it can expire. The bonus then rewards a real wait, not a staged short
+    /// life. Zero is no expiry and never farms.
+    pub fn max_ts_farms_escalation(max_ts: i64, now: i64) -> bool {
+        max_ts != 0 && max_ts < now.saturating_add(EXPIRY_ESCALATION_SECONDS as i64)
+    }
+
     /// What a liquidation crank pays on top of its base figure: what the
     /// transaction actually cost, bounded by a share of what the liquidation
     /// recovered.
@@ -275,13 +299,20 @@ impl CrankPaymentsV0 {
     /// from the reservoir, on every liquidation. The request alone would
     /// instead let a caller inflate the limit and bill the difference.
     /// The smaller of the two leaves nothing in either direction.
+    ///
+    /// The per-unit price is capped at `max_price_per_unit`. The caller sets
+    /// the price, so an uncapped price lets a caller that builds the block pay
+    /// the fee to itself and bill the reservoir any amount. A zero cap prices
+    /// the priority fee at nothing, which disables the reimbursement.
     pub fn crank_priority_lamports(
         price_per_unit: u64,
         requested_units: u32,
+        max_price_per_unit: u64,
     ) -> VelocityResult<u64> {
+        let price = price_per_unit.min(max_price_per_unit);
         let units = u64::from(requested_units).min(u64::from(LIQUIDATION_CRANK_REIMBURSED_UNITS));
         u64::try_from(
-            u128::from(price_per_unit)
+            u128::from(price)
                 .safe_mul(u128::from(units))?
                 .safe_div_ceil(1_000_000)?,
         )
@@ -767,6 +798,7 @@ mod tests {
             signature_lamports: 0,
             resource_fee_numerator: 1,
             resource_fee_denominator: 2,
+            max_priority_micro_lamports_per_cu: 0,
         };
         let priced = CrankPaymentsV0::derive(&rails, &units).unwrap();
         assert_eq!(priced.removal, 2_500 + 15_000);
@@ -790,6 +822,7 @@ mod tests {
             signature_lamports: 0,
             resource_fee_numerator: 1,
             resource_fee_denominator: 10,
+            max_priority_micro_lamports_per_cu: 0,
         };
         // 3 units at a tenth of a lamport each is a third of a lamport, and a
         // payment short by a lamport buys nothing.
@@ -801,6 +834,7 @@ mod tests {
             signature_lamports: 5_000,
             resource_fee_numerator: 1,
             resource_fee_denominator: 0,
+            max_priority_micro_lamports_per_cu: 0,
         };
         assert_eq!(off.transaction_cost(u64::MAX, 2).unwrap(), 2_500 + 10_000);
     }
@@ -970,7 +1004,7 @@ mod tests {
     fn priority_lamports_price_the_smaller_request() {
         let under = LIQUIDATION_CRANK_REIMBURSED_UNITS / 2;
         assert_eq!(
-            CrankPaymentsV0::crank_priority_lamports(1_000_000, under).unwrap(),
+            CrankPaymentsV0::crank_priority_lamports(1_000_000, under, u64::MAX).unwrap(),
             u64::from(under)
         );
     }
@@ -979,11 +1013,14 @@ mod tests {
     /// figure, so it cannot bill the difference.
     #[test]
     fn priority_lamports_cap_an_inflated_request() {
-        let capped =
-            CrankPaymentsV0::crank_priority_lamports(1_000_000, LIQUIDATION_CRANK_REIMBURSED_UNITS)
-                .unwrap();
+        let capped = CrankPaymentsV0::crank_priority_lamports(
+            1_000_000,
+            LIQUIDATION_CRANK_REIMBURSED_UNITS,
+            u64::MAX,
+        )
+        .unwrap();
         assert_eq!(
-            CrankPaymentsV0::crank_priority_lamports(1_000_000, u32::MAX).unwrap(),
+            CrankPaymentsV0::crank_priority_lamports(1_000_000, u32::MAX, u64::MAX).unwrap(),
             capped
         );
         assert_eq!(capped, u64::from(LIQUIDATION_CRANK_REIMBURSED_UNITS));
@@ -996,8 +1033,54 @@ mod tests {
         let units = 250_000;
         let charged = u64::from(price) * u64::from(units) / 1_000_000;
         assert_eq!(
-            CrankPaymentsV0::crank_priority_lamports(price, units).unwrap(),
+            CrankPaymentsV0::crank_priority_lamports(price, units, u64::MAX).unwrap(),
             charged
         );
+    }
+
+    /// The per-unit price is clamped to the ceiling, so a caller cannot bill
+    /// an arbitrary compute-unit price back to the reservoir.
+    #[test]
+    fn priority_lamports_clamp_the_price_per_unit() {
+        let units = 200_000;
+        let ceiling = 10_000;
+        // A price above the ceiling is reimbursed at the ceiling.
+        assert_eq!(
+            CrankPaymentsV0::crank_priority_lamports(1_000_000, units, ceiling).unwrap(),
+            u64::from(units) * ceiling / 1_000_000
+        );
+        // A zero ceiling disables the priority reimbursement.
+        assert_eq!(
+            CrankPaymentsV0::crank_priority_lamports(1_000_000, units, 0).unwrap(),
+            0
+        );
+        // A price below the ceiling is reimbursed at what it asked for.
+        assert_eq!(
+            CrankPaymentsV0::crank_priority_lamports(5_000, units, ceiling).unwrap(),
+            u64::from(units) * 5_000 / 1_000_000
+        );
+    }
+
+    /// A `max_ts` inside the escalation window farms the bonus and is rejected;
+    /// one past it, or zero, is fine.
+    #[test]
+    fn max_ts_farms_escalation_window() {
+        let now = 1_000_000;
+        let window = EXPIRY_ESCALATION_SECONDS as i64;
+        // Already expired, or due inside the window.
+        assert!(CrankPaymentsV0::max_ts_farms_escalation(now - 10, now));
+        assert!(CrankPaymentsV0::max_ts_farms_escalation(now, now));
+        assert!(CrankPaymentsV0::max_ts_farms_escalation(
+            now + window - 1,
+            now
+        ));
+        // Due one full window out, or later, is allowed.
+        assert!(!CrankPaymentsV0::max_ts_farms_escalation(now + window, now));
+        assert!(!CrankPaymentsV0::max_ts_farms_escalation(
+            now + window * 10,
+            now
+        ));
+        // No expiry never farms.
+        assert!(!CrankPaymentsV0::max_ts_farms_escalation(0, now));
     }
 }

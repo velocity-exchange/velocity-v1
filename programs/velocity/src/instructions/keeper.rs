@@ -52,7 +52,9 @@ use {
         optional_accounts::{get_token_mint, update_prelaunch_oracle},
         print_error, safe_decrement,
         state::{
-            clob_crank::{ClobCrankConditionsV0, CrankPaymentsV0},
+            clob_crank::{
+                ClobCrankConditionsV0, CrankPaymentsV0, LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE,
+            },
             events::{DeleteUserRecord, OrderActionExplanation, SignedMsgOrderRecord},
             fill_mode::FillMode,
             insurance_fund_stake::InsuranceFundStake,
@@ -1721,9 +1723,16 @@ fn liquidation_reimbursement<'info>(
         sysvar,
         crate::instruction::LiquidatePerpWithFill::DISCRIMINATOR,
     )?;
-    let priority_lamports =
-        CrankPaymentsV0::crank_priority_lamports(price_per_unit, requested_units)?
-            .safe_div(u64::from(claimants))?;
+    let priority_lamports = CrankPaymentsV0::crank_priority_lamports(
+        price_per_unit,
+        requested_units,
+        u64::from(
+            state
+                .transaction_fee_rails
+                .max_priority_micro_lamports_per_cu,
+        ),
+    )?
+    .safe_div(u64::from(claimants))?;
     CrankPaymentsV0::liquidation_reimbursement(
         filled_quote,
         sol_price,
@@ -1807,6 +1816,16 @@ pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
                 ErrorCode::DefaultError.into()
             },
         )?;
+        // The priority fee and the fixed part of the flat payment are both
+        // whole-transaction costs, so both are shared between the liquidations
+        // batched into one transaction. Count the peers once here.
+        let claimants = match &ctx.accounts.instructions_sysvar {
+            Some(sysvar) => crate::instructions::optional_accounts::tx_reimbursement_claimants(
+                sysvar,
+                crate::instruction::LiquidatePerpWithFill::DISCRIMINATOR,
+            )?,
+            None => 1,
+        };
         let payment = {
             let conditions = reservoir.load()?;
             validate!(
@@ -1816,15 +1835,27 @@ pub fn handle_liquidate_perp_with_fill<'c: 'info, 'info>(
                 conditions.market_index,
                 market_index
             )?;
-            u64::from(conditions.crank_payments.liquidation).saturating_add(
-                liquidation_reimbursement(
-                    &ctx.accounts.instructions_sysvar,
-                    &state,
-                    &spot_market_map,
-                    &mut oracle_map,
-                    filled_quote,
-                )?,
-            )
+            // A fill below the dust floor liquidates the position but earns no
+            // flat payment. Paying it per tiny step would let a keeper farm
+            // the flat reward by slicing one liquidation into many.
+            let flat = if filled_quote >= LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE {
+                u64::from(conditions.crank_payments.liquidation)
+            } else {
+                0
+            };
+            // The flat payment prices one transaction's fixed cost once. A
+            // batch shares that cost, so give back the part a lone crank would
+            // over-claim across the peers that share the transaction.
+            let fixed = state.transaction_fee_rails.fixed_cost();
+            let over_claimed = fixed.saturating_sub(fixed / u64::from(claimants));
+            let flat = flat.saturating_sub(over_claimed);
+            flat.saturating_add(liquidation_reimbursement(
+                &ctx.accounts.instructions_sysvar,
+                &state,
+                &spot_market_map,
+                &mut oracle_map,
+                filled_quote,
+            )?)
         };
         let info = reservoir.to_account_info();
         let rent_minimum = Rent::get()?.minimum_balance(info.data_len());

@@ -4536,6 +4536,29 @@ fn fulfill_perp_order_router_pass(
                 router.executor.quoter_key(i),
                 maker_key
             )?;
+            // Per-leg oracle band. The quoted-band and the aggregate checks
+            // bound a change against the quoter's own quote and the blended
+            // average, but a single maker can still sit far from oracle while
+            // the blend passes — value moved onto that maker at a price the
+            // average hides. Bound each maker's fill price the way the DLOB
+            // match path bounds a resting maker order.
+            let change_price = (change.quote_size as u128)
+                .safe_mul(BASE_PRECISION_U64.cast()?)?
+                .safe_div(change.base_size.cast()?)?
+                .cast::<u64>()?;
+            validate!(
+                !crate::math::orders::limit_price_breaches_maker_oracle_price_bands(
+                    change_price,
+                    maker_direction,
+                    oracle_price,
+                    market.margin_ratio_initial,
+                )?,
+                ErrorCode::QuoterFillOffQuote,
+                "quoter {} filled user {} at {} outside the oracle band",
+                router.executor.quoter_key(i),
+                maker_key,
+                change_price
+            )?;
             let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
             // Same pre-flight as the DLOB leg: the maker's funding stamp
             // must be current before `settle_external_match_fill` touches
@@ -5201,6 +5224,26 @@ pub fn cross_match(
                     maker_key
                 )?;
             }
+            // Per-leg oracle band, as the router fill applies. A cross settles
+            // real makers at the crossed prices; bound each against oracle so a
+            // maker resting far off it is not filled at that price.
+            let change_price = (change.quote_size as u128)
+                .safe_mul(BASE_PRECISION_U64.cast()?)?
+                .safe_div(change.base_size.cast()?)?
+                .cast::<u64>()?;
+            validate!(
+                !crate::math::orders::limit_price_breaches_maker_oracle_price_bands(
+                    change_price,
+                    maker_direction,
+                    oracle_price,
+                    market.margin_ratio_initial,
+                )?,
+                ErrorCode::QuoterFillOffQuote,
+                "quoter {} filled user {} at {} outside the oracle band",
+                executor.quoter_key(book_index),
+                maker_key,
+                change_price
+            )?;
             let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
             let mut maker_stats = Some(makers_and_referrer_stats.get_ref_mut(&maker.authority)?);
             let (base_filled, quote_filled) = settle_external_match_fill(

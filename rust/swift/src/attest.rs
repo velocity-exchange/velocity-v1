@@ -174,9 +174,22 @@ pub async fn attest(
         return err(StatusCode::BAD_REQUEST, "transaction does not deserialize");
     };
 
-    if let Err(reason) = validate_attestable(&tx, &keypair.pubkey(), &held.order_signature) {
+    let order_signature = held.order_signature;
+    // Release the borrow before consuming the entry below.
+    drop(held);
+
+    if let Err(reason) = validate_attestable(&tx, &keypair.pubkey(), &order_signature) {
         log::warn!(target: "attest", "refused attestation: {reason}");
         return err(StatusCode::UNPROCESSABLE_ENTITY, &reason);
+    }
+
+    // One co-signature per held order. The order signature the binding checks is
+    // public — swift broadcasts it — so anyone can build a transaction that
+    // carries it; consuming the entry on the first successful sign stops one
+    // uuid from yielding many distinct co-signed transactions across the hold
+    // window. A lost response is a lost fill, not a reuse: the taker re-signs.
+    if ctx.held.remove(&uuid).is_none() {
+        return err(StatusCode::CONFLICT, "order was already attested");
     }
 
     // Partial-sign: fill only our slot, leaving the keeper's signatures

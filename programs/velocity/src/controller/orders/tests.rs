@@ -11639,7 +11639,10 @@ fn crossing_prefix_size_stops_at_the_cross() {
         5
     );
     // Fully crossing, bounded by the shallower side.
-    assert_eq!(super::crossing_prefix_size(&[pl(100, 3)], &[pl(105, 10)]), 3);
+    assert_eq!(
+        super::crossing_prefix_size(&[pl(100, 3)], &[pl(105, 10)]),
+        3
+    );
     // Never crossing.
     assert_eq!(super::crossing_prefix_size(&[pl(105, 5)], &[pl(100, 5)]), 0);
     // Partial cross inside a level: only the 4 bid units at 101 cross the ask.

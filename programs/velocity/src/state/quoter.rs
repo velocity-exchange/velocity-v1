@@ -788,8 +788,12 @@ impl MarketQuoteInputs {
         validity_guard_rails: &crate::state::state::ValidityGuardRails,
         slot_clock: SlotClock,
     ) -> VelocityResult<Self> {
-        let mm_oracle =
-            market.get_mm_oracle_price_data(oracle_price_data, slot, validity_guard_rails, slot_clock)?;
+        let mm_oracle = market.get_mm_oracle_price_data(
+            oracle_price_data,
+            slot,
+            validity_guard_rails,
+            slot_clock,
+        )?;
         // `oracle_validity` is read only inside `project_and_apply`, which
         // returns early when the curve was already refreshed at this slot (by
         // the router's own projection, an earlier fill, or a keeper crank). In

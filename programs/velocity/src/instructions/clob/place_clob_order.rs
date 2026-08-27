@@ -525,8 +525,9 @@ pub fn try_place_remainder_on_clob<'info>(
                 base_asset_amount,
                 true,
             )?;
-            user.perp_positions[position_index].open_orders =
-                user.perp_positions[position_index].open_orders.saturating_sub(1);
+            user.perp_positions[position_index].open_orders = user.perp_positions[position_index]
+                .open_orders
+                .saturating_sub(1);
             user.decrement_open_orders(false);
             msg!("book cannot hold the remainder; stays cancelled");
             return Ok(false);

@@ -85,7 +85,12 @@ pub fn get_amm_is_available(
     let state = get_state(min_auction_duration);
     let oracle_price_data = oracle_map.get_price_data(&market.oracle_id()).unwrap();
     let mm_oracle_price_data = market
-        .get_mm_oracle_price_data(*oracle_price_data, slot, &state.oracle_guard_rails.validity, SlotClock::baseline())
+        .get_mm_oracle_price_data(
+            *oracle_price_data,
+            slot,
+            &state.oracle_guard_rails.validity,
+            SlotClock::baseline(),
+        )
         .unwrap();
     let safe_oracle_price_data = mm_oracle_price_data.get_safe_oracle_price_data();
     let safe_oracle_validity = oracle_validity(
@@ -169,7 +174,8 @@ pub mod amm_jit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -435,7 +441,8 @@ pub mod amm_jit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -777,7 +784,8 @@ pub mod amm_jit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {
@@ -1081,7 +1089,8 @@ pub mod amm_jit {
             PythLazerOracle,
             oracle_account_info
         );
-        let mut oracle_map = OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
 
         let mut market = PerpMarket {
             amm: AMM {

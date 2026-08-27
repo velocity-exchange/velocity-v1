@@ -81,8 +81,7 @@ pub fn find_clob_authority() -> (Pubkey, u8) {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use anchor_lang::prelude::Pubkey;
+    use {super::*, anchor_lang::prelude::Pubkey};
 
     /// The quoter CPI signers must never be the vault authority.
     ///

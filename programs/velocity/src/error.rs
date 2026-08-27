@@ -855,7 +855,9 @@ pub enum ErrorCode {
     FillerCarriedUnroutedQuoter,
     #[msg("A reduce-only order cannot rest on the CLOB; the book cannot clamp its fill to the position")]
     ReduceOnlyOrderCannotRestOnClob,
-    #[msg("User has orders resting on the CLOB; force_cancel_clob_orders must run before liquidation")]
+    #[msg(
+        "User has orders resting on the CLOB; force_cancel_clob_orders must run before liquidation"
+    )]
     LiquidationConflictsWithClobOrders,
 }
 

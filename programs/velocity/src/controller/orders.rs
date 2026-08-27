@@ -4010,7 +4010,13 @@ fn fulfill_perp_order_router_pass(
     // ---- Oracle context + AMM refresh (shared with the quote view). ----
     let oracle_pd = *oracle_map.get_price_data(&market.oracle_id())?;
     let oracle_price = oracle_pd.price;
-    let quote_inputs = QuoteInputs::load(&market, oracle_pd, slot, validity_guard_rails, oracle_map.slot_clock)?;
+    let quote_inputs = QuoteInputs::load(
+        &market,
+        oracle_pd,
+        slot,
+        validity_guard_rails,
+        oracle_map.slot_clock,
+    )?;
     let sanitize_clamp_denom = quote_inputs.sanitize_clamp_denominator;
     let order_tick_size = quote_inputs.tick_size;
     let order_step_size = quote_inputs.step_size;
@@ -5214,8 +5220,7 @@ pub fn cross_match(
         let located = executor.execute(book_index, cpi_direction, leg_size)?;
         let data = located.borrow()?;
         let response = located.execute_response(&data)?;
-        let maker_aggregates_tracked =
-            executor.quoter_type(book_index).tracks_maker_aggregates();
+        let maker_aggregates_tracked = executor.quoter_type(book_index).tracks_maker_aggregates();
         let maker_direction = taker_direction.opposite();
 
         let (leg_base, leg_quote) = response.changes.iter().try_fold(

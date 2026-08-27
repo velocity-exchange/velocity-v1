@@ -369,7 +369,6 @@ pub fn update_position_and_market(
     Ok(pnl)
 }
 
-
 pub fn calculate_quote_asset_amount_surplus(
     position_direction: PositionDirection,
     quote_asset_swapped: u64,

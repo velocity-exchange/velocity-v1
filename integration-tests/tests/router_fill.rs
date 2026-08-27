@@ -1545,7 +1545,10 @@ fn cancel_all_clob_orders_only_takes_the_signing_users_orders() {
     assert_eq!(mine.perp_positions[0].open_asks, 0);
     assert_eq!(mine.perp_positions[0].open_orders, 0);
     let theirs: User = read_zero_copy(&fixture.svm, &other_user);
-    assert_eq!(theirs.perp_positions[0].open_asks, -((2 * (UNIT / 5)) as i64));
+    assert_eq!(
+        theirs.perp_positions[0].open_asks,
+        -((2 * (UNIT / 5)) as i64)
+    );
     assert_eq!(theirs.perp_positions[0].open_orders, 2);
 }
 

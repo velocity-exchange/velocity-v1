@@ -355,8 +355,10 @@ pub fn restable_remainder_price(order: &crate::state::user::Order) -> Option<u64
 /// and be matched, it lives on the book, not in `User.orders`. Degrades
 /// gracefully — a dead quoter entry or a failed margin re-reserve returns
 /// `Ok(false)` (the remainder stays cancelled, the fill stands) instead of
-/// reverting the whole place-and-take. Only a hard-cap placement rejection on
-/// the CLOB side reverts, which is the documented ops-failure state.
+/// reverting the whole place-and-take. A book that cannot hold the remainder —
+/// a full side, or a maker remainder that would rest crossed — degrades the
+/// same way. The fill already happened and already cancelled the order, so a
+/// remainder that cannot rest never reverts it.
 ///
 /// Reached only from `place_and_take_perp_order_v1` — the v0 instruction has
 /// no CLOB accounts to pass.
@@ -490,7 +492,7 @@ pub fn try_place_remainder_on_clob<'info>(
         PositionDirection::Long => ClobSide::Bid,
         PositionDirection::Short => ClobSide::Ask,
     };
-    let order_ref = clob.place(ClobPlaceOrderArgsV0 {
+    let placement = clob.place(ClobPlaceOrderArgsV0 {
         side,
         price,
         base_asset_amount,
@@ -506,7 +508,30 @@ pub fn try_place_remainder_on_clob<'info>(
         // the taker that came to trade. A maker remainder refuses to rest
         // crossed, which is what post-only asked for.
         reject_if_crossed: !taker_origin,
-    })?;
+    });
+    let order_ref = match placement {
+        Ok(order_ref) => order_ref,
+        Err(_) => {
+            // The book cannot hold the remainder: the side is full, or a maker
+            // remainder would rest crossed. The fill that carried it already
+            // stands, so unwind the reserved aggregates and leave the remainder
+            // cancelled rather than revert the fill. A full side would otherwise
+            // let anyone stall every place-and-take whose remainder must rest.
+            let mut user = load_mut!(user_loader)?;
+            let position_index = get_position_index(&user.perp_positions, market_index)?;
+            crate::controller::position::decrease_open_bids_and_asks(
+                &mut user.perp_positions[position_index],
+                &direction,
+                base_asset_amount,
+                true,
+            )?;
+            user.perp_positions[position_index].open_orders =
+                user.perp_positions[position_index].open_orders.saturating_sub(1);
+            user.decrement_open_orders(false);
+            msg!("book cannot hold the remainder; stays cancelled");
+            return Ok(false);
+        }
+    };
 
     super::emit_clob_place_record(
         clock.unix_timestamp,
@@ -520,7 +545,7 @@ pub fn try_place_remainder_on_clob<'info>(
             base_asset_amount_filled: 0,
             max_ts,
             slot: clock.slot,
-            taker_origin: true,
+            taker_origin,
         },
     )?;
 

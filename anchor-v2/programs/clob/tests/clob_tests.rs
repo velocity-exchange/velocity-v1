@@ -1477,6 +1477,46 @@ fn an_order_under_the_blocking_floor_is_stepped_over_at_any_age() {
     );
 }
 
+/// The L3 read says which orders can end a walk, so a caller assembling an
+/// account set never applies the floor itself.
+#[test]
+fn the_l3_read_flags_the_orders_that_can_end_a_walk() {
+    use clob::state::{L3ArgsV0, L3ResponseV0};
+
+    let mut ctx = setup();
+    set_blocking_min_size(&mut ctx, 10);
+    let maker = addr(Pubkey::new_unique());
+    ctx.svm.warp_to_slot(10);
+    place(&mut ctx, place_args(Side::Ask, 100, 5), maker);
+    place(&mut ctx, place_args(Side::Ask, 101, 20), maker);
+    ctx.svm.warp_to_slot(20);
+
+    let ix = instruction::QuoteL3V0 {
+        args: L3ArgsV0 {
+            direction: Direction::Long,
+            size: 0,
+            max_rows: 8,
+        },
+    }
+    .to_instruction(accounts::QuoteL3V0 {
+        market: addr(ctx.market),
+    });
+    let meta = send(&mut ctx, ix).unwrap();
+    let bytes = read_response(&mut ctx, &meta);
+    let response = L3ResponseV0::parse(&bytes).expect("l3 response");
+
+    let gates: Vec<bool> = response
+        .rows
+        .iter()
+        .map(|row| row.flags & quoter_spec::L3_ROW_FLAG_BLOCKS_WALK != 0)
+        .collect();
+    assert_eq!(
+        gates,
+        vec![false, true],
+        "only the order at or over the floor can end a walk"
+    );
+}
+
 /// Zero is what a market reads out of reserved bytes, so an untouched market
 /// keeps the behaviour it had before the floor existed.
 #[test]

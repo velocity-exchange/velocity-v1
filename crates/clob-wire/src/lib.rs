@@ -310,11 +310,10 @@ pub struct OrderRulesV0 {
     /// is not in the caller's user set. Below it the order is stepped over at
     /// any age, exactly as a too-fresh one is.
     ///
-    /// Two callers need it. A maker sizing a quote learns what it costs to keep
-    /// price priority against a caller that leaves it out. A router assembling
-    /// an account set learns which owners are load-bearing: an owner all of
-    /// whose orders sit below this cannot end a walk, so carrying it buys depth
-    /// rather than reach, and it goes last when locks are short.
+    /// A maker sizing a quote needs it: this is what it costs to keep price
+    /// priority against a caller that leaves the maker out. A reader deciding
+    /// which owners to carry does not — `quote_l3_v0` flags the orders that can
+    /// end a walk per row, so nothing has to apply this floor itself.
     ///
     /// Zero disables the floor, which is what a market that has never set one
     /// reports.

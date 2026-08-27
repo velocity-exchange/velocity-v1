@@ -787,6 +787,26 @@ pub struct L3RowV0 {
 /// offering it, so depth behind it is not depth a cross can count on.
 pub const L3_ROW_FLAG_TAKER_ORIGIN: u8 = 1;
 
+/// This order is big enough to end a fill walk when its owner is absent from
+/// the caller's user set, so the depth behind it is unreachable to a caller
+/// that does not carry that owner.
+///
+/// A row without it gates nothing: a caller short of account locks can leave
+/// its owner out and still reach everything behind. That is what makes the
+/// flag worth carrying — it tells an account-set builder which owners are
+/// load-bearing, which is the only reason it needs to know sizes at all.
+///
+/// The quoter sets it, not the reader. Whatever the rule is — a size floor
+/// today — the program that enforces it is the one that reports it, so a
+/// reader never reimplements the rule and never falls out of step when it
+/// changes. A quoter with one user sets it on every row: its single owner
+/// gates all of its depth.
+///
+/// It says the order *can* end a walk, not that it will. Age also decides:
+/// an order inside the book's grace window is passed over whatever its size,
+/// and it leaves that window on its own with nothing writing to the book.
+pub const L3_ROW_FLAG_BLOCKS_WALK: u8 = 2;
+
 /// Encoded width of an [`L3RowV0`].
 pub const L3_ROW_BYTES: usize = core::mem::size_of::<L3RowV0>();
 

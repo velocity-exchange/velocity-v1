@@ -26,7 +26,10 @@ use {
         instructions::QuoteRouterArgs,
         state::{
             perp_market::PerpMarket,
-            prop_amm::{ClobUserRefV0 as UserRefV0, Direction, QuoterType, QuoterV0},
+            prop_amm::{
+                ClobUserRefV0 as UserRefV0, Direction, QuoterType, QuoterV0,
+                L3_ROW_FLAG_BLOCKS_WALK,
+            },
             router_quote::{QuotedLevelV0, QuotedSourceKind, RouterQuoteBufferV0},
             traits::Size,
             user::User,
@@ -155,7 +158,7 @@ impl QuoteView {
     /// maker the transaction did not carry, so a prefix of this list fills
     /// and a gap forfeits everything behind it.
     pub fn settleable_users(&self) -> Vec<UserRefV0> {
-        self.ranked_settleable_users(0)
+        self.ranked_settleable_users()
             .into_iter()
             .map(|(user, _)| user)
             .collect()
@@ -166,25 +169,26 @@ impl QuoteView {
     ///
     /// A book ends its walk at the first order whose owner the caller did not
     /// carry, so an owner that can end a walk gates every order behind it:
-    /// leaving that owner out forfeits the depth past it. An order below the
-    /// book's `blocking_min_size` cannot end a walk at all, so an owner all of
-    /// whose orders sit below it gates nothing — carrying it wins that owner's
-    /// own size and nothing more.
+    /// leaving that owner out forfeits the depth past it. An owner none of whose
+    /// orders can end a walk gates nothing — carrying it wins that owner's own
+    /// size and nothing more.
     ///
-    /// A caller has room for a bounded number of users, so it wants the
-    /// gating owners first. Within each group the walk order is preserved,
-    /// because that is the order the book stops in: a prefix of gating owners
-    /// fills, and the first gap forfeits what is behind it.
+    /// A caller has room for a bounded number of users, so it wants the gating
+    /// owners first. Within each group the walk order is preserved, because that
+    /// is the order the book stops in: a prefix of gating owners fills, and the
+    /// first gap forfeits what is behind it. Truncating the result at the
+    /// account budget therefore drops the owners that cost the least to lose.
     ///
-    /// `blocking_min_size` of zero is a market with no floor, where every owner
-    /// gates and this is walk order.
-    pub fn ranked_settleable_users(&self, blocking_min_size: u64) -> Vec<(UserRefV0, bool)> {
+    /// Which orders can end a walk is the quoter's own answer, carried per row
+    /// as [`L3_ROW_FLAG_BLOCKS_WALK`]. Nothing here reimplements the rule, so a
+    /// book that changes it does not leave this ordering stale.
+    pub fn ranked_settleable_users(&self) -> Vec<(UserRefV0, bool)> {
         let mut users: Vec<(UserRefV0, bool)> = Vec::new();
         for row in self.books.iter().flat_map(|book| book.rows.iter()) {
-            let gates = blocking_min_size == 0 || row.size >= blocking_min_size;
+            let gates = row.flags & L3_ROW_FLAG_BLOCKS_WALK != 0;
             match users.iter_mut().find(|(user, _)| *user == row.user) {
-                // One order over the floor is enough to make an owner gating,
-                // whichever of its orders the walk reached first.
+                // One gating order is enough to make an owner gating, whichever
+                // of its orders the walk reached first.
                 Some((_, seen)) => *seen |= gates,
                 None => users.push((row.user, gates)),
             }
@@ -624,13 +628,15 @@ mod tests {
         }
     }
 
-    fn row(size: u64, owner: u8) -> QuotedRow {
+    /// `gates` is the book's own answer about this order, which is what the
+    /// ranking reads — the size is carried only to tell rows apart.
+    fn row(size: u64, owner: u8, gates: bool) -> QuotedRow {
         QuotedRow {
             price: 100,
             size,
             order_id: size,
             user: user(owner),
-            flags: 0,
+            flags: if gates { L3_ROW_FLAG_BLOCKS_WALK } else { 0 },
         }
     }
 
@@ -658,9 +664,14 @@ mod tests {
     #[test]
     fn ranking_puts_the_owners_that_gate_depth_first() {
         // Walk order: dust(1), gating(2), dust(3), gating(4).
-        let view = view_of(vec![row(1, 1), row(50, 2), row(2, 3), row(80, 4)]);
+        let view = view_of(vec![
+            row(1, 1, false),
+            row(50, 2, true),
+            row(2, 3, false),
+            row(80, 4, true),
+        ]);
 
-        let ranked = view.ranked_settleable_users(10);
+        let ranked = view.ranked_settleable_users();
         assert_eq!(
             ranked,
             vec![
@@ -673,24 +684,24 @@ mod tests {
         );
     }
 
-    /// One order over the floor is enough, whichever of an owner's orders the
-    /// walk reached first — the walk stops at that order either way.
+    /// One gating order is enough, whichever of an owner's orders the walk
+    /// reached first — the walk stops at that order either way.
     #[test]
-    fn one_order_over_the_floor_makes_its_owner_gating() {
-        let view = view_of(vec![row(1, 1), row(2, 2), row(50, 1)]);
+    fn one_gating_order_makes_its_owner_gating() {
+        let view = view_of(vec![row(1, 1, false), row(2, 2, false), row(50, 1, true)]);
         assert_eq!(
-            view.ranked_settleable_users(10),
+            view.ranked_settleable_users(),
             vec![(user(1), true), (user(2), false)]
         );
     }
 
-    /// No floor is walk order, and every owner gates — which is what a market
-    /// that has never set one reports.
+    /// A book with no floor flags every row, and the order is then the walk's
+    /// own — which is what this endpoint answered before any floor existed.
     #[test]
-    fn no_floor_leaves_walk_order_untouched() {
-        let view = view_of(vec![row(1, 3), row(50, 1), row(2, 2)]);
+    fn a_book_that_gates_everything_leaves_walk_order_untouched() {
+        let view = view_of(vec![row(1, 3, true), row(50, 1, true), row(2, 2, true)]);
         assert_eq!(
-            view.ranked_settleable_users(0),
+            view.ranked_settleable_users(),
             vec![(user(3), true), (user(1), true), (user(2), true)]
         );
         assert_eq!(view.settleable_users(), vec![user(3), user(1), user(2)]);

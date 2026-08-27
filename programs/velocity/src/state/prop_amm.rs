@@ -417,7 +417,8 @@ pub fn write_l3_args(dst: &mut Vec<u8>, args: &L3ArgsV0) -> crate::error::Veloci
 /// runtime while every host-side test passed. The quoter reads it in place
 /// too, straight out of its instruction data.
 pub use quoter_spec::{
-    ExecuteArgsV0, L3ArgsV0, L3ResponseV0, L3RowV0, QuoteArgsV0, L3_ROW_FLAG_TAKER_ORIGIN,
+    ExecuteArgsV0, L3ArgsV0, L3ResponseV0, L3RowV0, QuoteArgsV0, L3_ROW_FLAG_BLOCKS_WALK,
+    L3_ROW_FLAG_TAKER_ORIGIN,
 };
 
 /// Declared by `quoter-spec`; the alias keeps velocity's name for it.

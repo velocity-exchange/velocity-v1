@@ -125,7 +125,7 @@ impl RouteContext {
                 .ok_or(RouteError::NoMarket(market_index))?;
         let market: velocity_rs::program::state::perp_market::PerpMarket =
             read_zero_copy(&account.data).map_err(RouteError::internal)?;
-        let quoters =
+        let entries =
             velocity_router_sim::quoter_entries(&self.source, &self.velocity, market_index)
                 .await
                 .map_err(RouteError::internal)?
@@ -135,14 +135,14 @@ impl RouteContext {
                         &account.data,
                     )
                     .ok()?;
-                    (entry.is_active && entry.is_approved).then_some(key)
+                    (entry.is_active && entry.is_approved).then_some((key, entry))
                 })
-                .collect();
+                .collect::<Vec<_>>();
         let route = MarketRoute {
             buffer,
             authority,
             step_size: market.order_step_size,
-            quoters,
+            quoters: entries.into_iter().map(|(key, _)| key).collect(),
         };
         self.markets
             .write()
@@ -172,16 +172,6 @@ pub struct RouteQuery {
     taker_authority: Option<String>,
     #[serde(default)]
     taker_sub_account_id: u16,
-    /// The book's `blocking_min_size`, from `order_rules_v0`. An order below it
-    /// cannot end a fill walk, so its owner gates no depth and is worth
-    /// carrying only after every owner that does.
-    ///
-    /// A parameter rather than a read: the caller already knows its market's
-    /// config, and the value only orders the answer — the chain enforces the
-    /// floor either way, so a stale one costs a suboptimal account set and
-    /// never a wrong fill. Omitted means no floor, which is walk order.
-    #[serde(default)]
-    blocking_min_size: u64,
     /// `User` accounts of DLOB makers to bridge into the quote, comma
     /// separated.
     ///
@@ -245,8 +235,8 @@ struct MakerOut {
     user_stats: String,
     /// This owner rests at least one order that can end a fill walk, so
     /// leaving it out forfeits the depth behind that order. False means
-    /// carrying it wins only its own size. Always true when the request named
-    /// no `blockingMinSize`.
+    /// carrying it wins only its own size. Always true on a book where any
+    /// order can end a walk, which is one that sets no size floor.
     gates_depth: bool,
 }
 
@@ -278,9 +268,10 @@ struct RouteResponse {
     /// room: the book stops at the first maker the caller did not bring, so a
     /// prefix fills and a gap forfeits everything behind it.
     ///
-    /// The order is the book's own walk, best price first, except that a
-    /// request naming `blockingMinSize` puts every owner that gates depth
-    /// ahead of every owner that does not, each group still in walk order. An
+    /// The order is the book's own walk, best price first, except that every
+    /// owner that gates depth comes ahead of every owner that does not, each
+    /// group still in walk order. The book itself says which of its orders can
+    /// end a walk, per row, so this ordering never reimplements that rule. An
     /// owner whose orders all sit below that floor cannot end a walk, so it
     /// gates nothing and carrying it buys only its own size — which is what
     /// `gatesDepth` reports per maker. Truncating this list at the account
@@ -452,7 +443,7 @@ pub async fn route_quote(
     // same book state as the ladders above — which is what a second read of
     // the book could never promise.
     let clob_makers: Vec<MakerOut> = view
-        .ranked_settleable_users(query.blocking_min_size)
+        .ranked_settleable_users()
         .into_iter()
         .filter(|(user, _)| *user != taker_ref(&query))
         .map(|(user, gates_depth)| {

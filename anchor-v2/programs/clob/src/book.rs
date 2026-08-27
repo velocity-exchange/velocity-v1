@@ -1040,6 +1040,7 @@ impl ClobBook for ClobMarketV0 {
     ) -> Result<ResponsePointerV0> {
         let side = direction.book_side();
         let rows_wanted = max_rows.min(L3_ROWS_CEILING) as usize;
+        let blocking_min_size = self.blocking_min_size;
         let mut writer = L3Writer::new();
         // Zero asks for the side, not for nothing: a caller drawing a book
         // has no size in mind.
@@ -1063,11 +1064,7 @@ impl ClobBook for ClobMarketV0 {
                         size: node.base_asset_amount,
                         order_id: node.order_id,
                         user: node.user_ref(),
-                        flags: if node.is_taker_origin() {
-                            quoter_spec::L3_ROW_FLAG_TAKER_ORIGIN
-                        } else {
-                            0
-                        },
+                        flags: l3_row_flags(node, blocking_min_size),
                         _pad: [0; 5],
                     },
                 )
@@ -1519,6 +1516,23 @@ enum Settleable {
     /// Absent, old enough that the caller had every chance to carry it, and big
     /// enough to be worth the right. The walk ends here.
     Withheld,
+}
+
+/// The facts about an order a caller cannot see from its price and size.
+///
+/// `L3_ROW_FLAG_BLOCKS_WALK` is the one an account-set builder acts on: it says
+/// this order can end a walk, so its owner gates the depth behind it. Reported
+/// rather than left to the reader to derive, so the floor stays the book's rule
+/// and a reader cannot fall out of step with it.
+fn l3_row_flags(node: &OrderNodeV0, blocking_min_size: u64) -> u8 {
+    let mut flags = 0;
+    if node.is_taker_origin() {
+        flags |= quoter_spec::L3_ROW_FLAG_TAKER_ORIGIN;
+    }
+    if blocking_min_size == 0 || node.base_asset_amount >= blocking_min_size {
+        flags |= quoter_spec::L3_ROW_FLAG_BLOCKS_WALK;
+    }
+    flags
 }
 
 /// A transaction locks at most 64 accounts and a maker costs two, so no

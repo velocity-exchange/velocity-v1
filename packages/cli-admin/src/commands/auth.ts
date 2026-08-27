@@ -108,7 +108,11 @@ export function registerAuth(parent: Command): void {
 	).action(async (role: string, pubkey: string, _flags, cmd: Command) => {
 		const opts = readGlobalOpts(cmd);
 		const provider = buildProvider(opts);
-		const client = await buildAdminClient(opts);
+		// No subscription: the ix needs only the state PDA and the signer, and
+		// this command must work while zero-copy accounts are pre-extension
+		// size (the account-extension migration window), when a subscribed
+		// client fails to decode them.
+		const client = await buildAdminClient(opts, false);
 		try {
 			const ix = await client.getUpdateHotAdminIx(
 				parseHotRole(role),

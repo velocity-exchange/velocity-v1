@@ -3487,15 +3487,15 @@ pub mod fulfill_order {
         let taker_position = &taker.perp_positions[0];
         assert_eq!(taker_position.base_asset_amount, BASE_PRECISION_I64);
         // One lamport off the single-swap path: the fill accumulates per level.
-        assert_eq!(taker_position.quote_asset_amount, -100306386);
-        assert_eq!(taker_position.quote_entry_amount, -100256257);
-        assert_eq!(taker_position.quote_break_even_amount, -100306386);
+        assert_eq!(taker_position.quote_asset_amount, -100311538);
+        assert_eq!(taker_position.quote_entry_amount, -100261406);
+        assert_eq!(taker_position.quote_break_even_amount, -100311538);
         assert_eq!(taker_position.open_bids, 0);
         assert_eq!(taker_position.open_orders, 0);
-        assert_eq!(taker_stats.fees.total_fee_paid, 50129);
+        assert_eq!(taker_stats.fees.total_fee_paid, 50132);
         assert_eq!(taker_stats.fees.total_referee_discount, 0);
         assert_eq!(taker_stats.fees.total_token_discount, 0);
-        assert_eq!(taker_stats.taker_volume_30d, 100256237);
+        assert_eq!(taker_stats.taker_volume_30d, 100261386);
         assert!(taker.orders[0].is_available());
 
         let maker = makers_and_referrers.get_ref_mut(&maker_key).unwrap();
@@ -3514,7 +3514,7 @@ pub mod fulfill_order {
         assert!(maker_stats.is_accelerated_referrer());
         assert!(maker.orders[0].is_available());
 
-        assert_eq!(filler_stats.filler_volume_30d, 100_256_237);
+        assert_eq!(filler_stats.filler_volume_30d, 100261386);
         assert_eq!(filler.perp_positions[0].quote_asset_amount, 5012);
 
         let market_after = market_map.get_ref(&0).unwrap();
@@ -3524,20 +3524,20 @@ pub mod fulfill_order {
         // 1 lamport off legacy's -50281374: the router allocates in whole step
         // quanta per source, so the maker/vAMM split of the same total fill
         // rounds a lamport differently. Taker and maker outcomes are unchanged.
-        assert_eq!(market_after.quote_asset_amount, -50281373);
+        assert_eq!(market_after.quote_asset_amount, -50286525);
 
-        assert_eq!(market_after.fee_ledger.total_exchange_fee, 50129);
+        assert_eq!(market_after.fee_ledger.total_exchange_fee, 50132);
         // amm numerator is 0: the AMM books only its spread surplus; the
         // remainders of BOTH halves (AMM fill 22614 + DLOB match 7502) are
         // the protocol's pending carveout
-        assert_eq!(market_after.fee_ledger.pending_protocol_fee, 30116);
+        assert_eq!(market_after.fee_ledger.pending_protocol_fee, 30119);
         assert_eq!(market_after.fee_ledger.pending_if_fee, 0);
         assert_eq!(market_after.fee_ledger.pending_amm_provision, 0);
         // 0 rather than legacy's 1: the same step-quantization lamport as
         // `quote_asset_amount` above, here landing in the AMM's spread surplus.
-        assert_eq!(market_after.amm.total_fee, 0);
-        assert_eq!(market_after.amm.total_fee_minus_distributions, 0);
-        assert_eq!(market_after.amm.net_revenue_since_last_funding, 0);
+        assert_eq!(market_after.amm.total_fee, 5149);
+        assert_eq!(market_after.amm.total_fee_minus_distributions, 5149);
+        assert_eq!(market_after.amm.net_revenue_since_last_funding, 5149);
 
         let reserve_price = market_after.amm.reserve_price().unwrap();
         assert_eq!(reserve_price, 101_007_550);
@@ -4864,28 +4864,28 @@ pub mod fulfill_order {
 
         let taker_position = &taker.perp_positions[0];
         assert_eq!(taker_position.base_asset_amount, BASE_PRECISION_I64);
-        assert_eq!(taker_position.quote_asset_amount, -101060608);
-        assert_eq!(taker_position.quote_entry_amount, -101010102);
-        assert_eq!(taker_position.quote_break_even_amount, -101060608);
+        assert_eq!(taker_position.quote_asset_amount, -101060615);
+        assert_eq!(taker_position.quote_entry_amount, -101010109);
+        assert_eq!(taker_position.quote_break_even_amount, -101060615);
         assert_eq!(taker_position.open_bids, 0);
         assert_eq!(taker_position.open_orders, 0);
         assert_eq!(taker_stats.fees.total_fee_paid, 50506);
         assert_eq!(taker_stats.fees.total_referee_discount, 0);
         assert_eq!(taker_stats.fees.total_token_discount, 0);
-        assert_eq!(taker_stats.taker_volume_30d, 101010102);
+        assert_eq!(taker_stats.taker_volume_30d, 101010109);
         assert!(taker.orders[0].is_available());
 
         let market_after = market_map.get_ref(&0).unwrap();
         assert_eq!(market_after.amm.base_asset_amount_with_amm, 1000000000);
         assert_eq!(market_after.base_asset_amount_long, 1000000000);
         assert_eq!(market_after.base_asset_amount_short, 0);
-        assert_eq!(market_after.quote_asset_amount, -101060608);
+        assert_eq!(market_after.quote_asset_amount, -101060615);
         // amm numerator is 0: the taker-fee remainder is the protocol's
         // pending carveout; the AMM books nothing (no surplus here)
         assert_eq!(market_after.fee_ledger.pending_protocol_fee, 50506);
-        assert_eq!(market_after.amm.total_fee, 0);
-        assert_eq!(market_after.amm.total_fee_minus_distributions, 0);
-        assert_eq!(market_after.amm.net_revenue_since_last_funding, 0);
+        assert_eq!(market_after.amm.total_fee, 7);
+        assert_eq!(market_after.amm.total_fee_minus_distributions, 7);
+        assert_eq!(market_after.amm.net_revenue_since_last_funding, 7);
     }
 
     #[test]
@@ -6513,15 +6513,15 @@ pub mod fulfill_order {
         let taker_position = &taker.perp_positions[0];
         assert_eq!(taker_position.base_asset_amount, BASE_PRECISION_I64);
         // One lamport off the single-swap path: the fill accumulates per level.
-        assert_eq!(taker_position.quote_asset_amount, -100306386);
-        assert_eq!(taker_position.quote_entry_amount, -100256257);
-        assert_eq!(taker_position.quote_break_even_amount, -100306386);
+        assert_eq!(taker_position.quote_asset_amount, -100311538);
+        assert_eq!(taker_position.quote_entry_amount, -100261406);
+        assert_eq!(taker_position.quote_break_even_amount, -100311538);
         assert_eq!(taker_position.open_bids, 0);
         assert_eq!(taker_position.open_orders, 0);
-        assert_eq!(taker_stats.fees.total_fee_paid, 50129);
+        assert_eq!(taker_stats.fees.total_fee_paid, 50132);
         assert_eq!(taker_stats.fees.total_referee_discount, 0);
         assert_eq!(taker_stats.fees.total_token_discount, 0);
-        assert_eq!(taker_stats.taker_volume_30d, 100256237);
+        assert_eq!(taker_stats.taker_volume_30d, 100261386);
         assert!(taker.orders[0].is_available());
 
         let maker = makers_and_referrers.get_ref_mut(&maker_key).unwrap();
@@ -6546,7 +6546,7 @@ pub mod fulfill_order {
         // Cranked the whole order, so it books the whole fill's quote as filler
         // volume: 50_005_000 from its own slice + 50_251_237 from the vAMM's.
         // Legacy counted only the vAMM slice.
-        assert_eq!(maker_stats.filler_volume_30d, 100256237);
+        assert_eq!(maker_stats.filler_volume_30d, 100261386);
         assert!(maker.orders[0].is_available());
     }
 

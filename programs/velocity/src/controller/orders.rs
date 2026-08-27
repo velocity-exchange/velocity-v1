@@ -2818,9 +2818,82 @@ fn emit_perp_action_record(
     emit_stack::<_, { OrderActionRecord::SIZE }>(record)
 }
 
+/// Quote and AMM surplus for a normal (non-post_only) sole-AMM fill.
+///
+/// Returns `(taker_quote, taker_surplus)`. `taker_quote` is what the taker
+/// pays or receives. `taker_surplus` is the AMM's spread profit booked for
+/// the LPs, signed so a positive value grows the AMM's books.
+///
+/// Two adjustments to the live-curve quote, both booked through the surplus:
+///
+///  * Capture the shade. The router quoted this slice at the shaded
+///    allocation quote, which is taker-worse than the live curve when a rival
+///    rung undercut the curve. Charge the taker that quote and book the gap
+///    for the LPs, so the shade does not leak to the taker as price
+///    improvement.
+///  * Hold the taker to its limit. The ladder's `top` understates the swap's
+///    first marginal, so a limit just above `top` can still sit below the
+///    curve. Cap the taker's quote at its limit and book the improvement
+///    against the surplus, so the taker is never charged worse than its
+///    limit.
+fn settle_amm_house_normal_quote(
+    fill: &QuoterFill,
+    taker_direction: PositionDirection,
+    taker_limit_price: Option<u64>,
+    amm_allocation_quote: u64,
+    amm_allocation_base: u64,
+) -> VelocityResult<(u64, i64)> {
+    let curve_quote = fill.quote_filled;
+    let mut taker_quote = curve_quote;
+
+    // Shade: charge the shaded allocation quote when it is taker-worse than
+    // the curve. Scale it to the base actually filled, taker-worse, so a
+    // partial fill is not overcharged the whole allocation.
+    if amm_allocation_base > 0 && fill.base_filled > 0 {
+        let shade_quote = if fill.base_filled >= amm_allocation_base {
+            amm_allocation_quote
+        } else {
+            let scaled = (amm_allocation_quote as u128).safe_mul(fill.base_filled as u128)?;
+            match taker_direction {
+                PositionDirection::Long => scaled.safe_div_ceil(amm_allocation_base as u128)?,
+                PositionDirection::Short => scaled.safe_div(amm_allocation_base as u128)?,
+            }
+            .cast::<u64>()?
+        };
+        taker_quote = match taker_direction {
+            PositionDirection::Long => taker_quote.max(shade_quote),
+            PositionDirection::Short => taker_quote.min(shade_quote),
+        };
+    }
+
+    // Limit cap: never charge worse than the taker's own limit.
+    if let Some(limit) = taker_limit_price {
+        let limit_quote = crate::math::orders::calculate_quote_asset_amount_for_maker_order(
+            fill.base_filled,
+            limit,
+            crate::math::constants::PERP_DECIMALS,
+            taker_direction,
+        )?;
+        taker_quote = match taker_direction {
+            PositionDirection::Long => taker_quote.min(limit_quote),
+            PositionDirection::Short => taker_quote.max(limit_quote),
+        };
+    }
+
+    // Book the change against the AMM's spread surplus. Positive when the
+    // shade earned more than the curve. Negative when the limit cap gave the
+    // taker improvement.
+    let delta = match taker_direction {
+        PositionDirection::Long => taker_quote.cast::<i64>()?.safe_sub(curve_quote.cast()?)?,
+        PositionDirection::Short => curve_quote.cast::<i64>()?.safe_sub(taker_quote.cast()?)?,
+    };
+    let taker_surplus = fill.quote_asset_amount_surplus.safe_add(delta)?;
+    Ok((taker_quote, taker_surplus))
+}
+
 #[allow(clippy::too_many_arguments)]
-/// Settle a single `AmmHouse` fill (sole-AMM step, or a JIT slice inside a
-/// Match step). Returns `(base_filled, quote_filled)` to accumulate.
+/// Settle a single sole-AMM fill step. Returns `(base_filled, quote_filled)`
+/// to accumulate.
 fn settle_amm_house_fill(
     fill: &QuoterFill,
     market: &mut PerpMarket,
@@ -2835,7 +2908,12 @@ fn settle_amm_house_fill(
     order_slot: u64,
     order_id: u32,
     taker_limit_price: Option<u64>,
-    is_jit_within_match: bool,
+    // The router priced this vAMM slice at the shaded allocation quote for
+    // `amm_allocation_base` base. The shade is taker-worse than the live
+    // curve. Charging the taker this quote, not the curve, keeps the shade
+    // for the LPs.
+    amm_allocation_quote: u64,
+    amm_allocation_base: u64,
     is_liquidation: bool,
     maker: &mut Option<&mut User>,
     maker_stats: &mut Option<&mut UserStats>,
@@ -2857,28 +2935,33 @@ fn settle_amm_house_fill(
     filler_reward_paid: &mut u64,
 ) -> VelocityResult<(u64, u64)> {
     let slot_clock = oracle_map.slot_clock;
-    // For sole-AMM steps with a post_only taker, override the
-    // fill's quote at the order's limit price (the taker, acting
-    // as maker, transacts at limit; the AMM captures the curve
-    // ↔ limit gap as spread surplus). For JIT slices inside a
-    // Match step, the AMM's `try_fill_solo` already returns
-    // the jit-price quote + curve↔jit surplus — pass through.
-    let (taker_quote, taker_surplus) =
-        if !is_jit_within_match && order_post_only && taker_limit_price.is_some() {
-            crate::controller::position::calculate_quote_asset_amount_surplus(
-                taker_direction,
-                fill.quote_filled,
-                fill.base_filled,
-                taker_limit_price.unwrap(),
-            )?
-        } else {
-            (fill.quote_filled, fill.quote_asset_amount_surplus)
-        };
+    // Decide the taker's quote and the AMM's surplus for this fill.
+    //
+    //  * post_only sole-AMM step: the taker acts as maker and transacts at
+    //    its limit. The AMM keeps the curve to limit gap as spread surplus.
+    //  * Normal sole-AMM step: charge the shade and hold the taker to its
+    //    limit. See `settle_amm_house_normal_quote`.
+    let (taker_quote, taker_surplus) = if order_post_only && taker_limit_price.is_some() {
+        crate::controller::position::calculate_quote_asset_amount_surplus(
+            taker_direction,
+            fill.quote_filled,
+            fill.base_filled,
+            taker_limit_price.unwrap(),
+        )?
+    } else {
+        settle_amm_house_normal_quote(
+            fill,
+            taker_direction,
+            taker_limit_price,
+            amm_allocation_quote,
+            amm_allocation_base,
+        )?
+    };
 
     let reward_referrer =
         can_reward_user_with_referral_reward(market.market_index, rev_share_escrow);
     let reward_filler = can_reward_user_with_perp_pnl(filler, market.market_index)
-        || (!is_jit_within_match && can_reward_user_with_perp_pnl(maker, market.market_index));
+        || can_reward_user_with_perp_pnl(maker, market.market_index);
 
     let (builder_order_idx, referrer_builder_order_idx, builder_order_fee_bps, builder_idx) =
         get_builder_escrow_info(
@@ -3008,18 +3091,16 @@ fn settle_amm_house_fill(
             now,
             slot,
         )?;
-    } else if !is_jit_within_match {
-        if let Some(maker_user) = maker.as_mut() {
-            credit_filler_perp_pnl(
-                maker_user,
-                maker_stats,
-                market,
-                filler_reward,
-                taker_quote,
-                now,
-                slot,
-            )?;
-        }
+    } else if let Some(maker_user) = maker.as_mut() {
+        credit_filler_perp_pnl(
+            maker_user,
+            maker_stats,
+            market,
+            filler_reward,
+            taker_quote,
+            now,
+            slot,
+        )?;
     }
 
     // Update taker order BEFORE event emit.
@@ -3047,8 +3128,6 @@ fn settle_amm_house_fill(
 
     let order_action_explanation = if is_liquidation {
         OrderActionExplanation::Liquidation
-    } else if is_jit_within_match {
-        OrderActionExplanation::OrderFilledWithAMMJit
     } else {
         OrderActionExplanation::OrderFilledWithAMM
     };
@@ -4400,7 +4479,8 @@ fn fulfill_perp_order_router_pass(
             order_slot,
             order_id,
             taker_limit_price,
-            false,
+            amm_allocation.quote,
+            amm_allocation.base,
             is_liquidation,
             &mut cranking_maker_opt,
             &mut cranking_maker_stats_opt,

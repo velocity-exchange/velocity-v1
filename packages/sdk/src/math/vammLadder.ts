@@ -148,12 +148,15 @@ export function vammQuoteLevels(
 			direction,
 			mmOraclePriceData
 		);
-		if (
-			isVariant(tradeDirection, isLong ? 'long' : 'short') &&
-			reachable.lt(total)
-		) {
-			total = reachable;
+		if (!isVariant(tradeDirection, isLong ? 'long' : 'short')) {
+			// `top` is the reserve price plus one spread, but the swap's first
+			// marginal is higher. A limit above `top` can still sit below that
+			// marginal, so the inversion trades the other way. No size fills
+			// within the limit. Quote nothing rather than leaving `total`
+			// uncapped and quoting past the limit.
+			return [];
 		}
+		total = BN.min(total, reachable);
 		if (total.lte(ZERO)) {
 			return [];
 		}

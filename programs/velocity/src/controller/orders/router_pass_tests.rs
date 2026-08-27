@@ -1290,3 +1290,141 @@ pub mod amm_jit {
         );
     }
 }
+
+#[cfg(test)]
+mod amm_house_capture {
+    //! Unit tests for `settle_amm_house_normal_quote`: the shade capture and
+    //! the limit cap on a normal (non-post_only) sole-AMM fill.
+    use {
+        super::super::settle_amm_house_normal_quote,
+        crate::{
+            controller::position::PositionDirection, math::constants::BASE_PRECISION_U64,
+            state::quoter::QuoterFill,
+        },
+    };
+
+    /// A live-curve fill of one base unit at `quote`, with an existing AMM
+    /// spread surplus. Prices are PRICE_PRECISION; a per-unit price on one
+    /// base unit equals the notional.
+    fn curve_fill(side: PositionDirection, quote: u64, surplus: i64) -> QuoterFill {
+        QuoterFill {
+            side,
+            base_filled: BASE_PRECISION_U64,
+            quote_filled: quote,
+            quote_asset_amount_surplus: surplus,
+            ..QuoterFill::ZERO
+        }
+    }
+
+    #[test]
+    fn long_charges_the_shade_and_books_the_gap() {
+        let fill = curve_fill(PositionDirection::Long, 50_000_000, 100_000);
+        // Router quoted the slice at 51 (taker-worse than the 50 curve).
+        let (quote, surplus) = settle_amm_house_normal_quote(
+            &fill,
+            PositionDirection::Long,
+            None,
+            51_000_000,
+            BASE_PRECISION_U64,
+        )
+        .unwrap();
+        assert_eq!(quote, 51_000_000);
+        // Existing spread surplus plus the captured shade gap.
+        assert_eq!(surplus, 100_000 + 1_000_000);
+    }
+
+    #[test]
+    fn short_charges_the_shade_and_books_the_gap() {
+        let fill = curve_fill(PositionDirection::Short, 50_000_000, 100_000);
+        // A short's shade is taker-worse when the taker receives less.
+        let (quote, surplus) = settle_amm_house_normal_quote(
+            &fill,
+            PositionDirection::Short,
+            None,
+            49_000_000,
+            BASE_PRECISION_U64,
+        )
+        .unwrap();
+        assert_eq!(quote, 49_000_000);
+        assert_eq!(surplus, 100_000 + 1_000_000);
+    }
+
+    #[test]
+    fn a_taker_favorable_allocation_never_lowers_the_charge() {
+        // Rounding could make the allocation quote look better than the
+        // curve. The taker still pays the curve; no leak the other way.
+        let fill = curve_fill(PositionDirection::Long, 50_000_000, 100_000);
+        let (quote, surplus) = settle_amm_house_normal_quote(
+            &fill,
+            PositionDirection::Long,
+            None,
+            49_000_000,
+            BASE_PRECISION_U64,
+        )
+        .unwrap();
+        assert_eq!(quote, 50_000_000);
+        assert_eq!(surplus, 100_000);
+    }
+
+    #[test]
+    fn long_never_charged_worse_than_its_limit() {
+        // The curve charges 50 but the taker's limit is 49.5. Cap at the
+        // limit and book the improvement against the surplus.
+        let fill = curve_fill(PositionDirection::Long, 50_000_000, 100_000);
+        let (quote, surplus) =
+            settle_amm_house_normal_quote(&fill, PositionDirection::Long, Some(49_500_000), 0, 0)
+                .unwrap();
+        assert_eq!(quote, 49_500_000);
+        assert_eq!(surplus, 100_000 - 500_000);
+    }
+
+    #[test]
+    fn short_never_receives_less_than_its_limit() {
+        // The curve returns 50 but the taker's limit demands at least 50.5.
+        let fill = curve_fill(PositionDirection::Short, 50_000_000, 100_000);
+        let (quote, surplus) =
+            settle_amm_house_normal_quote(&fill, PositionDirection::Short, Some(50_500_000), 0, 0)
+                .unwrap();
+        assert_eq!(quote, 50_500_000);
+        assert_eq!(surplus, 100_000 - 500_000);
+    }
+
+    #[test]
+    fn the_limit_caps_the_shade() {
+        // Shade would push to 51, but the limit caps at 50.5.
+        let fill = curve_fill(PositionDirection::Long, 50_000_000, 100_000);
+        let (quote, surplus) = settle_amm_house_normal_quote(
+            &fill,
+            PositionDirection::Long,
+            Some(50_500_000),
+            51_000_000,
+            BASE_PRECISION_U64,
+        )
+        .unwrap();
+        assert_eq!(quote, 50_500_000);
+        assert_eq!(surplus, 100_000 + 500_000);
+    }
+
+    #[test]
+    fn a_partial_fill_scales_the_shade_taker_worse() {
+        // Half the allocation base filled: charge half the shaded quote,
+        // rounded taker-worse (up for a long).
+        let fill = QuoterFill {
+            side: PositionDirection::Long,
+            base_filled: BASE_PRECISION_U64 / 2,
+            quote_filled: 25_000_000,
+            quote_asset_amount_surplus: 0,
+            ..QuoterFill::ZERO
+        };
+        let (quote, surplus) = settle_amm_house_normal_quote(
+            &fill,
+            PositionDirection::Long,
+            None,
+            51_000_001, // odd so the ceil is observable
+            BASE_PRECISION_U64,
+        )
+        .unwrap();
+        assert_eq!(quote, 25_500_001);
+        assert_eq!(surplus, 500_001);
+    }
+}

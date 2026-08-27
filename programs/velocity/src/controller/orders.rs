@@ -1002,7 +1002,11 @@ fn merge_modify_order_params_with_existing_order(
         } else {
             PostOnlyParam::None
         });
-    let bit_flags = 0;
+    // Preserve the recross gate across a modify. A triggered order that must
+    // observe the price recross before re-arming carries
+    // `AwaitingTriggerRecross`; rebuilding with `bit_flags = 0` would clear it,
+    // letting a user re-arm by modifying without the price ever recrossing.
+    let bit_flags = existing_order.bit_flags & (OrderBitFlag::AwaitingTriggerRecross as u8);
     let max_ts = modify_order_params.max_ts.or(Some(existing_order.max_ts));
     let trigger_price = modify_order_params
         .trigger_price

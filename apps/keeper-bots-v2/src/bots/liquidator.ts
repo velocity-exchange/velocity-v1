@@ -1511,6 +1511,153 @@ export class LiquidatorBot implements Bot {
 		return sentTx;
 	}
 
+	private isThrottled(userKey: string, auth: string): boolean {
+		const lastAttempt = this.throttledUsers.get(userKey);
+		if (!lastAttempt) {
+			return false;
+		}
+		const now = Date.now();
+		if (lastAttempt + LIQUIDATE_THROTTLE_BACKOFF > now) {
+			logger.warn(
+				`skipping user(throttled, retry in ${
+					lastAttempt + LIQUIDATE_THROTTLE_BACKOFF - now
+				}ms) ${auth}: ${userKey} `
+			);
+			return true;
+		}
+		this.throttledUsers.delete(userKey);
+		return false;
+	}
+
+	/**
+	 * Clears the `beingLiquidated` flag on a user who is no longer liquidatable.
+	 *
+	 * `liquidate_perp` with a zero base amount is a crank rather than a real
+	 * liquidation: it cancels the user's orders, recomputes margin and exits
+	 * liquidation if the account now clears the buffer. The market cannot be
+	 * chosen arbitrarily though, because the program rejects the call with
+	 * `PositionDoesntHaveOpenPositionOrOrders` unless that market holds a base
+	 * position or an open order, and rejects a zero base amount with
+	 * `InvalidBaseAssetAmountForLiquidatePerp` once it gets past the order
+	 * cancel with a base position still open. A perp slot holding only
+	 * unsettled pnl satisfies neither and has to go through
+	 * `liquidate_perp_pnl_for_deposit` / `settle_pnl` instead.
+	 */
+	private async clearBeingLiquidatedStatus(user: User): Promise<{
+		liquidatePerp: number;
+		liquidatePerpPnlForDeposit: number;
+	}> {
+		const sent = { liquidatePerp: 0, liquidatePerpPnlForDeposit: 0 };
+		const userKey = user.userAccountPublicKey.toBase58();
+		const positions = user.getActivePerpPositions();
+
+		// Cheapest exit: cancelling orders frees margin and re-checks the buffer.
+		// Cross margin cancels every order regardless of the market we target, so
+		// prefer one without a base position — there the program returns early
+		// instead of demanding a non-zero base amount.
+		const orderOnly = positions.find(
+			(p) => p.openOrders > 0 && p.baseAssetAmount.isZero()
+		);
+		if (orderOnly) {
+			if (
+				await this.liqPerp(
+					user,
+					orderOnly.marketIndex,
+					this.defaultSubaccountId,
+					ZERO
+				)
+			) {
+				sent.liquidatePerp++;
+			}
+			this.throttledUsers.set(userKey, Date.now());
+			return sent;
+		}
+
+		const withBase = positions.find((p) => !p.baseAssetAmount.isZero());
+		if (withBase) {
+			const subAccountToLiqPerp = this.getSubAccountIdToLiquidatePerp(
+				withBase.marketIndex
+			);
+			const baseAmountToLiquidate =
+				this.calculateBaseAmountToLiquidate(withBase);
+			if (subAccountToLiqPerp !== undefined && baseAmountToLiquidate.gt(ZERO)) {
+				if (
+					await this.liqPerp(
+						user,
+						withBase.marketIndex,
+						subAccountToLiqPerp,
+						baseAmountToLiquidate
+					)
+				) {
+					sent.liquidatePerp++;
+				}
+			} else {
+				logger.warn(
+					`[${this.name}]: cannot size a liquidation of stuck user ${userKey} on perp market ${withBase.marketIndex}`
+				);
+			}
+			this.throttledUsers.set(userKey, Date.now());
+			return sent;
+		}
+
+		// Only unsettled pnl left. liquidate_perp cannot act on it at all.
+		const pnlOnly = positions.find((p) => !p.quoteAssetAmount.isZero());
+		if (pnlOnly) {
+			const perpMarket = this.velocityClient.getPerpMarketAccount(
+				pnlOnly.marketIndex
+			);
+			const usdcMarket = this.velocityClient.getSpotMarketAccount(
+				QUOTE_SPOT_MARKET_INDEX
+			);
+			if (perpMarket && usdcMarket) {
+				const spotPositions = user.getUserAccountOrThrow().spotPositions;
+				const {
+					bestIndex: depositMarketIndextoLiq,
+					bestAmount: depositAmountToLiq,
+				} = this.findBestSpotPosition(
+					user,
+					spotPositions,
+					false,
+					this.maxPositionTakeoverPctOfCollateralNum,
+					this.maxPositionTakeoverPctOfCollateralDenom
+				);
+				const {
+					bestIndex: borrowMarketIndextoLiq,
+					bestAmount: borrowAmountToLiq,
+				} = this.findBestSpotPosition(
+					user,
+					spotPositions,
+					true,
+					this.maxPositionTakeoverPctOfCollateralNum,
+					this.maxPositionTakeoverPctOfCollateralDenom
+				);
+
+				if (
+					await this.liqPerpPnl(
+						user,
+						perpMarket,
+						usdcMarket,
+						pnlOnly,
+						depositMarketIndextoLiq,
+						depositAmountToLiq,
+						borrowMarketIndextoLiq,
+						borrowAmountToLiq
+					)
+				) {
+					sent.liquidatePerpPnlForDeposit++;
+				}
+			}
+			this.throttledUsers.set(userKey, Date.now());
+			return sent;
+		}
+
+		logger.warn(
+			`[${this.name}]: stuck user ${userKey} has no perp position to clear beingLiquidated with`
+		);
+		this.throttledUsers.set(userKey, Date.now());
+		return sent;
+	}
+
 	private async liqPerp(
 		user: User,
 		perpMarketIndex: number,
@@ -1694,20 +1841,9 @@ export class LiquidatorBot implements Bot {
 			if (bankrupt) {
 				await this.tryResolveBankruptUser(user);
 			} else if (canBeLiquidated) {
-				const lastAttempt = this.throttledUsers.get(userKey);
-				if (lastAttempt) {
-					const now = Date.now();
-					if (lastAttempt + LIQUIDATE_THROTTLE_BACKOFF > now) {
-						logger.warn(
-							`skipping user(throttled, retry in ${
-								lastAttempt + LIQUIDATE_THROTTLE_BACKOFF - now
-							}ms) ${auth}: ${userKey} `
-						);
-						throttledUser++;
-						continue;
-					} else {
-						this.throttledUsers.delete(userKey);
-					}
+				if (this.isThrottled(userKey, auth)) {
+					throttledUser++;
+					continue;
 				}
 
 				const liquidateeUserAccount = user.getUserAccountOrThrow();
@@ -1920,24 +2056,20 @@ export class LiquidatorBot implements Bot {
 					}
 				}
 			} else if (user.isBeingLiquidated()) {
-				// liquidate the user to bring them out of liquidation status, can liquidate any market even
-				// if the user doesn't have a position in it
+				if (this.isThrottled(userKey, auth)) {
+					throttledUser++;
+					continue;
+				}
+
 				logger.info(
 					`[${
 						this.name
 					}]: user stuck in beingLiquidated status, need to clear it for ${user.userAccountPublicKey.toBase58()}`
 				);
 
-				// can liquidate with any subaccount, no liability transfer
-				const sent = await this.liqPerp(
-					user,
-					0,
-					this.defaultSubaccountId,
-					ZERO
-				);
-				if (sent) {
-					liquidatePerpSent++;
-				}
+				const sent = await this.clearBeingLiquidatedStatus(user);
+				liquidatePerpSent += sent.liquidatePerp;
+				liquidatePerpPnlForDepositSent += sent.liquidatePerpPnlForDeposit;
 			}
 		}
 		return {

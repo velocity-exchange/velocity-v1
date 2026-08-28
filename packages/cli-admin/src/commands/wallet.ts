@@ -62,6 +62,46 @@ function syncNativeIx(ata: PublicKey): TransactionInstruction {
 
 const JUPITER_API = 'https://lite-api.jup.ag/swap/v1';
 
+/**
+ * Programs a Jupiter swap response is allowed to invoke. Instructions
+ * targeting anything else are rejected before signing/proposing: the swap
+ * endpoint returns opaque instruction bytes, and a compromised API must not
+ * be able to smuggle an arbitrary instruction under a "swap" label.
+ */
+const SWAP_PROGRAM_ALLOWLIST = new Set([
+	'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4', // Jupiter v6
+	TOKEN_PROGRAM_ID.toBase58(),
+	'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb', // Token-2022
+	ASSOCIATED_TOKEN_PROGRAM_ID.toBase58(),
+	SystemProgram.programId.toBase58(),
+]);
+
+/**
+ * Reject any instruction outside the swap program allowlist, and any
+ * instruction that requires a signature from an account other than the owner
+ * (a rogue signer would let the vault/wallet co-sign an arbitrary transfer).
+ */
+function validateSwapInstructions(
+	ixs: TransactionInstruction[],
+	owner: PublicKey
+): void {
+	for (const ix of ixs) {
+		const program = ix.programId.toBase58();
+		if (!SWAP_PROGRAM_ALLOWLIST.has(program)) {
+			throw new Error(
+				`swap response contains an instruction for non-allowlisted program ${program} — refusing to sign/propose`
+			);
+		}
+		for (const key of ix.keys) {
+			if (key.isSigner && !key.pubkey.equals(owner)) {
+				throw new Error(
+					`swap response requires a signature from ${key.pubkey.toBase58()} (not the owner) — refusing to sign/propose`
+				);
+			}
+		}
+	}
+}
+
 interface JupiterInstruction {
 	programId: string;
 	accounts: { pubkey: string; isSigner: boolean; isWritable: boolean }[];
@@ -308,10 +348,16 @@ export function registerWallet(parent: Command): void {
 					? [deserializeJupiterIx(swap.cleanupInstruction)]
 					: []),
 			];
+			validateSwapInstructions(ixs, owner);
 			const altAccounts = await fetchAltAccounts(
 				provider.connection,
 				swap.addressLookupTableAddresses ?? []
 			);
+			// Show reviewers what is actually being signed, not just the memo.
+			console.log('instruction programs:');
+			for (const ix of ixs) {
+				console.log(`  ${ix.programId.toBase58()}`);
+			}
 
 			const label =
 				`swap ${rawAmount} of ${inMint.toBase58()} → ${outMint.toBase58()} ` +

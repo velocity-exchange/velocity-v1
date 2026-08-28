@@ -123,6 +123,8 @@ velocity-admin program close-buffers [--dry-run] [--program-only|--metadata-only
 velocity-admin multisig create --proposer <pubkey> [--name <name>]  # create a Squads V4 1/1 multisig
 velocity-admin multisig proposals [--limit <n>]                  # recent proposals: status, approvals, timelock ETA
 velocity-admin multisig execute <index> [--cu-limit <units>] [--cu-price <microLamports>]  # execute an approved proposal as a member; sets a CU limit (Squads UI executes at the 200k default, too low for CPI-heavy inner txs)
+velocity-admin multisig inspect <index> [--accounts]             # decode a vault tx's inner instructions (lookup tables resolved) + simulate execution at full CU; sim reports InvalidProposalStatus until approved
+velocity-admin multisig close-accounts [--dry-run]               # reclaim rent from settled proposals (Executed/Rejected/Cancelled + stale non-approved); requires the multisig's rent collector to be set
 
 velocity-admin extend-account <account>                          # AccountExtension hot key (or warm/cold); grow one zero-copy account to the deployed program's size
 velocity-admin extend-account --type <type> [--batch-size <n>] [--dry-run]  # migration crank: scan + extend every account of a type (see docs/ACCOUNT-EXTENSION.md)

@@ -359,6 +359,12 @@ export function registerWallet(parent: Command): void {
 				'0'
 			)
 			.option(
+				'--to-token-account',
+				'treat <recipient> as the destination token account itself (e.g. a program ' +
+					'vault) instead of deriving its ATA; no account creation is attempted',
+				false
+			)
+			.option(
 				'--dry-run',
 				'print the instructions and expected proposal rent/fees, send nothing',
 				false
@@ -375,6 +381,7 @@ export function registerWallet(parent: Command): void {
 			const local = cmd.opts() as {
 				authority?: string;
 				vaultIndex: string;
+				toTokenAccount: boolean;
 				dryRun: boolean;
 			};
 			const mint = new PublicKey(mintArg);
@@ -396,11 +403,24 @@ export function registerWallet(parent: Command): void {
 			const tokenProgram = mintInfo.value!.owner;
 
 			const sourceAta = deriveAssociatedTokenAccount(mint, owner, tokenProgram);
-			const destAta = deriveAssociatedTokenAccount(
-				mint,
-				recipient,
-				tokenProgram
-			);
+			let destAta: PublicKey;
+			if (local.toTokenAccount) {
+				destAta = recipient;
+				const destInfo = await provider.connection.getParsedAccountInfo(
+					destAta
+				);
+				const destParsed = (destInfo.value?.data as any)?.parsed;
+				if (
+					destParsed?.type !== 'account' ||
+					destParsed.info.mint !== mint.toBase58()
+				) {
+					throw new Error(
+						`${destAta.toBase58()} is not a token account for mint ${mint.toBase58()}`
+					);
+				}
+			} else {
+				destAta = deriveAssociatedTokenAccount(mint, recipient, tokenProgram);
+			}
 			const balance = await provider.connection
 				.getTokenAccountBalance(sourceAta)
 				.then((r) => BigInt(r.value.amount))
@@ -415,23 +435,28 @@ export function registerWallet(parent: Command): void {
 			transferCheckedData.writeUInt8(12, 0); // TransferChecked
 			transferCheckedData.writeBigUInt64LE(amount, 1);
 			transferCheckedData.writeUInt8(decimals, 9);
-			const ixs = [
-				new TransactionInstruction({
-					programId: ASSOCIATED_TOKEN_PROGRAM_ID,
-					keys: [
-						{ pubkey: owner, isSigner: true, isWritable: true },
-						{ pubkey: destAta, isSigner: false, isWritable: true },
-						{ pubkey: recipient, isSigner: false, isWritable: false },
-						{ pubkey: mint, isSigner: false, isWritable: false },
-						{
-							pubkey: SystemProgram.programId,
-							isSigner: false,
-							isWritable: false,
-						},
-						{ pubkey: tokenProgram, isSigner: false, isWritable: false },
-					],
-					data: Buffer.from([1]), // CreateIdempotent
-				}),
+			const ixs = [];
+			if (!local.toTokenAccount) {
+				ixs.push(
+					new TransactionInstruction({
+						programId: ASSOCIATED_TOKEN_PROGRAM_ID,
+						keys: [
+							{ pubkey: owner, isSigner: true, isWritable: true },
+							{ pubkey: destAta, isSigner: false, isWritable: true },
+							{ pubkey: recipient, isSigner: false, isWritable: false },
+							{ pubkey: mint, isSigner: false, isWritable: false },
+							{
+								pubkey: SystemProgram.programId,
+								isSigner: false,
+								isWritable: false,
+							},
+							{ pubkey: tokenProgram, isSigner: false, isWritable: false },
+						],
+						data: Buffer.from([1]), // CreateIdempotent
+					})
+				);
+			}
+			ixs.push(
 				new TransactionInstruction({
 					programId: tokenProgram,
 					keys: [
@@ -441,8 +466,8 @@ export function registerWallet(parent: Command): void {
 						{ pubkey: owner, isSigner: true, isWritable: false },
 					],
 					data: transferCheckedData,
-				}),
-			];
+				})
+			);
 
 			const label =
 				`transfer ${amount} of ${mint.toBase58()} ` +

@@ -60,6 +60,8 @@ velocity-admin whoami                                # which on-chain authoritie
 
 velocity-admin show config
 velocity-admin show fees    # every fee users pay: trading tiers, filler reward, split, per-market adjustments + liquidation fees
+velocity-admin show perp-markets [market]  # per-market risk + quoting params: OI cap, margins, spreads, jit/curve intensity, funding clamp, fee/pnl pool balances (the vAMM capital view)
+velocity-admin show spot-markets [market]  # per-market lending params: deposit cap + headroom, weights, rate curve, withdraw guard, IF vault balance
 
 velocity-admin auth set-cold-admin <pubkey>
 velocity-admin auth set-warm-admin <pubkey>
@@ -116,7 +118,7 @@ velocity-admin if stake <market> <amount> [--authority <pk>] [--user-token-accou
 
 velocity-admin wallet wrap-sol <lamports> [--authority <pk>] [--vault-index <i>] [--min-remaining <sol>] [--dry-run]  # wrap native SOL into the owner's wSOL ATA (created idempotently); one proposal with --multisig
 velocity-admin wallet swap <inputMint> <outputMint> <amount> [--slippage-bps <bps>] [--only-direct-routes] [--vault-index <i>] [--dry-run]  # Jupiter swap from the owner wallet; with --multisig the route is quoted at proposal time — approve + execute promptly or it goes stale
-velocity-admin wallet transfer <mint> <recipient> <amount> [--authority <pk>] [--vault-index <i>] [--dry-run]  # SPL transfer to the recipient's ATA (created idempotently); raw base units, checked against on-chain mint decimals; one proposal with --multisig
+velocity-admin wallet transfer <mint> <recipient> <amount> [--authority <pk>] [--vault-index <i>] [--to-token-account] [--dry-run]  # SPL transfer to the recipient's ATA (created idempotently); --to-token-account sends to a raw token account instead (e.g. a program vault donation); raw base units, checked against on-chain mint decimals; one proposal with --multisig
 velocity-admin wallet balances [--authority <pk>] [--vault-index <i>]  # read-only: native SOL + token balances, velocity spot positions per sub-account, IF stakes
 
 velocity-admin program upgrade --buffer <pk> [--spill <pk>] [--dry-run]  # propose an upgrade from an existing on-chain buffer
@@ -136,6 +138,39 @@ velocity-admin extend-account --type <type> [--batch-size <n>] [--dry-run]  # mi
 velocity-admin call <ixName> <payloadFile>     # generic IDL escape hatch
 velocity-admin batch <payloadFile> [--dry-run] # several instructions in ONE tx / vault proposal ({ instructions: [{ ix, args, accounts }, ...] }); one approval round, one timelock
 ```
+
+## Common flows
+
+Sequences that come up in treasury operations. Each step is a command above; with a
+multisig profile every step is a proposal that members approve and execute in the Squads UI.
+
+**Fund a vault authority's trading account**: `wallet swap` (source the right token) →
+`wallet wrap-sol` (if SOL) → `user deposit`. Deposits fail while the market's hard cap has no
+headroom — check with `show spot-markets` first, raise with `spot-market set-max-token-deposits`
+(and raise `set-scale-initial-asset-weight-start` with it, or large depositors get their
+collateral weight derated).
+
+**Seed or top up an insurance fund**: `if stake <market> <amount>` — initializes the stake
+account on first use. Not subject to deposit caps.
+
+**Fund perp pnl pools**: (1) `wallet transfer <quoteMint> <spotMarketVault> <amount>
+--to-token-account` — an unattributed donation to the quote spot vault; (2) after it lands, a
+`batch` of `updatePerpMarketPnlPool` instructions attributing the amounts per market. Order
+matters: the update instruction validates the vault holds the tokens.
+
+**Fund vAMM fee pools (vAMM capital)**: `depositIntoPerpMarketFeePool` per market via `batch`,
+signed by the VaultDeposit hot role (see `show config`). Reserve resizing is separate:
+`recenterPerpMarketAmm` (peg + sqrt_k in one instruction, warm/cold) with values re-derived at
+the live oracle price — reserves never adjust themselves to new capital.
+
+**Executing heavy proposals**: anything CPI-heavy (Jupiter swaps) exceeds the Squads UI's
+default 200k compute budget. Set ~1M in the UI's execute modal, or use `multisig execute`
+from a machine holding a member key. Inner transactions never carry compute-budget
+instructions (not CPI-able) — a red UI simulation on an unapproved proposal is normal;
+verify with `multisig inspect`.
+
+**Reclaim proposal rent**: `multisig set-rent-collector` (config transaction — it marks
+still-Active vault proposals stale, so time it), then `multisig close-accounts`.
 
 ## Routing through a Squads V4 multisig
 

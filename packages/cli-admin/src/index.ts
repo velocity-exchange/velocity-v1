@@ -16,6 +16,7 @@ import { registerProgram } from './commands/program';
 import { registerShow } from './commands/show';
 import { registerSpotMarket } from './commands/spotMarket';
 import { registerUser } from './commands/user';
+import { registerWallet } from './commands/wallet';
 
 const program = new Command();
 
@@ -58,6 +59,7 @@ registerFeatureFlags(program);
 registerFees(program);
 registerMultisig(program);
 registerUser(program);
+registerWallet(program);
 registerInsuranceFund(program);
 registerProgram(program);
 registerAccountExtension(program);

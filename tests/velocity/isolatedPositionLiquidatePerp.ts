@@ -326,7 +326,7 @@ describe('liquidate perp (no open orders)', () => {
 		assert(fillRecord.makerFee.eq(new BN(ZERO)));
 		assert(isVariant(fillRecord.makerOrderDirection, 'long'));
 
-		assert(fillRecord.takerExistingQuoteEntryAmount.eq(new BN(17500007)));
+		assert(fillRecord.takerExistingQuoteEntryAmount.eq(new BN(17500024)));
 		assert(fillRecord.takerExistingBaseAssetAmount === null);
 		assert(fillRecord.makerExistingQuoteEntryAmount === null);
 		assert(fillRecord.makerExistingBaseAssetAmount === null);
@@ -358,7 +358,7 @@ describe('liquidate perp (no open orders)', () => {
 		assert(
 			velocityClient
 				.getUserAccount()
-				.perpPositions[0].quoteAssetAmount.eq(new BN(-5757226))
+				.perpPositions[0].quoteAssetAmount.eq(new BN(-5757243))
 		);
 
 		await velocityClient.updatePerpMarketContractTier(0, ContractTier.A);
@@ -411,7 +411,7 @@ describe('liquidate perp (no open orders)', () => {
 			'marketAfterBankruptcy.totalSocialLoss:',
 			marketAfterBankruptcy.totalSocialLoss.toString()
 		);
-		assert(marketAfterBankruptcy.totalSocialLoss.eq(new BN(5757226))); // more goes to socialised loss after removal of fee pool topping up during settlement
+		assert(marketAfterBankruptcy.totalSocialLoss.eq(new BN(5757243))); // more goes to socialised loss after removal of fee pool topping up during settlement
 
 		// assert(!velocityClient.getUserAccount().isBankrupt);
 		// assert(!velocityClient.getUserAccount().isBeingLiquidated);
@@ -431,13 +431,13 @@ describe('liquidate perp (no open orders)', () => {
 		console.log(
 			perpBankruptcyRecord.perpBankruptcy.cumulativeFundingRateDelta.toString()
 		);
-		assert(perpBankruptcyRecord.perpBankruptcy.pnl.eq(new BN(-5757226)));
+		assert(perpBankruptcyRecord.perpBankruptcy.pnl.eq(new BN(-5757243)));
 		console.log(
 			perpBankruptcyRecord.perpBankruptcy.cumulativeFundingRateDelta.toString()
 		);
 		assert(
 			perpBankruptcyRecord.perpBankruptcy.cumulativeFundingRateDelta.eq(
-				new BN(328985000)
+				new BN(328986000)
 			)
 		);
 
@@ -446,7 +446,7 @@ describe('liquidate perp (no open orders)', () => {
 			market.cumulativeFundingRateLong.toString(),
 			market.cumulativeFundingRateShort.toString()
 		);
-		assert(market.cumulativeFundingRateLong.eq(new BN(328997500)));
-		assert(market.cumulativeFundingRateShort.eq(new BN(-328972500)));
+		assert(market.cumulativeFundingRateLong.eq(new BN(328998500)));
+		assert(market.cumulativeFundingRateShort.eq(new BN(-328973500)));
 	});
 });

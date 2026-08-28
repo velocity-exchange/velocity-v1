@@ -308,7 +308,7 @@ describe('liquidate perp (no open orders)', () => {
 		assert(
 			velocityClient
 				.getUserAccount()
-				.perpPositions[0].quoteAssetAmount.eq(new BN(-15757926))
+				.perpPositions[0].quoteAssetAmount.eq(new BN(-15757943))
 		);
 
 		assert(

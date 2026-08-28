@@ -1,9 +1,11 @@
 import { AnchorProvider } from '@coral-xyz/anchor';
 import {
+	AddressLookupTableAccount,
 	PublicKey,
 	Transaction,
 	TransactionInstruction,
 	TransactionMessage,
+	VersionedTransaction,
 } from '@solana/web3.js';
 import * as multisig from '@sqds/multisig';
 import { confirmMainnetDirect } from './context';
@@ -58,7 +60,8 @@ export async function sendOrPropose(
 	instructions: TransactionInstruction[],
 	multisigPda: PublicKey | undefined,
 	memo: string,
-	vaultIndex = 0
+	vaultIndex = 0,
+	altAccounts: AddressLookupTableAccount[] = []
 ): Promise<DispatchResult> {
 	if (multisigPda) {
 		const [vaultPda] = multisig.getVaultPda({ multisigPda, index: vaultIndex });
@@ -76,6 +79,19 @@ export async function sendOrPropose(
 
 	if (!multisigPda) {
 		await confirmMainnetDirect(memo);
+		if (altAccounts.length > 0) {
+			// Lookup tables require a v0 message; legacy Transaction can't carry them.
+			const { blockhash } = await provider.connection.getLatestBlockhash();
+			const message = new TransactionMessage({
+				payerKey: provider.wallet.publicKey,
+				recentBlockhash: blockhash,
+				instructions,
+			}).compileToV0Message(altAccounts);
+			const signature = await provider.sendAndConfirm(
+				new VersionedTransaction(message)
+			);
+			return { kind: 'sent', signature };
+		}
 		const tx = new Transaction().add(...instructions);
 		const signature = await provider.sendAndConfirm(tx);
 		return { kind: 'sent', signature };
@@ -106,6 +122,7 @@ export async function sendOrPropose(
 		vaultIndex,
 		ephemeralSigners: 0,
 		transactionMessage,
+		addressLookupTableAccounts: altAccounts,
 		memo,
 	});
 
@@ -139,7 +156,8 @@ export async function reportDryRun(
 	provider: AnchorProvider,
 	instructions: TransactionInstruction[],
 	multisigPda: PublicKey | undefined,
-	vaultIndex = 0
+	vaultIndex = 0,
+	altAccounts: AddressLookupTableAccount[] = []
 ): Promise<void> {
 	console.log('dry run, nothing sent');
 	instructions.forEach((ix, i) => {
@@ -165,13 +183,16 @@ export async function reportDryRun(
 	const members = info.members.length;
 
 	const { blockhash } = await provider.connection.getLatestBlockhash();
-	const messageBytes = new TransactionMessage({
+	const message = new TransactionMessage({
 		payerKey: vaultPda,
 		recentBlockhash: blockhash,
 		instructions,
-	})
-		.compileToLegacyMessage()
-		.serialize().length;
+	});
+	const messageBytes = (
+		altAccounts.length > 0
+			? message.compileToV0Message(altAccounts)
+			: message.compileToLegacyMessage()
+	).serialize().length;
 
 	// VaultTransaction: discriminator + multisig/creator pubkeys + index +
 	// bumps/flags + the serialized inner message; Proposal: fixed fields plus

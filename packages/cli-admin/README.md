@@ -113,6 +113,7 @@ velocity-admin user withdraw <market> <amount> [--authority <pk>] [--vault-index
 velocity-admin if stake <market> <amount> [--authority <pk>] [--user-token-account <pk>]  # inits the stake account if missing
 
 velocity-admin wallet wrap-sol <lamports> [--authority <pk>] [--vault-index <i>] [--min-remaining <sol>] [--dry-run]  # wrap native SOL into the owner's wSOL ATA (created idempotently); one proposal with --multisig
+velocity-admin wallet swap <inputMint> <outputMint> <amount> [--slippage-bps <bps>] [--only-direct-routes] [--vault-index <i>] [--dry-run]  # Jupiter swap from the owner wallet; with --multisig the route is quoted at proposal time — approve + execute promptly or it goes stale
 
 velocity-admin program upgrade --buffer <pk> [--spill <pk>] [--dry-run]  # propose an upgrade from an existing on-chain buffer
 velocity-admin program halt [--so <path>]                        # deploy sbpf-asm-abort + propose an upgrade that bricks the program

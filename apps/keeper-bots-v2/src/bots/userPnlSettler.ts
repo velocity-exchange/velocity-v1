@@ -153,7 +153,7 @@ export class UserPnlSettlerBot implements Bot {
 		this.minPnlToSettle = new BN(
 			Math.abs(Number(config.settlePnlThresholdUsdc) ?? 10) * -1
 		).mul(QUOTE_PRECISION);
-		this.maxUsersToConsider = Number(config.maxUsersToConsider) ?? 50;
+		this.maxUsersToConsider = Number(config.maxUsersToConsider ?? 50);
 		this.globalConfig = globalConfig;
 
 		this.velocityClient = velocityClient;

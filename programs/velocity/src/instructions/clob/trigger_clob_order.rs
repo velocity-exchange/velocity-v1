@@ -24,6 +24,20 @@
 //! trigger", which is what stops an evicted stop-limit — near the tail by
 //! definition — from re-placing into an immediate re-eviction.
 //!
+//! The placed order rests **taker-origin**. A fired trigger is an order that
+//! came to trade, so it gets what any other taker remainder gets: a cross
+//! settles at the counterparty's price rather than its own, and the
+//! activation-slot window turns the race to fill it into a race on price.
+//! That is also how a fired trigger reaches a route at all — the taker-origin
+//! cross crank carries the market's baseline book, and an order resting as an
+//! ordinary maker quote never asks for one.
+//!
+//! Two consequences follow. Its owner pays taker fees when a counterparty
+//! crosses it, which is the price of demanding liquidity. And it cannot be
+//! cancelled before its activation slot, so a trigger commits its owner for
+//! that window; liquidation force-cancel stays exempt, and `max_ts` still
+//! bounds its life.
+//!
 //! Stop-markets never come here: a triggered stop-market becomes plain
 //! taker flow through `trigger_order` and takes the CLOB speed bump like
 //! any unattested taker.
@@ -449,8 +463,14 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
         activation_delay_slots: None,
         max_ts,
         user: user_ref,
-        // Not a migrated taker remainder: this price is its owner's choice.
-        taker_origin: false,
+        // A fired trigger came to trade. It rests taker-origin so a live
+        // counterparty crosses it at the counterparty's price instead of
+        // picking it off at its own, and so the activation-slot auction
+        // decides who fills it on price rather than on who lands a
+        // transaction first. It is also what routes it: the taker-origin
+        // cross crank carries the market's baseline book, which an order
+        // resting as an ordinary maker quote never asks for.
+        taker_origin: true,
         // The slot the trigger armed keeps its id: to its owner this is the
         // order they placed, now live, and the shadow slot holds the same id.
         client_order_id: order_id,
@@ -490,7 +510,7 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
             base_asset_amount_filled: 0,
             max_ts,
             slot,
-            taker_origin: false,
+            taker_origin: true,
         },
     )?;
 

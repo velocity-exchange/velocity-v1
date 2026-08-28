@@ -4,9 +4,11 @@ use base64::Engine;
 use nanoid::nanoid;
 use reqwest::header;
 use velocity_rs::{
+    constants::{derive_clob_authority, derive_clob_crank_conditions},
+    program::state::prop_amm::QuoterV0,
     swift_order_subscriber::{SignedOrderInfo, SignedOrderType},
     types::{MarketType, OrderParams, OrderType, PositionDirection, SignedMsgOrderParamsMessage},
-    Context, RpcClient, TransactionBuilder, VelocityClient, Wallet,
+    ClobFillAccounts, Context, RpcClient, TransactionBuilder, VelocityClient, Wallet,
 };
 
 /// Swift taker client example
@@ -146,6 +148,26 @@ async fn swift_deposit_trade(
             &spot_market_config.token_program(),
         );
 
+    // The placement routes the order and rests what it cannot fill on the
+    // market's book, so it carries the book's accounts.
+    let perp_market_index = signed_order_info.order_params().market_index;
+    let clob_quoter = velocity
+        .try_get_perp_market_account(perp_market_index)
+        .expect("perp market")
+        .clob_quoter;
+    let clob_entry = velocity
+        .get_account_value::<QuoterV0>(&clob_quoter)
+        .await
+        .expect("clob registry entry for the market");
+    let clob = ClobFillAccounts {
+        market_index: perp_market_index,
+        quoter: clob_quoter,
+        clob_market: clob_entry.response_account,
+        clob_program: clob_entry.program_id,
+        clob_authority: derive_clob_authority(),
+        crank_conditions: Some(derive_clob_crank_conditions(perp_market_index)),
+    };
+
     let unsigned_tx = TransactionBuilder::new(
         velocity.program_data(),
         taker_subaccount,
@@ -155,7 +177,7 @@ async fn swift_deposit_trade(
     // .add_ix(additional_setup_ixs)
     .add_ix(create_ata_ix)
     .deposit(deposit_amount, deposit_market_index, None, None)
-    .place_swift_order(&signed_order_info, &taker_account_data)
+    .place_swift_order(&signed_order_info, &taker_account_data, clob)
     // .add_ix(additional_clean_up_ixs)
     .build();
     let signed_tx = velocity

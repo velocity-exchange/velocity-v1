@@ -446,8 +446,6 @@ pub struct QuotedLadderV0 {
     pub withheld: PriceLevel,
 }
 
-/// `cancel_order_v0` args on the CLOB wire.
-pub use clob_wire::CancelOrderArgsV0 as ClobCancelOrderArgsV0;
 /// Order handle on the CLOB: an O(1) node hint verified against the order id
 /// there, so a stale hint fails closed on the CLOB side.
 pub use clob_wire::ClobOrderRefV0;
@@ -469,6 +467,12 @@ pub use clob_wire::PlaceOrderArgsV0 as ClobPlaceOrderArgsV0;
 /// side of a cross was demanding liquidity — hence which side's price the
 /// match settles at.
 pub use clob_wire::RemovedOrderV0 as ClobRemovedOrderV0;
+/// `cancel_order_v0` args on the CLOB wire.
+pub use clob_wire::{
+    CancelOrderArgsV0 as ClobCancelOrderArgsV0, FillArgsV0 as ClobFillArgsV0,
+    FillOutcomeV0 as ClobFillOutcomeV0, FillRequestV0 as ClobFillRequestV0,
+    FilledOrderV0 as ClobFilledOrderV0,
+};
 /// Which sides a `cancel_all_v0` withdraws, on the CLOB wire. Declared by
 /// `quoter-spec`; the alias keeps velocity's name for it.
 pub use quoter_spec::CancelSidesV0 as ClobCancelSides;
@@ -625,6 +629,7 @@ pub use clob_wire::{
 /// place that speaks this wire.
 pub const CLOB_PLACE_ORDER_V0_DISCRIMINATOR: [u8; 8] = [100, 204, 57, 226, 245, 228, 61, 187];
 pub const CLOB_CANCEL_ORDER_V0_DISCRIMINATOR: [u8; 8] = [70, 91, 225, 16, 228, 203, 124, 174];
+pub const CLOB_FILL_V0_DISCRIMINATOR: [u8; 8] = [66, 113, 11, 94, 94, 23, 154, 137];
 pub const CLOB_CANCEL_ALL_V0_DISCRIMINATOR: [u8; 8] = [212, 11, 203, 11, 184, 40, 88, 95];
 pub const CLOB_EVICT_WORST_V0_DISCRIMINATOR: [u8; 8] = [106, 60, 27, 129, 80, 27, 37, 73];
 pub const CLOB_REMOVE_EXPIRED_V0_DISCRIMINATOR: [u8; 8] = [241, 135, 215, 18, 254, 107, 179, 119];
@@ -705,6 +710,21 @@ impl<'a, 'info> ClobMarket<'a, 'info> {
     /// Rest a new order on the book; returns the CLOB's handle for it.
     pub fn place(&self, args: ClobPlaceOrderArgsV0) -> Result<ClobOrderRefV0> {
         self.invoke(&CLOB_PLACE_ORDER_V0_DISCRIMINATOR, &args, "place")
+    }
+
+    /// Report fills velocity made against taker remainders resting on this
+    /// book, so they shrink in place.
+    ///
+    /// The mirror of [`Self::execute`]. That one is the book filling its own
+    /// orders for a taker; this is velocity telling the book about a fill it
+    /// could not have made itself, because a taker remainder aggresses against
+    /// quoters and the vAMM as well as against the book.
+    ///
+    /// In place, so the order keeps its queue position and its id. Cancelling
+    /// and re-placing would send a partly-filled remainder to the back of its
+    /// own level for a fill that never changed its price.
+    pub fn fill(&self, args: ClobFillArgsV0) -> Result<ClobFillOutcomeV0> {
+        self.invoke(&CLOB_FILL_V0_DISCRIMINATOR, &args, "fill")
     }
 
     /// Pull one order off the book; returns what was removed so the caller
@@ -844,12 +864,6 @@ impl ClobReader<'_, '_> {
             ErrorCode::DefaultError
         })?;
         self.ask(data, "next removal")
-    }
-
-    /// The best matchable order on each side — what a cross would settle
-    /// between. Both heads are [`ClobOrderViewV0::NONE`] on an empty book.
-    pub fn next_cross(&self) -> Result<ClobNextCrossV0> {
-        self.ask(CLOB_NEXT_CROSS_V0_DISCRIMINATOR.to_vec(), "next cross")
     }
 
     /// What the book requires of an order before it will hold one. Asked

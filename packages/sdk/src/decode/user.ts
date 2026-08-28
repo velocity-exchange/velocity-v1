@@ -275,9 +275,10 @@ export function decodeUser(buffer: Buffer): UserAccount {
 		offset += 1;
 		const bitFlags = buffer.readUint8(offset);
 		offset += 1;
-		// The route digest is all 5 of what used to be padding bytes, so the
-		// order's width is unchanged.
-		const routeDigest = Array.from(buffer.subarray(offset, offset + 5));
+		// Five trailing free bytes. They held a route digest while a
+		// signed-message order could rest on the DLOB; the route now travels
+		// with the message instead. The width is unchanged either way.
+		const padding = Array.from(buffer.subarray(offset, offset + 5));
 		offset += 5;
 		orders.push({
 			slot,
@@ -305,7 +306,7 @@ export function decodeUser(buffer: Buffer): UserAccount {
 			auctionDuration,
 			bitFlags,
 			postedSlotTail,
-			routeDigest,
+			padding,
 		});
 	}
 

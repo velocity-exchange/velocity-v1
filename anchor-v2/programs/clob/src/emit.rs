@@ -38,9 +38,11 @@ use {
 pub const DISCRIMINATOR_BYTES: usize = 8;
 
 /// Widest [`ExecuteRecordV0`] log: the discriminator, the fixed prefix, and
-/// both sequences at the widest a market config can drive them — at most
-/// `EXECUTE_FILLS_CEILING` fills, and at most one culled order (a partial fill
-/// only happens once the taker's size runs out, which ends the walk).
+/// both sequences at the widest anything can drive them — at most
+/// `EXECUTE_FILLS_CEILING` fills, and at most `FILL_BATCH_CEILING` culled
+/// orders. `execute_v0` culls at most one (a partial fill only happens once
+/// the taker's size runs out, which ends the walk); `fill_v0` reports a batch,
+/// and every order in it can leave a sub-minimum leftover.
 pub const EXECUTE_RECORD_LOG_BYTES: usize = DISCRIMINATOR_BYTES
     + core::mem::size_of::<i64>()
     + core::mem::size_of::<u64>()
@@ -49,7 +51,7 @@ pub const EXECUTE_RECORD_LOG_BYTES: usize = DISCRIMINATOR_BYTES
     + COUNT_BYTES
     + EXECUTE_FILLS_CEILING as usize * FILL_SLIM_BYTES
     + COUNT_BYTES
-    + CLIENT_ORDER_ID_BYTES;
+    + crate::state::FILL_BATCH_CEILING * CLIENT_ORDER_ID_BYTES;
 
 /// Widest [`OrdersCancelRecordV0`] log: the discriminator, the fixed prefix
 /// (user ref, ts, both base totals, market index, sides tag, exhaustive flag),
@@ -213,7 +215,7 @@ pub fn write_execute_record<const N: usize>(
     market_index: u16,
     direction: u8,
     fills: &[FillSlimV0],
-    cancelled_client_order_id: Option<u32>,
+    cancelled_client_order_ids: &[u32],
 ) -> Result<()> {
     log.push(ExecuteRecordV0::DISCRIMINATOR)?;
     log.push(&ts.to_le_bytes())?;
@@ -230,8 +232,8 @@ pub fn write_execute_record<const N: usize>(
         entry[2 * ORDER_ID_BYTES..].copy_from_slice(&fill.client_order_id.to_le_bytes());
         log.push(&entry)
     })?;
-    log.push(&(cancelled_client_order_id.iter().count() as u32).to_le_bytes())?;
-    cancelled_client_order_id
+    log.push(&(cancelled_client_order_ids.len() as u32).to_le_bytes())?;
+    cancelled_client_order_ids
         .iter()
         .try_for_each(|order_id| log.push(&order_id.to_le_bytes()))
 }
@@ -340,7 +342,7 @@ pub fn emit_execute_record(
     market_index: u16,
     direction: u8,
     fills: &[FillSlimV0],
-    cancelled_client_order_id: Option<u32>,
+    cancelled_client_order_ids: &[u32],
 ) -> Result<()> {
     let mut log = LogBuf::<EXECUTE_RECORD_LOG_BYTES>::new();
     write_execute_record(
@@ -350,7 +352,7 @@ pub fn emit_execute_record(
         market_index,
         direction,
         fills,
-        cancelled_client_order_id,
+        cancelled_client_order_ids,
     )?;
     log.emit();
     Ok(())

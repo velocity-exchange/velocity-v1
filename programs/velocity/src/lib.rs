@@ -336,14 +336,18 @@ pub mod velocity {
         handle_place_and_make_perp_order_v1(ctx, params, taker_order_id)
     }
 
-    pub fn place_and_make_signed_msg_perp_order<'c: 'info, 'info>(
-        ctx: Context<'info, PlaceAndMakeSignedMsg<'info>>,
-        params: OrderParams,
-        signed_msg_order_uuid: [u8; 8],
-    ) -> Result<()> {
-        handle_place_and_make_signed_msg_perp_order(ctx, params, signed_msg_order_uuid)
-    }
-
+    /// Place, route and rest one signed-message taker order.
+    ///
+    /// The instruction does the whole order in one call. It verifies the
+    /// taker's signature, places the order, routes it through the market's
+    /// quoters and books for whatever fills at or better than the order's
+    /// auction start price, and rests what is left on the market's CLOB as a
+    /// taker-origin remainder. A signed-message order never rests on the DLOB.
+    ///
+    /// The keeper that builds the transaction is a filler: the taker signed a
+    /// message, not a transaction, so the keeper answers for the account list
+    /// it chose. It must carry every quoter the message named, and it owes the
+    /// taker every maker it had room for.
     pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
         ctx: Context<'info, PlaceSignedMsgTakerOrder<'info>>,
         signed_msg_order_params_message_bytes: Vec<u8>,
@@ -2500,8 +2504,10 @@ pub mod velocity {
     pub fn crank_taker_origin_cross<'c: 'info, 'info>(
         ctx: Context<'info, CrankTakerOriginCross<'info>>,
         market_index: u16,
+        cross_rows: u16,
+        signed_route: Vec<Pubkey>,
     ) -> Result<()> {
-        handle_crank_taker_origin_cross(ctx, market_index)
+        handle_crank_taker_origin_cross(ctx, market_index, cross_rows, signed_route)
     }
 
     /// Force-cancel a failing account's CLOB orders (keeper-passed

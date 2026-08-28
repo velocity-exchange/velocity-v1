@@ -158,4 +158,8 @@ pub mod clob {
     ) -> Result<state::ResponsePointerV0> {
         instructions::execute_v0::handle_execute_v0(ctx, args)
     }
+
+    pub fn fill_v0(ctx: &mut Context<FillV0>, args: FillArgsV0) -> Result<state::FillOutcomeV0> {
+        instructions::fill_v0::handle_fill_v0(ctx, args)
+    }
 }

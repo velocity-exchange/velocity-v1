@@ -203,6 +203,7 @@ pub fn handle_modify_clob_order<'c: 'info, 'info>(
     let removed = clob.cancel(ClobCancelOrderArgsV0 {
         order_ref: params.order_ref,
         user: user_ref,
+        force: false,
     })?;
     validate!(
         removed.user == user_ref,

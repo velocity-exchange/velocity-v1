@@ -2232,9 +2232,8 @@ export type Order = {
 	bitFlags: number;
 	/** low 8 bits of the slot the order was posted on-chain (not the order's `slot` field for signed-msg orders) */
 	postedSlotTail: number;
-	/** 4-byte digest of the `QuoterV0` route this order's signer chose, stamped from a signed message's `route`. All-zero when no route was signed (every directly-placed order). A `fillPerpOrder` must claim a route digesting to this and must carry every entry in it. */
-	/** Five bytes; see `getRouteDigest`. */
-	routeDigest: number[];
+	/** Free bytes. These held a route digest while a signed-message order could rest on the DLOB. Such an order now routes at placement and rests any remainder on the CLOB, so the route travels with the message, on `SignedMsgOrderId.routeDigest`. */
+	padding: number[];
 };
 
 /** Instruction-parameter shape for placing an order (perp or spot). Optional fields default to `null`/unset on-chain unless noted. */
@@ -2763,7 +2762,12 @@ export type SignedMsgOrderId = {
 	/** slot after which this signed message is no longer eligible to be placed */
 	maxSlot: BN;
 	uuid: Uint8Array;
+	/** the CLOB order this message's remainder rests as, or zero when nothing of it rests */
+	clobOrderId: BN;
 	orderId: number;
+	padding: number;
+	/** digest of the quoter entries the taker's signed route named; all-zero when the message named no route. See `getRouteDigest`. */
+	routeDigest: number[];
 };
 
 /** Per-authority account tracking recently-seen signed-msg order UUIDs, used to detect replay/duplicate submission of the same signed message. */
@@ -2908,6 +2912,33 @@ export type TakerOriginCrossRecordV0 = {
 	remainderOrderId: BN;
 	/** whose remainder was re-placed: `taker` or `maker` above (the default pubkey when nothing was). Only a match between two remainders can leave it on the maker, since an ordinary counterparty is consumed to exactly the size the cross was priced for */
 	remainderOwner: PublicKey;
+};
+
+/** Emitted when `crankTakerOriginCross` routes a resting taker remainder: what the taker gained by being routed instead of left at its own price, and what the cranker took out of that. The fill also emits the ordinary `OrderActionRecord`s — one per source the router reached, which is where the counterparties are named. */
+export type TakerOriginCrossRecordV1 = {
+	ts: BN;
+	slot: BN;
+	marketIndex: number;
+	/** owner of the remainder this crank resolved; the later of two crossed remainders to rest */
+	taker: PublicKey;
+	/** the cranker's `User`, credited `crankReward` in quote */
+	filler: PublicKey;
+	/** BASE_PRECISION (1e9) */
+	baseAssetAmount: BN;
+	/** QUOTE_PRECISION (1e6) */
+	quoteAssetAmount: BN;
+	/** PRICE_PRECISION (1e6) — the price the remainder was resting at, and the bound the fill was held to */
+	restPrice: BN;
+	/** PRICE_PRECISION (1e6) — what the fill averaged across every source it reached */
+	fillPrice: BN;
+	/** QUOTE_PRECISION (1e6) — gross quote the taker gained: |restPrice − fillPrice| × base */
+	improvement: BN;
+	/** QUOTE_PRECISION (1e6) — quote paid to the cranker out of that improvement */
+	crankReward: BN;
+	/** size still resting after the fill (0 when the fill took the whole remainder, or what was left fell under the book's minimum and was culled) */
+	remainderBaseAssetAmount: BN;
+	/** the CLOB order this resolved. It keeps its id and its queue position — the fill shrinks it in place rather than re-placing it, so an existing handle stays good. */
+	clobOrderId: BN;
 };
 
 /** Emitted when a builder's/referrer's accrued `RevenueShareOrder` fees are settled into their `RevenueShareAccount`. */

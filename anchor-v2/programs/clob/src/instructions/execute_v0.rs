@@ -48,7 +48,7 @@ pub fn handle_execute_v0(
         market_index,
         args.direction.to_u8(),
         &outcome.fills,
-        outcome.cancelled_client_order_id,
+        outcome.cancelled_client_order_id.as_slice(),
     )?;
 
     Ok(outcome.response)

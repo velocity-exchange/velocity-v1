@@ -774,12 +774,23 @@ pub struct L3RowV0 {
     /// The quoter's own handle for the order, for a caller that wants to
     /// cancel or track it. Zero when the row is not an order.
     pub order_id: u64,
+    /// The other half of the handle, beside the id it completes. An id alone
+    /// does not name an order to act on — a cancel or a fill takes both, so a
+    /// row carrying only the id described an order its reader could not then
+    /// touch. Zero when the quoter keeps no arena, as it is for every quoter
+    /// that is not a book.
+    pub node_index: u32,
     /// Who this row settles against.
     pub user: UserRefV0,
     /// [`L3_ROW_FLAG_TAKER_ORIGIN`], and room for the next fact a row has to
     /// carry.
     pub flags: u8,
-    pub _pad: [u8; 5],
+    pub _pad: [u8; 1],
+    /// Slot the order was placed in. Its id already orders it against the
+    /// other rows, which is what price-time needs; this is elapsed time, which
+    /// is what pricing the work of resolving it needs. Zero when the quoter
+    /// keeps no such record.
+    pub placed_slot: u64,
 }
 
 /// The row is an unfilled taker remainder the caller migrated onto the book,
@@ -1002,6 +1013,7 @@ mod tests {
         [CancelledRemainderV0 {
             order_id: 42,
             base_asset_amount: 17,
+            price: 101,
             client_order_id: 420,
             user: user(9, 1),
             _pad: [0; 2],
@@ -1355,17 +1367,21 @@ mod tests {
                 price: 100,
                 size: 5,
                 order_id: 7,
+                node_index: 7,
                 user: user(1, 0),
                 flags: L3_ROW_FLAG_TAKER_ORIGIN,
-                _pad: [0; 5],
+                _pad: [0; 1],
+                placed_slot: 7,
             },
             L3RowV0 {
                 price: 101,
                 size: 6,
                 order_id: 8,
+                node_index: 8,
                 user: user(2, 3),
                 flags: 0,
-                _pad: [0; 5],
+                _pad: [0; 1],
+                placed_slot: 8,
             },
         ];
 
@@ -1393,8 +1409,8 @@ mod tests {
     /// in-place read both need.
     #[test]
     fn the_l3_row_is_the_width_the_region_is_sized_from() {
-        assert_eq!(L3_ROW_BYTES, 64);
-        assert_eq!(L3_ROW_BYTES, 3 * 8 + UserRefV0::SIZE + 1 + 5);
+        assert_eq!(L3_ROW_BYTES, 72);
+        assert_eq!(L3_ROW_BYTES, 3 * 8 + 4 + UserRefV0::SIZE + 1 + 1 + 8);
     }
 
     #[test]

@@ -1637,24 +1637,16 @@ pub struct Order {
     /// Bitflags for further classification
     /// 0: is_signed_message
     pub bit_flags: u8,
-    /// The route this order's signer chose, as
-    /// [`crate::state::order_params::route_digest`] of the `QuoterV0` entries
-    /// their signed message named. Zero when no route was signed, which is
-    /// every directly-placed order.
+    /// Free bytes. These held a route digest while a signed-message order
+    /// could rest on the DLOB. Such an order now routes at placement and rests
+    /// any remainder on the market's CLOB, so the route travels with the
+    /// message, on
+    /// [`crate::state::signed_msg_user::SignedMsgOrderId::route_digest`].
     ///
-    /// A digest rather than the list because an `Order` has no room for
-    /// pubkeys, and stored bytes here cost 32 slots each. The filler supplies
-    /// the list and this pins which list it may supply — the check that the
-    /// fill actually *carried* those entries is then a containment test
-    /// against the transaction. Bytes, not an integer, to stay alignment-free
-    /// in the middle of a byte run.
-    ///
-    /// Five bytes is every byte this struct has left. `Order` is 104 bytes
-    /// with no slack, and it is an array element in `User`, so one more byte
-    /// changes the stride of that array rather than appending to a tail.
-    /// Width is [`crate::state::order_params::ROUTE_DIGEST_LEN`], spelled out
-    /// because the IDL derive resolves no alias.
-    pub route_digest: [u8; 5],
+    /// Kept as padding rather than removed: `Order` is 104 bytes with no
+    /// slack, and it is an array element in `User`, so dropping these bytes
+    /// would change that array's stride and rewrite every existing account.
+    pub padding: [u8; 5],
 }
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize, PartialEq, Eq, Debug)]
@@ -1979,7 +1971,7 @@ impl Default for Order {
             max_ts: 0,
             posted_slot_tail: 0,
             bit_flags: 0,
-            route_digest: crate::state::order_params::NO_ROUTE_DIGEST,
+            padding: [0; 5],
         }
     }
 }

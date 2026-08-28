@@ -6,7 +6,10 @@
 
 use {
     super::*,
-    crate::state::prop_amm::{ClobUserRefV0, L3RowV0, L3_ROW_FLAG_TAKER_ORIGIN},
+    crate::{
+        math::crosses::RestingOrder,
+        state::prop_amm::{ClobOrderRefV0, ClobUserRefV0, L3RowV0, L3_ROW_FLAG_TAKER_ORIGIN},
+    },
 };
 
 const UNIT: u64 = crate::math::constants::BASE_PRECISION_U64;
@@ -25,9 +28,11 @@ fn maker(authority: u8, price: u64, size: u64) -> L3RowV0 {
         price,
         size,
         order_id: 1,
+        node_index: 1,
         user: user(authority),
         flags: 0,
-        _pad: [0; 5],
+        _pad: [0; 1],
+        placed_slot: 1,
     }
 }
 
@@ -115,4 +120,95 @@ fn a_crossed_taker_remainder_is_not_offered_to_the_arb_crank() {
         .size,
         0
     );
+}
+
+/// The gate-strip guard: which crosses this crank may not take.
+///
+/// Rows here are [`RestingOrder`]s rather than raw `quote_l3_v0` rows, because
+/// that is what the guard reads.
+mod gate {
+    use super::{
+        super::strips_taker_origin_gate, ClobOrderRefV0, ClobUserRefV0, Pubkey, RestingOrder,
+    };
+
+    fn order(id: u64, price: u64, size: u64, owner: u8, taker_origin: bool) -> RestingOrder {
+        RestingOrder {
+            order_ref: ClobOrderRefV0 {
+                node_index: id as u32,
+                order_id: id,
+            },
+            user: ClobUserRefV0 {
+                authority: Pubkey::new_from_array([owner; 32]),
+                sub_account_id: 0,
+            },
+            price,
+            base_asset_amount: size,
+            taker_origin,
+            placed_slot: id,
+        }
+    }
+
+    fn remainder(id: u64, price: u64, size: u64, owner: u8) -> RestingOrder {
+        order(id, price, size, owner, true)
+    }
+
+    fn maker(id: u64, price: u64, size: u64, owner: u8) -> RestingOrder {
+        order(id, price, size, owner, false)
+    }
+
+    /// A maker pair at the front of the book crosses over a remainder that sits
+    /// behind it. The cross takes half the ask, so the rest of it still crosses
+    /// the remainder and the book keeps withholding it. This is the case the
+    /// arbitrage crank exists for, and it must not be refused.
+    #[test]
+    fn a_cross_that_leaves_the_remainder_covered_is_allowed() {
+        let bids = [maker(1, 102, 5, 0xA), remainder(2, 101, 10, 0xB)];
+        let asks = [maker(3, 99, 10, 0xC)];
+
+        assert!(!strips_taker_origin_gate(&bids, &asks, 5));
+    }
+
+    /// The same book, with the cross taking the whole ask. Nothing crosses the
+    /// remainder afterwards, so the gate stops firing part-way through the
+    /// instruction and the second leg would fill the remainder at its own 101.
+    #[test]
+    fn a_cross_that_consumes_the_remainders_cover_is_refused() {
+        let bids = [maker(1, 102, 10, 0xA), remainder(2, 101, 10, 0xB)];
+        let asks = [maker(3, 99, 10, 0xC)];
+
+        assert!(strips_taker_origin_gate(&bids, &asks, 10));
+    }
+
+    /// A remainder nothing crosses has no gate to lose. It rests at its own
+    /// price like any other order, which is what an unmatched remainder is for,
+    /// so its presence alone never blocks arbitrage elsewhere on the book.
+    #[test]
+    fn an_uncrossed_remainder_does_not_block_the_crank() {
+        let bids = [maker(1, 102, 10, 0xA), remainder(2, 98, 10, 0xB)];
+        let asks = [maker(3, 99, 10, 0xC)];
+
+        assert!(!strips_taker_origin_gate(&bids, &asks, 10));
+    }
+
+    /// Cover that is itself a remainder is not cover this crank can consume:
+    /// the book withholds that one too, so it stays and keeps the gate firing.
+    /// Counting it would let the cross proceed on protection it cannot remove.
+    #[test]
+    fn a_remainder_does_not_count_as_another_remainders_cover() {
+        let bids = [remainder(1, 101, 10, 0xA)];
+        let asks = [remainder(2, 99, 10, 0xB), maker(3, 100, 10, 0xC)];
+
+        assert!(strips_taker_origin_gate(&bids, &asks, 10));
+    }
+
+    /// The rule reads both sides. A remainder resting on the ask side loses its
+    /// cover the same way, and the leg that sweeps bids is what would take it.
+    #[test]
+    fn a_remainder_on_the_ask_side_is_covered_too() {
+        let bids = [maker(1, 101, 10, 0xA)];
+        let asks = [maker(2, 99, 10, 0xB), remainder(3, 100, 10, 0xC)];
+
+        assert!(strips_taker_origin_gate(&bids, &asks, 10));
+        assert!(!strips_taker_origin_gate(&bids, &asks, 5));
+    }
 }

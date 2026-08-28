@@ -351,17 +351,24 @@ pub fn restable_remainder_price(order: &crate::state::user::Order) -> Option<u64
     (price != 0).then_some(price)
 }
 
-/// Rest an unfilled `place_and_take` remainder on the CLOB: if it can rest
-/// and be matched, it lives on the book, not in `User.orders`. Degrades
-/// gracefully — a dead quoter entry or a failed margin re-reserve returns
-/// `Ok(false)` (the remainder stays cancelled, the fill stands) instead of
-/// reverting the whole place-and-take. A book that cannot hold the remainder —
-/// a full side, or a maker remainder that would rest crossed — degrades the
-/// same way. The fill already happened and already cancelled the order, so a
-/// remainder that cannot rest never reverts it.
+/// Rest an unfilled taker remainder on the CLOB: if it can rest and be
+/// matched, it lives on the book, not in `User.orders`.
 ///
-/// Reached only from `place_and_take_perp_order_v1` — the v0 instruction has
-/// no CLOB accounts to pass.
+/// Returns the CLOB order id it now rests as. A caller that has to find the
+/// order again later needs that id — a signed-message taker records it on its
+/// own message entry, which is how the fill at the activation slot knows which
+/// route the taker chose.
+///
+/// Degrades gracefully — a dead quoter entry or a failed margin re-reserve
+/// returns `Ok(None)` (the remainder stays cancelled, the fill stands) instead
+/// of reverting the whole call. A book that cannot hold the remainder — a full
+/// side, or a maker remainder that would rest crossed — degrades the same way.
+/// The fill already happened and already cancelled the order, so a remainder
+/// that cannot rest never reverts it.
+///
+/// Reached from the routes that hold CLOB accounts: `place_and_take_perp_order_v1`,
+/// `place_and_make_perp_order_v1`, `fill_perp_order_v1`, and
+/// `place_signed_msg_taker_order`.
 #[allow(clippy::too_many_arguments)]
 pub fn try_place_remainder_on_clob<'info>(
     user_loader: &AccountLoader<'info, User>,
@@ -391,7 +398,7 @@ pub fn try_place_remainder_on_clob<'info>(
     // crossed, which is what post-only asked for.
     taker_origin: bool,
     clock: &Clock,
-) -> Result<bool> {
+) -> Result<Option<u64>> {
     let clob = {
         let quoter = quoter_loader.load()?;
         let clob = ClobMarket::from_quoter(
@@ -404,7 +411,7 @@ pub fn try_place_remainder_on_clob<'info>(
         )?;
         if !(quoter.is_active && quoter.is_approved) {
             msg!("clob quoter inactive; remainder stays cancelled");
-            return Ok(false);
+            return Ok(None);
         }
         clob
     };
@@ -422,7 +429,7 @@ pub fn try_place_remainder_on_clob<'info>(
             base_asset_amount,
             min_order_size
         );
-        return Ok(false);
+        return Ok(None);
     }
 
     // Reserve the worst-case aggregates and re-run the placement margin
@@ -431,12 +438,12 @@ pub fn try_place_remainder_on_clob<'info>(
     let user_ref = {
         let mut user = load_mut!(user_loader)?;
         if user.is_bankrupt() {
-            return Ok(false);
+            return Ok(None);
         }
         let position_index = get_position_index(&user.perp_positions, market_index)
             .or_else(|_| add_new_position(&mut user.perp_positions, market_index))?;
         if user.perp_positions[position_index].open_orders == u8::MAX {
-            return Ok(false);
+            return Ok(None);
         }
         let risk_increasing = !is_order_position_reducing(
             &direction,
@@ -476,7 +483,7 @@ pub fn try_place_remainder_on_clob<'info>(
                 .saturating_sub(1);
             user.decrement_open_orders(false);
             msg!("remainder fails the placement margin gate; stays cancelled");
-            return Ok(false);
+            return Ok(None);
         }
         user.update_last_active_slot(clock.slot);
         crate::state::prop_amm::ClobUserRefV0 {
@@ -530,7 +537,7 @@ pub fn try_place_remainder_on_clob<'info>(
                 .saturating_sub(1);
             user.decrement_open_orders(false);
             msg!("book cannot hold the remainder; stays cancelled");
-            return Ok(false);
+            return Ok(None);
         }
     };
 
@@ -555,5 +562,5 @@ pub fn try_place_remainder_on_clob<'info>(
         order_ref.order_id,
         order_ref.node_index
     );
-    Ok(true)
+    Ok(Some(order_ref.order_id))
 }

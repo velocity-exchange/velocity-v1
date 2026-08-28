@@ -113,6 +113,7 @@ pub fn handle_cancel_all_clob_orders(
     let removed = clob.cancel_all(ClobCancelAllArgsV0 {
         user: user_ref,
         sides: params.sides,
+        force: false,
     })?;
     validate!(
         removed.user == user_ref,

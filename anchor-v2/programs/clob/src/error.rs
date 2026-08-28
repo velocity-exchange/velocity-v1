@@ -71,6 +71,20 @@ pub enum ClobError {
     OversizedUserSet,
     #[msg("Order would rest crossed with the opposite side and asked not to")]
     OrderWouldCross,
+    /// A taker remainder rests for its activation window so counterparties can
+    /// compete on price inside it. A taker that could withdraw at the last slot
+    /// would hold a free option on that window, and the makers who priced
+    /// against it wrote it. The window ends at the activation slot, `max_ts`
+    /// still expires the order, and liquidation passes `force`.
+    #[msg("Taker-origin remainder is bound until its activation slot")]
+    TakerOriginBound,
+    /// Only a taker remainder aggresses, so only a taker remainder can be
+    /// filled from outside. An ordinary maker quote is filled by `execute`,
+    /// where the book itself knows what it gave away.
+    #[msg("Only a taker-origin order can be filled from outside the book")]
+    OrderNotTakerOrigin,
+    #[msg("Fill is larger than the order has left")]
+    FillExceedsOrder,
 }
 
 impl From<quoter_spec::SpecError> for ClobError {

@@ -2771,86 +2771,22 @@ impl<'a> TransactionBuilder<'a> {
         self
     }
 
-    /// Place and try to fill (make) against the swift order (Perps only)
-    ///
-    /// * `maker_order` - order params defined by the maker, e.g. partial or full fill
-    /// * `signed_order_info` - the signed swift order info (i.e from taker)
-    /// * `taker_account` - taker account data
-    /// * `taker_account_referrer` - authority of the taker's referrer
-    ///
-    pub fn place_and_make_swift_order(
-        mut self,
-        maker_order: OrderParams,
-        signed_order_info: &SignedOrderInfo,
-        taker_account: &User,
-        taker_account_referrer: &Pubkey,
-    ) -> Self {
-        let order_params = signed_order_info.order_params();
-        assert!(
-            order_params.market_type == MarketType::Perp,
-            "only swift perps are supported"
-        );
-        self = self.place_swift_order(signed_order_info, taker_account);
-
-        let perp_writable = [MarketId::perp(order_params.market_index)];
-        let mut accounts = build_accounts(
-            self.program_data,
-            program::accounts::PlaceAndMakeSignedMsg {
-                state: *state_account(),
-                authority: self.authority,
-                user: self.sub_account,
-                user_stats: Wallet::derive_stats_account(&self.owner()),
-                taker: signed_order_info.taker_subaccount(),
-                taker_stats: Wallet::derive_stats_account(&taker_account.authority),
-                taker_signed_msg_user_orders: Wallet::derive_swift_order_account(
-                    &taker_account.authority,
-                ),
-            },
-            [self.account_data.as_ref(), taker_account].into_iter(),
-            self.force_markets.readable.iter(),
-            perp_writable
-                .iter()
-                .chain(self.force_markets.writeable.iter()),
-        );
-
-        if signed_order_info.has_builder() || taker_account_referrer != &DEFAULT_PUBKEY {
-            accounts.push(AccountMeta::new(
-                derive_revenue_share_escrow(&taker_account.authority),
-                false,
-            ));
-            if taker_account_referrer != &DEFAULT_PUBKEY {
-                accounts.push(AccountMeta::new_readonly(
-                    Wallet::derive_stats_account(taker_account_referrer),
-                    false,
-                ));
-            }
-        }
-
-        self.ixs.push(Instruction {
-            program_id: constants::PROGRAM_ID,
-            accounts,
-            data: InstructionData::data(&program::instruction::PlaceAndMakeSignedMsgPerpOrder {
-                params: maker_order,
-                signed_msg_order_uuid: signed_order_info.order_uuid(),
-            }),
-        });
-
-        self
-    }
-
     /// Place a swift order (Perps only)
     ///
-    /// ☢️ this Ix will not fill by itself. The caller should add a subsequent
-    /// fill Ix to atomically place and fill the order, or see
-    /// `place_and_make_swift_order`
+    /// The order routes when it is placed: it fills against the market's book
+    /// and the routed quoters, and whatever is left rests on the book as a
+    /// taker-origin remainder. The CLOB accounts are therefore required, not
+    /// an add-on, and no separate fill Ix is needed to make the order trade.
     ///
     /// * `signed_order_info` - the signed swift order info
     /// * `taker_account` - taker subaccount data
+    /// * `clob` - the market's book, its registry entry and the CLOB program
     ///
     pub fn place_swift_order(
         mut self,
         signed_order_info: &SignedOrderInfo,
         taker_account: &User,
+        clob: ClobFillAccounts,
     ) -> Self {
         let order_params = signed_order_info.order_params();
         assert!(
@@ -2862,7 +2798,9 @@ impl<'a> TransactionBuilder<'a> {
             self.force_include_markets(&[], &[MarketId::QUOTE_SPOT]);
         }
 
-        let perp_readable = [MarketId::perp(order_params.market_index)];
+        // The market is writable now: the placement fills through it rather
+        // than only recording an order against it.
+        let perp_writable = [MarketId::perp(order_params.market_index)];
         let mut accounts = build_accounts(
             self.program_data,
             program::accounts::PlaceSignedMsgTakerOrder {
@@ -2874,12 +2812,19 @@ impl<'a> TransactionBuilder<'a> {
                     &signed_order_info.taker_authority,
                 ),
                 ix_sysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
+                filler: self.sub_account,
+                filler_stats: Wallet::derive_stats_account(&self.owner()),
+                quoter: clob.quoter,
+                clob_market: clob.clob_market,
+                clob_program: clob.clob_program,
+                clob_authority: clob.clob_authority,
+                crank_conditions: clob.crank_conditions,
             },
             [taker_account].into_iter(),
-            perp_readable
+            self.force_markets.readable.iter(),
+            perp_writable
                 .iter()
-                .chain(self.force_markets.readable.iter()),
-            self.force_markets.writeable.iter(),
+                .chain(self.force_markets.writeable.iter()),
         );
 
         // Upstream drift removed User.margin_mode; high-leverage mode now

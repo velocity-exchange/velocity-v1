@@ -233,6 +233,8 @@ pub mod instructions {
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct CrankTakerOriginCross {
         pub market_index: u16,
+        pub cross_rows: u16,
+        pub signed_route: Vec<Pubkey>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for CrankTakerOriginCross {
@@ -950,17 +952,6 @@ pub mod instructions {
     }
     #[automatically_derived]
     impl anchor_lang::InstructionData for PlaceAndMakePerpOrderV1 {}
-    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
-    pub struct PlaceAndMakeSignedMsgPerpOrder {
-        pub params: OrderParams,
-        pub signed_msg_order_uuid: [u8; 8],
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for PlaceAndMakeSignedMsgPerpOrder {
-        const DISCRIMINATOR: &[u8] = &[16, 26, 123, 131, 94, 29, 175, 98];
-    }
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for PlaceAndMakeSignedMsgPerpOrder {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct PlaceAndTakePerpOrder {
         pub params: OrderParams,
@@ -4883,7 +4874,8 @@ pub mod types {
         pub auction_duration: u8,
         pub posted_slot_tail: u8,
         pub bit_flags: u8,
-        pub route_digest: [u8; 5],
+        #[serde(skip)]
+        pub padding: Padding<5>,
     }
     #[derive(
         AnchorSerialize,
@@ -5561,11 +5553,13 @@ pub mod types {
         pub price: u64,
         pub size: u64,
         pub order_id: u64,
+        pub node_index: u32,
         pub authority: Pubkey,
         pub sub_account_id: u16,
         pub flags: u8,
         #[serde(skip)]
-        pub padding: Padding<5>,
+        pub padding: Padding<1>,
+        pub placed_slot: u64,
     }
     #[derive(
         AnchorSerialize,
@@ -6033,8 +6027,10 @@ pub mod types {
     pub struct SignedMsgOrderId {
         pub uuid: [u8; 8],
         pub max_slot: u64,
+        pub clob_order_id: u64,
         pub order_id: u32,
         pub padding: u32,
+        pub route_digest: [u8; 8],
     }
     #[repr(C)]
     #[derive(
@@ -6507,6 +6503,34 @@ pub mod types {
         pub remainder_base_asset_amount: u64,
         pub remainder_order_id: u64,
         pub remainder_owner: Pubkey,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct TakerOriginCrossRecordV1 {
+        pub ts: i64,
+        pub slot: u64,
+        pub market_index: u16,
+        pub taker: Pubkey,
+        pub filler: Pubkey,
+        pub base_asset_amount: u64,
+        pub quote_asset_amount: u64,
+        pub rest_price: u64,
+        pub fill_price: u64,
+        pub improvement: u64,
+        pub crank_reward: u64,
+        pub remainder_base_asset_amount: u64,
+        pub clob_order_id: u64,
     }
     #[repr(C)]
     #[derive(
@@ -10328,6 +10352,8 @@ pub mod accounts {
         pub clob_program: Pubkey,
         pub clob_authority: Pubkey,
         pub crank_conditions: Pubkey,
+        pub signed_msg_user_orders: Pubkey,
+        pub instructions_sysvar: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for CrankTakerOriginCross {
@@ -10399,6 +10425,16 @@ pub mod accounts {
                     pubkey: self.crank_conditions,
                     is_signer: false,
                     is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.signed_msg_user_orders,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.instructions_sysvar,
+                    is_signer: false,
+                    is_writable: false,
                 },
             ]
         }
@@ -16314,100 +16350,6 @@ pub mod accounts {
     }
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
-    pub struct PlaceAndMakeSignedMsgPerpOrder {
-        pub state: Pubkey,
-        pub user: Pubkey,
-        pub user_stats: Pubkey,
-        pub taker: Pubkey,
-        pub taker_stats: Pubkey,
-        pub taker_signed_msg_user_orders: Pubkey,
-        pub authority: Pubkey,
-    }
-    #[automatically_derived]
-    impl anchor_lang::Discriminator for PlaceAndMakeSignedMsgPerpOrder {
-        const DISCRIMINATOR: &[u8] = &[240, 219, 156, 22, 147, 139, 152, 165];
-    }
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Pod for PlaceAndMakeSignedMsgPerpOrder {}
-    #[automatically_derived]
-    unsafe impl anchor_lang::__private::bytemuck::Zeroable for PlaceAndMakeSignedMsgPerpOrder {}
-    #[automatically_derived]
-    impl anchor_lang::ZeroCopy for PlaceAndMakeSignedMsgPerpOrder {}
-    #[automatically_derived]
-    impl anchor_lang::InstructionData for PlaceAndMakeSignedMsgPerpOrder {}
-    #[automatically_derived]
-    impl ToAccountMetas for PlaceAndMakeSignedMsgPerpOrder {
-        fn to_account_metas(&self) -> Vec<AccountMeta> {
-            vec![
-                AccountMeta {
-                    pubkey: self.state,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.user,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.user_stats,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.taker,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.taker_stats,
-                    is_signer: false,
-                    is_writable: true,
-                },
-                AccountMeta {
-                    pubkey: self.taker_signed_msg_user_orders,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.authority,
-                    is_signer: true,
-                    is_writable: false,
-                },
-            ]
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountSerialize for PlaceAndMakeSignedMsgPerpOrder {
-        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
-            if writer.write_all(Self::DISCRIMINATOR).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            if AnchorSerialize::serialize(self, writer).is_err() {
-                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
-            }
-            Ok(())
-        }
-    }
-    #[automatically_derived]
-    impl anchor_lang::AccountDeserialize for PlaceAndMakeSignedMsgPerpOrder {
-        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let given_disc = &buf[..8];
-            if Self::DISCRIMINATOR != given_disc {
-                return Err(anchor_lang::error!(
-                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
-                ));
-            }
-            Self::try_deserialize_unchecked(buf)
-        }
-        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
-            let mut data: &[u8] = &buf[8..];
-            AnchorDeserialize::deserialize(&mut data)
-                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
-        }
-    }
-    #[repr(C)]
-    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct PlaceAndTakePerpOrder {
         pub state: Pubkey,
         pub user: Pubkey,
@@ -16907,6 +16849,13 @@ pub mod accounts {
         pub signed_msg_user_orders: Pubkey,
         pub authority: Pubkey,
         pub ix_sysvar: Pubkey,
+        pub filler: Pubkey,
+        pub filler_stats: Pubkey,
+        pub quoter: Pubkey,
+        pub clob_market: Pubkey,
+        pub clob_program: Pubkey,
+        pub clob_authority: Pubkey,
+        pub crank_conditions: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for PlaceSignedMsgTakerOrder {
@@ -16953,6 +16902,41 @@ pub mod accounts {
                     pubkey: self.ix_sysvar,
                     is_signer: false,
                     is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.filler,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.filler_stats,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.quoter,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.clob_market,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.clob_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.clob_authority,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.crank_conditions,
+                    is_signer: false,
+                    is_writable: true,
                 },
             ]
         }
@@ -33052,6 +33036,23 @@ pub mod events {
         pub remainder_base_asset_amount: u64,
         pub remainder_order_id: u64,
         pub remainder_owner: Pubkey,
+    }
+    #[derive(Clone, Debug, PartialEq, Default)]
+    #[event]
+    pub struct TakerOriginCrossRecordV1 {
+        pub ts: i64,
+        pub slot: u64,
+        pub market_index: u16,
+        pub taker: Pubkey,
+        pub filler: Pubkey,
+        pub base_asset_amount: u64,
+        pub quote_asset_amount: u64,
+        pub rest_price: u64,
+        pub fill_price: u64,
+        pub improvement: u64,
+        pub crank_reward: u64,
+        pub remainder_base_asset_amount: u64,
+        pub clob_order_id: u64,
     }
     #[derive(Clone, Debug, PartialEq, Default)]
     #[event]

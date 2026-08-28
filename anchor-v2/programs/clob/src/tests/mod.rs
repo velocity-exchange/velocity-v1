@@ -13,3 +13,8 @@ mod emit;
 mod market;
 mod response;
 mod taker_origin;
+
+/// A slot past every activation slot these tests place at, so a cancel is
+/// never refused for a taker-origin order still inside its window. A test that
+/// exercises that binding passes its own slot instead.
+pub(crate) const ACTIVE_SLOT: u64 = u64::MAX;

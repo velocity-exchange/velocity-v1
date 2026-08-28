@@ -315,9 +315,10 @@ pub mod amm_jit {
                 unrouted_quoters: 0,
             },
         };
+        let mut order = taker.orders[0];
         let (base_asset_amount, quote_asset_amount) = fulfill_perp_order(
             &mut taker,
-            0,
+            &mut order,
             &taker_key,
             &mut taker_stats,
             &makers_and_referrers,
@@ -344,6 +345,7 @@ pub mod amm_jit {
             0,
         )
         .unwrap();
+        taker.orders[0] = order;
 
         // Fully filled: 0.5 from the maker at 100, 0.5 from the vAMM ladder
         // within the 105 limit.
@@ -638,9 +640,10 @@ pub mod amm_jit {
             },
         };
 
+        let mut order = taker.orders[0];
         let (base_asset_amount, quote_asset_amount) = fulfill_perp_order(
             &mut taker,
-            0,
+            &mut order,
             &taker_key,
             &mut taker_stats,
             &makers_and_referrers,
@@ -667,6 +670,7 @@ pub mod amm_jit {
             0,
         )
         .unwrap();
+        taker.orders[0] = order;
 
         // Fully filled: 0.5 from the external book at 99, 0.5 from the DLOB
         // maker at 100. The vAMM (ask above 100) gets nothing.
@@ -985,9 +989,10 @@ pub mod amm_jit {
             },
         };
 
+        let mut order = taker.orders[0];
         let result = fulfill_perp_order(
             &mut taker,
-            0,
+            &mut order,
             &taker_key,
             &mut taker_stats,
             &makers_and_referrers,
@@ -1013,6 +1018,7 @@ pub mod amm_jit {
             false,
             0,
         );
+        taker.orders[0] = order;
 
         assert_eq!(
             result,
@@ -1233,9 +1239,10 @@ pub mod amm_jit {
             },
         };
 
+        let mut order = taker.orders[0];
         let (base_asset_amount, _) = fulfill_perp_order(
             &mut taker,
-            0,
+            &mut order,
             &taker_key,
             &mut taker_stats,
             &makers_and_referrers,
@@ -1262,6 +1269,7 @@ pub mod amm_jit {
             0,
         )
         .unwrap();
+        taker.orders[0] = order;
 
         // The book was clamped before the split: the executor was asked for
         // less than the quoted 0.5, the thin maker's position matches what

@@ -1,3 +1,4 @@
+import { SYSVAR_INSTRUCTIONS_PUBKEY } from '@solana/web3.js';
 import type {
 	AccountMeta,
 	PublicKey,
@@ -52,6 +53,10 @@ export async function buildLiquidatePerpInstruction(args: {
 				liquidator: args.liquidator,
 				liquidatorStats: args.liquidatorStats,
 				crankConditions: args.crankConditions ?? args.program.programId,
+				// The liquidation reads its own transaction: the priority fee
+				// it repays a keeper is priced from the compute-budget
+				// instructions, and only this sysvar carries them.
+				instructionsSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
 			},
 			remainingAccounts: args.remainingAccounts,
 		}

@@ -329,13 +329,17 @@ pub mod fulfill_order_with_maker_order {
         let oracle_price = oracle_price_data.price;
         let mut maker_opt: Option<&mut User> = Some(maker);
         let mut maker_stats_opt: Option<&mut UserStats> = maker_stats.take();
+        // The settle takes the order itself. Copy it out, let the settle work
+        // on that, and put it back — passing a temporary here would discard
+        // every mutation the fill makes to it.
+        let mut taker_order = taker.orders[taker_order_index];
         let result = super::super::settle_dlob_match_fill(
             &fill,
             market,
             taker,
             taker_stats,
             taker_position_index,
-            taker_order_index,
+            &mut taker_order,
             taker_key,
             taker_direction,
             taker_existing_position_params_before,
@@ -364,6 +368,7 @@ pub mod fulfill_order_with_maker_order {
             // Single-leg shim: no earlier leg has drawn on the allowance.
             &mut 0,
         );
+        taker.orders[taker_order_index] = taker_order;
         // Restore the caller's `maker_stats` so the test can keep using it.
         *maker_stats = maker_stats_opt;
 
@@ -3447,9 +3452,10 @@ pub mod fulfill_order {
         );
 
         no_router!(router);
+        let mut order = taker.orders[order_index];
         let (base_asset_amount, _) = fulfill_perp_order(
             &mut taker,
-            order_index,
+            &mut order,
             &taker_key,
             &mut taker_stats,
             &makers_and_referrers,
@@ -3480,6 +3486,7 @@ pub mod fulfill_order {
             0,
         )
         .unwrap();
+        taker.orders[order_index] = order;
 
         assert_eq!(base_asset_amount, BASE_PRECISION_U64);
         assert!(taker_stats.is_accelerated_referrer());
@@ -3667,9 +3674,10 @@ pub mod fulfill_order {
 
         no_router!(router);
         no_router!(router);
+        let mut order = taker.orders[order_index];
         let (base_asset_amount, quote_asset_amount) = fulfill_perp_order(
             &mut taker,
-            order_index,
+            &mut order,
             &taker_key,
             &mut taker_stats,
             &UserMap::empty(),
@@ -3696,6 +3704,7 @@ pub mod fulfill_order {
             0,
         )
         .unwrap();
+        taker.orders[order_index] = order;
 
         // Fill happened against the projected curve near the oracle price,
         // impossible against the stale stored bid at 100 (101.9 > 100 never
@@ -3834,9 +3843,10 @@ pub mod fulfill_order {
         );
 
         no_router!(router);
+        let mut order = taker.orders[order_index];
         let (base_asset_amount, quote_asset_amount) = fulfill_perp_order(
             &mut taker,
-            order_index,
+            &mut order,
             &taker_key,
             &mut taker_stats,
             &UserMap::empty(),
@@ -3863,6 +3873,7 @@ pub mod fulfill_order {
             0,
         )
         .unwrap();
+        taker.orders[order_index] = order;
 
         // No projection, no cross, no fill; pre-change behavior preserved.
         assert_eq!(base_asset_amount, 0);
@@ -3996,9 +4007,10 @@ pub mod fulfill_order {
         );
 
         no_router!(router);
+        let mut order = taker.orders[order_index];
         let (base_asset_amount, quote_asset_amount) = fulfill_perp_order(
             &mut taker,
-            order_index,
+            &mut order,
             &taker_key,
             &mut taker_stats,
             &UserMap::empty(),
@@ -4025,6 +4037,7 @@ pub mod fulfill_order {
             0,
         )
         .unwrap();
+        taker.orders[order_index] = order;
 
         // No cross, so no fill.
         assert_eq!(base_asset_amount, 0);
@@ -4210,9 +4223,10 @@ pub mod fulfill_order {
         );
 
         no_router!(router);
+        let mut order = taker.orders[order_index];
         let (base_asset_amount, _) = fulfill_perp_order(
             &mut taker,
-            order_index,
+            &mut order,
             &taker_key,
             &mut taker_stats,
             &makers_and_referrers,
@@ -4242,6 +4256,7 @@ pub mod fulfill_order {
             0,
         )
         .unwrap();
+        taker.orders[order_index] = order;
 
         assert_eq!(base_asset_amount, BASE_PRECISION_U64);
 
@@ -4421,9 +4436,10 @@ pub mod fulfill_order {
         );
 
         no_router!(router);
+        let mut order = taker.orders[order_index];
         let (base_asset_amount, _) = fulfill_perp_order(
             &mut taker,
-            order_index,
+            &mut order,
             &taker_key,
             &mut taker_stats,
             &makers_and_referrers,
@@ -4450,6 +4466,7 @@ pub mod fulfill_order {
             0,
         )
         .unwrap();
+        taker.orders[order_index] = order;
 
         assert_eq!(base_asset_amount, BASE_PRECISION_U64);
 
@@ -4643,9 +4660,10 @@ pub mod fulfill_order {
         );
 
         no_router!(router);
+        let mut order = taker.orders[order_index];
         let (base_asset_amount, _) = fulfill_perp_order(
             &mut taker,
-            order_index,
+            &mut order,
             &taker_key,
             &mut taker_stats,
             &makers_and_referrers,
@@ -4672,6 +4690,7 @@ pub mod fulfill_order {
             0,
         )
         .unwrap();
+        taker.orders[order_index] = order;
 
         assert_eq!(base_asset_amount, BASE_PRECISION_U64 / 2);
 
@@ -4830,9 +4849,10 @@ pub mod fulfill_order {
         );
 
         no_router!(router);
+        let mut order = taker.orders[order_index];
         let (base_asset_amount, _) = fulfill_perp_order(
             &mut taker,
-            order_index,
+            &mut order,
             &taker_key,
             &mut taker_stats,
             &UserMap::empty(),
@@ -4859,6 +4879,7 @@ pub mod fulfill_order {
             0,
         )
         .unwrap();
+        taker.orders[order_index] = order;
 
         assert_eq!(base_asset_amount, BASE_PRECISION_U64);
 
@@ -5049,9 +5070,10 @@ pub mod fulfill_order {
         );
 
         no_router!(router);
+        let mut order = taker.orders[order_index];
         let result = fulfill_perp_order(
             &mut taker,
-            order_index,
+            &mut order,
             &taker_key,
             &mut taker_stats,
             &makers_and_referrers,
@@ -5079,6 +5101,7 @@ pub mod fulfill_order {
             false,
             0,
         );
+        taker.orders[order_index] = order;
 
         assert!(result.is_ok());
 
@@ -5256,9 +5279,10 @@ pub mod fulfill_order {
         );
 
         no_router!(router);
+        let mut order = taker.orders[order_index];
         let result = fulfill_perp_order(
             &mut taker,
-            order_index,
+            &mut order,
             &taker_key,
             &mut taker_stats,
             &makers_and_referrers,
@@ -5286,6 +5310,7 @@ pub mod fulfill_order {
             false,
             0,
         );
+        taker.orders[order_index] = order;
 
         assert_eq!(result, Err(ErrorCode::InsufficientCollateral));
     }
@@ -5416,9 +5441,10 @@ pub mod fulfill_order {
         );
 
         no_router!(router);
+        let mut order = taker.orders[order_index];
         let (base_asset_amount, _) = fulfill_perp_order(
             &mut taker,
-            order_index,
+            &mut order,
             &taker_key,
             &mut taker_stats,
             &makers_and_referrers,
@@ -5445,6 +5471,7 @@ pub mod fulfill_order {
             0,
         )
         .unwrap();
+        taker.orders[order_index] = order;
 
         assert_eq!(base_asset_amount, 35032000);
 
@@ -5604,9 +5631,10 @@ pub mod fulfill_order {
         );
 
         no_router!(router);
+        let mut order = taker.orders[order_index];
         let (base_asset_amount, _) = fulfill_perp_order(
             &mut taker,
-            order_index,
+            &mut order,
             &taker_key,
             &mut taker_stats,
             &makers_and_referrers,
@@ -5633,6 +5661,7 @@ pub mod fulfill_order {
             0,
         )
         .unwrap();
+        taker.orders[order_index] = order;
 
         assert_eq!(base_asset_amount, 34966000);
 
@@ -6213,9 +6242,10 @@ pub mod fulfill_order {
         );
 
         no_router!(router);
+        let mut order = taker.orders[order_index];
         let (base_asset_amount, _) = fulfill_perp_order(
             &mut taker,
-            order_index,
+            &mut order,
             &taker_key,
             &mut taker_stats,
             &makers_and_referrers,
@@ -6242,6 +6272,7 @@ pub mod fulfill_order {
             0,
         )
         .unwrap();
+        taker.orders[order_index] = order;
 
         assert_eq!(base_asset_amount, BASE_PRECISION_U64 / 2);
 
@@ -6478,9 +6509,10 @@ pub mod fulfill_order {
         );
 
         no_router!(router);
+        let mut order = taker.orders[order_index];
         let (base_asset_amount, _) = fulfill_perp_order(
             &mut taker,
-            order_index,
+            &mut order,
             &taker_key,
             &mut taker_stats,
             &makers_and_referrers,
@@ -6507,6 +6539,7 @@ pub mod fulfill_order {
             0,
         )
         .unwrap();
+        taker.orders[order_index] = order;
 
         assert_eq!(base_asset_amount, BASE_PRECISION_U64);
 
@@ -6699,9 +6732,10 @@ pub mod fulfill_order {
         let amm_is_available = false;
         no_router!(router);
 
+        let mut order = taker.orders[order_index];
         let (base_asset_amount, _) = fulfill_perp_order(
             &mut taker,
-            order_index,
+            &mut order,
             &taker_key,
             &mut taker_stats,
             &makers_and_referrers,
@@ -6728,6 +6762,7 @@ pub mod fulfill_order {
             0,
         )
         .unwrap();
+        taker.orders[order_index] = order;
 
         // Only the DLOB maker's half fills; the AMM does not JIT the residual.
         assert_eq!(base_asset_amount, BASE_PRECISION_U64 / 2);
@@ -6879,9 +6914,10 @@ pub mod fulfill_order {
         assert!(!is_amm_available);
 
         no_router!(router);
+        let mut order = taker.orders[order_index];
         let (base_asset_amount, _) = fulfill_perp_order(
             &mut taker,
-            order_index,
+            &mut order,
             &taker_key,
             &mut taker_stats,
             &UserMap::empty(),
@@ -6908,6 +6944,7 @@ pub mod fulfill_order {
             0,
         )
         .unwrap();
+        taker.orders[order_index] = order;
 
         assert_eq!(base_asset_amount, 0);
         assert_eq!(taker.perp_positions[0].base_asset_amount, 0);
@@ -10841,9 +10878,10 @@ pub mod builder_fee_margin_gate {
                 unrouted_quoters: 0,
             },
         };
+        let mut order = taker.orders[order_index];
         let (base_filled, _) = fulfill_perp_order(
             &mut taker,
-            order_index,
+            &mut order,
             &taker_key,
             &mut taker_stats,
             &UserMap::empty(),
@@ -10870,6 +10908,7 @@ pub mod builder_fee_margin_gate {
             0,
         )
         .unwrap();
+        taker.orders[order_index] = order;
 
         (base_filled, escrow.get_order(0).unwrap().fees_accrued)
     }
@@ -11158,9 +11197,10 @@ mod taker_floor_unverifiable_withholds_fill {
         assert!(is_amm_available);
 
         no_router!(router_inputs);
+        let mut order = taker.orders[order_index];
         let (base_filled, _) = fulfill_perp_order(
             &mut taker,
-            order_index,
+            &mut order,
             &taker_key,
             &mut taker_stats,
             &UserMap::empty(),
@@ -11187,6 +11227,7 @@ mod taker_floor_unverifiable_withholds_fill {
             0,
         )
         .unwrap();
+        taker.orders[order_index] = order;
 
         base_filled
     }
@@ -11510,9 +11551,10 @@ mod fill_gates_apply_to_a_reducing_fill {
                 unrouted_quoters: 0,
             },
         };
+        let mut order = taker.orders[0];
         fulfill_perp_order(
             &mut taker,
-            0,
+            &mut order,
             &taker_key,
             &mut taker_stats,
             &makers_and_referrers,

@@ -939,16 +939,11 @@ pub struct ProtocolUserWithdrawRecordV0 {
     pub recipient_token_account: Pubkey,
 }
 
-/// Emitted when `crank_taker_origin_cross` resolves a taker-origin cross on a
-/// CLOB book: what the taker gained by settling at the counterparty's price
-/// instead of its own, and what the cranker took out of that.
-///
-/// The fill itself also emits the ordinary `OrderActionRecord` for the match.
-/// This record carries what that one structurally cannot: the price the order
-/// was *resting* at (an `OrderActionRecord` only ever knows the price it
-/// filled at), the improvement between the two, and the crank reward — which
-/// is charged to the taker out of the improvement rather than carved out of
-/// the taker fee, so it never appears as that record's `filler_reward`.
+/// The first shape of the taker-origin resolution record, from when the crank
+/// resolved a cross against exactly one book counterparty. Superseded by
+/// [`TakerOriginCrossRecordV1`]: the crank now routes the remainder, so a
+/// single `maker` no longer describes the match. Kept so a reader of historical
+/// logs still has the type — nothing emits it.
 #[event]
 pub struct TakerOriginCrossRecordV0 {
     /// unix_timestamp of action
@@ -988,4 +983,47 @@ pub struct TakerOriginCrossRecordV0 {
     /// it on the maker, since an ordinary counterparty is consumed to exactly
     /// the size the cross was priced for
     pub remainder_owner: Pubkey,
+}
+
+/// Emitted when `crank_taker_origin_cross` resolves a resting taker remainder:
+/// what the taker gained by being routed instead of left at its own price, and
+/// what the cranker took out of that.
+///
+/// The fill itself also emits the ordinary `OrderActionRecord`s for the match —
+/// one per source the router reached, which is where the counterparties are
+/// named. This record carries what those structurally cannot: the price the
+/// order was *resting* at (an `OrderActionRecord` only ever knows the price it
+/// filled at), the improvement between the two, and the crank reward, which is
+/// charged to the taker out of the improvement rather than carved out of the
+/// taker fee, so it never appears as that record's `filler_reward`.
+#[event]
+pub struct TakerOriginCrossRecordV1 {
+    /// unix_timestamp of action
+    pub ts: i64,
+    pub slot: u64,
+    pub market_index: u16,
+    /// owner of the remainder this crank resolved. When two remainders crossed,
+    /// this is the later of the two to rest — the one demanding liquidity.
+    pub taker: Pubkey,
+    /// the cranker's `User`, credited `crank_reward` in quote
+    pub filler: Pubkey,
+    pub base_asset_amount: u64,
+    pub quote_asset_amount: u64,
+    /// the price the remainder was resting at, and the bound the fill was held
+    /// to
+    pub rest_price: u64,
+    /// what the fill averaged across every source it reached
+    pub fill_price: u64,
+    /// gross quote the taker gained: |rest_price − fill_price| × base
+    pub improvement: u64,
+    /// quote paid to the cranker out of that improvement
+    pub crank_reward: u64,
+    /// size still resting after the fill (0 when the fill took the whole
+    /// remainder, or when what was left fell under the book's minimum and was
+    /// culled)
+    pub remainder_base_asset_amount: u64,
+    /// the CLOB order this resolved. It keeps its id and its queue position —
+    /// the fill shrinks it in place rather than re-placing it, so a client's
+    /// existing handle stays good.
+    pub clob_order_id: u64,
 }

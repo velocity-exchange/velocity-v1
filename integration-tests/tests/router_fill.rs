@@ -624,6 +624,7 @@ fn force_cancel_clob_ix(
     fixture: &Fixture,
     filler_user: Pubkey,
     filler_stats: Pubkey,
+    user: Pubkey,
     user_stats: Pubkey,
     authority: Pubkey,
     order_refs: Vec<velocity::instructions::ForceCancelClobRefV0>,
@@ -634,7 +635,7 @@ fn force_cancel_clob_ix(
         authority,
         filler: filler_user,
         filler_stats,
-        user: fixture.clob_maker_user,
+        user,
         user_stats,
         quoter: fixture.quoter,
         clob_market: fixture.clob_market,
@@ -3194,6 +3195,16 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
     assert_eq!(clob_ask_count(&fixture), 1);
     let _ = node_index;
 
+    // The fired trigger rests taker-origin. It came to trade, so a cross
+    // settles at the counterparty's price rather than picking it off at its
+    // own, and the taker-origin crank is what carries a route to it.
+    assert!(
+        clob_side(&fixture, Direction::Long)
+            .iter()
+            .all(|row| row.flags & velocity::state::prop_amm::L3_ROW_FLAG_TAKER_ORIGIN != 0),
+        "a fired trigger rests as a taker remainder, not as a maker quote"
+    );
+
     // A second trigger attempt on the placed slot fails.
     let ix = trigger_clob_order_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
     let err = send(&mut fixture.svm, &keeper, ix, &[]).expect_err("already placed");
@@ -3878,6 +3889,7 @@ fn force_cancel_reclaims_a_failing_makers_clob_orders() {
             fixture,
             filler_user,
             filler_stats,
+            fixture.clob_maker_user,
             maker_stats,
             fixture.keeper.pubkey(),
             vec![ask_ref(order_ref)],
@@ -3975,6 +3987,7 @@ fn a_tripped_equity_breaker_is_grounds_on_its_own() {
             fixture,
             filler_user,
             filler_stats,
+            fixture.clob_maker_user,
             maker_stats,
             fixture.keeper.pubkey(),
             vec![ask_ref(order_ref)],
@@ -4045,6 +4058,7 @@ fn force_cancel_passes_over_a_risk_reducing_order() {
         &fixture,
         filler_user,
         filler_stats,
+        fixture.clob_maker_user,
         maker_stats,
         fixture.keeper.pubkey(),
         vec![
@@ -4119,6 +4133,7 @@ fn a_maker_cannot_outrun_cleanup_by_resting_more_orders() {
         &fixture,
         filler_user,
         filler_stats,
+        fixture.clob_maker_user,
         maker_stats,
         fixture.keeper.pubkey(),
         vec![],
@@ -4187,6 +4202,7 @@ fn a_misdeclared_side_fails_loudly() {
         &fixture,
         filler_user,
         filler_stats,
+        fixture.clob_maker_user,
         maker_stats,
         fixture.keeper.pubkey(),
         vec![velocity::instructions::ForceCancelClobRefV0 {
@@ -4816,6 +4832,13 @@ fn place_and_take_rests_a_market_order_remainder_on_the_clob() {
 // Midpoint spline quoter: a maker's PDA instance of the midpoint program,
 // registered as a Custom entry, quoting offsets around a maker-fed mid.
 // ---------------------------------------------------------------------------
+
+/// The taker's signed-message record. Seed-pinned on the crank, so it is
+/// passed whether or not it exists — a taker that never sent one has no
+/// account here, and that reads as no route.
+fn signed_msg_user_orders_pda(authority: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[b"SIGNED_MSG", authority.as_ref()], &velocity_id()).0
+}
 
 fn instructions_sysvar() -> Pubkey {
     "Sysvar1nstructions1111111111111111111111111"
@@ -6568,17 +6591,19 @@ fn liq_self_sync_stages_an_unsigned_executor_and_pays_from_the_treasury() {
     );
 }
 
-/// A filler cannot quietly drop a quoter the taker signed for.
+/// A DLOB order carries no route, and a fill may not claim one for it.
 ///
-/// The order carries a digest of the route its signer chose, so the route a
-/// filler claims is pinned to that one, and every entry in it has to be
-/// carried by the fill. That is what makes a signed route a constraint on the
-/// filler rather than a suggestion — a keeper has no reason to prefer the
-/// taker's sources over its own, so the chain holds it to them.
+/// Only a signed message names a route, and such an order routes at placement
+/// and rests any remainder on the book — so what a route binds is the fill of
+/// that remainder, not this call. A claim here is refused whatever it names,
+/// which is what stops a filler inventing one.
+///
+/// The property this used to pin — a filler cannot drop a quoter the taker
+/// signed for — now belongs to `place_signed_msg_taker_order`, which checks the
+/// message's own route against what the transaction carries. That case wants a
+/// signed message to drive it and is not covered here yet.
 #[test]
-fn a_fill_must_carry_every_quoter_the_taker_signed_for() {
-    use velocity::state::order_params::route_digest;
-
+fn a_dlob_fill_may_not_claim_a_route() {
     let mut fixture = setup();
     let maker = setup_midpoint_maker(&mut fixture, 10_000 * SPOT_BALANCE_PRECISION_U64, UNIT);
 
@@ -6595,10 +6620,7 @@ fn a_fill_must_carry_every_quoter_the_taker_signed_for() {
     taker_order.base_asset_amount = UNIT;
     taker_order.price = 105 * PRICE;
     taker_order.auction_end_price = (105 * PRICE) as i64;
-    // Signed with a route naming the midpoint entry — what a swift message's
-    // `route` becomes once `place_signed_msg_taker_order` stamps it.
     let route = vec![maker.entry];
-    taker_order.route_digest = route_digest(&route);
     set_user_account(
         &mut fixture.svm,
         taker_user,
@@ -6659,34 +6681,29 @@ fn a_fill_must_carry_every_quoter_the_taker_signed_for() {
         }
     };
 
-    // Claiming the real route while omitting its quoter: refused.
+    // Any claim at all is refused: the order carries no route to match it.
     let err = send_with_ixs(
         &mut fixture.svm,
         &fixture.keeper,
         &[compute_unit_limit_ix(400_000), fill_ix(route.clone())],
         &[],
     )
-    .expect_err("the signed quoter is absent from the transaction");
-    assert!(
-        format!("{:?}", err.meta.logs).contains("SignedRouteEntryMissing"),
-        "unexpected: {:?}",
-        err.meta.logs
-    );
-
-    // Claiming no route at all, to dodge the presence check: also refused —
-    // the claim no longer digests to what the order was signed with.
-    let err = send_with_ixs(
-        &mut fixture.svm,
-        &fixture.keeper,
-        &[compute_unit_limit_ix(400_000), fill_ix(vec![])],
-        &[],
-    )
-    .expect_err("an empty claim does not match the order's digest");
+    .expect_err("a DLOB order has no route for a claim to digest to");
     assert!(
         format!("{:?}", err.meta.logs).contains("SignedRouteMismatch"),
         "unexpected: {:?}",
         err.meta.logs
     );
+
+    // Claiming nothing is the honest answer, and the fill proceeds on the
+    // baseline the transaction carries.
+    send_with_ixs(
+        &mut fixture.svm,
+        &fixture.keeper,
+        &[compute_unit_limit_ix(400_000), fill_ix(vec![])],
+        &[],
+    )
+    .expect("an unrouted order fills against the carried baseline");
 }
 
 /// The maker route's remainder lives on the book.
@@ -7066,7 +7083,7 @@ fn rest_taker_origin_order(
     direction: PositionDirection,
     price: u64,
     size: u64,
-) {
+) -> ClobOrderRefV0 {
     use velocity::state::order_params::{OrderParams, PostOnlyParam};
 
     let (clob_authority, _) = clob_authority_pda();
@@ -7110,13 +7127,19 @@ fn rest_taker_origin_order(
         .data(),
     };
     let authority = party.authority.insecure_clone();
-    send_with_ixs(
+    let meta = send_with_ixs(
         &mut fixture.svm,
         &authority,
         &[compute_unit_limit_ix(400_000), ix],
         &[],
     )
     .unwrap();
+    // The book writes the rested remainder's handle as return data.
+    let data = &meta.return_data.data;
+    ClobOrderRefV0 {
+        node_index: u32::from_le_bytes(data[..4].try_into().unwrap()),
+        order_id: u64::from_le_bytes(data[4..12].try_into().unwrap()),
+    }
 }
 
 /// The crank, signed-keeper mode: `filler` is the caller's own `User` and the
@@ -7125,7 +7148,7 @@ fn crank_taker_origin_cross_ix(
     fixture: &Fixture,
     keeper: &Party,
     taker: &Party,
-    counterparty: &Party,
+    counterparties: &[&Party],
 ) -> Instruction {
     let (clob_authority, _) = clob_authority_pda();
     let mut accounts = velocity::accounts::CrankTakerOriginCross {
@@ -7140,18 +7163,37 @@ fn crank_taker_origin_cross_ix(
         clob_program: clob_id(),
         clob_authority,
         crank_conditions: None,
+        // Required and seed-pinned. This taker never sent a signed message, so
+        // the account does not exist — which is what "no route" looks like.
+        signed_msg_user_orders: signed_msg_user_orders_pda(&taker.authority.pubkey()),
+        instructions_sysvar: instructions_sysvar(),
     }
     .to_account_metas(None);
-    // Maps, then the counterparty's (User, UserStats) pair.
+    // Maps, then every counterparty's (User, UserStats) pair. All of them: the
+    // crank is a fill, so the filler obligation holds it to the makers it had
+    // room to carry.
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
     accounts.push(AccountMeta::new(spot_market_pda(0), false));
     accounts.push(AccountMeta::new(perp_market_pda(0), false));
-    accounts.push(AccountMeta::new(counterparty.user, false));
-    accounts.push(AccountMeta::new(counterparty.stats, false));
+    for counterparty in counterparties {
+        accounts.push(AccountMeta::new(counterparty.user, false));
+        accounts.push(AccountMeta::new(counterparty.stats, false));
+    }
+    // The quoter tail: the crank routes the remainder, and every router fill
+    // carries the market's CLOB entry as its mandatory baseline.
+    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(clob_authority, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
     Instruction {
         program_id: velocity_id(),
         accounts,
-        data: velocity::instruction::CrankTakerOriginCross { market_index: 0 }.data(),
+        data: velocity::instruction::CrankTakerOriginCross {
+            market_index: 0,
+            cross_rows: 32,
+            signed_route: vec![],
+        }
+        .data(),
     }
 }
 
@@ -7162,11 +7204,11 @@ fn perp_position(svm: &litesvm::LiteSVM, user: &Pubkey) -> velocity::state::user
 
 /// The mechanism, end to end. A taker's unfilled limit bid at 101 migrates to
 /// the book flagged taker-origin; two makers then line up asks at 100 and 99
-/// inside its window. The crank resolves against the **99** — the best price,
-/// not the taker's own — so the improvement goes to the taker and not to
-/// whoever could have taken the remainder at 101. The maker who quoted 100
-/// loses on price rather than on latency, and is untouched until the next
-/// crank walks down to it.
+/// inside its window. The crank routes the remainder like any other fill, so
+/// it sweeps both asks best-first and the taker buys its whole unit at a 99.5
+/// average — not at the 101 it rested at. The improvement goes to the taker
+/// rather than to whoever could have taken the remainder at its own price,
+/// and each maker fills at the price it quoted.
 #[test]
 fn taker_origin_cross_settles_at_the_best_counterpartys_price() {
     let mut fixture = setup();
@@ -7178,7 +7220,7 @@ fn taker_origin_cross_settles_at_the_best_counterpartys_price() {
     let keeper = party(&mut fixture.svm, 0);
 
     // The remainder: a whole unfilled unit resting at its limit of 101.
-    rest_taker_origin_order(
+    let subject = rest_taker_origin_order(
         &mut fixture,
         &taker,
         PositionDirection::Long,
@@ -7216,7 +7258,7 @@ fn taker_origin_cross_settles_at_the_best_counterpartys_price() {
         20,
     );
 
-    let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &taker, &best);
+    let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &taker, &[&best, &worse]);
     let keeper_authority = keeper.authority.insecure_clone();
     let meta = send_with_ixs(
         &mut fixture.svm,
@@ -7226,51 +7268,54 @@ fn taker_origin_cross_settles_at_the_best_counterpartys_price() {
     )
     .unwrap();
     let logs = meta.logs.join(" ");
-    // Two CLOB CPIs (cancel + execute), the settlement, and the re-placement.
-    // A ceiling rather than an equality, but a tight one: this runs inside a
-    // relay executor's budget alongside its own accounting.
+    // An ordinary router fill: both sides of the book read, the route quoted,
+    // the counterparty consumed, and the remainder shrunk in place. It prices
+    // like the three-user fill it is. A ceiling rather than an equality, but
+    // one that leaves a relay executor room for its own accounting.
     assert!(
-        meta.compute_units_consumed < 80_000,
+        meta.compute_units_consumed < 220_000,
         "crank cost {} CU",
         meta.compute_units_consumed
     );
     assert!(
-        logs.contains("taker-origin cross: 500000000 base at 99000000 instead of 101000000"),
-        "settled at the counterparty's price, not the resting one: {logs}"
+        logs.contains(
+            "taker-origin remainder routed: 1000000000 base at 99500000 instead of 101000000"
+        ),
+        "settled at the counterparties' prices, not the resting one: {logs}"
     );
 
-    // The taker is long half a unit at 99, not at 101. Its quote is the 49.5
-    // notional plus the taker fee plus the cranker's cut — all of which fits
-    // well inside the $1 the 101 rest price would have cost it.
+    // The taker is long its whole unit, bought at a 99.5 average rather than
+    // its own 101. Its quote is that notional plus the taker fee plus the
+    // cranker's cut — all of which fits well inside the $1.50 the 101 rest
+    // price would have cost it.
     let taker_position = perp_position(&fixture.svm, &taker.user);
-    assert_eq!(taker_position.base_asset_amount, (UNIT / 2) as i64);
+    assert_eq!(taker_position.base_asset_amount, UNIT as i64);
+    assert_eq!(taker_position.open_bids, 0, "nothing left resting");
+    assert_eq!(taker_position.open_orders, 0);
     let paid = -taker_position.quote_asset_amount;
     assert!(
-        (49_500_000..49_600_000).contains(&paid),
-        "paid {paid}: 99 plus fees, where 101 would have been 50_500_000"
+        (99_500_000..99_800_000).contains(&paid),
+        "paid {paid}: 99.5 plus fees, where 101 would have been 101_000_000"
     );
 
     // The cranker is paid out of the improvement, in quote, on its own `User`.
     let reward = perp_position(&fixture.svm, &keeper.user).quote_asset_amount;
-    assert_eq!(
-        reward, 1_980,
-        "the ordinary filler reward: 10% of the taker fee on the 49.5 notional"
-    );
-    let improvement = 1_000_000; // (101 - 99) * 0.5 units
+    let improvement = 1_500_000; // (101 - 99.5) * 1 unit
     assert!(
-        reward < improvement,
-        "reward {reward} must fit inside the {improvement} improvement"
+        reward > 0 && reward < improvement,
+        "reward {reward} must be paid and must fit inside the {improvement} improvement"
     );
     // The invariant, measured: the taker's all-in cost beats what being taken
     // at its own resting price would have been, fee included.
-    let cost_if_taken = 50_500_000 + 50_500; // 101 * 0.5 plus 10bps
+    let cost_if_taken = 101_000_000 + 101_000; // 101 * 1 unit plus 10bps
     assert!(
         paid < cost_if_taken,
         "crossing cost {paid}, resting would have cost {cost_if_taken}"
     );
 
-    // The best-priced maker filled at its own price; the one that quoted 100
-    // is untouched, order and reservation intact.
+    // Both makers filled at their own prices. The one that quoted 100 is not
+    // punished for being second — it is second in the average the taker pays,
+    // and it still gets the 100 it asked for.
     let best_position = perp_position(&fixture.svm, &best.user);
     assert_eq!(best_position.base_asset_amount, -((UNIT / 2) as i64));
     assert_eq!(best_position.open_asks, 0, "reservation released");
@@ -7281,47 +7326,24 @@ fn taker_origin_cross_settles_at_the_best_counterpartys_price() {
         best_position.quote_asset_amount
     );
     let worse_position = perp_position(&fixture.svm, &worse.user);
-    assert_eq!(worse_position.base_asset_amount, 0, "not filled");
-    assert_eq!(worse_position.open_asks, -((UNIT / 2) as i64));
-    assert_eq!(worse_position.open_orders, 1);
-
-    // The half the counterparty was too small to take went back on the book,
-    // still taker-origin — cancelling it would let a cranker delete a taker's
-    // whole order by crossing one unit of it.
-    assert_eq!(clob_bid_count(&fixture), 1);
-    assert_eq!(clob_ask_count(&fixture), 1);
-    assert_eq!(
-        perp_position(&fixture.svm, &taker.user).open_bids,
-        (UNIT / 2) as i64,
-        "the re-placed remainder keeps its reservation"
-    );
-
-    // ---- The second crank walks down to the 100: same order, next best
-    // counterparty, and the taker still beats its 101.
-    let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &taker, &worse);
-    let meta = send_with_ixs(
-        &mut fixture.svm,
-        &keeper_authority,
-        &[compute_unit_limit_ix(400_000), ix],
-        &[],
-    )
-    .unwrap();
+    assert_eq!(worse_position.base_asset_amount, -((UNIT / 2) as i64));
+    assert_eq!(worse_position.open_asks, 0, "reservation released");
+    assert_eq!(worse_position.open_orders, 0);
     assert!(
-        meta.logs
-            .join(" ")
-            .contains("taker-origin cross: 500000000 base at 100000000"),
-        "the next-best counterparty prices the second half"
+        worse_position.quote_asset_amount >= 50_000_000,
+        "the maker got the 100 it asked for, plus its rebate: {}",
+        worse_position.quote_asset_amount
     );
-    let taker_position = perp_position(&fixture.svm, &taker.user);
-    assert_eq!(taker_position.base_asset_amount, UNIT as i64);
-    assert_eq!(taker_position.open_bids, 0, "nothing left resting");
-    assert_eq!(taker_position.open_orders, 0);
+
+    // The whole cross cleared in one crank, so the book is empty on both
+    // sides. The filler obligation is what makes this the ordinary case: a
+    // transaction with room for both makers has to carry both.
     assert_eq!(clob_bid_count(&fixture), 0);
     assert_eq!(clob_ask_count(&fixture), 0);
 
     // Nothing crossed anymore: the crank declines rather than doing something
     // arbitrary.
-    let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &taker, &worse);
+    let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &taker, &[&worse]);
     let err = send_with_ixs(
         &mut fixture.svm,
         &keeper_authority,
@@ -7333,6 +7355,347 @@ fn taker_origin_cross_settles_at_the_best_counterpartys_price() {
         err.meta.logs.join(" ").contains("NoTakerOriginCross"),
         "unexpected: {:?}",
         err.meta.logs
+    );
+}
+
+/// A partly filled remainder keeps its identity and its place in the queue.
+///
+/// This is what `fill_v0` exists for. Cancelling the order and placing a new
+/// one for the leftover would settle the same base at the same price, and the
+/// taker would still pay for it: the replacement takes a fresh order id and
+/// goes to the back of its price level, behind every order that arrived while
+/// the first one was resting. A taker that waited for its turn would lose it
+/// by being filled.
+#[test]
+fn a_partly_filled_remainder_keeps_its_id_and_its_queue_position() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let behind = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let maker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+
+    // The remainder rests first, so it holds the front of the 101 level.
+    let subject = rest_taker_origin_order(
+        &mut fixture,
+        &taker,
+        PositionDirection::Long,
+        101 * PRICE,
+        UNIT,
+    );
+    // A maker joins the same level behind it, and is what a re-placement would
+    // end up behind.
+    let behind_ref = place_clob_order_for(
+        &mut fixture,
+        &behind,
+        PositionDirection::Long,
+        101 * PRICE,
+        UNIT / 2,
+    );
+    // Half a unit of ask inside the window: enough to fill half the remainder.
+    place_clob_order_for(
+        &mut fixture,
+        &maker,
+        PositionDirection::Short,
+        99 * PRICE,
+        UNIT / 2,
+    );
+
+    let before = clob_side(&fixture, Direction::Short);
+    assert_eq!(
+        before.iter().map(|row| row.order_id).collect::<Vec<_>>(),
+        vec![subject.order_id, behind_ref.order_id],
+        "the remainder is at the front of its price level"
+    );
+
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+
+    let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &taker, &[&maker]);
+    let keeper_authority = keeper.authority.insecure_clone();
+    send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .unwrap();
+
+    // Half the remainder filled. What is left is the same order — same id,
+    // same node — still ahead of the maker that joined after it.
+    let after = clob_side(&fixture, Direction::Short);
+    assert_eq!(
+        after.iter().map(|row| row.order_id).collect::<Vec<_>>(),
+        vec![subject.order_id, behind_ref.order_id],
+        "the remainder shrank in place instead of going to the back"
+    );
+    assert_eq!(
+        after[0].node_index, subject.node_index,
+        "the same node, so nothing was cancelled and re-placed"
+    );
+    assert_eq!(after[0].size, UNIT / 2, "half of it filled");
+    assert_eq!(after[1].size, UNIT / 2, "the maker behind it is untouched");
+
+    // The reservation follows the order down rather than being rebuilt.
+    let taker_position = perp_position(&fixture.svm, &taker.user);
+    assert_eq!(taker_position.base_asset_amount, (UNIT / 2) as i64);
+    assert_eq!(
+        taker_position.open_bids,
+        (UNIT / 2) as i64,
+        "the leftover keeps exactly its own worst case reserved"
+    );
+    assert_eq!(
+        taker_position.open_orders, 1,
+        "still one order, not a new one"
+    );
+}
+
+/// The window binds the taker who opened it.
+///
+/// A remainder its owner can pull the moment a maker lines up offers nothing to
+/// line up against, so an auction needs the order to still be there when it
+/// ends. Liquidation is the one thing that must never wait: force-cancel passes
+/// `force` and reaches a bound order, because an account in distress cannot be
+/// held hostage by its own resting orders.
+#[test]
+fn a_remainder_cannot_be_pulled_inside_its_window_but_force_cancel_reaches_it() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+    // The fixture's book activates immediately; give it a window to bind over.
+    set_clob_default_activation_delay(&mut fixture, 4);
+
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let subject = rest_taker_origin_order(
+        &mut fixture,
+        &taker,
+        PositionDirection::Long,
+        101 * PRICE,
+        UNIT,
+    );
+    assert_eq!(
+        perp_position(&fixture.svm, &taker.user).open_bids,
+        UNIT as i64,
+        "the remainder reserved its worst case on the book"
+    );
+
+    let (clob_authority, _) = clob_authority_pda();
+    let cancel_ix = |order_ref: ClobOrderRefV0| Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::CancelClobOrder {
+            state: state_pda(),
+            perp_market: perp_market_pda(0),
+            user: taker.user,
+            authority: taker.authority.pubkey(),
+            quoter: fixture.quoter,
+            clob_market: fixture.clob_market,
+            clob_program: clob_id(),
+            clob_authority,
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::CancelClobOrder {
+            params: CancelClobOrderParams {
+                market_index: 0,
+                order_ref: order_ref,
+            },
+        }
+        .data(),
+    };
+
+    // Inside the window: refused, and nothing moves.
+    let authority = taker.authority.insecure_clone();
+    let err = send(&mut fixture.svm, &authority, cancel_ix(subject), &[])
+        .expect_err("a bound remainder cannot be pulled");
+    // `ClobError::TakerOriginBound`. The book raises it, and a CPI callee's
+    // error reaches the caller as its code rather than its name.
+    assert!(
+        format!("{:?}", err.meta.logs).contains("0x1789"),
+        "unexpected: {:?}",
+        err.meta.logs
+    );
+    assert_eq!(
+        perp_position(&fixture.svm, &taker.user).open_bids,
+        UNIT as i64,
+        "a refused cancel releases nothing, so the order is still resting"
+    );
+    assert_eq!(
+        clob_bid_count(&fixture),
+        0,
+        "and nothing can reach it either: inside its window it is not matchable depth"
+    );
+
+    // Liquidation is exempt: force-cancel carries `force` and reaches it. An
+    // account in distress cannot be held hostage by its own resting orders.
+    let mut forced = setup();
+    pause_amm_fill(&mut forced.svm);
+    set_clob_default_activation_delay(&mut forced, 4);
+    let failing = party(&mut forced.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let bound = rest_taker_origin_order(
+        &mut forced,
+        &failing,
+        PositionDirection::Long,
+        101 * PRICE,
+        UNIT / 2,
+    );
+    // Gut the collateral while keeping the resting aggregates: the
+    // deterioration force-cancel exists for.
+    let mut broke = trading_user(&failing.authority.pubkey(), 1_000, None);
+    broke.perp_positions[0].open_bids = (UNIT / 2) as i64;
+    broke.perp_positions[0].open_orders = 1;
+    broke.open_orders = 1;
+    broke.has_open_order = true;
+    broke.next_order_id = 2;
+    set_user_account(&mut forced.svm, failing.user, &broke);
+
+    let filler_user = Pubkey::new_unique();
+    let filler_stats = Pubkey::new_unique();
+    set_user_account(
+        &mut forced.svm,
+        filler_user,
+        &trading_user(&forced.keeper.pubkey(), 0, None),
+    );
+    set_user_stats_account(&mut forced.svm, filler_stats, &forced.keeper.pubkey());
+    let keeper = forced.keeper.insecure_clone();
+    let ix = force_cancel_clob_ix(
+        &forced,
+        filler_user,
+        filler_stats,
+        failing.user,
+        failing.stats,
+        forced.keeper.pubkey(),
+        vec![velocity::instructions::ForceCancelClobRefV0 {
+            order_ref: bound,
+            side: velocity::state::prop_amm::ClobSide::Bid,
+        }],
+    );
+    send_with_ixs(
+        &mut forced.svm,
+        &keeper,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .expect("force-cancel reaches a bound remainder");
+    assert_eq!(
+        perp_position(&forced.svm, &failing.user).open_bids,
+        0,
+        "the bound order came off and its reservation was unwound"
+    );
+
+    // Past the activation slot the owner may pull it like any other order.
+    fixture.svm.warp_to_slot(30);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        30,
+    );
+    assert_eq!(
+        clob_bid_count(&fixture),
+        1,
+        "the window opened, so the order is matchable depth now"
+    );
+    send(&mut fixture.svm, &authority, cancel_ix(subject), &[]).expect("the window has passed");
+    assert_eq!(clob_bid_count(&fixture), 0);
+    assert_eq!(perp_position(&fixture.svm, &taker.user).open_bids, 0);
+}
+
+/// The window, doing the job it exists for. A remainder inside it is not in the
+/// book's matchable set at all, so nobody can take it at its own price while
+/// makers are still arriving. When it opens, the maker that quoted best during
+/// the window is what the crank settles against — a race on price rather than
+/// on who lands a transaction first.
+#[test]
+fn a_maker_that_arrives_during_the_window_wins_on_price_at_activation() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+    set_clob_default_activation_delay(&mut fixture, 4);
+
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let maker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+
+    let _ = rest_taker_origin_order(
+        &mut fixture,
+        &taker,
+        PositionDirection::Long,
+        101 * PRICE,
+        UNIT / 2,
+    );
+    // Inside the window the book does not report it, so no counterparty can
+    // reach it and no cross exists to resolve.
+    assert!(
+        clob_side(&fixture, Direction::Short).is_empty(),
+        "a remainder inside its window is not matchable depth"
+    );
+
+    // The maker lines up while the window runs. It takes the market's default
+    // delay rather than asking for a faster one, which is what an ordinary
+    // maker without the flow-authority attestation can do.
+    let maker_ix = place_clob_order_ix(
+        maker.user,
+        &maker.authority,
+        fixture.quoter,
+        fixture.clob_market,
+        fixture.oracle,
+        PlaceClobOrderParams {
+            market_index: 0,
+            direction: PositionDirection::Short,
+            price: 99 * PRICE,
+            base_asset_amount: UNIT / 2,
+            max_ts: 0,
+            activation_delay_slots: None,
+            reject_if_crossed: false,
+        },
+    );
+    let maker_authority = maker.authority.insecure_clone();
+    send(&mut fixture.svm, &maker_authority, maker_ix, &[]).unwrap();
+    let keeper_authority = keeper.authority.insecure_clone();
+    let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &taker, &[&maker]);
+    let err = send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .expect_err("nothing to resolve until the window opens");
+    assert!(
+        err.meta.logs.join(" ").contains("NoTakerOriginCross"),
+        "unexpected: {:?}",
+        err.meta.logs
+    );
+
+    // The window opens. Now the remainder is matchable, the cross exists, and
+    // it settles at the maker's 99 rather than the taker's own 101.
+    fixture.svm.warp_to_slot(30);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        30,
+    );
+    let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &taker, &[&maker]);
+    let meta = send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .expect("the window has opened");
+    assert!(
+        meta.logs.join(" ").contains(
+            "taker-origin remainder routed: 500000000 base at 99000000 instead of 101000000"
+        ),
+        "settled at the maker's price: {:?}",
+        meta.logs
+    );
+    assert_eq!(
+        perp_position(&fixture.svm, &taker.user).base_asset_amount,
+        (UNIT / 2) as i64
     );
 }
 
@@ -7352,7 +7715,7 @@ fn a_dust_improvement_resolves_without_paying_the_cranker() {
     let maker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
     let keeper = party(&mut fixture.svm, 0);
 
-    rest_taker_origin_order(
+    let subject = rest_taker_origin_order(
         &mut fixture,
         &taker,
         PositionDirection::Long,
@@ -7378,7 +7741,7 @@ fn a_dust_improvement_resolves_without_paying_the_cranker() {
         20,
     );
 
-    let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &taker, &maker);
+    let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &taker, &[&maker]);
     let keeper_authority = keeper.authority.insecure_clone();
     send_with_ixs(
         &mut fixture.svm,
@@ -7452,10 +7815,10 @@ fn rest_crossing_remainders(
     early: (&Party, PositionDirection, u64, u64),
     late: (&Party, PositionDirection, u64, u64),
     late_slot: u64,
-) {
+) -> ClobOrderRefV0 {
     let (early_party, early_direction, early_price, early_size) = early;
     let (late_party, late_direction, late_price, late_size) = late;
-    rest_taker_origin_order(
+    let _ = rest_taker_origin_order(
         fixture,
         early_party,
         early_direction,
@@ -7474,10 +7837,11 @@ fn rest_crossing_remainders(
         (100 * PRICE_PRECISION) as i64,
         late_slot,
     );
-    rest_taker_origin_order(fixture, late_party, late_direction, late_price, late_size);
+    let late = rest_taker_origin_order(fixture, late_party, late_direction, late_price, late_size);
     cancel_clob_order_for(fixture, blocker, blocker_ref);
     assert_eq!(clob_bid_count(&fixture), 1);
     assert_eq!(clob_ask_count(&fixture), 1);
+    late
 }
 
 /// Two taker remainders crossing each other, resolved by price-time priority:
@@ -7500,7 +7864,7 @@ fn two_crossed_remainders_settle_at_the_one_that_rested_first() {
     let blocker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
     let keeper = party(&mut fixture.svm, 0);
 
-    rest_crossing_remainders(
+    let subject = rest_crossing_remainders(
         &mut fixture,
         &blocker,
         (&early, PositionDirection::Long, 101 * PRICE, UNIT),
@@ -7522,7 +7886,7 @@ fn two_crossed_remainders_settle_at_the_one_that_rested_first() {
     );
 
     // The aggressor is the later order, so it is the `taker` of the crank.
-    let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &late, &early);
+    let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &late, &[&early]);
     let keeper_authority = keeper.authority.insecure_clone();
     let meta = send_with_ixs(
         &mut fixture.svm,
@@ -7539,9 +7903,9 @@ fn two_crossed_remainders_settle_at_the_one_that_rested_first() {
         meta.compute_units_consumed
     );
     assert!(
-        meta.logs
-            .join(" ")
-            .contains("taker-origin cross: 500000000 base at 101000000 instead of 99000000"),
+        meta.logs.join(" ").contains(
+            "taker-origin remainder routed: 500000000 base at 101000000 instead of 99000000"
+        ),
         "settled at the earlier order's price: {:?}",
         meta.logs
     );
@@ -7600,7 +7964,7 @@ fn two_crossed_remainders_settle_at_the_one_that_rested_first() {
 
     // Nothing crosses the leftover now, so there is no cross to resolve and the
     // crank declines rather than doing something arbitrary.
-    let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &late, &early);
+    let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &late, &[&early]);
     let err = send_with_ixs(
         &mut fixture.svm,
         &keeper_authority,
@@ -7632,7 +7996,7 @@ fn the_aggressors_own_leftover_goes_back_on_its_side() {
 
     // The earlier remainder is the *ask* this time, so the aggressor is a buyer
     // and the settlement price is the ask's 99 — the mirror of the case above.
-    rest_crossing_remainders(
+    let subject = rest_crossing_remainders(
         &mut fixture,
         &blocker,
         (&early, PositionDirection::Short, 99 * PRICE, UNIT / 2),
@@ -7648,7 +8012,7 @@ fn the_aggressors_own_leftover_goes_back_on_its_side() {
         20,
     );
 
-    let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &late, &early);
+    let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &late, &[&early]);
     let keeper_authority = keeper.authority.insecure_clone();
     let meta = send_with_ixs(
         &mut fixture.svm,
@@ -7658,9 +8022,9 @@ fn the_aggressors_own_leftover_goes_back_on_its_side() {
     )
     .unwrap();
     assert!(
-        meta.logs
-            .join(" ")
-            .contains("taker-origin cross: 500000000 base at 99000000 instead of 101000000"),
+        meta.logs.join(" ").contains(
+            "taker-origin remainder routed: 500000000 base at 99000000 instead of 101000000"
+        ),
         "the earlier ask priced it: {:?}",
         meta.logs
     );
@@ -7718,7 +8082,7 @@ fn cross_conditions_stage_the_taker_origin_crank_for_a_crossed_remainder() {
 
     let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
     let maker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
-    rest_taker_origin_order(
+    let subject = rest_taker_origin_order(
         &mut fixture,
         &taker,
         PositionDirection::Long,
@@ -7766,11 +8130,19 @@ fn cross_conditions_stage_the_taker_origin_crank_for_a_crossed_remainder() {
         (clob_id(), false),
         (clob_authority, false),
         (conditions, true),
+        (signed_msg_user_orders_pda(&taker.authority.pubkey()), false),
+        (instructions_sysvar(), false),
         (fixture.oracle, false),
         (spot_market_pda(0), true),
         (perp_market_pda(0), true),
         (maker.user, true),
         (maker.stats, true),
+        // The quoter tail: the crank routes the remainder, so it carries the
+        // market's CLOB entry as the baseline every router fill must include.
+        (fixture.quoter, false),
+        (fixture.clob_market, true),
+        (clob_authority, false),
+        (clob_id(), false),
     ];
     assert_eq!(
         resolved
@@ -7780,10 +8152,18 @@ fn cross_conditions_stage_the_taker_origin_crank_for_a_crossed_remainder() {
             .collect::<Vec<_>>(),
         expected
     );
+    // `market_index`, then the depth the resolver found the cross at, then an
+    // empty signed route: a staged crank routes through the market's baseline
+    // and claims none of the taker's own quoters.
     assert_eq!(
         resolved.data,
-        0u16.to_le_bytes(),
-        "market_index is the only argument"
+        [
+            0u16.to_le_bytes().as_slice(),
+            1u16.to_le_bytes().as_slice(),
+            0u32.to_le_bytes().as_slice(),
+        ]
+        .concat(),
+        "market_index, the cross depth, and an empty route"
     );
     // The staged payload fits the shared staging region with room to spare, so
     // the account list is bounded by the transaction rather than by the scratch.
@@ -7845,7 +8225,7 @@ fn cross_conditions_stage_the_pair_branch_with_the_later_remainder_as_taker() {
     let early = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
     let late = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
     let blocker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
-    rest_crossing_remainders(
+    let subject = rest_crossing_remainders(
         &mut fixture,
         &blocker,
         (&early, PositionDirection::Long, 101 * PRICE, UNIT),
@@ -7871,7 +8251,7 @@ fn cross_conditions_stage_the_pair_branch_with_the_later_remainder_as_taker() {
         "the later remainder is the aggressor, so it is the crank's taker"
     );
     assert_eq!(
-        resolved.accounts[14].address,
+        resolved.accounts[16].address,
         early.user.to_bytes(),
         "the earlier one is the counterparty the match is priced at"
     );
@@ -7926,7 +8306,7 @@ fn the_arb_crank_clears_the_front_of_book_before_the_remainders_own_cross() {
     // A remainder at 101, a whole unit of asks at 99 crossing it, and a maker
     // bidding 102 in front of it — so the top of the book is maker×maker and the
     // remainder is the second-best bid.
-    rest_taker_origin_order(
+    let subject = rest_taker_origin_order(
         &mut fixture,
         &taker,
         PositionDirection::Long,
@@ -8201,7 +8581,7 @@ fn the_arb_crank_refuses_a_book_holding_a_crossed_taker_remainder() {
     let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
     let maker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
     // A migrated remainder bidding 101, crossed by a maker ask at 99.
-    rest_taker_origin_order(
+    let subject = rest_taker_origin_order(
         &mut fixture,
         &taker,
         PositionDirection::Long,

@@ -5,14 +5,16 @@
 
 use {
     super::{
-        market::{params, place, place_taker_origin, user, TestMarket},
+        market::{assert_err, params, place, place_taker_origin, user, TestMarket},
         response::{encode_quote, streamed},
+        ACTIVE_SLOT,
     },
     crate::{
         book::{ClobBook, NodeArena},
+        error::ClobError,
         state::{
-            ClobMarketV0, Direction, OrderBitFlag, OrderRefV0, PlaceOrderParams, PriceLevel, Side,
-            UserCapsV0, UserRefV0,
+            CancelSidesV0, ClobMarketV0, Direction, OrderBitFlag, OrderRefV0, PlaceOrderParams,
+            PriceLevel, Side, UserCapsV0, UserRefV0,
         },
     },
 };
@@ -74,8 +76,17 @@ fn the_flag_rides_the_node_and_every_removal_reports_it() {
 
     // Cancel is the removal velocity's cross resolution uses, and the one that
     // has to say which side was the aggressor.
-    assert!(book.cancel(maker, remainder).unwrap().taker_origin);
-    assert!(!book.cancel(maker, ordinary).unwrap().taker_origin);
+    assert!(
+        book.cancel(maker, remainder, ACTIVE_SLOT, false)
+            .unwrap()
+            .taker_origin
+    );
+    assert!(
+        !book
+            .cancel(maker, ordinary, ACTIVE_SLOT, false)
+            .unwrap()
+            .taker_origin
+    );
 
     // Evict and expire report it too: a taker remainder is an ordinary resting
     // order in every other respect, so it can be the worst on its side or run
@@ -121,7 +132,8 @@ fn a_crossed_taker_remainder_is_passed_over() {
     assert_eq!(book.node_count(Side::Bid), 1);
 
     // With the ask gone the remainder is uncrossed and takeable again.
-    book.cancel(maker, counterparty).unwrap();
+    book.cancel(maker, counterparty, ACTIVE_SLOT, false)
+        .unwrap();
     assert_eq!(
         book.execute(Direction::Short, 5, &[], &UserCapsV0::EMPTY, 0, None, 0, 0)
             .unwrap()
@@ -333,7 +345,7 @@ fn the_cross_resolution_path_still_works() {
     assert_eq!(book.node_count(Side::Ask), 0);
 
     // Then the remainder comes off, saying it was the aggressor.
-    let removed = book.cancel(taker, remainder).unwrap();
+    let removed = book.cancel(taker, remainder, ACTIVE_SLOT, false).unwrap();
     assert!(removed.taker_origin);
     assert_eq!((removed.price, removed.base_asset_amount), (101, 5));
     assert_eq!(book.node_count(Side::Bid), 0);
@@ -499,7 +511,8 @@ fn the_same_book_quotes_that_depth_once_the_cross_is_gone() {
         ])
     );
 
-    book.cancel(crosser, crossing_bid).unwrap();
+    book.cancel(crosser, crossing_bid, ACTIVE_SLOT, false)
+        .unwrap();
     assert_eq!(
         quoted(&mut book, Direction::Long, u64::MAX, 0),
         encode_quote(&[
@@ -551,4 +564,86 @@ fn quote_follows_the_counterpartys_activation_slot() {
         quoted(&mut book, Direction::Short, u64::MAX, 10),
         encode_quote(&[PriceLevel { price: 98, size: 5 }])
     );
+}
+
+/// The window binds the taker that asked for it. A remainder rests at its own
+/// slippage bound so counterparties can compete on price inside the window; a
+/// taker able to withdraw at the last slot would hold a free option on that
+/// window, and the makers who priced against it wrote it.
+#[test]
+fn a_bound_remainder_cannot_be_cancelled_inside_its_window() {
+    let market = TestMarket::new(16);
+    let mut book = market.book();
+    let taker = user(0xA);
+
+    let remainder = place_at(&mut book, Side::Bid, 100, 5, taker, 10, true);
+
+    assert_err(
+        book.cancel(taker, remainder, 0, false),
+        ClobError::TakerOriginBound,
+    );
+    // The slot before activation is still inside the window.
+    assert_err(
+        book.cancel(taker, remainder, 9, false),
+        ClobError::TakerOriginBound,
+    );
+    // The order becomes matchable in its activation slot, and the window ends
+    // with it.
+    assert!(book.cancel(taker, remainder, 10, false).is_ok());
+}
+
+/// Liquidation must be able to clear a bound remainder: it is an open order
+/// consuming margin like any other.
+#[test]
+fn force_takes_a_bound_remainder() {
+    let market = TestMarket::new(16);
+    let mut book = market.book();
+    let taker = user(0xA);
+
+    let remainder = place_at(&mut book, Side::Bid, 100, 5, taker, 10, true);
+    assert!(book.cancel(taker, remainder, 0, true).unwrap().taker_origin);
+}
+
+/// The binding is about the taker-origin flag, not about the activation delay.
+/// An ordinary maker quote inside its own window stays withdrawable, because
+/// nobody is pricing against a promise it made.
+#[test]
+fn an_ordinary_order_inside_its_window_is_not_bound() {
+    let market = TestMarket::new(16);
+    let mut book = market.book();
+    let maker = user(0xA);
+
+    let quote = place_at(&mut book, Side::Bid, 100, 5, maker, 10, false);
+    assert!(book.cancel(maker, quote, 0, false).is_ok());
+}
+
+/// A sweep passes a bound remainder over rather than failing, so a maker
+/// withdrawing a ladder is not blocked by one order it cannot pull yet. The
+/// call reports itself as not exhaustive, which is what says orders remain.
+#[test]
+fn cancel_all_passes_over_a_bound_remainder_and_says_so() {
+    let market = TestMarket::new(16);
+    let mut book = market.book();
+    let owner = user(0xA);
+
+    let bound = place_at(&mut book, Side::Bid, 100, 5, owner, 10, true);
+    place_at(&mut book, Side::Bid, 90, 5, owner, 0, false);
+    place_at(&mut book, Side::Ask, 110, 5, owner, 0, false);
+
+    let outcome = book
+        .cancel_all(owner, CancelSidesV0::Both, 0, false, &mut |_| Ok(()))
+        .expect("sweep succeeds");
+    // Both ordinary orders left; the bound remainder stayed, on the side it
+    // shares with one of them.
+    assert_eq!(outcome.bid_orders, 1);
+    assert_eq!(outcome.ask_orders, 1);
+    assert!(!outcome.exhaustive);
+    assert!(book.read_node(bound.node_index).unwrap().is_taker_origin());
+
+    // Force sweeps it with the rest.
+    let outcome = book
+        .cancel_all(owner, CancelSidesV0::Both, 0, true, &mut |_| Ok(()))
+        .expect("sweep succeeds");
+    assert_eq!(outcome.bid_orders, 1);
+    assert!(outcome.exhaustive);
 }

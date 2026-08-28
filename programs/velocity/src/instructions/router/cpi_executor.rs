@@ -191,12 +191,16 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
             self.clob_authority_nonce,
         )
         .map_err(|_| ErrorCode::DefaultError)?;
-        clob.cancel_all(ClobCancelAllArgsV0 { user, sides })
-            .map(Some)
-            .map_err(|e| {
-                msg!("clob cancel_all failed: {}", e);
-                ErrorCode::DefaultError
-            })
+        clob.cancel_all(ClobCancelAllArgsV0 {
+            user,
+            sides,
+            force: false,
+        })
+        .map(Some)
+        .map_err(|e| {
+            msg!("clob cancel_all failed: {}", e);
+            ErrorCode::DefaultError
+        })
     }
 
     fn execute(

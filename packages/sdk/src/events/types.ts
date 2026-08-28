@@ -26,6 +26,7 @@ import {
 	ProtocolUserWithdrawRecordV0,
 	RevenueShareSettleRecord,
 	TakerOriginCrossRecordV0,
+	TakerOriginCrossRecordV1,
 	TransferFeeAndPnlPoolRecord,
 } from '../types';
 import { EventEmitter } from 'events';
@@ -88,6 +89,7 @@ export const DefaultEventSubscriptionOptions: EventSubscriptionOptions = {
 		'ProtocolUserWithdrawRecordV0',
 		'RevenueShareSettleRecord',
 		'TakerOriginCrossRecordV0',
+		'TakerOriginCrossRecordV1',
 		'TransferFeeAndPnlPoolRecord',
 		'AcceleratedReferralStatusChangedRecord',
 	],
@@ -185,6 +187,7 @@ export type EventMap = {
 	RevenueShareSettleRecord: Event<RevenueShareSettleRecord>;
 	/** A taker-origin cross resolved on a CLOB book: the migrated taker remainder settled at the crossing counterparty's price, with the cranker paid out of the improvement. */
 	TakerOriginCrossRecordV0: Event<TakerOriginCrossRecordV0>;
+	TakerOriginCrossRecordV1: Event<TakerOriginCrossRecordV1>;
 	/** Internal transfer of quote token between a perp market's fee pool and pnl pool. */
 	TransferFeeAndPnlPoolRecord: Event<TransferFeeAndPnlPoolRecord>;
 	/** An authority's Accelerated referral status changed, by automatic enrollment or an admin grant/revoke. */
@@ -225,6 +228,7 @@ export type VelocityEvent =
 	| Event<ProtocolUserWithdrawRecordV0>
 	| Event<RevenueShareSettleRecord>
 	| Event<TakerOriginCrossRecordV0>
+	| Event<TakerOriginCrossRecordV1>
 	| Event<TransferFeeAndPnlPoolRecord>
 	| Event<AcceleratedReferralStatusChangedRecord>
 	| Event<CuUsage>;

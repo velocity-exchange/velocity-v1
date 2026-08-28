@@ -646,6 +646,12 @@ pub struct ExecuteOutcome {
     pub cancelled_client_order_id: Option<u32>,
 }
 
+/// Most orders one `fill_v0` may report. A transaction that resolves several
+/// remainders pays for one call; the ceiling is what the execute record's log
+/// buffer is sized against, since every order in a batch can leave a
+/// sub-minimum remainder to cull.
+pub const FILL_BATCH_CEILING: usize = 8;
+
 /// Wire form of a removed order — return data of cancel/evict/expire.
 /// Declared by `clob-wire`.
 ///
@@ -659,6 +665,8 @@ pub struct ExecuteOutcome {
 /// removed orders was demanding liquidity, and so cannot know which side's
 /// price the match settles at.
 pub use clob_wire::RemovedOrderV0;
+/// What one order in a `fill_v0` came to. Declared by `clob-wire`.
+pub use clob_wire::{FillArgsV0, FillOutcomeV0, FillRequestV0, FilledOrderV0 as FilledOrder};
 /// A sub-`min_order_size` remainder culled during execute, on the wire so
 /// velocity decrements the maker's aggregates (the maker was just filled,
 /// so their `User` is always in the loaded set).

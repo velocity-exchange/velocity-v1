@@ -4,8 +4,11 @@
 //! operation (including against a deliberately tampered header).
 
 use {
-    super::market::{
-        assert_consistent, assert_err, params, place, place_raw, test_config, user, TestMarket,
+    super::{
+        market::{
+            assert_consistent, assert_err, params, place, place_raw, test_config, user, TestMarket,
+        },
+        ACTIVE_SLOT,
     },
     crate::{
         book::{walk_side, BookHeader, ClobBook, NodeArena, Walk, NIL},
@@ -57,12 +60,15 @@ fn order_ids_are_issued_once_each() {
     assert_eq!((first.order_id, second.order_id), (1, 2));
 
     // A recycled node gets a fresh id, so the old handle can never verify.
-    book.cancel(maker, second).unwrap();
+    book.cancel(maker, second, ACTIVE_SLOT, false).unwrap();
     let third = place(&mut book, Side::Bid, 100, 1, maker);
     assert_eq!(third.node_index, second.node_index);
     assert_eq!(third.order_id, 3);
     assert_eq!(book.next_order_id, 4);
-    assert_err(book.cancel(maker, second), ClobError::StaleOrderRef);
+    assert_err(
+        book.cancel(maker, second, ACTIVE_SLOT, false),
+        ClobError::StaleOrderRef,
+    );
 }
 
 #[test]
@@ -284,18 +290,21 @@ fn the_wake_hints_are_never_later_than_the_book() {
     assert_hints_are_not_late(&book, 0);
 
     // Removing an order that held neither minimum moves nothing.
-    book.cancel(maker, latest).expect("cancel succeeds");
+    book.cancel(maker, latest, ACTIVE_SLOT, false)
+        .expect("cancel succeeds");
     assert_eq!((book.next_expiry_ts, book.next_activation_slot), (300, 20));
 
     // Removing the expiry's holder repairs it to the next live order. The
     // activation hint is left where it is — safe, because early — until a
     // write that knows the slot moves it on.
-    book.cancel(maker, early).expect("cancel succeeds");
+    book.cancel(maker, early, ACTIVE_SLOT, false)
+        .expect("cancel succeeds");
     assert_eq!(book.next_expiry_ts, 900);
     assert_hints_are_not_late(&book, 0);
 
     // An empty book goes back to nothing expiring.
-    book.cancel(maker, late).expect("cancel succeeds");
+    book.cancel(maker, late, ACTIVE_SLOT, false)
+        .expect("cancel succeeds");
     assert_eq!(book.next_expiry_ts, i64::MAX);
     assert_hints_are_not_late(&book, 0);
 }
@@ -324,7 +333,8 @@ fn a_good_till_cancelled_order_is_not_an_expiry() {
 
     // Removing the only order that expires leaves the book with none again,
     // rather than with the good-till-cancelled order's zero.
-    book.cancel(maker, expiring).expect("cancel succeeds");
+    book.cancel(maker, expiring, ACTIVE_SLOT, false)
+        .expect("cancel succeeds");
     assert_eq!(book.next_expiry_ts, i64::MAX);
 }
 
@@ -795,7 +805,7 @@ fn removals_free_the_slot_and_close_the_list() {
     let high = place(&mut book, Side::Bid, 120, 3, maker);
 
     // Cancelling the middle order relinks its neighbours around it.
-    let removed = book.cancel(maker, mid).unwrap();
+    let removed = book.cancel(maker, mid, ACTIVE_SLOT, false).unwrap();
     assert_eq!(removed.order_id, mid.order_id);
     assert_consistent(&book);
     assert_eq!(
@@ -810,7 +820,10 @@ fn removals_free_the_slot_and_close_the_list() {
     let freed = book.read_node(mid.node_index).unwrap();
     assert_eq!((freed.bit_flags, freed.order_id), (0, 0));
     assert_eq!(book.free_head, mid.node_index);
-    assert_err(book.cancel(maker, mid), ClobError::StaleOrderRef);
+    assert_err(
+        book.cancel(maker, mid, ACTIVE_SLOT, false),
+        ClobError::StaleOrderRef,
+    );
     assert_err(book.remove_expired(mid, 1), ClobError::StaleOrderRef);
 }
 
@@ -824,7 +837,7 @@ fn cancel_all(
 ) -> (CancelAllOutcome, Vec<u32>) {
     let mut ids = Vec::new();
     let outcome = book
-        .cancel_all(user, sides, &mut |client_order_id| {
+        .cancel_all(user, sides, ACTIVE_SLOT, false, &mut |client_order_id| {
             ids.push(client_order_id);
             Ok(())
         })
@@ -972,7 +985,9 @@ fn cancel_all_ends_by_validating_the_book() {
     place(&mut book, Side::Bid, 100, 1, maker);
     book.free_count += 1;
     assert_err(
-        book.cancel_all(maker, CancelSidesV0::Both, &mut |_| Ok(())),
+        book.cancel_all(maker, CancelSidesV0::Both, ACTIVE_SLOT, false, &mut |_| {
+            Ok(())
+        }),
         ClobError::BookInvariantViolated,
     );
 }
@@ -986,7 +1001,7 @@ fn a_failing_id_sink_fails_the_sweep() {
     let maker = user(1);
     place(&mut book, Side::Bid, 100, 1, maker);
     assert_err(
-        book.cancel_all(maker, CancelSidesV0::Both, &mut |_| {
+        book.cancel_all(maker, CancelSidesV0::Both, ACTIVE_SLOT, false, &mut |_| {
             Err(ClobError::EventTooLarge.into())
         }),
         ClobError::EventTooLarge,
@@ -1082,7 +1097,10 @@ fn every_mutating_operation_ends_by_validating_the_book() {
     // Nothing in cancel's own path looks at the free count; the
     // end-of-operation invariant check is what catches it.
     book.free_count += 1;
-    assert_err(book.cancel(maker, order), ClobError::BookInvariantViolated);
+    assert_err(
+        book.cancel(maker, order, ACTIVE_SLOT, false),
+        ClobError::BookInvariantViolated,
+    );
 }
 
 #[test]

@@ -520,6 +520,7 @@ fn cancel_all_ix(ctx: &Ctx, user: Address, sides: CancelSidesV0) -> Instruction 
         args: CancelAllArgsV0 {
             user: uref(user),
             sides,
+            force: false,
         },
     }
     .to_instruction(accounts::CancelAllV0 {
@@ -640,6 +641,7 @@ fn cancel_verifies_hint_and_user() {
             args: CancelOrderArgsV0 {
                 order_ref,
                 user: uref(user),
+                force: false,
             },
         }
         .to_instruction(accounts::CancelOrderV0 {
@@ -1739,6 +1741,7 @@ fn cu_benchmarks() {
         args: CancelOrderArgsV0 {
             order_ref: oref,
             user: uref(u2),
+            force: false,
         },
     }
     .to_instruction(accounts::CancelOrderV0 {
@@ -1757,6 +1760,7 @@ fn cu_benchmarks() {
         args: CancelOrderArgsV0 {
             order_ref: mid_ref,
             user: uref(u2),
+            force: false,
         },
     }
     .to_instruction(accounts::CancelOrderV0 {
@@ -1816,6 +1820,7 @@ fn cu_benchmark_cancel_all() {
                 args: CancelOrderArgsV0 {
                     order_ref: *order_ref,
                     user: uref(mine),
+                    force: false,
                 },
             }
             .to_instruction(accounts::CancelOrderV0 {
@@ -2107,6 +2112,7 @@ fn cancel(
         args: CancelOrderArgsV0 {
             order_ref,
             user: uref(user),
+            force: false,
         },
     }
     .to_instruction(accounts::CancelOrderV0 {
@@ -2141,6 +2147,10 @@ fn the_taker_origin_flag_round_trips_through_place_and_removal() {
     );
     assert!(!node(&ctx, ordinary.node_index).is_taker_origin());
 
+    // Past the remainder's activation slot, so this is an ordinary cancel
+    // rather than the bound-window refusal. What is under test is the flag on
+    // the removal, not the window.
+    advance_slot(&mut ctx, 1);
     let meta = cancel(&mut ctx, remainder, user).unwrap();
     let (_, order_id, client_order_id, price, base, side, taker_origin) =
         parse_removed(&meta.return_data.data);
@@ -2479,9 +2489,19 @@ fn quote_l3_reports_the_orders_behind_the_ladder() {
 #[test]
 fn the_l3_ceiling_fits_the_region_the_market_already_pays_for() {
     use clob::state::{L3_ROWS_CEILING, L3_ROW_BYTES, RESPONSE_BUFFER_BYTES, RESPONSE_LEN_BYTES};
-    assert_eq!(L3_ROWS_CEILING, 128);
+    // The ceiling is derived from the region, so a wider row buys fewer rows
+    // rather than a bigger account. `L3RowV0` carries `node_index` and
+    // `placed_slot` for the cross resolver — a handle to the order and its rest
+    // time — which is 72 bytes per row and 114 rows in the same region.
+    assert_eq!(L3_ROWS_CEILING, 114);
     assert!(
         RESPONSE_LEN_BYTES + L3_ROWS_CEILING as usize * L3_ROW_BYTES + 1 <= RESPONSE_BUFFER_BYTES
+    );
+    // The next row would not fit: the ceiling is the region's true capacity,
+    // not a round number chosen under it.
+    assert!(
+        RESPONSE_LEN_BYTES + (L3_ROWS_CEILING as usize + 1) * L3_ROW_BYTES + 1
+            > RESPONSE_BUFFER_BYTES
     );
 }
 

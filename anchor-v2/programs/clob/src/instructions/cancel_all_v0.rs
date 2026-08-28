@@ -33,6 +33,10 @@ pub use clob_wire::CancelAllArgsV0;
 /// more than the cap repeats the call. Velocity's unwind is driven by the
 /// reported totals, so repeating is safe — each call unwinds exactly what it
 /// removed.
+///
+/// The sweep also passes over a taker-origin remainder that has not reached its
+/// activation slot, and reports itself as not exhaustive when it does. `force`
+/// takes those too, which is what liquidation needs.
 pub fn handle_cancel_all_v0(
     ctx: &mut Context<CancelAllV0>,
     args: CancelAllArgsV0,
@@ -50,9 +54,13 @@ pub fn handle_cancel_all_v0(
         args.user.sub_account_id,
         sides_tag(args.sides),
     )?;
-    let outcome = market.cancel_all(args.user, args.sides, &mut |order_id| {
-        record.push_id(order_id)
-    })?;
+    let outcome = market.cancel_all(
+        args.user,
+        args.sides,
+        clock.slot,
+        args.force,
+        &mut |order_id| record.push_id(order_id),
+    )?;
     // The removal path takes no clock, so an activation hint the chain
     // has already reached is dropped here instead.
     market.expire_activation_hint(clock.slot)?;

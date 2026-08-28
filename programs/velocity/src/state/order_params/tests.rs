@@ -2271,7 +2271,7 @@ mod get_close_perp_params {
             max_ts: 100,
             posted_slot_tail: get_posted_slot_from_clock_slot(slot),
             bit_flags: 0,
-            route_digest: crate::state::order_params::NO_ROUTE_DIGEST,
+            padding: [0; 5],
         }
     }
 
@@ -2522,9 +2522,16 @@ fn test_parse_optional_params() {
 /// same choice digests identically however a client ordered or repeated it.
 #[test]
 fn a_signed_route_digests_canonically() {
-    use {crate::state::order_params::route_digest, anchor_lang::prelude::Pubkey};
+    use {
+        crate::state::order_params::{route_digest, NO_ROUTE_DIGEST},
+        anchor_lang::prelude::Pubkey,
+    };
 
-    assert_eq!(route_digest(&[]), [0; 5], "no route is the zero digest");
+    assert_eq!(
+        route_digest(&[]),
+        NO_ROUTE_DIGEST,
+        "no route is the zero digest"
+    );
 
     let a = Pubkey::new_from_array([7; 32]);
     let b = Pubkey::new_from_array([9; 32]);
@@ -2539,10 +2546,20 @@ fn a_signed_route_digests_canonically() {
         route_digest(&[a, b]),
         "adding a quoter is a different route"
     );
-    assert_ne!(route_digest(&[a]), [0; 5], "a real route is never 'none'");
+    assert_ne!(
+        route_digest(&[a]),
+        NO_ROUTE_DIGEST,
+        "a real route is never 'none'"
+    );
 
     // Pinned bytes, so the SDK mirror (`getRouteDigest`) has something exact to
     // agree with rather than only the properties above.
-    assert_eq!(route_digest(&[a]), [0x4b, 0xb0, 0x6f, 0x8e, 0x4e]);
-    assert_eq!(route_digest(&[a, b]), [0x49, 0x44, 0x0f, 0xa4, 0x64]);
+    assert_eq!(
+        route_digest(&[a]),
+        [0x4b, 0xb0, 0x6f, 0x8e, 0x4e, 0x3a, 0x77, 0x15]
+    );
+    assert_eq!(
+        route_digest(&[a, b]),
+        [0x49, 0x44, 0x0f, 0xa4, 0x64, 0xb1, 0x71, 0xc0]
+    );
 }

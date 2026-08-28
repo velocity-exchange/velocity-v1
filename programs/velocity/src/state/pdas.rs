@@ -62,6 +62,19 @@ pub fn user_stats(authority: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(&[b"user_stats", authority.as_ref()], &crate::ID).0
 }
 
+/// A user's signed-message record, which carries the route any remainder of
+/// theirs resting on a book was signed with.
+pub fn signed_msg_user_orders(authority: &Pubkey) -> Pubkey {
+    Pubkey::find_program_address(
+        &[
+            crate::state::signed_msg_user::SIGNED_MSG_PDA_SEED.as_bytes(),
+            authority.as_ref(),
+        ],
+        &crate::ID,
+    )
+    .0
+}
+
 /// The `(User, UserStats)` pair of a derivable identity — the whole point
 /// of the CLOB storing `(authority, sub_account_id)` on its nodes.
 pub fn user_pair(authority: &Pubkey, sub_account_id: u16) -> (Pubkey, Pubkey) {

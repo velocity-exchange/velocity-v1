@@ -502,15 +502,22 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
             reject_if_crossed: false,
         },
     );
+    // The two `force` flags carry opposite values so the agreement covers both
+    // encodings of the byte, not just the zero one.
     agree(
         "CancelOrderArgsV0",
-        &ClobCancelOrderArgsV0 { order_ref, user },
+        &ClobCancelOrderArgsV0 {
+            order_ref,
+            user,
+            force: true,
+        },
     );
     agree(
         "CancelAllArgsV0",
         &ClobCancelAllArgsV0 {
             user,
             sides: ClobCancelSides::Both,
+            force: false,
         },
     );
     agree(

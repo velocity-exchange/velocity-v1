@@ -1018,12 +1018,16 @@ pub const fn expected_signed_msg_network() -> u8 {
 /// Cap on a signed route (see [`SignedMsgOrderParamsMessage::route`]): a
 /// message naming more custom quoters than this is refused rather than
 /// silently truncated, which also keeps the message length bounded for
-/// off-chain buffers. Four is past what one fill routes through in
-/// practice — the CLOB and the vAMM sit outside the list.
-pub const MAX_SIGNED_MSG_ROUTE_LEN: usize = 4;
+/// off-chain buffers.
+///
+/// It matches [`crate::instructions::MAX_ROUTE_QUOTERS`], because a
+/// taker may name every entry one transaction can carry and naming more than
+/// that could not be honoured. Raising this cap keeps every earlier message
+/// valid: the field is a borsh `Vec`, so the wire format does not change.
+pub const MAX_SIGNED_MSG_ROUTE_LEN: usize = crate::instructions::MAX_ROUTE_QUOTERS;
 
 /// Digest of a signed route: the `QuoterV0` entries a taker chose, reduced to
-/// the four bytes an [`crate::state::user::Order`] can hold.
+/// the bytes a [`crate::state::signed_msg_user::SignedMsgOrderId`] can hold.
 ///
 /// Canonicalised first (sorted, deduped) so the same choice always digests the
 /// same way regardless of how a client ordered it, and an empty route digests
@@ -1035,13 +1039,13 @@ pub const MAX_SIGNED_MSG_ROUTE_LEN: usize = 4;
 pub type RouteDigest = [u8; ROUTE_DIGEST_LEN];
 
 /// Width of a [`RouteDigest`]. See [`route_digest`] for why it is this wide.
-pub const ROUTE_DIGEST_LEN: usize = 5;
+pub const ROUTE_DIGEST_LEN: usize = 8;
 
 /// The digest of no route. A directly-placed order holds this, so one equality
 /// check covers both "no route was signed" and "this is the signed route".
 pub const NO_ROUTE_DIGEST: RouteDigest = [0; ROUTE_DIGEST_LEN];
 
-/// Five bytes, because a filler can enumerate candidates. It cannot choose
+/// Eight bytes, because a filler can enumerate candidates. It cannot choose
 /// preimages freely: a claimed route must consist of entries the transaction
 /// carries, and a fill carries at most `MAX_ROUTE_QUOTERS` of them. But it
 /// picks which ones to carry, so its candidate set is every subset of that
@@ -1054,10 +1058,10 @@ pub const NO_ROUTE_DIGEST: RouteDigest = [0; ROUTE_DIGEST_LEN];
 /// the taker's own limit price rather than a theft. It still defeats the only
 /// thing the digest is for.
 ///
-/// Five and not eight because `Order` has exactly this much room. Eight bytes
-/// would grow `Order` past an eight-byte boundary, and `Order` is an array
-/// element in `User`, so the stride of that array would change and every
-/// existing account would need its orders rewritten.
+/// The digest rides [`crate::state::signed_msg_user::SignedMsgOrderId`], whose
+/// stride this width is chosen against. An earlier home on `Order` allowed only
+/// five bytes, because `Order` is an array element in `User` and a sixth byte
+/// would have changed that array's stride.
 pub fn route_digest(route: &[Pubkey]) -> RouteDigest {
     if route.is_empty() {
         return [0; ROUTE_DIGEST_LEN];

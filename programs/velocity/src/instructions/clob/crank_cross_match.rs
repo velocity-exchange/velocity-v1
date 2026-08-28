@@ -212,6 +212,11 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
     // top pair is a remainder), but this instruction is permissionless, so a
     // hand-built one has to be refused here.
     //
+    // The read is the same L3 walk the crank itself runs, not the two heads.
+    // A remainder one level down is still a remainder the taker-origin crank
+    // owns, and it is invisible to a read that reports only the best order on
+    // each side.
+    //
     // Refusing rather than skipping, because the caller has a correct
     // instruction to send instead: `crank_taker_origin_cross` resolves this
     // book and pays the taker the difference.
@@ -223,13 +228,23 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
             crate::state::prop_amm::find_account(&accounts, key)
                 .ok_or_else(|| error!(ErrorCode::DefaultError))
         };
-        let reader = crate::state::prop_amm::ClobReader {
-            market: find(&clob.response_account)?,
-            program: find(&clob.entry.load()?.program_id)?,
-        };
+        let entry = clob.entry.load()?;
+        let sides = [
+            find(&clob.response_account)?.clone(),
+            find(&entry.program_id)?.clone(),
+        ];
+        let mut scratch = crate::state::prop_amm::QuoterCpiScratch::new();
+        let (bids, asks) = book_sides(
+            &entry,
+            &clob.entry.key(),
+            market_index,
+            clob_authority,
+            clob_authority_nonce,
+            &sides,
+            &mut scratch,
+        )?;
         validate!(
-            super::crank_taker_origin_cross::find_taker_origin_cross(&reader.next_cross()?)
-                .is_none(),
+            !strips_taker_origin_gate(&bids, &asks, size),
             ErrorCode::CrossedTakerRemainderPending,
             "a crossed taker remainder must be resolved by crank_taker_origin_cross"
         )?;
@@ -466,6 +481,75 @@ fn clob_rows<'info>(
     };
     let data = located.borrow()?;
     Ok(located.l3_response(&data)?.rows.to_vec())
+}
+
+/// Whether this cross would take a taker-origin remainder's protection away
+/// part-way through the instruction.
+///
+/// The book withholds a remainder for as long as a live counterparty crosses
+/// it, and that gate is the only thing keeping this crank's legs off it. The
+/// legs consume `size` from each side. A remainder whose whole crossing depth
+/// the cross takes stops being crossed before the second leg runs; the gate
+/// then goes quiet and that leg fills the remainder at its own resting price,
+/// which is the outcome the taker-origin path exists to prevent.
+///
+/// Depth counts only the rows the legs can actually consume. A remainder on
+/// the far side is withheld too, so it stays and keeps the gate firing.
+///
+/// A remainder nothing crosses has no gate to lose. It is an ordinary resting
+/// order at its own price, which is what an unmatched remainder is for.
+fn strips_taker_origin_gate(
+    bids: &[crate::math::crosses::RestingOrder],
+    asks: &[crate::math::crosses::RestingOrder],
+    size: u64,
+) -> bool {
+    let exposed = |rows: &[crate::math::crosses::RestingOrder],
+                   opposite: &[crate::math::crosses::RestingOrder],
+                   crosses: fn(u64, u64) -> bool| {
+        rows.iter().filter(|row| row.taker_origin).any(|row| {
+            let depth: u64 = opposite
+                .iter()
+                .filter(|other| !other.taker_origin && crosses(row.price, other.price))
+                .map(|other| other.base_asset_amount)
+                .sum();
+            depth > 0 && size >= depth
+        })
+    };
+    exposed(bids, asks, |bid, ask| bid >= ask) || exposed(asks, bids, |ask, bid| bid >= ask)
+}
+
+/// Both sides of a book, best price first, as the rows the cross resolver
+/// reads. A taker of `Long` sweeps asks, so that read names the ask side.
+fn book_sides<'info>(
+    quoter: &QuoterV0,
+    entry: &Pubkey,
+    market_index: u16,
+    clob_authority: Pubkey,
+    clob_authority_nonce: u8,
+    accounts: &[AccountInfo<'info>],
+    scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
+) -> Result<(
+    Vec<crate::math::crosses::RestingOrder>,
+    Vec<crate::math::crosses::RestingOrder>,
+)> {
+    let mut side = |direction| -> Result<Vec<crate::math::crosses::RestingOrder>> {
+        Ok(clob_rows(
+            quoter,
+            entry,
+            market_index,
+            direction,
+            &clob_authority,
+            clob_authority_nonce,
+            accounts,
+            scratch,
+        )?
+        .iter()
+        .map(crate::math::crosses::RestingOrder::from_row)
+        .collect())
+    };
+    let asks = side(crate::state::prop_amm::Direction::Long)?;
+    let bids = side(crate::state::prop_amm::Direction::Short)?;
+    Ok((bids, asks))
 }
 
 /// The crossing prefix of a book against itself: total matchable size, the

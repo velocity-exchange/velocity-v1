@@ -348,12 +348,16 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
     // Per-order first, while the node indices read above are still current:
     // the sweep below moves the book and would invalidate them. The sweep
     // itself names no index, so it is safe to run second.
+    // `force` is set on this path alone. A taker-origin remainder is bound to
+    // its activation window against its own owner, but it is still an open
+    // order holding margin, so liquidation has to be able to reclaim it.
     let removed_orders: Vec<ClobRemovedOrderV0> = cancellable
         .iter()
         .map(|order_ref| {
             clob.cancel(ClobCancelOrderArgsV0 {
                 order_ref: order_ref.order_ref,
                 user: user_ref,
+                force: true,
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -362,6 +366,7 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
             clob.cancel_all(ClobCancelAllArgsV0 {
                 user: user_ref,
                 sides,
+                force: true,
             })
         })
         .transpose()?;

@@ -1932,12 +1932,67 @@ export type Velocity = {
               }
             ]
           }
+        },
+        {
+          "name": "signedMsgUserOrders",
+          "docs": [
+            "The taker's signed-message record, which carries the route its signer",
+            "chose. The fill below is held to it.",
+            "",
+            "Required, and pinned to the taker's own authority by its seeds, even",
+            "though a remainder off a directly-placed order has no such record. The",
+            "two are not the same thing: an address the program derives cannot be",
+            "omitted or substituted, so a caller cannot hide a route by leaving it",
+            "out. A record that was never created still arrives — owned by the system",
+            "program, with no data — and reads as genuinely unrouted.",
+            "and the discriminator before anything is read out of it."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  83,
+                  73,
+                  71,
+                  78,
+                  69,
+                  68,
+                  95,
+                  77,
+                  83,
+                  71
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "taker"
+              }
+            ]
+          }
+        },
+        {
+          "name": "instructionsSysvar",
+          "docs": [
+            "many account locks the transaction holds, and this is what counts them."
+          ],
+          "address": "Sysvar1nstructions1111111111111111111111111"
         }
       ],
       "args": [
         {
           "name": "marketIndex",
           "type": "u16"
+        },
+        {
+          "name": "crossRows",
+          "type": "u16"
+        },
+        {
+          "name": "signedRoute",
+          "type": {
+            "vec": "pubkey"
+          }
         }
       ]
     },
@@ -7868,89 +7923,6 @@ export type Velocity = {
       ]
     },
     {
-      "name": "placeAndMakeSignedMsgPerpOrder",
-      "discriminator": [
-        16,
-        26,
-        123,
-        131,
-        94,
-        29,
-        175,
-        98
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "user",
-          "writable": true
-        },
-        {
-          "name": "userStats",
-          "writable": true
-        },
-        {
-          "name": "taker",
-          "writable": true
-        },
-        {
-          "name": "takerStats",
-          "writable": true
-        },
-        {
-          "name": "takerSignedMsgUserOrders",
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  83,
-                  73,
-                  71,
-                  78,
-                  69,
-                  68,
-                  95,
-                  77,
-                  83,
-                  71
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "taker"
-              }
-            ]
-          }
-        },
-        {
-          "name": "authority",
-          "signer": true
-        }
-      ],
-      "args": [
-        {
-          "name": "params",
-          "type": {
-            "defined": {
-              "name": "orderParams"
-            }
-          }
-        },
-        {
-          "name": "signedMsgOrderUuid",
-          "type": {
-            "array": [
-              "u8",
-              8
-            ]
-          }
-        }
-      ]
-    },
-    {
       "name": "placeAndTakePerpOrder",
       "discriminator": [
         213,
@@ -8347,6 +8319,20 @@ export type Velocity = {
     },
     {
       "name": "placeSignedMsgTakerOrder",
+      "docs": [
+        "Place, route and rest one signed-message taker order.",
+        "",
+        "The instruction does the whole order in one call. It verifies the",
+        "taker's signature, places the order, routes it through the market's",
+        "quoters and books for whatever fills at or better than the order's",
+        "auction start price, and rests what is left on the market's CLOB as a",
+        "taker-origin remainder. A signed-message order never rests on the DLOB.",
+        "",
+        "The keeper that builds the transaction is a filler: the taker signed a",
+        "message, not a transaction, so the keeper answers for the account list",
+        "it chose. It must carry every quoter the message named, and it owes the",
+        "taker every maker it had room for."
+      ],
       "discriminator": [
         32,
         79,
@@ -8408,6 +8394,113 @@ export type Velocity = {
             "in the Anchor framework yet, so this is the safe approach."
           ],
           "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "filler",
+          "docs": [
+            "The keeper's own `User`, credited for the fill it lands. The taker did",
+            "not sign this transaction, so the keeper is a filler and owes the taker",
+            "every maker it had room to carry."
+          ],
+          "writable": true
+        },
+        {
+          "name": "fillerStats",
+          "writable": true
+        },
+        {
+          "name": "quoter",
+          "docs": [
+            "The market's CLOB registry entry. The remainder only ever rests on a",
+            "vetted book, and the entry is the mandatory baseline of a router fill."
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "accounts (`ClobMarket::from_quoter`), so a valid entry cannot be",
+            "pointed at an arbitrary account."
+          ],
+          "writable": true
+        },
+        {
+          "name": "clobProgram"
+        },
+        {
+          "name": "clobAuthority",
+          "docs": [
+            "is set to. Its own key, distinct from the per-entry signer a",
+            "third-party quoter is handed: signer privilege is inherited by a",
+            "callee, and this one may place and cancel on any book, for any user."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "Wake-hint host for the rested remainder. Optional like every other CLOB",
+            "placement path: a market whose conditions were never initialized must",
+            "still be tradeable, and a missed hint costs crank latency rather than",
+            "liveness, because the fallback poll is the floor."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "quoter"
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -19623,6 +19716,19 @@ export type Velocity = {
       ]
     },
     {
+      "name": "takerOriginCrossRecordV1",
+      "discriminator": [
+        240,
+        35,
+        45,
+        179,
+        207,
+        27,
+        133,
+        254
+      ]
+    },
+    {
       "name": "transferFeeAndPnlPoolRecord",
       "discriminator": [
         92,
@@ -26229,25 +26335,17 @@ export type Velocity = {
             "type": "u8"
           },
           {
-            "name": "routeDigest",
+            "name": "padding",
             "docs": [
-              "The route this order's signer chose, as",
-              "[`crate::state::order_params::route_digest`] of the `QuoterV0` entries",
-              "their signed message named. Zero when no route was signed, which is",
-              "every directly-placed order.",
+              "Free bytes. These held a route digest while a signed-message order",
+              "could rest on the DLOB. Such an order now routes at placement and rests",
+              "any remainder on the market's CLOB, so the route travels with the",
+              "message, on",
+              "[`crate::state::signed_msg_user::SignedMsgOrderId::route_digest`].",
               "",
-              "A digest rather than the list because an `Order` has no room for",
-              "pubkeys, and stored bytes here cost 32 slots each. The filler supplies",
-              "the list and this pins which list it may supply — the check that the",
-              "fill actually *carried* those entries is then a containment test",
-              "against the transaction. Bytes, not an integer, to stay alignment-free",
-              "in the middle of a byte run.",
-              "",
-              "Five bytes is every byte this struct has left. `Order` is 104 bytes",
-              "with no slack, and it is an array element in `User`, so one more byte",
-              "changes the stride of that array rather than appending to a tail.",
-              "Width is [`crate::state::order_params::ROUTE_DIGEST_LEN`], spelled out",
-              "because the IDL derive resolves no alias."
+              "Kept as padding rather than removed: `Order` is 104 bytes with no",
+              "slack, and it is an array element in `User`, so dropping these bytes",
+              "would change that array's stride and rewrite every existing account."
             ],
             "type": {
               "array": [
@@ -28413,6 +28511,14 @@ export type Velocity = {
             "type": "u64"
           },
           {
+            "name": "nodeIndex",
+            "docs": [
+              "The other half of the handle, for a quoter that keeps an arena. Zero",
+              "when it does not."
+            ],
+            "type": "u32"
+          },
+          {
             "name": "authority",
             "docs": [
               "Authority of the `User` this row settles against."
@@ -28435,9 +28541,17 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                5
+                1
               ]
             }
+          },
+          {
+            "name": "placedSlot",
+            "docs": [
+              "Slot the order was placed in. Zero when the quoter keeps no such",
+              "record."
+            ],
+            "type": "u64"
           }
         ]
       }
@@ -29603,6 +29717,20 @@ export type Velocity = {
     },
     {
       "name": "signedMsgOrderId",
+      "docs": [
+        "One signed message this user sent, and what is still live from it.",
+        "",
+        "Two jobs. The `uuid` is replay protection, which is what this account was",
+        "built for. The rest is the routing state of the order that message became:",
+        "a signed-message order routes at placement and rests any remainder on the",
+        "market's CLOB, and the fill that resolves that remainder happens in a later",
+        "transaction built by somebody else. `route_digest` is what holds that",
+        "somebody to the quoters the taker chose, so it has to outlive the message.",
+        "",
+        "Field order is chosen so `#[repr(C)]` leaves no padding hole: the two `u64`",
+        "fields sit on eight-byte boundaries and the two byte arrays need no",
+        "alignment of their own. The stride is 40 bytes."
+      ],
       "serialization": "bytemuckunsafe",
       "repr": {
         "kind": "c"
@@ -29624,12 +29752,34 @@ export type Velocity = {
             "type": "u64"
           },
           {
+            "name": "clobOrderId",
+            "docs": [
+              "The CLOB order this message's remainder rests as, or zero when nothing",
+              "of it rests. An entry naming a live order survives the stale sweep,",
+              "because the fill that resolves it still needs the route below."
+            ],
+            "type": "u64"
+          },
+          {
             "name": "orderId",
             "type": "u32"
           },
           {
             "name": "padding",
             "type": "u32"
+          },
+          {
+            "name": "routeDigest",
+            "docs": [
+              "[`crate::state::order_params::route_digest`] of the quoter entries the",
+              "taker's signed route named. Zero when the message named no route."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
           }
         ]
       }
@@ -31343,16 +31493,11 @@ export type Velocity = {
     {
       "name": "takerOriginCrossRecordV0",
       "docs": [
-        "Emitted when `crank_taker_origin_cross` resolves a taker-origin cross on a",
-        "CLOB book: what the taker gained by settling at the counterparty's price",
-        "instead of its own, and what the cranker took out of that.",
-        "",
-        "The fill itself also emits the ordinary `OrderActionRecord` for the match.",
-        "This record carries what that one structurally cannot: the price the order",
-        "was *resting* at (an `OrderActionRecord` only ever knows the price it",
-        "filled at), the improvement between the two, and the crank reward — which",
-        "is charged to the taker out of the improvement rather than carved out of",
-        "the taker fee, so it never appears as that record's `filler_reward`."
+        "The first shape of the taker-origin resolution record, from when the crank",
+        "resolved a cross against exactly one book counterparty. Superseded by",
+        "[`TakerOriginCrossRecordV1`]: the crank now routes the remainder, so a",
+        "single `maker` no longer describes the match. Kept so a reader of historical",
+        "logs still has the type — nothing emits it."
       ],
       "type": {
         "kind": "struct",
@@ -31465,6 +31610,112 @@ export type Velocity = {
               "the size the cross was priced for"
             ],
             "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "takerOriginCrossRecordV1",
+      "docs": [
+        "Emitted when `crank_taker_origin_cross` resolves a resting taker remainder:",
+        "what the taker gained by being routed instead of left at its own price, and",
+        "what the cranker took out of that.",
+        "",
+        "The fill itself also emits the ordinary `OrderActionRecord`s for the match —",
+        "one per source the router reached, which is where the counterparties are",
+        "named. This record carries what those structurally cannot: the price the",
+        "order was *resting* at (an `OrderActionRecord` only ever knows the price it",
+        "filled at), the improvement between the two, and the crank reward, which is",
+        "charged to the taker out of the improvement rather than carved out of the",
+        "taker fee, so it never appears as that record's `filler_reward`."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ts",
+            "docs": [
+              "unix_timestamp of action"
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "slot",
+            "type": "u64"
+          },
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "taker",
+            "docs": [
+              "owner of the remainder this crank resolved. When two remainders crossed,",
+              "this is the later of the two to rest — the one demanding liquidity."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "filler",
+            "docs": [
+              "the cranker's `User`, credited `crank_reward` in quote"
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "baseAssetAmount",
+            "type": "u64"
+          },
+          {
+            "name": "quoteAssetAmount",
+            "type": "u64"
+          },
+          {
+            "name": "restPrice",
+            "docs": [
+              "the price the remainder was resting at, and the bound the fill was held",
+              "to"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "fillPrice",
+            "docs": [
+              "what the fill averaged across every source it reached"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "improvement",
+            "docs": [
+              "gross quote the taker gained: |rest_price − fill_price| × base"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "crankReward",
+            "docs": [
+              "quote paid to the cranker out of that improvement"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "remainderBaseAssetAmount",
+            "docs": [
+              "size still resting after the fill (0 when the fill took the whole",
+              "remainder, or when what was left fell under the book's minimum and was",
+              "culled)"
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "clobOrderId",
+            "docs": [
+              "the CLOB order this resolved. It keeps its id and its queue position —",
+              "the fill shrinks it in place rather than re-placing it, so a client's",
+              "existing handle stays good."
+            ],
+            "type": "u64"
           }
         ]
       }

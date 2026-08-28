@@ -365,8 +365,7 @@ pub fn get_position_delta_for_fill(
 }
 
 #[inline(always)]
-pub fn should_expire_order(user: &User, user_order_index: usize, now: i64) -> VelocityResult<bool> {
-    let order = &user.orders[user_order_index];
+pub fn should_expire_order(order: &Order, now: i64) -> VelocityResult<bool> {
     if order.status != OrderStatus::Open || order.max_ts == 0 || order.must_be_triggered() {
         return Ok(false);
     }

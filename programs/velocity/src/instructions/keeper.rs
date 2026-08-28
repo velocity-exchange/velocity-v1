@@ -51,9 +51,11 @@ use {
         math_error,
         optional_accounts::{get_token_mint, update_prelaunch_oracle},
         print_error, safe_decrement,
+        signer::CLOB_AUTHORITY_SEED,
         state::{
             clob_crank::{
-                ClobCrankConditionsV0, CrankPaymentsV0, LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE,
+                ClobCrankConditionsV0, CrankPaymentsV0, CLOB_CRANK_CONDITIONS_PDA_SEED,
+                LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE,
             },
             events::{DeleteUserRecord, OrderActionExplanation, SignedMsgOrderRecord},
             fill_mode::FillMode,
@@ -68,7 +70,7 @@ use {
                 get_market_set_from_list, get_writable_perp_market_set,
                 get_writable_perp_market_set_from_vec, MarketSet, PerpMarketMap,
             },
-            prop_amm::Direction,
+            prop_amm::{Direction, QuoterV0},
             revenue_share::{RevenueShareEscrowZeroCopyMut, REVENUE_SHARE_ESCROW_PDA_SEED},
             revenue_share_map::load_revenue_share_map,
             settle_pnl_mode::SettlePnlMode,
@@ -83,7 +85,7 @@ use {
             state::{HotRole, State},
             user::{MarketType, OrderStatus, OrderTriggerCondition, OrderType, User, UserStats},
             user_conditions::{UserConditionsV0, USER_CONDITIONS_PDA_SEED},
-            user_map::{load_user_map, load_user_maps},
+            user_map::{load_user_map, load_user_maps, UserMap, UserStatsMap},
             zero_copy::{AccountZeroCopyMut, ZeroCopyLoader},
         },
         validate,
@@ -292,7 +294,12 @@ fn fill_order<'c: 'info, 'info>(
                 authority: user.authority,
                 sub_account_id: user.sub_account_id.into(),
             },
-            order.route_digest,
+            // A DLOB order carries no route. Only a signed message names one,
+            // and such an order routes at placement and rests any remainder on
+            // the market's CLOB, so what a route binds is the fill of that
+            // remainder. `crank_taker_origin_cross` reads it from the taker's
+            // signed-message record.
+            crate::state::order_params::NO_ROUTE_DIGEST,
             FillMode::Fill.quote_limit_price(
                 order,
                 clock.slot,
@@ -370,7 +377,7 @@ fn fill_order<'c: 'info, 'info>(
     };
 
     let (base_asset_amount_filled, _) = controller::orders::fill_perp_order_with_router(
-        order_id,
+        controller::orders::FillTarget::Slot(order_id),
         &*accounts.state.load()?,
         &accounts.user,
         &accounts.user_stats,
@@ -845,13 +852,20 @@ pub fn handle_update_user_open_orders_count<'info>(ctx: Context<UpdateUserIdle>)
 
 #[access_control(
     exchange_not_paused(&ctx.accounts.state)
+    fill_not_paused(&ctx.accounts.state)
 )]
 pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
     ctx: Context<'info, PlaceSignedMsgTakerOrder<'info>>,
     signed_msg_order_params_message_bytes: Vec<u8>,
     is_delegate_signer: bool,
 ) -> Result<()> {
+    let clock = Clock::get()?;
     let state = ctx.accounts.state.load()?;
+    // The market comes off the CLOB registry entry rather than an argument,
+    // because the entry is what the crank-conditions seed already derives from
+    // and the two must name the same market. The message is checked against it
+    // once decoded.
+    let market_index = ctx.accounts.quoter.load()?.market;
 
     let mut remaining_accounts = ctx.remaining_accounts.iter().peekable();
     // TODO: generalize to support multiple market types
@@ -861,38 +875,365 @@ pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
         mut oracle_map,
     } = load_maps(
         &mut remaining_accounts,
+        &get_writable_perp_market_set(market_index),
         &MarketSet::new(),
-        &MarketSet::new(),
-        Clock::get()?.slot,
+        clock.slot,
         state.slot_clock(),
         Some(state.oracle_guard_rails),
     )?;
 
-    let taker_key = ctx.accounts.user.key();
-    let mut taker = load_mut!(ctx.accounts.user)?;
-    let mut taker_stats = load_mut!(ctx.accounts.user_stats)?;
-    let mut signed_msg_taker = ctx.accounts.signed_msg_user_orders.load_mut()?;
+    let (makers_and_referrer, makers_and_referrer_stats) =
+        load_user_maps(&mut remaining_accounts, true)?;
 
+    let taker_key = ctx.accounts.user.key();
     let escrow = if state.builder_codes_enabled() {
-        get_revenue_share_escrow_account(&mut remaining_accounts, &taker.authority)?
+        get_revenue_share_escrow_account(
+            &mut remaining_accounts,
+            &load!(ctx.accounts.user)?.authority,
+        )?
     } else {
         None
     };
+    let referrer_is_accelerated =
+        get_referrer_accelerated_status(&mut remaining_accounts, escrow.as_ref())?;
 
-    place_signed_msg_taker_order(
-        taker_key,
-        &mut taker,
-        &mut taker_stats,
-        &mut signed_msg_taker,
-        signed_msg_order_params_message_bytes,
-        &ctx.accounts.ix_sysvar.to_account_info(),
-        &perp_market_map,
-        &mut spot_market_map,
-        &mut oracle_map,
-        escrow,
-        &state,
-        is_delegate_signer,
+    // Everything past the sections above is the quoter tail: registry entries
+    // plus the union of their registered CPI accounts.
+    let tail_from = ctx.remaining_accounts.len() - remaining_accounts.len();
+    let tail = &ctx.remaining_accounts[tail_from..];
+
+    // ---- Placement. The taker's `User` is borrowed for this leg alone: the
+    // router fill below takes the loader, not a live borrow. ----
+    let (mut escrow, placed) = {
+        let mut taker = load_mut!(ctx.accounts.user)?;
+        let mut taker_stats = load_mut!(ctx.accounts.user_stats)?;
+        let mut signed_msg_taker = ctx.accounts.signed_msg_user_orders.load_mut()?;
+        place_signed_msg_taker_order(
+            taker_key,
+            &mut taker,
+            &mut taker_stats,
+            &mut signed_msg_taker,
+            signed_msg_order_params_message_bytes,
+            &ctx.accounts.ix_sysvar.to_account_info(),
+            &perp_market_map,
+            &mut spot_market_map,
+            &mut oracle_map,
+            escrow,
+            &state,
+            is_delegate_signer,
+        )?
+    };
+
+    // The message was stale, replayed, or past its placement deadline. Those
+    // are no-ops rather than failures, so there is nothing to fill.
+    let Some(placed) = placed else {
+        return Ok(());
+    };
+    validate!(
+        placed.market_index == market_index,
+        ErrorCode::InvalidSignedMsgOrderParam,
+        "signed message names market {} but the passed CLOB entry is for {}",
+        placed.market_index,
+        market_index
     )?;
+
+    let filled = fill_signed_msg_taker_order(
+        &ctx,
+        tail,
+        &placed,
+        &state,
+        &perp_market_map,
+        &spot_market_map,
+        &mut oracle_map,
+        &makers_and_referrer,
+        &makers_and_referrer_stats,
+        &mut escrow,
+        referrer_is_accelerated,
+        &clock,
+    )?;
+
+    rest_signed_msg_remainder(
+        &ctx,
+        &placed,
+        filled,
+        &perp_market_map,
+        &spot_market_map,
+        &mut oracle_map,
+        &clock,
+    )?;
+
+    if let Some(ref mut escrow) = escrow {
+        let mut taker = load_mut!(ctx.accounts.user)?;
+        escrow.revoke_completed_orders(&mut taker)?;
+    }
+    Ok(())
+}
+
+/// Route the freshly placed signed-message order and fill what the route
+/// reaches at or better than its auction start price.
+///
+/// The taker did not sign this transaction, so the keeper is a filler and the
+/// obligation rules apply: it owes the taker every maker it had room to carry,
+/// and it must carry every quoter the message named. `require_signed_route`
+/// states the second rule. The route is the message's own list here rather
+/// than a claim the caller makes, because the message is in this transaction —
+/// only a later fill of the rested remainder has to work from the digest.
+#[allow(clippy::too_many_arguments)]
+fn fill_signed_msg_taker_order<'c: 'info, 'info>(
+    ctx: &Context<'info, PlaceSignedMsgTakerOrder<'info>>,
+    tail: &'info [AccountInfo<'info>],
+    placed: &PlacedSignedMsgOrder,
+    state: &State,
+    perp_market_map: &PerpMarketMap<'info>,
+    spot_market_map: &SpotMarketMap<'info>,
+    oracle_map: &mut OracleMap<'info>,
+    makers_and_referrer: &UserMap<'info>,
+    makers_and_referrer_stats: &UserStatsMap<'info>,
+    escrow: &mut Option<RevenueShareEscrowZeroCopyMut<'info>>,
+    referrer_is_accelerated: bool,
+    clock: &Clock,
+) -> Result<u64> {
+    let market_index = placed.market_index;
+    let (direction, unfilled, taker_ref, quote_limit_price) = {
+        let user = load!(ctx.accounts.user)?;
+        let order = user
+            .get_order(placed.order_id)
+            .ok_or(ErrorCode::OrderDoesNotExist)?;
+        let position_base = user
+            .get_perp_position(market_index)
+            .map(|position| position.base_asset_amount)
+            .ok();
+        (
+            match order.direction {
+                PositionDirection::Long => Direction::Long,
+                PositionDirection::Short => Direction::Short,
+            },
+            order.get_base_asset_amount_unfilled(position_base)?,
+            crate::state::prop_amm::ClobUserRefV0 {
+                authority: user.authority,
+                sub_account_id: user.sub_account_id.into(),
+            },
+            // Zero progress prices the auction at its start. A signed-message
+            // order takes only genuine improvement now and rests the rest, so
+            // it never pays its own slippage bound to whoever lands first.
+            FillMode::PlaceAndTake(placed.is_immediate_or_cancel, 0).quote_limit_price(
+                order,
+                clock.slot,
+                perp_market_map.get_ref(&market_index)?.order_tick_size,
+                state.slot_clock(),
+            ),
+        )
+    };
+    if unfilled == 0 {
+        return Ok(0);
+    }
+
+    let (clob_authority, clob_authority_nonce) = crate::signer::find_clob_authority();
+    let route_reference_price = {
+        let oracle_id = perp_market_map.get_ref(&market_index)?.oracle_id();
+        oracle_map.get_price_data(&oracle_id)?.price
+    };
+    let inputs =
+        crate::instructions::QuoteInputs {
+            caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
+            market_index,
+            direction,
+            size: unfilled,
+            users: &crate::state::prop_amm::quoter_wire_users(
+                makers_and_referrer.user_ref_index()?.into_keys().map(
+                    |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
+                        authority,
+                        sub_account_id: sub_account_id.into(),
+                    },
+                ),
+            )?,
+            reference_price: route_reference_price,
+            taker: taker_ref,
+            limit_price: quote_limit_price,
+            clob_authority,
+            clob_authority_nonce,
+        };
+    // Before the quote, so a book never publishes depth standing on a maker
+    // this fill would refuse to settle against.
+    let inputs = crate::instructions::QuoteInputs {
+        caps: crate::instructions::build_user_caps(
+            tail,
+            &inputs,
+            &mut crate::instructions::CapInputs {
+                makers_and_referrer,
+                makers_and_referrer_stats,
+                perp_market_map,
+                spot_market_map,
+                oracle_map,
+                slot: clock.slot,
+                now: clock.unix_timestamp,
+            },
+        )?,
+        ..inputs
+    };
+
+    let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
+    let route = crate::instructions::QuotedRoute::assemble(tail, &inputs, &mut cpi_scratch)?;
+    route.require_baseline(perp_market_map.get_ref(&market_index)?.clob_quoter)?;
+    let digest = crate::state::order_params::route_digest(&placed.route);
+    route.require_signed_route(&placed.route, digest)?;
+
+    let obligation = crate::math::router::FillerObligation {
+        // A signed message is not a signed transaction. The keeper chose the
+        // account list, so it answers for what that list left out.
+        taker_signed: false,
+        tx_accounts: Some(
+            crate::instructions::optional_accounts::tx_writable_lock_count(
+                &ctx.accounts.ix_sysvar.to_account_info(),
+            )?,
+        ),
+        unrouted_quoters: route.unrouted_quoters(&placed.route, digest),
+    };
+
+    let mut book_storage =
+        [crate::math::router::QuoterBook::default(); crate::instructions::MAX_ROUTE_QUOTERS];
+    let books = route.books(&mut book_storage);
+    let mut executor = route.executor(&inputs, clock.slot, clock.unix_timestamp, &mut cpi_scratch);
+    let mut router_inputs = RouterFillInputs {
+        books,
+        executor: &mut executor,
+        protocol_authority: state.signer,
+        obligation,
+    };
+
+    let (base_asset_amount_filled, _) = controller::orders::fill_perp_order_with_router(
+        controller::orders::FillTarget::Slot(placed.order_id),
+        state,
+        &ctx.accounts.user,
+        &ctx.accounts.user_stats,
+        spot_market_map,
+        perp_market_map,
+        oracle_map,
+        &ctx.accounts.filler,
+        &ctx.accounts.filler_stats,
+        makers_and_referrer,
+        makers_and_referrer_stats,
+        None,
+        clock,
+        FillMode::PlaceAndTake(placed.is_immediate_or_cancel, 0),
+        &mut router_inputs,
+        &mut escrow.as_mut(),
+        referrer_is_accelerated,
+    )?;
+    Ok(base_asset_amount_filled)
+}
+
+/// Rest what the route could not fill, on the market's book.
+///
+/// A signed-message order never rests on the DLOB. Either it is
+/// immediate-or-cancel and its residual is cancelled, or the residual migrates
+/// to the CLOB as a taker-origin order and competes for price inside its
+/// activation window. `restable_remainder_price` is the shared rule for which
+/// residuals can rest at all.
+///
+/// The CLOB order id goes back onto the message's own record, which is how the
+/// fill at the activation slot — a different transaction, built by somebody
+/// else — finds the route this taker signed for.
+#[allow(clippy::too_many_arguments)]
+fn rest_signed_msg_remainder<'c: 'info, 'info>(
+    ctx: &Context<'info, PlaceSignedMsgTakerOrder<'info>>,
+    placed: &PlacedSignedMsgOrder,
+    base_asset_amount_filled: u64,
+    perp_market_map: &PerpMarketMap<'info>,
+    spot_market_map: &SpotMarketMap<'info>,
+    oracle_map: &mut OracleMap<'info>,
+    clock: &Clock,
+) -> Result<()> {
+    let market_index = placed.market_index;
+    let remainder = {
+        let user = load!(ctx.accounts.user)?;
+        if user.is_being_liquidated() {
+            return Ok(());
+        }
+        let Ok(order_index) = user.get_order_index(placed.order_id) else {
+            return Ok(());
+        };
+        let order = &user.orders[order_index];
+        if base_asset_amount_filled == 0 && !order.has_auction() {
+            return Ok(());
+        }
+        let position_base = user
+            .get_perp_position(market_index)
+            .map(|position| position.base_asset_amount)
+            .unwrap_or(0);
+        let unfilled = order
+            .get_base_asset_amount_unfilled(Some(position_base))
+            .unwrap_or(0);
+        crate::instructions::restable_remainder_price(order)
+            .map(|price| (order.direction, price, unfilled, order.max_ts))
+    };
+
+    // Immediate-or-cancel asked for no residual. Cancelling it here is what
+    // makes the order safe to accept on this path at all: nothing of it is
+    // stored, so it cannot fill after the window its signer allowed.
+    if placed.is_immediate_or_cancel {
+        if load!(ctx.accounts.user)?
+            .get_order_index(placed.order_id)
+            .is_ok()
+        {
+            controller::orders::cancel_order_by_order_id(
+                placed.order_id,
+                &ctx.accounts.user,
+                perp_market_map,
+                spot_market_map,
+                oracle_map,
+                clock,
+            )?;
+        }
+        return Ok(());
+    }
+
+    let Some((direction, price, unfilled, max_ts)) = remainder else {
+        return Ok(());
+    };
+    if unfilled == 0 {
+        return Ok(());
+    }
+
+    controller::orders::cancel_order_by_order_id(
+        placed.order_id,
+        &ctx.accounts.user,
+        perp_market_map,
+        spot_market_map,
+        oracle_map,
+        clock,
+    )?;
+    let (_, clob_authority_nonce) = crate::signer::find_clob_authority();
+    let rested = crate::instructions::try_place_remainder_on_clob(
+        &ctx.accounts.user,
+        &ctx.accounts.quoter,
+        &ctx.accounts.clob_market.to_account_info(),
+        &ctx.accounts.clob_program.to_account_info(),
+        &ctx.accounts.clob_authority.to_account_info(),
+        clob_authority_nonce,
+        perp_market_map,
+        spot_market_map,
+        oracle_map,
+        market_index,
+        direction,
+        price,
+        unfilled,
+        max_ts,
+        placed.order_id,
+        true,
+        clock,
+    )?;
+
+    if let Some(clob_order_id) = rested {
+        ctx.accounts
+            .signed_msg_user_orders
+            .load_mut()?
+            .set_resting_route(
+                placed.uuid,
+                clob_order_id,
+                crate::state::order_params::route_digest(&placed.route),
+            );
+    }
     Ok(())
 }
 
@@ -909,7 +1250,10 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
     escrow: Option<RevenueShareEscrowZeroCopyMut<'info>>,
     state: &State,
     is_delegate_signer: bool,
-) -> Result<()> {
+) -> Result<(
+    Option<RevenueShareEscrowZeroCopyMut<'info>>,
+    Option<PlacedSignedMsgOrder>,
+)> {
     // Authenticate the signed msg order param message
     let ix_idx = load_current_index_checked(ix_sysvar)?;
     validate!(
@@ -981,16 +1325,12 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
         return Err(print_error!(ErrorCode::InvalidSignedMsgOrderParam)().into());
     }
 
-    // Reject IOC on the signed-message path, mirroring the direct/batch place
-    // paths (which return `InvalidOrderIOC`). Limit orders default `max_ts` to 0,
-    // so a stored IOC limit order would never expire and would rest indefinitely,
-    // filling long after the signer's immediate-or-cancel window — IOC residual
-    // cancellation only exists in place-and-take/make fill modes, not for a
-    // persisted signed order (OtterSec #85).
-    if matching_taker_order_params.is_immediate_or_cancel() {
-        msg!("signed msg taker order cannot be immediate_or_cancel");
-        return Err(print_error!(ErrorCode::InvalidOrderIOC)().into());
-    }
+    // Immediate-or-cancel is allowed here. The hazard it used to carry was a
+    // stored IOC limit order resting forever, because a limit order defaults
+    // `max_ts` to 0 and residual cancellation only existed in the take and make
+    // fill modes. This instruction now routes and fills in the same
+    // transaction, and cancels the residual rather than storing it, so nothing
+    // of an IOC order survives the call.
 
     // Set max slot for the order early so we set correct signed msg order id
     let order_slot = verified_message_and_signature.slot;
@@ -1034,7 +1374,7 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
             max_slot,
             clock.slot
         );
-        return Ok(());
+        return Ok((escrow_zc, None));
     }
 
     // Dont place order if signed msg order already exists
@@ -1046,7 +1386,7 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
         state.slot_clock(),
     ) {
         msg!("SignedMsg order already exists for taker {:?}", taker_key);
-        return Ok(());
+        return Ok((escrow_zc, None));
     }
 
     if let Some(max_margin_ratio) = verified_message_and_signature.max_margin_ratio {
@@ -1101,7 +1441,7 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
                 max_ts,
                 clock.unix_timestamp
             );
-            return Ok(());
+            return Ok((escrow_zc, None));
         }
     }
 
@@ -1197,7 +1537,17 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
         )?;
     }
 
+    // Carry the taker's chosen route on the message's own record. A keeper
+    // builds the fill transaction, so without this the route is a suggestion it
+    // can ignore, and the whole point of the taker signing one is that they
+    // pick which quoters compete. The record outlives the message, which is
+    // what lets a fill in a later transaction still be held to it.
     signed_msg_order_id.order_id = taker.next_order_id;
+    signed_msg_order_id.route_digest = verified_message_and_signature
+        .route
+        .as_deref()
+        .map(crate::state::order_params::route_digest)
+        .unwrap_or(crate::state::order_params::NO_ROUTE_DIGEST);
     signed_msg_account.add_signed_msg_order_id(signed_msg_order_id)?;
 
     let mut builder_order = add_builder_order(
@@ -1226,18 +1576,6 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
         &mut builder_order,
     )?;
 
-    // Bind the taker's chosen route to the order they just signed for. A
-    // keeper builds the fill transaction, so without this the route is a
-    // suggestion it can ignore — and the whole point of the taker signing one
-    // is that they, not the keeper, pick which quoters get to compete.
-    if let Some(route) = verified_message_and_signature.route.as_deref() {
-        let digest = crate::state::order_params::route_digest(route);
-        let order_id = signed_msg_order_id.order_id;
-        if let Some(index) = taker.get_order_index(order_id).ok() {
-            taker.orders[index].route_digest = digest;
-        }
-    }
-
     let order_params_hash =
         base64::encode(solana_program::hash::hash(&borsh::to_vec(&signature).unwrap()).as_ref());
 
@@ -1251,11 +1589,35 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
         ts: clock.unix_timestamp,
     });
 
-    if let Some(ref mut escrow) = escrow_zc {
-        escrow.revoke_completed_orders(taker)?;
-    };
+    // `revoke_completed_orders` is deliberately not run here. The fill leg
+    // follows in the same instruction and completes orders of its own, so the
+    // caller revokes once, after it.
+    Ok((
+        escrow_zc,
+        Some(PlacedSignedMsgOrder {
+            order_id: signed_msg_order_id.order_id,
+            uuid: signed_msg_order_id.uuid,
+            market_index,
+            route: verified_message_and_signature.route.unwrap_or_default(),
+            is_immediate_or_cancel: matching_taker_order_params.is_immediate_or_cancel(),
+        }),
+    ))
+}
 
-    Ok(())
+/// What the placement leg hands the fill leg.
+///
+/// The placement holds the taker's `User` borrowed for its whole body, and the
+/// router fill takes the loader instead, so the two cannot run inside one
+/// borrow. This is the state that has to cross that boundary.
+pub struct PlacedSignedMsgOrder {
+    pub order_id: u32,
+    pub uuid: [u8; 8],
+    pub market_index: u16,
+    /// The custom quoters the taker's message named. The fill must carry every
+    /// one of them; the CLOB and the vAMM are the baseline and are not listed.
+    pub route: Vec<Pubkey>,
+    /// The taker asked for no remainder to rest.
+    pub is_immediate_or_cancel: bool,
 }
 
 #[access_control(
@@ -4556,6 +4918,49 @@ pub struct PlaceSignedMsgTakerOrder<'info> {
     /// in the Anchor framework yet, so this is the safe approach.
     #[account(address = IX_ID)]
     pub ix_sysvar: UncheckedAccount<'info>,
+    /// The keeper's own `User`, credited for the fill it lands. The taker did
+    /// not sign this transaction, so the keeper is a filler and owes the taker
+    /// every maker it had room to carry.
+    #[account(
+        mut,
+        constraint = can_sign_for_user(&filler, &authority)?
+    )]
+    pub filler: AccountLoader<'info, User>,
+    #[account(
+        mut,
+        constraint = is_stats_for_user(&filler, &filler_stats)?
+    )]
+    pub filler_stats: AccountLoader<'info, UserStats>,
+    /// The market's CLOB registry entry. The remainder only ever rests on a
+    /// vetted book, and the entry is the mandatory baseline of a router fill.
+    pub quoter: AccountLoader<'info, QuoterV0>,
+    /// CHECK: validated against the quoter entry's registered execute
+    /// accounts (`ClobMarket::from_quoter`), so a valid entry cannot be
+    /// pointed at an arbitrary account.
+    #[account(mut)]
+    pub clob_market: UncheckedAccount<'info>,
+    /// CHECK: locked to the registered quoter program.
+    #[account(address = quoter.load()?.program_id)]
+    pub clob_program: UncheckedAccount<'info>,
+    /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
+    /// is set to. Its own key, distinct from the per-entry signer a
+    /// third-party quoter is handed: signer privilege is inherited by a
+    /// callee, and this one may place and cancel on any book, for any user.
+    #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
+    pub clob_authority: UncheckedAccount<'info>,
+    /// Wake-hint host for the rested remainder. Optional like every other CLOB
+    /// placement path: a market whose conditions were never initialized must
+    /// still be tradeable, and a missed hint costs crank latency rather than
+    /// liveness, because the fallback poll is the floor.
+    #[account(
+        mut,
+        seeds = [
+            CLOB_CRANK_CONDITIONS_PDA_SEED,
+            quoter.load()?.market.to_le_bytes().as_ref(),
+        ],
+        bump
+    )]
+    pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
 }
 
 #[derive(Accounts)]

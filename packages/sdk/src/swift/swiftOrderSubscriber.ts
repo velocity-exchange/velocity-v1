@@ -5,18 +5,11 @@ import {
 import { VelocityClient } from '../velocityClient';
 import { VelocityEnv } from '../config';
 import {
-	getUserAccountPublicKey,
-	getUserStatsAccountPublicKey,
-} from '../addresses/pda';
-import {
-	MarketType,
-	OptionalOrderParams,
-	PostOnlyParams,
 	SignedMsgOrderParamsDelegateMessage,
 	SignedMsgOrderParamsMessage,
 	UserAccount,
 } from '../types';
-import { Keypair, PublicKey, TransactionInstruction } from '@solana/web3.js';
+import { Keypair } from '@solana/web3.js';
 import nacl from 'tweetnacl';
 import { decodeUTF8 } from 'tweetnacl-util';
 import WebSocket from 'ws';
@@ -252,72 +245,6 @@ export class SwiftOrderSubscriber {
 				this.reconnect();
 			}, 1000);
 		});
-	}
-
-	async getPlaceAndMakeSignedMsgOrderIxs(
-		orderMessageRaw: SwiftOrderMessage,
-		signedMsgOrderParamsMessage:
-			| SignedMsgOrderParamsMessage
-			| SignedMsgOrderParamsDelegateMessage,
-		makerOrderParams: OptionalOrderParams
-	): Promise<TransactionInstruction[]> {
-		if (!this.userAccountGetter) {
-			throw new Error('userAccountGetter must be set to use this function');
-		}
-
-		const signedMsgOrderParamsBuf = Buffer.from(
-			orderMessageRaw.order_message,
-			'hex'
-		);
-
-		const isDelegateSigner = signedMsgOrderParamsBuf
-			.slice(0, 8)
-			.equals(
-				Uint8Array.from(
-					Buffer.from(
-						sha256('global' + ':' + 'SignedMsgOrderParamsDelegateMessage')
-					).slice(0, 8)
-				)
-			);
-		const signedMessage = this.velocityClient.decodeSignedMsgOrderParamsMessage(
-			signedMsgOrderParamsBuf,
-			isDelegateSigner
-		);
-
-		const takerAuthority = new PublicKey(orderMessageRaw.taker_authority);
-		const signingAuthority = new PublicKey(orderMessageRaw.signing_authority);
-		const takerUserPubkey = isDelegateSigner
-			? (signedMessage as SignedMsgOrderParamsDelegateMessage).takerPubkey
-			: await getUserAccountPublicKey(
-					this.velocityClient.program.programId,
-					takerAuthority,
-					(signedMessage as SignedMsgOrderParamsMessage).subAccountId
-			  );
-		const takerUserAccount = await this.userAccountGetter.mustGetUserAccount(
-			takerUserPubkey.toString()
-		);
-		const ixs = await this.velocityClient.getPlaceAndMakeSignedMsgPerpOrderIxs(
-			{
-				orderParams: signedMsgOrderParamsBuf,
-				signature: Buffer.from(orderMessageRaw.order_signature, 'base64'),
-			},
-			decodeUTF8(orderMessageRaw.uuid),
-			{
-				taker: takerUserPubkey,
-				takerUserAccount,
-				takerStats: getUserStatsAccountPublicKey(
-					this.velocityClient.program.programId,
-					takerUserAccount.authority
-				),
-				signingAuthority: signingAuthority,
-			},
-			Object.assign({}, makerOrderParams, {
-				postOnly: PostOnlyParams.MUST_POST_ONLY,
-				immediateOrCancel: true,
-				marketType: MarketType.PERP,
-			})
-		);
-		return ixs;
 	}
 
 	private startHeartbeatTimer() {

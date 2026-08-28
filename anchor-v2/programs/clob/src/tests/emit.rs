@@ -200,14 +200,15 @@ fn the_execute_record_emits_the_bytes_the_event_impl_would() {
         // Boxed: the program keeps this buffer in its own stack frame, and the
         // test has no reason to put ~2KB on the host stack either.
         let mut log = Box::new(LogBuf::<EXECUTE_RECORD_LOG_BYTES>::new());
-        write_execute_record(&mut log, -7, 9, 23, 1, &fills, cancelled_client_order_id).unwrap();
+        let cancelled: Vec<u32> = cancelled_client_order_id.into_iter().collect();
+        write_execute_record(&mut log, -7, 9, 23, 1, &fills, &cancelled).unwrap();
         let record = ExecuteRecordV0 {
             ts: -7,
             slot: 9,
             market_index: 23,
             direction: 1,
             fills: fills.clone(),
-            cancelled_client_order_ids: cancelled_client_order_id.into_iter().collect(),
+            cancelled_client_order_ids: cancelled.clone(),
         };
         assert_eq!(
             log.as_slice(),

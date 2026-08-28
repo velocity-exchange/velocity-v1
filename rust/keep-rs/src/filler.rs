@@ -358,10 +358,11 @@ impl FillerBot {
                                     ).await;
                                 }
                                 SwiftEval::NotFillable(reason) => {
-                                    // Well-formed but not marketable yet. Rather than dropping it,
-                                    // place it on-chain (no fill) so it becomes a regular resting
-                                    // order that the normal per-slot fill path will pick up while
-                                    // it remains live. Skip if it can no longer be placed (the
+                                    // Well-formed but not marketable against the crosses this bot
+                                    // found. Place it anyway: the placement routes the order
+                                    // itself, and whatever it cannot fill rests on the market's
+                                    // book as a taker-origin remainder, where the activation-slot
+                                    // auction reaches it. Skip if it can no longer be placed (the
                                     // program would reject/no-op it) to avoid wasting gas.
                                     let now_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
                                     let order_slot = signed_order.slot();
@@ -380,6 +381,7 @@ impl FillerBot {
                                             filler_subaccount,
                                             signed_order,
                                             slot,
+                                            perp_market.clob_quoter,
                                             tx_worker_ref.clone(),
                                         ).await;
                                         metrics.swift_placed.inc();
@@ -1230,6 +1232,13 @@ async fn try_swift_fill(
         clob_authority: derive_clob_authority(),
         crank_conditions: Some(derive_clob_crank_conditions(taker_order.market_index)),
     });
+    // The placement routes and rests on the book, so it cannot be built at all
+    // without the book's accounts. A market whose registry entry is missing has
+    // no venue for this order.
+    let Some(clob_place) = clob_fill else {
+        log::warn!(target: TARGET, "no clob registry entry for market {}; cannot place signed-message order", taker_order.market_index);
+        return;
+    };
 
     // The book's own makers. The DLOB cross above cannot name them: its
     // orders live in `User.orders`, and a book order lives on the book. A
@@ -1270,7 +1279,7 @@ async fn try_swift_fill(
         );
         let tx_builder = tx_builder
             .with_priority_fee(priority_fee, Some(cu_limit))
-            .place_swift_order(&swift_order, &taker_account_data);
+            .place_swift_order(&swift_order, &taker_account_data, clob_place);
         // A borrow whose spot market has not accrued interest recently is
         // valued too low in the fill's margin check. Crank the stale markets
         // in the same transaction, ahead of the fill.
@@ -1577,6 +1586,9 @@ async fn try_swift_place(
     filler_subaccount: Pubkey,
     swift_order: SignedOrderInfo,
     slot: u64,
+    // The market's canonical CLOB registry entry (`PerpMarket.clob_quoter`).
+    // The placement routes through it and rests the remainder on its book.
+    clob_quoter: Pubkey,
     tx_worker_ref: TxSender,
 ) {
     let market_index = swift_order.order_params().market_index;
@@ -1595,6 +1607,19 @@ async fn try_swift_place(
         }
     };
 
+    let Ok(clob_entry) = velocity.get_account_value::<QuoterV0>(&clob_quoter).await else {
+        log::warn!(target: TARGET, "no clob registry entry for market {market_index}; cannot place signed-message order");
+        return;
+    };
+    let clob_place = ClobFillAccounts {
+        market_index,
+        quoter: clob_quoter,
+        clob_market: clob_entry.response_account,
+        clob_program: clob_entry.program_id,
+        clob_authority: derive_clob_authority(),
+        crank_conditions: Some(derive_clob_crank_conditions(market_index)),
+    };
+
     let tx = TransactionBuilder::new(
         velocity.program_data(),
         filler_subaccount,
@@ -1602,7 +1627,7 @@ async fn try_swift_place(
         false,
     )
     .with_priority_fee(priority_fee, Some(cu_limit))
-    .place_swift_order(&swift_order, &taker_account_data)
+    .place_swift_order(&swift_order, &taker_account_data, clob_place)
     .build();
 
     tx_worker_ref

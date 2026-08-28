@@ -80,8 +80,8 @@ use {
             },
             scale_order_params::ScaleOrderParams,
             signed_msg_user::{
-                SignedMsgOrderId, SignedMsgUserOrders, SignedMsgUserOrdersLoader,
-                SignedMsgWsDelegates, SIGNED_MSG_PDA_SEED, SIGNED_MSG_WS_PDA_SEED,
+                SignedMsgOrderId, SignedMsgUserOrders, SignedMsgWsDelegates, SIGNED_MSG_PDA_SEED,
+                SIGNED_MSG_WS_PDA_SEED,
             },
             spot_market::{SpotBalanceType, SpotMarket},
             spot_market_map::{
@@ -3473,7 +3473,7 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
             },
         };
         controller::orders::fill_perp_order_with_router(
-            order_id,
+            controller::orders::FillTarget::Slot(order_id),
             &state,
             user_loader,
             user_stats_loader,
@@ -3796,125 +3796,6 @@ pub fn place_and_make_perp_order<'c: 'info, 'info>(
                 )?;
             }
         }
-    }
-
-    Ok(())
-}
-
-#[access_control(
-    fill_not_paused(&ctx.accounts.state)
-)]
-pub fn handle_place_and_make_signed_msg_perp_order<'c: 'info, 'info>(
-    ctx: Context<'info, PlaceAndMakeSignedMsg<'info>>,
-    params: OrderParams,
-    signed_msg_order_uuid: [u8; 8],
-) -> Result<()> {
-    let clock = &Clock::get()?;
-    let state = ctx.accounts.state.load()?;
-
-    let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
-        remaining_accounts_iter,
-        &get_writable_perp_market_set(params.market_index),
-        &MarketSet::new(),
-        Clock::get()?.slot,
-        state.slot_clock(),
-        Some(state.oracle_guard_rails),
-    )?;
-
-    if !params.is_immediate_or_cancel()
-        || params.post_only == PostOnlyParam::None
-        || params.order_type != OrderType::Limit
-    {
-        msg!("place_and_make must use IOC post only limit order");
-        return Err(print_error!(ErrorCode::InvalidOrderIOCPostOnly)().into());
-    }
-
-    // No `update_amm` here: place_and_make posts a passive IOC post-only
-    // maker order. `place_perp_order` doesn't fill against the AMM, so
-    // peg/reserves freshness isn't required.
-
-    let user_key = ctx.accounts.user.key();
-    let mut user = load_mut!(ctx.accounts.user)?;
-
-    controller::orders::place_perp_order(
-        &state,
-        &mut user,
-        user_key,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
-        clock,
-        params,
-        PlaceOrderOptions::default(),
-        &mut None,
-    )?;
-
-    let (order_id, authority) = (user.get_last_order_id(), user.authority);
-
-    drop(user);
-
-    let (mut makers_and_referrer, mut makers_and_referrer_stats) =
-        load_user_maps(remaining_accounts_iter, true)?;
-    makers_and_referrer.insert(ctx.accounts.user.key(), ctx.accounts.user.clone())?;
-    makers_and_referrer_stats.insert(authority, ctx.accounts.user_stats.clone())?;
-
-    let builder_codes_enabled = state.builder_codes_enabled();
-    let mut escrow = if builder_codes_enabled {
-        get_revenue_share_escrow_account(
-            remaining_accounts_iter,
-            &load!(ctx.accounts.taker)?.authority,
-        )?
-    } else {
-        None
-    };
-    let referrer_is_accelerated =
-        get_referrer_accelerated_status(remaining_accounts_iter, escrow.as_ref())?;
-
-    let taker_signed_msg_account = ctx.accounts.taker_signed_msg_user_orders.load()?;
-    let taker_order_id = taker_signed_msg_account
-        .iter()
-        .find(|signed_msg_order_id| signed_msg_order_id.uuid == signed_msg_order_uuid)
-        .ok_or(ErrorCode::SignedMsgOrderDoesNotExist)?
-        .order_id;
-
-    controller::orders::fill_perp_order(
-        taker_order_id,
-        &state,
-        &ctx.accounts.taker,
-        &ctx.accounts.taker_stats,
-        &spot_market_map,
-        &perp_market_map,
-        &mut oracle_map,
-        &ctx.accounts.user.clone(),
-        &ctx.accounts.user_stats.clone(),
-        &makers_and_referrer,
-        &makers_and_referrer_stats,
-        Some(order_id),
-        clock,
-        FillMode::PlaceAndMake,
-        &mut escrow.as_mut(),
-        referrer_is_accelerated,
-    )?;
-
-    let order_exists = load!(ctx.accounts.user)?
-        .orders
-        .iter()
-        .any(|order| order.order_id == order_id && order.status == OrderStatus::Open);
-
-    if order_exists {
-        controller::orders::cancel_order_by_order_id(
-            order_id,
-            &ctx.accounts.user,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
-            clock,
-        )?;
     }
 
     Ok(())
@@ -5913,35 +5794,6 @@ pub struct PlaceAndMake<'info> {
         constraint = is_stats_for_user(&taker, &taker_stats)?
     )]
     pub taker_stats: AccountLoader<'info, UserStats>,
-    pub authority: Signer<'info>,
-}
-
-#[derive(Accounts)]
-pub struct PlaceAndMakeSignedMsg<'info> {
-    pub state: AccountLoader<'info, State>,
-    #[account(
-        mut,
-        constraint = can_sign_for_user(&user, &authority)?
-    )]
-    pub user: AccountLoader<'info, User>,
-    #[account(
-        mut,
-        constraint = is_stats_for_user(&user, &user_stats)?
-    )]
-    pub user_stats: AccountLoader<'info, UserStats>,
-    #[account(mut)]
-    pub taker: AccountLoader<'info, User>,
-    #[account(
-        mut,
-        constraint = is_stats_for_user(&taker, &taker_stats)?
-    )]
-    pub taker_stats: AccountLoader<'info, UserStats>,
-    #[account(
-        seeds = [SIGNED_MSG_PDA_SEED.as_bytes(), taker.load()?.authority.as_ref()],
-        bump,
-    )]
-    /// CHECK: checked in SignedMsgUserOrdersZeroCopy checks
-    pub taker_signed_msg_user_orders: UncheckedAccount<'info>,
     pub authority: Signer<'info>,
 }
 

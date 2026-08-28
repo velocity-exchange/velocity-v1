@@ -9673,13 +9673,22 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Submits a previously off-chain-signed swift/signed-msg taker order on-chain: verifies the
-	 * ed25519 signature via the sysvar-instructions program and records the order in the taker's
-	 * `SignedMsgUserOrders` account (see `initializeSignedMsgUserOrders`, required beforehand).
-	 * This only registers the order — it does not place or fill it against the market; a keeper
-	 * (or `placeAndMakeSignedMsgPerpOrder`) still performs the actual place/fill.
+	 * Submits a previously off-chain-signed swift/signed-msg taker order on-chain and completes it
+	 * in the same instruction: verifies the ed25519 signature via the sysvar-instructions program,
+	 * records the order in the taker's `SignedMsgUserOrders` account (see
+	 * `initializeSignedMsgUserOrders`, required beforehand), routes it through the market's quoters
+	 * and books for whatever fills at or better than its auction start price, and rests the
+	 * remainder on the market's CLOB. A signed-message order never rests on the DLOB.
+	 *
+	 * The caller is a filler, not the taker: it must carry every quoter the signed message named,
+	 * and it owes the taker every maker it had room for. Pass those quoter entries and their
+	 * registered CPI accounts in `remainingAccounts` after the market/oracle section.
 	 * @param signedSignedMsgOrderParams - The signed order payload from `signSignedMsgOrderParamsMessage`.
 	 * @param marketIndex - Perp market index the signed order targets.
+	 * @param fillerInfo - Optional; the keeper's own `User`/`UserStats`, credited for the fill it
+	 * lands. Defaults to the client's own margin account.
+	 * @param clobAccounts - Optional; the market's CLOB registry entry and book accounts, where the
+	 * remainder rests. Defaults to what the market's registry entry names.
 	 * @param takerInfo - Taker's account/authority info; `signingAuthority` is the delegate or
 	 * direct authority that produced the signature (compared against `takerUserAccount.delegate`
 	 * to determine whether the message decodes as the delegate-signer variant).
@@ -9702,14 +9711,27 @@ export class VelocityClient {
 		},
 		precedingIxs: TransactionInstruction[] = [],
 		overrideCustomIxIndex?: number,
-		txParams?: TxParams
+		txParams?: TxParams,
+		fillerInfo?: {
+			filler: PublicKey;
+			fillerStats: PublicKey;
+		},
+		clobAccounts?: {
+			quoter: PublicKey;
+			clobMarket: PublicKey;
+			clobProgram: PublicKey;
+			clobAuthority: PublicKey;
+			crankConditions?: PublicKey;
+		}
 	): Promise<TransactionSignature> {
 		const ixs = await this.getPlaceSignedMsgTakerPerpOrderIxs(
 			signedSignedMsgOrderParams,
 			marketIndex,
 			takerInfo,
 			precedingIxs,
-			overrideCustomIxIndex
+			overrideCustomIxIndex,
+			fillerInfo,
+			clobAccounts
 		);
 		const { txSig } = await this.sendTransaction(
 			await this.buildTransaction(ixs, txParams),
@@ -9742,8 +9764,27 @@ export class VelocityClient {
 			signingAuthority: PublicKey;
 		},
 		precedingIxs: TransactionInstruction[] = [],
-		overrideCustomIxIndex?: number
+		overrideCustomIxIndex?: number,
+		fillerInfo?: {
+			filler: PublicKey;
+			fillerStats: PublicKey;
+		},
+		clobAccounts?: {
+			quoter: PublicKey;
+			clobMarket: PublicKey;
+			clobProgram: PublicKey;
+			clobAuthority: PublicKey;
+			crankConditions?: PublicKey;
+		}
 	): Promise<TransactionInstruction[]> {
+		// Both default to what the client can derive: the caller's own margin
+		// account is the filler, and the market's registry entry names its own
+		// book. Nothing here is configuration a caller could get wrong.
+		const filler = fillerInfo ?? {
+			filler: await this.getUserAccountPublicKey(),
+			fillerStats: this.getUserStatsAccountPublicKey(),
+		};
+		const clob = clobAccounts ?? (await this.getClobAccounts(marketIndex));
 		const isDelegateSigner = takerInfo.signingAuthority.equals(
 			takerInfo.takerUserAccount.delegate
 		);
@@ -9764,10 +9805,12 @@ export class VelocityClient {
 			? [QUOTE_SPOT_MARKET_INDEX]
 			: undefined;
 
+		// The market is writable: this instruction fills as well as places, so
+		// the fill mutates the market it routes through.
 		const remainingAccounts = this.getRemainingAccounts({
 			userAccounts: [takerInfo.takerUserAccount],
 			useMarketLastSlotCache: false,
-			readablePerpMarketIndex: marketIndex,
+			writablePerpMarketIndexes: [marketIndex],
 			writableSpotMarketIndexes,
 		});
 
@@ -9816,171 +9859,21 @@ export class VelocityClient {
 						),
 						authority: this.wallet.publicKey,
 						ixSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
+						filler: filler.filler,
+						fillerStats: filler.fillerStats,
+						quoter: clob.quoter,
+						clobMarket: clob.clobMarket,
+						clobProgram: clob.clobProgram,
+						clobAuthority: clob.clobAuthority,
+						// An omitted `Option` account is encoded as the program
+						// id, which the program decodes as `None`.
+						crankConditions: clob.crankConditions ?? this.program.programId,
 					},
 					remainingAccounts,
 				}
 			);
 
 		return [signedMsgOrderParamsSignatureIx, placeTakerSignedMsgPerpOrderIx];
-	}
-
-	/**
-	 * Verifies and registers a taker's off-chain signed swift/signed-msg order (same as
-	 * `placeSignedMsgTakerOrder`) and, in the same transaction, places a maker order and fills the
-	 * taker order against it in one shot — the signed-msg analog of `placeAndMakePerpOrder`.
-	 * `orderParams` (the maker order) is subject to the same IOC/post-only/limit requirement as
-	 * `placeAndMakePerpOrder`.
-	 * @param signedSignedMsgOrderParams - The taker's signed order payload.
-	 * @param signedMsgOrderUuid - UUID identifying the signed-msg order, used by the program to
-	 * dedupe/match it against the recorded `SignedMsgUserOrders` entry.
-	 * @param takerInfo - Taker's account/authority info; see `placeSignedMsgTakerOrder`.
-	 * @param orderParams - Maker order to place; `baseAssetAmount` is BASE_PRECISION (1e9), `price`
-	 * is PRICE_PRECISION (1e6). Must have `orderType: LIMIT`, `postOnly` set, and be IOC.
-	 * @param txParams - Optional compute-unit/priority-fee overrides.
-	 * @param subAccountId - Sub-account placing the maker order; defaults to the active sub-account.
-	 * @param precedingIxs - Instructions preceding these in the final transaction (used only to
-	 * compute the ed25519-verify instruction's sysvar index).
-	 * @param overrideCustomIxIndex - Explicit sysvar-instructions index override.
-	 * @param takerEscrow - Optional decoded escrow used to avoid automatic UserStats lookup.
-	 * @returns The transaction signature.
-	 */
-	public async placeAndMakeSignedMsgPerpOrder(
-		signedSignedMsgOrderParams: SignedMsgOrderParams,
-		signedMsgOrderUuid: Uint8Array,
-		takerInfo: {
-			taker: PublicKey;
-			takerStats: PublicKey;
-			takerUserAccount: UserAccount;
-			signingAuthority: PublicKey;
-		},
-		orderParams: OptionalOrderParams,
-		txParams?: TxParams,
-		subAccountId?: number,
-		precedingIxs: TransactionInstruction[] = [],
-		overrideCustomIxIndex?: number,
-		takerEscrow?: RevenueShareEscrowAccount
-	): Promise<TransactionSignature> {
-		const ixs = await this.getPlaceAndMakeSignedMsgPerpOrderIxs(
-			signedSignedMsgOrderParams,
-			signedMsgOrderUuid,
-			takerInfo,
-			orderParams,
-			subAccountId,
-			precedingIxs,
-			overrideCustomIxIndex,
-			takerEscrow
-		);
-		const { txSig, slot } = await this.sendTransaction(
-			await this.buildTransaction(ixs, txParams),
-			[],
-			this.opts
-		);
-
-		this.cachePerpMarketSlot(slot, orderParams.marketIndex);
-		return txSig;
-	}
-
-	/**
-	 * Builds the instructions for `placeAndMakeSignedMsgPerpOrder`: the taker signature-verify +
-	 * registration instructions from `getPlaceSignedMsgTakerPerpOrderIxs`, followed by the
-	 * `placeAndMakeSignedMsgPerpOrder` program instruction. See `placeAndMakeSignedMsgPerpOrder`
-	 * for semantics.
-	 * @param signedSignedMsgOrderParams - The taker's signed order payload.
-	 * @param signedMsgOrderUuid - UUID identifying the signed-msg order.
-	 * @param takerInfo - Taker's account/authority info.
-	 * @param orderParams - Maker order to place; see `placeAndMakeSignedMsgPerpOrder` for field
-	 * precisions and required order shape.
-	 * @param subAccountId - Sub-account placing the maker order; defaults to the active sub-account.
-	 * @param precedingIxs - Instructions preceding these in the final transaction (used only to
-	 * compute the ed25519-verify instruction's sysvar index).
-	 * @param overrideCustomIxIndex - Explicit sysvar-instructions index override.
-	 * @param takerEscrow - See `placeAndMakeSignedMsgPerpOrder`.
-	 * @returns `[ed25519VerifyIx, placeSignedMsgTakerOrderIx, placeAndMakeSignedMsgPerpOrderIx]`.
-	 */
-	public async getPlaceAndMakeSignedMsgPerpOrderIxs(
-		signedSignedMsgOrderParams: SignedMsgOrderParams,
-		signedMsgOrderUuid: Uint8Array,
-		takerInfo: {
-			taker: PublicKey;
-			takerStats: PublicKey;
-			takerUserAccount: UserAccount;
-			signingAuthority: PublicKey;
-		},
-		orderParams: OptionalOrderParams,
-		subAccountId?: number,
-		precedingIxs: TransactionInstruction[] = [],
-		overrideCustomIxIndex?: number,
-		// Fills the taker's order in the same instruction. Referral accounts are
-		// discovered automatically when no decoded escrow is supplied.
-		takerEscrow?: RevenueShareEscrowAccount
-	): Promise<TransactionInstruction[]> {
-		const [signedMsgOrderSignatureIx, placeTakerSignedMsgPerpOrderIx] =
-			await this.getPlaceSignedMsgTakerPerpOrderIxs(
-				signedSignedMsgOrderParams,
-				orderParams.marketIndex,
-				takerInfo,
-				precedingIxs,
-				overrideCustomIxIndex
-			);
-
-		orderParams = getOrderParams(orderParams, { marketType: MarketType.PERP });
-		const userStatsPublicKey = this.getUserStatsAccountPublicKey();
-		const user = await this.getUserAccountPublicKey(subAccountId);
-
-		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [
-				this.getUserAccountOrThrow(subAccountId),
-				takerInfo.takerUserAccount,
-			],
-			useMarketLastSlotCache: false,
-			writablePerpMarketIndexes: [orderParams.marketIndex],
-		});
-
-		const isDelegateSigner = takerInfo.signingAuthority.equals(
-			takerInfo.takerUserAccount.delegate
-		);
-		const borshBuf = Buffer.from(
-			signedSignedMsgOrderParams.orderParams.toString(),
-			'hex'
-		);
-
-		const signedMessage = this.decodeSignedMsgOrderParamsMessage(
-			borshBuf,
-			isDelegateSigner
-		);
-		const takerRevenueShareMetas = await this.getTakerRevenueShareAccountMetas(
-			takerInfo.takerUserAccount.authority,
-			hasBuilderParams(signedMessage),
-			takerEscrow
-		);
-		remainingAccounts.push(...takerRevenueShareMetas);
-
-		const placeAndMakeIx =
-			await this.program.instruction.placeAndMakeSignedMsgPerpOrder(
-				orderParams,
-				signedMsgOrderUuid,
-				{
-					accounts: {
-						state: await this.getStatePublicKey(),
-						user,
-						userStats: userStatsPublicKey,
-						taker: takerInfo.taker,
-						takerStats: takerInfo.takerStats,
-						authority: this.wallet.publicKey,
-						takerSignedMsgUserOrders: getSignedMsgUserAccountPublicKey(
-							this.program.programId,
-							takerInfo.takerUserAccount.authority
-						),
-					},
-					remainingAccounts,
-				}
-			);
-
-		return [
-			signedMsgOrderSignatureIx,
-			placeTakerSignedMsgPerpOrderIx,
-			placeAndMakeIx,
-		];
 	}
 
 	/**

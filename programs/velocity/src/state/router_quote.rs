@@ -135,15 +135,21 @@ pub struct QuotedRowV0 {
     /// The quoter's own handle for the order. Zero when the row is not an
     /// order but a rung attributed to the quoter's user.
     pub order_id: u64,
+    /// The other half of the handle, for a quoter that keeps an arena. Zero
+    /// when it does not.
+    pub node_index: u32,
     /// Authority of the `User` this row settles against.
     pub authority: Pubkey,
     pub sub_account_id: u16,
     /// `L3_ROW_FLAG_*`, as the quoter reported them.
     pub flags: u8,
-    pub padding: [u8; 5],
+    pub padding: [u8; 1],
+    /// Slot the order was placed in. Zero when the quoter keeps no such
+    /// record.
+    pub placed_slot: u64,
 }
 
-const_assert_eq!(std::mem::size_of::<QuotedRowV0>(), 64);
+const_assert_eq!(std::mem::size_of::<QuotedRowV0>(), 72);
 const_assert_eq!(
     std::mem::size_of::<QuotedRowV0>(),
     std::mem::size_of::<L3RowV0>()
@@ -198,11 +204,15 @@ pub struct RouterQuoteBufferV0 {
 
 // Zero-copy layout invariant (docs/alignment-and-native-offsets.md): no u128
 // fields, and size including the 8-byte discriminator is ≡ 8 (mod 16).
-const_assert_eq!(std::mem::size_of::<RouterQuoteBufferV0>(), 41728);
+const_assert_eq!(std::mem::size_of::<RouterQuoteBufferV0>(), 42752);
 const_assert_eq!((RouterQuoteBufferV0::SIZE - 8) % 16, 0);
 
 impl Size for RouterQuoteBufferV0 {
-    const SIZE: usize = 41736;
+    // Derived, not written down: the struct's own width plus the
+    // discriminator. A hand-copied number here is a buffer a caller allocates
+    // too small the moment a row grows, and the overrun lands at the far end
+    // of a write rather than at the change that caused it.
+    const SIZE: usize = 8 + std::mem::size_of::<RouterQuoteBufferV0>();
 }
 
 impl RouterQuoteBufferV0 {

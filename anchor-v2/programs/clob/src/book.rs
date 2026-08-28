@@ -62,12 +62,12 @@ use {
         state::{
             response_pointer, user_set_within_capacity, CancelAllOutcome, CancelSidesExt,
             CancelSidesV0, CancelledRemainderV0, ClobDirectionExt, ClobHeaderV0, ClobMarketV0,
-            ClobSideExt, CompletedOrderV0, Direction, ExecuteOutcome, L3RowV0, MarketConfigV0,
-            OrderBitFlag, OrderNodeV0, OrderRefV0, PartiallyFilledOrderV0, PlaceOrderParams,
-            PriceLevel, RemovedOrder, ResponsePointerV0, Side, UserBalanceChangeV0, UserCapsV0,
-            UserRefV0, BASE_PRECISION, CANCEL_ALL_ORDERS_CEILING, EXECUTE_FILLS_CEILING,
-            EXECUTE_USERS_CEILING, L3_ROWS_CEILING, QUOTE_LEVELS_CEILING, USER_CAPS_CAPACITY,
-            USER_EXCLUSION_BITMAP_BYTES, USER_SET_CAPACITY, ZERO_ADDRESS,
+            ClobSideExt, CompletedOrderV0, Direction, ExecuteOutcome, FilledOrder, L3RowV0,
+            MarketConfigV0, OrderBitFlag, OrderNodeV0, OrderRefV0, PartiallyFilledOrderV0,
+            PlaceOrderParams, PriceLevel, RemovedOrder, ResponsePointerV0, Side,
+            UserBalanceChangeV0, UserCapsV0, UserRefV0, BASE_PRECISION, CANCEL_ALL_ORDERS_CEILING,
+            EXECUTE_FILLS_CEILING, EXECUTE_USERS_CEILING, L3_ROWS_CEILING, QUOTE_LEVELS_CEILING,
+            USER_CAPS_CAPACITY, USER_EXCLUSION_BITMAP_BYTES, USER_SET_CAPACITY, ZERO_ADDRESS,
         },
     },
     anchor_lang_v2::{address_eq, prelude::*},
@@ -100,15 +100,24 @@ pub trait ClobBook {
         config: MarketConfigV0,
     ) -> Result<()>;
     fn place(&mut self, params: PlaceOrderParams) -> Result<OrderRefV0>;
-    fn cancel(&mut self, user: UserRefV0, order_ref: OrderRefV0) -> Result<RemovedOrder>;
+    fn cancel(
+        &mut self,
+        user: UserRefV0,
+        order_ref: OrderRefV0,
+        slot: u64,
+        force: bool,
+    ) -> Result<RemovedOrder>;
     fn cancel_all(
         &mut self,
         user: UserRefV0,
         sides: CancelSidesV0,
+        slot: u64,
+        force: bool,
         removed_ids: &mut dyn FnMut(u32) -> Result<()>,
     ) -> Result<CancelAllOutcome>;
     fn evict_worst(&mut self, side: Side) -> Result<RemovedOrder>;
     fn remove_expired(&mut self, order_ref: OrderRefV0, now: i64) -> Result<RemovedOrder>;
+    fn fill(&mut self, order_ref: OrderRefV0, base_asset_amount: u64) -> Result<FilledOrder>;
     #[allow(clippy::too_many_arguments)]
     fn quote(
         &mut self,
@@ -685,9 +694,24 @@ impl ClobBook for ClobMarketV0 {
 
     /// Fails closed on a stale hint: node out of range, free, or holding a
     /// different order. `user` must own the order.
-    fn cancel(&mut self, user: UserRefV0, order_ref: OrderRefV0) -> Result<RemovedOrder> {
+    ///
+    /// A taker-origin remainder inside its activation window is refused unless
+    /// `force`. See [`ClobError::TakerOriginBound`] for why the window binds.
+    /// `crank_taker_origin_cross` is unaffected: it only ever reaches an order
+    /// the book reports as matchable, which is one that has already activated.
+    fn cancel(
+        &mut self,
+        user: UserRefV0,
+        order_ref: OrderRefV0,
+        slot: u64,
+        force: bool,
+    ) -> Result<RemovedOrder> {
         let node = live_order(self, order_ref)?;
         require!(node.user_ref() == user, ClobError::OrderUserMismatch);
+        require!(
+            force || !node.is_taker_origin() || node.is_active(slot),
+            ClobError::TakerOriginBound
+        );
         let removed = removed_order(&node);
         remove_order(self, order_ref.node_index)?;
         validate_single_removal(self, &node, order_ref.node_index)?;
@@ -718,6 +742,8 @@ impl ClobBook for ClobMarketV0 {
         &mut self,
         user: UserRefV0,
         sides: CancelSidesV0,
+        slot: u64,
+        force: bool,
         removed_ids: &mut dyn FnMut(u32) -> Result<()>,
     ) -> Result<CancelAllOutcome> {
         let ceiling = CANCEL_ALL_ORDERS_CEILING as u32;
@@ -725,6 +751,11 @@ impl ClobBook for ClobMarketV0 {
             exhaustive: true,
             ..Default::default()
         };
+        // A bound remainder is passed over rather than failing the sweep, so a
+        // maker withdrawing a ladder is not blocked by one order it cannot
+        // pull yet. It is reported through `exhaustive` after both sides run —
+        // setting that flag inside the walk would stop the other side too.
+        let mut skipped_bound = false;
         // Running across both sides, so the cap bounds the call rather than
         // each side of it.
         let mut total_removed = 0u32;
@@ -742,6 +773,10 @@ impl ClobBook for ClobMarketV0 {
             let mut orders_removed = 0u32;
             walk_side(self, side, |book, index, node| {
                 if node.user_ref() != user {
+                    return Ok(Walk::Continue);
+                }
+                if !force && node.is_taker_origin() && !node.is_active(slot) {
+                    skipped_bound = true;
                     return Ok(Walk::Continue);
                 }
                 if total_removed >= ceiling {
@@ -777,6 +812,9 @@ impl ClobBook for ClobMarketV0 {
                     outcome.ask_orders = orders_removed;
                 }
             }
+        }
+        if skipped_bound {
+            outcome.exhaustive = false;
         }
         if owes_expiry_repair {
             self.recompute_wake_hints(true, None)?;
@@ -831,6 +869,54 @@ impl ClobBook for ClobMarketV0 {
         validate_single_removal(self, &node, order_ref.node_index)?;
         self.validate_book()?;
         Ok(removed)
+    }
+
+    /// Take size off a resting order the caller filled elsewhere.
+    ///
+    /// Only a taker-origin order. An ordinary maker quote is filled by
+    /// `execute`, where this book walks its own side and knows what it gave
+    /// away. A taker remainder is the other case: it *aggresses*, and the
+    /// prices it aggresses against are not all here — a quoter or the vAMM may
+    /// be the better one, and this program can see neither. So velocity does
+    /// that matching and reports it back, and this is where the book learns
+    /// what happened to an order of its own.
+    ///
+    /// The order keeps its place in the queue and its id. That is the whole
+    /// reason this exists rather than a cancel and a fresh placement: a
+    /// remainder that is partly filled has not changed its mind about price,
+    /// and re-placing it would send it to the back of its own level.
+    ///
+    /// A leftover under `min_order_size` is culled, exactly as `execute` culls
+    /// one, and reported so the caller can unwind the reservation it still
+    /// holds for it.
+    fn fill(&mut self, order_ref: OrderRefV0, base_asset_amount: u64) -> Result<FilledOrder> {
+        let node = live_order(self, order_ref)?;
+        require!(node.is_taker_origin(), ClobError::OrderNotTakerOrigin);
+        require!(
+            base_asset_amount > 0 && base_asset_amount <= node.base_asset_amount,
+            ClobError::FillExceedsOrder
+        );
+        let remainder = node.base_asset_amount - base_asset_amount;
+        let culls = remainder > 0 && remainder < self.min_order_size;
+        let mut filled = FilledOrder {
+            order_id: node.order_id,
+            client_order_id: node.client_order_id,
+            base_asset_amount,
+            culled_base_asset_amount: 0,
+            removed: false,
+        };
+        if remainder == 0 || culls {
+            filled.culled_base_asset_amount = remainder;
+            filled.removed = true;
+            remove_order(self, order_ref.node_index)?;
+            validate_single_removal(self, &node, order_ref.node_index)?;
+        } else {
+            let mut reduced = node;
+            reduced.base_asset_amount = remainder;
+            self.write_node(order_ref.node_index, reduced)?;
+        }
+        self.validate_book()?;
+        Ok(filled)
     }
 
     /// Aggregate the levels a taker of `direction`/`size` would clear,
@@ -1048,7 +1134,7 @@ impl ClobBook for ClobMarketV0 {
         // Depth the walk left behind, so a caller knows its list is a prefix.
         let mut more = false;
 
-        walk_side(self, side, |book, _, node| {
+        walk_side(self, side, |book, index, node| {
             if remaining == 0 || writer.rows() == rows_wanted {
                 more = true;
                 return Ok(Walk::Stop);
@@ -1063,9 +1149,11 @@ impl ClobBook for ClobMarketV0 {
                         price: node.price,
                         size: node.base_asset_amount,
                         order_id: node.order_id,
+                        node_index: index,
                         user: node.user_ref(),
                         flags: l3_row_flags(node, blocking_min_size),
-                        _pad: [0; 5],
+                        _pad: [0; 1],
+                        placed_slot: node.placed_slot,
                     },
                 )
                 .map_err(ClobError::from)?;

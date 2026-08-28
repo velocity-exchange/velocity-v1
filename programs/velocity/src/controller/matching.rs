@@ -485,7 +485,7 @@ mod tests {
             auction_duration: 0,
             posted_slot_tail: 0,
             bit_flags: 0,
-            route_digest: crate::state::order_params::NO_ROUTE_DIGEST,
+            padding: [0; 5],
         }
     }
 }

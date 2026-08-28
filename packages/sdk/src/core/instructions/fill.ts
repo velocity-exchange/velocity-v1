@@ -1,3 +1,4 @@
+import { SYSVAR_INSTRUCTIONS_PUBKEY } from '@solana/web3.js';
 import type {
 	AccountMeta,
 	PublicKey,
@@ -21,7 +22,7 @@ import type { VelocityProgram } from '../../config';
  * @param args.authority - signer that must own or be a registered delegate of `filler`.
  * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for the order's market, followed by any maker/referrer `(User, UserStats)` account pairs, followed by the taker's `RevenueShareEscrow` account if builder codes are enabled protocol-wide, and, when that taker is referred, the referrer's readonly `UserStats` after the escrow, followed by the quoter section (each `QuoterV0` entry plus the accounts its CPI resolves against).
  * @param args.clobAccounts - pass the market's CLOB accounts to use `fillPerpOrderV1`, whose restable remainder of the filled order migrates to the book instead of resting in `User.orders`. `crankConditions` is optional (it only maintains the crank wake hint); `marketIndex` is required by the conditions PDA seed and is checked against the order's own market on-chain.
- * @param args.signedRoute - the `QuoterV0` entries the order's signer chose, as read off their signed message. Checked on-chain against the digest the order carries, and every entry must appear in `remainingAccounts` — a filler cannot drop a quoter the taker picked. Omit (or pass `[]`) for an order placed without a signed route.
+ * @param args.signedRoute - must be empty. A DLOB order carries no route: only a signed message names one, and such an order routes at placement and rests any remainder on the market's CLOB, so what a route binds is the fill of that remainder rather than this call. A non-empty claim is rejected on-chain.
  * @returns the unsigned `fillPerpOrder` `TransactionInstruction`.
  */
 export async function buildFillPerpOrderInstruction(args: {
@@ -66,6 +67,11 @@ export async function buildFillPerpOrderInstruction(args: {
 					clobProgram: args.clobAccounts.clobProgram,
 					clobAuthority: args.clobAccounts.clobAuthority,
 					crankConditions: args.clobAccounts.crankConditions ?? omitted,
+					// Always named. A fill that leaves a book short of an owner
+					// is refused unless velocity can count the transaction's
+					// accounts, and only this sysvar tells it. It costs one
+					// lock; being refused costs the whole fill.
+					instructionsSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
 				},
 				remainingAccounts: args.remainingAccounts,
 			}
@@ -83,6 +89,10 @@ export async function buildFillPerpOrderInstruction(args: {
 				user: args.user,
 				userStats: args.userStats,
 				authority: args.authority,
+				// Always named, as on the v1 route: a fill that leaves a book
+				// short of an owner is refused unless velocity can count the
+				// transaction's accounts, and only this sysvar tells it.
+				instructionsSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
 			},
 			remainingAccounts: args.remainingAccounts,
 		}

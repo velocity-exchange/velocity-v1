@@ -523,27 +523,27 @@ export function maxSizeForTargetLiabilityWeightBN(
 
 /**
  * Digest of a signed route: the `QuoterV0` entries a taker chose, reduced to the five bytes an
- * `Order` can hold. Mirrors the program's `state::order_params::route_digest`.
+ * `SignedMsgOrderId` holds. Mirrors the program's `state::order_params::route_digest`.
  *
  * Canonicalised first (sorted, deduped) so the same choice always digests the same way regardless
  * of the order a client listed it in. An empty route digests to all-zero, which is what makes one
  * equality check cover both "no route was signed" and "this is the route that was signed" — and a
  * real route never digests to zero, so the two stay distinguishable.
  *
- * A filler needs this: `fillPerpOrder` claims a route, and the program rejects the fill unless the
- * claim digests to what the order carries.
+ * A filler needs this: the fill of a rested taker remainder claims a route, and the program rejects
+ * it unless the claim digests to what the taker's signed-message record carries.
  *
- * Five bytes, not four. A filler picks which entries to carry, so its candidate routes are every
- * subset of the carry limit over a market's registered entries — a set it can precompute. Four
- * bytes stop covering that as the number of registered entries grows.
+ * Eight bytes. A filler picks which entries to carry, so its candidate routes are every subset of
+ * the carry limit over a market's registered entries — a set it can precompute. A narrower digest
+ * stops covering that as the number of registered entries grows.
  * @param route - The quoter entries the taker signed; empty or absent for an unrouted order.
- * @returns The five digest bytes, as the `number[]` `Order.routeDigest` holds.
+ * @returns The eight digest bytes, as the `number[]` `SignedMsgOrderId.routeDigest` holds.
  */
-export const ROUTE_DIGEST_LEN = 5;
+export const ROUTE_DIGEST_LEN = 8;
 
 export function getRouteDigest(route?: PublicKey[] | null): number[] {
 	if (!route || route.length === 0) {
-		return [0, 0, 0, 0, 0];
+		return new Array(ROUTE_DIGEST_LEN).fill(0);
 	}
 	const keys = route
 		.map((key) => key.toBytes())

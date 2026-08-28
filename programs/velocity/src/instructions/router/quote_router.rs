@@ -334,10 +334,13 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                 price: price.into(),
                 size: size.into(),
                 order_id: maker.orders[order_index].order_id.into(),
+                // A DLOB order lives in the owner's own array, not an arena.
+                node_index: 0,
                 authority: maker.authority,
                 sub_account_id: maker.sub_account_id,
                 flags: 0,
-                padding: [0; 5],
+                padding: [0; 1],
+                placed_slot: maker.orders[order_index].slot,
             })?;
         }
     }
@@ -470,10 +473,12 @@ fn quoter_rows<'info>(
             price: row.price,
             size,
             order_id: row.order_id,
+            node_index: row.node_index,
             authority: row.user.authority,
             sub_account_id: row.user.sub_account_id,
             flags: row.flags,
-            padding: [0; 5],
+            padding: [0; 1],
+            placed_slot: row.placed_slot,
         })? {
             break;
         }
@@ -521,10 +526,14 @@ fn attribute_to_user(
             price,
             size,
             order_id: 0,
+            // A rung attributed to the quoter's user, not an order: it has no
+            // handle and no placement of its own.
+            node_index: 0,
             authority: user.authority,
             sub_account_id: user.sub_account_id,
             flags: 0,
-            padding: [0; 5],
+            padding: [0; 1],
+            placed_slot: 0,
         })? {
             break;
         }

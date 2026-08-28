@@ -104,6 +104,71 @@ pub struct CancelOrderArgsV0 {
     pub order_ref: ClobOrderRefV0,
     /// Owner of the order, verified against the node.
     pub user: UserRefV0,
+    /// Remove the order even when it is a taker-origin remainder that has not
+    /// reached its activation slot. Liquidation sets this flag. Every other
+    /// caller leaves it clear, which holds a taker to the auction window its
+    /// own order asked for.
+    pub force: bool,
+}
+
+/// One order the caller filled elsewhere, and by how much.
+#[cfg_attr(
+    feature = "anchor-derive",
+    derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
+)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+pub struct FillRequestV0 {
+    pub order_ref: ClobOrderRefV0,
+    pub base_asset_amount: u64,
+}
+
+/// `fill_v0` arguments.
+///
+/// A taker remainder resting here can be the *aggressor* of a match, and the
+/// sources it aggresses against are not all on this book — a quoter or the
+/// vAMM may be the better price, and this program cannot see either. So
+/// velocity does that matching and reports the result back: these orders
+/// filled this much, take it off them.
+///
+/// A list rather than one, because a transaction that resolves several
+/// remainders should pay for one call.
+#[cfg_attr(
+    feature = "anchor-derive",
+    derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
+)]
+#[derive(Clone, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+pub struct FillArgsV0 {
+    pub fills: Vec<FillRequestV0>,
+}
+
+/// What one order in a [`FillArgsV0`] came to.
+#[cfg_attr(
+    feature = "anchor-derive",
+    derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
+)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+pub struct FilledOrderV0 {
+    pub order_id: u64,
+    /// The placing caller's own id, so a caller joins this to its own order
+    /// without holding a map between the two id spaces.
+    pub client_order_id: u32,
+    pub base_asset_amount: u64,
+    /// Size dropped because what was left fell under `min_order_size`. The
+    /// caller unwinds this from the owner's reservation; the book will not
+    /// hold it.
+    pub culled_base_asset_amount: u64,
+    /// The order left the book — filled out, or culled by the line above.
+    pub removed: bool,
+}
+
+/// Return data of `fill_v0`.
+#[cfg_attr(
+    feature = "anchor-derive",
+    derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
+)]
+#[derive(Clone, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+pub struct FillOutcomeV0 {
+    pub filled: Vec<FilledOrderV0>,
 }
 
 /// `evict_worst_v0` arguments.
@@ -136,6 +201,11 @@ pub struct CancelAllArgsV0 {
     /// Whose orders to withdraw, verified against each node.
     pub user: UserRefV0,
     pub sides: CancelSidesV0,
+    /// Sweep taker-origin remainders that have not reached their activation
+    /// slot as well. Liquidation sets this flag. Every other caller leaves it
+    /// clear, and the sweep then passes such an order over and reports the
+    /// call as not exhaustive.
+    pub force: bool,
 }
 
 /// Return data of `cancel_order_v0`, `evict_worst_v0` and
@@ -186,9 +256,11 @@ pub struct CancelAllOutcomeV0 {
     pub ask_base_asset_amount: u64,
     pub bid_orders: u32,
     pub ask_orders: u32,
-    /// The book finished the requested sides rather than stopping at its
-    /// per-call cap. False means the user still has resting orders and the
-    /// call is worth repeating.
+    /// The sweep took every order it was asked for. False means the user still
+    /// has resting orders, for one of two reasons: the book stopped at its
+    /// per-call cap, or it passed over a taker-origin remainder still inside
+    /// its activation window. Repeating the call clears the first. The second
+    /// clears itself once the order activates.
     pub exhaustive: bool,
 }
 

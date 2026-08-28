@@ -29,7 +29,7 @@ pub fn handle_cancel_order_v0(
 ) -> Result<RemovedOrderV0> {
     let clock = Clock::get()?;
     let market = &mut ctx.accounts.market;
-    let removed = market.cancel(args.user, args.order_ref)?;
+    let removed = market.cancel(args.user, args.order_ref, clock.slot, args.force)?;
     // The removal path takes no clock, so an activation hint the chain
     // has already reached is dropped here instead.
     market.expire_activation_hint(clock.slot)?;

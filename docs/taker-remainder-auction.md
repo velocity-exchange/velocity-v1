@@ -4,10 +4,10 @@ Status: **built.** R1–R8 are live: the CLOB carries the marker, reports it on 
 protects a crossed remainder; velocity migrates restable remainders (`fill_perp_order_v1`,
 `place_and_take_v1`, `place_and_make_v1`) and resolves the cross with `crank_taker_origin_cross` —
 against an ordinary maker, and between two remainders (R3's price-time rule) — and relay turners
-discover the crank through the market's existing cross conditions (R8). One thing named below is
-deliberately still open: open question C, market remainders still do not migrate. Design source of
-truth for the surrounding work is the Notion PropAMM doc; this is a focused proposal for one hole in
-it.
+discover the crank through the market's existing cross conditions (R8). Signed-message orders and
+fired triggers both rest here too, so the auction covers every order that comes to trade and does
+not fill. Design source of truth for the surrounding work is the Notion
+PropAMM doc; this is a focused proposal for one hole in it.
 
 ## The hole
 
@@ -57,6 +57,12 @@ maker that quoted 100 loses on price rather than on latency.
 it on the DLOB. Restable means what it already means on the `place_and_take_v1` path: a fixed
 price, no oracle offset, not reduce-only. The rest price and the activation delay are R6 and R7.
 
+Every order that comes to trade and does not fill ends up here. A signed-message order routes at
+placement and rests its remainder on the book, so the highest-volume order type in the protocol no
+longer rests on the DLOB. A fired trigger rests here too: it is an order that came to trade, so it
+gets the counterparty's price in a cross rather than being picked off at its own, and the
+taker-origin crank is what carries a route to it.
+
 **R2 — Taker-origin marker.** A migrated remainder is flagged on the book. `OrderNodeV0.bit_flags`
 already exists (`Open`, `Ask`), so this costs no space. The flag means: *this order demands
 liquidity; in a cross it is the aggressor.*
@@ -68,8 +74,9 @@ changes.
 
 **When both sides are taker-origin, price-time priority decides which is the counterparty**: the
 order that rested first is the maker and its price is the settlement price; the later arrival is the
-aggressor and crosses into it. Ties on the placement slot break on the lower CLOB order id — a
-book's `next_order_id` only increases, so within one slot the lower id rested first.
+aggressor and crosses into it. Rest order is the CLOB order id alone — a book's `next_order_id`
+only increases and never reuses a value, so the lower id rested first and no separate slot
+comparison is needed.
 
 Nothing else about R3 changes, because nothing else needs to: the later order is the one that came
 to trade, which is what "taker" means everywhere else in this document, and the earlier order gets
@@ -78,13 +85,15 @@ table was the midpoint, and it is worse in the way that matters — it takes hal
 from the order that earned it and hands it to one that was already content, and it makes the
 outcome depend on a number neither party quoted.
 
-Two consequences worth stating. A re-placed leftover gets a new placement slot along with its new
-order id, so it loses its time priority against other remainders; that is the same trade the new
-order id already makes, and the alternative is a book API for editing a resting order's size.
-And the *earlier* order captures nothing here — no improvement, no rebate beyond the ordinary maker
-rebate — even when a better ordinary maker is resting behind the aggressor on its own side. Only
-the best matchable order on each side is considered, so that better maker is not in this pair; it
-becomes reachable on the next crank, once the pair clears.
+One consequence worth stating: the *earlier* order captures nothing here — no improvement, no
+rebate beyond the ordinary maker rebate. It gets the price it was already offering.
+
+**A partly filled remainder keeps its id and its queue position.** The book API for editing a
+resting order's size is `fill_v0`: velocity reports the base it just settled and the order shrinks
+in place. The alternative — cancel the order and place a new one for the leftover — settles the
+same base at the same price and still charges the taker for it, because the replacement takes a
+fresh order id and goes to the back of its price level, behind every order that arrived while the
+first one was resting. A taker that waited for its turn would lose it by being filled.
 
 **The CLOB does not do this.** It stays honest: every order fills at its own stored price, exactly
 as today, and the book neither reprices a cross nor resolves one. Velocity already computes fill
@@ -114,8 +123,8 @@ Narrowed twice, both times to exactly the harm:
 - Only the order being traded is tested, against the best price on the other side that could match
   this slot. The counterparty itself is never skipped — it is an ordinary maker, and consuming it is
   the fill velocity's cross resolution runs: take the counterparty's side with `execute_v0` (an
-  ordinary fill at its own price), lift the taker-origin order off with `cancel_order_v0`, and settle
-  the pair internally at the counterparty's price.
+  ordinary fill at its own price), settle the pair internally at the counterparty's price, and
+  report the settled base back with `fill_v0` so the remainder shrinks in place.
 
 An order still inside its activation delay — or already expired — is not a counterparty: nothing can
 match it, so no improvement is within reach, and holding the remainder back then would cost the book
@@ -123,6 +132,14 @@ that depth for its whole auction window, which is exactly when it is resting the
 nothing crosses is likewise ordinary depth, quotable and takeable at its own price — that is the
 fallback when no maker lines up during the window, and how the remainder eventually fills if none
 ever does.
+
+**A remainder cannot be cancelled inside its window.** Binding the taker is what makes the auction
+an auction: an order its owner can pull the moment a maker lines up offers nothing to line up
+against. `Book::cancel` refuses while `slot < activation_slot` for a taker-origin node, and the rule
+lives in the CLOB because that is where the flag and the slot are. Liquidation force-cancel passes
+`force` and stays exempt, so a distressed account is never blocked, and `max_ts` still bounds the
+order's life. The cost is real and worth stating: a taker who signed a market order cannot pull it
+for the window, and neither can a delegate.
 
 **Quote and execute skip via one predicate, and that is the point.** A router allocates from the
 quote and velocity binds the execute to it, so depth one of them offers and the other withholds is a
@@ -181,15 +198,31 @@ price, so a maker arriving in the activation window competes on price rather tha
 landing. Oracle-offset orders do not migrate — an oracle-floating price has nothing fixed to
 rest at.
 
+**The route rides the order's own record, not the book.** A signed-message remainder's quoter list
+is stored on `SignedMsgUserOrders` alongside the CLOB order id it rests under, because the route is
+velocity's concept and the book has no registry to check it against. The CLOB knows tick, step,
+capacity and activation; `taker_origin` earns its place on `OrderNodeV0` because it changes what the
+book does, and a route digest changes nothing there. `OrderNodeV0` stays 96 bytes. Off the `Order`
+struct the digest is no longer squeezed into five spare bytes either — it is eight, the width the
+collision analysis wanted.
+
 A market remainder only exists when the taker's bound is tighter than the vAMM's price: the vAMM
 is in every fill's mandatory baseline and quotes deep enough to absorb a market order outright,
 so a taker with room to reach the curve simply fills. That is also the case where resting at the
 bound matters most — it is the one the taker cannot otherwise complete.
 
 **R7 — Activation delay.** The market's `default_activation_delay_slots`, as with any placement.
-A market configured at 0 has no auction window: its remainders can only be filled by taking, and
-the landing race applies. That is a per-market configuration consequence worth stating in the
-admin surface, not a special case in the program.
+
+A market at 0 is a supported setting, not a broken one. The delay is not what protects the
+improvement — R4's gate is, and it keys on whether a live counterparty crosses the order rather than
+on the clock. At 0 a remainder is takeable at its own price only while nothing crosses it, which is
+exactly when there is no improvement to take.
+
+A nonzero delay buys one thing: a pre-window in which the order is not matchable at all, so makers
+can line up before anyone trades with it. It costs one thing: the owner cannot cancel until the
+window ends, because the cancel refusal keys on the same activation slot. A market that wants makers
+to compete before the first fill pays that cost; a market that wants immediacy sets 0 and the taker
+keeps the right to pull its order at any time.
 
 **R8 — Discovery, on the conditions that already exist.** The crank is permissionless, so something
 has to notice a resolvable cross; relay turners do, through the market's `CLOB_CRANK_CROSS`
@@ -197,8 +230,8 @@ conditions, whose resolver stages `crank_taker_origin_cross` when the top of the
 crossed remainder and `crank_cross_match` otherwise. A `ResolvedCrankV0` names its own executor, so
 one condition slot serves both.
 
-No new slot and no new watch, because the crank only ever resolves the tops of the book: a
-taker-origin cross can newly appear either because a side's best moved — the cross condition's
+No new slot and no new watch. A taker-origin cross can newly appear either because a side's best
+moved — the cross condition's
 8-byte `OnAccountChange` over `best_bid`/`best_ask`, and a crossing order is by definition a new
 best — or because a front-of-book order reached its `activation_slot`, which the cross-activation
 `AtSlot` hint names precisely (min-folded at every placement, a migrating remainder's included).
@@ -241,8 +274,16 @@ opposite side, nothing crosses the remainder any more by the time the second leg
 hands it over at its own resting price with the improvement going to the protocol `User` — the
 landing-race outcome R4 exists to prevent, arrived at from the other direction. Stepping over it
 restores the composition: the arb crank clears the front of the book, and the remainder's own cross
-is what the resolver answers with next. The velocity-side gate for a hand-built `crank_cross_match`
-aimed at a crossed remainder is a separate hole, still open.
+is what the resolver answers with next.
+
+**A hand-built `crank_cross_match` is held to the same rule.** The instruction is permissionless, so
+the walk stepping over a remainder is not enough on its own — the caller controls the account list,
+not the walk. `strips_taker_origin_gate` states the exact condition: the book withholds a remainder
+only while a live counterparty crosses it, so the cross is unsafe precisely when it consumes that
+remainder's entire crossing depth, counting only the rows the legs can actually take. A remainder
+nothing crosses has no gate to lose, and cover that is itself a remainder is cover the legs cannot
+remove. That narrowness matters — refusing on the mere presence of a crossed remainder would
+deadlock the book, because the arb cross in front of a remainder is what clears the way to it.
 
 ## Changes required
 
@@ -259,6 +300,17 @@ aimed at a crossed remainder is a separate hole, still open.
   will not deliver, and the rest of the side stays tradeable.
 - `ClobError::TakerOriginCrossPending`, deprecated in place: the gate's first shape failed the call
   instead of skipping, and the numeric code cannot be reused.
+- `fill_v0`: velocity reports base it settled against a resting order and the order shrinks in
+  place, keeping its id and its queue position. This is what lets a cross resolve without
+  cancel-and-replace. It emits the existing `ExecuteRecordV0` — it is a fill, and a consumer that
+  already decodes fills needs nothing new.
+- `force` on `CancelOrderArgsV0` / `CancelAllArgsV0`, and a `slot` for the window check, so
+  liquidation force-cancel can reach a bound remainder and an ordinary cancel cannot.
+- `L3RowV0` carries `node_index` and `placed_slot`, because a cross resolved off the L3 read needs
+  a handle to the order and its rest time. The row is 72 bytes rather than 64. This is shared wire:
+  `quoter-spec` is compiled into velocity, the CLOB and the midpoint quoter, so all three `.so`
+  fixtures must be rebuilt together. A one-sided rebuild does not fail as a decode error — it
+  presents as broad, unrelated-looking breakage.
 - No cross matching and no pricing: R3 lives in velocity.
 
 **velocity (`programs/velocity`)** — built.
@@ -267,29 +319,37 @@ aimed at a crossed remainder is a separate hole, still open.
   because the CLOB baseline is mandatory; only `crank_conditions` is new, and it is optional
   everywhere else already.
 - The migration itself reuses `try_place_remainder_on_clob`, with the taker-origin flag set.
-- `crank_taker_origin_cross` resolves one cross: consume the counterparty with `execute_v0`, lift
-  the taker-origin order off with `cancel_order_v0` (its `taker_origin` report is what authorises
-  the repricing — velocity's own book read only *finds* the pair), then
-  `settle_taker_origin_cross` settles the two as an ordinary two-user match, not through
-  `cross_match`'s protocol pass-through. The cancel runs first, so a refusal leaves the book
-  untouched and the counterparty's fill never meets R4's gate.
-- **Two taker remainders crossing each other take a second branch of the same crank**: both are
-  cancelled and settled directly against each other, at the earlier one's price. They cannot be
-  resolved the other way — R4's gate withholds a crossed taker-origin order from `execute_v0`, so
+- `crank_taker_origin_cross` resolves one cross, and it resolves it as an ordinary fill. The
+  remainder is the taker of a router pass: the market's baseline book and the routed quoters
+  compete on price, `require_baseline` holds the call to carrying the CLOB entry, and the filler
+  obligation holds it to the makers it had room for. So the crank sweeps as far into the book as
+  the taker's own limit reaches rather than stopping at one counterparty. What is settled is then
+  reported back with `fill_v0`, which shrinks the remainder in place.
+- **Two taker remainders crossing each other take a second branch of the same crank**: velocity
+  computes the match itself and settles the two directly, at the earlier one's price. They cannot be
+  resolved through the book — R4's gate withholds a crossed taker-origin order from `execute_v0`, so
   an execute aimed at one would pass over it and fill deeper depth instead, settling against a maker
-  the cross was never priced for. Cancelling both takes them out of the book's reach entirely, and
-  two `RemovedOrderV0`s carry everything the settlement needs (owner, side, price, size, and the
-  flag). Because there is no `execute_v0` in it, this branch is *cheaper* than the maker one, and it
-  is the only one where the leftover can belong to either side: the match is sized to the smaller
-  order, so whichever was bigger goes back on the book still taker-origin.
-- Only the best matchable order on each side is considered. A taker-origin order behind a better
-  one on its own side is crossed by that better order too, which makes the pair an ordinary
-  maker×maker cross for `crank_cross_match`; once that clears, this crank sees it. The two cranks
-  compose rather than duplicating each other's search.
-- A partially-consumed remainder goes back on the book still taker-origin and immediately
-  matchable — it has already served its auction window — because cancelling it would let a cranker
-  delete a taker's whole resting order by crossing one unit of it. It comes back with a new CLOB
-  order id, so a client's cancel hint has to be re-read.
+  the cross was never priced for. Each leg is then reported with `fill_v0`, so both orders shrink in
+  place and neither loses its id or its queue position. Without this branch the pair deadlocks:
+  each remainder gates the other, so no router pass can reach either one. Because there is no
+  `execute_v0` and no router pass in it, this branch is much cheaper than the maker one — about
+  43k CU against the maker path's ~190k.
+- **The cross is found by reading both sides, not by asking for two heads.** The crank and its
+  relay resolver each read the L3 of both sides and run `resolve_crosses`, a pure function that
+  walks the two ladders and consumes size as it makes matches — so several crossed remainders
+  resolve without a fresh read for each, and a remainder one level down is visible. `next_cross_v0`
+  cannot answer this: it reports only the best order on each side, which is blind to exactly the
+  pairs that deadlock. Velocity no longer calls it.
+- Price priority still decides which crank owns the front of a book. When neither head is
+  taker-origin the front is a maker×maker cross and `crank_cross_match` takes it; clearing it is
+  what brings a remainder behind it forward. The two cranks compose rather than racing.
+- The resolver runs under simulation, so it walks the whole window and hands the crank the depth it
+  actually needs to re-find the cross, instead of the crank guessing.
+- A partially-consumed remainder stays on the book still taker-origin and immediately matchable —
+  it has already served its auction window — because removing it would let a cranker delete a
+  taker's whole resting order by crossing one unit of it. It keeps its CLOB order id, so a client's
+  cancel hint stays valid. A leftover the book would refuse as under its minimum is culled instead,
+  and its reservation unwound.
 - Crank-fee accounting out of the improvement (`calculate_taker_origin_cross_fee`), and the R5
   invariant. R5 is indifferent to which branch resolved the cross: the reward is drawn from the same
   improvement, capped the same way, and a zero or dust improvement resolves for free either way.
@@ -322,20 +382,31 @@ match's own fee split is identical to any other fill's — which is also why the
 *not* appear as the fill record's `filler_reward` and gets its own record
 (`TakerOriginCrossRecordV0`).
 
-**C. Market remainders: migrate now or after this lands?** Migrating them before R1–R5 exist
-means resting at a slippage bound with only the activation slot protecting them, which is
-strictly worse than today's DLOB behaviour for a market order that would otherwise expire
-unfilled. I would hold them.
+**C. Market remainders: migrate now or after this lands? — settled: they migrate.** R1–R5 are
+live, so a market remainder rests behind the same gate and the same auction as a limit one.
+`restable_remainder_price` is the single rule for what may rest, shared by every route, because a
+remainder whose fate depends on which route reached it is a bug.
 
-**D. Minimum viable window.** R7 defers to per-market config, but a market with a 1-slot delay
-gives makers no realistic chance to line up. Worth a floor on `default_activation_delay_slots`
-for markets that expect taker remainders, or at least a documented recommendation.
+**D. Minimum viable window — settled: no floor, and zero is a sensible setting.** R7 defers to
+per-market config, and zero is the expected default rather than a misconfiguration, because the
+delay is not what protects the improvement. R4's gate is: a remainder is withheld from the book's
+matchable set for as long as a live counterparty crosses it, whatever the delay. So at zero a
+remainder is takeable at its own price only while nothing crosses it — which is the case where
+there is no improvement to take — and the moment a counterparty arrives, the gate closes and the
+cross settles at the counterparty's price.
+
+What a nonzero delay adds is a pre-window in which the order is not matchable at all, so makers can
+line up before anyone can trade with it. It also binds the taker: the cancel refusal keys on the
+same activation slot, so at zero there is nothing to bind and the owner may pull the order at once.
+A market that wants makers to compete before the first fill sets a delay; a market that wants
+immediacy sets zero. Both are supported and both are tested.
 
 ## Sequencing
 
-1. `fill_perp_order_v1` migrating **limit** remainders only. No new mechanism: the taker chose
-   that price, and being taken at it is what a limit order is. Removes the DLOB from the honest
-   case immediately.
-2. R2–R5 in the CLOB and velocity: the taker-origin cross.
-3. Market remainders migrate once (2) is live.
-4. keep-rs drops the signed-route plumbing item, which (1) and (3) make unnecessary.
+All four steps are done.
+
+1. ~~`fill_perp_order_v1` migrating **limit** remainders only.~~ Done.
+2. ~~R2–R5 in the CLOB and velocity: the taker-origin cross.~~ Done.
+3. ~~Market remainders migrate once (2) is live.~~ Done.
+4. ~~keep-rs drops the signed-route plumbing item.~~ Done — signed-message orders route and rest
+   here, so a routed order never rests on the DLOB and the case is removed rather than plumbed.

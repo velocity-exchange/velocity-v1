@@ -386,6 +386,67 @@ export function registerMultisig(parent: Command): void {
 
 	withGlobalOptions(
 		ms
+			.command('set-rent-collector <pubkey>')
+			.description(
+				'Propose a config transaction setting the multisig rent collector — the ' +
+					'account paid when settled proposal accounts are closed (`close-accounts` ' +
+					'requires one). WARNING: executing any config transaction marks every ' +
+					'still-Active vault proposal stale (Approved ones survive); do this when ' +
+					'nothing important is pending. Signer must be a member with Initiate.'
+			)
+	).action(async (pubkey: string, _flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		if (!opts.multisig) {
+			throw new Error(
+				'no multisig: pass --multisig <pda> or use a profile that has one'
+			);
+		}
+		const provider = buildProvider(opts);
+		const multisigPda = new PublicKey(opts.multisig);
+		const rentCollector = new PublicKey(pubkey);
+		const info = await multisig.accounts.Multisig.fromAccountAddress(
+			provider.connection,
+			multisigPda
+		);
+		if (
+			info.configAuthority &&
+			!PublicKey.default.equals(new PublicKey(info.configAuthority))
+		) {
+			throw new Error(
+				`multisig has a config authority (${new PublicKey(
+					info.configAuthority
+				).toBase58()}) — ` +
+					'config changes go through it directly, not through proposals'
+			);
+		}
+		const transactionIndex = BigInt(Number(info.transactionIndex) + 1);
+		const createIx = multisig.instructions.configTransactionCreate({
+			multisigPda,
+			transactionIndex,
+			creator: provider.wallet.publicKey,
+			actions: [
+				{ __kind: 'SetRentCollector', newRentCollector: rentCollector },
+			],
+			memo: 'velocity-admin multisig set-rent-collector',
+		});
+		const proposeIx = multisig.instructions.proposalCreate({
+			multisigPda,
+			transactionIndex,
+			creator: provider.wallet.publicKey,
+		});
+		const tx = new Transaction().add(createIx, proposeIx);
+		const signature = await provider.sendAndConfirm(tx);
+		console.log(
+			`✓ proposed rent collector ${rentCollector.toBase58()} as config tx #${transactionIndex}`
+		);
+		console.log(`  signature: ${signature}`);
+		console.log(
+			'  (members approve + execute via Squads UI; then `multisig close-accounts` can reclaim rent)'
+		);
+	});
+
+	withGlobalOptions(
+		ms
 			.command('close-accounts')
 			.description(
 				'Reclaim rent from settled proposals: close the VaultTransaction + Proposal ' +

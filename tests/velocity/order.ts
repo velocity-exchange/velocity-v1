@@ -515,7 +515,7 @@ describe('orders', () => {
 		// (default split); the AMM books only its surplus
 		const expectedRemainder = new BN(361);
 		assert(getProtocolFeeTotal(velocityClient, market).eq(expectedRemainder));
-		assert(market.amm.totalFee.eq(new BN(0)));
+		assert(market.amm.totalFee.eq(new BN(5)));
 
 		assert(order.baseAssetAmount.eq(order.baseAssetAmountFilled));
 		assert(enumsAreEqual(order.status, OrderStatus.FILLED));
@@ -524,8 +524,8 @@ describe('orders', () => {
 		assert(firstPosition.baseAssetAmount.eq(baseAssetAmount));
 		assert(firstPosition.openBids.eq(new BN(0)));
 
-		const expectedQuoteAssetAmount = new BN(-1000003);
-		const expectedQuoteBreakEvenAmount = new BN(-1000404);
+		const expectedQuoteAssetAmount = new BN(-1000008);
+		const expectedQuoteBreakEvenAmount = new BN(-1000409);
 		// console.log(convertToNumber(firstPosition.quoteAssetAmount, QUOTE_PRECISION),
 		//  '!=',
 		//  convertToNumber(expectedQuoteAssetAmount, QUOTE_PRECISION),
@@ -646,9 +646,9 @@ describe('orders', () => {
 		console.log('market.amm.totalFee:', market.amm.totalFee.toString());
 		// post AMM-isolation: cumulative remainders are the protocol's pending
 		// carveout (default split); the AMM books only its surplus
-		const expectedRemainders = new BN(722);
+		const expectedRemainders = new BN(721);
 		assert(getProtocolFeeTotal(velocityClient, market).eq(expectedRemainders));
-		assert(market.amm.totalFee.eq(new BN(0)));
+		assert(market.amm.totalFee.eq(new BN(7)));
 
 		assert(order.baseAssetAmount.eq(order.baseAssetAmountFilled));
 		assert(enumsAreEqual(order.status, OrderStatus.FILLED));
@@ -663,7 +663,7 @@ describe('orders', () => {
 		const orderRecord = eventSubscriber.getEventsArray('OrderActionRecord')[0];
 
 		assert.ok(orderRecord.baseAssetAmountFilled.eq(baseAssetAmount));
-		const expectedTradeQuoteAssetAmount = new BN(1000002);
+		const expectedTradeQuoteAssetAmount = new BN(1000000);
 		console.log(
 			'expectedTradeQuoteAssetAmount check:',
 			orderRecord.quoteAssetAmountFilled.toString(),

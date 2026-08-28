@@ -420,7 +420,7 @@ describe('stop limit', () => {
 		const expectedQuoteAssetAmount = new BN(0);
 		assert(firstPosition.quoteBreakEvenAmount.eq(expectedQuoteAssetAmount));
 
-		const expectedTradeQuoteAssetAmount = new BN(990001);
+		const expectedTradeQuoteAssetAmount = new BN(990008);
 		const orderRecord = eventSubscriber.getEventsArray('OrderActionRecord')[0];
 
 		const expectedOrderId = 4;

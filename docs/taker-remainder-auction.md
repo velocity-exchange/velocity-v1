@@ -343,6 +343,13 @@ deadlock the book, because the arb cross in front of a remainder is what clears 
 - Price priority still decides which crank owns the front of a book. When neither head is
   taker-origin the front is a maker×maker cross and `crank_cross_match` takes it; clearing it is
   what brings a remainder behind it forward. The two cranks compose rather than racing.
+
+  **The crank enforces this itself, not only the resolver that stages it.** The instruction is
+  permissionless, and the cross resolver ranks a taker's improvement ahead of arbitrage — right
+  once a remainder is at the front, wrong before it is. A hand-built crank aimed at a remainder
+  sitting behind a better-priced resting order would fill it out of the depth that order had
+  priority on. Both the crank and the resolver read the two heads and refuse when neither
+  demands liquidity, so what the resolver stages is exactly what the crank accepts.
 - The resolver runs under simulation, so it walks the whole window and hands the crank the depth it
   actually needs to re-find the cross, instead of the crank guessing.
 - A partially-consumed remainder stays on the book still taker-origin and immediately matchable —

@@ -7699,6 +7699,80 @@ fn a_maker_that_arrives_during_the_window_wins_on_price_at_activation() {
     );
 }
 
+/// Price priority holds against a hand-built crank.
+///
+/// A maker bidding better than a remainder has priority on the ask that
+/// crosses them both. Resolving the remainder first would fill it out of depth
+/// that maker was in line for, and this instruction is permissionless, so the
+/// rule cannot live only in the resolver that stages it. Clearing the front
+/// with the arbitrage crank is what brings the remainder forward.
+#[test]
+fn a_crank_cannot_jump_a_maker_resting_in_front_of_the_remainder() {
+    let mut fixture = setup();
+    pause_amm_fill(&mut fixture.svm);
+
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let seller = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let ahead = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+
+    // The remainder bids 101; a maker bids 102 in front of it; one ask at 99
+    // crosses them both.
+    let _ = rest_taker_origin_order(
+        &mut fixture,
+        &taker,
+        PositionDirection::Long,
+        101 * PRICE,
+        UNIT / 2,
+    );
+    place_clob_order_for(
+        &mut fixture,
+        &ahead,
+        PositionDirection::Long,
+        102 * PRICE,
+        UNIT / 2,
+    );
+    place_clob_order_for(
+        &mut fixture,
+        &seller,
+        PositionDirection::Short,
+        99 * PRICE,
+        UNIT / 2,
+    );
+
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+
+    let ix = crank_taker_origin_cross_ix(&fixture, &keeper, &taker, &[&seller]);
+    let keeper_authority = keeper.authority.insecure_clone();
+    let err = send_with_ixs(
+        &mut fixture.svm,
+        &keeper_authority,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .expect_err("the front of the book is not this crank's");
+    assert!(
+        err.meta.logs.join(" ").contains("NoTakerOriginCross"),
+        "unexpected: {:?}",
+        err.meta.logs
+    );
+    // Nothing moved: the remainder still holds its whole reservation.
+    assert_eq!(
+        perp_position(&fixture.svm, &taker.user).open_bids,
+        (UNIT / 2) as i64
+    );
+    assert_eq!(
+        perp_position(&fixture.svm, &taker.user).base_asset_amount,
+        0
+    );
+}
+
 /// An improvement too small to fund the cranker's reward still resolves — for
 /// free. Refusing it instead would leave the remainder gated against being
 /// taken with nothing able to clear the gate, which is worse for the taker

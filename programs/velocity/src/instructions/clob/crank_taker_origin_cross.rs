@@ -375,6 +375,21 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         ],
         &mut cpi_scratch,
     )?;
+    // Price priority decides which crank owns the front of a book, and this
+    // instruction is permissionless, so the rule is enforced here and not only
+    // in the resolver that stages it. When neither head demands liquidity the
+    // front is a maker-against-maker cross, and taking a remainder behind it
+    // would fill that remainder out of the depth the better-priced resting
+    // order had priority on. Clearing the front with `crank_cross_match` is
+    // what brings the remainder forward.
+    let (Some(best_bid), Some(best_ask)) = (bids.first(), asks.first()) else {
+        return Err(ErrorCode::NoTakerOriginCross.into());
+    };
+    validate!(
+        best_bid.taker_origin || best_ask.taker_origin,
+        ErrorCode::NoTakerOriginCross,
+        "the front of the book is a maker cross; crank_cross_match resolves it first"
+    )?;
     let crosses = resolve_crosses(&bids, &asks, MAX_CROSSES_PER_CRANK);
 
     // This crank settles the remainder the transaction carries the accounts

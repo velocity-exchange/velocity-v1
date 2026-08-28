@@ -2437,6 +2437,55 @@ impl<'a> TransactionBuilder<'a> {
         self
     }
 
+    /// Rest a plain limit order on the market's CLOB.
+    ///
+    /// A book order has no `User.orders` slot. Velocity reserves the worst-case
+    /// open-order aggregates and gates margin exactly as a DLOB placement does,
+    /// then places the order on the book. Its id comes from the account's own
+    /// `next_order_id`, so a client names it the same way wherever it rests, and
+    /// the instruction returns the order's `ClobOrderRefV0`.
+    ///
+    /// The order is not matchable until its activation slot. Asking for less
+    /// than the book's default delay needs the transaction co-signed by the flow
+    /// authority, which is what swift's attestation provides; pass
+    /// `instructions_sysvar` in that case and leave it `false` otherwise, since
+    /// naming it costs an account lock.
+    ///
+    /// * `params` - market, side, price, size, expiry, activation delay, and
+    ///   whether to refuse resting crossed (what post-only asks for)
+    /// * `clob` - the market's book, its registry entry and the CLOB program
+    pub fn place_clob_order(
+        mut self,
+        params: program::instructions::PlaceClobOrderParams,
+        clob: ClobFillAccounts,
+        attested: bool,
+    ) -> Self {
+        let accounts = build_accounts(
+            self.program_data,
+            program::accounts::PlaceClobOrder {
+                state: *state_account(),
+                user: self.sub_account,
+                authority: self.authority,
+                quoter: clob.quoter,
+                clob_market: clob.clob_market,
+                clob_program: clob.clob_program,
+                clob_authority: clob.clob_authority,
+                instructions_sysvar: attested.then_some(SYSVAR_INSTRUCTIONS_PUBKEY),
+            },
+            [self.account_data.as_ref()].into_iter(),
+            std::iter::once(&MarketId::perp(params.market_index))
+                .chain(self.force_markets.readable.iter()),
+            self.force_markets.writeable.iter(),
+        );
+
+        self.ixs.push(Instruction {
+            program_id: constants::PROGRAM_ID,
+            accounts,
+            data: InstructionData::data(&program::instruction::PlaceClobOrder { params }),
+        });
+        self
+    }
+
     /// Cancel all orders for account
     pub fn cancel_all_orders(mut self) -> Self {
         let accounts = build_accounts(

@@ -341,6 +341,135 @@ export function registerWallet(parent: Command): void {
 
 	withGlobalOptions(
 		wallet
+			.command('transfer <mint> <recipient> <amount>')
+			.description(
+				"Transfer SPL tokens from the owner wallet to <recipient>'s ATA (created " +
+					'idempotently, owner pays the rent). <amount> is raw token base units; the ' +
+					'transfer is checked against the mint decimals read on chain. With --multisig ' +
+					'the owner defaults to the vault PDA at --vault-index and the transfer is ' +
+					'proposed as a vault transaction.'
+			)
+			.option(
+				'--authority <pubkey>',
+				'wallet owner (default: signer, or vault PDA with --multisig)'
+			)
+			.option(
+				'--vault-index <index>',
+				'with --multisig, vault index used to derive the owner PDA and propose against',
+				'0'
+			)
+			.option(
+				'--dry-run',
+				'print the instructions and expected proposal rent/fees, send nothing',
+				false
+			)
+	).action(
+		async (
+			mintArg: string,
+			recipientArg: string,
+			amountArg: string,
+			_flags,
+			cmd: Command
+		) => {
+			const opts = readGlobalOpts(cmd);
+			const local = cmd.opts() as {
+				authority?: string;
+				vaultIndex: string;
+				dryRun: boolean;
+			};
+			const mint = new PublicKey(mintArg);
+			const recipient = new PublicKey(recipientArg);
+			const amount = BigInt(amountArg);
+			if (amount <= 0n) {
+				throw new Error(`<amount> must be positive, got "${amountArg}"`);
+			}
+			const vaultIndex = Number.parseInt(local.vaultIndex, 10);
+			const owner = resolveAuthority(opts, local.authority, vaultIndex);
+			const provider = buildProvider(opts);
+
+			const mintInfo = await provider.connection.getParsedAccountInfo(mint);
+			const parsed = (mintInfo.value?.data as any)?.parsed;
+			if (parsed?.type !== 'mint') {
+				throw new Error(`${mint.toBase58()} is not a token mint`);
+			}
+			const decimals: number = parsed.info.decimals;
+			const tokenProgram = mintInfo.value!.owner;
+
+			const sourceAta = deriveAssociatedTokenAccount(mint, owner, tokenProgram);
+			const destAta = deriveAssociatedTokenAccount(
+				mint,
+				recipient,
+				tokenProgram
+			);
+			const balance = await provider.connection
+				.getTokenAccountBalance(sourceAta)
+				.then((r) => BigInt(r.value.amount))
+				.catch(() => 0n);
+			if (balance < amount) {
+				throw new Error(
+					`source ATA ${sourceAta.toBase58()} holds ${balance}, need ${amount}`
+				);
+			}
+
+			const transferCheckedData = Buffer.alloc(10);
+			transferCheckedData.writeUInt8(12, 0); // TransferChecked
+			transferCheckedData.writeBigUInt64LE(amount, 1);
+			transferCheckedData.writeUInt8(decimals, 9);
+			const ixs = [
+				new TransactionInstruction({
+					programId: ASSOCIATED_TOKEN_PROGRAM_ID,
+					keys: [
+						{ pubkey: owner, isSigner: true, isWritable: true },
+						{ pubkey: destAta, isSigner: false, isWritable: true },
+						{ pubkey: recipient, isSigner: false, isWritable: false },
+						{ pubkey: mint, isSigner: false, isWritable: false },
+						{
+							pubkey: SystemProgram.programId,
+							isSigner: false,
+							isWritable: false,
+						},
+						{ pubkey: tokenProgram, isSigner: false, isWritable: false },
+					],
+					data: Buffer.from([1]), // CreateIdempotent
+				}),
+				new TransactionInstruction({
+					programId: tokenProgram,
+					keys: [
+						{ pubkey: sourceAta, isSigner: false, isWritable: true },
+						{ pubkey: mint, isSigner: false, isWritable: false },
+						{ pubkey: destAta, isSigner: false, isWritable: true },
+						{ pubkey: owner, isSigner: true, isWritable: false },
+					],
+					data: transferCheckedData,
+				}),
+			];
+
+			const label =
+				`transfer ${amount} of ${mint.toBase58()} ` +
+				`from ${owner.toBase58()} to ${recipient.toBase58()}`;
+			if (local.dryRun) {
+				console.log(label);
+				await reportDryRun(
+					provider,
+					ixs,
+					opts.multisig ? new PublicKey(opts.multisig) : undefined,
+					vaultIndex
+				);
+				return;
+			}
+			const result = await sendOrPropose(
+				provider,
+				ixs,
+				opts.multisig ? new PublicKey(opts.multisig) : undefined,
+				'velocity-admin wallet transfer',
+				vaultIndex
+			);
+			reportDispatch(label, result);
+		}
+	);
+
+	withGlobalOptions(
+		wallet
 			.command('balances')
 			.description(
 				'Read-only: native SOL and token balances of the owner wallet, plus its Velocity ' +

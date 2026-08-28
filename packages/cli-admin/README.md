@@ -77,6 +77,7 @@ velocity-admin spot-market set-guard-threshold <market> <threshold>
 velocity-admin spot-market set-scale-initial-asset-weight-start <market> <start>  # warm/cold admin; QUOTE_PRECISION (1e6); 0 disables
 velocity-admin spot-market set-fee-factors <market> <ifFeeFactor> <protocolFeeFactor>
 velocity-admin spot-market set-withdraw-breaker <market> <pct>
+velocity-admin spot-market set-max-token-deposits <market> <amount>  # warm/cold admin; hard deposit cap, raw token base units, 0 = uncapped
 velocity-admin spot-market set-deposit-cap <market> <threshold> <pctPerDay>
 
 velocity-admin exchange set-status <bitfield>
@@ -130,6 +131,7 @@ velocity-admin extend-account <account>                          # AccountExtens
 velocity-admin extend-account --type <type> [--batch-size <n>] [--dry-run]  # migration crank: scan + extend every account of a type (see docs/ACCOUNT-EXTENSION.md)
 
 velocity-admin call <ixName> <payloadFile>     # generic IDL escape hatch
+velocity-admin batch <payloadFile> [--dry-run] # several instructions in ONE tx / vault proposal ({ instructions: [{ ix, args, accounts }, ...] }); one approval round, one timelock
 ```
 
 ## Routing through a Squads V4 multisig

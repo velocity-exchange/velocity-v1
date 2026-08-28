@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { BN } from '@coral-xyz/anchor';
 import {
 	AddressLookupTableAccount,
 	Connection,
@@ -6,8 +7,15 @@ import {
 	SystemProgram,
 	TransactionInstruction,
 } from '@solana/web3.js';
+import {
+	fetchUserStatsAccount,
+	getInsuranceFundStakeAccountPublicKey,
+	getTokenAmount,
+	getUserAccountPublicKeySync,
+	SpotBalanceType,
+} from '@velocity-exchange/sdk';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
-import { buildProvider } from '../lib/provider';
+import { buildAdminClient, buildProvider } from '../lib/provider';
 import { reportDispatch, reportDryRun, sendOrPropose } from '../lib/squads';
 import { deriveAssociatedTokenAccount, resolveAuthority } from '../lib/userOps';
 
@@ -330,4 +338,162 @@ export function registerWallet(parent: Command): void {
 			reportDispatch(label, result);
 		}
 	);
+
+	withGlobalOptions(
+		wallet
+			.command('balances')
+			.description(
+				'Read-only: native SOL and token balances of the owner wallet, plus its Velocity ' +
+					'holdings — spot deposits/borrows per sub-account and insurance-fund stakes. ' +
+					'Token balances for spot-market mints are labeled with the market name. ' +
+					'With --multisig the owner defaults to the vault PDA at --vault-index.'
+			)
+			.option(
+				'--authority <pubkey>',
+				'wallet owner (default: signer, or vault PDA with --multisig)'
+			)
+			.option(
+				'--vault-index <index>',
+				'with --multisig, vault index used to derive the owner PDA',
+				'0'
+			)
+	).action(async (_flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const local = cmd.opts() as { authority?: string; vaultIndex: string };
+		const vaultIndex = Number.parseInt(local.vaultIndex, 10);
+		const owner = resolveAuthority(opts, local.authority, vaultIndex);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts, true);
+		try {
+			const markets = (client as any).getSpotMarketAccounts() as any[];
+			markets.sort((a, b) => a.marketIndex - b.marketIndex);
+			const byMint = new Map<string, any>();
+			for (const m of markets) {
+				byMint.set(m.mint.toBase58(), m);
+			}
+			const nameOf = (m: any) =>
+				Buffer.from(m.name).toString('utf8').trim() || `spot[${m.marketIndex}]`;
+			const fmt = (raw: BN | bigint | number, decimals: number) =>
+				(Number(raw.toString()) / 10 ** decimals).toLocaleString('en-US', {
+					maximumFractionDigits: decimals > 6 ? 6 : decimals,
+				});
+
+			console.log(`owner ${owner.toBase58()}`);
+			const lamports = await provider.connection.getBalance(owner);
+			console.log(`native SOL: ${lamports / 1e9}`);
+
+			console.log('wallet tokens:');
+			let any = false;
+			for (const tokenProgram of [
+				TOKEN_PROGRAM_ID,
+				new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'),
+			]) {
+				const res = await provider.connection.getParsedTokenAccountsByOwner(
+					owner,
+					{ programId: tokenProgram }
+				);
+				for (const a of res.value) {
+					const info = a.account.data.parsed.info;
+					if (info.tokenAmount.uiAmount === 0) {
+						continue;
+					}
+					const market = byMint.get(info.mint);
+					const tag = market ? nameOf(market) : info.mint;
+					console.log(`  ${tag}  ${info.tokenAmount.uiAmountString}`);
+					any = true;
+				}
+			}
+			if (!any) {
+				console.log('  (none)');
+			}
+
+			const userStats = await fetchUserStatsAccount(
+				provider.connection,
+				client.program,
+				owner
+			);
+			if (!userStats) {
+				console.log('velocity: no UserStats for this owner');
+				return;
+			}
+
+			console.log('velocity spot positions:');
+			any = false;
+			const count = userStats.numberOfSubAccountsCreated;
+			for (let subAccountId = 0; subAccountId < count; subAccountId++) {
+				const userPda = getUserAccountPublicKeySync(
+					client.program.programId,
+					owner,
+					subAccountId
+				);
+				const user = await (client.program.account as any).user.fetchNullable(
+					userPda
+				);
+				if (!user) {
+					continue;
+				}
+				for (const pos of user.spotPositions) {
+					if (new BN(pos.scaledBalance).isZero()) {
+						continue;
+					}
+					const market = markets.find((m) => m.marketIndex === pos.marketIndex);
+					if (!market) {
+						continue;
+					}
+					const isDeposit = pos.balanceType.deposit !== undefined;
+					const amount = getTokenAmount(
+						new BN(pos.scaledBalance),
+						market,
+						isDeposit ? SpotBalanceType.DEPOSIT : SpotBalanceType.BORROW
+					);
+					console.log(
+						`  sub ${subAccountId}: ${nameOf(market)} ${
+							isDeposit ? 'deposit' : 'borrow'
+						} ${fmt(amount, market.decimals)}`
+					);
+					any = true;
+				}
+			}
+			if (!any) {
+				console.log('  (none)');
+			}
+
+			console.log('insurance fund stakes:');
+			any = false;
+			for (const market of markets) {
+				const stakePda = getInsuranceFundStakeAccountPublicKey(
+					client.program.programId,
+					owner,
+					market.marketIndex
+				);
+				const stake = await (
+					client.program.account as any
+				).insuranceFundStake.fetchNullable(stakePda);
+				if (!stake || new BN(stake.ifShares).isZero()) {
+					continue;
+				}
+				const totalShares = new BN(market.insuranceFund.totalShares);
+				const vaultBalance = new BN(
+					(
+						await provider.connection.getTokenAccountBalance(
+							market.insuranceFund.vault
+						)
+					).value.amount
+				);
+				const amount = totalShares.isZero()
+					? new BN(0)
+					: new BN(stake.ifShares).mul(vaultBalance).div(totalShares);
+				console.log(
+					`  ${nameOf(market)}: ${fmt(amount, market.decimals)} ` +
+						`(${stake.ifShares.toString()} of ${totalShares.toString()} shares)`
+				);
+				any = true;
+			}
+			if (!any) {
+				console.log('  (none)');
+			}
+		} finally {
+			await client.unsubscribe();
+		}
+	});
 }

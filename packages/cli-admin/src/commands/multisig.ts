@@ -1,8 +1,16 @@
 import { Command } from 'commander';
-import { Keypair, PublicKey, Transaction } from '@solana/web3.js';
+import {
+	ComputeBudgetProgram,
+	Keypair,
+	PublicKey,
+	Transaction,
+	TransactionMessage,
+	VersionedTransaction,
+} from '@solana/web3.js';
 import * as multisig from '@sqds/multisig';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
 import { buildProvider } from '../lib/provider';
+import { confirmMainnetDirect } from '../lib/context';
 
 const { Permission, Permissions } = multisig.types;
 
@@ -159,6 +167,79 @@ export function registerMultisig(parent: Command): void {
 				`  #${index}  ${status.padEnd(9)} approvals ${approvals}${extra}`
 			);
 		});
+	});
+
+	withGlobalOptions(
+		ms
+			.command('execute <index>')
+			.description(
+				'Execute an approved vault transaction as the signer (must be a multisig member ' +
+					'with Execute permission). Sets a compute-unit limit on the execute transaction — ' +
+					'the Squads UI executes with the 200k default, which CPI-heavy inner transactions ' +
+					'(e.g. Jupiter swaps) exceed.'
+			)
+			.option(
+				'--cu-limit <units>',
+				'compute-unit limit for the execute transaction',
+				'1400000'
+			)
+			.option(
+				'--cu-price <microLamports>',
+				'priority fee per compute unit (optional)'
+			)
+	).action(async (indexArg: string, _flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const local = cmd.opts() as { cuLimit: string; cuPrice?: string };
+		if (!opts.multisig) {
+			throw new Error(
+				'no multisig: pass --multisig <pda> or use a profile that has one'
+			);
+		}
+		const transactionIndex = BigInt(Number.parseInt(indexArg, 10));
+		const cuLimit = Number.parseInt(local.cuLimit, 10);
+		if (!Number.isInteger(cuLimit) || cuLimit < 1 || cuLimit > 1_400_000) {
+			throw new Error(
+				`--cu-limit must be between 1 and 1400000, got "${local.cuLimit}"`
+			);
+		}
+		const provider = buildProvider(opts);
+		const multisigPda = new PublicKey(opts.multisig);
+		const member = provider.wallet.publicKey;
+
+		const { instruction, lookupTableAccounts } =
+			await multisig.instructions.vaultTransactionExecute({
+				connection: provider.connection,
+				multisigPda,
+				transactionIndex,
+				member,
+			});
+
+		const ixs = [ComputeBudgetProgram.setComputeUnitLimit({ units: cuLimit })];
+		if (local.cuPrice !== undefined) {
+			ixs.push(
+				ComputeBudgetProgram.setComputeUnitPrice({
+					microLamports: Number.parseInt(local.cuPrice, 10),
+				})
+			);
+		}
+		ixs.push(instruction);
+
+		await confirmMainnetDirect(
+			`execute proposal #${transactionIndex} on ${multisigPda.toBase58()}`
+		);
+		const { blockhash } = await provider.connection.getLatestBlockhash();
+		const message = new TransactionMessage({
+			payerKey: member,
+			recentBlockhash: blockhash,
+			instructions: ixs,
+		}).compileToV0Message(lookupTableAccounts);
+		const signature = await provider.sendAndConfirm(
+			new VersionedTransaction(message)
+		);
+		console.log(
+			`✓ executed proposal #${transactionIndex} (cu-limit ${cuLimit})`
+		);
+		console.log(`  signature: ${signature}`);
 	});
 }
 

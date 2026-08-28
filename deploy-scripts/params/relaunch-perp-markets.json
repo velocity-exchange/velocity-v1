@@ -11,7 +11,9 @@
 		"funding_bias_sensitivity": "STAYS 0 (off). Risk derived k=0.5 (sensitivity 50) from the bias counterfactual but launch ships 0, channel untested. Not a field of this file; set via its update ix when enabled.",
 		"margin ratios, imf_factor, liquidator/if fees, base spreads, step/tick sizes, concentration, periodicity, contract tiers": "STAY unchanged from launch values.",
 		"amm_peg_multiplier": "STAYS as reference-price documentation only; always re-peg from the live oracle when touching reserves.",
-		"max_open_interest step alignment": "OI values floored to order_step_size multiples; the program rejects max_open_interest not divisible by the step. Raw cascade outputs are not aligned."
+		"max_open_interest step alignment": "OI values floored to order_step_size multiples; the program rejects max_open_interest not divisible by the step. Raw cascade outputs are not aligned.",
+		"quote_max_insurance (HYPE)": "STAYS 20000000000 (live launch value). Risk tier says 10000000000; team accepted the live value for now. Trimming to 10k is an open item.",
+		"taker_fee_addon_tenth_bps": "ADDED as documentation: +1.5bp on HYPE (15 tenth-bps), 0 elsewhere. Set via fees set-taker-addon, not by the init script."
 	},
 	"global": {
 		"initial_pct_to_liquidate": null,
@@ -50,7 +52,8 @@
 			"active_status": true,
 			"lp_pool_id": 0,
 			"funding_clamp_threshold": 5,
-			"funding_ramp_slope": 1000000
+			"funding_ramp_slope": 1000000,
+			"taker_fee_addon_tenth_bps": 0
 		},
 		{
 			"name": "BTC-PERP",
@@ -84,7 +87,8 @@
 			"active_status": true,
 			"lp_pool_id": 0,
 			"funding_clamp_threshold": 5,
-			"funding_ramp_slope": 1000000
+			"funding_ramp_slope": 1000000,
+			"taker_fee_addon_tenth_bps": 0
 		},
 		{
 			"name": "ETH-PERP",
@@ -118,7 +122,8 @@
 			"active_status": true,
 			"lp_pool_id": 0,
 			"funding_clamp_threshold": 5,
-			"funding_ramp_slope": 1000000
+			"funding_ramp_slope": 1000000,
+			"taker_fee_addon_tenth_bps": 0
 		},
 		{
 			"name": "HYPE-PERP",
@@ -138,7 +143,7 @@
 			"liquidator_fee": 10000,
 			"if_liquidation_fee": 10000,
 			"max_open_interest": "9358000000000",
-			"quote_max_insurance": "10000000000",
+			"quote_max_insurance": "20000000000",
 			"max_revenue_withdraw_per_period": "100000000",
 			"base_spread": 1000,
 			"max_spread": 20000,
@@ -152,7 +157,8 @@
 			"active_status": true,
 			"lp_pool_id": 0,
 			"funding_clamp_threshold": 5,
-			"funding_ramp_slope": 1000000
+			"funding_ramp_slope": 1000000,
+			"taker_fee_addon_tenth_bps": 15
 		}
 	]
 }

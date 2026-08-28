@@ -202,16 +202,58 @@ Example payload:
 
 The dispatcher does no PDA derivation — every account must be supplied.
 
+### Batching
+
+To land several instructions in ONE transaction / vault proposal (one approval
+round, one timelock — related admin params should ride together):
+
+```sh
+velocity-admin batch <payloadFile.json> [--dry-run]
+```
+
+The payload is a list of `call`-shaped entries, each with the camelCase
+instruction name under `ix`:
+
+```json
+{
+	"_comment": "optional notes: what this batch is, how values were derived",
+	"instructions": [
+		{
+			"ix": "updateSpotMarketMaxTokenDeposits",
+			"args": { "maxTokenDeposits": "5000000000000" },
+			"accounts": {
+				"admin": "<cold or warm vault PDA>",
+				"state": "<state PDA (seed velocity_state)>",
+				"spotMarket": "<spot market PDA (seeds spot_market + u16 LE index)>"
+			}
+		},
+		{
+			"ix": "updateSpotMarketScaleInitialAssetWeightStart",
+			"args": { "scaleInitialAssetWeightStart": "5000000000000" },
+			"accounts": { "…": "…" }
+		}
+	]
+}
+```
+
+Rules, same as `call`: no PDA derivation (supply every account), u64 args as
+JSON strings, pubkeys as base58 strings. Arg and account names are camelCase
+as Anchor's TS client exposes them, not the snake_case of the raw IDL file.
+Field names and types come from the instruction's entry in
+`packages/sdk/src/idl/velocity.json`. All instructions land in one inner
+transaction, so with `--multisig` the whole batch shares a single proposal;
+`--dry-run` prints the built instructions and the expected proposal rent first.
+
 ## Global options
 
-| Flag                      | Default                                          |
-| ------------------------- | ------------------------------------------------ |
-| `-p, --profile <name>`    | `VELOCITY_ADMIN_PROFILE` env, else config default |
-| `-u, --url <url>`         | profile, else `https://api.mainnet-beta.solana.com` |
-| `-k, --keypair <path>`    | profile, else `~/.config/solana/id.json`         |
-| `-e, --env <env>`         | profile, else detected from the RPC's genesis hash |
+| Flag                      | Default                                                                                   |
+| ------------------------- | ----------------------------------------------------------------------------------------- |
+| `-p, --profile <name>`    | `VELOCITY_ADMIN_PROFILE` env, else config default                                         |
+| `-u, --url <url>`         | profile, else `https://api.mainnet-beta.solana.com`                                       |
+| `-k, --keypair <path>`    | profile, else `~/.config/solana/id.json`                                                  |
+| `-e, --env <env>`         | profile, else detected from the RPC's genesis hash                                        |
 | `-m, --multisig <pubkey>` | profile, else none: direct send (`--no-multisig` forces direct under a proposing profile) |
-| `-y, --yes`               | (unset; mainnet direct sends ask for confirmation) |
+| `-y, --yes`               | (unset; mainnet direct sends ask for confirmation)                                        |
 
 ## Authority introspection
 

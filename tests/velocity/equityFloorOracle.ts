@@ -47,10 +47,9 @@ const INVALID_ORACLE_HEX = '0x1793';
 //    buy a withdrawal down through the floor.
 //  - The floor-shed defusal guard rejects an invalid oracle outright, so it
 //    agrees with `trip_equity_floor_breaker`, which already did.
-//  - The trip itself uses a concession walk: an invalid-oracle position past
-//    the dust allowance keeps the breach unprovable (`InvalidOracle`), while
-//    dust is conceded its most favorable value and a material breach stays
-//    trippable through it.
+//  - The trip uses a user-favorable upper bound: invalid-oracle liabilities
+//    and shorts count at zero, while any invalid-oracle asset or long keeps
+//    the breach unprovable (`InvalidOracle`).
 describe('equity floor oracle validity', () => {
 	const chProgram = anchor.workspace.Velocity as Program;
 
@@ -78,8 +77,8 @@ describe('equity floor oracle validity', () => {
 	const usdcAmount = new BN(200).mul(QUOTE_PRECISION);
 	const solAmount = new BN(20).mul(new BN(LAMPORTS_PER_SOL));
 	// net equity at a fair sol price is 200 usdc + 2 sol at 100 = 400. The
-	// sol position is deliberately larger than the trip's dust allowance, so
-	// the invalid-oracle trip cases below stay unprovable.
+	// invalid-oracle assets have no finite upper bound, so the trip cases below
+	// stay unprovable regardless of position size.
 	const floor = new BN(250).mul(QUOTE_PRECISION);
 
 	let marketIndexes: number[];
@@ -338,11 +337,10 @@ describe('equity floor oracle validity', () => {
 		// honest price and merely looks solvent at the stale one. It holds
 		// 160 usdc and 2 sol: 360 at the twap, which is under the floor,
 		// against 1160 at the stale live price of 500, which is over it. The
-		// sol position's twap notional is past the trip's dust allowance, so
-		// the breach is unprovable and the trip must reject rather than
-		// concede. The shed below moves 100 usdc of funds with 100 usdc of
-		// floor, so the credited side can back its new floor and the only
-		// thing that can stop the transfer is the oracle.
+		// invalid-oracle sol asset has no finite upper bound, so the breach is
+		// unprovable and the trip must reject. The shed below moves 100 usdc of
+		// funds with 100 usdc of floor, so the credited side can back its new
+		// floor and the only thing that can stop the transfer is the oracle.
 		await adminVelocityClient.updateUserEquityFloor(
 			takerUserPublicKey,
 			new BN(400).mul(QUOTE_PRECISION),
@@ -431,14 +429,10 @@ describe('equity floor oracle validity', () => {
 		await refreshSolOracle(100);
 	});
 
-	it('a stale dust position cannot veto the trip', async () => {
+	it('a stale dust asset keeps the trip unprovable', async () => {
 		// The dust account holds 0.0001 sol and nothing else, so its equity
-		// depends entirely on the sol oracle. Before the concession walk, a
-		// stale sol oracle made every trip against it return InvalidOracle
-		// for as long as the outage lasted, however deep the breach. The
-		// position is worth a cent at its twap, far under the allowance, so
-		// the trip now concedes it the full allowance and the breach against
-		// a 150 floor is still provable: 100 conceded < 150.
+		// depends entirely on the sol oracle. A stored twap cannot provide an
+		// independent upper bound, even for this tiny position.
 		await dustVelocityClient.fetchAccounts();
 		await adminVelocityClient.updateUserEquityFloor(
 			dustUserPublicKey,
@@ -448,25 +442,37 @@ describe('equity floor oracle validity', () => {
 
 		await staleSolOracleAt(100);
 
-		await adminVelocityClient.tripEquityFloorBreaker(
-			dustUserPublicKey,
-			dustVelocityClient.getUserAccount()
-		);
+		try {
+			let err: Error | undefined;
+			try {
+				await adminVelocityClient.tripEquityFloorBreaker(
+					dustUserPublicKey,
+					dustVelocityClient.getUserAccount()
+				);
+			} catch (e) {
+				err = e as Error;
+			}
+			assert(err, 'trip should have been rejected');
+			assert(
+				err.message.includes(INVALID_ORACLE_HEX),
+				`expected InvalidOracle, got: ${err.message}`
+			);
 
-		const stats = await (
-			adminVelocityClient.program.account as any
-		).userStats.fetch(
-			getUserStatsAccountPublicKey(
-				adminVelocityClient.program.programId,
-				dustVelocityClient.wallet.publicKey
-			)
-		);
-		assert(
-			stats.equityBreakerTripped !== 0,
-			'the breaker should be armed despite the stale dust oracle'
-		);
-
-		await refreshSolOracle(100);
+			const stats = await (
+				adminVelocityClient.program.account as any
+			).userStats.fetch(
+				getUserStatsAccountPublicKey(
+					adminVelocityClient.program.programId,
+					dustVelocityClient.wallet.publicKey
+				)
+			);
+			assert(
+				stats.equityBreakerTripped === 0,
+				'the breaker must stay clear while the asset has no finite upper bound'
+			);
+		} finally {
+			await refreshSolOracle(100);
+		}
 	});
 
 	// The handler binds `State` with a shared `load()` at the top and a `load_mut()` at the

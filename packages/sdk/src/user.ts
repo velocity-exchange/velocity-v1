@@ -43,7 +43,6 @@ import {
 	BASE_PRECISION,
 	BN_MAX,
 	DUST_POSITION_SIZE,
-	EQUITY_FLOOR_TRIP_DUST_ALLOWANCE,
 	MARGIN_PRECISION,
 	MAX_POSITIVE_UPNL_FOR_INITIAL_MARGIN,
 	ONE,
@@ -138,6 +137,11 @@ import {
 	MarginCalculation,
 	MarginContext,
 } from './marginCalculation';
+
+type FloorEquityCalculation = FloorNetEquity & {
+	/** `null` when an invalid-oracle asset/long or quote conversion has no finite upper bound. */
+	tripEquityUpperBound: BN | null;
+};
 
 export type MarginType = 'Cross' | 'Isolated';
 
@@ -1537,7 +1541,7 @@ export class User {
 	 *
 	 * The value always comes from `getFloorNetEquity` so it prices the
 	 * account exactly the way the gates do. Note the onchain trip decides
-	 * with its own walk, which concedes bounded value to invalid-oracle dust
+	 * with a separate upper-bound verdict from the same position walk
 	 * (`provesEquityFloorBreach` mirrors it exactly); this predicate only
 	 * compares the point value.
 	 */
@@ -2328,21 +2332,21 @@ export class User {
 	 * `allOraclesValid` and `value` clears `equityFloor + equityFloorBuffer`;
 	 * being below the raw floor counts as force-cancel grounds only when
 	 * `allOraclesValid` and `value` sits below it. The breaker trip uses its
-	 * own walk (`getTripNetEquity`), which concedes bounded value to
-	 * invalid-oracle dust instead of requiring every oracle valid.
+	 * own upper-bound verdict (`getTripNetEquity`).
 	 * @param slot Current slot, for oracle staleness classification. Omit to
 	 * skip the verdict: `value` is still priced exactly as the gates price it
 	 * (live oracles, expiry price for settled markets), but `allOraclesValid`
 	 * is reported `true` unconditionally.
 	 * @returns Value and verdict, QUOTE_PRECISION.
 	 */
-	getFloorNetEquity(slot?: BN): FloorNetEquity {
+	private calculateFloorEquity(slot?: BN): FloorEquityCalculation {
 		const stateAccount = this.velocityClient.getStateAccount();
 		const oracleGuardRails = stateAccount.oracleGuardRails;
 		const userAccount = this.getUserAccountOrThrow();
 
 		let value = ZERO;
 		let allOraclesValid = true;
+		let tripEquityUpperBound: BN | null = ZERO;
 
 		for (const spotPosition of userAccount.spotPositions) {
 			if (isSpotPositionAvailable(spotPosition)) {
@@ -2377,11 +2381,17 @@ export class User {
 				),
 				spotPosition.balanceType
 			);
-			value = value.add(
-				getTokenValue(tokenAmount, spotMarket.decimals, {
-					price: oracleData.price,
-				})
-			);
+			const tokenValue = getTokenValue(tokenAmount, spotMarket.decimals, {
+				price: oracleData.price,
+			});
+			value = value.add(tokenValue);
+
+			if (oracleValid && tripEquityUpperBound !== null) {
+				tripEquityUpperBound = tripEquityUpperBound.add(tokenValue);
+			} else if (!oracleValid && tokenAmount.gt(ZERO)) {
+				// An invalid-oracle asset has no finite upper value bound.
+				tripEquityUpperBound = null;
+			}
 		}
 
 		for (const perpPosition of userAccount.perpPositions) {
@@ -2411,6 +2421,10 @@ export class User {
 				  )
 				: true;
 			allOraclesValid = allOraclesValid && quoteOracleValid;
+			if (!quoteOracleValid) {
+				// The quote oracle prices isolated collateral and every pnl conversion.
+				tripEquityUpperBound = null;
+			}
 
 			// Keyed off the position flag, matching the program's `is_isolated()`.
 			if (this.isPerpPositionIsolated(perpPosition)) {
@@ -2419,11 +2433,15 @@ export class User {
 					quoteSpotMarket,
 					SpotBalanceType.DEPOSIT
 				);
-				value = value.add(
-					getTokenValue(isolatedTokenAmount, quoteSpotMarket.decimals, {
-						price: quoteOracleData.price,
-					})
+				const isolatedTokenValue = getTokenValue(
+					isolatedTokenAmount,
+					quoteSpotMarket.decimals,
+					{ price: quoteOracleData.price }
 				);
+				value = value.add(isolatedTokenValue);
+				if (quoteOracleValid && tripEquityUpperBound !== null) {
+					tripEquityUpperBound = tripEquityUpperBound.add(isolatedTokenValue);
+				}
 			}
 
 			const oracleData = this.getOracleDataForPerpMarket(
@@ -2454,217 +2472,54 @@ export class User {
 			const pnl = calculatePositionPNL(market, perpPosition, true, {
 				price: valuationPrice,
 			});
-			value = value.add(pnl.mul(quoteOracleData.price).div(PRICE_PRECISION));
+			const pnlValue = pnl.mul(quoteOracleData.price).div(PRICE_PRECISION);
+			value = value.add(pnlValue);
+
+			if (quoteOracleValid && tripEquityUpperBound !== null) {
+				if (settled || oracleValid) {
+					tripEquityUpperBound = tripEquityUpperBound.add(pnlValue);
+				} else if (perpPosition.baseAssetAmount.gt(ZERO)) {
+					// An invalid-oracle long has no finite upper value bound.
+					tripEquityUpperBound = null;
+				} else {
+					// A short's base leg can only lower equity at a positive price.
+					// Its stored quote and funding legs do not depend on that oracle.
+					const fixedPnl = perpPosition.quoteAssetAmount.add(
+						calculateUnsettledFundingPnl(market, perpPosition)
+					);
+					tripEquityUpperBound = tripEquityUpperBound.add(
+						fixedPnl.mul(quoteOracleData.price).div(PRICE_PRECISION)
+					);
+				}
+			}
 		}
 
+		return { value, allOraclesValid, tripEquityUpperBound };
+	}
+
+	getFloorNetEquity(slot?: BN): FloorNetEquity {
+		const { value, allOraclesValid } = this.calculateFloorEquity(slot);
 		return { value, allOraclesValid };
 	}
 
 	/**
 	 * Net-equity upper bound for the breaker trip, mirroring the program's
-	 * `calculate_user_equity_for_trip`. Positions with valid oracles are
-	 * valued exactly as `getFloorNetEquity` values them. A position with an
-	 * invalid oracle is conceded its most favorable value instead of vetoing
-	 * the proof: a liability or a short base leg counts as zero at any size,
-	 * an asset or long base leg worth no more than
-	 * `EQUITY_FLOOR_TRIP_DUST_ALLOWANCE` at its own last twap counts as
-	 * exactly the allowance, and a larger asset or long, or one whose twap
-	 * is not positive (or an invalid quote oracle), makes the breach
-	 * unprovable. Both onchain trip paths (the permissionless trip and the
-	 * lazy trip) arm the breaker when `provable` and `equityUpperBound` is
-	 * below the raw floor.
+	 * `calculate_user_equity_for_trip`. The shared portfolio walk values valid
+	 * positions exactly as `getFloorNetEquity` does. An invalid-oracle asset or
+	 * long makes the upper bound unprovable; an invalid-oracle liability or
+	 * short base leg contributes zero, its sound maximum at a positive price.
+	 * Invalid quote conversion also makes the result unprovable. Both onchain
+	 * trip paths arm the breaker only when this finite upper bound is below the
+	 * raw floor.
 	 * @param slot Current slot, for oracle staleness classification. Omit to
-	 * treat every oracle as valid: the result equals `getFloorNetEquity` with
-	 * no concession.
+	 * treat every oracle as valid: the result equals `getFloorNetEquity`.
 	 * @returns Upper bound and provability, QUOTE_PRECISION.
 	 */
 	getTripNetEquity(slot?: BN): TripNetEquity {
-		const stateAccount = this.velocityClient.getStateAccount();
-		const oracleGuardRails = stateAccount.oracleGuardRails;
-		const userAccount = this.getUserAccountOrThrow();
-
-		const unprovable: TripNetEquity = {
-			equityUpperBound: ZERO,
-			provable: false,
-		};
-
-		let equityUpperBound = ZERO;
-
-		for (const spotPosition of userAccount.spotPositions) {
-			if (isSpotPositionAvailable(spotPosition)) {
-				continue;
-			}
-
-			const spotMarket = this.velocityClient.getSpotMarketAccountOrThrow(
-				spotPosition.marketIndex
-			);
-			const oracleData = this.getOracleDataForSpotMarket(
-				spotPosition.marketIndex
-			);
-			const oracleValid = slot
-				? isOracleValidForMarginCalc(
-						getSpotOracleValidity(
-							spotMarket,
-							oracleData,
-							oracleGuardRails,
-							slot,
-							undefined,
-							stateAccount
-						)
-				  )
-				: true;
-
-			const tokenAmount = getSignedTokenAmount(
-				getTokenAmount(
-					spotPosition.scaledBalance,
-					spotMarket,
-					spotPosition.balanceType
-				),
-				spotPosition.balanceType
-			);
-
-			if (oracleValid) {
-				equityUpperBound = equityUpperBound.add(
-					getTokenValue(tokenAmount, spotMarket.decimals, {
-						price: oracleData.price,
-					})
-				);
-				continue;
-			}
-
-			// a liability can only lower equity at any price, so its most
-			// favorable value is zero at any size and it adds nothing
-			if (tokenAmount.lte(ZERO)) {
-				continue;
-			}
-
-			// the twap only sizes the asset for the dust test; the concession
-			// below overvalues whatever passes it. A non-positive twap cannot
-			// size anything, so the asset keeps the breach unprovable at any
-			// balance
-			const twap = spotMarket.historicalOracleData.lastOraclePriceTwap;
-			if (twap.lte(ZERO)) {
-				return unprovable;
-			}
-			const twapValue = getTokenValue(tokenAmount, spotMarket.decimals, {
-				price: twap,
-			});
-			if (twapValue.gt(EQUITY_FLOOR_TRIP_DUST_ALLOWANCE)) {
-				return unprovable;
-			}
-
-			// an asset under the dust test is worth at most the allowance
-			equityUpperBound = equityUpperBound.add(EQUITY_FLOOR_TRIP_DUST_ALLOWANCE);
-		}
-
-		for (const perpPosition of userAccount.perpPositions) {
-			if (positionIsAvailable(perpPosition)) {
-				continue;
-			}
-
-			const market = this.velocityClient.getPerpMarketAccountOrThrow(
-				perpPosition.marketIndex
-			);
-			const quoteSpotMarket = this.velocityClient.getSpotMarketAccountOrThrow(
-				market.quoteSpotMarketIndex
-			);
-			const quoteOracleData = this.getOracleDataForSpotMarket(
-				market.quoteSpotMarketIndex
-			);
-
-			// the quote leg stays strict: it prices every pnl conversion, so
-			// its verdict cannot be conceded away
-			const quoteOracleValid = slot
-				? isOracleValidForMarginCalc(
-						getSpotOracleValidity(
-							quoteSpotMarket,
-							quoteOracleData,
-							oracleGuardRails,
-							slot,
-							undefined,
-							stateAccount
-						)
-				  )
-				: true;
-			if (!quoteOracleValid) {
-				return unprovable;
-			}
-
-			// Keyed off the position flag, matching the program's `is_isolated()`.
-			if (this.isPerpPositionIsolated(perpPosition)) {
-				const isolatedTokenAmount = getTokenAmount(
-					perpPosition.isolatedPositionScaledBalance,
-					quoteSpotMarket,
-					SpotBalanceType.DEPOSIT
-				);
-				equityUpperBound = equityUpperBound.add(
-					getTokenValue(isolatedTokenAmount, quoteSpotMarket.decimals, {
-						price: quoteOracleData.price,
-					})
-				);
-			}
-
-			const oracleData = this.getOracleDataForPerpMarket(
-				perpPosition.marketIndex
-			);
-			const settled = isVariant(market.status, 'settlement');
-			const perpOracleValid =
-				settled ||
-				(slot
-					? isOracleValidForMarginCalc(
-							getOracleValidity(
-								market,
-								oracleData,
-								oracleGuardRails,
-								slot,
-								undefined,
-								undefined,
-								stateAccount
-							)
-					  )
-					: true);
-
-			let pnl: BN;
-			if (perpOracleValid) {
-				const valuationPrice = settled ? market.expiryPrice : oracleData.price;
-				pnl = calculatePositionPNL(market, perpPosition, true, {
-					price: valuationPrice,
-				});
-			} else {
-				// only the base leg depends on the invalid oracle. Entry
-				// quote and funding come from stored numbers and count
-				// exactly; a short's base leg only subtracts at any price, so
-				// it is conceded zero at any size. A long's base leg under
-				// the dust test is worth at most the allowance; a larger
-				// long, or a non-positive twap that cannot size it, keeps the
-				// breach unprovable
-				let baseLegUpperBound = ZERO;
-				if (perpPosition.baseAssetAmount.gt(ZERO)) {
-					const twap =
-						market.marketStats.historicalOracleData.lastOraclePriceTwap;
-					if (twap.lte(ZERO)) {
-						return unprovable;
-					}
-					const twapNotional = perpPosition.baseAssetAmount
-						.mul(twap)
-						.div(BASE_PRECISION);
-					if (twapNotional.gt(EQUITY_FLOOR_TRIP_DUST_ALLOWANCE)) {
-						return unprovable;
-					}
-					baseLegUpperBound = EQUITY_FLOOR_TRIP_DUST_ALLOWANCE;
-				}
-
-				pnl = perpPosition.quoteAssetAmount
-					.add(calculateUnsettledFundingPnl(market, perpPosition))
-					.add(baseLegUpperBound);
-			}
-
-			equityUpperBound = equityUpperBound.add(
-				pnl.mul(quoteOracleData.price).div(PRICE_PRECISION)
-			);
-		}
-
-		return { equityUpperBound, provable: true };
+		const { tripEquityUpperBound } = this.calculateFloorEquity(slot);
+		return tripEquityUpperBound === null
+			? { equityUpperBound: ZERO, provable: false }
+			: { equityUpperBound: tripEquityUpperBound, provable: true };
 	}
 
 	/**

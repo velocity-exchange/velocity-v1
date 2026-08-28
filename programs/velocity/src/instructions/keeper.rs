@@ -343,22 +343,20 @@ pub fn handle_trip_equity_floor_breaker<'c: 'info, 'info>(
     // unweighted spot liabilities), not the margin numerator: weighted
     // collateral overstates equity when borrows exist and understates it via
     // asset weights, strict pricing and the positive-pnl clamp. The walk is
-    // the trip's own: positions with invalid oracles are conceded a bounded
-    // most-favorable value instead of vetoing the proof, so dust in a
-    // dead-oracle market cannot keep a material breach untrippable.
+    // the trip's own upper bound: invalid-oracle liabilities and shorts count
+    // at zero, while invalid-oracle assets and longs block the proof.
     let trip_equity =
         calculate_user_equity_for_trip(&user, &perp_market_map, &spot_market_map, &mut oracle_map)?;
 
     // An authority-wide freeze must not arm over exposure the program cannot
-    // value: an invalid-oracle asset or long past the dust allowance (or one
-    // whose twap cannot size it) blocks the proof. The floor gates on
-    // withdrawals/fills still hold independently of the breaker. The two
+    // value: any invalid-oracle asset or long blocks the proof. The floor
+    // gates on withdrawals/fills still hold independently of the breaker. The two
     // validates decompose `TripNetEquity::proves_breach` so each failure
     // keeps its error code.
     validate!(
         trip_equity.provable,
         ErrorCode::InvalidOracle,
-        "cannot trip equity floor breaker: invalid oracle on a position the dust test cannot bound"
+        "cannot trip equity floor breaker: invalid oracle leaves equity without a finite upper bound"
     )?;
 
     validate!(

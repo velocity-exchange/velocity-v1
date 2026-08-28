@@ -4211,42 +4211,13 @@ fn fulfill_perp_order_router_pass(
         })
         .collect();
 
-    // The vAMM quotes last: every other book is its last look.
+    // Every book but the vAMM's, built once. The vAMM shades against this set
+    // as its last look, and the split then runs over the same set with the
+    // vAMM appended, so `books` takes this allocation over rather than
+    // collecting the same rows a second time. The runtime's allocator never
+    // reclaims, so a second copy is heap this instruction does not get back.
     let clob_tier = QuoterType::Clob.default_priority();
-    let amm_levels: Vec<PriceLevel> = if amm_is_available {
-        let rivals: Vec<QuoterBook> = external_books
-            .iter()
-            .enumerate()
-            .map(|(i, book)| {
-                let levels = external_levels(i);
-                QuoterBook {
-                    priority: book.priority,
-                    levels: &levels[..within_limit(levels)],
-                    withheld: book.withheld,
-                }
-            })
-            .chain(maker_levels.iter().map(|levels| QuoterBook {
-                priority: clob_tier,
-                levels: &levels[..within_limit(levels.as_slice())],
-                withheld: PriceLevel::default(),
-            }))
-            .collect();
-        vamm_quote_levels(
-            amm_quoter.amm,
-            direction,
-            target_size,
-            order_step_size,
-            &rivals,
-            // Fall back to the shared limit when the order has no limit of
-            // its own (a market order): `amm_taker_limit` is None then.
-            amm_taker_limit.or(effective_taker_limit),
-        )?
-    } else {
-        vec![]
-    };
-
-    // ---- Split across the union, all books truncated at the limit. ----
-    let books: Vec<QuoterBook> = external_books
+    let rivals: Vec<QuoterBook> = external_books
         .iter()
         .enumerate()
         .map(|(i, book)| {
@@ -4262,16 +4233,36 @@ fn fulfill_perp_order_router_pass(
             levels: &levels[..within_limit(levels.as_slice())],
             withheld: PriceLevel::default(),
         }))
-        // The vAMM book is NOT re-truncated: `vamm_quote_levels` already
-        // capped the ladder at the limit, and its per-rung prices are
-        // rounded slice averages — comparing those to the limit would drop
-        // dust rungs whose true cost is inside it.
-        .chain(core::iter::once(QuoterBook {
-            priority: QuoterType::Vamm.default_priority(),
-            levels: &amm_levels,
-            withheld: PriceLevel::default(),
-        }))
         .collect();
+
+    // The vAMM quotes last: every other book is its last look.
+    let amm_levels: Vec<PriceLevel> = if amm_is_available {
+        vamm_quote_levels(
+            amm_quoter.amm,
+            direction,
+            target_size,
+            order_step_size,
+            &rivals,
+            // Fall back to the shared limit when the order has no limit of
+            // its own (a market order): `amm_taker_limit` is None then.
+            amm_taker_limit.or(effective_taker_limit),
+        )?
+    } else {
+        vec![]
+    };
+
+    // ---- Split across the union, all books truncated at the limit. ----
+    //
+    // The vAMM book is NOT re-truncated: `vamm_quote_levels` already capped the
+    // ladder at the limit, and its per-rung prices are rounded slice averages —
+    // comparing those to the limit would drop dust rungs whose true cost is
+    // inside it.
+    let mut books = rivals;
+    books.push(QuoterBook {
+        priority: QuoterType::Vamm.default_priority(),
+        levels: &amm_levels,
+        withheld: PriceLevel::default(),
+    });
     // A book that stops its walk at an order whose owner this transaction does
     // not carry reports the depth behind it as withheld. Velocity holds back no
     // taker size for it: the taker asked to trade, the rest of the route can

@@ -2,6 +2,7 @@ import { PublicKey } from '@solana/web3.js';
 import {
 	QUOTE_PRECISION,
 	QUOTE_PRECISION_EXP,
+	EIGHT,
 	LAMPORTS_EXP,
 	LAMPORTS_PRECISION,
 	SIX,
@@ -94,6 +95,34 @@ export const MainnetSpotMarkets: SpotMarketConfig[] = [
 		pythFeedId:
 			'0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d',
 		pythLazerId: 6,
+	},
+	{
+		symbol: 'wBTC',
+		marketIndex: 2,
+		poolId: 0,
+		// Same Pyth Lazer PDA the BTC perp market uses (feed id 1).
+		oracle: new PublicKey('J7Fp8iTKuKdCM7PnzqHXTdTo5Jr7ykAmiDyvpz58GJGZ'),
+		oracleSource: OracleSource.PYTH_LAZER,
+		mint: new PublicKey('3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh'),
+		precision: new BN(10).pow(EIGHT),
+		precisionExp: EIGHT,
+		pythFeedId:
+			'0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43',
+		pythLazerId: 1,
+	},
+	{
+		symbol: 'wETH',
+		marketIndex: 3,
+		poolId: 0,
+		// Same Pyth Lazer PDA the ETH perp market uses (feed id 2).
+		oracle: new PublicKey('6wQ5RiQ7usJ3TqYZSiuAPZHrVCeSWNrvace84khDKEmH'),
+		oracleSource: OracleSource.PYTH_LAZER,
+		mint: new PublicKey('7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs'),
+		precision: new BN(10).pow(EIGHT),
+		precisionExp: EIGHT,
+		pythFeedId:
+			'0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace',
+		pythLazerId: 2,
 	},
 ];
 

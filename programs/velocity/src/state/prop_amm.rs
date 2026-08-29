@@ -244,8 +244,22 @@ fn write_quoter_account_metas(
 /// 71 KB of scaffolding on a 32 KB heap, which is an out-of-memory abort well
 /// before the route reaches the size the account-lock budget allows.
 ///
-/// Reserved at the widest any leg can be and then only ever cleared and
-/// refilled: `clear` keeps the allocation, so the whole fill pays for one set.
+/// Only ever cleared and refilled: `clear` keeps the allocation, so the whole
+/// fill pays for one set.
+///
+/// The buffers start empty and take their size from the first leg that uses
+/// them. Reserving the widest a leg may be costs about 4.4 KB of the 32 KB
+/// heap, and almost none of it is reachable: the wire allows 48 users but a
+/// transaction's account locks cap a real route far below that, and a
+/// registered CPI surface is a handful of accounts rather than the 32 the array
+/// holds. A pass that calls no quoter then pays nothing at all.
+///
+/// Reserving the maximum would not even buy a single allocation per fill.
+/// `invoke_signed` clones the `Instruction` on every leg — `StableInstruction`
+/// is built `from(instruction.clone())` — and a clone allocates for its length,
+/// not for the capacity it came from. The leg's own copy lands on the heap
+/// whatever this holds, so the reservation buys only the building, and the
+/// building is what growing from empty already pays for once.
 pub struct QuoterCpiScratch<'info> {
     /// Carries the metas and the args, because `Instruction` owns both and
     /// `invoke_signed` wants an `&Instruction` — so reusing them means reusing
@@ -265,12 +279,10 @@ impl<'info> QuoterCpiScratch<'info> {
         Self {
             instruction: Instruction {
                 program_id: Pubkey::default(),
-                accounts: Vec::with_capacity(MAX_QUOTER_ACCOUNTS),
-                data: Vec::with_capacity(QUOTER_CPI_DATA_MAX),
+                accounts: Vec::new(),
+                data: Vec::new(),
             },
-            // One more than the registered accounts: the callee program's own
-            // info rides the same list.
-            infos: Vec::with_capacity(MAX_QUOTER_ACCOUNTS + 1),
+            infos: Vec::new(),
         }
     }
 }

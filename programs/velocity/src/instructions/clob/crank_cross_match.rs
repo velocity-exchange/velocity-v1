@@ -152,7 +152,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
             user,
             response_account,
             priority,
-            levels: Vec::new(),
+            levels: 0..0,
         });
     }
     let buy_index = buy_quoter_index as usize;
@@ -757,6 +757,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
         // User, which quotes nothing anywhere).
         let market_index = ctx.accounts.cross_conditions.load()?.market_index;
         let mut quote = |direction: crate::state::prop_amm::Direction| -> Result<Vec<PriceLevel>> {
+            let mut levels = Vec::new();
             quoter
                 .quote(
                     market_index,
@@ -780,10 +781,11 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
                     quoter_signer_nonce,
                     &accounts,
                     &mut cpi_scratch,
+                    &mut levels,
                 )
                 // The crank routes the book against itself; there is no
                 // caller-supplied user set for it to fall short of.
-                .map(|quoted| quoted.levels)
+                .map(|_| levels)
         };
         let quoter_asks = sanitize_levels(quote(crate::state::prop_amm::Direction::Long)?, true);
         let quoter_bids = sanitize_levels(quote(crate::state::prop_amm::Direction::Short)?, false);

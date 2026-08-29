@@ -81,9 +81,11 @@ pub struct QuotedEntry<'info> {
     pub response_account: Pubkey,
     /// Routing tier at a shared price: lower fills first, pro rata within.
     pub priority: u8,
-    /// What it quoted, best price first. Owned because every later allocation
-    /// and price check is held to it, long after the quoting CPI returned.
-    pub levels: Vec<PriceLevel>,
+    /// What it quoted, best price first, as a run in [`QuotedRoute::levels`].
+    /// Held past the quoting CPI because every later allocation and price
+    /// check is measured against it, but pooled with every other entry's run
+    /// so a route costs one allocation rather than one per book.
+    pub levels: core::ops::Range<usize>,
     /// Depth it says it holds at a better price than it quoted, and could not
     /// offer because this transaction does not carry the accounts of the user
     /// who owns it. A zero price means it reached everything it was asked
@@ -100,6 +102,9 @@ pub struct QuotedRoute<'info> {
     /// The entries that quoted, in book order. Inactive or unapproved entries
     /// are absent — they were carried and skipped.
     pub quoted: Vec<QuotedEntry<'info>>,
+    /// Every entry's quoted levels, one run after another.
+    /// [`QuotedEntry::levels`] indexes into this.
+    levels: Vec<PriceLevel>,
     /// Every entry the caller passed, quoting or not. The mandatory baseline
     /// and the signed route are checked against this, because a dead entry
     /// still satisfies both. A fixed array: bounded by the same budget the
@@ -157,6 +162,7 @@ impl<'info> QuotedRoute<'info> {
             // is about a kilobyte, and this fill's stack frame is four — the
             // program has overflowed it before on a struct this size.
             quoted: Vec::with_capacity(MAX_ROUTE_QUOTERS),
+            levels: Vec::new(),
             carried: [Pubkey::default(); MAX_ROUTE_QUOTERS],
             carried_len: 0,
         };
@@ -265,6 +271,7 @@ impl<'info> QuotedRoute<'info> {
                     cpi_signer_nonce,
                     route.accounts,
                     scratch,
+                    &mut route.levels,
                 )?;
                 (
                     quoter.quoter_type,
@@ -281,7 +288,7 @@ impl<'info> QuotedRoute<'info> {
                 user,
                 response_account,
                 priority,
-                levels: quoted.levels,
+                levels: quoted.levels.clone(),
                 // Only a book can withhold. A book walks the orders of many
                 // owners and stops at one this transaction cannot settle for.
                 // Every other quoter fills from the single `user` in its own
@@ -384,7 +391,7 @@ impl<'info> QuotedRoute<'info> {
         for (slot, quoted) in into.iter_mut().zip(self.quoted.iter()) {
             *slot = QuoterBook {
                 priority: quoted.priority,
-                levels: &quoted.levels,
+                levels: &self.levels[quoted.levels.clone()],
                 withheld: quoted.withheld,
             };
         }

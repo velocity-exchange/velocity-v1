@@ -441,7 +441,11 @@ pub type PriceLevel = quoter_spec::PriceLevelV0;
 /// What one quoter answered: the ladder it stands behind, and the depth it
 /// says it holds at a better price but cannot reach in this transaction.
 pub struct QuotedLadderV0 {
-    pub levels: Vec<PriceLevel>,
+    /// Where this ladder's levels landed in the pool the caller passed. The
+    /// levels themselves are not owned here: a route quotes up to
+    /// `MAX_ROUTE_QUOTERS` books and one pool for all of them is one
+    /// allocation rather than one per book.
+    pub levels: core::ops::Range<usize>,
     /// `price == 0` when the quoter reached everything it was asked for.
     pub withheld: PriceLevel,
 }
@@ -1369,6 +1373,8 @@ impl QuoterV0 {
         quoter_signer_nonce: u8,
         accounts: &[AccountInfo<'info>],
         scratch: &mut QuoterCpiScratch<'info>,
+        // Where the quoted levels are appended. See `QuotedLadderV0::levels`.
+        out: &mut Vec<PriceLevel>,
     ) -> Result<QuotedLadderV0> {
         let located = self.quote_in_place(
             market_index,
@@ -1385,17 +1391,23 @@ impl QuoterV0 {
         // execute leg then writes the very accounts these levels sit in, so
         // the ladder has to outlive this borrow.
         //
+        // Copied into the caller's pool rather than into a list of its own. A
+        // route quotes up to `MAX_ROUTE_QUOTERS` books and reads them all
+        // together, so one pool holds every ladder for one allocation instead
+        // of one per book, on a heap that never reclaims.
+        //
         // Truncated at what a reader can use. The router's cursor and its level
         // validation both stop at `MAX_LEVELS_PER_BOOK`, so a deeper ladder is
         // copied and then never read — and a market may set `max_quote_levels`
-        // high enough that the discarded tail is kilobytes per book, on a 32 KB
-        // heap that never reclaims.
+        // high enough that the discarded tail is kilobytes per book.
         let usable = response
             .levels
             .len()
             .min(crate::math::router::MAX_LEVELS_PER_BOOK);
+        let start = out.len();
+        out.extend_from_slice(&response.levels[..usable]);
         Ok(QuotedLadderV0 {
-            levels: response.levels[..usable].to_vec(),
+            levels: start..out.len(),
             withheld: response.withheld,
         })
     }

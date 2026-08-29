@@ -101,6 +101,8 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
         // same set the same way, so a ladder taken here is the one that
         // execute fills — which is what makes it a bound the fill can be
         // checked against.
+        // Quoted once here, so the pool is the list this returns.
+        let mut levels = Vec::new();
         Ok(Some(
             quoter
                 .quote(
@@ -121,12 +123,13 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                     self.clob_authority_nonce,
                     self.accounts,
                     self.scratch,
+                    &mut levels,
                 )
                 .map_err(|_| {
                     msg!("clob quote for entry {} failed", loader.key());
                     ErrorCode::DefaultError
-                })?
-                .levels,
+                })
+                .map(|_| levels)?,
         ))
     }
 

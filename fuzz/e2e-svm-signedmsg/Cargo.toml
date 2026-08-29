@@ -66,3 +66,6 @@ regr_271_replay_resize_authority = []
 # the exchange is fully paused and asserts the FIXED behavior (rejected with
 # ExchangePaused / 6024), so it FAILS on pre-fix master.
 regr_271_signed_msg_taker_pause = []
+
+[build-dependencies]
+serde_json = "1"

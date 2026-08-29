@@ -943,6 +943,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "brine-ed25519"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521613852b9ff057440780f968789cae80e9f81756078cd4b74a19b2f0ccf1e2"
+dependencies = [
+ "curve25519-dalek",
+ "sha2 0.10.9",
+ "solana-address 2.6.1",
+ "solana-program-error",
+]
+
+[[package]]
 name = "bs58"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1127,6 +1139,15 @@ name = "clap_lex"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
+
+[[package]]
+name = "clob-wire"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "quoter-spec",
+ "wincode",
+]
 
 [[package]]
 name = "cmov"
@@ -1727,6 +1748,7 @@ dependencies = [
  "ctrlc",
  "libafl",
  "libafl_bolts",
+ "serde_json",
  "solana-instruction",
  "solana-keypair",
  "solana-program-runtime",
@@ -3173,6 +3195,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "quoter-spec"
+version = "0.1.0"
+dependencies = [
+ "anchor-lang",
+ "bytemuck",
+ "solana-address 2.6.1",
+ "wincode",
+]
+
+[[package]]
 name = "r-efi"
 version = "5.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3304,6 +3336,22 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "relay-anchor"
+version = "0.1.0"
+source = "git+https://github.com/velocity-exchange/relay?rev=88419fd1de3ee189e44ef591d9e8f5c558d58a9d#88419fd1de3ee189e44ef591d9e8f5c558d58a9d"
+dependencies = [
+ "relay-spec",
+]
+
+[[package]]
+name = "relay-spec"
+version = "0.1.0"
+source = "git+https://github.com/velocity-exchange/relay?rev=88419fd1de3ee189e44ef591d9e8f5c558d58a9d#88419fd1de3ee189e44ef591d9e8f5c558d58a9d"
+dependencies = [
+ "bytemuck",
+]
 
 [[package]]
 name = "rend"
@@ -5737,16 +5785,18 @@ dependencies = [
 
 [[package]]
 name = "velocity"
-version = "2.163.2"
+version = "2.165.0"
 dependencies = [
  "anchor-lang",
  "anchor-spl",
  "arrayref",
  "base64 0.13.1",
  "borsh",
+ "brine-ed25519",
  "bytemuck",
  "byteorder",
  "bytes",
+ "clob-wire",
  "enumflags2",
  "hex",
  "num-integer",
@@ -5754,6 +5804,10 @@ dependencies = [
  "pyth",
  "pyth-client",
  "pyth_lazer",
+ "quoter-spec",
+ "relay-anchor",
+ "relay-spec",
+ "solana-cpi",
  "solana-program",
  "solana-security-txt",
  "static_assertions",

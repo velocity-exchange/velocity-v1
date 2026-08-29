@@ -15,7 +15,7 @@
 //!    the global `exchange_not_paused` guard, so a signed-message taker order
 //!    could be placed while the exchange is fully paused. The fix adds the guard
 //!    as an `#[access_control]` that runs *before* the handler body. Submits a
-//!    signed-message taker order (ed25519 pre-ix + `SignedMsgUserOrders` account)
+//!    signed-message taker order (signature verified in-program, `SignedMsgUserOrders` account)
 //!    while the exchange is fully paused (`exchange_status = 0xFF`) and asserts
 //!    the FIXED behavior (rejected with `ExchangePaused` = 6024); FAILS on pre-fix
 //!    master (the access-control guard is absent, so the ix proceeds past it).
@@ -45,7 +45,7 @@ use {
 // Generated types/schemas, read straight from the canonical IDL that the SDK
 // also consumes. We only use `register_schemas()`; instruction building goes
 // through `raw_call`.
-crucible_idl_gen::declare_fuzz_program!(velocity_idl = "../../packages/sdk/src/idl/velocity.json");
+crucible_idl_gen::declare_fuzz_program!(velocity_idl = "velocity.fuzz-idl.json");
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -127,23 +127,23 @@ where
 ///
 /// The byte layout is identical for the borsh `Account` path (resize) and the
 /// custom zero-copy loader (place):
-///   disc[8] | authority_pubkey[32] | padding: u32 | len: u32 | num_orders * 24
-/// where each slot is a 24-byte `SignedMsgOrderId` (uuid[8] | max_slot u64 |
-/// order_id u32 | padding u32). All-zero slots read as `max_slot == 0` (empty).
+///   disc[8] | authority_pubkey[32] | padding: u32 | len: u32 | num_orders * 40
+/// where each slot is a 40-byte `SignedMsgOrderId`. All-zero slots read as
+/// `max_slot == 0` (empty).
 fn signed_msg_user_orders_bytes(authority: Pubkey, num_orders: u32) -> Vec<u8> {
     let mut v = Vec::new();
     v.extend_from_slice(&A_SIGNED_MSG_USER_ORDERS);
     v.extend_from_slice(&authority.to_bytes()); // authority_pubkey / fixed.user_pubkey
     v.extend_from_slice(&0u32.to_le_bytes()); // padding
     v.extend_from_slice(&num_orders.to_le_bytes()); // vec len / fixed.len
-    v.extend_from_slice(&vec![0u8; num_orders as usize * 24]); // slots
+    v.extend_from_slice(&vec![0u8; num_orders as usize * 40]); // slots
     v
 }
 
 /// `SignedMsgUserOrders::space(num_orders)` — mirror of the program helper:
-/// 8 (disc) + 32 (authority) + 4 (padding) + 32 + num_orders * 24.
+/// 8 (disc) + 32 (authority) + 4 (padding) + 32 + num_orders * 40.
 fn signed_msg_space(num_orders: usize) -> usize {
-    8 + 32 + 4 + 32 + num_orders * 24
+    8 + 32 + 4 + 32 + num_orders * 40
 }
 
 /// Create a program-owned `SignedMsgUserOrders` PDA account with `num_orders`
@@ -277,12 +277,12 @@ mod regr_271_resize {
                 .ctx
                 .raw_call(Instruction {
                     program_id: self.program_id,
-                    // Pre-fix account order: signed_msg_user_orders, authority,
-                    // user, payer, system_program.
+                    // Account order: signed_msg_user_orders, authority, payer,
+                    // system_program. The delegate signs as payer, and it is not
+                    // the authority, so the fix refuses the shrink.
                     accounts: vec![
                         AccountMeta::new(self.signed_msg_pda, false),
                         AccountMeta::new_readonly(self.authority, false),
-                        AccountMeta::new_readonly(self.user_pda, false),
                         AccountMeta::new(self.delegate.pubkey(), true),
                         AccountMeta::new_readonly(system_program_id(), false),
                     ],
@@ -366,10 +366,6 @@ mod regr_271_pause {
     use {
         super::*,
         anchor_lang::AnchorSerialize,
-        solana_program_runtime::{
-            invoke_context::InvokeContext,
-            solana_sbpf::{declare_builtin_function, memory_region::MemoryMapping},
-        },
         velocity::{
             controller::position::PositionDirection,
             state::{
@@ -379,32 +375,6 @@ mod regr_271_pause {
             },
         },
     };
-
-    // A no-op builtin registered at the native Ed25519 program id. Crucible builds
-    // litesvm WITHOUT the `precompiles` feature, so `is_precompile()` returns false
-    // and the ed25519 pre-ix would otherwise fail with UnsupportedProgramId before
-    // the velocity ix runs. The velocity handler re-reads the ed25519 ix data from
-    // the instructions sysvar and validates the offset *layout* + embedded pubkey
-    // itself (`verify_and_decode_ed25519_msg`); the precompile's cryptographic
-    // check is bypassed in this SVM anyway (sigverify off, dummy tx signatures), so
-    // a no-op stub here faithfully lets the full signed-message flow reach velocity.
-    declare_builtin_function!(
-        Ed25519NoopBuiltin,
-        fn rust(
-            invoke_context: &mut InvokeContext,
-            _arg0: u64,
-            _arg1: u64,
-            _arg2: u64,
-            _arg3: u64,
-            _arg4: u64,
-            _memory_mapping: &mut MemoryMapping,
-        ) -> std::result::Result<u64, Box<dyn std::error::Error>> {
-            // Builtins must consume >0 compute units (else the runtime errors with
-            // BuiltinProgramsMustConsumeComputeUnits).
-            invoke_context.consume_checked(1)?;
-            Ok(0)
-        }
-    );
 
     /// Build the signed-message envelope carried in the velocity ix `bytes` arg.
     ///
@@ -445,6 +415,8 @@ mod regr_271_pause {
             builder_idx: None,
             builder_fee_tenth_bps: None,
             isolated_position_deposit: None,
+            network: None,
+            route: None,
         };
 
         // manual 8-byte discriminator (not validated by the program) + borsh body.
@@ -456,11 +428,9 @@ mod regr_271_pause {
         let message_size = hex_msg.len() as u16;
 
         // Envelope: signature[64] | pubkey[32] | size u16 | message.
-        // The native Ed25519 program is registered (executable, native-loader
-        // owned) and the SVM runs FeatureSet::all_enabled(), so precompile
-        // verification runs inside the SVM — the signature must be a REAL
-        // ed25519 signature by `signer` over the message region (the ASCII-hex
-        // bytes).
+        // The velocity program verifies this signature in-program (brine), so
+        // it must be a REAL ed25519 signature by `signer` over the message
+        // region (the ASCII-hex bytes).
         let signature = signer_kp.sign_message(hex_msg.as_bytes());
         let mut envelope = Vec::new();
         envelope.extend_from_slice(signature.as_ref()); // signature (64 bytes)
@@ -478,39 +448,6 @@ mod regr_271_pause {
         s
     }
 
-    /// Build the native Ed25519 verify instruction whose offsets reference the
-    /// signature/pubkey/message embedded in the velocity instruction at
-    /// `velocity_ix_index`. The velocity ix data lays the envelope out starting
-    /// at offset 12 (8 disc + 4 borsh-vec length prefix):
-    ///   [12..76] signature, [76..108] pubkey, [108..110] size, [110..] message.
-    fn build_ed25519_ix(velocity_ix_index: u16, message_size: u16) -> Instruction {
-        // Ed25519SignatureOffsets, packed as the native program expects:
-        //   signature_offset u16, signature_instruction_index u16,
-        //   public_key_offset u16, public_key_instruction_index u16,
-        //   message_data_offset u16, message_data_size u16,
-        //   message_instruction_index u16
-        const SIG_OFFSET: u16 = 12;
-        const PUBKEY_OFFSET: u16 = SIG_OFFSET + 64; // 76
-        const MSG_DATA_OFFSET: u16 = PUBKEY_OFFSET + 32 + 2; // 110
-
-        let mut data = Vec::new();
-        data.push(1u8); // num_signatures
-        data.push(0u8); // padding
-        data.extend_from_slice(&SIG_OFFSET.to_le_bytes());
-        data.extend_from_slice(&velocity_ix_index.to_le_bytes());
-        data.extend_from_slice(&PUBKEY_OFFSET.to_le_bytes());
-        data.extend_from_slice(&velocity_ix_index.to_le_bytes());
-        data.extend_from_slice(&MSG_DATA_OFFSET.to_le_bytes());
-        data.extend_from_slice(&message_size.to_le_bytes());
-        data.extend_from_slice(&velocity_ix_index.to_le_bytes());
-
-        Instruction {
-            program_id: ed25519_program_id(),
-            accounts: vec![],
-            data,
-        }
-    }
-
     #[derive(Clone)]
     pub struct Regr271Pause {
         pub ctx: TestContext,
@@ -521,6 +458,10 @@ mod regr_271_pause {
         pub signed_msg_pda: Pubkey,
         pub user_pda: Pubkey,
         pub user_stats_pda: Pubkey,
+        pub quoter_pda: Pubkey,
+        pub clob_market_pda: Pubkey,
+        pub clob_program_id: Pubkey,
+        pub clob_authority_pda: Pubkey,
         pub authority: Rc<Keypair>,
     }
 
@@ -531,24 +472,6 @@ mod regr_271_pause {
             let mut ctx = TestContext::new();
             let program_id = velocity_program_id();
             ctx.add_program(&program_id, VELOCITY_SO).unwrap();
-
-            // Register a no-op builtin at the native Ed25519 program id (see the
-            // Ed25519NoopBuiltin doc comment). Without this the ed25519 pre-ix
-            // fails with UnsupportedProgramId before the velocity ix runs.
-            // `add_builtin` inserts the cache entry but sets the account owner to
-            // bpf_loader; the runtime's builtin dispatch only routes to the
-            // program's own id when the account is owned by the native loader, so
-            // we overwrite the account to be native-loader-owned + executable
-            // (the programs-cache entry keyed on the ed25519 id survives).
-            ctx.svm
-                .add_builtin(ed25519_program_id(), Ed25519NoopBuiltin::vm);
-            ctx.create_account()
-                .pubkey(ed25519_program_id())
-                .owner(native_loader_id())
-                .executable(true)
-                .lamports(1)
-                .create()
-                .unwrap();
 
             let (signer_pda, signer_nonce) =
                 Pubkey::find_program_address(&[b"velocity_signer"], &program_id);
@@ -638,6 +561,32 @@ mod regr_271_pause {
             );
             create_signed_msg_account(&mut ctx, signed_msg_pda, authority.pubkey(), 8);
 
+            // A router fill's CLOB baseline. Only its identity is validated
+            // before the paused-exchange guard fires, so the entry names a stub
+            // program and the book account is empty. `program_id` must equal the
+            // `clob_program` account the placement carries.
+            let clob_program_id = Pubkey::new_from_array([9u8; 32]);
+            let quoter_pda = Pubkey::find_program_address(
+                &[b"quoter", &mi0, clob_program_id.as_ref(), user_pda.as_ref()],
+                &program_id,
+            )
+            .0;
+            let mut quoter: velocity::state::prop_amm::QuoterV0 = bytemuck::Zeroable::zeroed();
+            quoter.program_id = anchor_pk(clob_program_id);
+            quoter.market = 0;
+            inject(&mut ctx, quoter_pda, &mut quoter);
+
+            let clob_market_pda = Pubkey::new_from_array([8u8; 32]);
+            ctx.create_account()
+                .pubkey(clob_market_pda)
+                .owner(clob_program_id)
+                .lamports(1_000_000_000)
+                .create()
+                .unwrap();
+
+            let clob_authority_pda =
+                Pubkey::find_program_address(&[b"clob_authority"], &program_id).0;
+
             Regr271Pause {
                 ctx,
                 program_id,
@@ -647,11 +596,15 @@ mod regr_271_pause {
                 signed_msg_pda,
                 user_pda,
                 user_stats_pda,
+                quoter_pda,
+                clob_market_pda,
+                clob_program_id,
+                clob_authority_pda,
                 authority,
             }
         }
 
-        /// Submit the signed-message taker order (ed25519 pre-ix + velocity ix)
+        /// Submit the signed-message taker order (its signature verified in-program)
         /// while the exchange is fully paused. Returns the program error code.
         pub fn place_while_paused(&mut self) -> Option<u32> {
             let slot = self.ctx.slot();
@@ -673,6 +626,17 @@ mod regr_271_pause {
                     AccountMeta::new(self.signed_msg_pda, false),
                     AccountMeta::new_readonly(self.authority.pubkey(), true),
                     AccountMeta::new_readonly(ix_sysvar_id(), false),
+                    // The filler is the signer's own `User`: the paused-exchange
+                    // guard fires before the fill, so it only needs to validate.
+                    AccountMeta::new(self.user_pda, false),
+                    AccountMeta::new(self.user_stats_pda, false),
+                    AccountMeta::new_readonly(self.quoter_pda, false),
+                    AccountMeta::new(self.clob_market_pda, false),
+                    AccountMeta::new_readonly(self.clob_program_id, false),
+                    AccountMeta::new_readonly(self.clob_authority_pda, false),
+                    // Optional `crank_conditions`, absent: the program id encodes
+                    // `None`.
+                    AccountMeta::new_readonly(self.program_id, false),
                     // remaining_accounts, in load_maps order [oracles, spot, perp]:
                     // quote spot market (w) then perp market (w). ($1 QuoteAsset
                     // oracle path needs no oracle account.)
@@ -682,14 +646,9 @@ mod regr_271_pause {
                 data,
             };
 
-            // The velocity ix is at index 1 (ed25519 pre-ix at index 0).
-            let ed25519_ix = build_ed25519_ix(1, message_size);
-
-            self.ctx
-                .raw_call(ed25519_ix)
-                .signers(&[&self.authority])
-                .add_transaction()
-                .unwrap();
+            // The taker signature rides the velocity ix data and is verified
+            // in-program, so there is no ed25519 pre-ix.
+            let _ = message_size;
             self.ctx
                 .raw_call(velocity_ix)
                 .signers(&[&self.authority])

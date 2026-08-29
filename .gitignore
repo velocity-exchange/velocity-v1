@@ -44,3 +44,4 @@ vendor
 anchor-v2/**/*keypair*.json
 
 .ci-local-logs/
+fuzz/e2e-svm-signedmsg/velocity.fuzz-idl.json

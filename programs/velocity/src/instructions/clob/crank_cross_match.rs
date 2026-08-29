@@ -187,21 +187,6 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
     let (clob_authority, clob_authority_nonce) = crate::signer::find_clob_authority();
     // One set of CPI buffers for the whole crank, as the router fill uses.
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
-    let mut executor = CpiQuoterExecutor {
-        scratch: &mut cpi_scratch,
-        caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
-        reference_price: 0,
-        quoted: &quoted,
-        market_index,
-        accounts: &accounts,
-        clob_authority,
-        clob_authority_nonce,
-        users: &users,
-        taker: taker_ref,
-        slot: clock.slot,
-        now: clock.unix_timestamp,
-    };
-
     // A crossed taker remainder is not this crank's to touch. The book's own
     // gate cannot stop it: the first leg can consume the whole opposite side,
     // after which nothing crosses the remainder any more and taking it becomes
@@ -216,6 +201,10 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
     // A remainder one level down is still a remainder the taker-origin crank
     // owns, and it is invisible to a read that reports only the best order on
     // each side.
+    //
+    // Runs before the executor takes the CPI buffers, so it reads through the
+    // one set the crank already built. A set per book would be an allocation
+    // per book, and the runtime's allocator never gives one back.
     //
     // Refusing rather than skipping, because the caller has a correct
     // instruction to send instead: `crank_taker_origin_cross` resolves this
@@ -233,7 +222,6 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
             find(&clob.response_account)?.clone(),
             find(&entry.program_id)?.clone(),
         ];
-        let mut scratch = crate::state::prop_amm::QuoterCpiScratch::new();
         let (bids, asks) = book_sides(
             &entry,
             &clob.entry.key(),
@@ -241,7 +229,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
             clob_authority,
             clob_authority_nonce,
             &sides,
-            &mut scratch,
+            &mut cpi_scratch,
         )?;
         validate!(
             !strips_taker_origin_gate(&bids, &asks, size),
@@ -249,6 +237,21 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
             "a crossed taker remainder must be resolved by crank_taker_origin_cross"
         )?;
     }
+
+    let mut executor = CpiQuoterExecutor {
+        scratch: &mut cpi_scratch,
+        caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
+        reference_price: 0,
+        quoted: &quoted,
+        market_index,
+        accounts: &accounts,
+        clob_authority,
+        clob_authority_nonce,
+        users: &users,
+        taker: taker_ref,
+        slot: clock.slot,
+        now: clock.unix_timestamp,
+    };
 
     // Raise the surplus floor to cover the keeper's lamport payment valued in
     // quote, so a cross the reservoir pays for never nets the protocol less

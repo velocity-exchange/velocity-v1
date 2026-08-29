@@ -4689,6 +4689,7 @@ dependencies = [
  "quoter-spec",
  "relay-anchor",
  "relay-spec",
+ "solana-cpi",
  "solana-program",
  "solana-security-txt",
  "static_assertions",

@@ -35,6 +35,7 @@ idl-build = [
 [dependencies]
 anchor-lang = { version = "1.0.2", features = ["init-if-needed"] }
 anchor-spl = "1.0.2"
+solana-cpi = "3"
 solana-program = "3"
 borsh = "1"
 # Declares the quoter wire types this program decodes. `borsh-derive` gives

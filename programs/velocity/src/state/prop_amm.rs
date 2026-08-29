@@ -234,6 +234,124 @@ fn write_quoter_account_metas(
     }));
 }
 
+/// CPI a quoter without handing the runtime an owned instruction.
+///
+/// [`invoke_signed`] builds its argument as
+/// `StableInstruction::from(instruction.clone())`, and a clone allocates for
+/// its own length. That is one copy of the account metas and one of the args on
+/// every leg, on a heap the runtime never gives back, which is the cost
+/// [`QuoterCpiScratch`] exists to avoid and cannot reach from the caller's side.
+///
+/// The runtime reads the instruction as a record of three
+/// `(address, capacity, length)` triples and never reads a capacity — it
+/// translates each address and length into a slice and bounds-checks it against
+/// the VM's memory map. Pointing those addresses at the buffers the scratch
+/// already holds says the same thing without the copy.
+///
+/// The aliasing probe [`invoke_signed`] runs first is kept. It is what stops a
+/// callee writing an account whose data this program still holds borrowed, and
+/// dropping it is what makes the SDK's own unchecked variant unsafe.
+fn invoke_quoter_signed(
+    instruction: &Instruction,
+    infos: &[AccountInfo],
+    signer_seeds: &[&[&[u8]]],
+) -> Result<()> {
+    // Exactly the check `invoke_signed` runs, for exactly its reason.
+    for meta in instruction.accounts.iter() {
+        for info in infos.iter() {
+            if meta.pubkey == *info.key {
+                if meta.is_writable {
+                    let _ = info.try_borrow_mut_lamports()?;
+                    let _ = info.try_borrow_mut_data()?;
+                } else {
+                    let _ = info.try_borrow_lamports()?;
+                    let _ = info.try_borrow_data()?;
+                }
+                break;
+            }
+        }
+    }
+
+    #[cfg(target_os = "solana")]
+    {
+        /// Mirrors `StableVec`, which the runtime reads as an address, a
+        /// capacity it ignores, and a length.
+        ///
+        /// Deliberately not `StableVec` itself: that type owns its allocation
+        /// and frees it on drop, so building one over borrowed memory would
+        /// hand the allocator a pointer this program still owns.
+        #[repr(C)]
+        struct BorrowedVec {
+            addr: u64,
+            cap: u64,
+            len: u64,
+        }
+
+        /// Mirrors `StableInstruction`. The asserts below pin it to that type,
+        /// so an SDK that moves a field fails the build rather than writing
+        /// through the wrong offset.
+        #[repr(C)]
+        struct BorrowedInstruction {
+            accounts: BorrowedVec,
+            data: BorrowedVec,
+            program_id: Pubkey,
+        }
+
+        const _: () = {
+            use solana_program::stable_layout::stable_instruction::StableInstruction;
+            assert!(
+                core::mem::size_of::<BorrowedInstruction>()
+                    == core::mem::size_of::<StableInstruction>()
+            );
+            assert!(
+                core::mem::align_of::<BorrowedInstruction>()
+                    == core::mem::align_of::<StableInstruction>()
+            );
+        };
+
+        let borrowed = BorrowedInstruction {
+            accounts: BorrowedVec {
+                addr: instruction.accounts.as_ptr() as u64,
+                cap: instruction.accounts.len() as u64,
+                len: instruction.accounts.len() as u64,
+            },
+            data: BorrowedVec {
+                addr: instruction.data.as_ptr() as u64,
+                cap: instruction.data.len() as u64,
+                len: instruction.data.len() as u64,
+            },
+            program_id: instruction.program_id,
+        };
+
+        // SAFETY: `borrowed` has `StableInstruction`'s layout, asserted above.
+        // The metas and args it addresses are the caller's and outlive this
+        // call. Every meta came from a real `AccountMeta`, so its flag bytes
+        // are 0 or 1, which the runtime requires. The infos and seeds are
+        // passed as the SDK passes them: a data pointer and a count.
+        let result = unsafe {
+            solana_cpi::syscalls::sol_invoke_signed_rust(
+                &borrowed as *const _ as *const u8,
+                infos as *const _ as *const u8,
+                infos.len() as u64,
+                signer_seeds as *const _ as *const u8,
+                signer_seeds.len() as u64,
+            )
+        };
+        match result {
+            0 => Ok(()),
+            _ => Err(anchor_lang::solana_program::program_error::ProgramError::from(result).into()),
+        }
+    }
+
+    // Off-chain the syscall does not exist, and the host harnesses run through
+    // the stubbed CPI the SDK provides.
+    #[cfg(not(target_os = "solana"))]
+    {
+        invoke_signed(instruction, infos, signer_seeds)?;
+        Ok(())
+    }
+}
+
 /// The three buffers a quoter CPI leg needs, allocated once and reused by every
 /// leg of every entry in one instruction.
 ///
@@ -1610,7 +1728,7 @@ impl QuoterV0 {
                 &entry_seeds
             }
         };
-        invoke_signed(instruction, infos, &[signer_seeds])?;
+        invoke_quoter_signed(instruction, infos, &[signer_seeds])?;
 
         // The payload lives in the quoter's response account; return data
         // carries only a pointer into it, so responses aren't bound by the

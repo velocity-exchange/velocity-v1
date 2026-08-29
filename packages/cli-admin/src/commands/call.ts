@@ -120,12 +120,16 @@ export function registerCall(parent: Command): void {
 			);
 			const names = payload.instructions.map((e) => e.ix).join(', ');
 			const label = `batch ${ixs.length} ix(s): ${names}`;
+			const memo = `velocity-admin batch: ${names}`;
 			if (local.dryRun) {
 				console.log(label);
 				await reportDryRun(
 					provider,
 					ixs,
-					opts.multisig ? new PublicKey(opts.multisig) : undefined
+					opts.multisig ? new PublicKey(opts.multisig) : undefined,
+					0,
+					[],
+					memo
 				);
 				return;
 			}

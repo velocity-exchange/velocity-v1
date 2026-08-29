@@ -157,7 +157,10 @@ export async function reportDryRun(
 	instructions: TransactionInstruction[],
 	multisigPda: PublicKey | undefined,
 	vaultIndex = 0,
-	altAccounts: AddressLookupTableAccount[] = []
+	altAccounts: AddressLookupTableAccount[] = [],
+	/** The memo the real `sendOrPropose` will use. It is stored inline in the
+	 * proposal transaction, so the size estimate is only accurate with it. */
+	memo = ''
 ): Promise<void> {
 	console.log('dry run, nothing sent');
 	instructions.forEach((ix, i) => {
@@ -203,9 +206,48 @@ export async function reportDryRun(
 		(await provider.connection.getMinimumBalanceForRentExemption(vaultTxSize)) +
 		(await provider.connection.getMinimumBalanceForRentExemption(proposalSize));
 
+	// The proposal-create transaction carries the whole inner message inline,
+	// so a batch that compiles fine can still exceed the 1232-byte transaction
+	// limit at propose time. Size it here rather than letting the send fail.
+	const createIx = multisig.instructions.vaultTransactionCreate({
+		multisigPda,
+		transactionIndex,
+		creator: provider.wallet.publicKey,
+		vaultIndex,
+		ephemeralSigners: 0,
+		transactionMessage: message,
+		addressLookupTableAccounts: altAccounts,
+		memo,
+	});
+	const proposeIx = multisig.instructions.proposalCreate({
+		multisigPda,
+		transactionIndex,
+		creator: provider.wallet.publicKey,
+	});
+	const outer = new Transaction().add(createIx, proposeIx);
+	outer.recentBlockhash = blockhash;
+	outer.feePayer = provider.wallet.publicKey;
+	// serialized message + compact-u16 signature count + one 64-byte signature
+	const outerSize = outer.serializeMessage().length + 1 + 64;
+	const TX_LIMIT = 1232;
+
 	console.log(
 		`  dispatch: proposal to multisig ${multisigPda.toBase58()}, vault ${vaultIndex} (${vaultPda.toBase58()}), next tx index ${transactionIndex}`
 	);
+	if (outerSize > TX_LIMIT) {
+		console.log(
+			`  proposal transaction: ${outerSize} bytes, OVER the ${TX_LIMIT}-byte limit ` +
+				`by ${
+					outerSize - TX_LIMIT
+				} — this will fail to propose; split the batch`
+		);
+	} else {
+		console.log(
+			`  proposal transaction: ${outerSize} bytes of ${TX_LIMIT} (${
+				TX_LIMIT - outerSize
+			} spare)`
+		);
+	}
 	console.log(
 		`  proposer rent: ~${rent} lamports (~${(rent / 1e9).toFixed(
 			4

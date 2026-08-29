@@ -2,11 +2,69 @@ mod sig_verification {
     use {
         crate::{
             controller::position::PositionDirection,
-            validation::sig_verification::deserialize_into_verified_message,
+            validation::sig_verification::{
+                deserialize_into_verified_message, verify_and_decode_signed_msg,
+            },
         },
         anchor_lang::prelude::Pubkey,
         std::str::FromStr,
     };
+
+    /// Pack the `place_signed_msg_taker_order` argument envelope:
+    /// `[signature: 64][public key: 32][payload size: 2 LE][payload]`.
+    fn pack_message(signature: &[u8; 64], pubkey: &[u8; 32], payload: &[u8]) -> Vec<u8> {
+        let mut message = Vec::with_capacity(98 + payload.len());
+        message.extend_from_slice(signature);
+        message.extend_from_slice(pubkey);
+        message.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+        message.extend_from_slice(payload);
+        message
+    }
+
+    /// The in-program verifier accepts a real signature over the hex payload,
+    /// and refuses a wrong signer or a tampered signature — the checks the
+    /// native ed25519 precompile used to make.
+    #[test]
+    fn verify_and_decode_signed_msg_checks_a_real_signature() {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        // A valid non-delegate order, hex-encoded: the taker signs the hex.
+        let order = with_order_params_builder_none(vec![
+            200, 213, 166, 94, 34, 52, 245, 93, 0, 1, 0, 1, 0, 202, 154, 59, 0, 0, 0, 0, 0, 248,
+            89, 13, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 10, 1, 192, 181, 74, 13, 0, 0, 0, 0,
+            1, 0, 248, 89, 13, 0, 0, 0, 0, 0, 0, 232, 3, 0, 0, 0, 0, 0, 0, 72, 112, 54, 84, 106,
+            83, 48, 107, 0, 0,
+        ]);
+        let hex_payload = hex::encode(&order).into_bytes();
+
+        let signing = SigningKey::from_bytes(&[7u8; 32]);
+        let pubkey = signing.verifying_key().to_bytes();
+        let signature = signing.sign(&hex_payload).to_bytes();
+        let message = pack_message(&signature, &pubkey, &hex_payload);
+
+        // The right signer: verified and decoded.
+        let verified = verify_and_decode_signed_msg(&message, &pubkey, false)
+            .expect("a real signature verifies");
+        assert_eq!(verified.sub_account_id, Some(0));
+        assert_eq!(verified.signature, signature);
+
+        // A different expected signer: refused before the crypto.
+        assert!(verify_and_decode_signed_msg(&message, &[9u8; 32], false).is_err());
+
+        // A tampered signature: the in-program check fails.
+        let mut tampered = message.clone();
+        tampered[0] ^= 1;
+        assert!(verify_and_decode_signed_msg(&tampered, &pubkey, false).is_err());
+
+        // A signature by a different key, presented under that key: the pubkey
+        // matches the signer but the message the taker signed differs, so it
+        // is refused.
+        let other = SigningKey::from_bytes(&[8u8; 32]);
+        let other_pk = other.verifying_key().to_bytes();
+        let other_sig = other.sign(b"not the order").to_bytes();
+        let forged = pack_message(&other_sig, &other_pk, &hex_payload);
+        assert!(verify_and_decode_signed_msg(&forged, &other_pk, false).is_err());
+    }
 
     /// The fixtures below encode the embedded `OrderParams` with its pre-builder-codes layout.
     /// Builder-codes support appended two trailing `Option` fields (`builder_idx`,

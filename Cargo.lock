@@ -459,6 +459,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "brine-ed25519"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "521613852b9ff057440780f968789cae80e9f81756078cd4b74a19b2f0ccf1e2"
+dependencies = [
+ "curve25519-dalek",
+ "sha2",
+ "solana-address 2.6.0",
+ "solana-program-error",
+]
+
+[[package]]
 name = "bs58"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -816,6 +828,30 @@ dependencies = [
  "rfc6979",
  "signature",
  "spki",
+]
+
+[[package]]
+name = "ed25519"
+version = "2.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
+dependencies = [
+ "pkcs8",
+ "signature",
+]
+
+[[package]]
+name = "ed25519-dalek"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
+dependencies = [
+ "curve25519-dalek",
+ "ed25519",
+ "serde",
+ "sha2",
+ "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -3200,10 +3236,12 @@ dependencies = [
  "arrayref",
  "base64 0.13.1",
  "borsh 1.6.1",
+ "brine-ed25519",
  "bytemuck",
  "byteorder",
  "bytes",
  "clob-wire",
+ "ed25519-dalek",
  "enumflags2",
  "hex",
  "num-integer",

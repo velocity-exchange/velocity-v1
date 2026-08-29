@@ -116,7 +116,7 @@ export function isSetLoadedAccountsDataSizeIx(
  *
  * Add it at the **end** of the instruction list. The runtime finds compute-budget instructions by
  * program id wherever they sit, and an instruction added at the front shifts every index behind
- * it — which the signed-message flows encode (see `createMinimalEd25519VerifyIx`).
+ * it — which the Pyth Lazer oracle-update flow encodes (see `createMinimalEd25519VerifyIx`).
  * @param bytes - The limit, in bytes.
  * @returns The instruction.
  */

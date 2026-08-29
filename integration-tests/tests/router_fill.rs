@@ -7039,6 +7039,181 @@ fn party(svm: &mut litesvm::LiteSVM, deposit: u64) -> Party {
     }
 }
 
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+/// Create a `SignedMsgUserOrders` account for `authority` with `num_orders`
+/// empty slots. The zero-copy loader reads an 8-byte discriminator, then the
+/// fixed header (user_pubkey 32, padding 4, len 4), then `len` order slots of
+/// 40 bytes each.
+fn set_signed_msg_user_orders(svm: &mut litesvm::LiteSVM, authority: &Pubkey, num_orders: u32) {
+    use velocity::state::signed_msg_user::SignedMsgUserOrders;
+    let mut data = SignedMsgUserOrders::DISCRIMINATOR.to_vec();
+    data.extend_from_slice(authority.as_ref());
+    data.extend_from_slice(&0u32.to_le_bytes());
+    data.extend_from_slice(&num_orders.to_le_bytes());
+    data.resize(data.len() + num_orders as usize * 40, 0);
+    svm.set_account(
+        signed_msg_user_orders_pda(authority),
+        Account {
+            lamports: 1_000_000_000,
+            data,
+            owner: velocity_id(),
+            executable: false,
+            rent_epoch: 0,
+        },
+    )
+    .unwrap();
+}
+
+/// The taker's ed25519 signature over a swift order is verified in-program
+/// (brine-ed25519), with no ed25519 precompile instruction. A real signature
+/// clears the verifier; flipping one byte makes the same order fail with
+/// SigVerificationFailed. Only the signature differs between the two sends, so
+/// the in-program verifier is what the difference isolates.
+#[test]
+fn signed_msg_taker_signature_is_verified_in_program() {
+    use {
+        anchor_lang::AnchorSerialize,
+        velocity::state::order_params::{OrderParams, PostOnlyParam, SignedMsgOrderParamsMessage},
+    };
+
+    let mut fixture = setup();
+    fixture.svm.warp_to_slot(30);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        30,
+    );
+
+    let taker = party(&mut fixture.svm, 100 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+    set_signed_msg_user_orders(&mut fixture.svm, &taker.authority.pubkey(), 8);
+
+    let order = OrderParams {
+        order_type: OrderType::Market,
+        market_type: MarketType::Perp,
+        direction: PositionDirection::Long,
+        base_asset_amount: UNIT,
+        price: 0,
+        market_index: 0,
+        post_only: PostOnlyParam::None,
+        auction_duration: Some(10),
+        auction_start_price: Some((99 * PRICE) as i64),
+        auction_end_price: Some((101 * PRICE) as i64),
+        ..OrderParams::default()
+    };
+    let message = SignedMsgOrderParamsMessage {
+        signed_msg_order_params: order,
+        sub_account_id: 0,
+        slot: 30,
+        uuid: *b"itbrine1",
+        take_profit_order_params: None,
+        stop_loss_order_params: None,
+        max_margin_ratio: None,
+        builder_idx: None,
+        builder_fee_tenth_bps: None,
+        isolated_position_deposit: None,
+        network: None,
+        route: None,
+    };
+    // manual 8-byte discriminator (unread) + borsh body, hex-encoded: the taker
+    // signs the hex text.
+    let mut borsh_body = vec![0u8; 8];
+    message.serialize(&mut borsh_body).unwrap();
+    let hex_msg = hex_lower(&borsh_body);
+    let signature = taker.authority.sign_message(hex_msg.as_bytes());
+
+    let taker_pubkey = taker.authority.pubkey().to_bytes();
+    let envelope = |sig: &[u8]| {
+        let mut e = Vec::new();
+        e.extend_from_slice(sig);
+        e.extend_from_slice(&taker_pubkey);
+        e.extend_from_slice(&(hex_msg.len() as u16).to_le_bytes());
+        e.extend_from_slice(hex_msg.as_bytes());
+        e
+    };
+
+    let place_ix = |bytes: Vec<u8>| {
+        let (clob_authority, _) = clob_authority_pda();
+        let mut accounts = velocity::accounts::PlaceSignedMsgTakerOrder {
+            state: state_pda(),
+            user: taker.user,
+            user_stats: taker.stats,
+            signed_msg_user_orders: signed_msg_user_orders_pda(&taker.authority.pubkey()),
+            authority: keeper.authority.pubkey(),
+            ix_sysvar: instructions_sysvar(),
+            filler: keeper.user,
+            filler_stats: keeper.stats,
+            quoter: fixture.quoter,
+            clob_market: fixture.clob_market,
+            clob_program: clob_id(),
+            clob_authority,
+            crank_conditions: None,
+        }
+        .to_account_metas(None);
+        accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+        accounts.push(AccountMeta::new(spot_market_pda(0), false));
+        accounts.push(AccountMeta::new(perp_market_pda(0), false));
+        Instruction {
+            program_id: velocity_id(),
+            accounts,
+            data: velocity::instruction::PlaceSignedMsgTakerOrder {
+                signed_msg_order_params_message_bytes: bytes,
+                is_delegate_signer: false,
+            }
+            .data(),
+        }
+    };
+
+    // A real signature clears the verifier: whatever the fill does next, the
+    // failure is never SigVerificationFailed.
+    let good = send_with_ixs(
+        &mut fixture.svm,
+        &keeper.authority,
+        &[
+            compute_unit_limit_ix(600_000),
+            place_ix(envelope(signature.as_ref())),
+        ],
+        &[],
+    );
+    let good_logs = match &good {
+        Ok(meta) => meta.logs.clone(),
+        Err(e) => e.meta.logs.clone(),
+    };
+    assert!(
+        !good_logs
+            .iter()
+            .any(|l| l.contains("SigVerificationFailed")),
+        "a real signature must clear the in-program verifier: {good_logs:?}"
+    );
+
+    // Flip one signature byte: the same order now fails at the verifier.
+    let mut bad_sig = signature.as_ref().to_vec();
+    bad_sig[0] ^= 1;
+    let bad = send_with_ixs(
+        &mut fixture.svm,
+        &keeper.authority,
+        &[compute_unit_limit_ix(600_000), place_ix(envelope(&bad_sig))],
+        &[],
+    )
+    .unwrap_err();
+    assert!(
+        bad.meta
+            .logs
+            .iter()
+            .any(|l| l.contains("SigVerificationFailed")),
+        "a tampered signature must be refused by the in-program verifier: {:?}",
+        bad.meta.logs
+    );
+}
+
 /// Rest one `party`'s CLOB order through the velocity adapter (margin gated,
 /// aggregates reserved), immediately matchable.
 fn place_clob_order_for(

@@ -738,11 +738,11 @@ export class TxHandler {
 
 		// Appended, not prepended. The runtime finds compute-budget instructions
 		// by program id wherever they sit, and an instruction added at the front
-		// shifts every index behind it — which the signed-message flows encode:
-		// an ed25519 verify instruction points at the instruction holding the
-		// message it verifies, by absolute index (`createMinimalEd25519VerifyIx`).
-		// A caller computes that index from the instructions it assembled, so
-		// only the tail is free.
+		// shifts every index behind it — which the Pyth Lazer oracle-update flow
+		// encodes: an ed25519 verify instruction points at the instruction
+		// holding the message it verifies, by absolute index
+		// (`createMinimalEd25519VerifyIx`). A caller computes that index from the
+		// instructions it assembled, so only the tail is free.
 		const loadedAccountsDataSize = baseTxParams?.loadedAccountsDataSize;
 		if (
 			loadedAccountsDataSize !== undefined &&

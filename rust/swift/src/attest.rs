@@ -15,12 +15,12 @@
 //! transaction-global — a malicious transaction could move the key's
 //! lamports — so co-signing is gated hard: the flow authority must appear
 //! as a *read-only, non-fee-payer* signer, every invoked program must be on
-//! the allowlist (velocity, compute budget, ed25519 verify), the transaction
-//! must demonstrably fill the held order (its taker signature must appear in
-//! an instruction's data — the ed25519 verify instruction carries it), and it
-//! must not place or modify a CLOB order — those carry the fast activation the
-//! co-signature unlocks, and a retail fill never rests one. Same drain-vector
-//! analysis as relay's payment guards.
+//! the allowlist (velocity, compute budget), the transaction must demonstrably
+//! fill the held order (its taker signature must appear in an instruction's
+//! data — the velocity fill instruction carries it), and it must not place or
+//! modify a CLOB order — those carry the fast activation the co-signature
+//! unlocks, and a retail fill never rests one. Same drain-vector analysis as
+//! relay's payment guards.
 
 use {
     anchor_lang::Discriminator,
@@ -37,7 +37,6 @@ use {
 };
 
 const COMPUTE_BUDGET_ID: &str = "ComputeBudget111111111111111111111111111111";
-const ED25519_ID: &str = "Ed25519SigVerify111111111111111111111111111";
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -264,12 +263,11 @@ fn validate_attestable(
     // drain vector this guards.
     let velocity = velocity_rs::constants::PROGRAM_ID;
     let compute_budget: Pubkey = COMPUTE_BUDGET_ID.parse().expect("const");
-    let ed25519: Pubkey = ED25519_ID.parse().expect("const");
     for instruction in message.instructions() {
         let program = keys
             .get(instruction.program_id_index as usize)
             .ok_or("instruction names a program outside the static keys")?;
-        if *program != velocity && *program != compute_budget && *program != ed25519 {
+        if *program != velocity && *program != compute_budget {
             return Err(format!("program {program} is not attestable"));
         }
         // A retail fill never places or modifies a resting CLOB order. Those
@@ -288,9 +286,8 @@ fn validate_attestable(
         }
     }
 
-    // The transaction must actually fill the held order: its taker
-    // signature travels in instruction data (the ed25519 verify
-    // instruction carries signature + message).
+    // The transaction must actually fill the held order: its taker signature
+    // travels in the velocity fill instruction's data.
     let binds = message.instructions().iter().any(|instruction| {
         instruction
             .data
@@ -321,25 +318,19 @@ mod tests {
     ) -> VersionedTransaction {
         let payer = Keypair::new();
         let velocity = velocity_rs::constants::PROGRAM_ID;
-        let ed25519: Pubkey = ED25519_ID.parse().unwrap();
-        let mut ed25519_data = vec![0u8; 16];
-        ed25519_data.extend_from_slice(order_signature);
-        let ixs = vec![
-            Instruction {
-                program_id: ed25519,
-                accounts: vec![],
-                data: ed25519_data,
-            },
-            Instruction {
-                program_id: program_override.unwrap_or(velocity),
-                accounts: vec![if flow_writable {
-                    AccountMeta::new(*flow, true)
-                } else {
-                    AccountMeta::new_readonly(*flow, true)
-                }],
-                data: vec![1, 2, 3],
-            },
-        ];
+        // The taker signature rides the velocity instruction's own data, the
+        // way place_signed_msg_taker_order carries it. No ed25519 instruction.
+        let mut data = vec![0u8; 8];
+        data.extend_from_slice(order_signature);
+        let ixs = vec![Instruction {
+            program_id: program_override.unwrap_or(velocity),
+            accounts: vec![if flow_writable {
+                AccountMeta::new(*flow, true)
+            } else {
+                AccountMeta::new_readonly(*flow, true)
+            }],
+            data,
+        }];
         let message = v0::Message::try_compile(&payer.pubkey(), &ixs, &[], Hash::default())
             .expect("compiles");
         VersionedTransaction {
@@ -391,24 +382,15 @@ mod tests {
         let order_sig = [7u8; 64];
         let payer = Keypair::new();
         let velocity = velocity_rs::constants::PROGRAM_ID;
-        let ed25519: Pubkey = ED25519_ID.parse().unwrap();
-        let mut ed25519_data = vec![0u8; 16];
-        ed25519_data.extend_from_slice(&order_sig);
-        // A velocity place_clob_order carries the fast-activation gate.
+        // A velocity place_clob_order carries the fast-activation gate, and the
+        // order signature rides its data.
         let mut place_data = PlaceClobOrder::DISCRIMINATOR.to_vec();
-        place_data.extend_from_slice(&[0u8; 8]);
-        let ixs = vec![
-            Instruction {
-                program_id: ed25519,
-                accounts: vec![],
-                data: ed25519_data,
-            },
-            Instruction {
-                program_id: velocity,
-                accounts: vec![AccountMeta::new_readonly(flow.pubkey(), true)],
-                data: place_data,
-            },
-        ];
+        place_data.extend_from_slice(&order_sig);
+        let ixs = vec![Instruction {
+            program_id: velocity,
+            accounts: vec![AccountMeta::new_readonly(flow.pubkey(), true)],
+            data: place_data,
+        }];
         let message = v0::Message::try_compile(&payer.pubkey(), &ixs, &[], Hash::default())
             .expect("compiles");
         let tx = VersionedTransaction {

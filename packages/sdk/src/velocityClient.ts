@@ -9692,11 +9692,10 @@ export class VelocityClient {
 	 * @param takerInfo - Taker's account/authority info; `signingAuthority` is the delegate or
 	 * direct authority that produced the signature (compared against `takerUserAccount.delegate`
 	 * to determine whether the message decodes as the delegate-signer variant).
-	 * @param precedingIxs - Instructions that will precede the returned ones in the final
-	 * transaction; used only to compute the correct sysvar-instructions index for signature
-	 * verification (has no other effect — the caller is still responsible for including them).
-	 * @param overrideCustomIxIndex - Explicit index of the ed25519-verify instruction within the
-	 * final transaction; overrides the value derived from `precedingIxs.length`.
+	 * @param _precedingIxs - Retained for call-site compatibility; no effect. The order's signature
+	 * is verified in-program, so it no longer rides an ed25519 precompile instruction whose sysvar
+	 * index these once computed.
+	 * @param _overrideCustomIxIndex - Retained for call-site compatibility; no effect.
 	 * @param txParams - Optional compute-unit/priority-fee overrides.
 	 * @returns The transaction signature.
 	 */
@@ -9742,17 +9741,15 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Builds the two instructions for `placeSignedMsgTakerOrder`: an ed25519-signature-verify
-	 * instruction (must be placed at the sysvar-instructions index this function assumes — see
-	 * `precedingIxs`/`overrideCustomIxIndex`) followed by the `placeSignedMsgTakerOrder` program
-	 * instruction. See `placeSignedMsgTakerOrder` for semantics.
+	 * Builds the single `placeSignedMsgTakerOrder` program instruction. The taker's signature
+	 * rides this instruction's own data and is verified in-program, so no ed25519 precompile
+	 * instruction precedes it. See `placeSignedMsgTakerOrder` for semantics.
 	 * @param signedSignedMsgOrderParams - The signed order payload.
 	 * @param marketIndex - Perp market index the signed order targets.
 	 * @param takerInfo - Taker's account/authority info; see `placeSignedMsgTakerOrder`.
-	 * @param precedingIxs - Instructions preceding these two in the final transaction (used only
-	 * to compute the ed25519-verify instruction's sysvar index).
-	 * @param overrideCustomIxIndex - Explicit sysvar-instructions index override.
-	 * @returns `[ed25519VerifyIx, placeSignedMsgTakerOrderIx]`.
+	 * @param _precedingIxs - Retained for call-site compatibility; no effect.
+	 * @param _overrideCustomIxIndex - Retained for call-site compatibility; no effect.
+	 * @returns `[placeSignedMsgTakerOrderIx]`.
 	 */
 	public async getPlaceSignedMsgTakerPerpOrderIxs(
 		signedSignedMsgOrderParams: SignedMsgOrderParams,
@@ -9763,8 +9760,11 @@ export class VelocityClient {
 			takerUserAccount: UserAccount;
 			signingAuthority: PublicKey;
 		},
-		precedingIxs: TransactionInstruction[] = [],
-		overrideCustomIxIndex?: number,
+		// Retained for call-site compatibility. The order no longer rides an
+		// ed25519 precompile instruction, so there is no sysvar index to
+		// compute and these have no effect.
+		_precedingIxs: TransactionInstruction[] = [],
+		_overrideCustomIxIndex?: number,
 		fillerInfo?: {
 			filler: PublicKey;
 			fillerStats: PublicKey;
@@ -9830,19 +9830,16 @@ export class VelocityClient {
 			signedSignedMsgOrderParams.orderParams.length
 		);
 
+		// The taker's signature, its public key, and the order travel in this
+		// instruction's own data. The program verifies the signature over the
+		// order in-program (brine-ed25519), so no ed25519 precompile
+		// instruction precedes this one.
 		const signedMsgIxData = Buffer.concat([
 			signedSignedMsgOrderParams.signature,
 			takerInfo.signingAuthority.toBytes(),
 			messageLengthBuffer,
 			signedSignedMsgOrderParams.orderParams,
 		]);
-
-		const signedMsgOrderParamsSignatureIx = createMinimalEd25519VerifyIx(
-			overrideCustomIxIndex || precedingIxs.length + 1,
-			12,
-			signedMsgIxData,
-			0
-		);
 
 		const placeTakerSignedMsgPerpOrderIx =
 			this.program.instruction.placeSignedMsgTakerOrder(
@@ -9873,7 +9870,7 @@ export class VelocityClient {
 				}
 			);
 
-		return [signedMsgOrderParamsSignatureIx, placeTakerSignedMsgPerpOrderIx];
+		return [placeTakerSignedMsgPerpOrderIx];
 	}
 
 	/**

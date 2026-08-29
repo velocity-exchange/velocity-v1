@@ -2889,13 +2889,10 @@ impl<'a> TransactionBuilder<'a> {
             ));
         }
 
+        // The signature, public key, and order travel in this instruction's
+        // own data. The program verifies the signature in-program, so no
+        // ed25519 precompile instruction precedes it.
         let swift_taker_ix_data = signed_order_info.to_ix_data();
-        let ed25519_verify_ix = crate::utils::new_ed25519_ix_ptr(
-            swift_taker_ix_data.as_slice(),
-            self.ixs.len() as u16 + 1,
-            None,
-        );
-
         let place_swift_ix = Instruction {
             program_id: constants::PROGRAM_ID,
             accounts,
@@ -2905,8 +2902,7 @@ impl<'a> TransactionBuilder<'a> {
             }),
         };
 
-        self.ixs
-            .extend_from_slice(&[ed25519_verify_ix, place_swift_ix]);
+        self.ixs.push(place_swift_ix);
         self
     }
 

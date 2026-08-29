@@ -90,7 +90,7 @@ use {
         },
         validate,
         validation::{
-            sig_verification::verify_and_decode_ed25519_msg,
+            sig_verification::verify_and_decode_signed_msg,
             user::{validate_user_deletion, validate_user_is_idle},
         },
         vlp::{amm::math::amm::calculate_net_user_pnl, amm_cache::CacheInfo},
@@ -102,11 +102,8 @@ use {
         token_interface::{TokenAccount, TokenInterface},
     },
     solana_program::{
-        instruction::Instruction,
         pubkey,
-        sysvar::instructions::{
-            self, load_current_index_checked, load_instruction_at_checked, ID as IX_ID,
-        },
+        sysvar::instructions::{self, ID as IX_ID},
     },
     std::{cell::RefMut, convert::TryFrom},
 };
@@ -914,7 +911,6 @@ pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
             &mut taker_stats,
             &mut signed_msg_taker,
             signed_msg_order_params_message_bytes,
-            &ctx.accounts.ix_sysvar.to_account_info(),
             &perp_market_map,
             &mut spot_market_map,
             &mut oracle_map,
@@ -1243,7 +1239,6 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
     taker_stats: &mut RefMut<UserStats>,
     signed_msg_account: &mut SignedMsgUserOrdersZeroCopyMut,
     taker_order_params_message_bytes: Vec<u8>,
-    ix_sysvar: &AccountInfo<'info>,
     perp_market_map: &PerpMarketMap,
     spot_market_map: &mut SpotMarketMap,
     oracle_map: &mut OracleMap,
@@ -1254,28 +1249,17 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
     Option<RevenueShareEscrowZeroCopyMut<'info>>,
     Option<PlacedSignedMsgOrder>,
 )> {
-    // Authenticate the signed msg order param message
-    let ix_idx = load_current_index_checked(ix_sysvar)?;
-    validate!(
-        ix_idx > 0,
-        ErrorCode::InvalidVerificationIxIndex,
-        "instruction index must be greater than 0 for one sig verifies"
-    )?;
-
-    // Verify data from verify ix
-    let ix: Instruction = load_instruction_at_checked(ix_idx as usize - 1, ix_sysvar)?;
-
+    // Authenticate the signed msg order param message. The taker's signature
+    // is verified in-program over the message the argument carries, so no
+    // preceding ed25519 precompile instruction is required.
     let signer = if is_delegate_signer {
         taker.delegate.to_bytes()
     } else {
         taker.authority.to_bytes()
     };
-    let verified_message_and_signature = verify_and_decode_ed25519_msg(
-        &ix,
-        ix_sysvar,
-        ix_idx,
-        &signer,
+    let verified_message_and_signature = verify_and_decode_signed_msg(
         &taker_order_params_message_bytes[..],
+        &signer,
         is_delegate_signer,
     )?;
 

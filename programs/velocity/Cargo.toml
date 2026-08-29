@@ -67,6 +67,13 @@ enumflags2 = "0.6.4"
 solana-security-txt = "1.1.0"
 static_assertions = "1.1.0"
 byteorder = "1.4.3"
+# In-program ed25519 verification via the curve25519 syscalls, replacing the
+# native ed25519 precompile for swift order authentication. `fast-sha512`
+# hashes in-program, so it does not depend on the SIMD-0512 sol_sha512 syscall
+# being active on the cluster. Pinned to 0.9.0: its `verify` rejects the eight
+# small-order points inline, matching the native precompile, and later 0.9.x
+# raise their solana-* requirements above this program's tree.
+brine-ed25519 = { version = "=0.9.0", features = ["fast-sha512"] }
 # Optional, activated only by the `fuzz-fixtures` feature so `test_utils` (which
 # returns `bytes::BytesMut` and `pyth::pc::Price`) compiles for external host
 # fuzz crates. Kept in [dev-dependencies] too for the plain `cargo test` path.
@@ -77,3 +84,6 @@ pyth = { path = "../pyth", features = ["no-entrypoint"], optional = true }
 bytes = "1.2.0"
 pyth = { path = "../pyth", features = ["no-entrypoint"]}
 base64 = "0.13.0"
+# Signs real ed25519 messages so the in-program signature verifier can be
+# exercised against genuine signatures on the host.
+ed25519-dalek = "2"

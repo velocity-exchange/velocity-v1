@@ -1789,7 +1789,12 @@ fn get_maker_orders_info(
 ) -> VelocityResult<Vec<(Pubkey, usize, u64)>> {
     let maker_direction = taker_order.direction.opposite();
 
-    let mut maker_orders_info = Vec::with_capacity(16);
+    // One entry per matchable maker order. Sized so a full book of makers does
+    // not grow the buffer part way through: a doubling abandons the old one on
+    // an allocator that never reclaims.
+    let mut maker_orders_info = Vec::with_capacity(
+        makers_and_referrer.0.len() * crate::math::constants::MAX_OPEN_ORDERS as usize,
+    );
 
     for (maker_key, user_account_loader) in makers_and_referrer.0.iter() {
         if maker_key == taker_key {
@@ -1862,7 +1867,12 @@ fn get_maker_orders_info(
         // cleanup below, as (order index, price, unfilled base). The
         // admit/prune decision is made on the whole set after the loop, in
         // `admit_reducing_maker_orders`.
-        let mut floor_prune_candidates: Vec<(usize, u64, u64)> = Vec::new();
+        // Sized to the most a user can hold. Growing inside the loop below
+        // doubles the buffer, and the runtime's allocator never reclaims the
+        // one it grew out of, so every doubling is heap this instruction does
+        // not get back.
+        let mut floor_prune_candidates: Vec<(usize, u64, u64)> =
+            Vec::with_capacity(crate::math::constants::MAX_OPEN_ORDERS as usize);
 
         for (maker_order_index, maker_order_price) in maker_order_price_and_indexes.iter() {
             let maker_order_index = *maker_order_index;
@@ -2059,6 +2069,7 @@ fn admit_reducing_maker_orders(
 }
 
 #[inline(always)]
+
 fn insert_maker_order_info(
     maker_orders_info: &mut Vec<(Pubkey, usize, u64)>,
     maker_order_info: (Pubkey, usize, u64),

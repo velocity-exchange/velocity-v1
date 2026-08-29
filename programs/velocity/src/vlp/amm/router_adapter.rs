@@ -132,24 +132,57 @@ pub fn vamm_quote_levels(
         (Some(limit), Direction::Short) => band_edge.max(limit),
         (None, _) => band_edge,
     };
-    let mut rival_rungs: Vec<u64> = rival_books
+    // The best [`VAMM_QUOTE_CHECKPOINTS`] rival rungs, best first and deduped.
+    //
+    // Held in a fixed array and insert-sorted rather than collected and then
+    // truncated. Only this many are ever read, and the collected form grows by
+    // doubling over every level of every rival book — a set carrying many
+    // makers abandons a buffer per doubling, on an allocator that never
+    // reclaims. Insert-sorting into the array is also the cheaper walk: it is
+    // linear in the rungs kept rather than sorting the whole set.
+    let mut rival_rungs = [0u64; VAMM_QUOTE_CHECKPOINTS];
+    let mut rung_count = 0usize;
+    let ranks_before = |a: u64, b: u64| match direction {
+        Direction::Long => a < b,
+        Direction::Short => a > b,
+    };
+    for price in rival_books
         .iter()
         .flat_map(|book| book.levels.iter().map(|level| level.price))
-        .filter(|&price| match direction {
+    {
+        let in_band = match direction {
             Direction::Long => price > top && price <= rung_edge,
             Direction::Short => price < top && price >= rung_edge && price > 0,
-        })
-        .collect();
-    rival_rungs.sort_unstable();
-    if direction == Direction::Short {
-        rival_rungs.reverse();
+        };
+        if !in_band {
+            continue;
+        }
+        let mut at = 0usize;
+        while at < rung_count && ranks_before(rival_rungs[at], price) {
+            at += 1;
+        }
+        if at < rung_count && rival_rungs[at] == price {
+            continue;
+        }
+        if at >= VAMM_QUOTE_CHECKPOINTS {
+            continue;
+        }
+        // Shift the worse rungs down one, dropping the worst when full.
+        let end = if rung_count < VAMM_QUOTE_CHECKPOINTS {
+            rung_count
+        } else {
+            VAMM_QUOTE_CHECKPOINTS - 1
+        };
+        if at < end {
+            rival_rungs.copy_within(at..end, at + 1);
+        }
+        rival_rungs[at] = price;
+        rung_count = (rung_count + 1).min(VAMM_QUOTE_CHECKPOINTS);
     }
-    rival_rungs.dedup();
-    rival_rungs.truncate(VAMM_QUOTE_CHECKPOINTS);
 
     // Checkpoints: (cumulative base, shading price if this is a rival rung).
     let mut checkpoints: Vec<(u64, Option<u64>)> = Vec::with_capacity(VAMM_QUOTE_CHECKPOINTS + 1);
-    for price in rival_rungs {
+    for price in rival_rungs[..rung_count].iter().copied() {
         let (cumulative, trade_direction) =
             calculate_base_asset_amount_to_trade_to_price(amm, price, position_direction)?;
         if trade_direction != position_direction {

@@ -25,6 +25,39 @@ fn validate_spot_dlob_trading_enabled_for_market_type_rejects_spot() {
     );
 }
 
+/// Rows back as `(maker key, order slot, price)`, for cases that assert which
+/// maker holds which order.
+fn resolve_maker_rows(
+    makers: &crate::state::user_map::UserMap,
+    rows: &[crate::controller::orders::MakerOrderInfo],
+) -> Vec<(Pubkey, usize, u64)> {
+    rows.iter()
+        .map(|row| (row.key(makers).unwrap(), row.slot(), row.price))
+        .collect()
+}
+
+/// A maker-order row naming `key`, by that maker's position in `makers`.
+///
+/// The row stores the position rather than the key, so a test that means a
+/// particular maker resolves it against the set the fill will index.
+fn maker_row(
+    makers: &crate::state::user_map::UserMap,
+    key: &Pubkey,
+    order_index: u16,
+    price: u64,
+) -> crate::controller::orders::MakerOrderInfo {
+    let maker = makers
+        .0
+        .iter()
+        .position(|(loaded, _)| loaded == key)
+        .expect("the row names a loaded maker") as u16;
+    crate::controller::orders::MakerOrderInfo {
+        maker,
+        order_index,
+        price,
+    }
+}
+
 #[test]
 fn validate_spot_dlob_trading_enabled_for_market_type_allows_perp() {
     let result = super::validate_spot_dlob_trading_enabled_for_market_type(MarketType::Perp);
@@ -3460,8 +3493,9 @@ pub mod fulfill_order {
             &mut taker_stats,
             &makers_and_referrers,
             &maker_and_referrer_stats,
-            &[(
-                Pubkey::default(),
+            &[maker_row(
+                &makers_and_referrers,
+                &Pubkey::default(),
                 0,
                 100_010_000 * PRICE_PRECISION_U64 / 1_000_000,
             )],
@@ -4232,8 +4266,18 @@ pub mod fulfill_order {
             &makers_and_referrers,
             &maker_and_referrer_stats,
             &[
-                (maker_key, 0, 90 * PRICE_PRECISION_U64),
-                (maker_key, 1, 95 * PRICE_PRECISION_U64),
+                maker_row(
+                    &makers_and_referrers,
+                    &maker_key,
+                    0,
+                    90 * PRICE_PRECISION_U64,
+                ),
+                maker_row(
+                    &makers_and_referrers,
+                    &maker_key,
+                    1,
+                    95 * PRICE_PRECISION_U64,
+                ),
             ],
             &mut Some(&mut filler),
             &filler_key,
@@ -4444,7 +4488,12 @@ pub mod fulfill_order {
             &mut taker_stats,
             &makers_and_referrers,
             &maker_and_referrer_stats,
-            &[(maker_key, 0, 100_010_000 * PRICE_PRECISION_U64 / 1_000_000)],
+            &[super::maker_row(
+                &makers_and_referrers,
+                &maker_key,
+                0,
+                100_010_000 * PRICE_PRECISION_U64 / 1_000_000,
+            )],
             &mut Some(&mut filler),
             &filler_key,
             &mut Some(&mut filler_stats),
@@ -4668,7 +4717,12 @@ pub mod fulfill_order {
             &mut taker_stats,
             &makers_and_referrers,
             &maker_and_referrer_stats,
-            &[(maker_key, 0, 100 * PRICE_PRECISION_U64)],
+            &[super::maker_row(
+                &makers_and_referrers,
+                &maker_key,
+                0,
+                100 * PRICE_PRECISION_U64,
+            )],
             &mut None,
             &filler_key,
             &mut None,
@@ -5080,7 +5134,12 @@ pub mod fulfill_order {
             &maker_and_referrer_stats,
             // Discovery returns the maker's own limit price; the router quotes
             // the book at it, so it has to match the order (it is the level).
-            &[(maker_key, 0, 100 * PRICE_PRECISION_U64)],
+            &[super::maker_row(
+                &makers_and_referrers,
+                &maker_key,
+                0,
+                100 * PRICE_PRECISION_U64,
+            )],
             &mut Some(&mut filler),
             &filler_key,
             &mut Some(&mut filler_stats),
@@ -5289,7 +5348,12 @@ pub mod fulfill_order {
             &maker_and_referrer_stats,
             // Discovery returns the maker's own limit price; the router quotes
             // the book at it, so it has to match the order (it is the level).
-            &[(maker_key, 0, 95 * PRICE_PRECISION_U64)],
+            &[super::maker_row(
+                &makers_and_referrers,
+                &maker_key,
+                0,
+                95 * PRICE_PRECISION_U64,
+            )],
             &mut Some(&mut filler),
             &filler_key,
             &mut Some(&mut filler_stats),
@@ -6250,7 +6314,12 @@ pub mod fulfill_order {
             &mut taker_stats,
             &makers_and_referrers,
             &maker_and_referrer_stats,
-            &[(maker_key, 1, 100 * PRICE_PRECISION_U64)],
+            &[super::maker_row(
+                &makers_and_referrers,
+                &maker_key,
+                1,
+                100 * PRICE_PRECISION_U64,
+            )],
             &mut None,
             &filler_key,
             &mut None,
@@ -6517,7 +6586,12 @@ pub mod fulfill_order {
             &mut taker_stats,
             &makers_and_referrers,
             &maker_and_referrer_stats,
-            &[(maker_key, 0, 100_010_000 * PRICE_PRECISION_U64 / 1_000_000)],
+            &[super::maker_row(
+                &makers_and_referrers,
+                &maker_key,
+                0,
+                100_010_000 * PRICE_PRECISION_U64 / 1_000_000,
+            )],
             &mut None,
             &maker_key,
             &mut None,
@@ -6740,7 +6814,12 @@ pub mod fulfill_order {
             &mut taker_stats,
             &makers_and_referrers,
             &maker_and_referrer_stats,
-            &[(maker_key, 0, 100_010_000 * PRICE_PRECISION_U64 / 1_000_000)],
+            &[super::maker_row(
+                &makers_and_referrers,
+                &maker_key,
+                0,
+                100_010_000 * PRICE_PRECISION_U64 / 1_000_000,
+            )],
             &mut Some(&mut filler),
             &filler_key,
             &mut Some(&mut filler_stats),
@@ -8212,18 +8291,46 @@ pub mod insert_maker_order_info {
     #[test]
     fn bids() {
         let mut bids = Vec::with_capacity(3);
-        bids.push((Pubkey::default(), 1, 10));
-        bids.push((Pubkey::default(), 0, 1));
+        bids.push(crate::controller::orders::MakerOrderInfo {
+            maker: 0,
+            order_index: 1,
+            price: 10,
+        });
+        bids.push(crate::controller::orders::MakerOrderInfo {
+            maker: 0,
+            order_index: 0,
+            price: 1,
+        });
         let maker_direction = PositionDirection::Long;
 
-        insert_maker_order_info(&mut bids, (Pubkey::default(), 2, 100), maker_direction);
+        insert_maker_order_info(
+            &mut bids,
+            crate::controller::orders::MakerOrderInfo {
+                maker: 0,
+                order_index: 2,
+                price: 100,
+            },
+            maker_direction,
+        );
 
         assert_eq!(
             bids,
             vec![
-                (Pubkey::default(), 2, 100),
-                (Pubkey::default(), 1, 10),
-                (Pubkey::default(), 0, 1),
+                crate::controller::orders::MakerOrderInfo {
+                    maker: 0,
+                    order_index: 2,
+                    price: 100
+                },
+                crate::controller::orders::MakerOrderInfo {
+                    maker: 0,
+                    order_index: 1,
+                    price: 10
+                },
+                crate::controller::orders::MakerOrderInfo {
+                    maker: 0,
+                    order_index: 0,
+                    price: 1
+                },
             ]
         );
     }
@@ -8231,18 +8338,46 @@ pub mod insert_maker_order_info {
     #[test]
     fn asks() {
         let mut asks = Vec::with_capacity(3);
-        asks.push((Pubkey::default(), 0, 1));
-        asks.push((Pubkey::default(), 1, 10));
+        asks.push(crate::controller::orders::MakerOrderInfo {
+            maker: 0,
+            order_index: 0,
+            price: 1,
+        });
+        asks.push(crate::controller::orders::MakerOrderInfo {
+            maker: 0,
+            order_index: 1,
+            price: 10,
+        });
         let maker_direction = PositionDirection::Short;
 
-        insert_maker_order_info(&mut asks, (Pubkey::default(), 2, 100), maker_direction);
+        insert_maker_order_info(
+            &mut asks,
+            crate::controller::orders::MakerOrderInfo {
+                maker: 0,
+                order_index: 2,
+                price: 100,
+            },
+            maker_direction,
+        );
 
         assert_eq!(
             asks,
             vec![
-                (Pubkey::default(), 0, 1),
-                (Pubkey::default(), 1, 10),
-                (Pubkey::default(), 2, 100)
+                crate::controller::orders::MakerOrderInfo {
+                    maker: 0,
+                    order_index: 0,
+                    price: 1
+                },
+                crate::controller::orders::MakerOrderInfo {
+                    maker: 0,
+                    order_index: 1,
+                    price: 10
+                },
+                crate::controller::orders::MakerOrderInfo {
+                    maker: 0,
+                    order_index: 2,
+                    price: 100
+                }
             ]
         );
     }
@@ -8473,7 +8608,12 @@ pub mod get_maker_orders_info {
 
         assert_eq!(
             maker_order_price_and_indexes,
-            vec![(maker_key, 1, 100 * PRICE_PRECISION_U64)]
+            vec![maker_row(
+                &makers_and_referrers,
+                &maker_key,
+                1,
+                100 * PRICE_PRECISION_U64
+            )]
         );
     }
 
@@ -8672,7 +8812,12 @@ pub mod get_maker_orders_info {
 
         assert_eq!(
             maker_order_price_and_indexes,
-            vec![(maker_key, 1, 100 * PRICE_PRECISION_U64)]
+            vec![maker_row(
+                &makers_and_referrers,
+                &maker_key,
+                1,
+                100 * PRICE_PRECISION_U64
+            )]
         );
     }
 
@@ -9110,7 +9255,7 @@ pub mod get_maker_orders_info {
         .unwrap();
 
         assert_eq!(
-            maker_order_price_and_indexes,
+            resolve_maker_rows(&makers_and_referrers, &maker_order_price_and_indexes),
             vec![
                 (first_maker_key, 0, 100000000),
                 (second_maker_key, 0, 101000000),
@@ -9316,7 +9461,7 @@ pub mod get_maker_orders_info {
         .unwrap();
 
         assert_eq!(
-            maker_order_price_and_indexes,
+            resolve_maker_rows(&makers_and_referrers, &maker_order_price_and_indexes),
             vec![(first_maker_key, 1, 102000000),],
         );
     }
@@ -10053,7 +10198,7 @@ pub mod maker_floor_prune {
         orders: [(u64, u64); 2],
         maker_position_base: i64,
         floor: u64,
-    ) -> Vec<(Pubkey, usize, u64)> {
+    ) -> Vec<crate::controller::orders::MakerOrderInfo> {
         run_with_exchange_match_policy(orders, maker_position_base, floor, true)
     }
 
@@ -10062,7 +10207,7 @@ pub mod maker_floor_prune {
         maker_position_base: i64,
         floor: u64,
         exchange_match_fills_allowed: bool,
-    ) -> Vec<(Pubkey, usize, u64)> {
+    ) -> Vec<crate::controller::orders::MakerOrderInfo> {
         let now = 0_i64;
         // far past the oracle's posted slot, so the maker's floor is
         // unverifiable and the prune engages
@@ -10253,7 +10398,7 @@ pub mod maker_floor_prune {
         );
         assert_eq!(admitted.len(), 1);
         assert_eq!(
-            (admitted[0].1, admitted[0].2),
+            (admitted[0].slot(), admitted[0].price),
             (1, 100 * PRICE_PRECISION_U64),
             "the better-priced order must win the reducing budget"
         );
@@ -11559,7 +11704,12 @@ mod fill_gates_apply_to_a_reducing_fill {
             &mut taker_stats,
             &makers_and_referrers,
             &maker_and_referrer_stats,
-            &[(maker_key, 0, 100 * PRICE_PRECISION_U64)],
+            &[super::maker_row(
+                &makers_and_referrers,
+                &maker_key,
+                0,
+                100 * PRICE_PRECISION_U64,
+            )],
             &mut Some(&mut filler),
             &filler_key,
             &mut Some(&mut filler_stats),

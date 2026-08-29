@@ -1771,6 +1771,36 @@ pub fn validate_market_within_price_band(
 }
 
 #[allow(clippy::type_complexity)]
+/// One matchable maker order: which loaded maker holds it, where it sits in
+/// that maker's orders, and the price it rests at.
+///
+/// The maker is its position in the loaded set rather than its key. A maker
+/// contributes a row per order slot it holds, and a key on every row is
+/// thirty-two bytes repeated — on a heap the runtime never reclaims, and a
+/// fill against a full book carries dozens of rows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct MakerOrderInfo {
+    pub maker: u16,
+    pub order_index: u16,
+    pub price: u64,
+}
+
+impl MakerOrderInfo {
+    /// The key of the maker this row names, from the set the row indexes.
+    pub fn key(&self, makers: &UserMap) -> VelocityResult<Pubkey> {
+        makers
+            .0
+            .iter()
+            .nth(self.maker as usize)
+            .map(|(key, _)| *key)
+            .ok_or(ErrorCode::UnableToLoadUserAccount)
+    }
+
+    pub fn slot(&self) -> usize {
+        self.order_index as usize
+    }
+}
+
 fn get_maker_orders_info(
     perp_market_map: &PerpMarketMap,
     spot_market_map: &SpotMarketMap,
@@ -1786,7 +1816,7 @@ fn get_maker_orders_info(
     jit_maker_order_id: Option<u32>,
     now: i64,
     slot: u64,
-) -> VelocityResult<Vec<(Pubkey, usize, u64)>> {
+) -> VelocityResult<Vec<MakerOrderInfo>> {
     let maker_direction = taker_order.direction.opposite();
 
     // One entry per matchable maker order. Sized so a full book of makers does
@@ -1796,7 +1826,9 @@ fn get_maker_orders_info(
         makers_and_referrer.0.len() * crate::math::constants::MAX_OPEN_ORDERS as usize,
     );
 
-    for (maker_key, user_account_loader) in makers_and_referrer.0.iter() {
+    for (maker_position, (maker_key, user_account_loader)) in
+        makers_and_referrer.0.iter().enumerate()
+    {
         if maker_key == taker_key {
             continue;
         }
@@ -1983,7 +2015,11 @@ fn get_maker_orders_info(
 
             insert_maker_order_info(
                 &mut maker_orders_info,
-                (*maker_key, maker_order_index, maker_order_price),
+                MakerOrderInfo {
+                    maker: maker_position as u16,
+                    order_index: maker_order_index as u16,
+                    price: maker_order_price,
+                },
                 maker_direction,
             );
         }
@@ -2001,7 +2037,11 @@ fn get_maker_orders_info(
             )? {
                 insert_maker_order_info(
                     &mut maker_orders_info,
-                    (*maker_key, maker_order_index, maker_order_price),
+                    MakerOrderInfo {
+                        maker: maker_position as u16,
+                        order_index: maker_order_index as u16,
+                        price: maker_order_price,
+                    },
                     maker_direction,
                 );
             }
@@ -2071,14 +2111,14 @@ fn admit_reducing_maker_orders(
 #[inline(always)]
 
 fn insert_maker_order_info(
-    maker_orders_info: &mut Vec<(Pubkey, usize, u64)>,
-    maker_order_info: (Pubkey, usize, u64),
+    maker_orders_info: &mut Vec<MakerOrderInfo>,
+    maker_order_info: MakerOrderInfo,
     direction: PositionDirection,
 ) {
-    let price = maker_order_info.2;
+    let price = maker_order_info.price;
     let index = match maker_orders_info.binary_search_by(|item| match direction {
-        PositionDirection::Short => item.2.cmp(&price),
-        PositionDirection::Long => price.cmp(&item.2),
+        PositionDirection::Short => item.price.cmp(&price),
+        PositionDirection::Long => price.cmp(&item.price),
     }) {
         Ok(index) => index,
         Err(index) => index,
@@ -2165,7 +2205,7 @@ fn fulfill_perp_order(
     user_stats: &mut UserStats,
     makers_and_referrer: &UserMap,
     makers_and_referrer_stats: &UserStatsMap,
-    maker_orders_info: &[(Pubkey, usize, u64)],
+    maker_orders_info: &[MakerOrderInfo],
     filler: &mut Option<&mut User>,
     filler_key: &Pubkey,
     filler_stats: &mut Option<&mut UserStats>,
@@ -3934,7 +3974,7 @@ fn fulfill_perp_order_router_pass(
     taker_stats: &mut UserStats,
     makers_and_referrer: &UserMap,
     makers_and_referrer_stats: &UserStatsMap,
-    maker_orders_info: &[(Pubkey, usize, u64)],
+    maker_orders_info: &[MakerOrderInfo],
     filler: &mut Option<&mut User>,
     filler_key: &Pubkey,
     filler_stats: &mut Option<&mut UserStats>,
@@ -4196,7 +4236,10 @@ fn fulfill_perp_order_router_pass(
         is_isolated: bool,
     }
     let mut router_makers: Vec<RouterMaker> = Vec::with_capacity(maker_orders_info.len());
-    for (maker_key, maker_order_index, maker_price) in maker_orders_info {
+    for info in maker_orders_info {
+        let maker_key = &info.key(makers_and_referrer)?;
+        let maker_order_index = &info.slot();
+        let maker_price = &info.price;
         let maker = makers_and_referrer.get_ref(maker_key)?;
         let position = maker.get_perp_position(market_index)?;
         let unfilled = maker.orders[*maker_order_index]

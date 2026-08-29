@@ -48,6 +48,28 @@ fn response_account(
     }
 }
 
+/// A maker-order row naming `key`, by that maker's position in `makers`.
+///
+/// The row stores the position rather than the key, so a test that means a
+/// particular maker resolves it against the set the fill will index.
+fn maker_row(
+    makers: &crate::state::user_map::UserMap,
+    key: &Pubkey,
+    order_index: u16,
+    price: u64,
+) -> crate::controller::orders::MakerOrderInfo {
+    let maker = makers
+        .0
+        .iter()
+        .position(|(loaded, _)| loaded == key)
+        .expect("the row names a loaded maker") as u16;
+    crate::controller::orders::MakerOrderInfo {
+        maker,
+        order_index,
+        price,
+    }
+}
+
 fn get_fee_structure() -> FeeStructure {
     let mut fee_tiers = [FeeTier::default(); 10];
     fee_tiers[0] = FeeTier {
@@ -323,7 +345,12 @@ pub mod amm_jit {
             &mut taker_stats,
             &makers_and_referrers,
             &maker_and_referrer_stats,
-            &[(maker_key, 0, 100 * PRICE_PRECISION_U64)],
+            &[maker_row(
+                &makers_and_referrers,
+                &maker_key,
+                0,
+                100 * PRICE_PRECISION_U64,
+            )],
             &mut Some(&mut filler),
             &filler_key,
             &mut Some(&mut filler_stats),
@@ -648,7 +675,12 @@ pub mod amm_jit {
             &mut taker_stats,
             &makers_and_referrers,
             &maker_and_referrer_stats,
-            &[(maker_key, 0, 100 * PRICE_PRECISION_U64)],
+            &[maker_row(
+                &makers_and_referrers,
+                &maker_key,
+                0,
+                100 * PRICE_PRECISION_U64,
+            )],
             &mut Some(&mut filler),
             &filler_key,
             &mut Some(&mut filler_stats),
@@ -997,7 +1029,12 @@ pub mod amm_jit {
             &mut taker_stats,
             &makers_and_referrers,
             &maker_and_referrer_stats,
-            &[(maker_key, 0, 100 * PRICE_PRECISION_U64)],
+            &[maker_row(
+                &makers_and_referrers,
+                &maker_key,
+                0,
+                100 * PRICE_PRECISION_U64,
+            )],
             &mut Some(&mut filler),
             &filler_key,
             &mut Some(&mut filler_stats),

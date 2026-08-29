@@ -523,8 +523,14 @@ describe('multiple maker orders', () => {
 		// below the 679,777 sweep average — so it is the worst-priced tail of a
 		// short's sweep, and dropping it moves the taker's average execution
 		// marginally in its favour.
+		//
+		// The quote also carries the vAMM's last-look shade, which settlement
+		// charges the taker and books to the AMM. It is confined to that leg:
+		// the size, the record count and all three makers' fills are the same
+		// either way, and the 349,129 it moves the short's proceeds by sits
+		// inside the surplus the AMM books on this sweep.
 		assert(takerPosition.baseAssetAmount.eq(new BN('-412388600000')));
-		assert(takerPosition.quoteAssetAmount.eq(new BN('280500826')));
+		assert(takerPosition.quoteAssetAmount.eq(new BN('280151697')));
 
 		const makerPosition = makerVelocityClient.getUser().getPerpPosition(1);
 		console.log(

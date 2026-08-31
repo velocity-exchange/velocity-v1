@@ -1,5 +1,19 @@
 # @velocity-exchange/sdk
 
+## 0.18.0
+
+### Minor Changes
+
+- [#461](https://github.com/velocity-exchange/velocity-v1/pull/461) [`4b55e4e`](https://github.com/velocity-exchange/velocity-v1/commit/4b55e4e6c7ae161b42d86f12a61da9d2c1003141) Thanks [@0xahzam](https://github.com/0xahzam)! - Remove the equity-floor breaker's `$100` invalid-oracle dust concession. Invalid-oracle assets and perp longs now make a trip unprovable at every size; liabilities and shorts retain their sound zero upper bound. The program and SDK now derive observed equity, strict oracle validity, and the trip upper bound from one shared position walk. This removes the exported `EQUITY_FLOOR_TRIP_DUST_ALLOWANCE` constant without changing instructions, accounts, IDL, error codes, or strict floor gates.
+
+- [#463](https://github.com/velocity-exchange/velocity-v1/pull/463) [`560a198`](https://github.com/velocity-exchange/velocity-v1/commit/560a198fa8a0f22ba7f3dc7f926164f8ca91dff5) Thanks [@0xahzam](https://github.com/0xahzam)! - Add wBTC (spot market index 2) and wETH (index 3) to `MainnetSpotMarkets`. Both reuse the Pyth Lazer oracle accounts their perp counterparts already use (feed ids 1 and 2).
+
+  Do not publish this version until the two markets are initialized on chain. `findAllMarketAndOracles` derives `spotMarketIndexes` and oracle subscriptions from this registry when a client passes no explicit market list, so a client on a version that lists markets the chain does not have will try to subscribe to accounts that do not exist.
+
+### Patch Changes
+
+- [#455](https://github.com/velocity-exchange/velocity-v1/pull/455) [`48b8529`](https://github.com/velocity-exchange/velocity-v1/commit/48b85296c60250316ae30e3f980237af97591ec4) Thanks [@0xahzam](https://github.com/0xahzam)! - `getUpdateHotAdminIx` accepts an optional `admin` authority override, and `auth set-hot-admin` passes the Squads vault PDA through it when `--multisig` is set. Previously the instruction always listed the local wallet as the admin signer, so proposing the rotation through a multisig failed (the vault was not a required signer of any instruction).
+
 ## 0.17.0
 
 ### Minor Changes

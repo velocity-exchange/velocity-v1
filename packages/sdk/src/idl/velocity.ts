@@ -19068,13 +19068,16 @@ export type Velocity = {
             "name": "mmOracleCrank"
           },
           {
-            "name": "vammQuoteManagement"
+            "name": "ammSpreadAdjust"
           },
           {
             "name": "feeWithdraw"
           },
           {
             "name": "accountExtension"
+          },
+          {
+            "name": "vammQuoteManagement"
           }
         ]
       }
@@ -24580,11 +24583,9 @@ export type Velocity = {
             "type": "pubkey"
           },
           {
-            "name": "hotVammQuoteManagement",
+            "name": "hotAmmSpreadAdjust",
             "docs": [
-              "Active-management authority for scoped vAMM quoting controls carried by",
-              "`HotAdminUpdatePerpMarket`, plus the low-CU native spread adjustment.",
-              "This may be a multisig PDA; timelock policy lives in that multisig."
+              "Bot authority for the low-CU native AMM spread-adjustment crank."
             ],
             "type": "pubkey"
           },
@@ -24835,10 +24836,21 @@ export type Velocity = {
             }
           },
           {
+            "name": "hotVammQuoteManagement",
+            "docs": [
+              "Active-management authority for scoped vAMM quoting controls carried by",
+              "`HotAdminUpdatePerpMarket`. This may be a multisig PDA; timelock policy",
+              "lives in that multisig. Added from former padding so existing fields,",
+              "including `hot_amm_spread_adjust`, retain their offsets."
+            ],
+            "type": "pubkey"
+          },
+          {
             "name": "padding",
             "docs": [
-              "200 = the former 244 byte padding minus the 12 staging bytes and the 32",
-              "bytes used by `slot_duration_transition_slots`.",
+              "168 = the former 244 byte padding minus the 12 staging bytes, the 32 bytes",
+              "used by `slot_duration_transition_slots`, and the 32-byte quote-management",
+              "authority.",
               "(`pending_slot_duration_ms` 2 + `slot_duration_pad` 2 + the 8-byte",
               "`slot_duration_effective_slot`). The padding still absorbs the 8 bytes that",
               "were previously *implicit* trailing padding on x86_64 (State contains a",
@@ -24849,7 +24861,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                200
+                168
               ]
             }
           }

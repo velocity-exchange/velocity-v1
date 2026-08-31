@@ -3405,9 +3405,10 @@ pub mod types {
         UserFlag,
         VaultDeposit,
         MmOracleCrank,
-        VammQuoteManagement,
+        AmmSpreadAdjust,
         FeeWithdraw,
         AccountExtension,
+        VammQuoteManagement,
     }
     #[repr(C)]
     #[derive(
@@ -5204,7 +5205,7 @@ pub mod types {
         pub hot_user_flag: Pubkey,
         pub hot_vault_deposit: Pubkey,
         pub hot_mm_oracle_crank: Pubkey,
-        pub hot_vamm_quote_management: Pubkey,
+        pub hot_amm_spread_adjust: Pubkey,
         pub whitelist_mint: Pubkey,
         pub discount_mint: Pubkey,
         pub signer: Pubkey,
@@ -5240,8 +5241,9 @@ pub mod types {
         pub slot_duration_pad: [u8; 2],
         pub slot_duration_effective_slot: u64,
         pub slot_duration_transition_slots: [u64; 4],
+        pub hot_vamm_quote_management: Pubkey,
         #[serde(skip)]
-        pub padding: Padding<200>,
+        pub padding: Padding<168>,
     }
     #[repr(C)]
     #[derive(
@@ -6557,7 +6559,7 @@ pub mod accounts {
         pub hot_user_flag: Pubkey,
         pub hot_vault_deposit: Pubkey,
         pub hot_mm_oracle_crank: Pubkey,
-        pub hot_vamm_quote_management: Pubkey,
+        pub hot_amm_spread_adjust: Pubkey,
         pub whitelist_mint: Pubkey,
         pub discount_mint: Pubkey,
         pub signer: Pubkey,
@@ -6593,8 +6595,9 @@ pub mod accounts {
         pub slot_duration_pad: [u8; 2],
         pub slot_duration_effective_slot: u64,
         pub slot_duration_transition_slots: [u64; 4],
+        pub hot_vamm_quote_management: Pubkey,
         #[serde(skip)]
-        pub padding: Padding<200>,
+        pub padding: Padding<168>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for State {

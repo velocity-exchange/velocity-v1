@@ -193,6 +193,29 @@ describe('admin', () => {
 			}
 			expect(rejectedWhileUnassigned).to.equal(true);
 
+			// The existing native-spread bot role is separate and must not gain
+			// access to quote-management setters.
+			await velocityClient.updateHotAdmin(
+				HotRole.AmmSpreadAdjust,
+				activeManagementKey.publicKey
+			);
+			await velocityClient.fetchAccounts();
+			expect(
+				velocityClient
+					.getStateAccount()
+					.hotAmmSpreadAdjust.equals(activeManagementKey.publicKey)
+			).to.equal(true);
+			let spreadBotRejected = false;
+			try {
+				await activeManagementClient.updatePerpMarketCurveUpdateIntensity(
+					0,
+					42
+				);
+			} catch (_) {
+				spreadBotRejected = true;
+			}
+			expect(spreadBotRejected).to.equal(true);
+
 			await velocityClient.updateHotAdmin(
 				HotRole.VammQuoteManagement,
 				activeManagementKey.publicKey

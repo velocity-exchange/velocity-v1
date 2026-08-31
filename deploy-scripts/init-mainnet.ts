@@ -266,7 +266,8 @@ async function main() {
 		pubkey: PublicKey;
 	}> = [
 		{ role: HotRole.MmOracleCrank, field: 'hotMmOracleCrank', pubkey: new PublicKey(process.env.HOT_MM_ORACLE_CRANK ?? MM_ORACLE_CRANKER_BOT_WALLET) },
-		{ role: HotRole.VammQuoteManagement, field: 'hotVammQuoteManagement', pubkey: new PublicKey(process.env.HOT_VAMM_QUOTE_MANAGEMENT ?? process.env.HOT_AMM_SPREAD_ADJUST ?? VAMM_CRANKER_BOT_WALLET) },
+		{ role: HotRole.AmmSpreadAdjust, field: 'hotAmmSpreadAdjust', pubkey: new PublicKey(process.env.HOT_AMM_SPREAD_ADJUST ?? VAMM_CRANKER_BOT_WALLET) },
+		{ role: HotRole.VammQuoteManagement, field: 'hotVammQuoteManagement', pubkey: process.env.HOT_VAMM_QUOTE_MANAGEMENT ? new PublicKey(process.env.HOT_VAMM_QUOTE_MANAGEMENT) : PublicKey.default },
 		{ role: HotRole.LpSwap, field: 'hotLpSwap', pubkey: new PublicKey(process.env.HOT_LP_SWAP ?? DLP_TAKER_WATCHER_BOT_WALLET) },
 		{ role: HotRole.LpCache, field: 'hotLpCache', pubkey: process.env.HOT_LP_CACHE ? new PublicKey(process.env.HOT_LP_CACHE) : hotDefault },
 		{ role: HotRole.LpSettle, field: 'hotLpSettle', pubkey: process.env.HOT_LP_SETTLE ? new PublicKey(process.env.HOT_LP_SETTLE) : hotDefault },

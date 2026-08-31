@@ -137,6 +137,7 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         hot_user_flag: Pubkey::default(),
         hot_vault_deposit: Pubkey::default(),
         hot_mm_oracle_crank: Pubkey::default(),
+        hot_amm_spread_adjust: Pubkey::default(),
         hot_vamm_quote_management: Pubkey::default(),
         exchange_status: ExchangeStatus::active(),
         whitelist_mint: Pubkey::default(),
@@ -173,7 +174,7 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         slot_duration_pad: [0; 2],
         slot_duration_effective_slot: 0,
         slot_duration_transition_slots: [0; 4],
-        padding: [0; 200],
+        padding: [0; 168],
     };
 
     Ok(())

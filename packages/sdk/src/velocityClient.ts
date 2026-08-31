@@ -13929,7 +13929,7 @@ export class VelocityClient {
 
 	/**
 	 * Updates a perp market's AMM spread adjustment using the program's high-frequency custom native
-	 * entrypoint. Restricted to the state's configured `hotVammQuoteManagement` signer in production
+	 * entrypoint. Restricted to the state's configured `hotAmmSpreadAdjust` signer in production
 	 * (unchecked under the `anchor-test` feature).
 	 * @param marketIndex - Perp market index whose AMM spread adjustment to update.
 	 * @param ammSpreadAdjustment - Percentage adjustment to the AMM's base long/short spread, as a
@@ -13979,7 +13979,7 @@ export class VelocityClient {
 		// Build the instruction manually. The native handler re-establishes the
 		// account guarantees Anchor would normally provide: it loads `state` as
 		// the program-owned State account and authenticates the signer against
-		// `state.hotVammQuoteManagement`, so the state account is required at index 2.
+		// `state.hotAmmSpreadAdjust`, so the state account is required at index 2.
 		return new TransactionInstruction({
 			programId: this.program.programId,
 			keys: [

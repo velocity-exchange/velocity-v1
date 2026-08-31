@@ -8676,10 +8676,11 @@ export enum HotRole {
 	UserFlag = 'userFlag',
 	VaultDeposit = 'vaultDeposit',
 	MmOracleCrank = 'mmOracleCrank',
-	/** vAMM active-management authority (spread/JIT/curve and related quoting controls). */
-	VammQuoteManagement = 'vammQuoteManagement',
+	AmmSpreadAdjust = 'ammSpreadAdjust',
 	FeeWithdraw = 'feeWithdraw',
 	AccountExtension = 'accountExtension',
+	/** vAMM active-management authority (spread/JIT/curve and related quoting controls). */
+	VammQuoteManagement = 'vammQuoteManagement',
 }
 
 /** Anchor encodes Rust enums as `{ <variant>: {} }`. */

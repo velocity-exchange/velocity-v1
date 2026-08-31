@@ -1055,7 +1055,7 @@ export type LPBorrowLendDepositRecord = {
  * **Admin tiers** — three levels of authority, from slowest/most-trusted to fastest/least-trusted:
  * - `coldAdmin`: root authority, set once at `initialize`. Only key that can rotate `warmAdmin`
  *   and `pauseAdmin`. Expected to sit behind a (small) timelocked multisig.
- * - `warmAdmin`: operational authority that can rotate the eleven `hot*` bot keys below.
+ * - `warmAdmin`: operational authority that can rotate the `hot*` role keys below.
  *   `PublicKey.default()` means unset, in which case only `coldAdmin` can act.
  * - `pauseAdmin`: emergency-pause authority with no on-chain timelock — may only *add* pause bits
  *   to `exchangeStatus` (never clear them); `coldAdmin`/`warmAdmin` retain full pause+unpause power.
@@ -1063,7 +1063,7 @@ export type LPBorrowLendDepositRecord = {
  *
  * **Hot role keys** (`hot*`): purpose-specific bot keys for high-frequency keeper actions (AMM
  * cranking, LP cache/swap/settle, feature-flag toggles, fuel, user-flag updates, vault deposits,
- * mm-oracle cranking, vAMM active management, protocol-fee withdrawal). `PublicKey.default()` means
+ * mm-oracle cranking, native spread adjustment, vAMM active management, protocol-fee withdrawal). `PublicKey.default()` means
  * the role is unassigned and only `warmAdmin`/`coldAdmin` may call handlers gated on that role.
  */
 export type StateAccount = {
@@ -1079,12 +1079,14 @@ export type StateAccount = {
 	hotUserFlag: PublicKey;
 	hotVaultDeposit: PublicKey;
 	hotMmOracleCrank: PublicKey;
-	/** vAMM active-management authority; may be a multisig PDA with its own timelock policy */
-	hotVammQuoteManagement: PublicKey;
+	/** bot authority for the low-CU native AMM spread-adjustment crank */
+	hotAmmSpreadAdjust: PublicKey;
 	/** hot key authorized to trigger protocol-fee withdrawals to `protocolFeeRecipientPerp`/`protocolFeeRecipientSpot` */
 	hotFeeWithdraw: PublicKey;
 	/** hot key authorized to grow zero-copy accounts to the deployed program's size (`extendAccount`) */
 	hotAccountExtension: PublicKey;
+	/** vAMM active-management authority; may be a multisig PDA with its own timelock policy */
+	hotVammQuoteManagement: PublicKey;
 	/** treasury PERP protocol fees are withdrawn to (settable only by `coldAdmin`); `PublicKey.default()` makes perp fee withdrawals inert */
 	protocolFeeRecipientPerp: PublicKey;
 	/** treasury SPOT protocol fees are withdrawn to (settable only by `coldAdmin`); `PublicKey.default()` makes spot fee withdrawals inert */

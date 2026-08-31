@@ -7,7 +7,7 @@
 
 use {
     crate::{
-        controller::position::{decrease_open_bids_and_asks, get_position_index},
+        controller::position::{get_position_index, release_reserved_open_base_for_exit},
         error::ErrorCode,
         instructions::constraints::*,
         load_mut, msg,
@@ -26,8 +26,8 @@ use {
 };
 
 #[derive(Accounts)]
-#[instruction(params: CancelClobOrderParams)]
-pub struct CancelClobOrder<'info> {
+#[instruction(params: CancelOrderV1Params)]
+pub struct CancelOrderV1<'info> {
     pub state: AccountLoader<'info, State>,
     #[account(
         mut,
@@ -59,15 +59,15 @@ pub struct CancelClobOrder<'info> {
 }
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
-pub struct CancelClobOrderParams {
+pub struct CancelOrderV1Params {
     pub market_index: u16,
     /// The hint returned at placement; the CLOB fails closed on a stale one.
     pub order_ref: ClobOrderRefV0,
 }
 
-pub fn handle_cancel_clob_order(
-    ctx: Context<CancelClobOrder>,
-    params: CancelClobOrderParams,
+pub fn handle_cancel_order_v1(
+    ctx: Context<CancelOrderV1>,
+    params: CancelOrderV1Params,
 ) -> Result<()> {
     let clock = Clock::get()?;
 
@@ -106,16 +106,19 @@ pub fn handle_cancel_clob_order(
     // placement reserved.
     let mut user = load_mut!(ctx.accounts.user)?;
     let position_index = get_position_index(&user.perp_positions, params.market_index)?;
-    decrease_open_bids_and_asks(
+    release_reserved_open_base_for_exit(
         &mut user.perp_positions[position_index],
         &removed.side.to_position_direction(),
         removed.base_asset_amount,
-        true,
     )?;
     user.perp_positions[position_index].open_orders = user.perp_positions[position_index]
         .open_orders
         .saturating_sub(1);
     user.decrement_open_orders(false);
+    // The order left the book, so disarm the reduce-only counter it armed.
+    if removed.reduce_only {
+        user.perp_positions[position_index].disarm_reduce_only_clob();
+    }
     // If this was a placed trigger's live order, its shadow slot frees too —
     // cancelling here is how a user cancels a placed trigger.
     user.release_placed_trigger_slot(

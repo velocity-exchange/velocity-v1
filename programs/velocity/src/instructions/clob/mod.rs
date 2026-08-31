@@ -6,13 +6,13 @@
 //!
 //! - [`place_clob_order`]: margin gate + aggregate reserve, then a CPI to the
 //!   CLOB as its `place_authority` (the CLOB place authority PDA).
-//! - [`cancel_clob_order`]: cancel CPI, then unwind the removed order's
+//! - [`cancel_order_v1`]: cancel CPI, then unwind the removed order's
 //!   remaining size from the aggregates.
-//! - [`cancel_all_clob_orders`]: the same thing for a maker's whole side (or
+//! - [`cancel_orders_v1`]: the same thing for a maker's whole side (or
 //!   both) in one CPI, unwinding from per-side totals so the cost does not grow
 //!   with the ladder. The book caps a single sweep and says so; the handler
 //!   unwinds what was actually removed, so repeating it converges.
-//! - [`modify_clob_order`]: cancel-and-replace in one instruction, with one
+//! - [`modify_order_v1`]: cancel-and-replace in one instruction, with one
 //!   margin gate over the *net* change (the CLOB has no in-place mutation).
 //! - [`fill_v1`]: the keeper fill with the CLOB accounts required — a restable
 //!   remainder migrates to the book instead of resting in `User.orders`.
@@ -45,7 +45,7 @@
 //! stream would name it unless velocity says so. [`records`] emits the two
 //! records that stream already carries — `OrderRecord` when an order starts
 //! resting, `OrderActionRecord` when it stops — from every path here that
-//! places or removes one. `cancel_all_clob_orders` is the exception: a sweep
+//! places or removes one. `cancel_orders_v1` is the exception: a sweep
 //! takes up to 128 orders and a record is 480 bytes, which no transaction's
 //! log budget holds, so its per-order detail rides the book's own compact
 //! cancel record instead.
@@ -67,8 +67,8 @@
 //!   flow — reclaim a failing account's risk-increasing book orders (and
 //!   their placed-trigger shadows) for the flat fee.
 
-mod cancel_all_clob_orders;
-mod cancel_clob_order;
+mod cancel_order_v1;
+mod cancel_orders_v1;
 mod crank_clob_evict;
 mod crank_clob_remove_expired;
 mod crank_common;
@@ -78,7 +78,7 @@ mod crank_taker_origin_cross;
 mod fill_v1;
 mod force_cancel_clob_orders;
 mod initialize_quoter_cross_conditions;
-mod modify_clob_order;
+mod modify_order_v1;
 mod place_and_make_v1;
 mod place_and_take_v1;
 mod place_clob_order;
@@ -86,12 +86,13 @@ mod records;
 pub mod refill_crank_reservoir;
 pub mod resolve_clob_crank;
 mod trigger_clob_order;
+mod trigger_order_v1;
 
 pub use {
-    cancel_all_clob_orders::*, cancel_clob_order::*, crank_clob_evict::*,
-    crank_clob_remove_expired::*, crank_common::*, crank_conditions_setup::*, crank_cross_match::*,
-    crank_taker_origin_cross::*, fill_v1::*, force_cancel_clob_orders::*,
-    initialize_quoter_cross_conditions::*, modify_clob_order::*, place_and_make_v1::*,
-    place_and_take_v1::*, place_clob_order::*, records::*, refill_crank_reservoir::*,
-    resolve_clob_crank::*, trigger_clob_order::*,
+    cancel_order_v1::*, cancel_orders_v1::*, crank_clob_evict::*, crank_clob_remove_expired::*,
+    crank_common::*, crank_conditions_setup::*, crank_cross_match::*, crank_taker_origin_cross::*,
+    fill_v1::*, force_cancel_clob_orders::*, initialize_quoter_cross_conditions::*,
+    modify_order_v1::*, place_and_make_v1::*, place_and_take_v1::*, place_clob_order::*,
+    records::*, refill_crank_reservoir::*, resolve_clob_crank::*, trigger_clob_order::*,
+    trigger_order_v1::*,
 };

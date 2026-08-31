@@ -722,7 +722,249 @@ export type Velocity = {
       ]
     },
     {
-      "name": "cancelAllClobOrders",
+      "name": "cancelOrder",
+      "discriminator": [
+        95,
+        129,
+        237,
+        240,
+        8,
+        49,
+        223,
+        132
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "user",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "orderId",
+          "type": {
+            "option": "u32"
+          }
+        }
+      ]
+    },
+    {
+      "name": "cancelOrderByUserId",
+      "discriminator": [
+        107,
+        211,
+        250,
+        133,
+        18,
+        37,
+        57,
+        100
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "user",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "userOrderId",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "cancelOrderV1",
+      "discriminator": [
+        51,
+        184,
+        83,
+        34,
+        163,
+        184,
+        149,
+        71
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "user",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "perpMarket",
+          "docs": [
+            "Read-only, and read for one thing: the cached oracle price the cancel",
+            "record is stamped with. Deliberately not an oracle account — a maker",
+            "pulling orders off a book must not be able to fail on a stale feed."
+          ]
+        },
+        {
+          "name": "quoter"
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "accounts in the handler."
+          ],
+          "writable": true
+        },
+        {
+          "name": "clobProgram"
+        },
+        {
+          "name": "clobAuthority",
+          "docs": [
+            "is set to. Its own key, distinct from the per-entry signer a",
+            "third-party quoter is handed: signer privilege is inherited by a",
+            "callee, and this one may place and cancel on any book, for any user."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "cancelOrderV1Params"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "cancelOrders",
+      "discriminator": [
+        238,
+        225,
+        95,
+        158,
+        227,
+        103,
+        8,
+        194
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "user",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "marketType",
+          "type": {
+            "option": {
+              "defined": {
+                "name": "marketType"
+              }
+            }
+          }
+        },
+        {
+          "name": "marketIndex",
+          "type": {
+            "option": "u16"
+          }
+        },
+        {
+          "name": "direction",
+          "type": {
+            "option": {
+              "defined": {
+                "name": "positionDirection"
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "cancelOrdersByIds",
+      "discriminator": [
+        134,
+        19,
+        144,
+        165,
+        94,
+        240,
+        210,
+        94
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "user",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "orderIds",
+          "type": {
+            "vec": "u32"
+          }
+        }
+      ]
+    },
+    {
+      "name": "cancelOrdersV1",
       "docs": [
         "Pull every resting CLOB order this `User` holds on one side (or both) in",
         "a single CPI, unwinding the aggregates from per-side totals. The book",
@@ -730,14 +972,14 @@ export type Velocity = {
         "to repeat."
       ],
       "discriminator": [
-        161,
-        193,
-        25,
-        181,
-        238,
-        63,
-        127,
-        144
+        59,
+        47,
+        26,
+        254,
+        5,
+        35,
+        224,
+        226
       ],
       "accounts": [
         {
@@ -846,250 +1088,8 @@ export type Velocity = {
           "name": "params",
           "type": {
             "defined": {
-              "name": "cancelAllClobOrdersParams"
+              "name": "cancelOrdersV1Params"
             }
-          }
-        }
-      ]
-    },
-    {
-      "name": "cancelClobOrder",
-      "discriminator": [
-        145,
-        107,
-        104,
-        232,
-        171,
-        3,
-        245,
-        94
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "user",
-          "writable": true
-        },
-        {
-          "name": "authority",
-          "signer": true
-        },
-        {
-          "name": "perpMarket",
-          "docs": [
-            "Read-only, and read for one thing: the cached oracle price the cancel",
-            "record is stamped with. Deliberately not an oracle account — a maker",
-            "pulling orders off a book must not be able to fail on a stale feed."
-          ]
-        },
-        {
-          "name": "quoter"
-        },
-        {
-          "name": "clobMarket",
-          "docs": [
-            "accounts in the handler."
-          ],
-          "writable": true
-        },
-        {
-          "name": "clobProgram"
-        },
-        {
-          "name": "clobAuthority",
-          "docs": [
-            "is set to. Its own key, distinct from the per-entry signer a",
-            "third-party quoter is handed: signer privilege is inherited by a",
-            "callee, and this one may place and cancel on any book, for any user."
-          ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  108,
-                  111,
-                  98,
-                  95,
-                  97,
-                  117,
-                  116,
-                  104,
-                  111,
-                  114,
-                  105,
-                  116,
-                  121
-                ]
-              }
-            ]
-          }
-        }
-      ],
-      "args": [
-        {
-          "name": "params",
-          "type": {
-            "defined": {
-              "name": "cancelClobOrderParams"
-            }
-          }
-        }
-      ]
-    },
-    {
-      "name": "cancelOrder",
-      "discriminator": [
-        95,
-        129,
-        237,
-        240,
-        8,
-        49,
-        223,
-        132
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "user",
-          "writable": true
-        },
-        {
-          "name": "authority",
-          "signer": true
-        }
-      ],
-      "args": [
-        {
-          "name": "orderId",
-          "type": {
-            "option": "u32"
-          }
-        }
-      ]
-    },
-    {
-      "name": "cancelOrderByUserId",
-      "discriminator": [
-        107,
-        211,
-        250,
-        133,
-        18,
-        37,
-        57,
-        100
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "user",
-          "writable": true
-        },
-        {
-          "name": "authority",
-          "signer": true
-        }
-      ],
-      "args": [
-        {
-          "name": "userOrderId",
-          "type": "u8"
-        }
-      ]
-    },
-    {
-      "name": "cancelOrders",
-      "discriminator": [
-        238,
-        225,
-        95,
-        158,
-        227,
-        103,
-        8,
-        194
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "user",
-          "writable": true
-        },
-        {
-          "name": "authority",
-          "signer": true
-        }
-      ],
-      "args": [
-        {
-          "name": "marketType",
-          "type": {
-            "option": {
-              "defined": {
-                "name": "marketType"
-              }
-            }
-          }
-        },
-        {
-          "name": "marketIndex",
-          "type": {
-            "option": "u16"
-          }
-        },
-        {
-          "name": "direction",
-          "type": {
-            "option": {
-              "defined": {
-                "name": "positionDirection"
-              }
-            }
-          }
-        }
-      ]
-    },
-    {
-      "name": "cancelOrdersByIds",
-      "discriminator": [
-        134,
-        19,
-        144,
-        165,
-        94,
-        240,
-        210,
-        94
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "user",
-          "writable": true
-        },
-        {
-          "name": "authority",
-          "signer": true
-        }
-      ],
-      "args": [
-        {
-          "name": "orderIds",
-          "type": {
-            "vec": "u32"
           }
         }
       ]
@@ -3212,7 +3212,11 @@ export type Velocity = {
         "read it off their signed message. It is checked against the digest the",
         "order carries, so a filler cannot misreport it, and every entry in it",
         "must appear in this transaction — the taker picks who competes for",
-        "their flow, not the filler. Empty for an order with no signed route."
+        "their flow, not the filler. Empty for an order with no signed route.",
+        "@deprecated Legacy fill, kept for ABI compatibility. It routes the fill",
+        "through the vAMM + DLOB makers but carries no CLOB books, and a restable",
+        "remainder stays on the DLOB. New integrations use `fill_perp_order_v1`,",
+        "which carries the market's CLOB and migrates the remainder to the book."
       ],
       "discriminator": [
         13,
@@ -7379,103 +7383,6 @@ export type Velocity = {
       ]
     },
     {
-      "name": "modifyClobOrder",
-      "docs": [
-        "Reprice/resize a resting CLOB order: cancel-and-replace in one",
-        "instruction, with a single margin gate over the net change. `None`",
-        "fields keep the resting order's value."
-      ],
-      "discriminator": [
-        64,
-        222,
-        242,
-        64,
-        138,
-        91,
-        220,
-        67
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "user",
-          "writable": true
-        },
-        {
-          "name": "authority",
-          "signer": true
-        },
-        {
-          "name": "quoter",
-          "docs": [
-            "The book's registry entry. The replacement leg additionally requires it",
-            "to be active and approved."
-          ]
-        },
-        {
-          "name": "clobMarket",
-          "docs": [
-            "accounts in the handler."
-          ],
-          "writable": true
-        },
-        {
-          "name": "clobProgram"
-        },
-        {
-          "name": "clobAuthority",
-          "docs": [
-            "is set to. Its own key, distinct from the per-entry signer a",
-            "third-party quoter is handed: signer privilege is inherited by a",
-            "callee, and this one may place and cancel on any book, for any user."
-          ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  108,
-                  111,
-                  98,
-                  95,
-                  97,
-                  117,
-                  116,
-                  104,
-                  111,
-                  114,
-                  105,
-                  116,
-                  121
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "instructionsSysvar",
-          "docs": [
-            "faster-than-default activation delay on the replacement."
-          ],
-          "optional": true,
-          "address": "Sysvar1nstructions1111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "params",
-          "type": {
-            "defined": {
-              "name": "modifyClobOrderParams"
-            }
-          }
-        }
-      ]
-    },
-    {
       "name": "modifyOrder",
       "discriminator": [
         47,
@@ -7552,6 +7459,103 @@ export type Velocity = {
           "type": {
             "defined": {
               "name": "modifyOrderParams"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "modifyOrderV1",
+      "docs": [
+        "Reprice/resize a resting CLOB order: cancel-and-replace in one",
+        "instruction, with a single margin gate over the net change. `None`",
+        "fields keep the resting order's value."
+      ],
+      "discriminator": [
+        163,
+        94,
+        18,
+        30,
+        100,
+        199,
+        112,
+        131
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "user",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "quoter",
+          "docs": [
+            "The book's registry entry. The replacement leg additionally requires it",
+            "to be active and approved."
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "accounts in the handler."
+          ],
+          "writable": true
+        },
+        {
+          "name": "clobProgram"
+        },
+        {
+          "name": "clobAuthority",
+          "docs": [
+            "is set to. Its own key, distinct from the per-entry signer a",
+            "third-party quoter is handed: signer privilege is inherited by a",
+            "callee, and this one may place and cancel on any book, for any user."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "instructionsSysvar",
+          "docs": [
+            "faster-than-default activation delay on the replacement."
+          ],
+          "optional": true,
+          "address": "Sysvar1nstructions1111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "params",
+          "type": {
+            "defined": {
+              "name": "modifyOrderV1Params"
             }
           }
         }
@@ -7722,64 +7726,12 @@ export type Velocity = {
       "args": []
     },
     {
-      "name": "placeAndMakePerpOrder",
-      "discriminator": [
-        149,
-        117,
-        11,
-        237,
-        47,
-        95,
-        89,
-        237
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "user",
-          "writable": true
-        },
-        {
-          "name": "userStats",
-          "writable": true
-        },
-        {
-          "name": "taker",
-          "writable": true
-        },
-        {
-          "name": "takerStats",
-          "writable": true
-        },
-        {
-          "name": "authority",
-          "signer": true
-        }
-      ],
-      "args": [
-        {
-          "name": "params",
-          "type": {
-            "defined": {
-              "name": "orderParams"
-            }
-          }
-        },
-        {
-          "name": "takerOrderId",
-          "type": "u32"
-        }
-      ]
-    },
-    {
       "name": "placeAndMakePerpOrderV1",
       "docs": [
-        "`place_and_make_perp_order` with the market's CLOB accounts required:",
-        "the unmatched remainder rests on the book instead of being cancelled.",
-        "v0's account list is frozen for ABI compatibility, so the CLOB route is",
-        "a separate endpoint rather than optional accounts on v0."
+        "Rest a maker limit order on the market's CLOB. The order goes straight to",
+        "the book as a maker quote and never occupies a `User.orders` slot.",
+        "`activation_delay_slots` sets the book speed bump; `None` takes the",
+        "default, and a below-default value needs the flow-authority attestation."
       ],
       "discriminator": [
         29,
@@ -7804,22 +7756,14 @@ export type Velocity = {
           "writable": true
         },
         {
-          "name": "taker",
-          "writable": true
-        },
-        {
-          "name": "takerStats",
-          "writable": true
-        },
-        {
           "name": "authority",
           "signer": true
         },
         {
           "name": "quoter",
           "docs": [
-            "The market's CLOB registry entry — the remainder only ever rests on a",
-            "vetted book."
+            "The market's CLOB registry entry — the maker only ever rests on a vetted",
+            "book."
           ]
         },
         {
@@ -7865,7 +7809,7 @@ export type Velocity = {
         {
           "name": "crankConditions",
           "docs": [
-            "Wake-hint host for the rested remainder. Optional like every other CLOB",
+            "Wake-hint host for the rested maker. Optional like every other CLOB",
             "placement path: a market whose conditions were never initialized must",
             "still be tradeable, and a missed hint costs crank latency, not liveness."
           ],
@@ -7905,6 +7849,15 @@ export type Velocity = {
               }
             ]
           }
+        },
+        {
+          "name": "instructionsSysvar",
+          "docs": [
+            "faster-than-default activation delay: the handler introspects it for the",
+            "flow-authority co-signer (the attestation)."
+          ],
+          "optional": true,
+          "address": "Sysvar1nstructions1111111111111111111111111"
         }
       ],
       "args": [
@@ -7917,13 +7870,20 @@ export type Velocity = {
           }
         },
         {
-          "name": "takerOrderId",
-          "type": "u32"
+          "name": "activationDelaySlots",
+          "type": {
+            "option": "u32"
+          }
         }
       ]
     },
     {
       "name": "placeAndTakePerpOrder",
+      "docs": [
+        "@deprecated Legacy DLOB path, kept for ABI compatibility. New",
+        "integrations use `place_and_take_perp_order_v1`, which routes through the",
+        "CLOB and rests any restable remainder on the book instead of the DLOB."
+      ],
       "discriminator": [
         213,
         51,
@@ -8110,99 +8070,6 @@ export type Velocity = {
           "name": "successCondition",
           "type": {
             "option": "u32"
-          }
-        }
-      ]
-    },
-    {
-      "name": "placeClobOrder",
-      "discriminator": [
-        252,
-        250,
-        165,
-        51,
-        142,
-        80,
-        101,
-        210
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "user",
-          "writable": true
-        },
-        {
-          "name": "authority",
-          "signer": true
-        },
-        {
-          "name": "quoter",
-          "docs": [
-            "The CLOB's registry entry for this market — placement is only allowed",
-            "on a vetted book."
-          ]
-        },
-        {
-          "name": "clobMarket",
-          "docs": [
-            "accounts in the handler (the vetted CPI surface names the book)."
-          ],
-          "writable": true
-        },
-        {
-          "name": "clobProgram"
-        },
-        {
-          "name": "clobAuthority",
-          "docs": [
-            "is set to. Its own key, distinct from the per-entry signer a",
-            "third-party quoter is handed: signer privilege is inherited by a",
-            "callee, and this one may place and cancel on any book, for any user."
-          ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  108,
-                  111,
-                  98,
-                  95,
-                  97,
-                  117,
-                  116,
-                  104,
-                  111,
-                  114,
-                  105,
-                  116,
-                  121
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "instructionsSysvar",
-          "docs": [
-            "a faster-than-default activation delay: the handler introspects it",
-            "for the flow-authority co-signer (the attestation)."
-          ],
-          "optional": true,
-          "address": "Sysvar1nstructions1111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "params",
-          "type": {
-            "defined": {
-              "name": "placeClobOrderParams"
-            }
           }
         }
       ]
@@ -12323,6 +12190,12 @@ export type Velocity = {
     },
     {
       "name": "triggerOrder",
+      "docs": [
+        "@deprecated Legacy trigger, kept for ABI compatibility. It flips the",
+        "fired order live and leaves it on the DLOB for a later fill crank. New",
+        "integrations use `trigger_order_v1`, which fires and fills the order",
+        "straight to the book in one instruction."
+      ],
       "discriminator": [
         63,
         112,
@@ -12410,6 +12283,210 @@ export type Velocity = {
         {
           "name": "orderId",
           "type": "u32"
+        }
+      ]
+    },
+    {
+      "name": "triggerOrderV1",
+      "docs": [
+        "Fire a DLOB trigger order straight to the book. Unlike `trigger_order`,",
+        "it fills the fired order in the same instruction and rests only the",
+        "remainder as a taker-origin order, so nothing lingers live in",
+        "`User.orders`."
+      ],
+      "discriminator": [
+        229,
+        234,
+        130,
+        57,
+        54,
+        247,
+        245,
+        202
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "authority",
+          "docs": [
+            "program-keeper mode (protocol `User` as filler, relay turners) it is",
+            "only the lamport payout target and no signature is required."
+          ],
+          "writable": true
+        },
+        {
+          "name": "filler",
+          "writable": true
+        },
+        {
+          "name": "fillerStats",
+          "writable": true
+        },
+        {
+          "name": "user",
+          "docs": [
+            "The owner of the armed trigger order."
+          ],
+          "writable": true
+        },
+        {
+          "name": "userStats",
+          "writable": true
+        },
+        {
+          "name": "quoter",
+          "docs": [
+            "The market's CLOB registry entry — the remainder only ever rests on a",
+            "vetted book."
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "writable": true
+        },
+        {
+          "name": "clobProgram"
+        },
+        {
+          "name": "clobAuthority",
+          "docs": [
+            "may place and cancel on any book for any user. Distinct from the",
+            "per-entry signer a third-party quoter is handed."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  97,
+                  117,
+                  116,
+                  104,
+                  111,
+                  114,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "Wake-hint host for the rested remainder, optional as on every CLOB",
+            "placement path."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "marketIndex"
+              }
+            ]
+          }
+        },
+        {
+          "name": "triggerConditions",
+          "docs": [
+            "The user's relay trigger conditions: the fired slot is released so its",
+            "level-triggered wake goes quiet. Optional, like everything relay-side."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "ixSysvar",
+          "docs": [
+            "owner signed the transaction and how many accounts it locks — the same",
+            "filler-obligation facts `fill_perp_order_v1` needs. Optional, and it",
+            "costs one lock: a fill needs it only when a book withholds depth for an",
+            "owner the transaction does not carry, and the owner did not sign. A",
+            "trigger crank's owner never signs, so a fill that reaches a withheld",
+            "order and passes `None` here is refused."
+          ],
+          "optional": true,
+          "address": "Sysvar1nstructions1111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "marketIndex",
+          "type": "u16"
+        },
+        {
+          "name": "orderId",
+          "type": "u32"
+        },
+        {
+          "name": "signedRoute",
+          "type": {
+            "vec": "pubkey"
+          }
         }
       ]
     },
@@ -15840,6 +15917,42 @@ export type Velocity = {
               "name": "updateQuoterConfigArgs"
             }
           }
+        }
+      ]
+    },
+    {
+      "name": "updateQuoterMaxOracleDeviation",
+      "discriminator": [
+        71,
+        255,
+        142,
+        165,
+        199,
+        225,
+        55,
+        77
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "docs": [
+            "The entry's own authority — the quoted user's wallet for Custom",
+            "entries."
+          ],
+          "signer": true,
+          "relations": [
+            "quoter"
+          ]
+        },
+        {
+          "name": "quoter",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "maxOracleDeviationBps",
+          "type": "u32"
         }
       ]
     },
@@ -21644,7 +21757,7 @@ export type Velocity = {
     {
       "code": 6377,
       "name": "orderPlacedOnClob",
-      "msg": "Order is placed on the CLOB; cancel it there (cancel_clob_order)"
+      "msg": "Order is placed on the CLOB; cancel it there (cancel_order_v1)"
     },
     {
       "code": 6378,
@@ -21765,6 +21878,11 @@ export type Velocity = {
       "code": 6401,
       "name": "liquidationConflictsWithClobOrders",
       "msg": "User has orders resting on the CLOB; force_cancel_clob_orders must run before liquidation"
+    },
+    {
+      "code": 6402,
+      "name": "quoterReportExceedsReservation",
+      "msg": "A quoter reported more base or more retired orders than velocity reserved for that user"
     }
   ],
   "types": [
@@ -22559,27 +22677,7 @@ export type Velocity = {
       }
     },
     {
-      "name": "cancelAllClobOrdersParams",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "marketIndex",
-            "type": "u16"
-          },
-          {
-            "name": "sides",
-            "type": {
-              "defined": {
-                "name": "cancelSidesV0"
-              }
-            }
-          }
-        ]
-      }
-    },
-    {
-      "name": "cancelClobOrderParams",
+      "name": "cancelOrderV1Params",
       "type": {
         "kind": "struct",
         "fields": [
@@ -22595,6 +22693,26 @@ export type Velocity = {
             "type": {
               "defined": {
                 "name": "clobOrderRefV0"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "cancelOrdersV1Params",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "sides",
+            "type": {
+              "defined": {
+                "name": "cancelSidesV0"
               }
             }
           }
@@ -25810,80 +25928,6 @@ export type Velocity = {
       }
     },
     {
-      "name": "modifyClobOrderParams",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "marketIndex",
-            "type": "u16"
-          },
-          {
-            "name": "orderRef",
-            "docs": [
-              "Handle for the order being modified; the CLOB fails closed on a stale",
-              "hint, and velocity fails the whole call if the removal hit anyone else."
-            ],
-            "type": {
-              "defined": {
-                "name": "clobOrderRefV0"
-              }
-            }
-          },
-          {
-            "name": "price",
-            "docs": [
-              "`None` keeps the resting price."
-            ],
-            "type": {
-              "option": "u64"
-            }
-          },
-          {
-            "name": "baseAssetAmount",
-            "docs": [
-              "`None` keeps the *remaining* size of the resting order (not its",
-              "original size)."
-            ],
-            "type": {
-              "option": "u64"
-            }
-          },
-          {
-            "name": "maxTs",
-            "docs": [
-              "`None` keeps the resting expiry (read off the book node before the",
-              "cancel — the CLOB's removal response doesn't carry it). `Some(0)` makes",
-              "the replacement good-till-cancelled."
-            ],
-            "type": {
-              "option": "i64"
-            }
-          },
-          {
-            "name": "activationDelaySlots",
-            "docs": [
-              "Same rule as `place_clob_order`: `None` takes the book's default speed",
-              "bump, anything below it needs the flow-authority attestation."
-            ],
-            "type": {
-              "option": "u32"
-            }
-          },
-          {
-            "name": "rejectIfCrossed",
-            "docs": [
-              "Same rule as `place_clob_order`: refuse the replacement rather than",
-              "rest it crossed. The original is already off the book when this fires,",
-              "so a refused replacement leaves the maker with no order — which is what",
-              "a maker repricing into a crossed book is asking for."
-            ],
-            "type": "bool"
-          }
-        ]
-      }
-    },
-    {
       "name": "modifyOrderParams",
       "type": {
         "kind": "struct",
@@ -25983,6 +26027,80 @@ export type Velocity = {
             "type": {
               "option": "u8"
             }
+          }
+        ]
+      }
+    },
+    {
+      "name": "modifyOrderV1Params",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "orderRef",
+            "docs": [
+              "Handle for the order being modified; the CLOB fails closed on a stale",
+              "hint, and velocity fails the whole call if the removal hit anyone else."
+            ],
+            "type": {
+              "defined": {
+                "name": "clobOrderRefV0"
+              }
+            }
+          },
+          {
+            "name": "price",
+            "docs": [
+              "`None` keeps the resting price."
+            ],
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "baseAssetAmount",
+            "docs": [
+              "`None` keeps the *remaining* size of the resting order (not its",
+              "original size)."
+            ],
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "maxTs",
+            "docs": [
+              "`None` keeps the resting expiry (read off the book node before the",
+              "cancel — the CLOB's removal response doesn't carry it). `Some(0)` makes",
+              "the replacement good-till-cancelled."
+            ],
+            "type": {
+              "option": "i64"
+            }
+          },
+          {
+            "name": "activationDelaySlots",
+            "docs": [
+              "Same rule as `place_clob_order`: `None` takes the book's default speed",
+              "bump, anything below it needs the flow-authority attestation."
+            ],
+            "type": {
+              "option": "u32"
+            }
+          },
+          {
+            "name": "rejectIfCrossed",
+            "docs": [
+              "Same rule as `place_clob_order`: refuse the replacement rather than",
+              "rest it crossed. The original is already off the book when this fires,",
+              "so a refused replacement leaves the maker with no order — which is what",
+              "a maker repricing into a crossed book is asking for."
+            ],
+            "type": "bool"
           }
         ]
       }
@@ -27948,13 +28066,16 @@ export type Velocity = {
             "type": "u64"
           },
           {
-            "name": "padding",
-            "type": {
-              "array": [
-                "u8",
-                2
-              ]
-            }
+            "name": "reduceOnlyClobOrders",
+            "docs": [
+              "The number of reduce-only orders the user has resting on the CLOB for",
+              "this market. The book is position-blind, so velocity must tell it which",
+              "resting orders to clamp to the owner's position. This count is that",
+              "signal: it is not zero exactly when the router must pass a `base_cover`",
+              "cap for this user. Velocity arms it when it rests a reduce-only order",
+              "and disarms it when that order leaves the book."
+            ],
+            "type": "u16"
           },
           {
             "name": "maxMarginRatio",
@@ -27977,71 +28098,6 @@ export type Velocity = {
           {
             "name": "positionFlag",
             "type": "u8"
-          }
-        ]
-      }
-    },
-    {
-      "name": "placeClobOrderParams",
-      "type": {
-        "kind": "struct",
-        "fields": [
-          {
-            "name": "marketIndex",
-            "type": "u16"
-          },
-          {
-            "name": "direction",
-            "docs": [
-              "Long rests as a bid, Short as an ask."
-            ],
-            "type": {
-              "defined": {
-                "name": "positionDirection"
-              }
-            }
-          },
-          {
-            "name": "price",
-            "type": "u64"
-          },
-          {
-            "name": "baseAssetAmount",
-            "type": "u64"
-          },
-          {
-            "name": "maxTs",
-            "docs": [
-              "0 = good-till-cancelled."
-            ],
-            "type": "i64"
-          },
-          {
-            "name": "activationDelaySlots",
-            "docs": [
-              "None = the CLOB market's default speed bump. Anything below the",
-              "default requires the flow-authority attestation (the transaction",
-              "co-signed by `State.hot_flow_authority`, introspected off the",
-              "instructions sysvar); the CLOB clamps to its max."
-            ],
-            "type": {
-              "option": "u32"
-            }
-          },
-          {
-            "name": "rejectIfCrossed",
-            "docs": [
-              "Refuse the placement when the order would cross the opposite best",
-              "price, rather than resting it crossed. What a post-only order asks for.",
-              "",
-              "It is not what makes the order a maker. A CLOB order always fills at",
-              "its own price on the maker fee schedule — a router taker takes it",
-              "there, and a crossed pair settles through the cross crank, which runs",
-              "the protocol `User` as the taker on both legs. This is about the order",
-              "resting at all: a maker that quotes through the other side has",
-              "mispriced and would rather place nothing."
-            ],
-            "type": "bool"
           }
         ]
       }
@@ -29016,6 +29072,37 @@ export type Velocity = {
               "many quoters a route can hold."
             ],
             "type": "u64"
+          },
+          {
+            "name": "maxOracleDeviationBps",
+            "docs": [
+              "The furthest from oracle a fill on this entry may price, in",
+              "MARGIN_PRECISION units, so one unit is one basis point. Zero means the",
+              "entry declares nothing and the market's own band stands.",
+              "",
+              "A maker sets this to cap what its own program can lose if that program",
+              "is compromised. Velocity already bounds every external leg by the",
+              "market's band, and that band is sized for a market rather than for one",
+              "quoter's risk appetite; this is how a quoter asks for a tighter one.",
+              "",
+              "Unlike the rest of the config it does not reset `is_approved`. The band",
+              "applies as the smaller of this and the market's, so no value it can hold",
+              "is wider than the one the admin vetted, and a maker tightening it during",
+              "an incident must not have to wait for re-vetting.",
+              "",
+              "`Custom` entries only. A book fills third parties, so a band on one",
+              "would let its entry authority revert other people's fills."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "padding",
+            "type": {
+              "array": [
+                "u8",
+                12
+              ]
+            }
           }
         ]
       }

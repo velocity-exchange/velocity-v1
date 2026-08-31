@@ -30,7 +30,9 @@ use {
     crate::{
         controller::{
             orders::pay_keeper_flat_reward_for_perps,
-            position::{decrease_open_bids_and_asks, get_position_index},
+            position::{
+                get_position_index, release_reserved_open_base, release_reserved_open_orders,
+            },
         },
         error::ErrorCode,
         instructions::{constraints::*, relay_harness::StagedCall},
@@ -214,17 +216,21 @@ pub fn crank_clob_removal(
             )?;
         }
 
+        // The removal report is the book's, so its size and its slot are held
+        // to what velocity reserved for this user rather than clamped to it.
+        // An over-report would free the margin behind orders that still rest.
         let position_index = get_position_index(&user.perp_positions, market_index)?;
-        decrease_open_bids_and_asks(
+        release_reserved_open_base(
             &mut user.perp_positions[position_index],
             &removed.side.to_position_direction(),
             removed.base_asset_amount,
-            true,
         )?;
-        user.perp_positions[position_index].open_orders = user.perp_positions[position_index]
-            .open_orders
-            .saturating_sub(1);
+        release_reserved_open_orders(&mut user.perp_positions[position_index], 1)?;
         user.decrement_open_orders(false);
+        // The order left the book, so disarm the reduce-only counter it armed.
+        if removed.reduce_only {
+            user.perp_positions[position_index].disarm_reduce_only_clob();
+        }
 
         // A placed trigger's shadow slot follows its CLOB order: eviction
         // re-arms it (with the unfilled remainder, edge-gated on a price

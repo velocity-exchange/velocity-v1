@@ -30,7 +30,7 @@ use {
     crate::{
         controller::{
             orders::pay_keeper_flat_reward_for_spot,
-            position::{decrease_open_bids_and_asks, get_position_index},
+            position::{get_position_index, release_reserved_open_base_for_exit},
         },
         error::ErrorCode,
         instructions::{
@@ -415,16 +415,19 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
                 removed.order_id
             )?;
             let direction = removed.side.to_position_direction();
-            decrease_open_bids_and_asks(
+            release_reserved_open_base_for_exit(
                 &mut user.perp_positions[position_index],
                 &direction,
                 removed.base_asset_amount,
-                true,
             )?;
             user.perp_positions[position_index].open_orders = user.perp_positions[position_index]
                 .open_orders
                 .saturating_sub(1);
             user.decrement_open_orders(false);
+            // The order left the book, so disarm the reduce-only counter it armed.
+            if removed.reduce_only {
+                user.perp_positions[position_index].disarm_reduce_only_clob();
+            }
             // A placed trigger's shadow frees for good — a failing account
             // must not re-arm.
             user.release_placed_trigger_slot(market_index, removed.order_id, OrderStatus::Canceled);

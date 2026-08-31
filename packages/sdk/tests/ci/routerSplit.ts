@@ -13,6 +13,9 @@ import {
 	quotedPrefix,
 	isExecutedNotionalInQuote,
 	isChangeNotionalInQuote,
+	quoterOracleBand,
+	makerPriceBreachesOracleBand,
+	isReportWithinReservation,
 	RouterQuoterBook,
 	VAMM_PRIORITY,
 	CLOB_PRIORITY,
@@ -273,5 +276,108 @@ describe('quoter response bounds (mirror of math/router.rs)', () => {
 			)
 		);
 		assert(quotedPrefix(levels, new BN(2), new BN(7)) === undefined);
+	});
+});
+
+describe('external quoter bounds', () => {
+	const PRICE = new BN(1_000_000);
+	const ORACLE = PRICE.muln(100);
+
+	it('lets a maker band tighten the market band and never widen it', () => {
+		assert.equal(quoterOracleBand(0, 1000), 1000);
+		assert.equal(quoterOracleBand(250, 1000), 250);
+		assert.equal(quoterOracleBand(5000, 1000), 1000);
+	});
+
+	it('bounds only the direction that prices against the maker', () => {
+		// A maker selling far below oracle is the direction value leaves them.
+		assert(
+			makerPriceBreachesOracleBand(
+				PRICE.muln(89),
+				PositionDirection.SHORT,
+				ORACLE,
+				1000
+			)
+		);
+		assert(
+			!makerPriceBreachesOracleBand(
+				PRICE.muln(91),
+				PositionDirection.SHORT,
+				ORACLE,
+				1000
+			)
+		);
+		// Selling above oracle is never a breach, however far above.
+		assert(
+			!makerPriceBreachesOracleBand(
+				PRICE.muln(200),
+				PositionDirection.SHORT,
+				ORACLE,
+				1000
+			)
+		);
+
+		// The mirror image for a maker buying.
+		assert(
+			makerPriceBreachesOracleBand(
+				PRICE.muln(111),
+				PositionDirection.LONG,
+				ORACLE,
+				1000
+			)
+		);
+		assert(
+			!makerPriceBreachesOracleBand(
+				PRICE.muln(109),
+				PositionDirection.LONG,
+				ORACLE,
+				1000
+			)
+		);
+		assert(
+			!makerPriceBreachesOracleBand(
+				PRICE.muln(1),
+				PositionDirection.LONG,
+				ORACLE,
+				1000
+			)
+		);
+	});
+
+	it("holds a book's report to the reservation on the side it names", () => {
+		const openBids = B.muln(3);
+		const openAsks = B.muln(2).neg();
+
+		assert(
+			isReportWithinReservation(
+				openBids,
+				openAsks,
+				PositionDirection.SHORT,
+				B.muln(2)
+			)
+		);
+		assert(
+			!isReportWithinReservation(
+				openBids,
+				openAsks,
+				PositionDirection.SHORT,
+				B.muln(2).addn(1)
+			)
+		);
+		assert(
+			isReportWithinReservation(
+				openBids,
+				openAsks,
+				PositionDirection.LONG,
+				B.muln(3)
+			)
+		);
+
+		// A user with nothing resting can be named for nothing.
+		const idle = new BN(0);
+		assert(
+			!isReportWithinReservation(idle, idle, PositionDirection.LONG, new BN(1))
+		);
+		assert(isReportWithinReservation(idle, idle, PositionDirection.LONG, idle));
 	});
 });

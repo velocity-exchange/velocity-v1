@@ -531,6 +531,84 @@ pub fn increase_open_bids_and_asks(
     Ok(())
 }
 
+/// Release exactly `base_asset_amount` of the reservation this position holds
+/// on `direction`, or fail.
+///
+/// [`decrease_open_bids_and_asks`] clamps at zero. That is right for a number
+/// velocity itself authored: the reservation and the order it backs move
+/// together, so the clamp only ever absorbs rounding. It is wrong for a number
+/// an external quoter reported. A report above the reservation collapses the
+/// whole side and frees the margin behind orders that still rest, and the
+/// clamp makes that silent.
+///
+/// So this is the flavour for a report velocity did not author. Every place a
+/// quoter's answer moves a user's aggregates uses it, which is what holds a
+/// book to orders its users really placed.
+pub fn release_reserved_open_base(
+    position: &mut PerpPosition,
+    direction: &PositionDirection,
+    base_asset_amount: u64,
+) -> VelocityResult {
+    let reserved = position.reserved_open_base(*direction);
+    validate!(
+        base_asset_amount <= reserved,
+        ErrorCode::QuoterReportExceedsReservation,
+        "quoter reported {} base on the {:?} side of market {}, above the {} reserved",
+        base_asset_amount,
+        direction,
+        position.market_index,
+        reserved
+    )?;
+
+    decrease_open_bids_and_asks(position, direction, base_asset_amount, true)
+}
+
+/// Release what the report names, or the whole reservation when it names more,
+/// and say which happened.
+///
+/// The lenient half of [`release_reserved_open_base`], and only for the paths
+/// an owner signs to pull their own orders off a book. Those paths run against
+/// a book that may be dead or de-listed, so failing them would trap a maker's
+/// orders on exactly the book they need to leave. The clamp is the escape
+/// hatch; the message is what stops it from being silent.
+pub fn release_reserved_open_base_for_exit(
+    position: &mut PerpPosition,
+    direction: &PositionDirection,
+    base_asset_amount: u64,
+) -> VelocityResult {
+    let reserved = position.reserved_open_base(*direction);
+    if base_asset_amount > reserved {
+        msg!(
+            "clob reported {} base on the {:?} side of market {}, above the {} reserved; \
+             releasing the reservation and letting the exit through",
+            base_asset_amount,
+            direction,
+            position.market_index,
+            reserved
+        );
+    }
+
+    decrease_open_bids_and_asks(position, direction, base_asset_amount, true)
+}
+
+/// Take `count` open-order slots back off this position, or fail.
+///
+/// The counterpart to [`release_reserved_open_base`] for the order count a
+/// quoter reports it retired. Saturating here would let one answer collapse
+/// the count backing orders that still rest.
+pub fn release_reserved_open_orders(position: &mut PerpPosition, count: u8) -> VelocityResult {
+    validate!(
+        count <= position.open_orders,
+        ErrorCode::QuoterReportExceedsReservation,
+        "quoter reported {} retired orders on market {}, above the {} open",
+        count,
+        position.market_index,
+        position.open_orders
+    )?;
+    position.open_orders -= count;
+    Ok(())
+}
+
 pub fn decrease_open_bids_and_asks(
     position: &mut PerpPosition,
     direction: &PositionDirection,

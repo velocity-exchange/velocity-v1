@@ -14,7 +14,6 @@ mod tests;
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum FillMode {
     Fill,
-    PlaceAndMake,
     PlaceAndTake(bool, u8),
     Liquidation,
 }
@@ -29,7 +28,7 @@ impl FillMode {
         slot_clock: SlotClock,
     ) -> VelocityResult<Option<u64>> {
         match self {
-            FillMode::Fill | FillMode::PlaceAndMake | FillMode::Liquidation => {
+            FillMode::Fill | FillMode::Liquidation => {
                 order.get_limit_price(valid_oracle_price, None, slot, tick_size, slot_clock)
             }
             FillMode::PlaceAndTake(_, auction_duration_percentage) => {

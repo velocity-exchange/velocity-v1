@@ -724,6 +724,17 @@ impl User {
         let Some(index) = self.find_placed_trigger_slot(market_index, clob_order_id) else {
             return Ok(false);
         };
+        // `remaining_base` is the book's report of what the evicted order still
+        // held, and it is written straight onto the row below. An order can
+        // only shrink while it rests, so a report above the size the row
+        // carries is the book growing someone's order.
+        validate!(
+            remaining_base <= self.orders[index].base_asset_amount,
+            ErrorCode::QuoterReportExceedsReservation,
+            "clob evicted {} base off a trigger order of {}",
+            remaining_base,
+            self.orders[index].base_asset_amount
+        )?;
         {
             let order = &mut self.orders[index];
             order.remove_bit_flag(OrderBitFlag::PlacedOnClob);
@@ -1294,7 +1305,13 @@ pub struct PerpPosition {
     /// The scaled balance of the isolated position
     /// precision: SPOT_BALANCE_PRECISION
     pub isolated_position_scaled_balance: u64,
-    pub padding: [u8; 2],
+    /// The number of reduce-only orders the user has resting on the CLOB for
+    /// this market. The book is position-blind, so velocity must tell it which
+    /// resting orders to clamp to the owner's position. This count is that
+    /// signal: it is not zero exactly when the router must pass a `base_cover`
+    /// cap for this user. Velocity arms it when it rests a reduce-only order
+    /// and disarms it when that order leaves the book.
+    pub reduce_only_clob_orders: u16,
     // custom max margin ratio for perp market
     pub max_margin_ratio: u16,
     /// The market index for the perp market
@@ -1323,6 +1340,48 @@ impl PerpPosition {
 
     pub fn has_open_order(&self) -> bool {
         self.open_orders != 0 || self.open_bids != 0 || self.open_asks != 0
+    }
+
+    /// The unfilled base this position holds resting on `direction` — every
+    /// order on that side, on a book and in [`User::orders`] alike.
+    ///
+    /// Velocity writes this at placement, under the owner's signature, and
+    /// takes it back on each fill, cull, cancel, eviction and expiry. An
+    /// external quoter cannot inflate it. So it is the one number that says
+    /// how much size the owner really put on this side, and it bounds what a
+    /// quoter's report may claim to have filled or removed.
+    pub fn reserved_open_base(&self, direction: PositionDirection) -> u64 {
+        match direction {
+            PositionDirection::Long => self.open_bids.max(0).unsigned_abs(),
+            PositionDirection::Short => self.open_asks.min(0).unsigned_abs(),
+        }
+    }
+
+    /// Record that one more reduce-only order now rests on the CLOB. Velocity
+    /// calls this when it rests a reduce-only remainder or fired trigger.
+    pub fn arm_reduce_only_clob(&mut self) {
+        self.reduce_only_clob_orders = self.reduce_only_clob_orders.saturating_add(1);
+    }
+
+    /// Record that one reduce-only CLOB order left the book. Velocity calls
+    /// this when such an order fills out, cancels, is evicted or expires. The
+    /// count saturates at zero, so a double disarm never wraps the counter and
+    /// leaves the user wrongly uncapped.
+    pub fn disarm_reduce_only_clob(&mut self) {
+        self.reduce_only_clob_orders = self.reduce_only_clob_orders.saturating_sub(1);
+    }
+
+    /// Disarm many at once, for a bulk sweep that reports how many reduce-only
+    /// orders it removed rather than removing them one at a time.
+    pub fn disarm_reduce_only_clob_by(&mut self, count: u16) {
+        self.reduce_only_clob_orders = self.reduce_only_clob_orders.saturating_sub(count);
+    }
+
+    /// True when the router must pass a reduce-only `base_cover` cap for this
+    /// user, because at least one reduce-only order of theirs rests on the
+    /// book.
+    pub fn has_reduce_only_clob(&self) -> bool {
+        self.reduce_only_clob_orders != 0
     }
 
     pub fn margin_requirement_for_open_orders(&self) -> VelocityResult<u128> {

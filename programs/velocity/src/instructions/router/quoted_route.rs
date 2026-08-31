@@ -81,6 +81,9 @@ pub struct QuotedEntry<'info> {
     pub response_account: Pubkey,
     /// Routing tier at a shared price: lower fills first, pro rata within.
     pub priority: u8,
+    /// The entry's declared oracle band, captured with the rest. Zero means it
+    /// declared none — see [`QuoterV0::max_oracle_deviation_bps`].
+    pub max_oracle_deviation_bps: u32,
     /// What it quoted, best price first, as a run in [`QuotedRoute::levels`].
     /// Held past the quoting CPI because every later allocation and price
     /// check is measured against it, but pooled with every other entry's run
@@ -278,16 +281,19 @@ impl<'info> QuotedRoute<'info> {
                     quoter.user,
                     quoter.response_account,
                     quoter.priority,
+                    quoter.max_oracle_deviation_bps,
                     levels,
                 )
             };
-            let (quoter_type, user, response_account, priority, quoted) = quoted;
+            let (quoter_type, user, response_account, priority, max_oracle_deviation_bps, quoted) =
+                quoted;
             route.quoted.push(QuotedEntry {
                 entry: loader,
                 quoter_type,
                 user,
                 response_account,
                 priority,
+                max_oracle_deviation_bps,
                 levels: quoted.levels.clone(),
                 // Only a book can withhold. A book walks the orders of many
                 // owners and stops at one this transaction cannot settle for.

@@ -198,7 +198,7 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
 
     // ---- Gate, reserve, reward — everything that can decide NOT to place,
     // while the user is borrowed. ----
-    let (side, price, base_asset_amount, max_ts, user_ref) = {
+    let (side, price, base_asset_amount, max_ts, reduce_only, user_ref) = {
         let user = &mut load_mut!(ctx.accounts.user)?;
         let user_stats = load!(ctx.accounts.user_stats)?;
 
@@ -332,20 +332,16 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
         // to the maker's position, so a reduce-only order that rests here fills
         // its full size, and a position that shrank elsewhere after placement
         // makes that fill risk-increasing. The trigger-time gate below exempts
-        // reduce-only orders the way trigger_order does, which on the CLOB
-        // would let the full size rest ungated. So a reduce-only trigger stays
-        // on the speed-bumped taker flow (trigger_order), where reduce-only is
-        // enforced at fill. Mirrors restable_remainder_price.
-        validate!(
-            !user.orders[order_index].reduce_only,
-            ErrorCode::ReduceOnlyOrderCannotRestOnClob,
-            "reduce-only trigger order {} cannot rest on the CLOB",
-            order_id
-        )?;
+        // reduce-only orders. The book is position-blind, but the router now
+        // carries an authoritative `base_cover` per user, so a reduce-only order
+        // rests flagged and the book clamps every fill against it to the
+        // position it may reduce. A reduce-only trigger therefore rests here
+        // like any other.
 
         // Reserve worst-case aggregates for the resting order, then gate
         // exactly like trigger_order: a risk-increasing trigger on a failing
         // account cancels instead of placing.
+        let reduce_only = user.orders[order_index].reduce_only;
         let direction = user.orders[order_index].direction;
         let base_asset_amount = user.orders[order_index].get_base_asset_amount_unfilled(None)?;
         let (_, worst_case_before) = user
@@ -448,6 +444,7 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
             user.orders[order_index].price,
             base_asset_amount,
             user.orders[order_index].max_ts,
+            reduce_only,
             crate::state::prop_amm::ClobUserRefV0 {
                 authority: user.authority,
                 sub_account_id: user.sub_account_id.into(),
@@ -478,6 +475,9 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
         // crossing would leave the position unprotected, which is the one
         // thing the trigger exists to prevent.
         reject_if_crossed: false,
+        // A reduce-only trigger rests flagged; the book clamps its fills to the
+        // owner's base cover.
+        reduce_only,
     })?;
 
     // ---- Mark the slot as the placed shadow. ----
@@ -492,6 +492,12 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
             .ok_or(ErrorCode::OrderDoesNotExist)?;
         user.orders[order_index].set_clob_order_ref(order_ref.node_index, order_ref.order_id);
         user.orders[order_index].add_bit_flag(OrderBitFlag::PlacedOnClob);
+        // A reduce-only trigger now rests on the book. Arm the counter so the
+        // router caps its fills until it leaves the book.
+        if reduce_only {
+            let position_index = get_position_index(&user.perp_positions, market_index)?;
+            user.perp_positions[position_index].arm_reduce_only_clob();
+        }
         user.update_last_active_slot(slot);
     }
 

@@ -296,12 +296,15 @@ pub mod velocity {
         handle_modify_order_by_user_order_id(ctx, user_order_id, modify_order_params)
     }
 
+    /// @deprecated Legacy DLOB path, kept for ABI compatibility. New
+    /// integrations use `place_and_take_perp_order_v1`, which routes through the
+    /// CLOB and rests any restable remainder on the book instead of the DLOB.
     pub fn place_and_take_perp_order<'c: 'info, 'info>(
         ctx: Context<'info, PlaceAndTake<'info>>,
         params: OrderParams,
         success_condition: Option<u32>,
     ) -> Result<()> {
-        handle_place_and_take_perp_order(ctx, params, success_condition)
+        handle_legacy_place_and_take_perp_order(ctx, params, success_condition)
     }
 
     /// `place_and_take_perp_order` with the market's CLOB accounts required:
@@ -316,24 +319,16 @@ pub mod velocity {
         handle_place_and_take_perp_order_v1(ctx, params, success_condition)
     }
 
-    pub fn place_and_make_perp_order<'c: 'info, 'info>(
-        ctx: Context<'info, PlaceAndMake<'info>>,
-        params: OrderParams,
-        taker_order_id: u32,
-    ) -> Result<()> {
-        handle_place_and_make_perp_order(ctx, params, taker_order_id)
-    }
-
-    /// `place_and_make_perp_order` with the market's CLOB accounts required:
-    /// the unmatched remainder rests on the book instead of being cancelled.
-    /// v0's account list is frozen for ABI compatibility, so the CLOB route is
-    /// a separate endpoint rather than optional accounts on v0.
+    /// Rest a maker limit order on the market's CLOB. The order goes straight to
+    /// the book as a maker quote and never occupies a `User.orders` slot.
+    /// `activation_delay_slots` sets the book speed bump; `None` takes the
+    /// default, and a below-default value needs the flow-authority attestation.
     pub fn place_and_make_perp_order_v1<'c: 'info, 'info>(
         ctx: Context<'info, PlaceAndMakeV1<'info>>,
         params: OrderParams,
-        taker_order_id: u32,
+        activation_delay_slots: Option<u32>,
     ) -> Result<()> {
-        handle_place_and_make_perp_order_v1(ctx, params, taker_order_id)
+        handle_place_and_make_perp_order_v1(ctx, params, activation_delay_slots)
     }
 
     /// Place, route and rest one signed-message taker order.
@@ -512,13 +507,17 @@ pub mod velocity {
     /// order carries, so a filler cannot misreport it, and every entry in it
     /// must appear in this transaction — the taker picks who competes for
     /// their flow, not the filler. Empty for an order with no signed route.
+    /// @deprecated Legacy fill, kept for ABI compatibility. It routes the fill
+    /// through the vAMM + DLOB makers but carries no CLOB books, and a restable
+    /// remainder stays on the DLOB. New integrations use `fill_perp_order_v1`,
+    /// which carries the market's CLOB and migrates the remainder to the book.
     pub fn fill_perp_order<'c: 'info, 'info>(
         ctx: Context<'info, FillOrder<'info>>,
         order_id: Option<u32>,
         _maker_order_id: Option<u32>,
         signed_route: Vec<Pubkey>,
     ) -> Result<()> {
-        handle_fill_perp_order(ctx, order_id, signed_route)
+        handle_legacy_fill_perp_order(ctx, order_id, signed_route)
     }
 
     /// `fill_perp_order` with the market's CLOB accounts required: a restable
@@ -541,11 +540,28 @@ pub mod velocity {
         handle_revert_fill(ctx)
     }
 
+    /// @deprecated Legacy trigger, kept for ABI compatibility. It flips the
+    /// fired order live and leaves it on the DLOB for a later fill crank. New
+    /// integrations use `trigger_order_v1`, which fires and fills the order
+    /// straight to the book in one instruction.
     pub fn trigger_order<'c: 'info, 'info>(
         ctx: Context<'info, TriggerOrder<'info>>,
         order_id: u32,
     ) -> Result<()> {
-        handle_trigger_order(ctx, order_id)
+        handle_legacy_trigger_order(ctx, order_id)
+    }
+
+    /// Fire a DLOB trigger order straight to the book. Unlike `trigger_order`,
+    /// it fills the fired order in the same instruction and rests only the
+    /// remainder as a taker-origin order, so nothing lingers live in
+    /// `User.orders`.
+    pub fn trigger_order_v1<'c: 'info, 'info>(
+        ctx: Context<'info, TriggerOrderV1<'info>>,
+        market_index: u16,
+        order_id: u32,
+        signed_route: Vec<Pubkey>,
+    ) -> Result<()> {
+        handle_trigger_order_v1(ctx, market_index, order_id, signed_route)
     }
 
     pub fn force_cancel_orders<'c: 'info, 'info>(
@@ -2402,39 +2418,36 @@ pub mod velocity {
         handle_update_quoter_watch(ctx, args)
     }
 
-    pub fn place_clob_order<'c: 'info, 'info>(
-        ctx: Context<'info, PlaceClobOrder<'info>>,
-        params: PlaceClobOrderParams,
+    pub fn update_quoter_max_oracle_deviation(
+        ctx: Context<UpdateQuoterMaxOracleDeviation>,
+        max_oracle_deviation_bps: u32,
     ) -> Result<()> {
-        handle_place_clob_order(ctx, params)
+        handle_update_quoter_max_oracle_deviation(ctx, max_oracle_deviation_bps)
     }
 
-    pub fn cancel_clob_order(
-        ctx: Context<CancelClobOrder>,
-        params: CancelClobOrderParams,
-    ) -> Result<()> {
-        handle_cancel_clob_order(ctx, params)
+    pub fn cancel_order_v1(ctx: Context<CancelOrderV1>, params: CancelOrderV1Params) -> Result<()> {
+        handle_cancel_order_v1(ctx, params)
     }
 
     /// Pull every resting CLOB order this `User` holds on one side (or both) in
     /// a single CPI, unwinding the aggregates from per-side totals. The book
     /// caps one sweep; the log says when it stopped early and the call is safe
     /// to repeat.
-    pub fn cancel_all_clob_orders(
-        ctx: Context<CancelAllClobOrders>,
-        params: CancelAllClobOrdersParams,
+    pub fn cancel_orders_v1(
+        ctx: Context<CancelOrdersV1>,
+        params: CancelOrdersV1Params,
     ) -> Result<()> {
-        handle_cancel_all_clob_orders(ctx, params)
+        handle_cancel_orders_v1(ctx, params)
     }
 
     /// Reprice/resize a resting CLOB order: cancel-and-replace in one
     /// instruction, with a single margin gate over the net change. `None`
     /// fields keep the resting order's value.
-    pub fn modify_clob_order<'c: 'info, 'info>(
-        ctx: Context<'info, ModifyClobOrder<'info>>,
-        params: ModifyClobOrderParams,
+    pub fn modify_order_v1<'c: 'info, 'info>(
+        ctx: Context<'info, ModifyOrderV1<'info>>,
+        params: ModifyOrderV1Params,
     ) -> Result<()> {
-        handle_modify_clob_order(ctx, params)
+        handle_modify_order_v1(ctx, params)
     }
 
     pub fn initialize_router_quote_buffer(

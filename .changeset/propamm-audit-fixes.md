@@ -61,3 +61,30 @@ a filler that omits it is refused whenever a book withholds. The SDK and
 allocation it won was skipped, so the size went nowhere and a source that would
 have filled it never saw it. Returning less than the allocation already failed;
 returning nothing now fails the same way, with `QuoterFilledShort` (6398).
+
+**A book's report is held to what velocity reserved.** Every CLOB order reserves `openBids` /
+`openAsks` and an open-order slot on its owner's `PerpPosition` at placement, under that owner's
+signature. Nothing outside velocity can write those, so they are now the bound on every response a
+quoter returns: fills, sub-min culls, retired-order counts, the evict / expire removal cranks, and
+both cross cranks fail with `QuoterReportExceedsReservation` (6402) when the report exceeds the
+reservation, instead of saturating at zero.
+
+The ceiling on what a compromised book can open for a user the transaction carries drops from that
+user's free collateral to the size they actually posted, on the side they posted it. The exits an
+owner signs — `cancelClobOrder`, `cancelAllClobOrders`, `forceCancelClobOrders` — still clamp and
+log rather than fail, so a maker can always pull orders off a book that reports garbage.
+
+**A Custom quoter can tighten its own oracle band.** New `QuoterV0Account.maxOracleDeviationBps`
+(MARGIN_PRECISION units, so one unit is one basis point; `0` = no declaration) and
+`updateQuoterMaxOracleDeviation`, signed by the entry authority. Velocity already bounds every
+external leg by the market's `marginRatioInitial`; this asks for a tighter one, so a maker caps what
+its own program can lose if that program is compromised.
+
+It applies as the smaller of the declaration and the market's, so no value it can hold is wider than
+the one the admin vetted — which is why, alone among the config fields, setting it does not clear
+`isApproved`. A declared band also trims the entry's quoted ladder before the split, so an over-wide
+quote costs that maker allocation rather than failing a fill that carries other makers.
+
+`QuoterV0` grows to 2792 bytes. New `math/router` exports `quoterOracleBand`,
+`makerPriceBreachesOracleBand`, and `isReportWithinReservation` mirror the three predicates a client
+needs to tell whether a fill will be accepted. Admin CLI: `velocity-admin quoter set-oracle-band`.

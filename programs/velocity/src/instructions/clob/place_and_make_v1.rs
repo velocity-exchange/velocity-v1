@@ -1,38 +1,33 @@
-//! `place_and_make_perp_order_v1` — the CLOB-aware maker route.
+//! `place_and_make_perp_order_v1` — rest a maker order on the CLOB.
 //!
-//! Same semantics as `place_and_make_perp_order`: post an IOC post-only limit
-//! order and immediately match a named taker order against it. The difference
-//! is where the unmatched remainder goes. v0 cancels it; v1 rests it on the
-//! market's CLOB.
+//! A maker posts a limit order that rests on the market's CLOB. The order never
+//! enters `User.orders`: it is built, margin-checked, and placed straight on the
+//! book as a maker quote. Whoever wants that liquidity takes it off the book.
 //!
-//! That is not a contradiction of the IOC requirement — IOC here means the
-//! order must not occupy a `User.orders` slot, and on this route it does not:
-//! the remainder leaves `User.orders` and lives on the book, which is where a
-//! restable maker order belongs. A maker who quoted a price to fill a taker
-//! generally still wants that price working afterwards, and throwing the
-//! remainder away is the thing v0 could not avoid.
-//!
-//! Why a new instruction rather than optional accounts on v0: appending
-//! optional accounts to a shipped `#[derive(Accounts)]` changes the account
-//! list every existing client builds, so v0 keeps its exact shape forever and
-//! callers opt into the book by naming this endpoint. Both share one body
-//! ([`crate::instructions::place_and_make_perp_order`]).
-//!
-//! Unlike the taker route, this one does **not** quote external books: a maker
-//! is providing liquidity, not consuming it, and the fill here is the named
-//! taker order against this one order. Nothing to route.
+//! Just-in-time matching against a named taker order is gone. A maker provides
+//! liquidity that rests; it does not consume liquidity and quotes no external
+//! books, so there is no taker to name and nothing to route.
 
 use {
     crate::{
-        instructions::{constraints::*, place_and_make_perp_order, ClobRemainderRoute},
-        signer::CLOB_AUTHORITY_SEED,
+        controller,
+        error::ErrorCode,
+        instructions::{
+            constraints::*,
+            optional_accounts::{load_maps, AccountMaps},
+            try_place_remainder_on_clob,
+        },
+        load, load_mut,
+        signer::{find_clob_authority, CLOB_AUTHORITY_SEED},
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
-            order_params::OrderParams,
+            order_params::{OrderParams, PlaceOrderOptions, PostOnlyParam},
+            perp_market_map::{get_writable_perp_market_set, MarketSet},
             prop_amm::QuoterV0,
             state::State,
-            user::{User, UserStats},
+            user::{OrderType, User, UserStats},
         },
+        validate,
     },
     anchor_lang::prelude::*,
 };
@@ -51,16 +46,9 @@ pub struct PlaceAndMakeV1<'info> {
         constraint = is_stats_for_user(&user, &user_stats)?
     )]
     pub user_stats: AccountLoader<'info, UserStats>,
-    #[account(mut)]
-    pub taker: AccountLoader<'info, User>,
-    #[account(
-        mut,
-        constraint = is_stats_for_user(&taker, &taker_stats)?
-    )]
-    pub taker_stats: AccountLoader<'info, UserStats>,
     pub authority: Signer<'info>,
-    /// The market's CLOB registry entry — the remainder only ever rests on a
-    /// vetted book.
+    /// The market's CLOB registry entry — the maker only ever rests on a vetted
+    /// book.
     pub quoter: AccountLoader<'info, QuoterV0>,
     /// CHECK: validated against the quoter entry's registered accounts
     /// (`ClobMarket::from_quoter`), so a valid entry can't be pointed at an
@@ -74,7 +62,7 @@ pub struct PlaceAndMakeV1<'info> {
     /// is set to, and nothing a third-party quoter is ever handed.
     #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
     pub clob_authority: UncheckedAccount<'info>,
-    /// Wake-hint host for the rested remainder. Optional like every other CLOB
+    /// Wake-hint host for the rested maker. Optional like every other CLOB
     /// placement path: a market whose conditions were never initialized must
     /// still be tradeable, and a missed hint costs crank latency, not liveness.
     #[account(
@@ -86,6 +74,11 @@ pub struct PlaceAndMakeV1<'info> {
         bump
     )]
     pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
+    /// CHECK: the instructions sysvar, locked by address. Required only for a
+    /// faster-than-default activation delay: the handler introspects it for the
+    /// flow-authority co-signer (the attestation).
+    #[account(address = ::solana_program::sysvar::instructions::ID)]
+    pub instructions_sysvar: Option<UncheckedAccount<'info>>,
 }
 
 #[access_control(
@@ -94,24 +87,126 @@ pub struct PlaceAndMakeV1<'info> {
 pub fn handle_place_and_make_perp_order_v1<'c: 'info, 'info>(
     ctx: Context<'info, PlaceAndMakeV1<'info>>,
     params: OrderParams,
-    taker_order_id: u32,
+    // The book speed bump the maker rests behind. `None` takes the book's
+    // default. A value below the default needs the flow-authority attestation.
+    activation_delay_slots: Option<u32>,
 ) -> Result<()> {
-    place_and_make_perp_order(
-        &ctx.accounts.state,
+    let clock = Clock::get()?;
+    let state = ctx.accounts.state.load()?;
+    let user_key = ctx.accounts.user.key();
+
+    let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
+    let AccountMaps {
+        perp_market_map,
+        spot_market_map,
+        mut oracle_map,
+    } = load_maps(
+        remaining_accounts_iter,
+        &get_writable_perp_market_set(params.market_index),
+        &MarketSet::new(),
+        clock.slot,
+        state.slot_clock(),
+        Some(state.oracle_guard_rails),
+    )?;
+
+    validate!(
+        params.order_type == OrderType::Limit,
+        ErrorCode::InvalidOrderIOCPostOnly,
+        "place_and_make rests a limit order on the book"
+    )?;
+    // A post-only order refuses to rest crossed; a plain limit rests crossed and
+    // the cross crank matches it at the counterparty's price. Either way the
+    // order rests as a maker, so `post_only` chooses only whether a crossed
+    // placement is refused, not the fee schedule.
+    let reject_if_crossed = params.post_only != PostOnlyParam::None;
+
+    // Build and margin-check the maker order without persisting it to
+    // `User.orders`. The build reserves nothing that lasts; the rest below makes
+    // the order's own reservation on the book.
+    let placed = {
+        let mut user = load_mut!(ctx.accounts.user)?;
+        controller::orders::place_ephemeral_perp_order(
+            &state,
+            &mut user,
+            user_key,
+            &perp_market_map,
+            &spot_market_map,
+            &mut oracle_map,
+            &clock,
+            params,
+            // The order rests straight on the CLOB; its CLOB placement record
+            // is the one statement about it, so suppress the ephemeral place
+            // record that would be a redundant second one.
+            PlaceOrderOptions {
+                emit_place_record: false,
+                ..PlaceOrderOptions::default()
+            },
+            &mut None,
+        )?
+    };
+    let Some(order) = placed else {
+        // The order soft-skipped its build. Nothing to rest.
+        return Ok(());
+    };
+
+    // A maker order rests at a fixed price. The CLOB has no oracle-offset or
+    // reduce-only semantics, so refuse those. Unlike a taker remainder a maker
+    // is post-only, so `restable_remainder_price` is the wrong gate here.
+    validate!(
+        order.order_type == OrderType::Limit
+            && order.oracle_price_offset == 0
+            && !order.reduce_only,
+        ErrorCode::InvalidOrderIOCPostOnly,
+        "place_and_make order cannot rest on the book"
+    )?;
+    let rest_price = order.price;
+
+    let position_base = load!(ctx.accounts.user)?
+        .get_perp_position(params.market_index)
+        .map(|position| position.base_asset_amount)
+        .unwrap_or(0);
+    let unfilled = order
+        .get_base_asset_amount_unfilled(Some(position_base))
+        .unwrap_or(order.base_asset_amount);
+
+    let (_, clob_authority_nonce) = find_clob_authority();
+    // A below-default activation delay is reserved for attested flow.
+    crate::instructions::attest_activation_delay(
+        &state,
+        &ctx.accounts.quoter,
+        &ctx.accounts.clob_market.to_account_info(),
+        &ctx.accounts.clob_program.to_account_info(),
+        &ctx.accounts.clob_authority.to_account_info(),
+        clob_authority_nonce,
+        params.market_index,
+        activation_delay_slots,
+        ctx.accounts
+            .instructions_sysvar
+            .as_ref()
+            .map(|sysvar| sysvar.as_ref()),
+    )?;
+    try_place_remainder_on_clob(
         &ctx.accounts.user,
-        &ctx.accounts.user_stats,
-        &ctx.accounts.taker,
-        &ctx.accounts.taker_stats,
-        ctx.remaining_accounts,
-        params,
-        taker_order_id,
-        Some(ClobRemainderRoute {
-            quoter: &ctx.accounts.quoter,
-            clob_market: &ctx.accounts.clob_market,
-            clob_program: &ctx.accounts.clob_program,
-            clob_authority: &ctx.accounts.clob_authority,
-            clob_authority_nonce: ctx.bumps.clob_authority,
-            crank_conditions: ctx.accounts.crank_conditions.as_ref(),
-        }),
-    )
+        &ctx.accounts.quoter,
+        &ctx.accounts.clob_market.to_account_info(),
+        &ctx.accounts.clob_program.to_account_info(),
+        &ctx.accounts.clob_authority.to_account_info(),
+        clob_authority_nonce,
+        &perp_market_map,
+        &spot_market_map,
+        &mut oracle_map,
+        params.market_index,
+        order.direction,
+        rest_price,
+        unfilled,
+        order.max_ts,
+        order.order_id,
+        // A maker quote, not a taker remainder: it may be taken at its own price.
+        false,
+        reject_if_crossed,
+        order.reduce_only,
+        activation_delay_slots,
+        &clock,
+    )?;
+    Ok(())
 }

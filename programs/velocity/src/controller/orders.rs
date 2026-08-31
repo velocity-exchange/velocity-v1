@@ -102,70 +102,49 @@ pub struct PlaceOrderResult {
     pub isolated_market_index: Option<u16>,
 }
 
-pub fn place_perp_order(
+/// A perp `Order` built from its params, ready to place or to route detached.
+///
+/// The output of [`build_perp_order`]: the constructed order plus the facts a
+/// caller needs to reserve, margin-check, and record it. It holds no slot and
+/// touches no open-order counter, so an ephemeral taker can route it without
+/// ever entering `user.orders`.
+pub struct BuiltPerpOrder {
+    pub order: Order,
+    pub position_index: usize,
+    pub risk_increasing: bool,
+    pub force_reduce_only: bool,
+}
+
+/// Build a perp `Order` from its params, minting its id, without persisting it.
+///
+/// This is the shared core of order construction: market and status checks, the
+/// position lookup, size and direction, auction params, the max-time-in-force
+/// default, the order value itself, and `validate_order`. It writes no slot,
+/// bumps no counter, reserves no `open_bids`/`open_asks`, and runs no margin
+/// check — the caller does those, because a slot placement and an ephemeral
+/// detached fill need them differently.
+///
+/// Returns `None` for the two soft-skips that are not errors: an already
+/// expired `max_ts`, and a `TryPostOnly` order that would cross. Both clear the
+/// builder-order row so it cannot linger.
+///
+/// The caller must run the placement preconditions first (not-liquidated,
+/// not-bankrupt, the reduce-only-user gate), since those guard the whole
+/// placement, not the order value.
+#[allow(clippy::too_many_arguments)]
+pub fn build_perp_order(
     state: &State,
     user: &mut User,
-    user_key: Pubkey,
     perp_market_map: &PerpMarketMap,
     spot_market_map: &SpotMarketMap,
     oracle_map: &mut OracleMap,
     clock: &Clock,
     mut params: OrderParams,
-    mut options: PlaceOrderOptions,
+    options: &PlaceOrderOptions,
     rev_share_order: &mut Option<&mut RevenueShareOrder>,
-) -> VelocityResult<PlaceOrderResult> {
+) -> VelocityResult<Option<BuiltPerpOrder>> {
     let now = clock.unix_timestamp;
     let slot: u64 = clock.slot;
-
-    if !options.is_liquidation() {
-        validate_user_not_being_liquidated(
-            user,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
-            state.liquidation_margin_buffer_ratio,
-        )?;
-    }
-
-    validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
-
-    if options.try_expire_orders {
-        expire_orders(
-            user,
-            &user_key,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
-            now,
-            slot,
-        )?;
-    }
-
-    if user.is_reduce_only() {
-        validate!(
-            params.reduce_only,
-            ErrorCode::UserReduceOnly,
-            "order must be reduce only"
-        )?;
-    }
-
-    let new_order_index = user
-        .orders
-        .iter()
-        .position(|order| order.is_available())
-        .ok_or(ErrorCode::MaxNumberOfOrders)?;
-
-    if params.user_order_id > 0 {
-        let user_order_id_already_used = user
-            .orders
-            .iter()
-            .position(|order| order.user_order_id == params.user_order_id && !order.is_available());
-
-        if user_order_id_already_used.is_some() {
-            msg!("user_order_id is already in use {}", params.user_order_id);
-            return Err(ErrorCode::UserOrderIdAlreadyInUse);
-        }
-    }
 
     let market_index = params.market_index;
     let market = &perp_market_map.get_ref(&market_index)?;
@@ -288,7 +267,7 @@ pub fn place_perp_order(
         // `add_builder_order` already wrote for this id, otherwise it would linger
         // and attach to the reusing order (fill-time lookup is keyed by order id).
         clear_placed_builder_order(rev_share_order);
-        return Ok(PlaceOrderResult::default());
+        return Ok(None);
     }
 
     validate!(
@@ -376,7 +355,7 @@ pub fn place_perp_order(
             // builder-order row `add_builder_order` wrote for it would be orphaned
             // (no live order carries it). Clear it so it can't linger in the escrow.
             clear_placed_builder_order(rev_share_order);
-            return Ok(PlaceOrderResult::default());
+            return Ok(None);
         }
         Err(err) => return Err(err),
     };
@@ -388,13 +367,109 @@ pub fn place_perp_order(
         user.perp_positions[position_index].open_asks,
     )?;
 
+    Ok(Some(BuiltPerpOrder {
+        order: new_order,
+        position_index,
+        risk_increasing,
+        force_reduce_only,
+    }))
+}
+
+pub fn place_perp_order(
+    state: &State,
+    user: &mut User,
+    user_key: Pubkey,
+    perp_market_map: &PerpMarketMap,
+    spot_market_map: &SpotMarketMap,
+    oracle_map: &mut OracleMap,
+    clock: &Clock,
+    params: OrderParams,
+    mut options: PlaceOrderOptions,
+    rev_share_order: &mut Option<&mut RevenueShareOrder>,
+) -> VelocityResult<PlaceOrderResult> {
+    let now = clock.unix_timestamp;
+    let slot: u64 = clock.slot;
+
+    if !options.is_liquidation() {
+        validate_user_not_being_liquidated(
+            user,
+            perp_market_map,
+            spot_market_map,
+            oracle_map,
+            state.liquidation_margin_buffer_ratio,
+        )?;
+    }
+
+    validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
+
+    if options.try_expire_orders {
+        expire_orders(
+            user,
+            &user_key,
+            perp_market_map,
+            spot_market_map,
+            oracle_map,
+            now,
+            slot,
+        )?;
+    }
+
+    if user.is_reduce_only() {
+        validate!(
+            params.reduce_only,
+            ErrorCode::UserReduceOnly,
+            "order must be reduce only"
+        )?;
+    }
+
+    let new_order_index = user
+        .orders
+        .iter()
+        .position(|order| order.is_available())
+        .ok_or(ErrorCode::MaxNumberOfOrders)?;
+
+    if params.user_order_id > 0 {
+        let user_order_id_already_used = user
+            .orders
+            .iter()
+            .position(|order| order.user_order_id == params.user_order_id && !order.is_available());
+
+        if user_order_id_already_used.is_some() {
+            msg!("user_order_id is already in use {}", params.user_order_id);
+            return Err(ErrorCode::UserOrderIdAlreadyInUse);
+        }
+    }
+
+    let market_index = params.market_index;
+
+    let Some(built) = build_perp_order(
+        state,
+        user,
+        perp_market_map,
+        spot_market_map,
+        oracle_map,
+        clock,
+        params,
+        &options,
+        rev_share_order,
+    )?
+    else {
+        return Ok(PlaceOrderResult::default());
+    };
+    let BuiltPerpOrder {
+        order: new_order,
+        position_index,
+        risk_increasing,
+        force_reduce_only,
+    } = built;
+
     user.increment_open_orders(new_order.has_auction());
     user.orders[new_order_index] = new_order;
     user.perp_positions[position_index].open_orders += 1;
     increase_open_bids_and_asks(
         &mut user.perp_positions[position_index],
-        &params.direction,
-        order_base_asset_amount,
+        &new_order.direction,
+        new_order.base_asset_amount,
         new_order.update_open_bids_and_asks(),
     )?;
 
@@ -431,16 +506,17 @@ pub fn place_perp_order(
         )?;
     }
 
+    let market = &perp_market_map.get_ref(&market_index)?;
     let max_oi = market.max_open_interest;
     if max_oi != 0 && risk_increasing {
-        let oi_plus_order = match params.direction {
+        let oi_plus_order = match new_order.direction {
             PositionDirection::Long => market
                 .base_asset_amount_long
-                .safe_add(order_base_asset_amount.cast()?)?
+                .safe_add(new_order.base_asset_amount.cast()?)?
                 .unsigned_abs(),
             PositionDirection::Short => market
                 .base_asset_amount_short
-                .safe_sub(order_base_asset_amount.cast()?)?
+                .safe_sub(new_order.base_asset_amount.cast()?)?
                 .unsigned_abs(),
         };
 
@@ -448,8 +524,8 @@ pub fn place_perp_order(
             oi_plus_order <= max_oi,
             ErrorCode::MaxOpenInterest,
             "Order Base Amount={} could breach Max Open Interest for Perp Market={}",
-            order_base_asset_amount,
-            params.market_index
+            new_order.base_asset_amount,
+            market_index
         )?;
     }
 
@@ -476,7 +552,7 @@ pub fn place_perp_order(
         maker,
         maker_order,
         oracle_map.get_price_data(&market.oracle_id())?.price,
-        bit_flags,
+        new_order.bit_flags,
         None,
         None,
         None,
@@ -504,6 +580,205 @@ pub fn place_perp_order(
             None
         },
     })
+}
+
+/// Place a perp order without persisting it to `user.orders`.
+///
+/// The straight-to-book path: build the order, run the same preconditions,
+/// margin gate, open-interest guard, and place records `place_perp_order` runs,
+/// but write no slot and reserve no `open_bids`/`open_asks`. The caller routes
+/// the returned order through `FillTarget::Detached { reserved: false }` and
+/// rests only its remainder on the CLOB. Returns `None` on the same soft-skips
+/// as `place_perp_order` (expired `max_ts`, `TryPostOnly` that would cross).
+///
+/// The margin gate models the order's worst-case reservation on the position
+/// for the check, then reverses it, so the check is byte-for-byte as strong as
+/// `place_perp_order`'s while the order carries no reservation into the fill.
+#[allow(clippy::too_many_arguments)]
+pub fn place_ephemeral_perp_order(
+    state: &State,
+    user: &mut User,
+    user_key: Pubkey,
+    perp_market_map: &PerpMarketMap,
+    spot_market_map: &SpotMarketMap,
+    oracle_map: &mut OracleMap,
+    clock: &Clock,
+    params: OrderParams,
+    mut options: PlaceOrderOptions,
+    rev_share_order: &mut Option<&mut RevenueShareOrder>,
+) -> VelocityResult<Option<Order>> {
+    let now = clock.unix_timestamp;
+    let slot: u64 = clock.slot;
+
+    if !options.is_liquidation() {
+        validate_user_not_being_liquidated(
+            user,
+            perp_market_map,
+            spot_market_map,
+            oracle_map,
+            state.liquidation_margin_buffer_ratio,
+        )?;
+    }
+
+    validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
+
+    if options.try_expire_orders {
+        expire_orders(
+            user,
+            &user_key,
+            perp_market_map,
+            spot_market_map,
+            oracle_map,
+            now,
+            slot,
+        )?;
+    }
+
+    if user.is_reduce_only() {
+        validate!(
+            params.reduce_only,
+            ErrorCode::UserReduceOnly,
+            "order must be reduce only"
+        )?;
+    }
+
+    let market_index = params.market_index;
+
+    let Some(built) = build_perp_order(
+        state,
+        user,
+        perp_market_map,
+        spot_market_map,
+        oracle_map,
+        clock,
+        params,
+        &options,
+        rev_share_order,
+    )?
+    else {
+        return Ok(None);
+    };
+    let BuiltPerpOrder {
+        order,
+        position_index,
+        risk_increasing,
+        force_reduce_only,
+    } = built;
+
+    options.update_risk_increasing(risk_increasing);
+
+    let isolated_market_index = if user.perp_positions[position_index].is_isolated() {
+        Some(market_index)
+    } else {
+        None
+    };
+
+    // Model the worst-case reservation on the position for the margin check,
+    // then reverse it. The ephemeral order never carries a reservation into the
+    // fill: the fill unwinds nothing for it, and only the rested remainder
+    // reserves (`try_place_remainder_on_clob`). The check itself is identical to
+    // `place_perp_order`'s. On failure the whole transaction reverts, so the
+    // reversal only has to hold for the success path.
+    if options.enforce_margin_check && !options.is_liquidation() {
+        increase_open_bids_and_asks(
+            &mut user.perp_positions[position_index],
+            &order.direction,
+            order.base_asset_amount,
+            order.update_open_bids_and_asks(),
+        )?;
+        let checked = meets_place_order_margin_requirement(
+            user,
+            perp_market_map,
+            spot_market_map,
+            oracle_map,
+            options.risk_increasing,
+            isolated_market_index,
+        );
+        decrease_open_bids_and_asks(
+            &mut user.perp_positions[position_index],
+            &order.direction,
+            order.base_asset_amount,
+            order.update_open_bids_and_asks(),
+        )?;
+        checked?;
+    }
+
+    if force_reduce_only {
+        validate_order_for_force_reduce_only(
+            &order,
+            user.perp_positions[position_index].base_asset_amount,
+        )?;
+    }
+
+    let market = &perp_market_map.get_ref(&market_index)?;
+    let max_oi = market.max_open_interest;
+    if max_oi != 0 && risk_increasing {
+        let oi_plus_order = match order.direction {
+            PositionDirection::Long => market
+                .base_asset_amount_long
+                .safe_add(order.base_asset_amount.cast()?)?
+                .unsigned_abs(),
+            PositionDirection::Short => market
+                .base_asset_amount_short
+                .safe_sub(order.base_asset_amount.cast()?)?
+                .unsigned_abs(),
+        };
+
+        validate!(
+            oi_plus_order <= max_oi,
+            ErrorCode::MaxOpenInterest,
+            "Order Base Amount={} could breach Max Open Interest for Perp Market={}",
+            order.base_asset_amount,
+            market_index
+        )?;
+    }
+
+    if options.emit_place_record {
+        let (taker, taker_order, maker, maker_order) =
+            get_taker_and_maker_for_order_record(&user_key, &order);
+
+        let order_action_record = get_order_action_record(
+            now,
+            OrderAction::Place,
+            options.explanation,
+            market_index,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            taker,
+            taker_order,
+            maker,
+            maker_order,
+            oracle_map.get_price_data(&market.oracle_id())?.price,
+            order.bit_flags,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+        emit_stack::<_, { OrderActionRecord::SIZE }>(order_action_record)?;
+
+        let order_record = OrderRecord {
+            ts: now,
+            user: user_key,
+            order,
+        };
+        emit_stack::<_, { OrderRecord::SIZE }>(order_record)?;
+    }
+
+    user.update_last_active_slot(slot);
+
+    Ok(Some(order))
 }
 
 fn get_auction_params(
@@ -599,7 +874,7 @@ pub fn cancel_orders(
         }
 
         // Placed triggers live on the CLOB; their shadow slots can only be
-        // reclaimed through the CLOB removal paths (cancel_clob_order or the
+        // reclaimed through the CLOB removal paths (cancel_order_v1 or the
         // cranks), where the book and the aggregates unwind together.
         if user.orders[order_index].is_placed_on_clob() {
             continue;
@@ -756,7 +1031,7 @@ pub fn cancel_order(
     // A placed trigger's live order rests on the CLOB; the slot here is a
     // shadow whose open-order count the CLOB order carries. Cancelling the
     // shadow would strand the CLOB order and double-unwind its accounting —
-    // it must go through `cancel_clob_order` (bulk sweeps skip these slots).
+    // it must go through `cancel_order_v1` (bulk sweeps skip these slots).
     validate!(
         !user.orders[order_index].is_placed_on_clob(),
         ErrorCode::OrderPlacedOnClob,
@@ -1078,7 +1353,6 @@ pub fn fill_perp_order(
     filler_stats: &AccountLoader<UserStats>,
     makers_and_referrer: &UserMap,
     makers_and_referrer_stats: &UserStatsMap,
-    jit_maker_order_id: Option<u32>,
     clock: &Clock,
     fill_mode: FillMode,
     rev_share_escrow: &mut Option<&mut RevenueShareEscrowZeroCopyMut>,
@@ -1105,7 +1379,6 @@ pub fn fill_perp_order(
         filler_stats,
         makers_and_referrer,
         makers_and_referrer_stats,
-        jit_maker_order_id,
         clock,
         fill_mode,
         &mut router_inputs,
@@ -1128,7 +1401,17 @@ pub enum FillTarget<'a> {
     Slot(u32),
     /// An order held by the caller. Nothing is written back: the caller owns
     /// what happens to whatever the fill leaves unfilled.
-    Detached(&'a mut Order),
+    ///
+    /// `reserved` says whether the taker owns an `open_bids`/`open_asks` +
+    /// `open_orders` reservation the fill must unwind as it fills. An order
+    /// lifted off the book rested first, so it reserved: `reserved: true`. A
+    /// fresh ephemeral taker that routes straight to the book never reserved:
+    /// `reserved: false`, and the fill must not unwind exposure it never took,
+    /// or it eats a co-resident order's reservation and underflows the counter.
+    Detached {
+        order: &'a mut Order,
+        reserved: bool,
+    },
 }
 
 pub fn fill_perp_order_with_router(
@@ -1143,7 +1426,6 @@ pub fn fill_perp_order_with_router(
     filler_stats: &AccountLoader<UserStats>,
     makers_and_referrer: &UserMap,
     makers_and_referrer_stats: &UserStatsMap,
-    jit_maker_order_id: Option<u32>,
     clock: &Clock,
     fill_mode: FillMode,
     router: &mut crate::math::router::RouterFillInputs,
@@ -1159,17 +1441,27 @@ pub fn fill_perp_order_with_router(
     let user_stats = &mut load_mut!(user_stats)?;
 
     // A detached order is the caller's own; a slot order is read out here and
-    // written back after the fill.
-    let (order_index, mut order) = match target {
+    // written back after the fill. `taker_reserved` says whether the fill must
+    // unwind an `open_bids`/`open_asks` + `open_orders` reservation as it fills:
+    // a slot order reserved at placement, a detached order says for itself.
+    // For a detached order, keep the caller's handle so the fill's progress is
+    // written back to it, exactly as a slot order is written back to its slot.
+    // The rest leg then reads the remainder off the same order.
+    let mut detached: Option<&mut Order> = None;
+    let (order_index, taker_reserved, mut order) = match target {
         FillTarget::Slot(order_id) => {
             let index = user
                 .orders
                 .iter()
                 .position(|order| order.order_id == order_id && order.status == OrderStatus::Open)
                 .ok_or_else(print_error!(ErrorCode::OrderDoesNotExist))?;
-            (Some(index), user.orders[index])
+            (Some(index), true, user.orders[index])
         }
-        FillTarget::Detached(order) => (None, *order),
+        FillTarget::Detached { order, reserved } => {
+            let snapshot = *order;
+            detached = Some(order);
+            (None, reserved, snapshot)
+        }
     };
 
     let (order_status, market_index, order_market_type, order_reduce_only) =
@@ -1453,7 +1745,6 @@ pub fn fill_perp_order_with_router(
         state.perp_fee_structure.flat_filler_fee,
         oracle_price,
         exchange_match_fills_allowed,
-        jit_maker_order_id,
         now,
         slot,
     )?;
@@ -1501,7 +1792,12 @@ pub fn fill_perp_order_with_router(
 
     let should_expire_order = should_expire_order(&order, now)?;
 
-    let position_index = get_position_index(&user.perp_positions, order.market_index)?;
+    // An ephemeral taker holds only the empty position `build_perp_order` added,
+    // which `get_position_index` skips as available. `add_new_position` reuses
+    // that same slot, so the fill settles into it. A slot order always has a
+    // findable position from its placement, so this never fires for one.
+    let position_index = get_position_index(&user.perp_positions, order.market_index)
+        .or_else(|_| add_new_position(&mut user.perp_positions, order.market_index))?;
     let existing_base_asset_amount = user.perp_positions[position_index].base_asset_amount;
     let should_cancel_reduce_only = should_cancel_reduce_only_order(
         &order,
@@ -1579,13 +1875,17 @@ pub fn fill_perp_order_with_router(
         referrer_is_accelerated,
         state.vamm_maker_rebate_enabled(),
         state.promo_fee_tier,
+        taker_reserved,
     )?;
     // A slot order goes back where it came from, so everything downstream —
     // the reduce-only check, and the caller's own lookup by order id — sees
-    // what the fill did to it. A detached order is the caller's; nothing here
-    // owns it.
+    // what the fill did to it. A detached order is the caller's; its progress
+    // is written back to the handle it passed in.
     if let Some(order_index) = order_index {
         user.orders[order_index] = order;
+    }
+    if let Some(detached) = detached {
+        *detached = order;
     }
 
     if base_asset_amount != 0 {
@@ -1813,7 +2113,6 @@ fn get_maker_orders_info(
     filler_reward: u64,
     oracle_price: i64,
     exchange_match_fills_allowed: bool,
-    jit_maker_order_id: Option<u32>,
     now: i64,
     slot: u64,
 ) -> VelocityResult<Vec<MakerOrderInfo>> {
@@ -1917,13 +2216,6 @@ fn get_maker_orders_info(
 
             if !are_orders_same_market_but_different_sides(maker_order, taker_order) {
                 continue;
-            }
-
-            if let Some(jit_maker_order_id) = jit_maker_order_id {
-                // if jit maker order id exists, must only use that order
-                if maker_order.order_id != jit_maker_order_id {
-                    continue;
-                }
             }
 
             let breaches_oracle_price_limits = {
@@ -2227,12 +2519,20 @@ fn fulfill_perp_order(
     referrer_is_accelerated: bool,
     vamm_maker_rebate: bool,
     promo_fee_tier: u8,
+    // Whether the taker owns an `open_bids`/`open_asks` + `open_orders`
+    // reservation the fill must unwind. False for a fresh ephemeral taker.
+    taker_reserved: bool,
 ) -> VelocityResult<(u64, u64)> {
     let market_index = user_order.market_index;
 
     let user_order_position_decreasing =
         determine_if_user_order_is_position_decreasing(user, market_index, user_order)?;
-    let user_is_isolated_position = user.get_perp_position(market_index)?.is_isolated();
+    // A fresh ephemeral taker has no position yet: it opens a cross-margin one,
+    // so a missing position is not isolated.
+    let user_is_isolated_position = user
+        .get_perp_position(market_index)
+        .map(|position| position.is_isolated())
+        .unwrap_or(false);
 
     // A risk-increasing taker whose floor cannot be verified would execute
     // its fulfillment legs and then revert at the buffered-floor gate below:
@@ -2366,6 +2666,7 @@ fn fulfill_perp_order(
         vamm_maker_rebate,
         promo_fee_tier,
         builder_fee_allowed,
+        taker_reserved,
         &mut maker_fills,
     )?;
     fulfill_perp_order_post_checks(
@@ -2779,8 +3080,11 @@ fn determine_if_user_order_is_position_decreasing(
     market_index: u16,
     order: &Order,
 ) -> VelocityResult<bool> {
-    let position_index = get_position_index(&user.perp_positions, market_index)?;
-    let position_base_asset_amount_before = user.perp_positions[position_index].base_asset_amount;
+    // A fresh ephemeral taker has no position yet: opening one is not
+    // decreasing, so a missing position reads as base zero.
+    let position_base_asset_amount_before = get_position_index(&user.perp_positions, market_index)
+        .map(|position_index| user.perp_positions[position_index].base_asset_amount)
+        .unwrap_or(0);
     is_order_position_reducing(
         &order.direction,
         order.get_base_asset_amount_unfilled(Some(position_base_asset_amount_before))?,
@@ -3006,6 +3310,9 @@ fn settle_amm_house_fill(
     vamm_maker_rebate: bool,
     promo_fee_tier: u8,
     builder_fee_allowed: bool,
+    // Whether the taker owns an `open_bids`/`open_asks` reservation this fill
+    // must unwind. False for a fresh ephemeral taker that never reserved.
+    taker_reserved: bool,
     // Filler reward already paid by earlier legs of this same fill. The
     // time-based component of the reward is size-independent, so it is a
     // per-fill allowance the legs draw down rather than one each.
@@ -3190,12 +3497,17 @@ fn settle_amm_house_fill(
                 .map(|o| o.add_bit_flag(RevenueShareOrderBitFlag::Completed));
         }
     }
-    decrease_open_bids_and_asks(
-        &mut taker.perp_positions[taker_position_index],
-        &taker_direction,
-        fill.base_filled,
-        taker_order.update_open_bids_and_asks(),
-    )?;
+    // Only unwind a reservation the taker actually took. A fresh ephemeral
+    // taker never reserved, and unwinding here would eat a co-resident order's
+    // `open_bids`/`open_asks`.
+    if taker_reserved {
+        decrease_open_bids_and_asks(
+            &mut taker.perp_positions[taker_position_index],
+            &taker_direction,
+            fill.base_filled,
+            taker_order.update_open_bids_and_asks(),
+        )?;
+    }
 
     let (taker_record_key, taker_record_order, maker_record_key, maker_record_order) =
         get_taker_and_maker_for_order_record(taker_key, &taker_order);
@@ -3313,6 +3625,9 @@ fn settle_dlob_match_fill(
     slot: u64,
     promo_fee_tier: u8,
     builder_fee_allowed: bool,
+    // Whether the taker owns an `open_bids`/`open_asks` reservation this fill
+    // must unwind. False for a fresh ephemeral taker that never reserved.
+    taker_reserved: bool,
     // Filler reward already paid by earlier legs of this same fill. The
     // time-based component of the reward is size-independent, so it is a
     // per-fill allowance the legs draw down rather than one each.
@@ -3329,7 +3644,6 @@ fn settle_dlob_match_fill(
         .ok_or_else(print_error!(ErrorCode::DefaultError))?;
     let maker_position_index = get_position_index(&maker_user.perp_positions, market.market_index)?;
     let maker_direction = maker_user.orders[m_idx].direction;
-    let maker_order_has_jit_flag = maker_user.orders[m_idx].is_jit_maker();
 
     let taker_price_validate =
         taker_price_for_match.ok_or_else(print_error!(ErrorCode::DefaultError))?;
@@ -3541,12 +3855,17 @@ fn settle_dlob_match_fill(
                 .map(|o| o.add_bit_flag(RevenueShareOrderBitFlag::Completed));
         }
     }
-    decrease_open_bids_and_asks(
-        &mut taker.perp_positions[taker_position_index],
-        &taker_direction,
-        fill.base_filled,
-        taker_order.update_open_bids_and_asks(),
-    )?;
+    // Only unwind a reservation the taker actually took. A fresh ephemeral
+    // taker never reserved, and unwinding here would eat a co-resident order's
+    // `open_bids`/`open_asks`.
+    if taker_reserved {
+        decrease_open_bids_and_asks(
+            &mut taker.perp_positions[taker_position_index],
+            &taker_direction,
+            fill.base_filled,
+            taker_order.update_open_bids_and_asks(),
+        )?;
+    }
 
     // Maker open-bids/asks bookkeeping. commit_fill already
     // updated maker order's filled counters; we only need open
@@ -3563,8 +3882,6 @@ fn settle_dlob_match_fill(
 
     let order_action_explanation = if is_liquidation {
         OrderActionExplanation::Liquidation
-    } else if maker_order_has_jit_flag {
-        OrderActionExplanation::OrderFilledWithMatchJit
     } else {
         OrderActionExplanation::OrderFilledWithMatch
     };
@@ -3676,6 +3993,9 @@ pub(crate) fn settle_external_match_fill(
     slot: u64,
     promo_fee_tier: u8,
     builder_fee_allowed: bool,
+    // Whether the taker owns an `open_bids`/`open_asks` reservation this fill
+    // must unwind. False for a fresh ephemeral taker that never reserved.
+    taker_reserved: bool,
     // Filler reward already paid by earlier legs of this same fill. The
     // time-based component of the reward is size-independent, so it is a
     // per-fill allowance the legs draw down rather than one each.
@@ -3862,18 +4182,29 @@ pub(crate) fn settle_external_match_fill(
                 .map(|o| o.add_bit_flag(RevenueShareOrderBitFlag::Completed));
         }
     }
-    decrease_open_bids_and_asks(
-        &mut taker.perp_positions[taker_position_index],
-        &taker_direction,
-        base_filled,
-        taker_order.update_open_bids_and_asks(),
-    )?;
-    decrease_open_bids_and_asks(
-        &mut maker_user.perp_positions[maker_position_index],
-        &maker_direction,
-        base_filled,
-        maker_aggregates_tracked,
-    )?;
+    // Only unwind a reservation the taker actually took. A fresh ephemeral
+    // taker never reserved, and unwinding here would eat a co-resident order's
+    // `open_bids`/`open_asks`.
+    if taker_reserved {
+        decrease_open_bids_and_asks(
+            &mut taker.perp_positions[taker_position_index],
+            &taker_direction,
+            base_filled,
+            taker_order.update_open_bids_and_asks(),
+        )?;
+    }
+    // The maker's leg is the quoter's own claim about a user it does not own,
+    // so it is held to that user's reservation rather than clamped to it. This
+    // is the single place every external settlement passes through — the
+    // router fill, both cross cranks — which is what stops a caller from
+    // settling one without the bound.
+    if maker_aggregates_tracked {
+        position::release_reserved_open_base(
+            &mut maker_user.perp_positions[maker_position_index],
+            &maker_direction,
+            base_filled,
+        )?;
+    }
 
     let order_action_explanation = if is_liquidation {
         OrderActionExplanation::Liquidation
@@ -3997,6 +4328,10 @@ fn fulfill_perp_order_router_pass(
     // charges no builder fee. `fulfill_perp_order` computes it and documents
     // the rule.
     builder_fee_allowed: bool,
+    // Whether the taker owns an `open_bids`/`open_asks` + `open_orders`
+    // reservation the fill must unwind. False for a fresh ephemeral taker that
+    // never reserved. See `FillTarget::Detached`.
+    taker_reserved: bool,
     maker_fills: &mut BTreeMap<Pubkey, (i64, bool)>,
 ) -> VelocityResult<(u64, u64)> {
     use crate::{
@@ -4013,7 +4348,10 @@ fn fulfill_perp_order_router_pass(
     let market_index = taker_order.market_index;
 
     // ---- Taker order fields (mirrors the step's capture). ----
-    let taker_position_index = get_position_index(&taker.perp_positions, market_index)?;
+    // An ephemeral taker holds only the empty position `build_perp_order` added;
+    // `add_new_position` reuses that slot so the fill can settle into it.
+    let taker_position_index = get_position_index(&taker.perp_positions, market_index)
+        .or_else(|_| add_new_position(&mut taker.perp_positions, market_index))?;
     let taker_existing_position_before =
         taker.perp_positions[taker_position_index].base_asset_amount;
     let taker_existing_position_params_before = taker.perp_positions[taker_position_index]
@@ -4032,11 +4370,15 @@ fn fulfill_perp_order_router_pass(
         return Ok((0, 0));
     }
 
-    // Resolves a wire user reference against the loaded set. Built here
-    // rather than at the settle loop below because the CLOB depth clamp
-    // needs it too, and the index is a snapshot of identities that no fill
-    // changes.
-    let user_ref_index = makers_and_referrer.user_ref_index()?;
+    // Resolves a wire user reference against the loaded set. Only an external
+    // quoter's balance change names a wire user, so a fill with no external
+    // books never queries this. Building it there loads every user, so skip it
+    // when there are no external books to resolve for.
+    let user_ref_index = if external_books.is_empty() {
+        std::collections::BTreeMap::new()
+    } else {
+        makers_and_referrer.user_ref_index()?
+    };
     let taker_ref = crate::state::prop_amm::ClobUserRefV0 {
         authority: taker.authority,
         sub_account_id: taker.sub_account_id.into(),
@@ -4077,7 +4419,15 @@ fn fulfill_perp_order_router_pass(
     // below still holds.
     //
     // Custom: a PropAMM's depth is never margin-reserved, so the cap is what
-    // the quoted user's account supports right now.
+    // the quoted user's account supports right now. Its declared oracle band,
+    // if it has one, cuts the same ladder: levels outside the band are dropped
+    // before the split reaches them, so a maker's own ceiling costs it
+    // allocation instead of failing a fill that carries other makers. The
+    // response is still held to the band afterwards — the trim is what keeps an
+    // honest quoter inside it, the check is what catches one that is not.
+    //
+    // The band always cuts the taker-favourable end of the ladder, because that
+    // is the end that prices against the maker.
     //
     // A CLOB needs no clamp: its makers are sized before the books are
     // quoted and the book passes over anyone out of room, mid-book, so the
@@ -4087,6 +4437,16 @@ fn fulfill_perp_order_router_pass(
     //
     // Runs before this market's `RefMut` is taken, because the margin walk
     // values every market the quoted user touches.
+    let (band_oracle_price, market_margin_ratio_initial) = {
+        let market = perp_market_map.get_ref(&market_index)?;
+        let oracle_id = market.oracle_id();
+        let margin_ratio_initial = market.margin_ratio_initial;
+        drop(market);
+        (
+            oracle_map.get_price_data(&oracle_id)?.price,
+            margin_ratio_initial,
+        )
+    };
     let clamped_books: Vec<Option<Vec<PriceLevel>>> = (0..external_books.len())
         .map(|i| -> VelocityResult<Option<Vec<PriceLevel>>> {
             let cap = match router.executor.quoter_type(i) {
@@ -4115,16 +4475,30 @@ fn fulfill_perp_order_router_pass(
                 }
                 QuoterType::Clob | QuoterType::Vamm => return Ok(None),
             };
-            let depth = external_books[i]
-                .levels
+            let band = router.executor.oracle_band(i, market_margin_ratio_initial);
+            let banded = external_books[i].levels.iter().try_fold(
+                Vec::new(),
+                |mut kept, level| -> VelocityResult<Vec<PriceLevel>> {
+                    if !crate::math::orders::limit_price_breaches_maker_oracle_price_bands(
+                        level.price,
+                        maker_direction,
+                        band_oracle_price,
+                        band,
+                    )? {
+                        kept.push(*level);
+                    }
+                    Ok(kept)
+                },
+            )?;
+            let banded_out = banded.len() != external_books[i].levels.len();
+            let depth = banded
                 .iter()
                 .fold(0u64, |total, level| total.saturating_add(level.size));
             if depth <= cap {
-                return Ok(None);
+                return Ok(banded_out.then_some(banded));
             }
             let mut remaining = cap;
-            let levels = external_books[i]
-                .levels
+            let levels = banded
                 .iter()
                 .map_while(|level| {
                     if remaining == 0 {
@@ -4417,7 +4791,9 @@ fn fulfill_perp_order_router_pass(
         if fill.base_filled == 0 {
             continue;
         }
-        mark_settled(&router_maker.key);
+        if withheld_depth {
+            mark_settled(&router_maker.key);
+        }
         validate!(
             fill.base_filled <= allocation.base,
             ErrorCode::DefaultError,
@@ -4475,6 +4851,7 @@ fn fulfill_perp_order_router_pass(
             slot,
             promo_fee_tier,
             builder_fee_allowed,
+            taker_reserved,
             &mut filler_reward_paid,
         )?;
         total_base = total_base.safe_add(base_filled)?;
@@ -4553,6 +4930,7 @@ fn fulfill_perp_order_router_pass(
             vamm_maker_rebate,
             promo_fee_tier,
             builder_fee_allowed,
+            taker_reserved,
             &mut filler_reward_paid,
         )?;
         total_base = total_base.safe_add(base_filled)?;
@@ -4662,8 +5040,13 @@ fn fulfill_perp_order_router_pass(
             if change.base_size == 0 {
                 continue;
             }
+            // The count of orders this change completed, walked once for both
+            // the band check and the open-order decrement.
+            let completed = response.completed_count(change_index);
             let maker_key = resolve_user(&change.user)?;
-            mark_settled(&maker_key);
+            if withheld_depth {
+                mark_settled(&maker_key);
+            }
             validate!(
                 subjects.permits(&change.user, &maker_key, &taker_ref, &protocol_authority),
                 ErrorCode::QuoterSubjectNotPermitted,
@@ -4676,7 +5059,7 @@ fn fulfill_perp_order_router_pass(
                     &quoted,
                     change.base_size,
                     change.quote_size,
-                    merged_orders(response.completed_count(change_index))?,
+                    merged_orders(completed)?,
                 )?,
                 ErrorCode::QuoterFillOffQuote,
                 "quoter {} priced user {} outside its quoted band",
@@ -4698,7 +5081,7 @@ fn fulfill_perp_order_router_pass(
                     change_price,
                     maker_direction,
                     oracle_price,
-                    market.margin_ratio_initial,
+                    router.executor.oracle_band(i, market.margin_ratio_initial),
                 )?,
                 ErrorCode::QuoterFillOffQuote,
                 "quoter {} filled user {} at {} outside the oracle band",
@@ -4746,6 +5129,7 @@ fn fulfill_perp_order_router_pass(
                 slot,
                 promo_fee_tier,
                 builder_fee_allowed,
+                taker_reserved,
                 &mut filler_reward_paid,
             )?;
             total_base = total_base.safe_add(base_filled)?;
@@ -4760,10 +5144,10 @@ fn fulfill_perp_order_router_pass(
                 maker.perp_positions[maker_position_index].is_isolated(),
             )?;
             if maker_aggregates_tracked {
-                let position = &mut maker.perp_positions[maker_position_index];
-                position.open_orders = position
-                    .open_orders
-                    .saturating_sub(response.completed_count(change_index).cast()?);
+                position::release_reserved_open_orders(
+                    &mut maker.perp_positions[maker_position_index],
+                    completed.cast()?,
+                )?;
                 for clob_order_id in response.completed_for(change_index) {
                     maker.decrement_open_orders(false);
                     // A fully-consumed order may be a placed trigger's live
@@ -4794,9 +5178,8 @@ fn fulfill_perp_order_router_pass(
                 // A cull is a remainder the book refused to let rest, so it is
                 // below the book's own minimum — and the attach requires that
                 // minimum to be at or under the market's. The release below
-                // saturates, so an oversized figure here would collapse the
-                // maker's whole reservation for this market and free the margin
-                // backing orders that are still resting.
+                // holds the figure to the maker's whole reservation; this holds
+                // it to the one order a cull can be about.
                 //
                 // A market with no minimum of its own bounds nothing, which is
                 // the same case the attach lets through.
@@ -4811,14 +5194,15 @@ fn fulfill_perp_order_router_pass(
                 )?;
                 let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
                 let maker_position_index = get_position_index(&maker.perp_positions, market_index)?;
-                decrease_open_bids_and_asks(
+                position::release_reserved_open_base(
                     &mut maker.perp_positions[maker_position_index],
                     &maker_direction,
                     cancelled.base_asset_amount,
-                    true,
                 )?;
-                let position = &mut maker.perp_positions[maker_position_index];
-                position.open_orders = position.open_orders.saturating_sub(1);
+                position::release_reserved_open_orders(
+                    &mut maker.perp_positions[maker_position_index],
+                    1,
+                )?;
                 maker.decrement_open_orders(false);
                 maker.release_placed_trigger_slot(
                     market_index,
@@ -4882,7 +5266,10 @@ fn fulfill_perp_order_router_pass(
         .update_volume_24h(total_quote, taker_direction, now)?;
 
     // Once-per-order taker open-orders counter (mirrors the step's finalize).
-    if taker_order.get_base_asset_amount_unfilled(None)? == 0 {
+    // Only a taker that reserved at placement unwinds a count here. A fresh
+    // ephemeral taker never incremented, so decrementing would underflow the
+    // per-position `u8` and wrongly drop the user-level count.
+    if taker_reserved && taker_order.get_base_asset_amount_unfilled(None)? == 0 {
         taker.decrement_open_orders(taker_order.has_auction());
         taker.perp_positions[taker_position_index].open_orders -= 1;
     }
@@ -5265,15 +5652,20 @@ pub fn cross_match(
     // read); a Custom side is bounded by its pre-execute margin clamp and the
     // surplus floor instead. The two ladders come from the same quote the
     // execute below fills, so the boundary they show is the one it hits.
-    {
-        let buy_asks =
-            executor.resting_levels(buy_index, crate::state::prop_amm::Direction::Long, size)?;
-        let sell_bids =
-            executor.resting_levels(sell_index, crate::state::prop_amm::Direction::Short, size)?;
-        if let (Some(buy_asks), Some(sell_bids)) = (buy_asks, sell_bids) {
-            size = size.min(crossing_prefix_size(&buy_asks, &sell_bids));
-        }
+    // Read each side's ladder once, here. The legs settle against these same
+    // ladders below rather than re-quoting the books: a leg fills a prefix of
+    // what it reads, so the ladder read at `size` covers the smaller
+    // `leg_size`, and the buy leg consumes only its own book, leaving the sell
+    // ladder unchanged for the second leg. A Custom side reads `None` and its
+    // leg is bounded by its margin clamp and the surplus floor instead.
+    let buy_asks =
+        executor.resting_levels(buy_index, crate::state::prop_amm::Direction::Long, size)?;
+    let sell_bids =
+        executor.resting_levels(sell_index, crate::state::prop_amm::Direction::Short, size)?;
+    if let (Some(buy_asks), Some(sell_bids)) = (&buy_asks, &sell_bids) {
+        size = size.min(crossing_prefix_size(buy_asks, sell_bids));
     }
+    let leg_ladders = [buy_asks, sell_bids];
 
     let mut leg_totals: [(u64, u64); 2] = [(0, 0); 2];
     let legs = [
@@ -5345,13 +5737,13 @@ pub fn cross_match(
             PositionDirection::Short => crate::state::prop_amm::Direction::Short,
         };
         let subjects = executor.subjects(book_index, cpi_direction, leg_size)?;
-        // Read before the CPI, because execute consumes the orders it is read
-        // from. A cross has no `quote_v0` leg to bind against (the crank's
-        // account list carries only the execute surface), so the run these
-        // orders rest at stands in as the quote. A Custom entry offers none,
-        // and there it is the entry's single consenting `user` plus the
-        // surplus check that bound the leg.
-        let resting = executor.resting_levels(book_index, cpi_direction, leg_size)?;
+        // The ladder this leg settles against, read once above before any
+        // execute consumed a book. A cross has no `quote_v0` leg to bind
+        // against (the crank's account list carries only the execute surface),
+        // so the run these orders rest at stands in as the quote. A Custom
+        // entry offers none, and there it is the entry's single consenting
+        // `user` plus the surplus check that bound the leg.
+        let resting = leg_ladders[leg].as_ref();
         let located = executor.execute(book_index, cpi_direction, leg_size)?;
         let data = located.borrow()?;
         let response = located.execute_response(&data)?;
@@ -5381,7 +5773,7 @@ pub fn cross_match(
         // their own size with no step quantization.
         let quoted = match resting {
             Some(levels) if leg_base > 0 => {
-                Some(crate::math::router::quoted_prefix(&levels, 1, leg_base)?)
+                Some(crate::math::router::quoted_prefix(levels, 1, leg_base)?)
             }
             _ => None,
         };
@@ -5403,6 +5795,9 @@ pub fn cross_match(
             if change.base_size == 0 {
                 continue;
             }
+            // The count of orders this change completed, walked once for both
+            // the band check and the open-order decrement.
+            let completed = response.completed_count(change_index);
             let maker_key = resolve_user(&change.user)?;
             validate!(
                 subjects.permits(&change.user, &maker_key, &taker_ref, &protocol_authority),
@@ -5418,7 +5813,7 @@ pub fn cross_match(
                         quoted,
                         change.base_size,
                         change.quote_size,
-                        merged_orders(response.completed_count(change_index))?,
+                        merged_orders(completed)?,
                     )?,
                     ErrorCode::QuoterFillOffQuote,
                     "quoter {} priced user {} outside the book it swept",
@@ -5438,7 +5833,7 @@ pub fn cross_match(
                     change_price,
                     maker_direction,
                     oracle_price,
-                    market.margin_ratio_initial,
+                    executor.oracle_band(book_index, market.margin_ratio_initial),
                 )?,
                 ErrorCode::QuoterFillOffQuote,
                 "quoter {} filled user {} at {} outside the oracle band",
@@ -5480,6 +5875,8 @@ pub fn cross_match(
                 // The crank's taker is the protocol User. It has no builder
                 // escrow, so there is no builder fee to allow.
                 false,
+                // The ephemeral taker never reserved, so nothing to unwind.
+                false,
                 &mut filler_reward_paid,
             )?;
             leg_totals[leg].0 = leg_totals[leg].0.safe_add(base_filled)?;
@@ -5494,10 +5891,10 @@ pub fn cross_match(
                 maker.perp_positions[maker_position_index].is_isolated(),
             )?;
             if maker_aggregates_tracked {
-                let position = &mut maker.perp_positions[maker_position_index];
-                position.open_orders = position
-                    .open_orders
-                    .saturating_sub(response.completed_count(change_index).cast()?);
+                position::release_reserved_open_orders(
+                    &mut maker.perp_positions[maker_position_index],
+                    completed.cast()?,
+                )?;
                 for clob_order_id in response.completed_for(change_index) {
                     maker.decrement_open_orders(false);
                     maker.release_placed_trigger_slot(
@@ -5521,9 +5918,8 @@ pub fn cross_match(
                 // A cull is a remainder the book refused to let rest, so it is
                 // below the book's own minimum — and the attach requires that
                 // minimum to be at or under the market's. The release below
-                // saturates, so an oversized figure here would collapse the
-                // maker's whole reservation for this market and free the margin
-                // backing orders that are still resting.
+                // holds the figure to the maker's whole reservation; this holds
+                // it to the one order a cull can be about.
                 //
                 // A market with no minimum of its own bounds nothing, which is
                 // the same case the attach lets through.
@@ -5538,14 +5934,15 @@ pub fn cross_match(
                 )?;
                 let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
                 let maker_position_index = get_position_index(&maker.perp_positions, market_index)?;
-                decrease_open_bids_and_asks(
+                position::release_reserved_open_base(
                     &mut maker.perp_positions[maker_position_index],
                     &maker_direction,
                     cancelled.base_asset_amount,
-                    true,
                 )?;
-                let position = &mut maker.perp_positions[maker_position_index];
-                position.open_orders = position.open_orders.saturating_sub(1);
+                position::release_reserved_open_orders(
+                    &mut maker.perp_positions[maker_position_index],
+                    1,
+                )?;
                 maker.decrement_open_orders(false);
                 maker.release_placed_trigger_slot(
                     market_index,
@@ -6128,6 +6525,345 @@ pub fn trigger_order(
     Ok(true)
 }
 
+/// Fire a DLOB trigger order and hand back the now-live order for the caller to
+/// route straight to the book.
+///
+/// This is the v1 trigger path. Unlike [`trigger_order`], it does not leave the
+/// fired order resting live in `User.orders` for a later fill crank to find. It
+/// validates the trigger, transforms a copy of the slot's order into a live
+/// market order, frees the slot, pays the keeper, and returns the order as a
+/// detached value. The caller fills it against the book and rests only the
+/// remainder, the same straight-to-book shape a v1 place takes. The armed slot
+/// reserved no exposure, so freeing it releases only the order count; the
+/// remainder the caller rests re-adds one for its CLOB order.
+///
+/// Returns `None` when there is no payable work: the order is already
+/// triggered, or a risk-increasing trigger on a failing account is cancelled
+/// instead of fired. The caller skips the fill and the reservoir payout on
+/// `None`, so a failing account's cancel cannot drain the market reservoir.
+#[allow(clippy::too_many_arguments)]
+pub fn trigger_and_route_order(
+    order_id: u32,
+    state: &State,
+    user: &AccountLoader<User>,
+    user_stats: &AccountLoader<UserStats>,
+    spot_market_map: &SpotMarketMap,
+    perp_market_map: &PerpMarketMap,
+    oracle_map: &mut OracleMap,
+    filler: &AccountLoader<User>,
+    clock: &Clock,
+) -> VelocityResult<Option<Order>> {
+    let now = clock.unix_timestamp;
+    let slot = clock.slot;
+
+    let filler_key = filler.key();
+    let user_key = user.key();
+    let user = &mut load_mut!(user)?;
+    let user_stats_loader = user_stats;
+    let user_stats = load!(user_stats_loader)?;
+
+    let order_index = user
+        .orders
+        .iter()
+        .position(|order| order.order_id == order_id && order.status == OrderStatus::Open)
+        .ok_or_else(print_error!(ErrorCode::OrderDoesNotExist))?;
+
+    let (order_status, market_index, market_type) =
+        get_struct_values!(user.orders[order_index], status, market_index, market_type);
+
+    validate!(
+        order_status == OrderStatus::Open,
+        ErrorCode::OrderNotOpen,
+        "Order not open"
+    )?;
+    validate!(
+        user.orders[order_index].must_be_triggered(),
+        ErrorCode::OrderNotTriggerable,
+        "Order is not triggerable"
+    )?;
+    // A placed trigger's slot reads as untriggered to stay out of every DLOB
+    // matching path; its live order already rests on the CLOB.
+    validate!(
+        !user.orders[order_index].is_placed_on_clob(),
+        ErrorCode::OrderPlacedOnClob,
+        "Order is placed on the CLOB"
+    )?;
+
+    if user.orders[order_index].triggered() {
+        msg!("Order is already triggered");
+        return Ok(None);
+    }
+
+    validate!(
+        market_type == MarketType::Perp,
+        ErrorCode::InvalidOrderMarketType,
+        "Order must be a perp order"
+    )?;
+
+    validate_user_not_being_liquidated(
+        user,
+        perp_market_map,
+        spot_market_map,
+        oracle_map,
+        state.liquidation_margin_buffer_ratio,
+    )?;
+    validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
+
+    // Validate market state and oracle, and price the trigger. The market
+    // borrow is dropped before the margin calc, which walks every market
+    // itself.
+    let (oracle_price_data, oracle_price, trigger_price) = {
+        let perp_market = perp_market_map.get_ref(&market_index)?;
+        validate!(
+            !perp_market.is_operation_paused(PerpOperation::Fill),
+            ErrorCode::MarketFillOrderPaused,
+            "Market fills paused",
+        )?;
+        // A trigger starts the order's auction and pays the flat reward, both
+        // forbidden once a market is in settlement. Without this a keeper could
+        // fire a dormant order on a settling market for the reward (OtterSec #86).
+        validate!(
+            !perp_market.is_in_settlement(now),
+            ErrorCode::MarketPlaceOrderPaused,
+            "Market is in settlement mode",
+        )?;
+
+        let (oracle_price_data, oracle_validity) = oracle_map.get_price_data_and_validity(
+            MarketType::Perp,
+            perp_market.market_index,
+            &perp_market.oracle_id(),
+            perp_market
+                .market_stats
+                .historical_oracle_data
+                .last_oracle_price_twap,
+            perp_market.get_max_confidence_interval_multiplier()?,
+            perp_market.oracle_slot_delay_override,
+            perp_market.oracle_low_risk_slot_delay_override,
+            None,
+        )?;
+        let is_oracle_valid =
+            is_oracle_valid_for_action(oracle_validity, Some(VelocityAction::TriggerOrder))?;
+        validate!(is_oracle_valid, ErrorCode::InvalidOracle)?;
+        let oracle_price = oracle_price_data.price;
+
+        let oracle_too_divergent_with_twap_5min = is_oracle_too_divergent_with_twap_5min(
+            oracle_price_data.price,
+            perp_market
+                .market_stats
+                .historical_oracle_data
+                .last_oracle_price_twap_5min,
+            state
+                .oracle_guard_rails
+                .max_oracle_twap_5min_percent_divergence()
+                .cast()?,
+        )?;
+        validate!(
+            !oracle_too_divergent_with_twap_5min,
+            ErrorCode::OrderBreachesOraclePriceLimits,
+            "oracle price vs twap too divergent"
+        )?;
+
+        let trigger_price =
+            perp_market.get_trigger_price(oracle_price, now, state.use_median_trigger_price())?;
+        (*oracle_price_data, oracle_price, trigger_price)
+    };
+
+    let can_trigger = order_satisfies_trigger_condition(&user.orders[order_index], trigger_price)?;
+    validate!(
+        can_trigger,
+        ErrorCode::OrderDidNotSatisfyTriggerCondition,
+        "Order did not satisfy trigger condition. trigger_price: {} oracle_price: {} trigger_condition: {:?}",
+        trigger_price,
+        &user.orders[order_index].trigger_price,
+        &user.orders[order_index].trigger_condition
+    )?;
+
+    // Transform a copy of the slot's order into the live market order. The copy,
+    // not the slot, so freeing the slot never reserves exposure the ephemeral
+    // fill does not rest.
+    let mut fired = user.orders[order_index];
+    {
+        let perp_market = perp_market_map.get_ref(&market_index)?;
+        update_trigger_order_params(
+            &mut fired,
+            &oracle_price_data,
+            slot,
+            // ~8s minimum, in wall clock 400ms units
+            Millis::from_secs(8)
+                .div_periods(Millis::UNIT)
+                .min(u8::MAX as u64) as u8,
+            Some(&perp_market),
+            state.slot_clock(),
+        )?;
+    }
+
+    // Whether the fired order increases risk: apply its worst-case exposure to
+    // the position, measure, and take it straight back. The ephemeral fill does
+    // not rest it, so the reservation must not linger.
+    let (_, worst_case_before) = user
+        .get_perp_position(market_index)?
+        .worst_case_liability_value(oracle_price)?;
+    let update_open_bids_and_asks = fired.update_open_bids_and_asks();
+    {
+        let position = user.get_perp_position_mut(market_index)?;
+        increase_open_bids_and_asks(
+            position,
+            &fired.direction,
+            fired.base_asset_amount,
+            update_open_bids_and_asks,
+        )?;
+    }
+    let (_, worst_case_after) = user
+        .get_perp_position(market_index)?
+        .worst_case_liability_value(oracle_price)?;
+    {
+        let position = user.get_perp_position_mut(market_index)?;
+        decrease_open_bids_and_asks(
+            position,
+            &fired.direction,
+            fired.base_asset_amount,
+            update_open_bids_and_asks,
+        )?;
+    }
+    let is_risk_increasing = worst_case_after > worst_case_before;
+
+    // A risk-increasing trigger on a failing account cancels instead of firing.
+    // The same gate `trigger_order` runs: initial margin, buffered equity
+    // floor, and the authority-wide equity breaker, before any reward. An
+    // unverifiable floor rejects rather than cancels, since a cancel is
+    // irreversible.
+    if is_risk_increasing && !fired.reduce_only {
+        let margin_calc = calculate_margin_requirement_and_total_collateral_and_liability_info(
+            user,
+            perp_market_map,
+            spot_market_map,
+            oracle_map,
+            MarginContext::standard(MarginRequirementType::Initial),
+        )?;
+        let net_equity =
+            calculate_net_equity_for_floor(user, perp_market_map, spot_market_map, oracle_map)?;
+        if let Some(net_equity) = net_equity {
+            validate!(
+                net_equity.all_oracles_valid,
+                ErrorCode::InvalidOracle,
+                "cannot verify equity floor {} + buffer {} with an invalid oracle (authority {} subaccount {})",
+                user.equity_floor,
+                user.equity_floor_buffer,
+                user.authority,
+                user.sub_account_id
+            )?;
+        }
+        if !margin_calc.meets_margin_requirement()
+            || net_equity.is_some_and(|net_equity| !net_equity.clears_buffered_floor(user))
+            || user_stats.is_equity_breaker_tripped()
+        {
+            cancel_order(
+                order_index,
+                user,
+                &user_key,
+                perp_market_map,
+                spot_market_map,
+                oracle_map,
+                now,
+                slot,
+                OrderActionExplanation::InsufficientFreeCollateral,
+                Some(&filler_key),
+                0,
+                false,
+            )?;
+            user.update_last_active_slot(slot);
+            drop(user_stats);
+            let mut user_stats = load_mut!(user_stats_loader)?;
+            controller::equity_floor::try_lazy_equity_breaker_trip(
+                user,
+                &mut user_stats,
+                perp_market_map,
+                spot_market_map,
+                oracle_map,
+            )?;
+            return Ok(None);
+        }
+    }
+
+    let mut bit_flags = 0;
+    if user
+        .get_perp_position(market_index)
+        .map(|position| position.is_isolated())
+        .unwrap_or(false)
+    {
+        bit_flags = set_order_bit_flag(bit_flags, true, OrderBitFlag::IsIsolatedPosition);
+    }
+
+    // Pay the keeper the flat trigger reward and record the trigger. The fill
+    // the caller runs settles its own fees; this is the trigger's own reward,
+    // paid once for the crank that fired it.
+    let is_filler_taker = user_key == filler_key;
+    let mut filler = if !is_filler_taker {
+        Some(load_mut!(filler)?)
+    } else {
+        None
+    };
+    let filler_reward = {
+        let mut perp_market = perp_market_map.get_ref_mut(&market_index)?;
+        pay_keeper_flat_reward_for_perps(
+            user,
+            filler.as_deref_mut(),
+            &mut perp_market,
+            state.perp_fee_structure.flat_filler_fee,
+            slot,
+        )?
+    };
+
+    let order_action_record = get_order_action_record(
+        now,
+        OrderAction::Trigger,
+        OrderActionExplanation::None,
+        market_index,
+        Some(filler_key),
+        None,
+        Some(filler_reward),
+        None,
+        None,
+        Some(filler_reward),
+        None,
+        None,
+        None,
+        None,
+        Some(user_key),
+        Some(fired),
+        None,
+        None,
+        oracle_price,
+        bit_flags,
+        None,
+        None,
+        None,
+        None,
+        Some(trigger_price),
+        None,
+        None,
+    )?;
+    emit!(order_action_record);
+
+    // Free the armed slot last, after the reward the position must still be
+    // present for. The order is now the detached `fired` value; an untriggered
+    // trigger reserved no exposure, so only the order count comes off. The
+    // caller's fill tolerates the now-empty position and rebuilds it.
+    {
+        let position_index = get_position_index(&user.perp_positions, market_index)?;
+        let slot_had_auction = user.orders[order_index].has_auction();
+        user.decrement_open_orders(slot_had_auction);
+        user.perp_positions[position_index].open_orders = user.perp_positions[position_index]
+            .open_orders
+            .saturating_sub(1);
+        user.orders[order_index] = Order::default();
+    }
+
+    user.update_last_active_slot(slot);
+
+    Ok(Some(fired))
+}
+
 fn update_trigger_order_params(
     order: &mut Order,
     oracle_price_data: &OraclePriceData,
@@ -6495,6 +7231,7 @@ pub fn taker_origin_order(
         base_asset_amount: resting.base_asset_amount,
         price: resting.price,
         existing_position_direction: taker_direction,
+        reduce_only: resting.reduce_only,
         ..Order::default()
     }
 }

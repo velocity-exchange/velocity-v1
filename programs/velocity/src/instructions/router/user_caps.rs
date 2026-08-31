@@ -195,12 +195,20 @@ pub fn build_user_caps<'info>(
             inputs.reference_price,
             books,
         )?;
-        if budget == u64::MAX {
+        // The most base the book may fill against this user's reduce-only
+        // orders on the swept side: the position they may reduce. `0` when they
+        // hold none, which fails a reduce-only order closed rather than letting
+        // it grow a position it should shrink. A reduce-only order rests only
+        // when the owner is capped here, so this is always computed, even for a
+        // maker whose quote budget does not bind.
+        let base_cover = maker_reduce_cover(ctx, &key, inputs.market_index, resting_side)?;
+        if budget == u64::MAX && base_cover == u64::MAX {
             continue;
         }
         caps.push(QuoterUserCapV0 {
             index: index as u8,
             budget,
+            base_cover,
         });
     }
     Ok(QuoterUserCapsV0::from_caps(caps))
@@ -384,6 +392,38 @@ fn clob_resting_base(
             )
         })?;
     Ok(reserved.saturating_sub(on_the_dlob))
+}
+
+/// The most base the book may fill against this user's reduce-only orders on
+/// `resting_side`, or `u64::MAX` when the user holds none.
+///
+/// A user with no reduce-only order resting stays uncapped, so a normal maker
+/// never spends one of the scarce cap slots. A user who does hold one is capped
+/// to the position those orders reduce: a reduce-only ask reduces a long, and a
+/// reduce-only bid reduces a short, so the cover is the position held in the
+/// reduce direction. It is `0` when the user holds none of that position, which
+/// is the whole guard: the book is position-blind, so without this a reduce-only
+/// order rested against a flat account would grow a position it exists to
+/// shrink. The cover reads from live position every call, so a position closed
+/// elsewhere shrinks the cover on the next fill.
+fn maker_reduce_cover(
+    ctx: &mut CapInputs<'_, '_>,
+    key: &Pubkey,
+    market_index: u16,
+    resting_side: ClobSide,
+) -> Result<u64> {
+    let maker = ctx.makers_and_referrer.get_ref(key)?;
+    let Ok(position) = maker.get_perp_position(market_index) else {
+        return Ok(u64::MAX);
+    };
+    if !position.has_reduce_only_clob() {
+        return Ok(u64::MAX);
+    }
+    let base = position.base_asset_amount;
+    Ok(match resting_side {
+        ClobSide::Ask => base.max(0).unsigned_abs(),
+        ClobSide::Bid => base.min(0).unsigned_abs(),
+    })
 }
 
 #[cfg(test)]

@@ -139,7 +139,8 @@ export function decodeUser(buffer: Buffer): UserAccount {
 		const settledPnl = readSignedBigInt64LE(buffer, offset);
 		offset += 8;
 		offset += 8; // isolated_position_scaled_balance (already pre-read above)
-		offset += 2; // skip padding[u8; 2]
+		const reduceOnlyClobOrders = buffer.readUInt16LE(offset);
+		offset += 2;
 		const maxMarginRatio = buffer.readUInt16LE(offset); // offset+74
 		offset += 2;
 		const marketIndex = buffer.readUInt16LE(offset); // offset+76
@@ -159,6 +160,7 @@ export function decodeUser(buffer: Buffer): UserAccount {
 			maxMarginRatio,
 			positionFlag,
 			isolatedPositionScaledBalance,
+			reduceOnlyClobOrders,
 		});
 	}
 

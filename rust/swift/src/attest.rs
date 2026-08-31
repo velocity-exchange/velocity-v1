@@ -8,7 +8,7 @@
 //! attestation is the proof: a keeper builds its fill transaction, posts it
 //! here after the hold, and swift co-signs with the flow-authority key —
 //! the key registered on-chain as `State.hot_flow_authority` and checked by
-//! `place_clob_order`'s fast-activation gate and by quoters (the midpoint's
+//! `place_and_make_perp_order_v1`'s fast-activation gate and by quoters (the midpoint's
 //! `require_attested_flow`) via instructions-sysvar introspection.
 //!
 //! The signature authorizes nothing by itself, but a Solana signer is
@@ -33,7 +33,7 @@ use {
     solana_signer::Signer,
     solana_transaction::versioned::VersionedTransaction,
     std::time::{SystemTime, UNIX_EPOCH},
-    velocity_rs::velocity_idl::instructions::{ModifyClobOrder, PlaceClobOrder},
+    velocity_rs::velocity_idl::instructions::{ModifyOrderV1, PlaceAndMakePerpOrderV1},
 };
 
 const COMPUTE_BUDGET_ID: &str = "ComputeBudget111111111111111111111111111111";
@@ -278,8 +278,8 @@ fn validate_attestable(
         // otherwise the keeper's to shape.
         if *program == velocity {
             let discriminator = instruction.data.get(..8);
-            if discriminator == Some(PlaceClobOrder::DISCRIMINATOR)
-                || discriminator == Some(ModifyClobOrder::DISCRIMINATOR)
+            if discriminator == Some(PlaceAndMakePerpOrderV1::DISCRIMINATOR)
+                || discriminator == Some(ModifyOrderV1::DISCRIMINATOR)
             {
                 return Err("an attested transaction cannot place or modify a CLOB order".into());
             }
@@ -382,9 +382,9 @@ mod tests {
         let order_sig = [7u8; 64];
         let payer = Keypair::new();
         let velocity = velocity_rs::constants::PROGRAM_ID;
-        // A velocity place_clob_order carries the fast-activation gate, and the
+        // A place_and_make_perp_order_v1 carries the fast-activation gate, and the
         // order signature rides its data.
-        let mut place_data = PlaceClobOrder::DISCRIMINATOR.to_vec();
+        let mut place_data = PlaceAndMakePerpOrderV1::DISCRIMINATOR.to_vec();
         place_data.extend_from_slice(&order_sig);
         let ixs = vec![Instruction {
             program_id: velocity,

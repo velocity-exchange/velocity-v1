@@ -60,6 +60,7 @@ pub fn handle_place_order_v0(
         taker_origin: args.taker_origin,
         client_order_id: args.client_order_id,
         reject_if_crossed: args.reject_if_crossed,
+        reduce_only: args.reduce_only,
     })?;
 
     emit_pod!(OrderPlaceRecordV0 {

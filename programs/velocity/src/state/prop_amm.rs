@@ -152,15 +152,48 @@ pub struct QuoterV0 {
     /// cost one more account lock per quoter, on the budget that decides how
     /// many quoters a route can hold.
     pub approved_program_slot: u64,
+    /// The furthest from oracle a fill on this entry may price, in
+    /// MARGIN_PRECISION units, so one unit is one basis point. Zero means the
+    /// entry declares nothing and the market's own band stands.
+    ///
+    /// A maker sets this to cap what its own program can lose if that program
+    /// is compromised. Velocity already bounds every external leg by the
+    /// market's band, and that band is sized for a market rather than for one
+    /// quoter's risk appetite; this is how a quoter asks for a tighter one.
+    ///
+    /// Unlike the rest of the config it does not reset `is_approved`. The band
+    /// applies as the smaller of this and the market's, so no value it can hold
+    /// is wider than the one the admin vetted, and a maker tightening it during
+    /// an incident must not have to wait for re-vetting.
+    ///
+    /// `Custom` entries only. A book fills third parties, so a band on one
+    /// would let its entry authority revert other people's fills.
+    pub max_oracle_deviation_bps: u32,
+    pub padding: [u8; 12],
 }
 
 // Zero-copy layout invariant (see docs/alignment-and-native-offsets.md):
 // no u128 fields, size (incl. 8-byte discriminator) ≡ 8 (mod 16).
-const_assert_eq!(std::mem::size_of::<QuoterV0>(), 2768);
+const_assert_eq!(std::mem::size_of::<QuoterV0>(), 2784);
 const_assert_eq!((QuoterV0::SIZE - 8) % 16, 0);
 
 impl Size for QuoterV0 {
-    const SIZE: usize = 2776;
+    const SIZE: usize = 2792;
+}
+
+impl QuoterV0 {
+    /// The oracle deviation a fill on this entry may reach, in
+    /// MARGIN_PRECISION units.
+    ///
+    /// The market's band is the ceiling. A maker's declaration can only bring
+    /// it in, which is what makes the declaration safe to take from the maker
+    /// rather than from the admin.
+    pub fn oracle_band(&self, market_margin_ratio_initial: u32) -> u32 {
+        match self.max_oracle_deviation_bps {
+            0 => market_margin_ratio_initial,
+            declared => declared.min(market_margin_ratio_initial),
+        }
+    }
 }
 
 /// PDA: one entry per (perp market, quoter program, quoted user).
@@ -478,14 +511,15 @@ pub use quoter_spec::{
 
 /// Upper bound on a CLOB CPI's instruction data: discriminator plus the widest
 /// args on that interface, which is `place` — a side, two `u64`s, an optional
-/// delay, a timestamp, a user ref and the taker-origin flag.
+/// delay, a timestamp, a user ref, the taker-origin flag and the reduce-only
+/// flag.
 ///
 /// Reserved in one shot for the same reason [`quoter_cpi_data_len`] is: a
 /// `Vec` that starts at the discriminator and doubles into place leaks every
 /// intermediate buffer, and velocity's bump allocator never reclaims. This path
 /// runs on every order placed on the book and every removal crank, so it is the
 /// busier of the two.
-pub const CLOB_CPI_DATA_CAPACITY: usize = 8 + 1 + 8 + 8 + 5 + 8 + CLOB_USER_REF_BYTES + 1;
+pub const CLOB_CPI_DATA_CAPACITY: usize = 8 + 1 + 8 + 8 + 5 + 8 + CLOB_USER_REF_BYTES + 1 + 1;
 
 /// Bytes an execute CPI's instruction data takes: discriminator, direction,
 /// size, the user set, the caps, the reference price, and the taker behind
@@ -562,7 +596,7 @@ pub fn write_l3_args(dst: &mut Vec<u8>, args: &L3ArgsV0) -> crate::error::Veloci
 /// too, straight out of its instruction data.
 pub use quoter_spec::{
     ExecuteArgsV0, L3ArgsV0, L3ResponseV0, L3RowV0, QuoteArgsV0, L3_ROW_FLAG_BLOCKS_WALK,
-    L3_ROW_FLAG_TAKER_ORIGIN,
+    L3_ROW_FLAG_REDUCE_ONLY, L3_ROW_FLAG_TAKER_ORIGIN,
 };
 
 /// Declared by `quoter-spec`; the alias keeps velocity's name for it.
@@ -612,30 +646,30 @@ pub use clob_wire::{
 pub use quoter_spec::CancelSidesV0 as ClobCancelSides;
 /// One order a CLOB removed as a sub-min remainder of a fill.
 ///
-/// **`base_asset_amount` and the completed-order ids beside it are taken on
-/// faith, and that is a first-party-code assumption, not a verified one.**
-/// They release a maker's margin reservation and decrement their open-order
-/// counts, and that maker is an ordinary velocity user resting on the book —
-/// not the quoter's own account, so the subject rule bounds *whose* books an
-/// entry may touch but not whether it described what it did to them.
-/// Over-reporting frees more reservation than the order held, which
-/// understates that user's margin requirement; an id for an order still live
-/// on the book frees a placed trigger's shadow while the book keeps the size.
+/// `base_asset_amount` releases a maker's margin reservation and the
+/// completed-order ids beside it decrement their open-order counts. That maker
+/// is an ordinary velocity user resting on the book, not the quoter's own
+/// account, so the subject rule bounds *whose* orders an entry may remove but
+/// not whether it described what it removed.
 ///
-/// Two things make it acceptable rather than a hole. Only a `QuoterType::Clob`
-/// entry reaches this path at all (a Custom quoter's depth is never reserved
-/// through velocity, so there is nothing to unwind), and velocity already
-/// takes the same numbers on faith from the same program on every removal
-/// path — `ClobRemovedOrderV0` out of `cancel_order_v0`, `evict_worst_v0` and
-/// `remove_expired_v0` drives the identical unwinding. Verifying only this
-/// one would leave four equivalent routes open.
+/// The bound on the description is the reservation itself. Velocity wrote
+/// `open_bids` / `open_asks` when the order was placed, under its owner's
+/// signature, and holds every removal report to it
+/// ([`PerpPosition::reserved_open_base`]): a report above what the user has
+/// resting fails rather than freeing the margin behind orders that still rest.
+/// The same bound covers `evict_worst_v0` and `remove_expired_v0`, which drive
+/// identical unwinding, and the fill path's balance changes.
 ///
-/// So the assumption is: **a Clob-typed registry entry runs code we ship.**
-/// Nothing in the program enforces that — `is_approved` is admin vetting of a
-/// CPI surface, not a program-id allowlist — so approving a third-party CLOB
-/// is what would turn this into a real exposure. At that point these amounts
-/// must be checked against the book's own `quote_l3_v0`, asked before execute
-/// consumes the orders, and the same check owed to the removal cranks.
+/// The one place it is deliberately lenient is a removal the owner signed for
+/// (`cancel_order_v0` through `cancel_order_v1` and the sweeps). Those run
+/// against books that may be dead or de-listed, so an over-report clamps and
+/// logs instead of failing: a maker must always be able to leave a book that
+/// reports garbage.
+///
+/// What the reservation does not bound is which of a user's orders a report
+/// names. An id for an order still live on the book frees a placed trigger's
+/// shadow while the book keeps the size, and the size still has to be one the
+/// user really placed.
 pub use quoter_spec::CancelledRemainderV0;
 pub use quoter_spec::CompletedOrderV0;
 /// The execute response, read in place out of the quoter's account.
@@ -694,6 +728,7 @@ pub use clob_wire::CancelAllOutcomeV0 as ClobCancelAllOutcomeV0;
 /// [`ClobCancelSidesExt`] is a trait.
 pub trait ClobCancelAllOutcomeExt {
     fn orders(&self) -> u32;
+    fn reduce_only_orders(&self) -> u32;
     fn base_for(&self, direction: crate::controller::position::PositionDirection) -> u64;
     fn orders_for(&self, direction: crate::controller::position::PositionDirection) -> u32;
 }
@@ -701,6 +736,13 @@ pub trait ClobCancelAllOutcomeExt {
 impl ClobCancelAllOutcomeExt for ClobCancelAllOutcomeV0 {
     fn orders(&self) -> u32 {
         self.bid_orders.saturating_add(self.ask_orders)
+    }
+
+    /// Reduce-only orders the sweep removed, across both sides. The caller
+    /// disarms its per-user reduce-only tracking by this many.
+    fn reduce_only_orders(&self) -> u32 {
+        self.bid_reduce_only_orders
+            .saturating_add(self.ask_reduce_only_orders)
     }
 
     /// Base amount withdrawn on the side a maker position of `direction` rests
@@ -1071,6 +1113,10 @@ pub fn unwind_swept_orders(
     user.perp_positions[position_index].open_orders = user.perp_positions[position_index]
         .open_orders
         .saturating_sub(orders.min(u8::MAX as u32) as u8);
+    // The sweep took this many reduce-only orders off the book, so disarm the
+    // counter by the same amount.
+    user.perp_positions[position_index]
+        .disarm_reduce_only_clob_by(swept.reduce_only_orders().min(u16::MAX as u32) as u16);
     (0..orders).for_each(|_| user.decrement_open_orders(false));
     release_swept_trigger_shadows(user, clob, market_index, sides)?;
     Ok(orders)
@@ -1152,13 +1198,27 @@ pub enum QuoterSubjects {
     /// cost a walk of the swept prefix on every leg, and it was the last of
     /// velocity's CLOB-specific logic on the fill path.
     ///
-    /// What actually bounds a book, then: the admin approves the program
-    /// behind a `Clob` entry — and approving a third party's is what would
-    /// make this an exposure, exactly as it would for the removal reports
-    /// velocity already takes on faith (see [`ClobRemovedOrderV0`]) — the
-    /// response may only name users the transaction already carries, every
-    /// balance change is held to the quoted prices, and every user it touches
-    /// is margin-checked after the fill.
+    /// What bounds a book instead is the record velocity wrote itself. Every
+    /// CLOB order reserved `open_bids` / `open_asks` on its owner's position at
+    /// placement, under that owner's signature, and no external program can
+    /// write those. So a response is held to
+    /// [`PerpPosition::reserved_open_base`]: a book may only fill or remove
+    /// size a user really placed, on the side they placed it. That bound needs
+    /// nothing from the book's own state, which is why it stands where the
+    /// arena walk did not. It covers the removal reports on the same terms (see
+    /// [`ClobRemovedOrderV0`]).
+    ///
+    /// On top of it: the response may only name users the transaction already
+    /// carries, every balance change is held to the quoted prices and to the
+    /// oracle band, and every user it touches is margin-checked after the fill.
+    ///
+    /// Two things it does not bound. The reservation records size and side, not
+    /// price, so an order a user did place can still be filled anywhere inside
+    /// the oracle band — the leak is the band's width across the size they
+    /// posted. And `open_bids` does not separate a book's reservation from the
+    /// DLOB's on the same market and side, so a book's report can consume
+    /// reservation a DLOB order made. Splitting them needs sixteen bytes on
+    /// [`PerpPosition`], which has two.
     Book,
 }
 
@@ -1319,6 +1379,15 @@ pub trait ExternalQuoterExecutor<'info> {
     /// CPI brackets, but one quoter program serves many entries, so only the
     /// entry key says which maker to hold responsible.
     fn quoter_key(&self, index: usize) -> Pubkey;
+
+    /// How far from oracle a fill on quoter `index` may price, in
+    /// MARGIN_PRECISION units — see [`QuoterV0::oracle_band`].
+    ///
+    /// Defaults to the market's own band, which is what an executor that
+    /// carries no registry entry can say.
+    fn oracle_band(&self, _index: usize, market_margin_ratio_initial: u32) -> u32 {
+        market_margin_ratio_initial
+    }
 
     /// The prices quoter `index`'s liquidity rests at, for a caller with no
     /// quote leg to bind its fill against — the cross cranks, whose account

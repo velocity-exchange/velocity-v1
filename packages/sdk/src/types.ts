@@ -631,7 +631,7 @@ export class ClobSide {
  * order id, so a stale hint (node freed or reused) fails closed rather than
  * acting on whichever order took the slot.
  *
- * Returned by `placeClobOrder` and carried on every row of the user-orders
+ * Returned by `placeAndMakePerpOrderV1` and carried on every row of the user-orders
  * feed, so a client cancelling or modifying an order never has to find one.
  */
 export type ClobOrderRefV0 = {
@@ -639,38 +639,21 @@ export type ClobOrderRefV0 = {
 	orderId: BN;
 };
 
-/** Which sides a `cancelAllClobOrders` sweep withdraws. */
+/** Which sides a `cancelOrdersV1` sweep withdraws. */
 export class CancelSidesV0 {
 	static readonly BIDS = { bids: {} };
 	static readonly ASKS = { asks: {} };
 	static readonly BOTH = { both: {} };
 }
 
-/** Args of `placeClobOrder`. */
-export type PlaceClobOrderParams = {
-	marketIndex: number;
-	/** Long rests as a bid, Short as an ask. */
-	direction: PositionDirection;
-	/** PRICE_PRECISION. */
-	price: BN;
-	/** BASE_PRECISION. */
-	baseAssetAmount: BN;
-	/** 0 = good-till-cancelled. */
-	maxTs: BN;
-	/** `null` takes the book's default speed bump; anything below it needs the flow-authority attestation on the transaction. */
-	activationDelaySlots: number | null;
-	/** Refuse the placement rather than rest crossed with the opposite side — what a post-only order asks for. It is not what makes the order a maker: a resting CLOB order settles at its own price on the maker fee schedule either way. */
-	rejectIfCrossed: boolean;
-};
-
-/** Args of `cancelClobOrder`. */
-export type CancelClobOrderParams = {
+/** Args of `cancelOrderV1` (cancel one resting CLOB order). */
+export type CancelOrderV1Params = {
 	marketIndex: number;
 	orderRef: ClobOrderRefV0;
 };
 
-/** Args of `modifyClobOrder`. A modify keeps the order's id and loses its queue position. */
-export type ModifyClobOrderParams = {
+/** Args of `modifyOrderV1`. A modify keeps the order's id and loses its queue position. */
+export type ModifyOrderV1Params = {
 	marketIndex: number;
 	orderRef: ClobOrderRefV0;
 	/** `null` keeps the resting price. */
@@ -683,8 +666,8 @@ export type ModifyClobOrderParams = {
 	rejectIfCrossed: boolean;
 };
 
-/** Args of `cancelAllClobOrders`. */
-export type CancelAllClobOrdersParams = {
+/** Args of `cancelOrdersV1` (sweep a whole side, or both, off the book). */
+export type CancelOrdersV1Params = {
 	marketIndex: number;
 	sides: CancelSidesV0;
 };
@@ -2088,6 +2071,8 @@ export type PerpPosition = {
 	positionFlag: number;
 	/** SPOT_BALANCE_PRECISION (1e9) scaled balance backing this position when it is isolated-margin (`PositionFlag.IsolatedPosition` set) */
 	isolatedPositionScaledBalance: BN;
+	/** count of reduce-only orders resting on the CLOB for this market; the router caps a user's reduce-only fills only while this is non-zero */
+	reduceOnlyClobOrders: number;
 };
 
 /** Decoded mirror of the on-chain `UserStats` account: authority-level (cross-sub-account) rolling volume, fee, and referral stats. */
@@ -3287,4 +3272,15 @@ export type QuoterV0Account = {
 	 * to look at, and one a router may choose to stop carrying.
 	 */
 	approvedProgramSlot: BN;
+	/**
+	 * The furthest from oracle a fill on this entry may price, in MARGIN_PRECISION units, so one unit
+	 * is one basis point. `0` = no declaration, and the market's own band stands.
+	 *
+	 * A maker sets this to cap what its own program can lose if that program is compromised. It
+	 * applies as the smaller of this and the market's `marginRatioInitial`, so it can only tighten a
+	 * bound the admin already vetted — which is why, unlike the rest of the config, setting it does
+	 * not reset `isApproved`. Custom entries only.
+	 */
+	maxOracleDeviationBps: number;
+	padding: number[];
 };

@@ -564,6 +564,7 @@ impl ClobBook for ClobMarketV0 {
             taker_origin,
             client_order_id,
             reject_if_crossed,
+            reduce_only,
         } = params;
         require!(
             price != 0 && base_asset_amount != 0 && !address_eq(&user.authority, &ZERO_ADDRESS),
@@ -636,7 +637,8 @@ impl ClobBook for ClobMarketV0 {
                 next,
                 bit_flags: OrderBitFlag::Open as u8
                     | side.side_bit()
-                    | OrderBitFlag::TakerOrigin.bit_if(taker_origin),
+                    | OrderBitFlag::TakerOrigin.bit_if(taker_origin)
+                    | OrderBitFlag::ReduceOnly.bit_if(reduce_only),
                 padding0: 0,
                 sub_account_id: user.sub_account_id,
                 client_order_id,
@@ -771,6 +773,7 @@ impl ClobBook for ClobMarketV0 {
             let count_before = self.node_count(side);
             let mut base_removed = 0u64;
             let mut orders_removed = 0u32;
+            let mut reduce_only_removed = 0u32;
             walk_side(self, side, |book, index, node| {
                 if node.user_ref() != user {
                     return Ok(Walk::Continue);
@@ -788,6 +791,9 @@ impl ClobBook for ClobMarketV0 {
                     .ok_or(ClobError::MathError)?;
                 orders_removed += 1;
                 total_removed += 1;
+                if node.is_reduce_only() {
+                    reduce_only_removed += 1;
+                }
                 removed_ids(node.client_order_id)?;
                 owes_expiry_repair |= holds_expiry_hint(book, node);
                 unlink_order(book, index)?;
@@ -806,10 +812,12 @@ impl ClobBook for ClobMarketV0 {
                 Side::Bid => {
                     outcome.bid_base_asset_amount = base_removed;
                     outcome.bid_orders = orders_removed;
+                    outcome.bid_reduce_only_orders = reduce_only_removed;
                 }
                 Side::Ask => {
                     outcome.ask_base_asset_amount = base_removed;
                     outcome.ask_orders = orders_removed;
+                    outcome.ask_reduce_only_orders = reduce_only_removed;
                 }
             }
         }
@@ -1037,7 +1045,12 @@ impl ClobBook for ClobMarketV0 {
                     return Ok(Walk::Stop);
                 }
             }
-            let take = budget.allow(owner, remaining.min(node.base_asset_amount), node.price);
+            let take = budget.allow(
+                owner,
+                remaining.min(node.base_asset_amount),
+                node.price,
+                node.is_reduce_only(),
+            );
             if take == 0 {
                 // Out of room: this owner's remaining orders cannot settle,
                 // and the depth behind them still can.
@@ -1253,7 +1266,12 @@ impl ClobBook for ClobMarketV0 {
                 Settleable::SteppedOver => return Ok(Walk::Continue),
                 Settleable::Withheld => return Ok(Walk::Stop),
             }
-            let take = budget.allow(owner, remaining.min(node.base_asset_amount), node.price);
+            let take = budget.allow(
+                owner,
+                remaining.min(node.base_asset_amount),
+                node.price,
+                node.is_reduce_only(),
+            );
             if take == 0 {
                 return Ok(Walk::Continue);
             }
@@ -1566,6 +1584,7 @@ fn removed_order(node: &OrderNodeV0) -> RemovedOrder {
         base_asset_amount: node.base_asset_amount,
         side: node.side(),
         taker_origin: node.is_taker_origin(),
+        reduce_only: node.is_reduce_only(),
         max_ts: node.max_ts,
     }
 }
@@ -1619,6 +1638,9 @@ fn l3_row_flags(node: &OrderNodeV0, blocking_min_size: u64) -> u8 {
     }
     if blocking_min_size == 0 || node.base_asset_amount >= blocking_min_size {
         flags |= quoter_spec::L3_ROW_FLAG_BLOCKS_WALK;
+    }
+    if node.is_reduce_only() {
+        flags |= quoter_spec::L3_ROW_FLAG_REDUCE_ONLY;
     }
     flags
 }
@@ -1689,6 +1711,18 @@ fn settleable(
 /// names. A ref is 34 bytes and this lives on a walk's frame inside a 4 KB
 /// SBF stack that the fixed-width args have already spent most of — copying
 /// them in overflowed it.
+/// One user's remaining room in the current sweep.
+#[derive(Clone, Copy)]
+struct UserRoom {
+    /// Index into the caller's user set.
+    index: u8,
+    /// Quote the user may still lose on the swept side. `u64::MAX` is unbounded.
+    budget: u64,
+    /// Base the book may still fill against this user's reduce-only orders on
+    /// the swept side. `u64::MAX` means the user carries no reduce-only cap.
+    cover: u64,
+}
+
 /// The caller's per-user budgets, spent as the walk fills.
 ///
 /// A budget is quote the user may lose, not base it may take, because the
@@ -1697,11 +1731,10 @@ fn settleable(
 struct UserBudget {
     excluded: [u8; USER_EXCLUSION_BITMAP_BYTES],
     any_excluded: bool,
-    /// `(index into the caller's set, quote still available)` for the users
-    /// with *some* room. Indices rather than refs: a ref is 34 bytes and this
-    /// lives on a walk's frame inside a 4 KB SBF stack the fixed-width args
-    /// have already spent most of.
-    entries: [(u8, u64); USER_CAPS_CAPACITY],
+    /// Per-user room for the users with *some* room. An index rather than a
+    /// ref: a ref is 34 bytes and this lives on a walk's frame inside a 4 KB
+    /// SBF stack the fixed-width args have already spent most of.
+    entries: [UserRoom; USER_CAPS_CAPACITY],
     len: usize,
     /// The side these orders rest on, which decides which way a price has to
     /// move for the fill to cost their owner anything.
@@ -1714,13 +1747,21 @@ impl UserBudget {
         let mut budget = UserBudget {
             excluded: caps.excluded,
             any_excluded: caps.any_excluded(),
-            entries: [(0, 0); USER_CAPS_CAPACITY],
+            entries: [UserRoom {
+                index: 0,
+                budget: 0,
+                cover: u64::MAX,
+            }; USER_CAPS_CAPACITY],
             len: 0,
             side,
             reference_price: reference_price.max(0) as u64,
         };
         for cap in caps.as_slice() {
-            budget.entries[budget.len] = (cap.index, cap.budget);
+            budget.entries[budget.len] = UserRoom {
+                index: cap.index,
+                budget: cap.budget,
+                cover: cap.base_cover,
+            };
             budget.len += 1;
         }
         budget
@@ -1741,41 +1782,70 @@ impl UserBudget {
     ///
     /// `index` is the position the membership scan already resolved, so the
     /// bitmap costs a bit test rather than a second walk of the set.
-    fn allow(&mut self, index: Option<usize>, want: u64, price: u64) -> u64 {
+    ///
+    /// `reduce_only` is the resting order's own flag. A reduce-only order fills
+    /// only against an authoritative `base_cover` on a named cap entry: the
+    /// book is position-blind, so no caps, an unnamed owner, or a full-budget
+    /// (unconstrained) owner all leave it uncovered, and it does not fill. A
+    /// non-reduce-only order ignores the cover entirely.
+    fn allow(&mut self, index: Option<usize>, want: u64, price: u64, reduce_only: bool) -> u64 {
+        // Uncovered fast paths: no caps at all, or an owner the set does not
+        // name. Free for an ordinary order; refused for a reduce-only one.
         if !self.any_excluded && self.len == 0 {
-            return want;
+            return if reduce_only { 0 } else { want };
         }
         let Some(index) = index else {
-            // Unrestricted set: nobody is named, so nobody is capped.
-            return want;
+            return if reduce_only { 0 } else { want };
         };
         if index < USER_SET_CAPACITY && self.excluded[index / 8] & (1 << (index % 8)) != 0 {
             return 0;
         }
         for slot in 0..self.len {
-            let (named, room) = self.entries[slot];
+            let UserRoom {
+                index: named,
+                budget: room,
+                cover,
+            } = self.entries[slot];
             if named as usize != index {
                 continue;
             }
-            if room == u64::MAX {
-                return want;
-            }
             let cost_per_base = self.cost_per_base(price);
-            if cost_per_base == 0 {
-                // The fill does not move against this owner, so it draws on
-                // nothing and the whole order is available.
-                return want;
+            // The quote budget. Unbounded, or a price in the owner's favour
+            // (cost zero), means it does not bind. Otherwise convert the quote
+            // room to affordable base, rounding the base down and the spend
+            // back up so a long run of orders cannot creep past the budget one
+            // remainder at a time.
+            let budget_allowed = if room == u64::MAX || cost_per_base == 0 {
+                want
+            } else {
+                let affordable = (room as u128 * BASE_PRECISION as u128) / cost_per_base as u128;
+                want.min(affordable.min(u64::MAX as u128) as u64)
+            };
+            // The authoritative base cover binds only a reduce-only order.
+            let allowed = if reduce_only {
+                budget_allowed.min(cover)
+            } else {
+                budget_allowed
+            };
+            // Spend the quote budget for what was actually taken, and draw the
+            // cover down by the same base for a reduce-only fill.
+            if room != u64::MAX && cost_per_base != 0 {
+                let spent =
+                    (allowed as u128 * cost_per_base as u128).div_ceil(BASE_PRECISION as u128);
+                self.entries[slot].budget = room.saturating_sub(spent.min(u64::MAX as u128) as u64);
             }
-            // Round the affordable base down and the spend back up, so a long
-            // run of orders cannot creep past the budget one remainder at a
-            // time.
-            let affordable = (room as u128 * BASE_PRECISION as u128) / cost_per_base as u128;
-            let allowed = want.min(affordable.min(u64::MAX as u128) as u64);
-            let spent = (allowed as u128 * cost_per_base as u128).div_ceil(BASE_PRECISION as u128);
-            self.entries[slot].1 = room.saturating_sub(spent.min(u64::MAX as u128) as u64);
+            if reduce_only {
+                self.entries[slot].cover = cover.saturating_sub(allowed);
+            }
             return allowed;
         }
-        want
+        // Owner named in the set but carrying no cap entry: unconstrained.
+        // Uncovered, so a reduce-only order does not fill.
+        if reduce_only {
+            0
+        } else {
+            want
+        }
     }
 }
 

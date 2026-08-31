@@ -60,6 +60,10 @@ pub enum OrderBitFlag {
     /// cross it is the aggressor, so the cross prices at the counterparty's
     /// side.
     TakerOrigin = 4,
+    /// The order only reduces its owner's position. The book is position-blind,
+    /// so a fill against it is clamped to the owner's `base_cover` cap from the
+    /// caller's user set. See [`OrderNodeV0::is_reduce_only`].
+    ReduceOnly = 8,
 }
 
 impl OrderBitFlag {
@@ -146,6 +150,12 @@ impl OrderNodeV0 {
     /// The order is a migrated taker remainder.
     pub fn is_taker_origin(&self) -> bool {
         self.is_bit_flag_set(OrderBitFlag::TakerOrigin)
+    }
+
+    /// The order only reduces its owner's position. The book clamps a fill
+    /// against it to the owner's `base_cover` cap.
+    pub fn is_reduce_only(&self) -> bool {
+        self.is_bit_flag_set(OrderBitFlag::ReduceOnly)
     }
 
     pub fn side(&self) -> Side {

@@ -807,7 +807,7 @@ pub enum ErrorCode {
     InvalidQuoterAuthority,
     #[msg("CLOB crank condition account cannot cover the keeper payment")]
     InsufficientCrankReservoir,
-    #[msg("Order is placed on the CLOB; cancel it there (cancel_clob_order)")]
+    #[msg("Order is placed on the CLOB; cancel it there (cancel_order_v1)")]
     OrderPlacedOnClob,
     #[msg("Trigger is awaiting a price recross after eviction")]
     OrderAwaitingTriggerRecross,
@@ -859,6 +859,10 @@ pub enum ErrorCode {
         "User has orders resting on the CLOB; force_cancel_clob_orders must run before liquidation"
     )]
     LiquidationConflictsWithClobOrders,
+    #[msg(
+        "A quoter reported more base or more retired orders than velocity reserved for that user"
+    )]
+    QuoterReportExceedsReservation,
 }
 
 #[macro_export]

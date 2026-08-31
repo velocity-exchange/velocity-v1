@@ -69,10 +69,9 @@ import {
 	UserAccount,
 	ForceCancelClobRefV0,
 	QuoterV0Account,
-	PlaceClobOrderParams,
-	CancelClobOrderParams,
-	ModifyClobOrderParams,
-	CancelAllClobOrdersParams,
+	CancelOrderV1Params,
+	ModifyOrderV1Params,
+	CancelOrdersV1Params,
 	UserStatsAccount,
 	SignedMsgOrderParamsDelegateMessage,
 	TokenProgramFlag,
@@ -6963,6 +6962,9 @@ export class VelocityClient {
 	 * requires an explicit `orderId` (see note above).
 	 * @returns The transaction signature.
 	 * @see `getCancelOrderIx` to obtain the instruction without sending.
+	 * @remarks Cancels an order resting on the DLOB (a `User.orders` slot). An order resting on
+	 * the CLOB has no such slot and is cancelled by its book handle — read its `ClobOrderRefV0`
+	 * from the user-orders feed (`UserClobOrdersClient`) and call `cancelOrderV1` / `cancelOrdersV1`.
 	 */
 	public async cancelOrder(
 		orderId?: number,
@@ -8564,6 +8566,106 @@ export class VelocityClient {
 	}
 
 	/**
+	 * Fires a resting DLOB stop-market straight to the book: it fills the fired
+	 * order and rests only its remainder as a taker-origin order on the market's
+	 * CLOB, in one instruction. Unlike `triggerOrder`, nothing is left live in
+	 * `User.orders` for a later fill crank. For DLOB trigger-market orders only.
+	 * See `getTriggerOrderV1Ix`.
+	 */
+	public async triggerOrderV1(
+		marketIndex: number,
+		userAccountPublicKey: PublicKey,
+		userAccount: UserAccount,
+		order: Order,
+		clobAccounts: {
+			quoter: PublicKey;
+			clobMarket: PublicKey;
+			clobProgram: PublicKey;
+		},
+		routeAccounts: AccountMeta[],
+		txParams?: TxParams,
+		fillerPublicKey?: PublicKey
+	): Promise<TransactionSignature> {
+		const { txSig } = await this.sendTransaction(
+			await this.buildTransaction(
+				await this.getTriggerOrderV1Ix(
+					marketIndex,
+					userAccountPublicKey,
+					userAccount,
+					order,
+					clobAccounts,
+					routeAccounts,
+					fillerPublicKey
+				),
+				txParams
+			),
+			[],
+			this.opts
+		);
+		return txSig;
+	}
+
+	/**
+	 * Builds the `triggerOrderV1` instruction. See `triggerOrderV1` for semantics.
+	 * @param marketIndex - The order's perp market.
+	 * @param userAccountPublicKey - Public key of the order owner's user account.
+	 * @param userAccount - Decoded user account for the order owner.
+	 * @param order - The trigger-market order to fire.
+	 * @param clobAccounts - The market's CLOB registry entry, book and program.
+	 * @param routeAccounts - The maker/referrer and quoter `AccountMeta[]` the fill routes through, appended after the standard market/oracle accounts. The market's baseline CLOB quoter is mandatory.
+	 * @param fillerPublicKey - Filler's user account public key; defaults to this client's own user account.
+	 * @returns The instruction.
+	 */
+	public async getTriggerOrderV1Ix(
+		marketIndex: number,
+		userAccountPublicKey: PublicKey,
+		userAccount: UserAccount,
+		order: Order,
+		clobAccounts: {
+			quoter: PublicKey;
+			clobMarket: PublicKey;
+			clobProgram: PublicKey;
+		},
+		routeAccounts: AccountMeta[],
+		fillerPublicKey?: PublicKey
+	): Promise<TransactionInstruction> {
+		const filler = fillerPublicKey ?? (await this.getUserAccountPublicKey());
+
+		const remainingAccounts = this.getRemainingAccounts({
+			userAccounts: [userAccount],
+			writablePerpMarketIndexes: [order.marketIndex],
+		});
+
+		return await VelocityCore.buildTriggerOrderV1Instruction({
+			program: this.program,
+			marketIndex,
+			orderId: order.orderId,
+			state: await this.getStatePublicKey(),
+			filler,
+			fillerStats: await this.getUserStatsAccountPublicKey(),
+			user: userAccountPublicKey,
+			userStats: getUserStatsAccountPublicKey(
+				this.program.programId,
+				userAccount.authority
+			),
+			authority: this.wallet.publicKey,
+			quoter: clobAccounts.quoter,
+			clobMarket: clobAccounts.clobMarket,
+			clobProgram: clobAccounts.clobProgram,
+			clobAuthority: this.getClobAuthorityPublicKey(),
+			remainingAccounts: [...remainingAccounts, ...routeAccounts],
+			crankConditions: getClobCrankConditionsPublicKey(
+				this.program.programId,
+				marketIndex
+			),
+			triggerConditions: getUserConditionsPublicKey(
+				this.program.programId,
+				userAccountPublicKey
+			),
+		});
+	}
+
+	/**
 	 * Keeper instruction: cancels a user's open, non-position-reducing orders when the user fails
 	 * their initial margin requirement (reverts with `SufficientCollateral` if the user still
 	 * meets it, or with `UserIsBeingLiquidated`/`UserBankrupt` if either is set). Charges the user a
@@ -9468,18 +9570,24 @@ export class VelocityClient {
 	 */
 	public async placeAndMakePerpOrder(
 		orderParams: OptionalOrderParams,
-		takerInfo: TakerInfo,
+		clobAccounts: {
+			quoter: PublicKey;
+			clobMarket: PublicKey;
+			clobProgram: PublicKey;
+			clobAuthority: PublicKey;
+			crankConditions?: PublicKey;
+		},
 		txParams?: TxParams,
 		subAccountId?: number,
-		takerEscrow?: RevenueShareEscrowAccount
+		activationDelaySlots?: number | null
 	): Promise<TransactionSignature> {
 		const { txSig, slot } = await this.sendTransaction(
 			await this.buildTransaction(
 				await this.getPlaceAndMakePerpOrderIx(
 					orderParams,
-					takerInfo,
+					clobAccounts,
 					subAccountId,
-					takerEscrow
+					activationDelaySlots
 				),
 				txParams
 			),
@@ -9493,55 +9601,45 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Builds the `placeAndMakePerpOrder` instruction. See `placeAndMakePerpOrder` for semantics.
-	 * @param orderParams - Maker order to place; see `placeAndMakePerpOrder` for field precisions
-	 * and required order shape.
-	 * @param takerInfo - The taker account/order to fill against.
+	 * Builds the `placeAndMakePerpOrderV1` instruction: a post-only maker order that rests
+	 * straight on the market's CLOB. See `placeAndMakePerpOrder` for semantics.
+	 * @param orderParams - Maker order to place (post-only `Limit`).
+	 * @param clobAccounts - the market's CLOB accounts.
 	 * @param subAccountId - Sub-account placing the maker order; defaults to the active sub-account.
-	 * @param takerEscrow - See `placeAndMakePerpOrder`.
 	 * @returns The instruction.
 	 */
 	public async getPlaceAndMakePerpOrderIx(
 		orderParams: OptionalOrderParams,
-		takerInfo: TakerInfo,
+		clobAccounts: {
+			quoter: PublicKey;
+			clobMarket: PublicKey;
+			clobProgram: PublicKey;
+			clobAuthority: PublicKey;
+			crankConditions?: PublicKey;
+		},
 		subAccountId?: number,
-		// place_and_make fills the taker's order in-instruction, so the TAKER's
-		// RevenueShareEscrow must be attached when their order has a builder or they
-		// are referred. Referral accounts are discovered automatically when no decoded
-		// escrow is supplied.
-		takerEscrow?: RevenueShareEscrowAccount
+		activationDelaySlots?: number | null
 	): Promise<TransactionInstruction> {
 		orderParams = getOrderParams(orderParams, { marketType: MarketType.PERP });
 		const userStatsPublicKey = this.getUserStatsAccountPublicKey();
 		const user = await this.getUserAccountPublicKey(subAccountId);
 
 		const remainingAccounts = this.getRemainingAccounts({
-			userAccounts: [
-				this.getUserAccountOrThrow(subAccountId),
-				takerInfo.takerUserAccount,
-			],
+			userAccounts: [this.getUserAccountOrThrow(subAccountId)],
 			useMarketLastSlotCache: true,
 			writablePerpMarketIndexes: [orderParams.marketIndex],
 		});
 
-		const takerOrderId = takerInfo.order.orderId;
-		const takerRevenueShareMetas = await this.getTakerRevenueShareAccountMetas(
-			takerInfo.takerUserAccount.authority,
-			hasBuilder(takerInfo.order),
-			takerEscrow
-		);
-		remainingAccounts.push(...takerRevenueShareMetas);
 		return await VelocityCore.buildPlaceAndMakePerpOrderInstruction({
 			program: this.program,
 			orderParams,
-			takerOrderId,
 			state: await this.getStatePublicKey(),
 			user,
 			userStats: userStatsPublicKey,
-			taker: takerInfo.taker,
-			takerStats: takerInfo.takerStats,
 			authority: this.wallet.publicKey,
 			remainingAccounts,
+			clobAccounts,
+			activationDelaySlots,
 		});
 	}
 
@@ -10047,6 +10145,8 @@ export class VelocityClient {
 	 * @param txParams - Optional compute-unit/priority-fee overrides.
 	 * @param subAccountId - Sub-account the order belongs to; defaults to the active sub-account.
 	 * @returns The transaction signature.
+	 * @remarks Modifies an order resting on the DLOB. An order resting on the CLOB is modified by
+	 * its book handle — read its `ClobOrderRefV0` from the user-orders feed and call `modifyOrderV1`.
 	 */
 	public async modifyOrder(
 		orderParams: {
@@ -14160,62 +14260,7 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Builds a `placeClobOrder` instruction: rest a limit order on the market's CLOB.
-	 *
-	 * Plain limits live on the book, not in `User.orders` — velocity reserves the worst-case
-	 * open-order aggregates and gates margin exactly as a DLOB placement does, then CPIs the
-	 * book. The order's id is minted from the `User`'s own counter, so a client names it the
-	 * same way it names a DLOB order.
-	 *
-	 * The order is not matchable until its activation slot (the speed bump). Asking for less
-	 * than the book's default delay requires the transaction to be co-signed by the flow
-	 * authority, which is what swift's `/attest` provides.
-	 *
-	 * @param params - Market, side, price, size, expiry, activation delay, post-only behaviour.
-	 * @param subAccountId - Sub-account to place from; defaults to the active one.
-	 * @param instructionsSysvar - Pass when asking for a below-default activation delay, so the
-	 * program can verify the flow authority co-signed.
-	 * @returns The instruction. Its return data is the order's `ClobOrderRefV0`.
-	 */
-	public async getPlaceClobOrderIx(
-		params: PlaceClobOrderParams,
-		subAccountId?: number,
-		instructionsSysvar?: PublicKey
-	): Promise<TransactionInstruction> {
-		const clob = await this.getClobAccounts(params.marketIndex);
-		return await this.program.instruction.placeClobOrder(params, {
-			accounts: {
-				state: await this.getStatePublicKey(),
-				user: await this.getUserAccountPublicKey(subAccountId),
-				authority: this.wallet.publicKey,
-				...clob,
-				instructionsSysvar: instructionsSysvar ?? null,
-			},
-		});
-	}
-
-	/**
-	 * Places a resting limit order on the market's CLOB. See `getPlaceClobOrderIx`.
-	 * @returns The transaction signature.
-	 */
-	public async placeClobOrder(
-		params: PlaceClobOrderParams,
-		txParams?: TxParams,
-		subAccountId?: number
-	): Promise<TransactionSignature> {
-		const { txSig } = await this.sendTransaction(
-			await this.buildTransaction(
-				await this.getPlaceClobOrderIx(params, subAccountId),
-				txParams
-			),
-			[],
-			this.opts
-		);
-		return txSig;
-	}
-
-	/**
-	 * Builds a `cancelClobOrder` instruction.
+	 * Builds a `cancelOrderV1` instruction.
 	 *
 	 * The `orderRef` is the hint the placement returned, which the user-orders feed also carries
 	 * on every row — the book verifies it against the order id and fails closed on a stale one,
@@ -14228,12 +14273,12 @@ export class VelocityClient {
 	 * @param subAccountId - Sub-account holding the order; defaults to the active one.
 	 * @returns The instruction.
 	 */
-	public async getCancelClobOrderIx(
-		params: CancelClobOrderParams,
+	public async getCancelOrderV1Ix(
+		params: CancelOrderV1Params,
 		subAccountId?: number
 	): Promise<TransactionInstruction> {
 		const clob = await this.getClobAccounts(params.marketIndex);
-		return await this.program.instruction.cancelClobOrder(params, {
+		return await this.program.instruction.cancelOrderV1(params, {
 			accounts: {
 				state: await this.getStatePublicKey(),
 				perpMarket: await getPerpMarketPublicKey(
@@ -14251,17 +14296,17 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Cancels one resting CLOB order. See `getCancelClobOrderIx`.
+	 * Cancels one resting CLOB order. See `getCancelOrderV1Ix`.
 	 * @returns The transaction signature.
 	 */
-	public async cancelClobOrder(
-		params: CancelClobOrderParams,
+	public async cancelOrderV1(
+		params: CancelOrderV1Params,
 		txParams?: TxParams,
 		subAccountId?: number
 	): Promise<TransactionSignature> {
 		const { txSig } = await this.sendTransaction(
 			await this.buildTransaction(
-				await this.getCancelClobOrderIx(params, subAccountId),
+				await this.getCancelOrderV1Ix(params, subAccountId),
 				txParams
 			),
 			[],
@@ -14271,7 +14316,7 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Builds a `modifyClobOrder` instruction: cancel and replace in one call, gated on the net
+	 * Builds a `modifyOrderV1` instruction: cancel and replace in one call, gated on the net
 	 * margin change.
 	 *
 	 * The order keeps its id — a reprice is one order that moved, not two orders — and loses its
@@ -14284,13 +14329,13 @@ export class VelocityClient {
 	 * @param instructionsSysvar - Pass when asking for a below-default activation delay.
 	 * @returns The instruction.
 	 */
-	public async getModifyClobOrderIx(
-		params: ModifyClobOrderParams,
+	public async getModifyOrderV1Ix(
+		params: ModifyOrderV1Params,
 		subAccountId?: number,
 		instructionsSysvar?: PublicKey
 	): Promise<TransactionInstruction> {
 		const clob = await this.getClobAccounts(params.marketIndex);
-		return await this.program.instruction.modifyClobOrder(params, {
+		return await this.program.instruction.modifyOrderV1(params, {
 			accounts: {
 				state: await this.getStatePublicKey(),
 				user: await this.getUserAccountPublicKey(subAccountId),
@@ -14305,17 +14350,17 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Modifies one resting CLOB order. See `getModifyClobOrderIx`.
+	 * Modifies one resting CLOB order. See `getModifyOrderV1Ix`.
 	 * @returns The transaction signature.
 	 */
-	public async modifyClobOrder(
-		params: ModifyClobOrderParams,
+	public async modifyOrderV1(
+		params: ModifyOrderV1Params,
 		txParams?: TxParams,
 		subAccountId?: number
 	): Promise<TransactionSignature> {
 		const { txSig } = await this.sendTransaction(
 			await this.buildTransaction(
-				await this.getModifyClobOrderIx(params, subAccountId),
+				await this.getModifyOrderV1Ix(params, subAccountId),
 				txParams
 			),
 			[],
@@ -14325,7 +14370,7 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Builds a `cancelAllClobOrders` instruction: pull a whole side (or both) off the book in one
+	 * Builds a `cancelOrdersV1` instruction: pull a whole side (or both) off the book in one
 	 * CPI, unwinding from per-side totals so the cost does not grow with the ladder.
 	 *
 	 * The book caps how many orders one sweep removes and reports whether it finished. When it did
@@ -14336,12 +14381,12 @@ export class VelocityClient {
 	 * @param subAccountId - Sub-account holding the orders; defaults to the active one.
 	 * @returns The instruction.
 	 */
-	public async getCancelAllClobOrdersIx(
-		params: CancelAllClobOrdersParams,
+	public async getCancelOrdersV1Ix(
+		params: CancelOrdersV1Params,
 		subAccountId?: number
 	): Promise<TransactionInstruction> {
 		const clob = await this.getClobAccounts(params.marketIndex);
-		return await this.program.instruction.cancelAllClobOrders(params, {
+		return await this.program.instruction.cancelOrdersV1(params, {
 			accounts: {
 				state: await this.getStatePublicKey(),
 				user: await this.getUserAccountPublicKey(subAccountId),
@@ -14356,17 +14401,17 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Cancels every resting CLOB order on the named sides. See `getCancelAllClobOrdersIx`.
+	 * Cancels every resting CLOB order on the named sides. See `getCancelOrdersV1Ix`.
 	 * @returns The transaction signature.
 	 */
-	public async cancelAllClobOrders(
-		params: CancelAllClobOrdersParams,
+	public async cancelOrdersV1(
+		params: CancelOrdersV1Params,
 		txParams?: TxParams,
 		subAccountId?: number
 	): Promise<TransactionSignature> {
 		const { txSig } = await this.sendTransaction(
 			await this.buildTransaction(
-				await this.getCancelAllClobOrdersIx(params, subAccountId),
+				await this.getCancelOrdersV1Ix(params, subAccountId),
 				txParams
 			),
 			[],

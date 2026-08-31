@@ -2437,54 +2437,6 @@ impl<'a> TransactionBuilder<'a> {
         self
     }
 
-    /// Rest a plain limit order on the market's CLOB.
-    ///
-    /// A book order has no `User.orders` slot. Velocity reserves the worst-case
-    /// open-order aggregates and gates margin exactly as a DLOB placement does,
-    /// then places the order on the book. Its id comes from the account's own
-    /// `next_order_id`, so a client names it the same way wherever it rests, and
-    /// the instruction returns the order's `ClobOrderRefV0`.
-    ///
-    /// The order is not matchable until its activation slot. Asking for less
-    /// than the book's default delay needs the transaction co-signed by the flow
-    /// authority, which is what swift's attestation provides; pass
-    /// `instructions_sysvar` in that case and leave it `false` otherwise, since
-    /// naming it costs an account lock.
-    ///
-    /// * `params` - market, side, price, size, expiry, activation delay, and
-    ///   whether to refuse resting crossed (what post-only asks for)
-    /// * `clob` - the market's book, its registry entry and the CLOB program
-    pub fn place_clob_order(
-        mut self,
-        params: program::instructions::PlaceClobOrderParams,
-        clob: ClobFillAccounts,
-        attested: bool,
-    ) -> Self {
-        let accounts = build_accounts(
-            self.program_data,
-            program::accounts::PlaceClobOrder {
-                state: *state_account(),
-                user: self.sub_account,
-                authority: self.authority,
-                quoter: clob.quoter,
-                clob_market: clob.clob_market,
-                clob_program: clob.clob_program,
-                clob_authority: clob.clob_authority,
-                instructions_sysvar: attested.then_some(SYSVAR_INSTRUCTIONS_PUBKEY),
-            },
-            [self.account_data.as_ref()].into_iter(),
-            std::iter::once(&MarketId::perp(params.market_index))
-                .chain(self.force_markets.readable.iter()),
-            self.force_markets.writeable.iter(),
-        );
-
-        self.ixs.push(Instruction {
-            program_id: constants::PROGRAM_ID,
-            accounts,
-            data: InstructionData::data(&program::instruction::PlaceClobOrder { params }),
-        });
-        self
-    }
 
     /// Cancel all orders for account
     pub fn cancel_all_orders(mut self) -> Self {
@@ -2659,84 +2611,6 @@ impl<'a> TransactionBuilder<'a> {
             self.ixs.push(ix);
         }
 
-        self
-    }
-
-    /// Add a place and make instruction (perp-only; spot variant removed upstream).
-    ///
-    /// * `order` - the order to place
-    /// * `taker_info` - taker account address and data
-    /// * `taker_order_id` - the id of the taker's order to match with
-    /// * `referrer` - authority of the taker's referrer, if any
-    pub fn place_and_make(
-        mut self,
-        order: OrderParams,
-        taker_info: &(Pubkey, User),
-        taker_order_id: u32,
-        referrer: Option<Pubkey>,
-    ) -> Self {
-        let (taker, taker_account) = taker_info;
-        let is_perp = order.market_type == MarketType::Perp;
-        let perp_writable = [MarketId::perp(order.market_index)];
-        let spot_writable = [MarketId::spot(order.market_index), MarketId::QUOTE_SPOT];
-        let mut accounts = build_accounts(
-            self.program_data,
-            program::accounts::PlaceAndMake {
-                state: *state_account(),
-                authority: self.authority,
-                user: self.sub_account,
-                user_stats: Wallet::derive_stats_account(&self.owner()),
-                taker: *taker,
-                taker_stats: Wallet::derive_stats_account(&taker_account.authority),
-            },
-            [self.account_data.as_ref(), taker_account].into_iter(),
-            self.force_markets.readable.iter(),
-            if is_perp {
-                perp_writable.iter()
-            } else {
-                spot_writable.iter()
-            }
-            .chain(self.force_markets.writeable.iter()),
-        );
-
-        // Upstream drift removed User.margin_mode; high-leverage mode now
-        // comes exclusively from individual OrderParams flags.
-        if order.high_leverage_mode() {
-            accounts.push(AccountMeta::new(*high_leverage_mode_account(), false));
-        }
-
-        // A taker order missing from the supplied account (a stale cache, or an order that has
-        // not landed yet) is treated as carrying a builder, so the escrow is attached rather
-        // than omitted. Attaching one that is not needed is harmless: the program peeks at the
-        // account and ignores anything that is not an initialized escrow.
-        let taker_order_has_builder = taker_account
-            .orders
-            .iter()
-            .find(|order| order.order_id == taker_order_id)
-            .is_none_or(|order| order.has_builder());
-        if taker_order_has_builder || referrer.is_some() {
-            accounts.push(AccountMeta::new(
-                derive_revenue_share_escrow(&taker_account.authority),
-                false,
-            ));
-            if let Some(referrer) = referrer {
-                accounts.push(AccountMeta::new_readonly(
-                    Wallet::derive_stats_account(&referrer),
-                    false,
-                ));
-            }
-        }
-
-        let ix = Instruction {
-            program_id: constants::PROGRAM_ID,
-            accounts,
-            data: InstructionData::data(&program::instruction::PlaceAndMakePerpOrder {
-                params: order,
-                taker_order_id,
-            }),
-        };
-
-        self.ixs.push(ix);
         self
     }
 

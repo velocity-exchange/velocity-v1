@@ -75,6 +75,21 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
             .unwrap_or_default()
     }
 
+    fn oracle_band(&self, index: usize, market_margin_ratio_initial: u32) -> u32 {
+        self.quoted
+            .get(index)
+            .map(|quoted| {
+                if quoted.max_oracle_deviation_bps == 0 {
+                    market_margin_ratio_initial
+                } else {
+                    quoted
+                        .max_oracle_deviation_bps
+                        .min(market_margin_ratio_initial)
+                }
+            })
+            .unwrap_or(market_margin_ratio_initial)
+    }
+
     fn resting_levels(
         &mut self,
         index: usize,

@@ -22,7 +22,10 @@ import {
 	buildPlaceOrdersInstruction,
 } from './instructions/orders';
 import { buildFillPerpOrderInstruction } from './instructions/fill';
-import { buildTriggerOrderInstruction } from './instructions/trigger';
+import {
+	buildTriggerOrderInstruction,
+	buildTriggerOrderV1Instruction,
+} from './instructions/trigger';
 import { buildSettlePnlInstruction } from './instructions/settlement';
 import { buildLiquidatePerpInstruction } from './instructions/liquidation';
 import { buildUpdateFundingRateInstruction } from './instructions/funding';
@@ -309,6 +312,32 @@ export class VelocityCore {
 	}
 
 	/**
+	 * Builds a `triggerOrderV1` instruction, firing a DLOB stop-market straight
+	 * to the book. See `buildTriggerOrderV1Instruction`.
+	 */
+	static async buildTriggerOrderV1Instruction(args: {
+		program: VelocityProgram;
+		marketIndex: number;
+		orderId: number;
+		state: PublicKey;
+		filler: PublicKey;
+		fillerStats: PublicKey;
+		user: PublicKey;
+		userStats: PublicKey;
+		authority: PublicKey;
+		quoter: PublicKey;
+		clobMarket: PublicKey;
+		clobProgram: PublicKey;
+		clobAuthority: PublicKey;
+		remainingAccounts: AccountMeta[];
+		signedRoute?: PublicKey[];
+		crankConditions?: PublicKey;
+		triggerConditions?: PublicKey;
+	}): Promise<TransactionInstruction> {
+		return await buildTriggerOrderV1Instruction(args);
+	}
+
+	/**
 	 * Builds a `settlePnl` instruction, settling `user`'s realized/expired perp PnL on
 	 * `marketIndex` against the quote spot market vault. Fully permissionless: `authority`
 	 * does not need to own or be a delegate of `user` — any signer can crank this.
@@ -435,28 +464,31 @@ export class VelocityCore {
 	 * order or the instruction throws. Any unfilled remainder of the just-placed maker
 	 * order is auto-cancelled.
 	 * @param args.program - Anchor `Program<Velocity>` used to build the instruction.
-	 * @param args.orderParams - an `OrderParams` object; `baseAssetAmount` is BASE_PRECISION (1e9), `price`/`oraclePriceOffset` are PRICE_PRECISION (1e6).
-	 * @param args.takerOrderId - the on-chain order ID of `taker`'s resting order being filled.
+	 * @param args.orderParams - an `OrderParams` object; `baseAssetAmount` is BASE_PRECISION (1e9), `price` is PRICE_PRECISION (1e6).
 	 * @param args.state - the global `State` PDA.
 	 * @param args.user - the maker's `User` account.
 	 * @param args.userStats - the maker's `UserStats` PDA.
-	 * @param args.taker - the taker's `User` account (order owner being filled).
-	 * @param args.takerStats - the taker's `UserStats` PDA.
 	 * @param args.authority - signer that must own or be a registered delegate of `user` (the maker).
-	 * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`, followed by any additional maker/referrer `(User, UserStats)` pairs needed to fill `taker`'s order, followed by `taker`'s `RevenueShareEscrow` account if builder codes are enabled, and, when that taker is referred, the referrer's readonly `UserStats` after the escrow.
-	 * @returns the unsigned `placeAndMakePerpOrder` `TransactionInstruction`.
+	 * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`.
+	 * @param args.clobAccounts - the market's CLOB accounts (`crankConditions` optional).
+	 * @returns the unsigned `placeAndMakePerpOrderV1` `TransactionInstruction`.
 	 */
 	static async buildPlaceAndMakePerpOrderInstruction(args: {
 		program: VelocityProgram;
 		orderParams: any;
-		takerOrderId: number;
 		state: PublicKey;
 		user: PublicKey;
 		userStats: PublicKey;
-		taker: PublicKey;
-		takerStats: PublicKey;
 		authority: PublicKey;
 		remainingAccounts: AccountMeta[];
+		clobAccounts: {
+			quoter: PublicKey;
+			clobMarket: PublicKey;
+			clobProgram: PublicKey;
+			clobAuthority: PublicKey;
+			crankConditions?: PublicKey;
+		};
+		activationDelaySlots?: number | null;
 	}): Promise<TransactionInstruction> {
 		return await buildPlaceAndMakePerpOrderInstruction(args);
 	}

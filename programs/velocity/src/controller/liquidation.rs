@@ -1229,7 +1229,6 @@ pub fn liquidate_perp_with_fill(
         liquidator_stats_loader,
         makers_and_referrer,
         makers_and_referrer_stats,
-        None,
         clock,
         FillMode::Liquidation,
         &mut None,

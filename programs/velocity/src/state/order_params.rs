@@ -1208,6 +1208,11 @@ pub struct PlaceOrderOptions {
     pub risk_increasing: bool,
     pub explanation: OrderActionExplanation,
     pub existing_position_direction_override: Option<PositionDirection>,
+    /// Emit the `Place` `OrderActionRecord` and `OrderRecord` for the built
+    /// order. A maker that rests straight on the CLOB clears this: its CLOB
+    /// placement record is the one statement about the order, and the ephemeral
+    /// place record would be a redundant second one for the same resting order.
+    pub emit_place_record: bool,
 }
 
 impl Default for PlaceOrderOptions {
@@ -1219,6 +1224,7 @@ impl Default for PlaceOrderOptions {
             risk_increasing: false,
             explanation: OrderActionExplanation::None,
             existing_position_direction_override: None,
+            emit_place_record: true,
         }
     }
 }

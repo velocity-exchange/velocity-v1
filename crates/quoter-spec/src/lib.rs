@@ -585,6 +585,15 @@ pub const BASE_PRECISION: u64 = 1_000_000_000;
 pub struct UserCapV0 {
     /// Quote this user may lose filling on the swept side.
     pub budget: u64,
+    /// The most base the book may fill against this user's **reduce-only**
+    /// resting orders on the swept side. `u64::MAX` means no reduce-only cap.
+    ///
+    /// Unlike [`Self::budget`], this **is** a trust boundary. The book is
+    /// position-blind, so a reduce-only order can only be safe if the caller
+    /// bounds its fill to the position it may reduce. The book enforces it at
+    /// match time and never fills a reduce-only order past it. A reduce-only
+    /// order whose owner carries no cap here is not filled at all.
+    pub base_cover: u64,
     /// Index into the accompanying user set.
     pub index: u8,
 }
@@ -624,7 +633,8 @@ pub struct UserCapsV0 {
 
 /// Encoded width of a [`UserCapsV0`]. One constant rather than an assertion
 /// per program, which is the point of declaring the shape once.
-pub const USER_CAPS_BYTES: usize = USER_EXCLUSION_BITMAP_BYTES + 1 + USER_CAPS_CAPACITY * (8 + 1);
+pub const USER_CAPS_BYTES: usize =
+    USER_EXCLUSION_BITMAP_BYTES + 1 + USER_CAPS_CAPACITY * (8 + 8 + 1);
 
 impl Default for UserCapsV0 {
     fn default() -> Self {
@@ -639,6 +649,7 @@ impl UserCapsV0 {
         caps: [UserCapV0 {
             index: 0,
             budget: 0,
+            base_cover: u64::MAX,
         }; USER_CAPS_CAPACITY],
     };
 
@@ -683,7 +694,11 @@ impl UserCapsV0 {
                 set.exclude(cap.index as usize);
                 continue;
             }
-            if cap.budget == u64::MAX {
+            // An unbounded budget alone says nothing, but a finite `base_cover`
+            // still needs a slot: it is the reduce-only clamp the book cannot
+            // reconstruct on its own. A cap unbounded on both is the only one
+            // worth no slot.
+            if cap.budget == u64::MAX && cap.base_cover == u64::MAX {
                 continue;
             }
             // Insertion sort into a fixed array: the list is eight long and
@@ -817,6 +832,15 @@ pub const L3_ROW_FLAG_TAKER_ORIGIN: u8 = 1;
 /// an order inside the book's grace window is passed over whatever its size,
 /// and it leaves that window on its own with nothing writing to the book.
 pub const L3_ROW_FLAG_BLOCKS_WALK: u8 = 2;
+
+/// The order is reduce-only: it may fill only up to the owner's position in the
+/// reduce direction, and its owner carries an authoritative `base_cover` cap.
+///
+/// A caller that settles a fill against this row must know it is reduce-only,
+/// both to bind the fill to the cover its own accounting reserved and to stop
+/// tracking the owner's reduce-only exposure once the order leaves the book.
+/// The quoter sets it, so the reader never reads the owner's position to guess.
+pub const L3_ROW_FLAG_REDUCE_ONLY: u8 = 4;
 
 /// Encoded width of an [`L3RowV0`].
 pub const L3_ROW_BYTES: usize = core::mem::size_of::<L3RowV0>();
@@ -1452,6 +1476,7 @@ mod tests {
         let caps = (0..9).map(|index| UserCapV0 {
             index,
             budget: 1_000 - index as u64,
+            base_cover: u64::MAX,
         });
         let set = UserCapsV0::from_caps(caps);
 
@@ -1474,7 +1499,11 @@ mod tests {
     /// it leaves the eight for users who can still fill.
     #[test]
     fn no_room_costs_no_slot() {
-        let set = UserCapsV0::from_caps((0..20).map(|index| UserCapV0 { index, budget: 0 }));
+        let set = UserCapsV0::from_caps((0..20).map(|index| UserCapV0 {
+            index,
+            budget: 0,
+            base_cover: u64::MAX,
+        }));
 
         assert_eq!(set.len, 0);
         for index in 0..20 {
@@ -1489,6 +1518,7 @@ mod tests {
         let set = UserCapsV0::from_caps((0..20).map(|index| UserCapV0 {
             index,
             budget: u64::MAX,
+            base_cover: u64::MAX,
         }));
 
         assert_eq!(set.len, 0);

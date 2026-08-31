@@ -14,7 +14,11 @@
 import { BN } from '@coral-xyz/anchor';
 import { PositionDirection } from '../types';
 import { isVariant } from '../types';
-import { BASE_PRECISION, ZERO } from '../constants/numericConstants';
+import {
+	BASE_PRECISION,
+	MARGIN_PRECISION,
+	ZERO,
+} from '../constants/numericConstants';
 
 /** Levels processed per book; anything past this is ignored (Rust: `MAX_LEVELS_PER_BOOK`). */
 export const MAX_LEVELS_PER_BOOK = 128;
@@ -422,4 +426,72 @@ export function isChangeNotionalInQuote(
 		quote,
 		orders
 	);
+}
+
+/**
+ * How far from oracle a fill on a quoter entry may price, in MARGIN_PRECISION
+ * units — the mirror of `QuoterV0::oracle_band`.
+ *
+ * The market's `marginRatioInitial` is the ceiling. A maker's declaration can
+ * only bring it in, which is what makes the declaration safe to take from the
+ * maker rather than from the admin.
+ */
+export function quoterOracleBand(
+	maxOracleDeviationBps: number,
+	marketMarginRatioInitial: number
+): number {
+	return maxOracleDeviationBps === 0
+		? marketMarginRatioInitial
+		: Math.min(maxOracleDeviationBps, marketMarginRatioInitial);
+}
+
+/**
+ * Whether a maker filled at `price` sits inside `band` of `oraclePrice` — the
+ * mirror of `limit_price_breaches_maker_oracle_price_bands`, which every
+ * external quoter leg is held to.
+ *
+ * One-sided, in the maker's favour: a maker buying below oracle or selling
+ * above it is never breaching. Only the direction that moves value off the
+ * maker is bounded, which is the direction a compromised quoter moves it.
+ *
+ * `makerDirection` is the maker's side, so the opposite of the taker's.
+ */
+export function makerPriceBreachesOracleBand(
+	price: BN,
+	makerDirection: PositionDirection,
+	oraclePrice: BN,
+	band: number
+): boolean {
+	const oracle = oraclePrice.abs();
+	if (oracle.isZero()) {
+		return false;
+	}
+	const diff = isVariant(makerDirection, 'long')
+		? price.sub(oracle)
+		: oracle.sub(price);
+	if (diff.lte(ZERO)) {
+		return false;
+	}
+	return diff.mul(MARGIN_PRECISION).div(oracle).gten(band);
+}
+
+/**
+ * Whether a book's report of `base` filled or removed for a maker is inside
+ * what velocity reserved for them — the mirror of the
+ * `PerpPosition::reserved_open_base` bound every external unwind is held to.
+ *
+ * `openBids` / `openAsks` come straight off the maker's `PerpPosition`. They
+ * are written at placement under the owner's signature, so a quoter cannot
+ * inflate them; a report above them fails the fill on-chain.
+ */
+export function isReportWithinReservation(
+	openBids: BN,
+	openAsks: BN,
+	makerDirection: PositionDirection,
+	base: BN
+): boolean {
+	const reserved = isVariant(makerDirection, 'long')
+		? BN.max(openBids, ZERO)
+		: BN.min(openAsks, ZERO).abs();
+	return base.lte(reserved);
 }

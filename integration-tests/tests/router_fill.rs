@@ -19,8 +19,8 @@ use {
     velocity::{
         controller::position::PositionDirection,
         instructions::{
-            CancelAllClobOrdersParams, CancelClobOrderParams, InitializeQuoterArgs,
-            PlaceClobOrderParams, QuoterAccountMetaArg, UpdateQuoterAccountsArgs,
+            CancelOrderV1Params, CancelOrdersV1Params, InitializeQuoterArgs, QuoterAccountMetaArg,
+            UpdateQuoterAccountsArgs,
         },
         math::constants::{
             AMM_RESERVE_PRECISION, PEG_PRECISION, PRICE_PRECISION, QUOTE_PRECISION_I64,
@@ -30,6 +30,7 @@ use {
             clob_crank::CrankCostUnitsV0,
             market_status::MarketStatus,
             oracle::OracleSource,
+            order_params::{OrderParams, PostOnlyParam},
             perp_market::PerpMarket,
             prop_amm::{
                 ClobCancelSides, ClobOrderRefV0, Direction, L3ArgsV0, L3ResponseV0, L3RowV0,
@@ -475,6 +476,22 @@ fn register_clob_quoter(
     quoter
 }
 
+/// Test-local mirror of the folded-away `place_clob_order` args, so the many
+/// call sites stay unchanged. It maps onto `place_and_make_perp_order_v1`: the
+/// direction/price/size/max_ts become a limit `OrderParams`, `reject_if_crossed`
+/// maps onto `post_only` (true = MustPostOnly, false = rest crossed), and
+/// `activation_delay_slots` rides through.
+#[allow(dead_code)]
+struct PlaceClobOrderParams {
+    market_index: u16,
+    direction: PositionDirection,
+    price: u64,
+    base_asset_amount: u64,
+    max_ts: i64,
+    activation_delay_slots: Option<u32>,
+    reject_if_crossed: bool,
+}
+
 fn place_clob_order_ix(
     user: Pubkey,
     authority: &Keypair,
@@ -484,14 +501,39 @@ fn place_clob_order_ix(
     params: PlaceClobOrderParams,
 ) -> Instruction {
     let (clob_authority, _) = clob_authority_pda();
-    let mut accounts = velocity::accounts::PlaceClobOrder {
+    let user_stats = Pubkey::find_program_address(
+        &[b"user_stats", authority.pubkey().as_ref()],
+        &velocity_id(),
+    )
+    .0;
+    let order_params = OrderParams {
+        order_type: OrderType::Limit,
+        market_type: MarketType::Perp,
+        direction: params.direction,
+        base_asset_amount: params.base_asset_amount,
+        price: params.price,
+        market_index: params.market_index,
+        // reject_if_crossed maps onto post-only: a crossed rest is refused only
+        // when post-only. `false` rests crossed, which several setups rely on to
+        // seed book liquidity below the oracle.
+        post_only: if params.reject_if_crossed {
+            PostOnlyParam::MustPostOnly
+        } else {
+            PostOnlyParam::None
+        },
+        max_ts: (params.max_ts != 0).then_some(params.max_ts),
+        ..Default::default()
+    };
+    let mut accounts = velocity::accounts::PlaceAndMakeV1 {
         state: state_pda(),
         user,
+        user_stats,
         authority: authority.pubkey(),
         quoter,
         clob_market,
         clob_program: clob_id(),
         clob_authority,
+        crank_conditions: None,
         instructions_sysvar: None,
     }
     .to_account_metas(None);
@@ -502,7 +544,11 @@ fn place_clob_order_ix(
     Instruction {
         program_id: velocity_id(),
         accounts,
-        data: velocity::instruction::PlaceClobOrder { params }.data(),
+        data: velocity::instruction::PlaceAndMakePerpOrderV1 {
+            params: order_params,
+            activation_delay_slots: params.activation_delay_slots,
+        }
+        .data(),
     }
 }
 
@@ -565,6 +611,14 @@ fn setup() -> Fixture {
             None,
         ),
     );
+    // `place_and_make_perp_order_v1` (the maker-rest path) checks the maker's
+    // `UserStats`, so it must exist at the address `is_stats_for_user` derives.
+    let clob_maker_stats = Pubkey::find_program_address(
+        &[b"user_stats", clob_maker_authority.pubkey().as_ref()],
+        &velocity_id(),
+    )
+    .0;
+    set_user_stats_account(&mut svm, clob_maker_stats, &clob_maker_authority.pubkey());
     let registered = register_clob_quoter(&mut svm, &admin, clob_maker_user, clob_market);
     assert_eq!(registered, quoter);
 
@@ -1407,7 +1461,7 @@ fn cancel_all_clob_ix(fixture: &Fixture, sides: ClobCancelSides) -> Instruction 
     let (clob_authority, _) = clob_authority_pda();
     Instruction {
         program_id: velocity_id(),
-        accounts: velocity::accounts::CancelAllClobOrders {
+        accounts: velocity::accounts::CancelOrdersV1 {
             state: state_pda(),
             user: fixture.clob_maker_user,
             authority: fixture.clob_maker_authority.pubkey(),
@@ -1418,8 +1472,8 @@ fn cancel_all_clob_ix(fixture: &Fixture, sides: ClobCancelSides) -> Instruction 
             crank_conditions: None,
         }
         .to_account_metas(None),
-        data: velocity::instruction::CancelAllClobOrders {
-            params: CancelAllClobOrdersParams {
+        data: velocity::instruction::CancelOrdersV1 {
+            params: CancelOrdersV1Params {
                 market_index: 0,
                 sides,
             },
@@ -1502,6 +1556,13 @@ fn second_clob_maker(fixture: &mut Fixture) -> (Pubkey, Keypair) {
             None,
         ),
     );
+    // place_and_make_perp_order_v1 reads the maker's UserStats; init it.
+    let stats = Pubkey::find_program_address(
+        &[b"user_stats", authority.pubkey().as_ref()],
+        &velocity_id(),
+    )
+    .0;
+    set_user_stats_account(&mut fixture.svm, stats, &authority.pubkey());
     (user, authority)
 }
 
@@ -1572,7 +1633,7 @@ fn cu_bench_cancel_all_beats_cancelling_order_by_order() {
         .map(|order_ref| {
             let ix = Instruction {
                 program_id: velocity_id(),
-                accounts: velocity::accounts::CancelClobOrder {
+                accounts: velocity::accounts::CancelOrderV1 {
                     state: state_pda(),
                     perp_market: perp_market_pda(0),
                     user: fixture.clob_maker_user,
@@ -1583,8 +1644,8 @@ fn cu_bench_cancel_all_beats_cancelling_order_by_order() {
                     clob_authority,
                 }
                 .to_account_metas(None),
-                data: velocity::instruction::CancelClobOrder {
-                    params: CancelClobOrderParams {
+                data: velocity::instruction::CancelOrderV1 {
+                    params: CancelOrderV1Params {
                         market_index: 0,
                         order_ref: *order_ref,
                     },
@@ -1640,7 +1701,7 @@ fn cancel_clob_order_unwinds_the_reserved_aggregates() {
     let (clob_authority, _) = clob_authority_pda();
     let ix = Instruction {
         program_id: velocity_id(),
-        accounts: velocity::accounts::CancelClobOrder {
+        accounts: velocity::accounts::CancelOrderV1 {
             state: state_pda(),
             perp_market: perp_market_pda(0),
             user: fixture.clob_maker_user,
@@ -1651,8 +1712,8 @@ fn cancel_clob_order_unwinds_the_reserved_aggregates() {
             clob_authority,
         }
         .to_account_metas(None),
-        data: velocity::instruction::CancelClobOrder {
-            params: CancelClobOrderParams {
+        data: velocity::instruction::CancelOrderV1 {
+            params: CancelOrderV1Params {
                 market_index: 0,
                 order_ref,
             },
@@ -1670,7 +1731,7 @@ fn cancel_clob_order_unwinds_the_reserved_aggregates() {
     // The stale ref fails closed on a second cancel.
     let ix2 = Instruction {
         program_id: velocity_id(),
-        accounts: velocity::accounts::CancelClobOrder {
+        accounts: velocity::accounts::CancelOrderV1 {
             state: state_pda(),
             perp_market: perp_market_pda(0),
             user: fixture.clob_maker_user,
@@ -1681,8 +1742,8 @@ fn cancel_clob_order_unwinds_the_reserved_aggregates() {
             clob_authority,
         }
         .to_account_metas(None),
-        data: velocity::instruction::CancelClobOrder {
-            params: CancelClobOrderParams {
+        data: velocity::instruction::CancelOrderV1 {
+            params: CancelOrderV1Params {
                 market_index: 0,
                 order_ref,
             },
@@ -1748,7 +1809,7 @@ fn a_clob_orders_records_name_it_by_the_users_own_order_id() {
     let (clob_authority, _) = clob_authority_pda();
     let cancel = Instruction {
         program_id: velocity_id(),
-        accounts: velocity::accounts::CancelClobOrder {
+        accounts: velocity::accounts::CancelOrderV1 {
             state: state_pda(),
             perp_market: perp_market_pda(0),
             user: fixture.clob_maker_user,
@@ -1759,8 +1820,8 @@ fn a_clob_orders_records_name_it_by_the_users_own_order_id() {
             clob_authority,
         }
         .to_account_metas(None),
-        data: velocity::instruction::CancelClobOrder {
-            params: CancelClobOrderParams {
+        data: velocity::instruction::CancelOrderV1 {
+            params: CancelOrderV1Params {
                 market_index: 0,
                 order_ref,
             },
@@ -3476,7 +3537,7 @@ fn placed_trigger_cancels_through_the_clob_only() {
     let (clob_authority, _) = clob_authority_pda();
     let ix = Instruction {
         program_id: velocity_id(),
-        accounts: velocity::accounts::CancelClobOrder {
+        accounts: velocity::accounts::CancelOrderV1 {
             state: state_pda(),
             perp_market: perp_market_pda(0),
             user: fixture.clob_maker_user,
@@ -3487,8 +3548,8 @@ fn placed_trigger_cancels_through_the_clob_only() {
             clob_authority,
         }
         .to_account_metas(None),
-        data: velocity::instruction::CancelClobOrder {
-            params: CancelClobOrderParams {
+        data: velocity::instruction::CancelOrderV1 {
+            params: CancelOrderV1Params {
                 market_index: 0,
                 order_ref: velocity::state::prop_amm::ClobOrderRefV0 {
                     node_index,
@@ -6714,38 +6775,13 @@ fn a_dlob_fill_may_not_claim_a_route() {
 /// which is where a restable maker order belongs. IOC still holds in the sense
 /// that matters: the order does not occupy a `User.orders` slot afterwards.
 #[test]
-fn place_and_make_v1_rests_the_unmatched_remainder_on_the_book() {
+fn place_and_make_v1_rests_a_maker_order_on_the_book() {
     use velocity::state::order_params::{OrderParams, PostOnlyParam};
 
     let mut fixture = setup();
 
-    // A taker resting a long for half a unit at $100 — the order the maker
-    // will be matched against.
-    let taker_authority = Keypair::new();
-    let taker_user = Pubkey::new_unique();
-    let taker_stats = Pubkey::new_unique();
-    let mut taker_order = Order::default();
-    taker_order.order_id = 1;
-    taker_order.status = OrderStatus::Open;
-    taker_order.order_type = OrderType::Market;
-    taker_order.market_type = MarketType::Perp;
-    taker_order.market_index = 0;
-    taker_order.direction = PositionDirection::Long;
-    taker_order.base_asset_amount = UNIT / 2;
-    taker_order.price = 101 * PRICE;
-    taker_order.auction_end_price = (101 * PRICE) as i64;
-    set_user_account(
-        &mut fixture.svm,
-        taker_user,
-        &trading_user(
-            &taker_authority.pubkey(),
-            10_000 * SPOT_BALANCE_PRECISION_U64,
-            Some(taker_order),
-        ),
-    );
-    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
-
-    // The maker: quotes a full unit, so half is left after the taker's half.
+    // A maker quoting a full-unit ask. It provides liquidity that rests on the
+    // book; it names no taker and matches nothing on placement. JIT is gone.
     let maker_authority = Keypair::new();
     fixture
         .svm
@@ -6779,14 +6815,13 @@ fn place_and_make_v1_rests_the_unmatched_remainder_on_the_book() {
         state: state_pda(),
         user: maker_user,
         user_stats: maker_stats,
-        taker: taker_user,
-        taker_stats,
         authority: maker_authority.pubkey(),
         quoter: fixture.quoter,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
         clob_authority,
         crank_conditions: None,
+        instructions_sysvar: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -6797,20 +6832,19 @@ fn place_and_make_v1_rests_the_unmatched_remainder_on_the_book() {
         program_id: velocity_id(),
         accounts,
         data: velocity::instruction::PlaceAndMakePerpOrderV1 {
+            activation_delay_slots: None,
             params: OrderParams {
                 order_type: OrderType::Limit,
                 market_type: MarketType::Perp,
                 direction: PositionDirection::Short,
                 base_asset_amount: UNIT,
-                price: 100 * PRICE,
+                // Above the oracle/vAMM, so the post-only ask rests instead of
+                // crossing.
+                price: 105 * PRICE,
                 market_index: 0,
                 post_only: PostOnlyParam::MustPostOnly,
-                // IOC is a bit flag on the params, not a field.
-                bit_flags: velocity::state::order_params::OrderParamsBitFlag::ImmediateOrCancel
-                    as u8,
                 ..OrderParams::default()
             },
-            taker_order_id: 1,
         }
         .data(),
     };
@@ -6822,25 +6856,24 @@ fn place_and_make_v1_rests_the_unmatched_remainder_on_the_book() {
     )
     .unwrap();
 
-    // The maker sold the taker's half, and the other half is resting as a
-    // CLOB ask rather than having been cancelled.
+    // The whole order rests on the book. Nothing filled, and nothing occupies a
+    // `User.orders` slot: the maker went straight to the CLOB.
     let maker: User = read_zero_copy(&fixture.svm, &maker_user);
     assert_eq!(
-        maker.perp_positions[0].base_asset_amount,
-        -((UNIT / 2) as i64),
-        "matched the taker's half"
+        maker.perp_positions[0].base_asset_amount, 0,
+        "the maker filled nothing on placement"
     );
     assert!(
         maker
             .orders
             .iter()
             .all(|order| order.status != OrderStatus::Open),
-        "nothing rests in User.orders — IOC still holds there"
+        "nothing rests in User.orders — the maker is on the book"
     );
     assert_eq!(
         maker.perp_positions[0].open_asks,
-        -((UNIT / 2) as i64),
-        "the remainder is reserved against the book"
+        -(UNIT as i64),
+        "the full order is reserved against the book"
     );
     assert_eq!(maker.open_orders, 1);
     assert_eq!(clob_ask_count(&fixture), 1);
@@ -7662,7 +7695,7 @@ fn a_remainder_cannot_be_pulled_inside_its_window_but_force_cancel_reaches_it() 
     let (clob_authority, _) = clob_authority_pda();
     let cancel_ix = |order_ref: ClobOrderRefV0| Instruction {
         program_id: velocity_id(),
-        accounts: velocity::accounts::CancelClobOrder {
+        accounts: velocity::accounts::CancelOrderV1 {
             state: state_pda(),
             perp_market: perp_market_pda(0),
             user: taker.user,
@@ -7673,8 +7706,8 @@ fn a_remainder_cannot_be_pulled_inside_its_window_but_force_cancel_reaches_it() 
             clob_authority,
         }
         .to_account_metas(None),
-        data: velocity::instruction::CancelClobOrder {
-            params: CancelClobOrderParams {
+        data: velocity::instruction::CancelOrderV1 {
+            params: CancelOrderV1Params {
                 market_index: 0,
                 order_ref: order_ref,
             },
@@ -8025,7 +8058,7 @@ fn cancel_clob_order_for(fixture: &mut Fixture, party: &Party, order_ref: ClobOr
     let (clob_authority, _) = clob_authority_pda();
     let ix = Instruction {
         program_id: velocity_id(),
-        accounts: velocity::accounts::CancelClobOrder {
+        accounts: velocity::accounts::CancelOrderV1 {
             state: state_pda(),
             perp_market: perp_market_pda(0),
             user: party.user,
@@ -8036,8 +8069,8 @@ fn cancel_clob_order_for(fixture: &mut Fixture, party: &Party, order_ref: ClobOr
             clob_authority,
         }
         .to_account_metas(None),
-        data: velocity::instruction::CancelClobOrder {
-            params: CancelClobOrderParams {
+        data: velocity::instruction::CancelOrderV1 {
+            params: CancelOrderV1Params {
                 market_index: 0,
                 order_ref,
             },
@@ -8803,6 +8836,150 @@ fn fill_v1_rests_a_market_remainder_at_its_auction_bound() {
         best_bid,
         Some(99 * PRICE + PRICE / 2),
         "at the auction bound, not at a zero price"
+    );
+}
+
+/// A fired DLOB stop-market fills straight to the book and rests only its
+/// remainder, leaving nothing live in `User.orders`.
+///
+/// `trigger_order_v1` fires the armed trigger, routes the now-live market order
+/// against the book, and migrates the unfilled remainder as a taker-origin
+/// order in one instruction. The v0 path would instead leave a live
+/// `TriggeredAbove` slot for a later fill crank.
+#[test]
+fn trigger_order_v1_fires_a_stop_market_straight_to_the_book() {
+    use velocity::state::user::OrderTriggerCondition;
+
+    let mut fixture = setup();
+
+    let maker_stats = Pubkey::find_program_address(
+        &[
+            b"user_stats",
+            fixture.clob_maker_authority.pubkey().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    set_user_stats_account(
+        &mut fixture.svm,
+        maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+    // The vAMM would absorb the whole order; pause it so the CLOB half is the
+    // fill and a remainder survives to migrate.
+    pause_amm_fill(&mut fixture.svm);
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+
+    // A long buy-stop armed below the oracle: it fires at oracle 100, becomes a
+    // live market order, and takes the book's ask.
+    let taker_authority = Keypair::new();
+    let taker_user = Pubkey::new_unique();
+    let taker_stats = Pubkey::new_unique();
+    let mut order = Order::default();
+    order.order_id = 1;
+    order.status = OrderStatus::Open;
+    order.order_type = OrderType::TriggerMarket;
+    order.market_type = MarketType::Perp;
+    order.market_index = 0;
+    order.direction = PositionDirection::Long;
+    order.base_asset_amount = UNIT;
+    order.price = 0;
+    order.trigger_price = 99 * PRICE;
+    order.trigger_condition = OrderTriggerCondition::Above;
+    let clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    order.max_ts = clock.unix_timestamp + 1_000;
+    let mut taker_state = armed_trigger_user(
+        &taker_authority.pubkey(),
+        10_000 * SPOT_BALANCE_PRECISION_U64,
+        order,
+    );
+    taker_state.next_order_id = 2;
+    set_user_account(&mut fixture.svm, taker_user, &taker_state);
+    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
+
+    let filler_user = Pubkey::new_unique();
+    let filler_stats = Pubkey::new_unique();
+    set_user_account(
+        &mut fixture.svm,
+        filler_user,
+        &trading_user(&fixture.keeper.pubkey(), 0, None),
+    );
+    set_user_stats_account(&mut fixture.svm, filler_stats, &fixture.keeper.pubkey());
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    let (clob_authority, _) = clob_authority_pda();
+    let mut accounts = velocity::accounts::TriggerOrderV1 {
+        state: state_pda(),
+        authority: fixture.keeper.pubkey(),
+        filler: filler_user,
+        filler_stats,
+        user: taker_user,
+        user_stats: taker_stats,
+        quoter: fixture.quoter,
+        clob_market: fixture.clob_market,
+        clob_program: clob_id(),
+        clob_authority,
+        crank_conditions: None,
+        trigger_conditions: None,
+        ix_sysvar: Some(instructions_sysvar()),
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
+    accounts.push(AccountMeta::new(maker_stats, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(clob_authority, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::TriggerOrderV1 {
+            market_index: 0,
+            order_id: 1,
+            signed_route: vec![],
+        }
+        .data(),
+    };
+    send_with_ixs(
+        &mut fixture.svm,
+        &fixture.keeper,
+        &[compute_unit_limit_ix(400_000), ix],
+        &[],
+    )
+    .unwrap();
+
+    let taker: User = read_zero_copy(&fixture.svm, &taker_user);
+    assert_eq!(
+        taker.perp_positions[0].base_asset_amount,
+        (UNIT / 2) as i64,
+        "the fired stop took the book's half"
+    );
+    assert!(
+        taker
+            .orders
+            .iter()
+            .all(|order| order.status != OrderStatus::Open),
+        "the armed slot is freed: nothing lingers live on the DLOB"
+    );
+    assert_eq!(
+        taker.perp_positions[0].open_bids,
+        (UNIT / 2) as i64,
+        "the remainder is reserved against the book"
+    );
+    assert_eq!(
+        clob_bid_count(&fixture),
+        1,
+        "the remainder rests taker-origin on the book"
     );
 }
 

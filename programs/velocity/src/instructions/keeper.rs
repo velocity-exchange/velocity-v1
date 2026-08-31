@@ -122,7 +122,7 @@ use {
 #[access_control(
     fill_not_paused(&ctx.accounts.state)
 )]
-pub fn handle_fill_perp_order<'c: 'info, 'info>(
+pub fn handle_legacy_fill_perp_order<'c: 'info, 'info>(
     ctx: Context<'info, FillOrder<'info>>,
     order_id: Option<u32>,
     signed_route: Vec<Pubkey>,
@@ -385,7 +385,6 @@ fn fill_order<'c: 'info, 'info>(
         &accounts.filler_stats,
         &makers_and_referrer,
         &makers_and_referrer_stats,
-        None,
         clock,
         FillMode::Fill,
         &mut router_inputs,
@@ -440,9 +439,10 @@ fn fill_order<'c: 'info, 'info>(
                     .get_base_asset_amount_unfilled(Some(position_base))
                     .unwrap_or(0),
                 order.max_ts,
+                order.reduce_only,
             ))
         };
-        if let Some((direction, price, unfilled, max_ts)) = remainder {
+        if let Some((direction, price, unfilled, max_ts, reduce_only)) = remainder {
             if unfilled > 0 {
                 controller::orders::cancel_order_by_order_id(
                     order_id,
@@ -469,6 +469,9 @@ fn fill_order<'c: 'info, 'info>(
                     max_ts,
                     order_id,
                     true,
+                    false,
+                    reduce_only,
+                    None,
                     clock,
                 )?;
             }
@@ -499,7 +502,7 @@ pub fn handle_revert_fill<'info>(ctx: Context<RevertFill>) -> Result<()> {
 #[access_control(
     fill_not_paused(&ctx.accounts.state)
 )]
-pub fn handle_trigger_order<'c: 'info, 'info>(
+pub fn handle_legacy_trigger_order<'c: 'info, 'info>(
     ctx: Context<'info, TriggerOrder<'info>>,
     order_id: u32,
 ) -> Result<()> {
@@ -922,7 +925,7 @@ pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
 
     // The message was stale, replayed, or past its placement deadline. Those
     // are no-ops rather than failures, so there is nothing to fill.
-    let Some(placed) = placed else {
+    let Some(mut placed) = placed else {
         return Ok(());
     };
     validate!(
@@ -933,10 +936,12 @@ pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
         market_index
     )?;
 
+    // The fill mutates the ephemeral order's filled amounts in place; the rest
+    // leg reads its remainder from there.
     let filled = fill_signed_msg_taker_order(
         &ctx,
         tail,
-        &placed,
+        &mut placed,
         &state,
         &perp_market_map,
         &spot_market_map,
@@ -978,7 +983,7 @@ pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
 fn fill_signed_msg_taker_order<'c: 'info, 'info>(
     ctx: &Context<'info, PlaceSignedMsgTakerOrder<'info>>,
     tail: &'info [AccountInfo<'info>],
-    placed: &PlacedSignedMsgOrder,
+    placed: &mut PlacedSignedMsgOrder,
     state: &State,
     perp_market_map: &PerpMarketMap<'info>,
     spot_market_map: &SpotMarketMap<'info>,
@@ -992,9 +997,9 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
     let market_index = placed.market_index;
     let (direction, unfilled, taker_ref, quote_limit_price) = {
         let user = load!(ctx.accounts.user)?;
-        let order = user
-            .get_order(placed.order_id)
-            .ok_or(ErrorCode::OrderDoesNotExist)?;
+        // The order lives on `placed`, not `user.orders`. It is the taker order
+        // this leg fills detached.
+        let order = &placed.order;
         let position_base = user
             .get_perp_position(market_index)
             .map(|position| position.base_asset_amount)
@@ -1071,7 +1076,7 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
     let route = crate::instructions::QuotedRoute::assemble(tail, &inputs, &mut cpi_scratch)?;
     route.require_baseline(perp_market_map.get_ref(&market_index)?.clob_quoter)?;
-    let digest = crate::state::order_params::route_digest(&placed.route);
+    let digest = placed.route_digest;
     route.require_signed_route(&placed.route, digest)?;
 
     let obligation = crate::math::router::FillerObligation {
@@ -1098,7 +1103,12 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
     };
 
     let (base_asset_amount_filled, _) = controller::orders::fill_perp_order_with_router(
-        controller::orders::FillTarget::Slot(placed.order_id),
+        // The taker order is ephemeral: it never reserved, so the fill unwinds
+        // no exposure for it.
+        controller::orders::FillTarget::Detached {
+            order: &mut placed.order,
+            reserved: false,
+        },
         state,
         &ctx.accounts.user,
         &ctx.accounts.user_stats,
@@ -1109,7 +1119,6 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
         &ctx.accounts.filler_stats,
         makers_and_referrer,
         makers_and_referrer_stats,
-        None,
         clock,
         FillMode::PlaceAndTake(placed.is_immediate_or_cancel, 0),
         &mut router_inputs,
@@ -1146,10 +1155,9 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
         if user.is_being_liquidated() {
             return Ok(());
         }
-        let Ok(order_index) = user.get_order_index(placed.order_id) else {
-            return Ok(());
-        };
-        let order = &user.orders[order_index];
+        // The order lives on `placed`, not `user.orders`. Its filled amounts
+        // were updated in place by the fill leg.
+        let order = &placed.order;
         if base_asset_amount_filled == 0 && !order.has_auction() {
             return Ok(());
         }
@@ -1164,23 +1172,10 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
             .map(|price| (order.direction, price, unfilled, order.max_ts))
     };
 
-    // Immediate-or-cancel asked for no residual. Cancelling it here is what
-    // makes the order safe to accept on this path at all: nothing of it is
-    // stored, so it cannot fill after the window its signer allowed.
+    // Immediate-or-cancel asked for no residual. The order never persisted, so
+    // dropping it is enough — nothing of it can fill after the window its signer
+    // allowed.
     if placed.is_immediate_or_cancel {
-        if load!(ctx.accounts.user)?
-            .get_order_index(placed.order_id)
-            .is_ok()
-        {
-            controller::orders::cancel_order_by_order_id(
-                placed.order_id,
-                &ctx.accounts.user,
-                perp_market_map,
-                spot_market_map,
-                oracle_map,
-                clock,
-            )?;
-        }
         return Ok(());
     }
 
@@ -1191,14 +1186,8 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
         return Ok(());
     }
 
-    controller::orders::cancel_order_by_order_id(
-        placed.order_id,
-        &ctx.accounts.user,
-        perp_market_map,
-        spot_market_map,
-        oracle_map,
-        clock,
-    )?;
+    // No slot to cancel: the order never entered `user.orders`. Its remainder
+    // migrates straight onto the CLOB.
     let (_, clob_authority_nonce) = crate::signer::find_clob_authority();
     let rested = crate::instructions::try_place_remainder_on_clob(
         &ctx.accounts.user,
@@ -1217,6 +1206,9 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
         max_ts,
         placed.order_id,
         true,
+        false,
+        placed.order.reduce_only,
+        None,
         clock,
     )?;
 
@@ -1224,11 +1216,7 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
         ctx.accounts
             .signed_msg_user_orders
             .load_mut()?
-            .set_resting_route(
-                placed.uuid,
-                clob_order_id,
-                crate::state::order_params::route_digest(&placed.route),
-            );
+            .set_resting_route(placed.uuid, clob_order_id, placed.route_digest);
     }
     Ok(())
 }
@@ -1543,7 +1531,9 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
         market_index,
     )?;
 
-    controller::orders::place_perp_order(
+    // The taker order never enters `user.orders`. It is built, margin-checked,
+    // routed straight to the book, and only its remainder rests on the CLOB.
+    let Some(ephemeral_order) = controller::orders::place_ephemeral_perp_order(
         state,
         taker,
         taker_key,
@@ -1558,10 +1548,16 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
             ..PlaceOrderOptions::default()
         },
         &mut builder_order,
-    )?;
+    )?
+    else {
+        // The order soft-skipped its build (expired `max_ts`, or a `TryPostOnly`
+        // that would cross). There is nothing to fill or rest.
+        return Ok((escrow_zc, None));
+    };
 
-    let order_params_hash =
-        base64::encode(solana_program::hash::hash(&borsh::to_vec(&signature).unwrap()).as_ref());
+    // `signature` is `[u8; 64]`; borsh serializes it as its raw bytes, so hash
+    // the array directly rather than allocating an identical copy.
+    let order_params_hash = base64::encode(solana_program::hash::hash(&signature).as_ref());
 
     emit!(SignedMsgOrderRecord {
         user: taker_key,
@@ -1580,8 +1576,10 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
         escrow_zc,
         Some(PlacedSignedMsgOrder {
             order_id: signed_msg_order_id.order_id,
+            order: ephemeral_order,
             uuid: signed_msg_order_id.uuid,
             market_index,
+            route_digest: signed_msg_order_id.route_digest,
             route: verified_message_and_signature.route.unwrap_or_default(),
             is_immediate_or_cancel: matching_taker_order_params.is_immediate_or_cancel(),
         }),
@@ -1595,11 +1593,19 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
 /// borrow. This is the state that has to cross that boundary.
 pub struct PlacedSignedMsgOrder {
     pub order_id: u32,
+    /// The ephemeral taker order. It never enters `user.orders`: the fill leg
+    /// routes it detached and mutates its filled amounts here, and the rest leg
+    /// reads its remainder from here to migrate onto the CLOB.
+    pub order: crate::state::user::Order,
     pub uuid: [u8; 8],
     pub market_index: u16,
     /// The custom quoters the taker's message named. The fill must carry every
     /// one of them; the CLOB and the vAMM are the baseline and are not listed.
     pub route: Vec<Pubkey>,
+    /// The digest of `route`, computed once at placement. The fill and the rest
+    /// both hold the quoters they carry against it, so it is cached rather than
+    /// re-hashed at each.
+    pub route_digest: crate::state::order_params::RouteDigest,
     /// The taker asked for no remainder to rest.
     pub is_immediate_or_cancel: bool,
 }

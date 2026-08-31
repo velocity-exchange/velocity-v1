@@ -10,303 +10,17 @@ use {
             add_new_position, get_position_index, increase_open_bids_and_asks, PositionDirection,
         },
         error::ErrorCode,
-        instructions::{
-            constraints::*,
-            optional_accounts::{load_maps, AccountMaps},
-        },
         load_mut,
         math::{margin::meets_place_order_margin_requirement, orders::is_order_position_reducing},
         msg,
-        signer::CLOB_AUTHORITY_SEED,
         state::{
-            market_status::MarketStatus,
-            perp_market_map::MarketSet,
             prop_amm::{ClobMarket, ClobPlaceOrderArgsV0, ClobSide, QuoterV0},
-            state::State,
             user::User,
         },
         validate,
     },
     anchor_lang::prelude::*,
 };
-
-#[derive(Accounts)]
-#[instruction(params: PlaceClobOrderParams)]
-pub struct PlaceClobOrder<'info> {
-    pub state: AccountLoader<'info, State>,
-    #[account(
-        mut,
-        constraint = can_sign_for_user(&user, &authority)?
-    )]
-    pub user: AccountLoader<'info, User>,
-    pub authority: Signer<'info>,
-    /// The CLOB's registry entry for this market — placement is only allowed
-    /// on a vetted book.
-    pub quoter: AccountLoader<'info, QuoterV0>,
-    /// CHECK: validated against the quoter entry's registered execute
-    /// accounts in the handler (the vetted CPI surface names the book).
-    #[account(mut)]
-    pub clob_market: UncheckedAccount<'info>,
-    /// CHECK: locked to the registered quoter program.
-    #[account(address = quoter.load()?.program_id)]
-    pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
-    /// is set to. Its own key, distinct from the per-entry signer a
-    /// third-party quoter is handed: signer privilege is inherited by a
-    /// callee, and this one may place and cancel on any book, for any user.
-    #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
-    pub clob_authority: UncheckedAccount<'info>,
-    /// CHECK: the instructions sysvar, locked by address. Required only for
-    /// a faster-than-default activation delay: the handler introspects it
-    /// for the flow-authority co-signer (the attestation).
-    #[account(address = solana_program::sysvar::instructions::ID)]
-    pub instructions_sysvar: Option<UncheckedAccount<'info>>,
-}
-
-#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
-pub struct PlaceClobOrderParams {
-    pub market_index: u16,
-    /// Long rests as a bid, Short as an ask.
-    pub direction: PositionDirection,
-    pub price: u64,
-    pub base_asset_amount: u64,
-    /// 0 = good-till-cancelled.
-    pub max_ts: i64,
-    /// None = the CLOB market's default speed bump. Anything below the
-    /// default requires the flow-authority attestation (the transaction
-    /// co-signed by `State.hot_flow_authority`, introspected off the
-    /// instructions sysvar); the CLOB clamps to its max.
-    pub activation_delay_slots: Option<u32>,
-    /// Refuse the placement when the order would cross the opposite best
-    /// price, rather than resting it crossed. What a post-only order asks for.
-    ///
-    /// It is not what makes the order a maker. A CLOB order always fills at
-    /// its own price on the maker fee schedule — a router taker takes it
-    /// there, and a crossed pair settles through the cross crank, which runs
-    /// the protocol `User` as the taker on both legs. This is about the order
-    /// resting at all: a maker that quotes through the other side has
-    /// mispriced and would rather place nothing.
-    pub reject_if_crossed: bool,
-}
-
-#[access_control(
-    exchange_not_paused(&ctx.accounts.state)
-)]
-pub fn handle_place_clob_order<'c: 'info, 'info>(
-    ctx: Context<'info, PlaceClobOrder<'info>>,
-    params: PlaceClobOrderParams,
-) -> Result<()> {
-    let clock = Clock::get()?;
-    let state = ctx.accounts.state.load()?;
-
-    let mut remaining_accounts = ctx.remaining_accounts.iter().peekable();
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
-        &mut remaining_accounts,
-        &MarketSet::new(),
-        &MarketSet::new(),
-        clock.slot,
-        state.slot_clock(),
-        Some(state.oracle_guard_rails),
-    )?;
-
-    let clob = {
-        let quoter = ctx.accounts.quoter.load()?;
-        validate!(
-            quoter.is_active && quoter.is_approved,
-            ErrorCode::DefaultError,
-            "CLOB quoter is not active and approved"
-        )?;
-        ClobMarket::from_quoter(
-            &quoter,
-            params.market_index,
-            &ctx.accounts.clob_market,
-            &ctx.accounts.clob_program,
-            &ctx.accounts.clob_authority,
-            ctx.bumps.clob_authority,
-        )?
-    };
-    {
-        let market = perp_market_map.get_ref(&params.market_index)?;
-        validate!(
-            matches!(market.status, MarketStatus::Active),
-            ErrorCode::MarketPlaceOrderPaused,
-            "market not active"
-        )?;
-    }
-
-    // The speed bump is the taker protection that replaced JIT; skipping it
-    // is reserved for attested flow — a transaction the flow authority
-    // (swift) co-signed after serving the hold window off-chain. Anything
-    // at-or-above the book's default needs no attestation.
-    if let Some(requested) = params.activation_delay_slots {
-        let default_delay = clob.reader().order_rules()?.default_activation_delay_slots;
-        if requested < default_delay {
-            let flow_authority = state.hot_key(crate::state::state::HotRole::FlowAuthority);
-            validate!(
-                flow_authority != Pubkey::default(),
-                ErrorCode::UnattestedFastActivation,
-                "no flow authority is configured; fast activation is disabled"
-            )?;
-            let sysvar = ctx.accounts.instructions_sysvar.as_ref().ok_or_else(|| {
-                msg!("fast activation needs the instructions sysvar for attestation");
-                ErrorCode::UnattestedFastActivation
-            })?;
-            validate!(
-                crate::instructions::optional_accounts::tx_co_signed_by(sysvar, &flow_authority)?,
-                ErrorCode::UnattestedFastActivation,
-                "activation delay {} is below the default {} and the transaction is not \
-                 co-signed by the flow authority",
-                requested,
-                default_delay
-            )?;
-        }
-    }
-
-    // CPI the placement. Identity travels in the args in derivable form —
-    // the book stores (authority, sub_account_id), not the User key, so
-    // off-chain readers can derive every user-hung PDA from a node.
-    let side = match params.direction {
-        PositionDirection::Long => ClobSide::Bid,
-        PositionDirection::Short => ClobSide::Ask,
-    };
-    // The order's id comes from the `User`'s own counter, the one that numbers
-    // its DLOB orders, so a client names every order it owns the same way
-    // wherever the order rests. The book stores it and reports it back on
-    // every answer, which is what keeps the two id spaces from ever needing a
-    // map between them.
-    let (user_ref, client_order_id) = {
-        let mut user = load_mut!(ctx.accounts.user)?;
-        let client_order_id = crate::get_then_update_id!(user, next_order_id);
-        (
-            crate::state::prop_amm::ClobUserRefV0 {
-                authority: user.authority,
-                sub_account_id: user.sub_account_id.into(),
-            },
-            client_order_id,
-        )
-    };
-    // The CLOB returns the new order's ref; it stays the transaction's return
-    // data (clients persist it as the cancel hint) and is decoded here so a
-    // malformed response fails the placement.
-    let order_ref = clob.place(ClobPlaceOrderArgsV0 {
-        side,
-        price: params.price,
-        base_asset_amount: params.base_asset_amount,
-        activation_delay_slots: params.activation_delay_slots,
-        max_ts: params.max_ts,
-        user: user_ref,
-        // A placement whose price its owner chose, not a migrated remainder.
-        taker_origin: false,
-        client_order_id,
-        reject_if_crossed: params.reject_if_crossed,
-    })?;
-
-    // Reserve the worst-case aggregates, then gate margin exactly like a
-    // DLOB placement (initial margin in the risk scope when risk-increasing,
-    // maintenance otherwise). Failure unwinds the CPI with the tx.
-    let mut user = load_mut!(ctx.accounts.user)?;
-    validate!(
-        !user.is_bankrupt(),
-        ErrorCode::UserBankrupt,
-        "user bankrupt"
-    )?;
-    // Placement gates place_perp_order applies, mirrored so the book is not a
-    // way around them. A user being liquidated cannot add orders; an account in
-    // a non-default pool cannot trade this market.
-    crate::math::liquidation::validate_user_not_being_liquidated(
-        &mut user,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
-        state.liquidation_margin_buffer_ratio,
-    )?;
-    validate!(
-        user.pool_id == 0,
-        ErrorCode::InvalidPoolId,
-        "user pool id ({}) != 0",
-        user.pool_id
-    )?;
-    let position_index = get_position_index(&user.perp_positions, params.market_index)
-        .or_else(|_| add_new_position(&mut user.perp_positions, params.market_index))?;
-    let risk_increasing = !is_order_position_reducing(
-        &params.direction,
-        params.base_asset_amount,
-        user.perp_positions[position_index].base_asset_amount,
-    )?;
-    // Reduce-only mode — the user's (set by the vaults program on a depositor
-    // liquidation) or the market's — cannot be enforced at fill on the book, so
-    // a risk-increasing placement is refused rather than clamped. A reducing
-    // order still rests.
-    if risk_increasing {
-        validate!(
-            !user.is_reduce_only(),
-            ErrorCode::UserReduceOnly,
-            "user is reduce-only; a risk-increasing order cannot rest on the book"
-        )?;
-        validate!(
-            !perp_market_map
-                .get_ref(&params.market_index)?
-                .is_reduce_only()?,
-            ErrorCode::MarketPlaceOrderPaused,
-            "market is reduce-only; a risk-increasing order cannot rest on the book"
-        )?;
-    }
-    validate!(
-        user.perp_positions[position_index].open_orders < u8::MAX,
-        ErrorCode::MaxNumberOfOrders,
-        "position open order count at max"
-    )?;
-    increase_open_bids_and_asks(
-        &mut user.perp_positions[position_index],
-        &params.direction,
-        params.base_asset_amount,
-        true,
-    )?;
-    user.perp_positions[position_index].open_orders += 1;
-    user.increment_open_orders(false);
-    user.update_last_active_slot(clock.slot);
-
-    let isolated_market_index = (risk_increasing
-        && user.perp_positions[position_index].is_isolated())
-    .then_some(params.market_index);
-    meets_place_order_margin_requirement(
-        &user,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
-        risk_increasing,
-        isolated_market_index,
-    )?;
-
-    drop(user);
-    super::emit_clob_place_record(
-        clock.unix_timestamp,
-        &ctx.accounts.user.key(),
-        super::ClobOrderFacts {
-            order_id: client_order_id,
-            market_index: params.market_index,
-            direction: params.direction,
-            price: params.price,
-            base_asset_amount: params.base_asset_amount,
-            base_asset_amount_filled: 0,
-            max_ts: params.max_ts,
-            slot: clock.slot,
-            taker_origin: false,
-        },
-    )?;
-
-    msg!(
-        "placed clob order {} (node {}) for user {}",
-        order_ref.order_id,
-        order_ref.node_index,
-        ctx.accounts.user.key()
-    );
-    Ok(())
-}
 
 /// The price an unfilled remainder can rest at on the book, or `None` when it
 /// cannot rest at all.
@@ -326,8 +40,11 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
 /// option written at the taker's own worst price.
 ///
 /// Everything else stays behind. An oracle-floating price has nothing fixed
-/// to rest at, reduce-only has no meaning on the book, and a trigger has its
-/// own placement path.
+/// to rest at, and a trigger-limit has its own placement path. A fired
+/// trigger-market does rest: once it fires it is a plain market order, and its
+/// remainder belongs on the book. A reduce-only order rests too: the router
+/// carries an authoritative `base_cover`, so the book clamps every fill against
+/// it to the position it may reduce.
 ///
 /// A `post_only` order never migrates either. It is a maker's own quote, not a
 /// taker remainder — migrating it would cancel the maker's resting order, hide
@@ -336,19 +53,79 @@ pub fn handle_place_clob_order<'c: 'info, 'info>(
 /// maker order belongs where its owner placed it.
 pub fn restable_remainder_price(order: &crate::state::user::Order) -> Option<u64> {
     use crate::state::user::{OrderStatus, OrderType};
-    if order.status != OrderStatus::Open
-        || order.has_oracle_price_offset()
-        || order.reduce_only
-        || order.post_only
-    {
+    if order.status != OrderStatus::Open || order.has_oracle_price_offset() || order.post_only {
         return None;
     }
     let price = match order.order_type {
         OrderType::Limit => order.price,
-        OrderType::Market => order.auction_end_price.max(0).unsigned_abs(),
+        // A market order and a fired trigger-market both rest at their auction
+        // bound: the worst fill they already agreed to, and the only price a
+        // market order has. A fired trigger-market is a market order that
+        // started as a conditional; once it fires, its remainder belongs on the
+        // book like any other.
+        OrderType::Market | OrderType::TriggerMarket => {
+            order.auction_end_price.max(0).unsigned_abs()
+        }
         _ => return None,
     };
     (price != 0).then_some(price)
+}
+
+/// Gate a below-default activation delay on the flow authority's attestation.
+///
+/// The speed bump is the taker protection that replaced JIT. Skipping it is
+/// reserved for attested flow: a transaction the flow authority (swift)
+/// co-signed after serving the hold window off-chain. A delay at or above the
+/// book's default needs no attestation, and `None` takes the default.
+#[allow(clippy::too_many_arguments)]
+pub fn attest_activation_delay<'info>(
+    state: &crate::state::state::State,
+    quoter_loader: &AccountLoader<'info, QuoterV0>,
+    clob_market: &AccountInfo<'info>,
+    clob_program: &AccountInfo<'info>,
+    clob_authority: &AccountInfo<'info>,
+    clob_authority_nonce: u8,
+    market_index: u16,
+    requested: Option<u32>,
+    instructions_sysvar: Option<&AccountInfo<'info>>,
+) -> Result<()> {
+    let Some(requested) = requested else {
+        return Ok(());
+    };
+    let clob = {
+        let quoter = quoter_loader.load()?;
+        ClobMarket::from_quoter(
+            &quoter,
+            market_index,
+            clob_market,
+            clob_program,
+            clob_authority,
+            clob_authority_nonce,
+        )?
+    };
+    let default_delay = clob.reader().order_rules()?.default_activation_delay_slots;
+    if requested >= default_delay {
+        return Ok(());
+    }
+    let flow_authority = state.hot_key(crate::state::state::HotRole::FlowAuthority);
+    validate!(
+        flow_authority != Pubkey::default(),
+        ErrorCode::UnattestedFastActivation,
+        "no flow authority is configured; fast activation is disabled"
+    )?;
+    let sysvar = instructions_sysvar.ok_or_else(|| {
+        msg!("fast activation needs the instructions sysvar for attestation");
+        ErrorCode::UnattestedFastActivation
+    })?;
+    validate!(
+        crate::instructions::optional_accounts::tx_co_signed_by(sysvar, &flow_authority)?,
+        ErrorCode::UnattestedFastActivation,
+        "activation delay {} is below the default {} and the transaction is not \
+         co-signed by the flow authority",
+        requested,
+        default_delay
+    )?;
+    Ok(())
 }
 
 /// Rest an unfilled taker remainder on the CLOB: if it can rest and be
@@ -397,6 +174,20 @@ pub fn try_place_remainder_on_clob<'info>(
     // fees when a later order crossed it. A maker rest also refuses to rest
     // crossed, which is what post-only asked for.
     taker_origin: bool,
+    // Refuse to rest when the order would cross the opposite best price, rather
+    // than resting it crossed. What a post-only maker asks for. A taker
+    // remainder passes `false` — it came to trade and must rest even crossed,
+    // where the cross crank matches it at the counterparty's price.
+    reject_if_crossed: bool,
+    // Whether this order only reduces its owner's position. The book clamps a
+    // fill against it to the owner's `base_cover` cap, so a reduce-only order
+    // can rest on a position-blind book without a fill ever increasing the
+    // position it should shrink.
+    reduce_only: bool,
+    // The book speed bump the order rests behind. `None` takes the book's
+    // default. A taker remainder always passes `None`; only a maker place sets
+    // it, and the caller attests a below-default value before it reaches here.
+    activation_delay_slots: Option<u32>,
     clock: &Clock,
 ) -> Result<Option<u64>> {
     let clob = {
@@ -503,7 +294,7 @@ pub fn try_place_remainder_on_clob<'info>(
         side,
         price,
         base_asset_amount,
-        activation_delay_slots: None,
+        activation_delay_slots,
         max_ts,
         user: user_ref,
         // A taker remainder rests taker-origin so a cross settles at the
@@ -514,7 +305,8 @@ pub fn try_place_remainder_on_clob<'info>(
         // A taker remainder must rest even if crossed — refusing would strand
         // the taker that came to trade. A maker remainder refuses to rest
         // crossed, which is what post-only asked for.
-        reject_if_crossed: !taker_origin,
+        reject_if_crossed,
+        reduce_only,
     });
     let order_ref = match placement {
         Ok(order_ref) => order_ref,
@@ -540,6 +332,15 @@ pub fn try_place_remainder_on_clob<'info>(
             return Ok(None);
         }
     };
+
+    // The remainder now rests. A reduce-only rest arms the position's counter,
+    // so the router caps its fills to the position it may reduce until it
+    // leaves the book.
+    if reduce_only {
+        let mut user = load_mut!(user_loader)?;
+        let position_index = get_position_index(&user.perp_positions, market_index)?;
+        user.perp_positions[position_index].arm_reduce_only_clob();
+    }
 
     super::emit_clob_place_record(
         clock.unix_timestamp,

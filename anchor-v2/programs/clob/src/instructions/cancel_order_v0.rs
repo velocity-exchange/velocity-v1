@@ -51,6 +51,7 @@ pub fn handle_cancel_order_v0(
         base_asset_amount: removed.base_asset_amount,
         side: removed.side,
         taker_origin: removed.taker_origin,
+        reduce_only: removed.reduce_only,
         max_ts: removed.max_ts,
     })
 }

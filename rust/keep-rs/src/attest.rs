@@ -2,7 +2,7 @@
 //! that marks a fill as attested retail flow.
 //!
 //! Quoters gating on `require_attested_flow` (the midpoint) only quote
-//! attested transactions, and `place_clob_order` only grants
+//! attested transactions, and place_and_make_perp_order_v1 only grants
 //! faster-than-default activation to them — so a swift-order fill that
 //! carries the co-signature reaches strictly more liquidity. The flow:
 //! build the fill with the flow authority as a read-only co-signer (hung

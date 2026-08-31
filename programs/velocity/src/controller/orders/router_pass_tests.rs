@@ -370,6 +370,7 @@ pub mod amm_jit {
             false,
             false,
             0,
+            true,
         )
         .unwrap();
         taker.orders[0] = order;
@@ -700,6 +701,7 @@ pub mod amm_jit {
             false,
             false,
             0,
+            true,
         )
         .unwrap();
         taker.orders[0] = order;
@@ -740,6 +742,318 @@ pub mod amm_jit {
         assert_eq!(
             market_after.amm.base_asset_amount_with_amm,
             (AMM_RESERVE_PRECISION / 2) as i128
+        );
+    }
+
+    /// The same fixture as the external-book fill above, except the user the
+    /// book names has no reservation: no CLOB placement was ever made for
+    /// them, so `open_asks` is zero and no open-order slot was ever taken.
+    ///
+    /// A book may name any user the transaction carries, and the loaded set
+    /// holds strangers — rival sources' makers, the referrer. Without the
+    /// reservation bound the only ceiling on what a book could open for one of
+    /// them is their free collateral. With it the fill fails outright: the size
+    /// the book claims to have filled is size that user never posted.
+    #[test]
+    fn router_pass_refuses_a_book_filling_a_user_who_reserved_nothing() {
+        use crate::state::prop_amm::{
+            CompletedOrderV0, Direction, ExecuteResponseV0, ExternalQuoterExecutor, PriceLevel,
+            QuoterType, UserBalanceChangeV0,
+        };
+
+        struct MockClobExecutor {
+            user: Pubkey,
+            user_ref: crate::state::prop_amm::ClobUserRefV0,
+            price: u64,
+        }
+        impl ExternalQuoterExecutor<'static> for MockClobExecutor {
+            fn quoter_type(&self, _index: usize) -> QuoterType {
+                QuoterType::Clob
+            }
+            fn quoter_user(&self, _index: usize) -> Pubkey {
+                self.user
+            }
+            fn quoter_key(&self, _index: usize) -> Pubkey {
+                self.user
+            }
+            fn subjects(
+                &self,
+                _index: usize,
+                _direction: Direction,
+                _size: u64,
+            ) -> crate::error::VelocityResult<crate::state::prop_amm::QuoterSubjects> {
+                Ok(crate::state::prop_amm::QuoterSubjects::Book)
+            }
+            fn execute(
+                &mut self,
+                _index: usize,
+                _direction: Direction,
+                size: u64,
+            ) -> crate::error::VelocityResult<crate::state::prop_amm::ResponseLocationV0<'static>>
+            {
+                let quote_size =
+                    ((size as u128) * (self.price as u128) / BASE_PRECISION_U64 as u128) as u64;
+                Ok(response_account(
+                    &[UserBalanceChangeV0 {
+                        base_size: size,
+                        quote_size,
+                        user: self.user_ref,
+                        _pad: [0; 6],
+                    }],
+                    &[CompletedOrderV0 {
+                        order_id: 1,
+                        change_index: 0,
+                        client_order_id: 0,
+                    }],
+                ))
+            }
+        }
+
+        let now = 0_i64;
+        let slot = 0_u64;
+
+        let mut oracle_price = get_pyth_price(100, 6);
+        let oracle_price_key =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        create_anchor_account_info!(
+            oracle_price,
+            &oracle_price_key,
+            PythLazerOracle,
+            oracle_account_info
+        );
+        let mut oracle_map =
+            OracleMap::load_one(&oracle_account_info, slot, SlotClock::baseline(), None).unwrap();
+
+        let mut market = PerpMarket {
+            amm: AMM {
+                base_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                quote_asset_reserve: 100 * AMM_RESERVE_PRECISION,
+                base_asset_amount_with_amm: (AMM_RESERVE_PRECISION / 2) as i128,
+                sqrt_k: 100 * AMM_RESERVE_PRECISION,
+                peg_multiplier: 100 * PEG_PRECISION,
+                max_slippage_ratio: 50,
+                max_fill_reserve_fraction: 100,
+                base_spread: 20000,
+                ..AMM::default()
+            },
+            base_asset_amount_long: (AMM_RESERVE_PRECISION / 2) as i128,
+            order_step_size: 1000,
+            order_tick_size: 1,
+            oracle: oracle_price_key,
+            oracle_source: crate::state::oracle::OracleSource::PythLazer,
+            market_stats: MarketStats {
+                historical_oracle_data: HistoricalOracleData {
+                    last_oracle_price: (100 * PRICE_PRECISION) as i64,
+                    last_oracle_price_twap: (100 * PRICE_PRECISION) as i64,
+                    last_oracle_price_twap_5min: (100 * PRICE_PRECISION) as i64,
+                    ..HistoricalOracleData::default()
+                },
+                ..MarketStats::default()
+            },
+            margin_ratio_initial: 1000,
+            margin_ratio_maintenance: 500,
+            status: MarketStatus::Initialized,
+            ..PerpMarket::default_test()
+        };
+        market.amm.max_base_asset_reserve = u64::MAX as u128;
+        market.amm.min_base_asset_reserve = 0;
+
+        create_anchor_account_info!(market, PerpMarket, market_account_info);
+        let market_map = PerpMarketMap::load_one(&market_account_info, true).unwrap();
+
+        let mut spot_market = SpotMarket {
+            market_index: 0,
+            oracle_source: OracleSource::QuoteAsset,
+            cumulative_deposit_interest: SPOT_CUMULATIVE_INTEREST_PRECISION,
+            decimals: 6,
+            initial_asset_weight: SPOT_WEIGHT_PRECISION,
+            maintenance_asset_weight: SPOT_WEIGHT_PRECISION,
+            historical_oracle_data: HistoricalOracleData::default_price(QUOTE_PRECISION_I64),
+            ..SpotMarket::default()
+        };
+        create_anchor_account_info!(spot_market, SpotMarket, spot_market_account_info);
+        let spot_market_map = SpotMarketMap::load_one(&spot_market_account_info, true).unwrap();
+
+        let mut taker = User {
+            orders: get_orders(Order {
+                market_index: 0,
+                status: OrderStatus::Open,
+                order_type: OrderType::Market,
+                direction: PositionDirection::Long,
+                base_asset_amount: BASE_PRECISION_U64,
+                slot: 0,
+                auction_start_price: 0,
+                auction_end_price: 105 * PRICE_PRECISION_I64,
+                price: 105 * PRICE_PRECISION_U64,
+                auction_duration: 0,
+                ..Order::default()
+            }),
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                open_orders: 1,
+                open_bids: BASE_PRECISION_I64,
+                ..PerpPosition::default()
+            }),
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 100 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+
+        // DLOB maker: 0.5 ask at 100.
+        let maker_key = Pubkey::from_str("My11111111111111111111111111111111111111113").unwrap();
+        let maker_authority =
+            Pubkey::from_str("J83w4HKfqxwcq3BEMMkPFSppX3gqekLyLJBexebFVkix").unwrap();
+        let mut maker = User {
+            authority: maker_authority,
+            orders: get_orders(Order {
+                market_index: 0,
+                post_only: true,
+                order_type: OrderType::Limit,
+                direction: PositionDirection::Short,
+                base_asset_amount: BASE_PRECISION_U64 / 2,
+                price: 100 * PRICE_PRECISION_U64,
+                ..Order::default()
+            }),
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                open_orders: 1,
+                open_asks: -BASE_PRECISION_I64 / 2,
+                ..PerpPosition::default()
+            }),
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 100 * 100 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+        create_anchor_account_info!(maker, &maker_key, User, maker_account_info);
+        let mut makers_and_referrers = UserMap::load_one(&maker_account_info).unwrap();
+
+        // The stranger the book names: loaded, solvent, and holding no
+        // reservation at all — nothing was ever placed for them.
+        let clob_maker_key =
+            Pubkey::from_str("CLoB111111111111111111111111111111111111111").unwrap();
+        let clob_maker_authority =
+            Pubkey::from_str("6ncQ5nmiZjHJK8QPGevKJnnLKtSXjZ4Q2r8bTHTNiFEf").unwrap();
+        let mut clob_maker = User {
+            authority: clob_maker_authority,
+            perp_positions: get_positions(PerpPosition {
+                market_index: 0,
+                ..PerpPosition::default()
+            }),
+            spot_positions: get_spot_positions(SpotPosition {
+                market_index: 0,
+                balance_type: SpotBalanceType::Deposit,
+                scaled_balance: 100 * 100 * SPOT_BALANCE_PRECISION_U64,
+                ..SpotPosition::default()
+            }),
+            ..User::default()
+        };
+        create_anchor_account_info!(clob_maker, &clob_maker_key, User, clob_maker_account_info);
+        makers_and_referrers.0.insert(
+            clob_maker_key,
+            anchor_lang::prelude::AccountLoader::try_from(&clob_maker_account_info).unwrap(),
+        );
+
+        let mut filler = User::default();
+        let fee_structure = get_fee_structure();
+        let (taker_key, _, filler_key) = get_user_keys();
+        let mut taker_stats = UserStats::default();
+        let mut maker_stats = UserStats {
+            authority: maker_authority,
+            ..UserStats::default()
+        };
+        create_anchor_account_info!(maker_stats, UserStats, maker_stats_account_info);
+        let mut maker_and_referrer_stats =
+            UserStatsMap::load_one(&maker_stats_account_info).unwrap();
+        let mut clob_maker_stats = UserStats {
+            authority: clob_maker_authority,
+            ..UserStats::default()
+        };
+        create_anchor_account_info!(clob_maker_stats, UserStats, clob_maker_stats_account_info);
+        maker_and_referrer_stats.0.insert(
+            clob_maker_authority,
+            anchor_lang::prelude::AccountLoader::try_from(&clob_maker_stats_account_info).unwrap(),
+        );
+        let mut filler_stats = UserStats::default();
+
+        // External CLOB book: 0.5 at 99 — the best price on the fill.
+        let external_levels = [PriceLevel {
+            price: 99 * PRICE_PRECISION_U64,
+            size: BASE_PRECISION_U64 / 2,
+        }];
+        let external_books = [crate::math::router::QuoterBook {
+            priority: QuoterType::Clob.default_priority(),
+            levels: &external_levels,
+            withheld: PriceLevel::default(),
+        }];
+        let mut executor = MockClobExecutor {
+            user: clob_maker_key,
+            user_ref: crate::state::prop_amm::ClobUserRefV0 {
+                authority: clob_maker_authority,
+                sub_account_id: 0,
+            },
+            price: 99 * PRICE_PRECISION_U64,
+        };
+        let mut router_inputs = crate::math::router::RouterFillInputs {
+            books: &external_books,
+            executor: &mut executor,
+            protocol_authority: Pubkey::default(),
+            // Test fixtures stand in for a taker-signed fill: no filler
+            // obligation, so a withheld book does not end the pass.
+            obligation: crate::math::router::FillerObligation {
+                taker_signed: true,
+                tx_accounts: None,
+                unrouted_quoters: 0,
+            },
+        };
+
+        let mut order = taker.orders[0];
+        let result = fulfill_perp_order(
+            &mut taker,
+            &mut order,
+            &taker_key,
+            &mut taker_stats,
+            &makers_and_referrers,
+            &maker_and_referrer_stats,
+            &[maker_row(
+                &makers_and_referrers,
+                &maker_key,
+                0,
+                100 * PRICE_PRECISION_U64,
+            )],
+            &mut Some(&mut filler),
+            &filler_key,
+            &mut Some(&mut filler_stats),
+            &spot_market_map,
+            &market_map,
+            &mut oracle_map,
+            &crate::state::state::ValidityGuardRails::default(),
+            &fee_structure,
+            Some(market.market_stats.historical_oracle_data.last_oracle_price),
+            now,
+            slot,
+            true,
+            FillMode::Fill,
+            false,
+            &mut router_inputs,
+            &mut None,
+            false,
+            false,
+            0,
+            true,
+        );
+        taker.orders[0] = order;
+
+        assert_eq!(
+            result,
+            Err(crate::error::ErrorCode::QuoterReportExceedsReservation)
         );
     }
 
@@ -1054,6 +1368,7 @@ pub mod amm_jit {
             false,
             false,
             0,
+            true,
         );
         taker.orders[0] = order;
 
@@ -1304,6 +1619,7 @@ pub mod amm_jit {
             false,
             false,
             0,
+            true,
         )
         .unwrap();
         taker.orders[0] = order;
@@ -1471,5 +1787,195 @@ mod amm_house_capture {
         .unwrap();
         assert_eq!(quote, 25_500_001);
         assert_eq!(surplus, 500_001);
+    }
+}
+
+/// A book's report is held to what velocity reserved for the user it names.
+///
+/// The reservation is the only record velocity keeps of a plain CLOB order, and
+/// it is written under the owner's own signature — so it is what stops a book
+/// from opening a position for someone who never placed one, or from filling
+/// more than they posted.
+#[cfg(test)]
+pub mod hostile_book_reports {
+    use {
+        super::*,
+        crate::{
+            controller::position::{
+                release_reserved_open_base, release_reserved_open_orders, PositionDirection,
+            },
+            error::ErrorCode,
+            math::constants::{BASE_PRECISION_I64, BASE_PRECISION_U64},
+            state::{
+                prop_amm::{QuoterType, QuoterV0},
+                user::{OrderBitFlag, OrderStatus, OrderTriggerCondition, OrderType, User},
+            },
+        },
+    };
+
+    fn resting(direction: PositionDirection, base: u64) -> PerpPosition {
+        let mut position = PerpPosition {
+            market_index: 0,
+            open_orders: 1,
+            ..PerpPosition::default()
+        };
+        match direction {
+            PositionDirection::Long => position.open_bids = base as i64,
+            PositionDirection::Short => position.open_asks = -(base as i64),
+        }
+        position
+    }
+
+    #[test]
+    fn reserved_open_base_reads_the_side_the_orders_rest_on() {
+        let position = PerpPosition {
+            market_index: 0,
+            open_bids: 3 * BASE_PRECISION_I64,
+            open_asks: -2 * BASE_PRECISION_I64,
+            ..PerpPosition::default()
+        };
+        assert_eq!(
+            position.reserved_open_base(PositionDirection::Long),
+            3 * BASE_PRECISION_U64
+        );
+        assert_eq!(
+            position.reserved_open_base(PositionDirection::Short),
+            2 * BASE_PRECISION_U64
+        );
+
+        // A position with nothing resting reserves nothing on either side,
+        // which is the case that stops a book naming a stranger.
+        let idle = PerpPosition::default();
+        assert_eq!(idle.reserved_open_base(PositionDirection::Long), 0);
+        assert_eq!(idle.reserved_open_base(PositionDirection::Short), 0);
+    }
+
+    #[test]
+    fn a_release_up_to_the_reservation_is_exact() {
+        let mut position = resting(PositionDirection::Short, BASE_PRECISION_U64);
+        release_reserved_open_base(
+            &mut position,
+            &PositionDirection::Short,
+            BASE_PRECISION_U64 / 4,
+        )
+        .unwrap();
+        assert_eq!(position.open_asks, -3 * BASE_PRECISION_I64 / 4);
+
+        release_reserved_open_base(
+            &mut position,
+            &PositionDirection::Short,
+            3 * BASE_PRECISION_U64 / 4,
+        )
+        .unwrap();
+        assert_eq!(position.open_asks, 0);
+    }
+
+    #[test]
+    fn a_release_past_the_reservation_fails_instead_of_clamping() {
+        let mut position = resting(PositionDirection::Short, BASE_PRECISION_U64);
+        assert_eq!(
+            release_reserved_open_base(
+                &mut position,
+                &PositionDirection::Short,
+                BASE_PRECISION_U64 + 1,
+            ),
+            Err(ErrorCode::QuoterReportExceedsReservation)
+        );
+        assert_eq!(position.open_asks, -BASE_PRECISION_I64);
+    }
+
+    #[test]
+    fn a_user_with_nothing_resting_cannot_be_named_at_all() {
+        let mut position = PerpPosition {
+            market_index: 0,
+            ..PerpPosition::default()
+        };
+        assert_eq!(
+            release_reserved_open_base(&mut position, &PositionDirection::Long, 1),
+            Err(ErrorCode::QuoterReportExceedsReservation)
+        );
+    }
+
+    /// A report on the side the user did not post on is the same as a report
+    /// against a user who posted nothing.
+    #[test]
+    fn a_release_on_the_other_side_is_not_covered_by_this_sides_reservation() {
+        let mut position = resting(PositionDirection::Short, BASE_PRECISION_U64);
+        assert_eq!(
+            release_reserved_open_base(&mut position, &PositionDirection::Long, 1),
+            Err(ErrorCode::QuoterReportExceedsReservation)
+        );
+    }
+
+    #[test]
+    fn retired_order_counts_are_held_to_the_slots_that_are_open() {
+        let mut position = PerpPosition {
+            market_index: 0,
+            open_orders: 2,
+            ..PerpPosition::default()
+        };
+        release_reserved_open_orders(&mut position, 2).unwrap();
+        assert_eq!(position.open_orders, 0);
+        assert_eq!(
+            release_reserved_open_orders(&mut position, 1),
+            Err(ErrorCode::QuoterReportExceedsReservation)
+        );
+    }
+
+    /// An evicted trigger's shadow row takes back the remainder the book
+    /// reports. A report above the row's own size would grow the order.
+    #[test]
+    fn an_evicted_trigger_cannot_be_re_armed_larger_than_it_was() {
+        let placed = Order {
+            status: OrderStatus::Open,
+            market_index: 0,
+            market_type: MarketType::Perp,
+            order_type: OrderType::TriggerLimit,
+            trigger_condition: OrderTriggerCondition::TriggeredAbove,
+            base_asset_amount: BASE_PRECISION_U64,
+            bit_flags: OrderBitFlag::PlacedOnClob as u8,
+            ..Order::default()
+        };
+        let mut user = User {
+            perp_positions: crate::test_utils::get_positions(PerpPosition {
+                market_index: 0,
+                open_orders: 1,
+                ..PerpPosition::default()
+            }),
+            orders: crate::test_utils::get_orders(placed),
+            ..User::default()
+        };
+        user.orders[0].set_clob_order_ref(0, 7);
+
+        assert_eq!(
+            user.re_arm_placed_trigger_slot(0, 7, BASE_PRECISION_U64 + 1, 0),
+            Err(ErrorCode::QuoterReportExceedsReservation)
+        );
+
+        // The honest case still re-arms with the unfilled remainder.
+        assert!(user
+            .re_arm_placed_trigger_slot(0, 7, BASE_PRECISION_U64 / 2, 0)
+            .unwrap());
+        assert_eq!(user.orders[0].base_asset_amount, BASE_PRECISION_U64 / 2);
+    }
+
+    /// A maker's declared band only ever tightens the market's.
+    #[test]
+    fn a_declared_band_cannot_widen_the_markets() {
+        let mut entry = QuoterV0 {
+            quoter_type: QuoterType::Custom,
+            ..QuoterV0::default()
+        };
+
+        // Undeclared: the market's band stands.
+        assert_eq!(entry.oracle_band(1000), 1000);
+
+        // Tighter: the declaration stands.
+        entry.max_oracle_deviation_bps = 250;
+        assert_eq!(entry.oracle_band(1000), 250);
+
+        // Wider than the market's: the market's still stands.
+        entry.max_oracle_deviation_bps = 5000;
+        assert_eq!(entry.oracle_band(1000), 1000);
     }
 }

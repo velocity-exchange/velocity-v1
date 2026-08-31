@@ -1,7 +1,7 @@
 //! Pull every order a maker holds on a CLOB — one side or both — in a single
 //! instruction.
 //!
-//! The per-order [`super::cancel_clob_order`] is what a maker had before, and it
+//! The per-order [`super::cancel_order_v1`] is what a maker had before, and it
 //! costs a velocity instruction plus a CPI round trip *each*: repricing a
 //! twenty-quote ladder meant twenty of them, which at some point stops fitting
 //! in one transaction at all. Here the sweep is one CPI, and the aggregates come
@@ -21,7 +21,7 @@
 use {
     crate::{
         controller::position::{
-            decrease_open_bids_and_asks, get_position_index, PositionDirection,
+            get_position_index, release_reserved_open_base_for_exit, PositionDirection,
         },
         error::ErrorCode,
         instructions::constraints::*,
@@ -42,8 +42,8 @@ use {
 };
 
 #[derive(Accounts)]
-#[instruction(params: CancelAllClobOrdersParams)]
-pub struct CancelAllClobOrders<'info> {
+#[instruction(params: CancelOrdersV1Params)]
+pub struct CancelOrdersV1<'info> {
     pub state: AccountLoader<'info, State>,
     #[account(
         mut,
@@ -81,14 +81,14 @@ pub struct CancelAllClobOrders<'info> {
 }
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
-pub struct CancelAllClobOrdersParams {
+pub struct CancelOrdersV1Params {
     pub market_index: u16,
     pub sides: ClobCancelSides,
 }
 
-pub fn handle_cancel_all_clob_orders(
-    ctx: Context<CancelAllClobOrders>,
-    params: CancelAllClobOrdersParams,
+pub fn handle_cancel_orders_v1(
+    ctx: Context<CancelOrdersV1>,
+    params: CancelOrdersV1Params,
 ) -> Result<()> {
     let clock = Clock::get()?;
 
@@ -158,8 +158,13 @@ pub fn handle_cancel_all_clob_orders(
 
         // One unwind per side, by the summed base the sweep reported. This is
         // the whole point of the aggregate wire: the arithmetic is identical to
-        // N per-order unwinds (each placement reserved its own amount, so the
-        // sum can never exceed what is reserved) at a fixed cost.
+        // N per-order unwinds at a fixed cost, because each placement reserved
+        // its own amount. That equality holds while the book reports what it
+        // holds, which is why the release below bounds the sum by the
+        // reservation rather than trusting it.
+        //
+        // It bounds rather than fails: this is the owner's own exit, and a book
+        // that reports garbage must not be able to keep them on it.
         //
         // Both sides regardless of what was requested, so the reserve always
         // moves by exactly what left the book — the reserved aggregates track
@@ -167,11 +172,10 @@ pub fn handle_cancel_all_clob_orders(
         [PositionDirection::Long, PositionDirection::Short]
             .iter()
             .try_for_each(|direction| -> Result<()> {
-                decrease_open_bids_and_asks(
+                release_reserved_open_base_for_exit(
                     &mut user.perp_positions[position_index],
                     direction,
                     removed.base_for(*direction),
-                    true,
                 )?;
                 Ok(())
             })?;
@@ -181,6 +185,9 @@ pub fn handle_cancel_all_clob_orders(
             .open_orders
             .saturating_sub(orders.min(u8::MAX as u32) as u8);
         (0..orders).for_each(|_| user.decrement_open_orders(false));
+        // Disarm the reduce-only counter by however many the sweep removed.
+        user.perp_positions[position_index]
+            .disarm_reduce_only_clob_by(removed.reduce_only_orders().min(u16::MAX as u32) as u16);
 
         // Free the placed-trigger shadows whose live orders the sweep took.
         let shadows = crate::state::prop_amm::release_swept_trigger_shadows(

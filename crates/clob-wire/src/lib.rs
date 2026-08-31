@@ -92,6 +92,11 @@ pub struct PlaceOrderArgsV0 {
     /// mispriced, and would rather place nothing than hold a position it did
     /// not intend to take.
     pub reject_if_crossed: bool,
+    /// The order only reduces its owner's position. The book is position-blind
+    /// and cannot know that, so it is the caller's to declare. A fill against a
+    /// reduce-only order is clamped at match time to the owner's `base_cover`
+    /// cap from the execute call's user set.
+    pub reduce_only: bool,
 }
 
 /// `cancel_order_v0` arguments.
@@ -232,6 +237,10 @@ pub struct RemovedOrderV0 {
     /// which side of a cross it is resolving was demanding liquidity — hence
     /// which side's price the match settles at.
     pub taker_origin: bool,
+    /// The order was reduce-only. Reported for the same reason as
+    /// `taker_origin`: a modify removes the order and rests an equivalent one,
+    /// and must carry the flag across or the replacement rests uncapped.
+    pub reduce_only: bool,
     /// The expiry the order carried, zero for good-till-cancelled.
     ///
     /// Reported so a caller that removes an order to put an equivalent one
@@ -256,6 +265,11 @@ pub struct CancelAllOutcomeV0 {
     pub ask_base_asset_amount: u64,
     pub bid_orders: u32,
     pub ask_orders: u32,
+    /// How many of the swept orders on each side were reduce-only. The caller
+    /// tracks reduce-only resting orders per user, so it disarms exactly this
+    /// many when the sweep removes them, without a per-order report.
+    pub bid_reduce_only_orders: u32,
+    pub ask_reduce_only_orders: u32,
     /// The sweep took every order it was asked for. False means the user still
     /// has resting orders, for one of two reasons: the book stopped at its
     /// per-call cap, or it passed over a taker-origin remainder still inside

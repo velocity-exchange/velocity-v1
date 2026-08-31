@@ -3184,6 +3184,7 @@ fn place_orders<'c: 'info, 'info>(
                 risk_increasing: false,
                 explanation: OrderActionExplanation::None,
                 existing_position_direction_override: None,
+                emit_place_record: true,
             },
             &mut builder_order,
         )?);
@@ -3234,7 +3235,7 @@ fn place_orders<'c: 'info, 'info>(
 #[access_control(
     fill_not_paused(&ctx.accounts.state)
 )]
-pub fn handle_place_and_take_perp_order<'c: 'info, 'info>(
+pub fn handle_legacy_place_and_take_perp_order<'c: 'info, 'info>(
     ctx: Context<'info, PlaceAndTake<'info>>,
     params: OrderParams,
     optional_params: Option<u32>, // u32 for backwards compatibility
@@ -3343,24 +3344,46 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
         params.market_index,
     )?;
 
-    controller::orders::place_perp_order(
-        &state,
-        &mut user,
-        user_key,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
-        &clock,
-        params,
-        PlaceOrderOptions::default(),
-        &mut builder_order,
-    )?;
+    // v1 routes straight to the book: the taker order is ephemeral and never
+    // enters `user.orders`. v0's account list is frozen, so it keeps the
+    // persisted-slot placement.
+    let mut ephemeral_order: Option<crate::state::user::Order> = None;
+    if clob.is_some() {
+        ephemeral_order = controller::orders::place_ephemeral_perp_order(
+            &state,
+            &mut user,
+            user_key,
+            &perp_market_map,
+            &spot_market_map,
+            &mut oracle_map,
+            &clock,
+            params,
+            PlaceOrderOptions::default(),
+            &mut builder_order,
+        )?;
+    } else {
+        controller::orders::place_perp_order(
+            &state,
+            &mut user,
+            user_key,
+            &perp_market_map,
+            &spot_market_map,
+            &mut oracle_map,
+            &clock,
+            params,
+            PlaceOrderOptions::default(),
+            &mut builder_order,
+        )?;
+    }
 
     // `builder_order` borrows `escrow`; its borrow ends here at its last use (above), freeing
     // `escrow` to be re-borrowed for the fill below.
     drop(user);
 
-    let order_id = load!(user_loader)?.get_last_order_id();
+    let order_id = match ephemeral_order {
+        Some(ref order) => order.order_id,
+        None => load!(user_loader)?.get_last_order_id(),
+    };
 
     let fill_mode = FillMode::PlaceAndTake(
         is_immediate_or_cancel || optional_params.is_some(),
@@ -3372,125 +3395,134 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
     // (that is the keeper path's problem, and the signed route's). v0's
     // account list is frozen, so it keeps the vAMM + passed-DLOB-makers fill.
     let (base_asset_amount_filled, _) = if clob.is_some() {
-        // The tail as a subslice rather than a collected list: what the sections
-        // above consumed is the difference in the iterator's remaining length, and
-        // borrowing from there costs nothing where cloning every account did.
-        let tail_from = remaining_accounts.len() - remaining_accounts_iter.len();
-        let tail = &remaining_accounts[tail_from..];
-        let (direction, unfilled, taker_ref, quote_limit_price) = {
-            let user = load!(user_loader)?;
-            let order = user
-                .get_order(order_id)
-                .ok_or(ErrorCode::OrderDoesNotExist)?;
-            let position_base = user
-                .get_perp_position(params.market_index)
-                .map(|position| position.base_asset_amount)
-                .ok();
-            (
-                match order.direction {
-                    PositionDirection::Long => crate::state::prop_amm::Direction::Long,
-                    PositionDirection::Short => crate::state::prop_amm::Direction::Short,
-                },
-                order.get_base_asset_amount_unfilled(position_base)?,
-                crate::state::prop_amm::ClobUserRefV0 {
-                    authority: user.authority,
-                    sub_account_id: user.sub_account_id.into(),
-                },
-                fill_mode.quote_limit_price(
-                    order,
-                    clock.slot,
-                    perp_market_map
-                        .get_ref(&params.market_index)?
-                        .order_tick_size,
-                    state.slot_clock(),
-                ),
-            )
-        };
-        let (clob_authority, clob_authority_nonce) = crate::signer::find_clob_authority();
-        let route_reference_price = {
-            let oracle_id = perp_market_map.get_ref(&params.market_index)?.oracle_id();
-            oracle_map.get_price_data(&oracle_id)?.price
-        };
-        let inputs = crate::instructions::QuoteInputs {
-            // Filled in below, once the makers on the books are sized.
-            caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
-            market_index: params.market_index,
-            direction,
-            size: unfilled,
-            users: &crate::state::prop_amm::quoter_wire_users(
-                makers_and_referrer.user_ref_index()?.into_keys().map(
-                    |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
-                        authority,
-                        sub_account_id: sub_account_id.into(),
-                    },
-                ),
-            )?,
-            reference_price: route_reference_price,
-            taker: taker_ref,
-            limit_price: quote_limit_price,
-            clob_authority,
-            clob_authority_nonce,
-        };
-        // Before the quote: see `build_user_caps`.
-        let inputs = crate::instructions::QuoteInputs {
-            caps: crate::instructions::build_user_caps(
-                tail,
-                &inputs,
-                &mut crate::instructions::CapInputs {
-                    makers_and_referrer: &makers_and_referrer,
-                    makers_and_referrer_stats: &makers_and_referrer_stats,
-                    perp_market_map: &perp_market_map,
-                    spot_market_map: &spot_market_map,
-                    oracle_map: &mut oracle_map,
-                    slot: clock.slot,
-                    now: clock.unix_timestamp,
-                },
-            )?,
-            ..inputs
-        };
+        // The taker order is ephemeral (v1) and lives on `ephemeral_order`, not
+        // `user.orders`. A soft-skipped build fills nothing.
+        match ephemeral_order.as_mut() {
+            None => (0u64, 0u64),
+            Some(order) => {
+                // The tail as a subslice rather than a collected list: what the sections
+                // above consumed is the difference in the iterator's remaining length, and
+                // borrowing from there costs nothing where cloning every account did.
+                let tail_from = remaining_accounts.len() - remaining_accounts_iter.len();
+                let tail = &remaining_accounts[tail_from..];
+                let (direction, unfilled, taker_ref, quote_limit_price) = {
+                    let user = load!(user_loader)?;
+                    let position_base = user
+                        .get_perp_position(params.market_index)
+                        .map(|position| position.base_asset_amount)
+                        .ok();
+                    (
+                        match order.direction {
+                            PositionDirection::Long => crate::state::prop_amm::Direction::Long,
+                            PositionDirection::Short => crate::state::prop_amm::Direction::Short,
+                        },
+                        order.get_base_asset_amount_unfilled(position_base)?,
+                        crate::state::prop_amm::ClobUserRefV0 {
+                            authority: user.authority,
+                            sub_account_id: user.sub_account_id.into(),
+                        },
+                        fill_mode.quote_limit_price(
+                            order,
+                            clock.slot,
+                            perp_market_map
+                                .get_ref(&params.market_index)?
+                                .order_tick_size,
+                            state.slot_clock(),
+                        ),
+                    )
+                };
+                let (clob_authority, clob_authority_nonce) = crate::signer::find_clob_authority();
+                let route_reference_price = {
+                    let oracle_id = perp_market_map.get_ref(&params.market_index)?.oracle_id();
+                    oracle_map.get_price_data(&oracle_id)?.price
+                };
+                let inputs = crate::instructions::QuoteInputs {
+                    // Filled in below, once the makers on the books are sized.
+                    caps: crate::state::prop_amm::QuoterUserCapsV0::EMPTY,
+                    market_index: params.market_index,
+                    direction,
+                    size: unfilled,
+                    users: &crate::state::prop_amm::quoter_wire_users(
+                        makers_and_referrer.user_ref_index()?.into_keys().map(
+                            |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
+                                authority,
+                                sub_account_id: sub_account_id.into(),
+                            },
+                        ),
+                    )?,
+                    reference_price: route_reference_price,
+                    taker: taker_ref,
+                    limit_price: quote_limit_price,
+                    clob_authority,
+                    clob_authority_nonce,
+                };
+                // Before the quote: see `build_user_caps`.
+                let inputs = crate::instructions::QuoteInputs {
+                    caps: crate::instructions::build_user_caps(
+                        tail,
+                        &inputs,
+                        &mut crate::instructions::CapInputs {
+                            makers_and_referrer: &makers_and_referrer,
+                            makers_and_referrer_stats: &makers_and_referrer_stats,
+                            perp_market_map: &perp_market_map,
+                            spot_market_map: &spot_market_map,
+                            oracle_map: &mut oracle_map,
+                            slot: clock.slot,
+                            now: clock.unix_timestamp,
+                        },
+                    )?,
+                    ..inputs
+                };
 
-        // One set of CPI buffers for the fill: the quote legs below and the
-        // execute legs the router runs later all refill the same allocation,
-        // because velocity's heap never gives a freed one back.
-        let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
-        let route = crate::instructions::QuotedRoute::assemble(tail, &inputs, &mut cpi_scratch)?;
-        route.require_baseline(perp_market_map.get_ref(&params.market_index)?.clob_quoter)?;
-        let mut book_storage =
-            [crate::math::router::QuoterBook::default(); crate::instructions::MAX_ROUTE_QUOTERS];
-        let book_refs = route.books(&mut book_storage);
-        let mut executor =
-            route.executor(&inputs, clock.slot, clock.unix_timestamp, &mut cpi_scratch);
-        let mut router_inputs = crate::math::router::RouterFillInputs {
-            books: &book_refs,
-            executor: &mut executor,
-            protocol_authority: state.signer,
-            // The taker signs a place-and-take, so the taker chose the
-            // account list and no filler obligation applies.
-            obligation: crate::math::router::FillerObligation {
-                taker_signed: true,
-                tx_accounts: None,
-                unrouted_quoters: 0,
-            },
-        };
-        controller::orders::fill_perp_order_with_router(
-            controller::orders::FillTarget::Slot(order_id),
-            &state,
-            user_loader,
-            user_stats_loader,
-            &spot_market_map,
-            &perp_market_map,
-            &mut oracle_map,
-            &user_loader.clone(),
-            &user_stats_loader.clone(),
-            &makers_and_referrer,
-            &makers_and_referrer_stats,
-            None,
-            &Clock::get()?,
-            fill_mode,
-            &mut router_inputs,
-            &mut escrow.as_mut(),
-            referrer_is_accelerated,
-        )?
+                // One set of CPI buffers for the fill: the quote legs below and the
+                // execute legs the router runs later all refill the same allocation,
+                // because velocity's heap never gives a freed one back.
+                let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
+                let route =
+                    crate::instructions::QuotedRoute::assemble(tail, &inputs, &mut cpi_scratch)?;
+                route
+                    .require_baseline(perp_market_map.get_ref(&params.market_index)?.clob_quoter)?;
+                let mut book_storage = [crate::math::router::QuoterBook::default();
+                    crate::instructions::MAX_ROUTE_QUOTERS];
+                let book_refs = route.books(&mut book_storage);
+                let mut executor =
+                    route.executor(&inputs, clock.slot, clock.unix_timestamp, &mut cpi_scratch);
+                let mut router_inputs = crate::math::router::RouterFillInputs {
+                    books: &book_refs,
+                    executor: &mut executor,
+                    protocol_authority: state.signer,
+                    // The taker signs a place-and-take, so the taker chose the
+                    // account list and no filler obligation applies.
+                    obligation: crate::math::router::FillerObligation {
+                        taker_signed: true,
+                        tx_accounts: None,
+                        unrouted_quoters: 0,
+                    },
+                };
+                controller::orders::fill_perp_order_with_router(
+                    // Ephemeral taker: it never reserved, so the fill unwinds nothing.
+                    controller::orders::FillTarget::Detached {
+                        order,
+                        reserved: false,
+                    },
+                    &state,
+                    user_loader,
+                    user_stats_loader,
+                    &spot_market_map,
+                    &perp_market_map,
+                    &mut oracle_map,
+                    &user_loader.clone(),
+                    &user_stats_loader.clone(),
+                    &makers_and_referrer,
+                    &makers_and_referrer_stats,
+                    &Clock::get()?,
+                    fill_mode,
+                    &mut router_inputs,
+                    &mut escrow.as_mut(),
+                    referrer_is_accelerated,
+                )?
+            }
+        }
     } else {
         controller::orders::fill_perp_order(
             order_id,
@@ -3504,7 +3536,6 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
             &user_stats_loader.clone(),
             &makers_and_referrer,
             &makers_and_referrer_stats,
-            None,
             &Clock::get()?,
             fill_mode,
             &mut escrow.as_mut(),
@@ -3512,12 +3543,28 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
         )?
     };
 
-    let order_unfilled = load!(user_loader)?
-        .orders
-        .iter()
-        .any(|order| order.order_id == order_id && order.status == OrderStatus::Open);
+    let order_unfilled = match ephemeral_order {
+        // v1 ephemeral: unfilled is read off the order the fill just updated.
+        Some(ref order) => {
+            let user = load!(user_loader)?;
+            let position_base = user
+                .get_perp_position(params.market_index)
+                .map(|position| position.base_asset_amount)
+                .unwrap_or(0);
+            order
+                .get_base_asset_amount_unfilled(Some(position_base))
+                .unwrap_or(0)
+                > 0
+        }
+        None => load!(user_loader)?
+            .orders
+            .iter()
+            .any(|order| order.order_id == order_id && order.status == OrderStatus::Open),
+    };
 
-    if is_immediate_or_cancel && order_unfilled {
+    // Only the v0 slot order can be cancelled here. A v1 IOC order is ephemeral:
+    // it never persisted, so dropping it is enough.
+    if is_immediate_or_cancel && order_unfilled && ephemeral_order.is_none() {
         controller::orders::cancel_order_by_order_id(
             order_id,
             user_loader,
@@ -3540,13 +3587,16 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
     // transaction's return data for the client to persist as its cancel hint.
     if let Some(clob) = clob {
         if !is_immediate_or_cancel && order_unfilled {
-            let remainder = {
-                let user = load!(user_loader)?;
-                let order_index = user.get_order_index(order_id)?;
-                let order = &user.orders[order_index];
-                let position_base = user
-                    .get_perp_position(params.market_index)
-                    .map(|position| position.base_asset_amount)
+            // The order is ephemeral (v1): its remainder is read off it, and
+            // there is no slot to cancel before the remainder migrates.
+            let remainder = ephemeral_order.as_ref().and_then(|order| {
+                let position_base = load!(user_loader)
+                    .ok()
+                    .and_then(|user| {
+                        user.get_perp_position(params.market_index)
+                            .map(|position| position.base_asset_amount)
+                            .ok()
+                    })
                     .unwrap_or(0);
                 crate::instructions::restable_remainder_price(order).map(|price| {
                     (
@@ -3556,19 +3606,12 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
                             .get_base_asset_amount_unfilled(Some(position_base))
                             .unwrap_or(0),
                         order.max_ts,
+                        order.reduce_only,
                     )
                 })
-            };
-            if let Some((direction, price, unfilled, max_ts)) = remainder {
+            });
+            if let Some((direction, price, unfilled, max_ts, reduce_only)) = remainder {
                 if unfilled > 0 {
-                    controller::orders::cancel_order_by_order_id(
-                        order_id,
-                        user_loader,
-                        &perp_market_map,
-                        &spot_market_map,
-                        &mut oracle_map,
-                        &Clock::get()?,
-                    )?;
                     crate::instructions::try_place_remainder_on_clob(
                         user_loader,
                         clob.quoter,
@@ -3586,6 +3629,9 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
                         max_ts,
                         order_id,
                         true,
+                        false,
+                        reduce_only,
+                        None,
                         &Clock::get()?,
                     )?;
                 }
@@ -3605,197 +3651,6 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
             ErrorCode::PlaceAndTakeOrderSuccessConditionFailed,
             "no full fill"
         )?;
-    }
-
-    Ok(())
-}
-
-#[access_control(
-    fill_not_paused(&ctx.accounts.state)
-)]
-pub fn handle_place_and_make_perp_order<'c: 'info, 'info>(
-    ctx: Context<'info, PlaceAndMake<'info>>,
-    params: OrderParams,
-    taker_order_id: u32,
-) -> Result<()> {
-    place_and_make_perp_order(
-        &ctx.accounts.state,
-        &ctx.accounts.user,
-        &ctx.accounts.user_stats,
-        &ctx.accounts.taker,
-        &ctx.accounts.taker_stats,
-        ctx.remaining_accounts,
-        params,
-        taker_order_id,
-        None,
-    )
-}
-
-/// Shared body of `place_and_make_perp_order` (v0) and
-/// `place_and_make_perp_order_v1`. `clob` is what separates them: v0 passes
-/// `None` and cancels an unmatched remainder, v1 passes its required CLOB
-/// accounts and rests the remainder on the book instead.
-#[allow(clippy::too_many_arguments)]
-pub fn place_and_make_perp_order<'c: 'info, 'info>(
-    state_loader: &AccountLoader<'info, State>,
-    user_loader: &AccountLoader<'info, User>,
-    user_stats_loader: &AccountLoader<'info, UserStats>,
-    taker_loader: &AccountLoader<'info, User>,
-    taker_stats_loader: &AccountLoader<'info, UserStats>,
-    remaining_accounts: &'c [AccountInfo<'info>],
-    params: OrderParams,
-    taker_order_id: u32,
-    clob: Option<ClobRemainderRoute<'_, 'info>>,
-) -> Result<()> {
-    let clock = &Clock::get()?;
-    let state = state_loader.load()?;
-
-    let remaining_accounts_iter = &mut remaining_accounts.iter().peekable();
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
-        remaining_accounts_iter,
-        &get_writable_perp_market_set(params.market_index),
-        &MarketSet::new(),
-        Clock::get()?.slot,
-        state.slot_clock(),
-        Some(state.oracle_guard_rails),
-    )?;
-
-    if !params.is_immediate_or_cancel()
-        || params.post_only == PostOnlyParam::None
-        || params.order_type != OrderType::Limit
-    {
-        msg!("place_and_make must use IOC post only limit order");
-        return Err(print_error!(ErrorCode::InvalidOrderIOCPostOnly)().into());
-    }
-
-    // No `update_amm` here: place_and_make posts a passive IOC post-only
-    // maker order. `place_perp_order` doesn't fill against the AMM, so
-    // peg/reserves freshness isn't required.
-
-    let user_key = user_loader.key();
-    let mut user = load_mut!(user_loader)?;
-
-    controller::orders::place_perp_order(
-        &state,
-        &mut user,
-        user_key,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
-        clock,
-        params,
-        PlaceOrderOptions::default(),
-        &mut None,
-    )?;
-
-    let (order_id, authority) = (user.get_last_order_id(), user.authority);
-
-    drop(user);
-
-    let (mut makers_and_referrer, mut makers_and_referrer_stats) =
-        load_user_maps(remaining_accounts_iter, true)?;
-    makers_and_referrer.insert(user_loader.key(), user_loader.clone())?;
-    makers_and_referrer_stats.insert(authority, user_stats_loader.clone())?;
-
-    let builder_codes_enabled = state.builder_codes_enabled();
-    let mut escrow = if builder_codes_enabled {
-        get_revenue_share_escrow_account(remaining_accounts_iter, &load!(taker_loader)?.authority)?
-    } else {
-        None
-    };
-    let referrer_is_accelerated =
-        get_referrer_accelerated_status(remaining_accounts_iter, escrow.as_ref())?;
-
-    controller::orders::fill_perp_order(
-        taker_order_id,
-        &state,
-        taker_loader,
-        taker_stats_loader,
-        &spot_market_map,
-        &perp_market_map,
-        &mut oracle_map,
-        &user_loader.clone(),
-        &user_stats_loader.clone(),
-        &makers_and_referrer,
-        &makers_and_referrer_stats,
-        Some(order_id),
-        clock,
-        FillMode::PlaceAndMake,
-        &mut escrow.as_mut(),
-        referrer_is_accelerated,
-    )?;
-
-    let order_exists = load!(user_loader)?
-        .orders
-        .iter()
-        .any(|order| order.order_id == order_id && order.status == OrderStatus::Open);
-
-    if order_exists {
-        // A restable remainder migrates to the book on the v1 route: the
-        // maker wanted to quote at this price, and IOC on this instruction is
-        // about not occupying a `User.orders` slot, not about refusing to
-        // rest. Oracle-offset and reduce-only orders keep v0 behaviour — the
-        // CLOB has neither semantic — and any can't-rest outcome downgrades
-        // to the cancel rather than reverting a fill that already landed.
-        let remainder = clob.as_ref().and_then(|_| {
-            let user = load!(user_loader).ok()?;
-            let order_index = user.get_order_index(order_id).ok()?;
-            let order = &user.orders[order_index];
-            let position_base = user
-                .get_perp_position(params.market_index)
-                .map(|position| position.base_asset_amount)
-                .unwrap_or(0);
-            (order.order_type == OrderType::Limit
-                && !order.has_oracle_price_offset()
-                && !order.reduce_only)
-                .then(|| {
-                    (
-                        order.direction,
-                        order.price,
-                        order
-                            .get_base_asset_amount_unfilled(Some(position_base))
-                            .unwrap_or(0),
-                        order.max_ts,
-                    )
-                })
-        });
-
-        controller::orders::cancel_order_by_order_id(
-            order_id,
-            user_loader,
-            &perp_market_map,
-            &spot_market_map,
-            &mut oracle_map,
-            clock,
-        )?;
-
-        if let (Some(clob), Some((direction, price, unfilled, max_ts))) = (clob, remainder) {
-            if unfilled > 0 {
-                crate::instructions::try_place_remainder_on_clob(
-                    user_loader,
-                    clob.quoter,
-                    clob.clob_market,
-                    clob.clob_program,
-                    clob.clob_authority,
-                    clob.clob_authority_nonce,
-                    &perp_market_map,
-                    &spot_market_map,
-                    &mut oracle_map,
-                    params.market_index,
-                    direction,
-                    price,
-                    unfilled,
-                    max_ts,
-                    order_id,
-                    false,
-                    clock,
-                )?;
-            }
-        }
     }
 
     Ok(())
@@ -5771,29 +5626,6 @@ pub struct PlaceAndTake<'info> {
         constraint = is_stats_for_user(&user, &user_stats)?
     )]
     pub user_stats: AccountLoader<'info, UserStats>,
-    pub authority: Signer<'info>,
-}
-
-#[derive(Accounts)]
-pub struct PlaceAndMake<'info> {
-    pub state: AccountLoader<'info, State>,
-    #[account(
-        mut,
-        constraint = can_sign_for_user(&user, &authority)?
-    )]
-    pub user: AccountLoader<'info, User>,
-    #[account(
-        mut,
-        constraint = is_stats_for_user(&user, &user_stats)?
-    )]
-    pub user_stats: AccountLoader<'info, UserStats>,
-    #[account(mut)]
-    pub taker: AccountLoader<'info, User>,
-    #[account(
-        mut,
-        constraint = is_stats_for_user(&taker, &taker_stats)?
-    )]
-    pub taker_stats: AccountLoader<'info, UserStats>,
     pub authority: Signer<'info>,
 }
 

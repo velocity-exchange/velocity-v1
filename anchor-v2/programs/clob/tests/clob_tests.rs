@@ -209,6 +209,7 @@ fn place_args(side: Side, price: u64, size: u64) -> PlaceOrderArgsV0 {
         taker_origin: false,
         client_order_id: 0,
         reject_if_crossed: false,
+        reduce_only: false,
     }
 }
 
@@ -532,13 +533,18 @@ fn cancel_all_ix(ctx: &Ctx, user: Address, sides: CancelSidesV0) -> Instruction 
 /// `CancelAllOutcomeV0` off return data:
 /// `(bid_base, ask_base, bid_orders, ask_orders, exhaustive)`.
 fn parse_cancel_all(b: &[u8]) -> (u64, u64, u32, u32, bool) {
-    assert_eq!(b.len(), 34 + 8 + 8 + 4 + 4 + 1, "outcome wire width");
+    assert_eq!(
+        b.len(),
+        34 + 8 + 8 + 4 + 4 + 4 + 4 + 1,
+        "outcome wire width"
+    );
     (
         parse_u64(&b[34..]),
         parse_u64(&b[42..]),
         parse_u32(&b[50..]),
         parse_u32(&b[54..]),
-        b[58] == 1,
+        // Skip the bid/ask reduce-only counts at [58..66]; exhaustive follows.
+        b[66] == 1,
     )
 }
 

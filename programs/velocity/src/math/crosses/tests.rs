@@ -13,6 +13,7 @@ fn order(id: u64, price: u64, size: u64, owner: u8, taker_origin: bool) -> Resti
         price,
         base_asset_amount: size,
         taker_origin,
+        reduce_only: false,
         // Rest order is the id; the slot only prices the work of resolving it.
         placed_slot: id,
     }

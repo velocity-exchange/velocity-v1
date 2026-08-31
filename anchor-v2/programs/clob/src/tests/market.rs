@@ -181,6 +181,7 @@ pub fn params(side: Side, price: u64, size: u64, user: UserRefV0) -> PlaceOrderP
         taker_origin: false,
         client_order_id: 0,
         reject_if_crossed: false,
+        reduce_only: false,
     }
 }
 

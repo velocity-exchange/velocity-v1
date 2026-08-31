@@ -72,6 +72,8 @@ pub fn handle_cancel_all_v0(
         ask_base_asset_amount: outcome.ask_base_asset_amount,
         bid_orders: outcome.bid_orders,
         ask_orders: outcome.ask_orders,
+        bid_reduce_only_orders: outcome.bid_reduce_only_orders,
+        ask_reduce_only_orders: outcome.ask_reduce_only_orders,
         exhaustive: outcome.exhaustive,
     })
 }

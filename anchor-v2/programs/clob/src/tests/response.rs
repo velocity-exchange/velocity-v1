@@ -432,20 +432,22 @@ fn wire_widths_match_the_response_types() {
         base_asset_amount: 3,
         side: Side::Ask,
         taker_origin: true,
+        reduce_only: true,
         max_ts: 4,
     };
     assert_eq!(encode(&removed).len(), REMOVED_ORDER_BYTES);
-    // Side and the taker-origin flag, then the expiry that trails them.
-    let tail = REMOVED_ORDER_BYTES - 2 - core::mem::size_of::<i64>();
-    assert_eq!(encode(&removed)[tail..tail + 2], [Side::Ask.to_u8(), 1]);
-    assert_eq!(encode(&removed)[tail + 2..], 4i64.to_le_bytes());
+    // Side, the taker-origin flag, the reduce-only flag, then the expiry.
+    let tail = REMOVED_ORDER_BYTES - 3 - core::mem::size_of::<i64>();
+    assert_eq!(encode(&removed)[tail..tail + 3], [Side::Ask.to_u8(), 1, 1]);
+    assert_eq!(encode(&removed)[tail + 3..], 4i64.to_le_bytes());
     assert_eq!(
         encode(&RemovedOrderV0 {
             side: Side::Bid,
             taker_origin: false,
+            reduce_only: false,
             ..removed
-        })[tail..tail + 2],
-        [Side::Bid.to_u8(), 0]
+        })[tail..tail + 3],
+        [Side::Bid.to_u8(), 0, 0]
     );
     // Every record is one fixed stride: a change carries no ids, so it cannot
     // grow, and a consumed order is its own record in the trailing section.
@@ -564,7 +566,8 @@ fn the_args_round_trip_with_caps_between_the_set_and_the_taker() {
 #[test]
 fn the_cap_list_is_fixed_width_on_the_wire() {
     assert_eq!(USER_CAPS_CAPACITY, 8);
-    assert_eq!(USER_CAPS_BYTES, 79);
+    // 6-byte exclusion bitmap + 1-byte len + 8 caps * (8 budget + 8 base_cover + 1 index).
+    assert_eq!(USER_CAPS_BYTES, 143);
     assert_eq!(encode(&UserCapsV0::EMPTY).len(), USER_CAPS_BYTES);
     let mut full = UserCapsV0::EMPTY;
     full.len = USER_CAPS_CAPACITY as u8;

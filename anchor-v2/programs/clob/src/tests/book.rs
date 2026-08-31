@@ -545,6 +545,7 @@ fn a_user_with_some_room_is_filled_only_that_far() {
     caps.caps[0] = crate::state::UserCapV0 {
         index: 0,
         budget: 4,
+        base_cover: u64::MAX,
     };
 
     let pointer = book
@@ -570,6 +571,73 @@ fn a_user_with_some_room_is_filled_only_that_far() {
         .unwrap();
     let filled: u64 = outcome.fills.iter().map(|fill| fill.base_size).sum();
     assert_eq!(filled, 9 * UNIT);
+}
+
+/// A reduce-only order fills only up to its owner's authoritative base cover.
+///
+/// The book is position-blind, so the cover the caller carries is the only
+/// thing that keeps a reduce-only fill from growing a position it should
+/// shrink. The maker's reduce-only ask is capped to two units, so two fill and
+/// the depth behind it takes the rest.
+#[test]
+fn a_reduce_only_order_fills_only_up_to_its_base_cover() {
+    const UNIT: u64 = BASE_PRECISION;
+    let market = TestMarket::new(8);
+    let mut book = market.book();
+    let capped = user(1);
+    let healthy = user(2);
+    book.place(PlaceOrderParams {
+        reduce_only: true,
+        ..params(Side::Ask, 100, 5 * UNIT, capped)
+    })
+    .expect("placement succeeds");
+    place(&mut book, Side::Ask, 101, 7 * UNIT, healthy);
+
+    let users = [capped, healthy];
+    let mut caps = UserCapsV0::EMPTY;
+    caps.len = 1;
+    caps.caps[0] = crate::state::UserCapV0 {
+        index: 0,
+        budget: u64::MAX,
+        base_cover: 2 * UNIT,
+    };
+
+    let outcome = book
+        .execute(Direction::Long, 12 * UNIT, &users, &caps, 100, None, 0, 0)
+        .unwrap();
+    let filled: u64 = outcome.fills.iter().map(|fill| fill.base_size).sum();
+    // Two units of the reduce-only ask (its cover) plus all seven behind it.
+    assert_eq!(filled, 9 * UNIT);
+}
+
+/// A reduce-only order with no cover does not fill at all.
+///
+/// A cover the caller did not carry is not "unlimited" — it is unknown, and an
+/// unknown cover on a position-blind book is refused. The reduce-only ask is
+/// passed over; the ordinary depth behind it still fills.
+#[test]
+fn a_reduce_only_order_with_no_cover_does_not_fill() {
+    const UNIT: u64 = BASE_PRECISION;
+    let market = TestMarket::new(8);
+    let mut book = market.book();
+    let uncovered = user(1);
+    let healthy = user(2);
+    book.place(PlaceOrderParams {
+        reduce_only: true,
+        ..params(Side::Ask, 100, 5 * UNIT, uncovered)
+    })
+    .expect("placement succeeds");
+    place(&mut book, Side::Ask, 101, 7 * UNIT, healthy);
+
+    let users = [uncovered, healthy];
+    // No cap entry for the reduce-only maker: uncovered, so it must not fill.
+    let caps = UserCapsV0::EMPTY;
+
+    let outcome = book
+        .execute(Direction::Long, 12 * UNIT, &users, &caps, 100, None, 0, 0)
+        .unwrap();
+    let filled: u64 = outcome.fills.iter().map(|fill| fill.base_size).sum();
+    assert_eq!(filled, 7 * UNIT, "only the ordinary ask fills");
 }
 
 /// Two capped makers in one sweep end the walk instead of failing it.
@@ -598,10 +666,12 @@ fn a_second_capped_maker_ends_the_sweep_rather_than_failing_it() {
     caps.caps[0] = crate::state::UserCapV0 {
         index: 0,
         budget: 4,
+        base_cover: u64::MAX,
     };
     caps.caps[1] = crate::state::UserCapV0 {
         index: 1,
         budget: 3,
+        base_cover: u64::MAX,
     };
 
     let pointer = book
@@ -648,6 +718,7 @@ fn a_fill_that_pays_the_maker_spends_no_budget() {
     caps.caps[0] = crate::state::UserCapV0 {
         index: 0,
         budget: 1,
+        base_cover: u64::MAX,
     };
 
     // Selling at 100 against a reference of 98 is a gain, not a loss.

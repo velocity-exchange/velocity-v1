@@ -695,6 +695,62 @@ export function registerQuoter(parent: Command): void {
 
 	withGlobalOptions(
 		quoter
+			.command('set-oracle-band <quoter> <bps>')
+			.description(
+				"Declare (or clear) how far from oracle a Custom quoter's fills may price, in basis points. Velocity already bounds every external leg by the market's own band; this asks for a tighter one, so a maker caps what its own program can lose if that program is compromised. Applied as the smaller of this and the market's margin ratio, so it can only tighten a bound the admin already vetted — which is why it does NOT clear admin approval. <bps> = 0 clears the declaration. Signer must be the entry authority."
+			)
+			.option(
+				'-a, --authority <pubkey>',
+				'entry authority (must sign; defaults to the wallet)'
+			)
+	).action(
+		async (
+			quoterArg: string,
+			bpsArg: string,
+			flags: { authority?: string },
+			cmd: Command
+		) => {
+			const bps = Number.parseInt(bpsArg, 10);
+			if (!Number.isInteger(bps) || bps < 0 || bps >= 10_000) {
+				throw new Error(`bps must be 0-9999, got "${bpsArg}"`);
+			}
+			const opts = readGlobalOpts(cmd);
+			const provider = buildProvider(opts);
+			const client = await buildAdminClient(opts, false);
+			try {
+				const ix = client.program.instruction.updateQuoterMaxOracleDeviation(
+					bps,
+					{
+						accounts: {
+							authority: flags.authority
+								? new PublicKey(flags.authority)
+								: provider.wallet.publicKey,
+							quoter: new PublicKey(quoterArg),
+						},
+					}
+				);
+				const result = await sendOrPropose(
+					provider,
+					[ix],
+					opts.multisig ? new PublicKey(opts.multisig) : undefined,
+					'velocity-admin quoter set-oracle-band'
+				);
+				reportDispatch(
+					`quoter ${quoterArg} oracle band ${
+						bps > 0 ? `= ${bps} bps` : 'cleared (market band stands)'
+					}`,
+					result
+				);
+			} finally {
+				if ((client as any).isSubscribed) {
+					await client.unsubscribe();
+				}
+			}
+		}
+	);
+
+	withGlobalOptions(
+		quoter
 			.command('attach-cross <quoter>')
 			.description(
 				"Stand up (or re-price) a Custom quoter's relay cross-discovery conditions — the per-entry account whose resolver prices the quoter through its registered quote_v0 surface and stages crank_cross_match. Permissionless; the signer pays the rent. Requires the entry active + approved and the market's canonical CLOB attached."

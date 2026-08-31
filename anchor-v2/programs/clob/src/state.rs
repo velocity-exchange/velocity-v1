@@ -122,7 +122,8 @@ pub const PARTIAL_BYTES: usize = quoter_spec::PARTIAL_BYTES;
 pub const REMOVED_ORDER_BYTES: usize = USER_REF_BYTES
     + 3 * core::mem::size_of::<u64>()
     + core::mem::size_of::<u32>()
-    + 2
+    // side + taker_origin + reduce_only.
+    + 3
     + core::mem::size_of::<i64>();
 
 // Hard ceilings on the per-market response/batch config — bound by the
@@ -604,6 +605,10 @@ pub struct CancelAllOutcome {
     pub ask_base_asset_amount: u64,
     pub bid_orders: u32,
     pub ask_orders: u32,
+    /// Reduce-only orders among those swept on each side. The caller disarms
+    /// its per-user reduce-only tracking by this count.
+    pub bid_reduce_only_orders: u32,
+    pub ask_reduce_only_orders: u32,
     /// Whether the walk finished every requested side rather than stopping at
     /// [`CANCEL_ALL_ORDERS_CEILING`]. False means orders of this user are
     /// still resting and the caller should repeat the call.
@@ -631,6 +636,7 @@ pub struct RemovedOrder {
     pub base_asset_amount: u64,
     pub side: Side,
     pub taker_origin: bool,
+    pub reduce_only: bool,
     pub max_ts: i64,
 }
 
@@ -698,6 +704,9 @@ pub struct PlaceOrderParams {
     /// Refuse the placement when the order would cross the opposite best,
     /// rather than resting it crossed.
     pub reject_if_crossed: bool,
+    /// Marks the order [`OrderBitFlag::ReduceOnly`]: a fill against it is
+    /// clamped to the owner's `base_cover` cap at match time.
+    pub reduce_only: bool,
 }
 
 /// Per-market configuration, set at init (also the init wire args).

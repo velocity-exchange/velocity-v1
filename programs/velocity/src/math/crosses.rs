@@ -30,7 +30,9 @@
 //! pair frees the next, a maker cross hiding behind a taker one — can be tested
 //! without a book.
 
-use crate::state::prop_amm::{ClobOrderRefV0, ClobSide, ClobUserRefV0, L3_ROW_FLAG_TAKER_ORIGIN};
+use crate::state::prop_amm::{
+    ClobOrderRefV0, ClobSide, ClobUserRefV0, L3_ROW_FLAG_REDUCE_ONLY, L3_ROW_FLAG_TAKER_ORIGIN,
+};
 
 #[cfg(test)]
 mod tests;
@@ -46,6 +48,10 @@ pub struct RestingOrder {
     pub price: u64,
     pub base_asset_amount: u64,
     pub taker_origin: bool,
+    /// The order fills only up to its owner's position in the reduce direction.
+    /// A cross that settles it must bind the fill to the owner's cover and stop
+    /// tracking the owner's reduce-only exposure once it leaves the book.
+    pub reduce_only: bool,
     /// Slot it was placed in. Not what orders it — the id does that — but what
     /// prices the work of resolving it.
     pub placed_slot: u64,
@@ -63,6 +69,7 @@ impl RestingOrder {
             price: row.price,
             base_asset_amount: row.size,
             taker_origin: row.flags & L3_ROW_FLAG_TAKER_ORIGIN != 0,
+            reduce_only: row.flags & L3_ROW_FLAG_REDUCE_ONLY != 0,
             placed_slot: row.placed_slot,
         }
     }

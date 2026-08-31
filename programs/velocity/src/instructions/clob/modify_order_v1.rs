@@ -1,8 +1,8 @@
-//! `modify_clob_order` — reprice/resize a resting CLOB order.
+//! `modify_order_v1` — reprice/resize a resting CLOB order.
 //!
 //! `modify_order` only ever touched `User.orders`, so a maker whose order
 //! lives on the book had no modify route at all: they had to send
-//! `cancel_clob_order` and `place_clob_order` as two instructions, which
+//! `cancel_order_v1` and `place_clob_order` as two instructions, which
 //! surrenders queue position between them and can leave the maker flat if the
 //! second one fails.
 //!
@@ -16,7 +16,7 @@
 //!
 //! Semantics deliberately mirror `place_clob_order` for the replacement leg
 //! (same margin gate, same activation-delay attestation rule, same wake
-//! hints) and `cancel_clob_order` for the removal leg (not gated on the
+//! hints) and `cancel_order_v1` for the removal leg (not gated on the
 //! quoter entry's active/approved flags — but the *replacement* is, so a
 //! killed book can only be modified in the shrinking direction… which is to
 //! say: on a killed book, modify fails and cancel is the way out).
@@ -58,8 +58,8 @@ use {
 };
 
 #[derive(Accounts)]
-#[instruction(params: ModifyClobOrderParams)]
-pub struct ModifyClobOrder<'info> {
+#[instruction(params: ModifyOrderV1Params)]
+pub struct ModifyOrderV1<'info> {
     pub state: AccountLoader<'info, State>,
     #[account(
         mut,
@@ -90,7 +90,7 @@ pub struct ModifyClobOrder<'info> {
 }
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
-pub struct ModifyClobOrderParams {
+pub struct ModifyOrderV1Params {
     pub market_index: u16,
     /// Handle for the order being modified; the CLOB fails closed on a stale
     /// hint, and velocity fails the whole call if the removal hit anyone else.
@@ -117,9 +117,9 @@ pub struct ModifyClobOrderParams {
 #[access_control(
     exchange_not_paused(&ctx.accounts.state)
 )]
-pub fn handle_modify_clob_order<'c: 'info, 'info>(
-    ctx: Context<'info, ModifyClobOrder<'info>>,
-    params: ModifyClobOrderParams,
+pub fn handle_modify_order_v1<'c: 'info, 'info>(
+    ctx: Context<'info, ModifyOrderV1<'info>>,
+    params: ModifyOrderV1Params,
 ) -> Result<()> {
     let clock = Clock::get()?;
     let state = ctx.accounts.state.load()?;
@@ -289,14 +289,21 @@ pub fn handle_modify_clob_order<'c: 'info, 'info>(
         activation_delay_slots: params.activation_delay_slots,
         max_ts,
         user: user_ref,
-        // Not a migrated taker remainder: this price is its owner's choice.
-        taker_origin: false,
+        // A normal order rests at its owner's chosen price, so a modify makes
+        // it an ordinary maker quote. A reduce-only order stays taker-origin:
+        // reduce-only CLOB orders are taker-origin by construction, and every
+        // path that fills or removes one relies on that to keep the owner's
+        // reduce-only counter balanced. A modify must not break the invariant.
+        taker_origin: removed.reduce_only,
         // A modify keeps the order's identity: same id before and after, so a
         // reprice is one order that moved rather than two orders. A placed
         // trigger forces it — its shadow slot keeps the id it armed under, and
         // a new one here would leave the slot naming an order nobody holds.
         client_order_id: removed.client_order_id,
         reject_if_crossed: params.reject_if_crossed,
+        // A modify keeps the order's reduce-only status, or the replacement
+        // would rest uncapped on a book that clamps only reduce-only fills.
+        reduce_only: removed.reduce_only,
     })?;
 
     // A placed trigger's shadow follows its live order to the new handle;

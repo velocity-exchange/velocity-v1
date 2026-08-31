@@ -1,3 +1,4 @@
+import { SYSVAR_INSTRUCTIONS_PUBKEY } from '@solana/web3.js';
 import type {
 	AccountMeta,
 	PublicKey,
@@ -121,80 +122,61 @@ export async function buildPlaceAndTakePerpOrderInstruction(args: {
 }
 
 /**
- * Builds a `placeAndMakePerpOrder` instruction: posts an immediate-or-cancel, post-only
- * `Limit` order for `user` and immediately fills it as the maker against `taker`'s
- * existing resting order (`InvalidOrderIOCPostOnly` if `orderParams` isn't IOC + post-only
- * + `Limit`). Any unfilled remainder of the just-placed maker order is auto-cancelled —
- * unless `clobAccounts` is passed, which selects the v1 route and rests that remainder on
- * the market's CLOB instead of throwing it away.
+ * Builds a `placeAndMakePerpOrderV1` instruction: posts a post-only `Limit` maker
+ * order for `user` that rests straight on the market's CLOB. It names no taker and
+ * matches nothing on placement (`InvalidOrderIOCPostOnly` if `orderParams` isn't a
+ * post-only `Limit`). The maker never occupies a `User.orders` slot.
  * @param args.program - Anchor `Program<Velocity>` used to build the instruction.
- * @param args.orderParams - an `OrderParams` object; `baseAssetAmount` is BASE_PRECISION (1e9), `price`/`oraclePriceOffset` are PRICE_PRECISION (1e6).
- * @param args.takerOrderId - the on-chain order ID of `taker`'s resting order being filled.
+ * @param args.orderParams - an `OrderParams` object; `baseAssetAmount` is BASE_PRECISION (1e9), `price` is PRICE_PRECISION (1e6).
  * @param args.state - the global `State` PDA.
  * @param args.user - the maker's `User` account.
  * @param args.userStats - the maker's `UserStats` PDA.
- * @param args.taker - the taker's `User` account (order owner being filled).
- * @param args.takerStats - the taker's `UserStats` PDA.
  * @param args.authority - signer that must own or be a registered delegate of `user` (the maker).
- * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`, followed by any additional maker/referrer `(User, UserStats)` pairs needed to fill `taker`'s order, followed by `taker`'s `RevenueShareEscrow` account if builder codes are enabled.
- * @param args.clobAccounts - pass the market's CLOB accounts to use `placeAndMakePerpOrderV1`, whose unmatched remainder rests on the book rather than being cancelled. `crankConditions` is optional (it only maintains the crank wake hint); the rest are required on that route.
- * @returns the unsigned `placeAndMakePerpOrder` (or `...V1`) `TransactionInstruction`.
+ * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`.
+ * @param args.clobAccounts - the market's CLOB accounts. `crankConditions` is optional (it only maintains the crank wake hint); the rest are required.
+ * @param args.activationDelaySlots - the book speed bump the maker rests behind; `null`/omitted takes the book's default. A value below the default needs the flow authority to co-sign the transaction (the attestation), read off the instructions sysvar, which this passes only when a delay is set.
+ * @returns the unsigned `placeAndMakePerpOrderV1` `TransactionInstruction`.
  */
 export async function buildPlaceAndMakePerpOrderInstruction(args: {
 	program: VelocityProgram;
 	orderParams: any;
-	takerOrderId: number;
 	state: PublicKey;
 	user: PublicKey;
 	userStats: PublicKey;
-	taker: PublicKey;
-	takerStats: PublicKey;
 	authority: PublicKey;
 	remainingAccounts: AccountMeta[];
-	clobAccounts?: {
+	clobAccounts: {
 		quoter: PublicKey;
 		clobMarket: PublicKey;
 		clobProgram: PublicKey;
 		clobAuthority: PublicKey;
 		crankConditions?: PublicKey;
 	};
+	activationDelaySlots?: number | null;
 }): Promise<TransactionInstruction> {
-	if (args.clobAccounts) {
-		// An omitted `Option` account is encoded as the program id, which the
-		// program decodes as `None`.
-		const omitted = args.program.programId;
-		return await args.program.instruction.placeAndMakePerpOrderV1(
-			args.orderParams,
-			args.takerOrderId,
-			{
-				accounts: {
-					state: args.state,
-					user: args.user,
-					userStats: args.userStats,
-					taker: args.taker,
-					takerStats: args.takerStats,
-					authority: args.authority,
-					quoter: args.clobAccounts.quoter,
-					clobMarket: args.clobAccounts.clobMarket,
-					clobProgram: args.clobAccounts.clobProgram,
-					clobAuthority: args.clobAccounts.clobAuthority,
-					crankConditions: args.clobAccounts.crankConditions ?? omitted,
-				},
-				remainingAccounts: args.remainingAccounts,
-			}
-		);
-	}
-	return await args.program.instruction.placeAndMakePerpOrder(
+	// An omitted `Option` account is encoded as the program id, which the program
+	// decodes as `None`. The maker rests straight on the CLOB: it names no taker
+	// and matches nothing on placement.
+	const omitted = args.program.programId;
+	const activationDelaySlots = args.activationDelaySlots ?? null;
+	return await args.program.instruction.placeAndMakePerpOrderV1(
 		args.orderParams,
-		args.takerOrderId,
+		activationDelaySlots,
 		{
 			accounts: {
 				state: args.state,
 				user: args.user,
 				userStats: args.userStats,
-				taker: args.taker,
-				takerStats: args.takerStats,
 				authority: args.authority,
+				quoter: args.clobAccounts.quoter,
+				clobMarket: args.clobAccounts.clobMarket,
+				clobProgram: args.clobAccounts.clobProgram,
+				clobAuthority: args.clobAccounts.clobAuthority,
+				crankConditions: args.clobAccounts.crankConditions ?? omitted,
+				// Needed only to attest a below-default activation delay; passed
+				// when a delay is set, omitted otherwise.
+				instructionsSysvar:
+					activationDelaySlots != null ? SYSVAR_INSTRUCTIONS_PUBKEY : omitted,
 			},
 			remainingAccounts: args.remainingAccounts,
 		}

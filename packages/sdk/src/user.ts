@@ -507,6 +507,7 @@ export class User {
 			maxMarginRatio: 0,
 			isolatedPositionScaledBalance: ZERO,
 			positionFlag: 0,
+			reduceOnlyClobOrders: 0,
 		};
 	}
 

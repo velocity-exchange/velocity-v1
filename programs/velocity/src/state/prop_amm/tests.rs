@@ -201,7 +201,7 @@ fn the_cap_list_puts_no_ceiling_on_exclusions() {
     }
     assert_eq!(MAX_CONSTRAINED_WIRE_USERS, 8);
     assert_eq!(USER_EXCLUSION_BITMAP_BYTES, 6);
-    assert_eq!(QUOTER_USER_CAPS_BYTES, 79);
+    assert_eq!(QUOTER_USER_CAPS_BYTES, 143);
     assert_eq!(
         encode(&QuoterUserCapsV0::EMPTY).len(),
         QUOTER_USER_CAPS_BYTES
@@ -211,10 +211,12 @@ fn the_cap_list_puts_no_ceiling_on_exclusions() {
     let partial = QuoterUserCapV0 {
         index: 0,
         budget: 500,
+        base_cover: u64::MAX,
     };
     let excluded = QuoterUserCapV0 {
         index: 1,
         budget: 0,
+        base_cover: u64::MAX,
     };
     let caps = QuoterUserCapsV0::from_caps(vec![partial, excluded]);
     assert_eq!(caps.len, 1, "only the partial spends a slot");
@@ -226,7 +228,11 @@ fn the_cap_list_puts_no_ceiling_on_exclusions() {
     // The case that scales: every user in the set can be excluded at once,
     // which is what a sharp move produces. None of them touches the slots.
     let all: Vec<QuoterUserCapV0> = (0..MAX_QUOTER_WIRE_USERS as u8)
-        .map(|index| QuoterUserCapV0 { index, budget: 0 })
+        .map(|index| QuoterUserCapV0 {
+            index,
+            budget: 0,
+            base_cover: u64::MAX,
+        })
         .collect();
     let caps = QuoterUserCapsV0::from_caps(all);
     assert_eq!(caps.len, 0);
@@ -239,6 +245,7 @@ fn the_cap_list_puts_no_ceiling_on_exclusions() {
         .map(|index| QuoterUserCapV0 {
             index,
             budget: 1_000 * (index as u64 + 1),
+            base_cover: u64::MAX,
         })
         .collect();
     let caps = QuoterUserCapsV0::from_caps(many);
@@ -485,6 +492,7 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
             taker_origin: true,
             client_order_id: 0x0102_0304,
             reject_if_crossed: true,
+            reduce_only: false,
         },
     );
     // The absent-option arm encodes its tag differently; both are on the wire.
@@ -500,6 +508,7 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
             taker_origin: false,
             client_order_id: 0,
             reject_if_crossed: false,
+            reduce_only: true,
         },
     );
     // The two `force` flags carry opposite values so the agreement covers both
@@ -540,6 +549,7 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
             base_asset_amount: 0x9999_AAAA_BBBB_CCCC,
             side: ClobSide::Ask,
             taker_origin: true,
+            reduce_only: true,
             max_ts: 0x0102_0304_0506_0708,
         },
     );
@@ -551,6 +561,8 @@ fn the_clob_wire_encodes_the_same_under_borsh_and_wincode() {
             ask_base_asset_amount: 0x090A_0B0C_0D0E_0F10,
             bid_orders: 0x1112_1314,
             ask_orders: 0x1516_1718,
+            bid_reduce_only_orders: 0x191A_1B1C,
+            ask_reduce_only_orders: 0x1D1E_1F20,
             exhaustive: true,
         },
     );

@@ -144,6 +144,7 @@ mod gate {
             price,
             base_asset_amount: size,
             taker_origin,
+            reduce_only: false,
             placed_slot: id,
         }
     }

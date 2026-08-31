@@ -110,10 +110,12 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
     // The account tail: registry entries plus the union of their registered CPI
     // accounts, same shape as the router fill's. This crank does not quote, so
     // each entry carries no levels.
-    let leftover: Vec<&AccountInfo<'info>> = remaining_accounts_iter.collect();
-    let accounts: Vec<AccountInfo<'info>> = leftover.iter().map(|info| (*info).clone()).collect();
-    let mut quoted: Vec<QuotedEntry<'info>> = Vec::with_capacity(leftover.len());
-    for info in &leftover {
+    // Borrow the tail in place: the executor and the guard read it by
+    // reference, so nothing needs an owned clone of every account.
+    let tail_from = ctx.remaining_accounts.len() - remaining_accounts_iter.len();
+    let tail = &ctx.remaining_accounts[tail_from..];
+    let mut quoted: Vec<QuotedEntry<'info>> = Vec::with_capacity(tail.len());
+    for info in tail {
         let is_entry = info.owner == &crate::ID
             && info
                 .try_borrow_data()
@@ -121,7 +123,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         if !is_entry {
             continue;
         }
-        let loader = AccountLoader::<QuoterV0>::try_from(*info)?;
+        let loader = AccountLoader::<QuoterV0>::try_from(info)?;
         let quoter = loader.load()?;
         validate!(
             quoter.market == market_index,
@@ -136,11 +138,12 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
             ErrorCode::DefaultError,
             "the vAMM reprices continuously and cannot rest crossed"
         )?;
-        let (quoter_type, user, response_account, priority) = (
+        let (quoter_type, user, response_account, priority, max_oracle_deviation_bps) = (
             quoter.quoter_type,
             quoter.user,
             quoter.response_account,
             quoter.priority,
+            quoter.max_oracle_deviation_bps,
         );
         drop(quoter);
         quoted.push(QuotedEntry {
@@ -152,6 +155,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
             user,
             response_account,
             priority,
+            max_oracle_deviation_bps,
             levels: 0..0,
         });
     }
@@ -214,7 +218,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         .filter(|quoted| quoted.quoter_type == QuoterType::Clob)
     {
         let find = |key: &Pubkey| {
-            crate::state::prop_amm::find_account(&accounts, key)
+            crate::state::prop_amm::find_account(tail, key)
                 .ok_or_else(|| error!(ErrorCode::DefaultError))
         };
         let entry = clob.entry.load()?;
@@ -244,7 +248,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         reference_price: 0,
         quoted: &quoted,
         market_index,
-        accounts: &accounts,
+        accounts: tail,
         clob_authority,
         clob_authority_nonce,
         users: &users,
@@ -535,20 +539,32 @@ fn book_sides<'info>(
     Vec<crate::math::crosses::RestingOrder>,
     Vec<crate::math::crosses::RestingOrder>,
 )> {
+    // Map the L3 response in place: `from_row` copies each row, so the rows
+    // never need an owned intermediate the way `find_clob_cross` needs one.
     let mut side = |direction| -> Result<Vec<crate::math::crosses::RestingOrder>> {
-        Ok(clob_rows(
-            quoter,
-            entry,
+        let located = quoter.quote_l3(
             market_index,
-            direction,
+            crate::state::prop_amm::L3ArgsV0 {
+                direction,
+                size: 0,
+                max_rows: CROSS_ROWS_PER_SIDE,
+            },
+            entry,
             &clob_authority,
             clob_authority_nonce,
             accounts,
             scratch,
-        )?
-        .iter()
-        .map(crate::math::crosses::RestingOrder::from_row)
-        .collect())
+        )?;
+        let Some(located) = located else {
+            return Ok(Vec::new());
+        };
+        let data = located.borrow()?;
+        Ok(located
+            .l3_response(&data)?
+            .rows
+            .iter()
+            .map(crate::math::crosses::RestingOrder::from_row)
+            .collect())
     };
     let asks = side(crate::state::prop_amm::Direction::Long)?;
     let bids = side(crate::state::prop_amm::Direction::Short)?;

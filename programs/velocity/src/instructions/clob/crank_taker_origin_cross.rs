@@ -49,7 +49,10 @@ use {
     crate::{
         controller::{
             self,
-            position::{decrease_open_bids_and_asks, get_position_index, PositionDirection},
+            position::{
+                get_position_index, release_reserved_open_base, release_reserved_open_orders,
+                PositionDirection,
+            },
         },
         error::ErrorCode,
         instructions::{
@@ -258,30 +261,46 @@ fn read_book_rows<'info>(
     Ok((bids, asks))
 }
 
-/// Take an order that has left the book off its owner's aggregates: the
-/// open-order slot comes off, and so does whatever it still reserved. Runs for
-/// an order the fill consumed outright (nothing left to unwind but the slot)
-/// and for one the book culled for falling under its minimum.
+/// Take an order that has left the book off its owner's aggregates: whatever
+/// it still reserved comes off, and the open-order slot with it. Runs for an
+/// order the fill consumed outright (nothing left to unwind but the slot) and
+/// for one the book culled for falling under its minimum.
+///
+/// `leftover` is the book's report, so it is held to what velocity reserved for
+/// this user rather than clamped to it. A report above the reservation would
+/// free the margin behind orders that still rest.
+///
+/// `release_slot` is false when the fill already took the slot. A router fill
+/// releases it as soon as the order it was handed reaches zero unfilled, so a
+/// fully-consumed order arrives here with its slot already gone; taking it
+/// again would free the slot of some other order the owner still has resting.
 fn unwind_leftover(
     user: &mut User,
     market_index: u16,
     direction: &PositionDirection,
     leftover: u64,
     order_id: u64,
+    release_slot: bool,
+    reduce_only: bool,
 ) -> Result<()> {
     let position_index = get_position_index(&user.perp_positions, market_index)?;
     if leftover > 0 {
-        decrease_open_bids_and_asks(
+        release_reserved_open_base(
             &mut user.perp_positions[position_index],
             direction,
             leftover,
-            true,
         )?;
     }
-    user.perp_positions[position_index].open_orders = user.perp_positions[position_index]
-        .open_orders
-        .saturating_sub(1);
-    user.decrement_open_orders(false);
+    if release_slot {
+        release_reserved_open_orders(&mut user.perp_positions[position_index], 1)?;
+        user.decrement_open_orders(false);
+    }
+    // The order left the book, so disarm the reduce-only counter it armed. This
+    // runs only for a removed order, which is the one arm-and-disarm point on
+    // this path: a partial fill shrinks the order in place and never lands here.
+    if reduce_only {
+        user.perp_positions[position_index].disarm_reduce_only_clob();
+    }
     user.release_placed_trigger_slot(market_index, order_id, OrderStatus::Canceled);
     Ok(())
 }
@@ -525,7 +544,8 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         ..inputs
     };
 
-    let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
+    // Reuse the CPI scratch the book read filled: its buffers clear and refill
+    // per leg, so one fill pays for one set of buffers.
     let route = crate::instructions::QuotedRoute::assemble(tail, &inputs, &mut cpi_scratch)?;
     route.require_baseline(perp_market_map.get_ref(&market_index)?.clob_quoter)?;
     route.require_signed_route(&signed_route, route_digest)?;
@@ -554,7 +574,12 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     // taker fee. The cranker is paid below, out of the improvement it actually
     // delivered — a crank that improves nothing is worth nothing.
     let (base_filled, quote_filled) = controller::orders::fill_perp_order_with_router(
-        controller::orders::FillTarget::Detached(&mut order),
+        // The remainder rested on the book first, so it holds an
+        // `open_bids`/`open_asks` reservation this fill unwinds.
+        controller::orders::FillTarget::Detached {
+            order: &mut order,
+            reserved: true,
+        },
         &state,
         &ctx.accounts.taker,
         &ctx.accounts.taker_stats,
@@ -565,7 +590,6 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         &ctx.accounts.taker_stats,
         &makers_and_referrer,
         &makers_and_referrer_stats,
-        None,
         &clock,
         FillMode::Fill,
         &mut router_inputs,
@@ -651,6 +675,11 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         .copied()
         .ok_or(ErrorCode::NoTakerOriginCross)?;
     if filled.removed {
+        // The router released the slot itself if it exhausted the order, so
+        // only a culled remainder still owes one. Measured off what the fill
+        // returned rather than off `order`, which a detached fill does not
+        // write back.
+        let release_slot = base_filled < subject_order.base_asset_amount;
         let mut taker = load_mut!(ctx.accounts.taker)?;
         unwind_leftover(
             &mut taker,
@@ -658,6 +687,8 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
             &taker_direction,
             filled.culled_base_asset_amount,
             subject_order.order_ref.order_id,
+            release_slot,
+            subject_order.reduce_only,
         )?;
     }
 
@@ -815,10 +846,114 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
 
     let mut order =
         controller::orders::taker_origin_order(market_index, taker_direction, aggressor);
-    let oracle_price = {
-        let oracle_id = perp_market_map.get_ref(&market_index)?.oracle_id();
-        oracle_map.get_price_data(&oracle_id)?.price
+    let (oracle_price, margin_ratio_initial) = {
+        let market = perp_market_map.get_ref(&market_index)?;
+        let oracle_id = market.oracle_id();
+        let margin_ratio_initial = market.margin_ratio_initial;
+        drop(market);
+        (
+            oracle_map.get_price_data(&oracle_id)?.price,
+            margin_ratio_initial,
+        )
     };
+
+    // Both the price and the size come off the book's own rows, and this path
+    // has no quote leg to hold them against — velocity priced the match itself.
+    // The oracle is the outside anchor, applied the way the router fill and the
+    // cross crank apply it to an external leg: the counterparty is a resting
+    // maker at `price`, so a price that far from oracle would move value onto
+    // it that no quote ever offered.
+    validate!(
+        !crate::math::orders::limit_price_breaches_maker_oracle_price_bands(
+            price,
+            taker_direction.opposite(),
+            oracle_price,
+            margin_ratio_initial,
+        )?,
+        ErrorCode::QuoterFillOffQuote,
+        "the book rested the counterparty at {}, outside the oracle band around {}",
+        price,
+        oracle_price
+    )?;
+    // The aggressor's own side. `settle_external_match_fill` holds the
+    // counterparty's leg to its reservation, but the aggressor's leg is
+    // velocity's own order row and would clamp instead, so the size the book
+    // reported is bound here.
+    {
+        let taker = load!(ctx.accounts.taker)?;
+        let position_index = get_position_index(&taker.perp_positions, market_index)?;
+        let reserved = taker.perp_positions[position_index].reserved_open_base(taker_direction);
+        // A reduce-only aggressor fills only up to the position it reduces. The
+        // book must clamp it to the same cover, but bind it here too, so a
+        // misbehaving book cannot grow a position a reduce-only order shrinks.
+        // A long aggressor reduces a short, and a short aggressor reduces a
+        // long, so the cover is the position held the opposite way.
+        let cover = if order.reduce_only {
+            let base = taker.perp_positions[position_index].base_asset_amount;
+            match taker_direction {
+                PositionDirection::Long => base.min(0).unsigned_abs(),
+                PositionDirection::Short => base.max(0).unsigned_abs(),
+            }
+        } else {
+            u64::MAX
+        };
+        let bound = reserved.min(cover);
+        validate!(
+            base_filled <= bound,
+            ErrorCode::QuoterReportExceedsReservation,
+            "the book reported a {} base cross for a taker bound to {}",
+            base_filled,
+            bound
+        )?;
+    }
+    // The counterparty's leg. `settle_external_match_fill` binds it to its
+    // reservation, but a reduce-only counterparty must also stay within the
+    // position it reduces. This cross settles both legs itself, so no book
+    // clamp stands behind it: the bind here is the whole guard. A long
+    // counterparty rests bids and reduces a short; a short counterparty rests
+    // asks and reduces a long, so the cover is the position held the other way.
+    if counterparty.reduce_only {
+        let counterparty_user = makers_and_referrer.get_ref(&maker_key)?;
+        let cp_index = get_position_index(&counterparty_user.perp_positions, market_index)?;
+        let base = counterparty_user.perp_positions[cp_index].base_asset_amount;
+        let cp_cover = match taker_direction.opposite() {
+            PositionDirection::Long => base.min(0).unsigned_abs(),
+            PositionDirection::Short => base.max(0).unsigned_abs(),
+        };
+        validate!(
+            base_filled <= cp_cover,
+            ErrorCode::QuoterReportExceedsReservation,
+            "the cross filled {} base against a reduce-only counterparty covering {}",
+            base_filled,
+            cp_cover
+        )?;
+    }
+
+    // Settle funding for both parties before any position update.
+    // `update_position_and_market` requires each position's
+    // `last_cumulative_funding_rate` to match the market's rate. A party that
+    // last traded before a funding update fails that invariant. The router and
+    // `cross_match` paths pre-settle the same way. This two-remainder path must
+    // match them, or it reverts whenever either party holds a position.
+    {
+        let now = clock.unix_timestamp;
+        let taker_key = ctx.accounts.taker.key();
+        let mut market = perp_market_map.get_ref_mut(&market_index)?;
+        let mut taker = load_mut!(ctx.accounts.taker)?;
+        crate::controller::funding::settle_funding_payment(
+            &mut taker,
+            &taker_key,
+            &mut market,
+            now,
+        )?;
+        let mut counterparty_user = makers_and_referrer.get_ref_mut(&maker_key)?;
+        crate::controller::funding::settle_funding_payment(
+            &mut counterparty_user,
+            &maker_key,
+            &mut market,
+            now,
+        )?;
+    }
 
     {
         let mut market = perp_market_map.get_ref_mut(&market_index)?;
@@ -866,6 +1001,9 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
             clock.slot,
             state.promo_fee_tier,
             false,
+            // The aggressor rested on the book first, so its reservation is
+            // still on it and this fill unwinds it.
+            true,
             &mut filler_reward_paid,
         )?;
     }
@@ -915,6 +1053,8 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
                 &direction,
                 leg.culled_base_asset_amount,
                 leg.order_id,
+                true,
+                aggressor.reduce_only,
             )?;
         } else {
             let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
@@ -924,6 +1064,8 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
                 &direction,
                 leg.culled_base_asset_amount,
                 leg.order_id,
+                true,
+                counterparty.reduce_only,
             )?;
         }
     }

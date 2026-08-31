@@ -62,7 +62,7 @@ jobs:
       anchor: ${{ steps.filter.outputs.anchor }}
       docker_ts: ${{ steps.filter.outputs.docker_ts }}
       docker_rust: ${{ steps.filter.outputs.docker_rust }}
-      # True when the PR changes nothing but package versions — see the step.
+      # True when the PR changes nothing but package versions. See the step.
       version_only: ${{ steps.version_only.outputs.value }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -82,8 +82,8 @@ jobs:
       # a PR that touches program or SDK source never qualifies, whoever opens
       # it and wherever from.
       #
-      # Every unexpected condition — a fetch failure, an added or deleted
-      # package.json, an unreadable blob, a path outside the allowlist — leaves
+      # Every unexpected condition (a fetch failure, an added or deleted
+      # package.json, an unreadable blob, a path outside the allowlist) leaves
       # the verdict false and runs the heavy jobs. The failure direction is
       # always "test more", never "test less".
       - name: Detect a version-bump-only PR
@@ -113,7 +113,7 @@ jobs:
           # `--no-renames` is load-bearing. Rename detection is on by default and
           # reports a rename as the destination path ALONE, so renaming a source
           # or test file to something like tests/x/CHANGELOG.md would show the
-          # allowlisted destination and hide the deletion — dropping a test while
+          # allowlisted destination and hide the deletion, dropping a test while
           # skipping the suite that would have noticed. Disabling it splits every
           # rename into its delete and add halves so both paths get checked.
           if git fetch --no-tags --depth=1 origin "$BASE_SHA" "$HEAD_SHA" 2>&1 \
@@ -999,7 +999,7 @@ jobs:
   # Path-gated: TS images only when TS/workspace changes, rust images only when
   # the rust workspace / program changes. type=gha layer cache keeps reruns cheap.
   # TS images additionally skip a version-bump-only PR (see `version_only` in
-  # the changes job) — a bumped `version` field cannot change what an image builds.
+  # the changes job). A bumped `version` field cannot change what an image builds.
   docker-images-ts:
     name: Docker build (ts)
     needs: changes

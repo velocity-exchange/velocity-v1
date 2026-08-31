@@ -49,7 +49,7 @@ use {
                 is_oracle_valid_for_action, oracle_validity, LogMode, OracleValidity,
                 VelocityAction,
             },
-            time::{Millis, SlotDuration},
+            time::{Millis, SlotClock, SlotDuration},
         },
         titan::{self, TitanSwapApi},
         types::{
@@ -184,19 +184,20 @@ fn validate_data_freshness(
     user_meta: &UserAccountMetadata,
     oracle_prices: &HashMap<MarketId, OraclePriceMetadata>,
     current_slot: u64,
-    slot_duration: SlotDuration,
+    slot_clock: SlotClock,
 ) -> Result<(), StalenessError> {
-    let max_oracle_age_slots = MAX_ORACLE_AGE.to_slots(slot_duration);
+    // Oracle age is integrated across slot duration regimes, not converted
+    // with the duration at one endpoint
     // Check oracle prices for all markets user has positions in
     for pos in &user_meta.user.perp_positions {
         if pos.base_asset_amount != 0 {
             let market_id = MarketId::perp(pos.market_index);
             if let Some(oracle_meta) = oracle_prices.get(&market_id) {
-                let oracle_age_slots = current_slot.saturating_sub(oracle_meta.last_updated_slot);
-                if oracle_age_slots > max_oracle_age_slots {
+                let oracle_age = slot_clock.elapsed(oracle_meta.last_updated_slot, current_slot);
+                if oracle_age > MAX_ORACLE_AGE {
                     return Err(StalenessError::OraclePriceStale {
                         market: market_id,
-                        age_slots: oracle_age_slots,
+                        age_slots: current_slot.saturating_sub(oracle_meta.last_updated_slot),
                     });
                 }
             }
@@ -207,11 +208,11 @@ fn validate_data_freshness(
         if !pos.is_available() {
             let market_id = MarketId::spot(pos.market_index);
             if let Some(oracle_meta) = oracle_prices.get(&market_id) {
-                let oracle_age_slots = current_slot.saturating_sub(oracle_meta.last_updated_slot);
-                if oracle_age_slots > max_oracle_age_slots {
+                let oracle_age = slot_clock.elapsed(oracle_meta.last_updated_slot, current_slot);
+                if oracle_age > MAX_ORACLE_AGE {
                     return Err(StalenessError::OraclePriceStale {
                         market: market_id,
-                        age_slots: oracle_age_slots,
+                        age_slots: current_slot.saturating_sub(oracle_meta.last_updated_slot),
                     });
                 }
             }
@@ -341,11 +342,12 @@ async fn update_dashboard_state(
     }
 
     let mut oracle_price_infos = Vec::new();
+    let slot_clock = velocity.slot_clock();
     for (market_id, oracle_meta) in oracle_prices {
         let age_slots = current_slot.saturating_sub(oracle_meta.last_updated_slot);
         let age_ms = now_ms.saturating_sub(oracle_meta.last_updated_timestamp_ms);
-        let is_stale = age_slots
-            > MAX_ORACLE_AGE.to_slots(crate::util::client_slot_duration(velocity, current_slot));
+        let is_stale =
+            slot_clock.elapsed(oracle_meta.last_updated_slot, current_slot) > MAX_ORACLE_AGE;
 
         oracle_price_infos.push(OraclePriceInfo {
             market_type: if market_id.is_perp() {
@@ -762,6 +764,7 @@ impl LiquidatorBot {
         // reflects it immediately, not only after the first refresh below
         let startup_slot = velocity.get_slot().await.unwrap_or(0);
         let mut slot_duration = crate::util::client_slot_duration(velocity, startup_slot);
+        let mut slot_clock = velocity.slot_clock();
         // keep the worker's rate limiter in sync with the resolved duration
         self.liquidation_slot_duration_ms
             .store(slot_duration.as_ms(), std::sync::atomic::Ordering::Relaxed);
@@ -903,6 +906,9 @@ impl LiquidatorBot {
                 log::error!(target: TARGET, "grpc event channel closed, exiting liquidator loop");
                 return;
             }
+            // Refresh on every event batch, not only on user traffic: oracle-only
+            // periods must still pick up a slot duration transition
+            slot_clock = velocity.slot_clock();
             for event in event_buffer.drain(..) {
                 match event {
                     GrpcEvent::UserUpdate {
@@ -1083,7 +1089,7 @@ impl LiquidatorBot {
                                 user_meta,
                                 &oracle_prices,
                                 current_slot,
-                                slot_duration,
+                                slot_clock,
                             )
                         {
                             log::warn!(
@@ -1141,7 +1147,7 @@ impl LiquidatorBot {
                     if let Some(user_meta) = users.get(pubkey) {
                         // With a stale oracle the margin picture is unreliable — keep the
                         // user under watch rather than dropping them.
-                        if validate_data_freshness(user_meta, &oracle_prices, current_slot, slot_duration)
+                        if validate_data_freshness(user_meta, &oracle_prices, current_slot, slot_clock)
                             .is_err()
                         {
                             return true;
@@ -1196,13 +1202,8 @@ impl LiquidatorBot {
                     }
 
                     // Don't act on stale oracle data (see the high-risk scan above)
-                    if validate_data_freshness(
-                        user_meta,
-                        &oracle_prices,
-                        current_slot,
-                        slot_duration,
-                    )
-                    .is_err()
+                    if validate_data_freshness(user_meta, &oracle_prices, current_slot, slot_clock)
+                        .is_err()
                     {
                         continue;
                     }

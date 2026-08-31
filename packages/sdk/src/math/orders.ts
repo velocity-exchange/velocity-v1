@@ -18,7 +18,11 @@ import {
 } from '../constants/numericConstants';
 import { BN } from '../isomorphic/anchor';
 import { MMOraclePriceData, OraclePriceData } from '../oracles/types';
-import { SlotDurationState } from './time';
+import {
+	SlotDurationState,
+	millisFromStoredUnits,
+	slotAtOrAfterDuration,
+} from './time';
 import {
 	getAuctionPrice,
 	isAuctionComplete,
@@ -371,6 +375,29 @@ export function isOrderExpired(
 	}
 
 	return new BN(ts).gt(maxTs);
+}
+
+/**
+ * The last slot a signed message (swift) order can still be placed on-chain, mirroring
+ * `max_slot` in the program's `place_signed_msg_taker_order`: the signed message slot plus
+ * the auction duration, integrated across every known slot duration transition. The program
+ * starts the auction at the message slot rather than at placement, so this window is anchored
+ * there too.
+ * @param state `State` fields the live slot duration resolves from.
+ * @param orderSlot The order's signed message slot (`Order.slot` on a synthetic signed-msg node).
+ * @param auctionDuration `auctionDuration` in 400ms stored units.
+ * @returns The last slot at which the order may still be placed.
+ */
+export function signedMsgOrderMaxSlot(
+	state: SlotDurationState,
+	orderSlot: BN,
+	auctionDuration: number
+): BN {
+	return slotAtOrAfterDuration(
+		state,
+		orderSlot,
+		millisFromStoredUnits(auctionDuration)
+	);
 }
 
 /** True if `order.orderType` is `market`, `triggerMarket`, or `oracle`. */

@@ -16,7 +16,6 @@ import {
 	SlotDurationState,
 	elapsedMillis,
 	millisFromStoredUnits,
-	slotAtOrAfterDuration,
 } from '../math/time';
 import {
 	BASE_PRECISION,
@@ -35,6 +34,7 @@ import {
 	isRestingLimitOrder,
 	isTriggered,
 	mustBeTriggered,
+	signedMsgOrderMaxSlot,
 } from '../math/orders';
 import {
 	getVariant,
@@ -1327,17 +1327,12 @@ export class DLOB {
 	 * @returns `NodeToFill`s (with empty `makerNodes`) for orders ready to expire
 	 * @throws if a signed-message order is present and `slot` was not provided
 	 */
-	/**
-	 * The last slot a signed message order can still be placed on-chain,
-	 * mirroring the program's `max_slot`: placement slot plus the auction
-	 * duration converted from 400ms units to actual slots (ceil) at the live
-	 * slot duration.
-	 */
+	/** The order's placement window, resolved against this DLOB's slot clock. */
 	private signedMsgMaxSlot(order: Order): BN {
-		return slotAtOrAfterDuration(
+		return signedMsgOrderMaxSlot(
 			this.slotDurationState,
 			order.slot,
-			millisFromStoredUnits(order.auctionDuration)
+			order.auctionDuration
 		);
 	}
 

@@ -62,6 +62,13 @@ jobs:
       anchor: ${{ steps.filter.outputs.anchor }}
       docker_ts: ${{ steps.filter.outputs.docker_ts }}
       docker_rust: ${{ steps.filter.outputs.docker_rust }}
+      # The changesets bot's "Version Packages" PR (changesets.yml). It only ever
+      # touches package.json `version` fields, CHANGELOGs, and .changeset/*, but
+      # those live under packages/** and apps/**, so the anchor and docker_ts
+      # filters below match every single time. Heavy jobs gate on this to skip.
+      # `github.head_ref` is empty outside pull_request, so this is false on
+      # push/schedule/dispatch and those runs keep their normal gating.
+      version_pr: ${{ github.head_ref == 'changeset-release/master' }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: dorny/paths-filter@4512585405083f25c027a35db413c2b3b9006d50 # v2
@@ -580,7 +587,7 @@ jobs:
   anchor-tests:
     name: Anchor tests
     needs: changes
-    if: ${{ needs.changes.outputs.anchor == 'true' }}
+    if: ${{ needs.changes.outputs.anchor == 'true' && needs.changes.outputs.version_pr != 'true' }}
     runs-on: ubicloud
     timeout-minutes: 60
     steps:
@@ -733,7 +740,7 @@ jobs:
   vault-tests:
     name: Vault tests
     needs: changes
-    if: ${{ needs.changes.outputs.anchor == 'true' }}
+    if: ${{ needs.changes.outputs.anchor == 'true' && needs.changes.outputs.version_pr != 'true' }}
     runs-on: ubicloud
     timeout-minutes: 60
     steps:
@@ -915,10 +922,12 @@ jobs:
   # docker-info.json), but with push: false — just prove they build clean.
   # Path-gated: TS images only when TS/workspace changes, rust images only when
   # the rust workspace / program changes. type=gha layer cache keeps reruns cheap.
+  # TS images additionally skip the Version Packages PR, which only rewrites
+  # package.json versions and CHANGELOGs (see `version_pr` in the changes job).
   docker-images-ts:
     name: Docker build (ts)
     needs: changes
-    if: ${{ needs.changes.outputs.docker_ts == 'true' }}
+    if: ${{ needs.changes.outputs.docker_ts == 'true' && needs.changes.outputs.version_pr != 'true' }}
     runs-on: ubicloud
     strategy:
       fail-fast: false

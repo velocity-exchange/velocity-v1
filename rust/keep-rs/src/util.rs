@@ -470,6 +470,43 @@ impl<const N: usize> PendingTxs<N> {
 /// (programs/velocity/src/instructions/keeper.rs).
 pub const SWIFT_SIGNED_MSG_MAX_AGE: Millis = Millis::from_secs(200);
 
+/// How to treat a swift order whose signed message may be stamped ahead of the chain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SwiftSlotWait {
+    /// The message slot has arrived: the order can be filled or placed now.
+    Ready,
+    /// Stamped ahead of the chain, within a credible signing buffer: hold the order and
+    /// re-evaluate once its slot arrives.
+    Wait,
+    /// Stamped so far ahead it cannot be a signing buffer: don't hold it.
+    TooFarAhead,
+}
+
+/// Classify a swift order's signed-message slot against the current slot.
+///
+/// `place_signed_msg_taker_order` rejects `order_slot > clock.slot`
+/// (`InvalidSignedMsgOrderParam`), so an order stamped ahead of the chain can be neither
+/// filled nor placed yet. Signers add a buffer so the message stays valid while it travels
+/// (the UI stamps a few slots ahead), which makes this a normal arrival state rather than a
+/// bad order: the swift feed delivers each order exactly once, so the only way not to lose
+/// it is to hold it until its slot arrives.
+///
+/// `max_wait` bounds how far ahead a stamp is still credible as a signing buffer.
+pub fn swift_slot_wait(
+    order_slot: u64,
+    current_slot: u64,
+    max_wait: Millis,
+    slot_clock: SlotClock,
+) -> SwiftSlotWait {
+    if order_slot <= current_slot {
+        return SwiftSlotWait::Ready;
+    }
+    if slot_clock.elapsed(current_slot, order_slot) > max_wait {
+        return SwiftSlotWait::TooFarAhead;
+    }
+    SwiftSlotWait::Wait
+}
+
 /// Returns true if a swift (signed-message) order can no longer be usefully *placed* on-chain,
 /// so the bot shouldn't spend a tx trying.
 ///
@@ -955,7 +992,8 @@ mod tests {
     use {
         super::{
             preview_pyth_lazer_oracle, pyth_update_is_fresh, swift_placement_expired,
-            OrderSlotLimiter, PendingTxMeta, PendingTxs, Pubkey, PythPriceUpdate, TxIntent,
+            swift_slot_wait, OrderSlotLimiter, PendingTxMeta, PendingTxs, Pubkey, PythPriceUpdate,
+            SwiftSlotWait, TxIntent,
         },
         pyth_lazer_protocol::{
             message::SolanaMessage,
@@ -965,7 +1003,7 @@ mod tests {
         solana_sdk::signature::Signature,
         std::num::NonZeroI64,
         velocity_rs::{
-            program::math::time::SlotClock,
+            program::math::time::{Millis, SlotClock},
             types::{MarketType, OracleSource},
         },
     };
@@ -1090,6 +1128,33 @@ mod tests {
         assert!(pending.confirm(&sig).is_some());
         // a redelivered signature must not re-run the confirmation accounting
         assert!(pending.confirm(&sig).is_none());
+    }
+
+    #[test]
+    fn swift_slot_wait_holds_a_signing_buffer() {
+        // The UI's buffer: a few slots ahead of the chain, the normal arrival state.
+        assert_eq!(
+            swift_slot_wait(107, 100, Millis::from_secs(10), SlotClock::baseline()),
+            SwiftSlotWait::Wait
+        );
+        // Arrived: the program accepts the order from its own slot onward.
+        assert_eq!(
+            swift_slot_wait(100, 100, Millis::from_secs(10), SlotClock::baseline()),
+            SwiftSlotWait::Ready
+        );
+        assert_eq!(
+            swift_slot_wait(95, 100, Millis::from_secs(10), SlotClock::baseline()),
+            SwiftSlotWait::Ready
+        );
+        // 25 baseline slots = 10s, exactly the bound; one more is not a signing buffer.
+        assert_eq!(
+            swift_slot_wait(125, 100, Millis::from_secs(10), SlotClock::baseline()),
+            SwiftSlotWait::Wait
+        );
+        assert_eq!(
+            swift_slot_wait(126, 100, Millis::from_secs(10), SlotClock::baseline()),
+            SwiftSlotWait::TooFarAhead
+        );
     }
 
     #[test]

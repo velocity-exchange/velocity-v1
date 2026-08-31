@@ -5,9 +5,11 @@ import {
 	FeeTier,
 	HotRole,
 	decodeName,
+	getTokenAmount,
+	SpotBalanceType,
 } from '@velocity-exchange/sdk';
 import { readGlobalOpts, withGlobalOptions } from '../lib/options';
-import { buildAdminClient } from '../lib/provider';
+import { buildAdminClient, buildProvider } from '../lib/provider';
 
 /** Render `numerator / denominator` as basis points (e.g. taker fee). */
 function asBps(numerator: number, denominator: number): string {
@@ -125,6 +127,160 @@ export function registerShow(parent: Command): void {
 				`${state.perpFeeStructure.ifFeeNumerator}%,`,
 				'protocol = residual'
 			);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		show
+			.command('perp-markets [market]')
+			.description(
+				"Print every live perp market's risk and quoting params: OI cap, margins, " +
+					'imf, liquidation fees, spreads, jit/curve intensities, funding clamp, ' +
+					'insurance claim, and the fee/pnl pool balances (the vAMM capital view). ' +
+					'Pass a market index to show just one.'
+			)
+	).action(async (market: string | undefined, _flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const client = await buildAdminClient(opts);
+		try {
+			const markets = (client as any).getPerpMarketAccounts() as any[];
+			markets.sort((a, b) => a.marketIndex - b.marketIndex);
+			const filter =
+				market !== undefined ? Number.parseInt(market, 10) : undefined;
+			for (const m of markets) {
+				if (filter !== undefined && m.marketIndex !== filter) {
+					continue;
+				}
+				const quoteSpot = (client as any).getQuoteSpotMarketAccount();
+				const q = (bn: any) => trimZeros(Number(bn.toString()) / 1_000_000);
+				const feePool = getTokenAmount(
+					m.amm.feePool.scaledBalance,
+					quoteSpot,
+					SpotBalanceType.DEPOSIT
+				);
+				const pnlPool = getTokenAmount(
+					m.pnlPool.scaledBalance,
+					quoteSpot,
+					SpotBalanceType.DEPOSIT
+				);
+				// AMM reserve price: (quote/base) * peg. Good enough for display.
+				const price =
+					(Number(m.amm.quoteAssetReserve.toString()) /
+						Number(m.amm.baseAssetReserve.toString())) *
+					(Number(m.amm.pegMultiplier.toString()) / 1e6);
+				const maxOiBase = Number(m.maxOpenInterest.toString()) / 1e9;
+				console.log(
+					`${decodeName(m.name)} (perp ${m.marketIndex}, ${JSON.stringify(
+						m.status
+					)})`
+				);
+				console.log(
+					`  oracle: ${m.oracle.toBase58()} reservePrice=$${trimZeros(price)}`
+				);
+				console.log(
+					`  max OI: ${trimZeros(maxOiBase)} base (~$${trimZeros(
+						maxOiBase * price
+					)})  quote_max_insurance: $${q(m.insuranceClaim.quoteMaxInsurance)}`
+				);
+				console.log(
+					`  margins: init ${m.marginRatioInitial / 100}% maint ${
+						m.marginRatioMaintenance / 100
+					}%  imf: ${m.imfFactor}  liq fees: ${pct1e6(
+						m.liquidatorFee
+					)}/${pct1e6(m.ifLiquidationFee)} (liquidator/IF)`
+				);
+				console.log(
+					`  spreads: base ${m.amm.baseSpread / 100}bp max ${
+						m.amm.maxSpread / 100
+					}bp  jit: ${m.amm.ammJitIntensity}  curve intensity: ${
+						m.amm.curveUpdateIntensity
+					}`
+				);
+				console.log(
+					`  funding: clamp ${m.fundingClampThreshold}bp slope ${
+						Number(m.fundingRampSlope) / 1e6
+					}x`
+				);
+				console.log(
+					`  pools: fee $${trimZeros(Number(feePool) / 1e6)} pnl $${trimZeros(
+						Number(pnlPool) / 1e6
+					)}  sqrt_k ${trimZeros(Number(m.amm.sqrtK.toString()) / 1e9)}`
+				);
+			}
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		show
+			.command('spot-markets [market]')
+			.description(
+				"Print every live spot market's lending and collateral params: deposit cap " +
+					'and headroom, scale start, weights, rate curve, withdraw guard, and the ' +
+					'vault + insurance fund balances. Pass a market index to show just one.'
+			)
+	).action(async (market: string | undefined, _flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts);
+		try {
+			const markets = (client as any).getSpotMarketAccounts() as any[];
+			markets.sort((a, b) => a.marketIndex - b.marketIndex);
+			const filter =
+				market !== undefined ? Number.parseInt(market, 10) : undefined;
+			for (const m of markets) {
+				if (filter !== undefined && m.marketIndex !== filter) {
+					continue;
+				}
+				const div = 10 ** m.decimals;
+				const deposits =
+					Number(getTokenAmount(m.depositBalance, m, SpotBalanceType.DEPOSIT)) /
+					div;
+				const borrows =
+					Number(getTokenAmount(m.borrowBalance, m, SpotBalanceType.BORROW)) /
+					div;
+				const cap = Number(m.maxTokenDeposits.toString()) / div;
+				const ifBal = await provider.connection
+					.getTokenAccountBalance(m.insuranceFund.vault)
+					.then((r) => r.value.uiAmountString)
+					.catch(() => 'n/a');
+				console.log(
+					`${decodeName(m.name)} (spot ${m.marketIndex}, ${JSON.stringify(
+						m.status
+					)}) mint=${m.mint.toBase58()} decimals=${m.decimals}`
+				);
+				console.log(
+					`  deposits: ${trimZeros(deposits)} / cap ${
+						cap === 0 ? 'uncapped' : trimZeros(cap)
+					}${
+						cap > 0 ? ` (headroom ${trimZeros(cap - deposits)})` : ''
+					}  borrows: ${trimZeros(borrows)}`
+				);
+				console.log(
+					`  weights: asset ${m.initialAssetWeight / 100}/${
+						m.maintenanceAssetWeight / 100
+					}% liability ${m.initialLiabilityWeight / 100}/${
+						m.maintenanceLiabilityWeight / 100
+					}%  imf: ${m.imfFactor}  scale start: $${trimZeros(
+						Number(m.scaleInitialAssetWeightStart.toString()) / 1e6
+					)}`
+				);
+				console.log(
+					`  rates: optimal ${pct1e6(m.optimalUtilization)} util @ ${pct1e6(
+						m.optimalBorrowRate
+					)} APR, max ${pct1e6(m.maxBorrowRate)}  withdraw guard: ${trimZeros(
+						Number(m.withdrawGuardThreshold.toString()) / div
+					)}`
+				);
+				console.log(
+					`  liq fees: ${pct1e6(m.liquidatorFee)}/${pct1e6(
+						m.ifLiquidationFee
+					)}  IF vault: ${ifBal}`
+				);
+			}
 		} finally {
 			await client.unsubscribe();
 		}

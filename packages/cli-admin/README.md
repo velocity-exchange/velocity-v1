@@ -60,6 +60,8 @@ velocity-admin whoami                                # which on-chain authoritie
 
 velocity-admin show config
 velocity-admin show fees    # every fee users pay: trading tiers, filler reward, split, per-market adjustments + liquidation fees
+velocity-admin show perp-markets [market]  # per-market risk + quoting params: OI cap, margins, spreads, jit/curve intensity, funding clamp, fee/pnl pool balances (the vAMM capital view)
+velocity-admin show spot-markets [market]  # per-market lending params: deposit cap + headroom, weights, rate curve, withdraw guard, IF vault balance
 
 velocity-admin auth set-cold-admin <pubkey>
 velocity-admin auth set-warm-admin <pubkey>
@@ -77,6 +79,7 @@ velocity-admin spot-market set-guard-threshold <market> <threshold>
 velocity-admin spot-market set-scale-initial-asset-weight-start <market> <start>  # warm/cold admin; QUOTE_PRECISION (1e6); 0 disables
 velocity-admin spot-market set-fee-factors <market> <ifFeeFactor> <protocolFeeFactor>
 velocity-admin spot-market set-withdraw-breaker <market> <pct>
+velocity-admin spot-market set-max-token-deposits <market> <amount>  # warm/cold admin; hard deposit cap, raw token base units, 0 = uncapped
 velocity-admin spot-market set-deposit-cap <market> <threshold> <pctPerDay>
 
 velocity-admin exchange set-status <bitfield>
@@ -88,6 +91,7 @@ velocity-admin feature-flags builder-codes <true|false>  # bit 4; enabling requi
 velocity-admin feature-flags vamm-maker-rebate <true|false>  # bit 8; enabling requires cold admin
 
 velocity-admin fees set-recipient <pubkey> <perp|spot>           # cold admin
+velocity-admin fees set-schedule <t0bp> <t1bp> <t2bp> [--maker-rebate-bp <bp>] [--referrer <pct>] [--referee <pct>] [--amm-split <pct>] [--if-split <pct>] [--dry-run]  # warm/cold admin; rewrite the perp fee schedule in one ix (tier fees in bps; tiers 3-9 mirror tier 2; volume thresholds are program constants)
 velocity-admin fees set-split <ammFeeNumerator> <ifFeeNumerator> # warm/cold admin
 velocity-admin fees set-taker-addon <market> <tenthBps>          # warm/cold admin; additive taker-fee add-on, -100..100 tenth-bps
 velocity-admin fees set-promo-tier <tier>                        # warm/cold admin; promo fee-tier floor for everyone, 0 = off
@@ -112,18 +116,61 @@ velocity-admin user withdraw <market> <amount> [--authority <pk>] [--vault-index
 
 velocity-admin if stake <market> <amount> [--authority <pk>] [--user-token-account <pk>]  # inits the stake account if missing
 
+velocity-admin wallet wrap-sol <lamports> [--authority <pk>] [--vault-index <i>] [--min-remaining <sol>] [--dry-run]  # wrap native SOL into the owner's wSOL ATA (created idempotently); one proposal with --multisig
+velocity-admin wallet swap <inputMint> <outputMint> <amount> [--slippage-bps <bps>] [--only-direct-routes] [--vault-index <i>] [--dry-run]  # Jupiter swap from the owner wallet; with --multisig the route is quoted at proposal time — approve + execute promptly or it goes stale
+velocity-admin wallet transfer <mint> <recipient> <amount> [--authority <pk>] [--vault-index <i>] [--to-token-account] [--dry-run]  # SPL transfer to the recipient's ATA (created idempotently); --to-token-account sends to a raw token account instead (e.g. a program vault donation); raw base units, checked against on-chain mint decimals; one proposal with --multisig
+velocity-admin wallet balances [--authority <pk>] [--vault-index <i>]  # read-only: native SOL + token balances, velocity spot positions per sub-account, IF stakes
+
 velocity-admin program upgrade --buffer <pk> [--spill <pk>] [--dry-run]  # propose an upgrade from an existing on-chain buffer
 velocity-admin program halt [--so <path>]                        # deploy sbpf-asm-abort + propose an upgrade that bricks the program
 velocity-admin program close-buffers [--dry-run] [--program-only|--metadata-only]  # reclaim rent from orphaned program + IDL buffers
 
 velocity-admin multisig create --proposer <pubkey> [--name <name>]  # create a Squads V4 1/1 multisig
 velocity-admin multisig proposals [--limit <n>]                  # recent proposals: status, approvals, timelock ETA
+velocity-admin multisig execute <index> [--cu-limit <units>] [--cu-price <microLamports>]  # execute an approved proposal as a member; sets a CU limit (Squads UI executes at the 200k default, too low for CPI-heavy inner txs)
+velocity-admin multisig inspect <index> [--accounts]             # decode a vault tx's inner instructions (lookup tables resolved) + simulate execution at full CU; sim reports InvalidProposalStatus until approved
+velocity-admin multisig set-rent-collector <pubkey>              # propose a config tx setting the rent collector (required by close-accounts); executing any config tx marks still-Active vault proposals stale
+velocity-admin multisig close-accounts [--dry-run]               # reclaim rent from settled proposals (Executed/Rejected/Cancelled + stale non-approved); requires the multisig's rent collector to be set
 
 velocity-admin extend-account <account>                          # AccountExtension hot key (or warm/cold); grow one zero-copy account to the deployed program's size
 velocity-admin extend-account --type <type> [--batch-size <n>] [--dry-run]  # migration crank: scan + extend every account of a type (see docs/ACCOUNT-EXTENSION.md)
 
 velocity-admin call <ixName> <payloadFile>     # generic IDL escape hatch
+velocity-admin batch <payloadFile> [--dry-run] # several instructions in ONE tx / vault proposal ({ instructions: [{ ix, args, accounts }, ...] }); one approval round, one timelock
 ```
+
+## Common flows
+
+Sequences that come up in treasury operations. Each step is a command above; with a
+multisig profile every step is a proposal that members approve and execute in the Squads UI.
+
+**Fund a vault authority's trading account**: `wallet swap` (source the right token) →
+`wallet wrap-sol` (if SOL) → `user deposit`. Deposits fail while the market's hard cap has no
+headroom — check with `show spot-markets` first, raise with `spot-market set-max-token-deposits`
+(and raise `set-scale-initial-asset-weight-start` with it, or large depositors get their
+collateral weight derated).
+
+**Seed or top up an insurance fund**: `if stake <market> <amount>` — initializes the stake
+account on first use. Not subject to deposit caps.
+
+**Fund perp pnl pools**: (1) `wallet transfer <quoteMint> <spotMarketVault> <amount>
+--to-token-account` — an unattributed donation to the quote spot vault; (2) after it lands, a
+`batch` of `updatePerpMarketPnlPool` instructions attributing the amounts per market. Order
+matters: the update instruction validates the vault holds the tokens.
+
+**Fund vAMM fee pools (vAMM capital)**: `depositIntoPerpMarketFeePool` per market via `batch`,
+signed by the VaultDeposit hot role (see `show config`). Reserve resizing is separate:
+`recenterPerpMarketAmm` (peg + sqrt_k in one instruction, warm/cold) with values re-derived at
+the live oracle price — reserves never adjust themselves to new capital.
+
+**Executing heavy proposals**: anything CPI-heavy (Jupiter swaps) exceeds the Squads UI's
+default 200k compute budget. Set ~1M in the UI's execute modal, or use `multisig execute`
+from a machine holding a member key. Inner transactions never carry compute-budget
+instructions (not CPI-able) — a red UI simulation on an unapproved proposal is normal;
+verify with `multisig inspect`.
+
+**Reclaim proposal rent**: `multisig set-rent-collector` (config transaction — it marks
+still-Active vault proposals stale, so time it), then `multisig close-accounts`.
 
 ## Routing through a Squads V4 multisig
 
@@ -193,16 +240,58 @@ Example payload:
 
 The dispatcher does no PDA derivation — every account must be supplied.
 
+### Batching
+
+To land several instructions in ONE transaction / vault proposal (one approval
+round, one timelock — related admin params should ride together):
+
+```sh
+velocity-admin batch <payloadFile.json> [--dry-run]
+```
+
+The payload is a list of `call`-shaped entries, each with the camelCase
+instruction name under `ix`:
+
+```json
+{
+	"_comment": "optional notes: what this batch is, how values were derived",
+	"instructions": [
+		{
+			"ix": "updateSpotMarketMaxTokenDeposits",
+			"args": { "maxTokenDeposits": "5000000000000" },
+			"accounts": {
+				"admin": "<cold or warm vault PDA>",
+				"state": "<state PDA (seed velocity_state)>",
+				"spotMarket": "<spot market PDA (seeds spot_market + u16 LE index)>"
+			}
+		},
+		{
+			"ix": "updateSpotMarketScaleInitialAssetWeightStart",
+			"args": { "scaleInitialAssetWeightStart": "5000000000000" },
+			"accounts": { "…": "…" }
+		}
+	]
+}
+```
+
+Rules, same as `call`: no PDA derivation (supply every account), u64 args as
+JSON strings, pubkeys as base58 strings. Arg and account names are camelCase
+as Anchor's TS client exposes them, not the snake_case of the raw IDL file.
+Field names and types come from the instruction's entry in
+`packages/sdk/src/idl/velocity.json`. All instructions land in one inner
+transaction, so with `--multisig` the whole batch shares a single proposal;
+`--dry-run` prints the built instructions and the expected proposal rent first.
+
 ## Global options
 
-| Flag                      | Default                                          |
-| ------------------------- | ------------------------------------------------ |
-| `-p, --profile <name>`    | `VELOCITY_ADMIN_PROFILE` env, else config default |
-| `-u, --url <url>`         | profile, else `https://api.mainnet-beta.solana.com` |
-| `-k, --keypair <path>`    | profile, else `~/.config/solana/id.json`         |
-| `-e, --env <env>`         | profile, else detected from the RPC's genesis hash |
+| Flag                      | Default                                                                                   |
+| ------------------------- | ----------------------------------------------------------------------------------------- |
+| `-p, --profile <name>`    | `VELOCITY_ADMIN_PROFILE` env, else config default                                         |
+| `-u, --url <url>`         | profile, else `https://api.mainnet-beta.solana.com`                                       |
+| `-k, --keypair <path>`    | profile, else `~/.config/solana/id.json`                                                  |
+| `-e, --env <env>`         | profile, else detected from the RPC's genesis hash                                        |
 | `-m, --multisig <pubkey>` | profile, else none: direct send (`--no-multisig` forces direct under a proposing profile) |
-| `-y, --yes`               | (unset; mainnet direct sends ask for confirmation) |
+| `-y, --yes`               | (unset; mainnet direct sends ask for confirmation)                                        |
 
 ## Authority introspection
 

@@ -93,7 +93,13 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          # No `set -e`: any failure below must fall through to verdict=false.
+          # errexit must be OFF: the runner invokes this step as
+          # `bash -e -o pipefail`, and `set -u`/`set -o pipefail` do not clear
+          # that. Under -e a missing blob (an added or deleted package.json) or
+          # unparseable JSON aborts the step, failing the whole `changes` job
+          # and every job that needs it. Those cases must fall through to
+          # verdict=false and let the heavy jobs run instead.
+          set +e
           set -uo pipefail
           verdict=false
           # checkout is depth-1 on the merge ref, so fetch both endpoints. A

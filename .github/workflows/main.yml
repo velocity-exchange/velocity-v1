@@ -109,8 +109,15 @@ jobs:
           # The file list is captured up front rather than piped into the loop:
           # a `git diff` that failed inside a process substitution would run the
           # loop zero times and leave an affirmative verdict standing.
+          #
+          # `--no-renames` is load-bearing. Rename detection is on by default and
+          # reports a rename as the destination path ALONE, so renaming a source
+          # or test file to something like tests/x/CHANGELOG.md would show the
+          # allowlisted destination and hide the deletion — dropping a test while
+          # skipping the suite that would have noticed. Disabling it splits every
+          # rename into its delete and add halves so both paths get checked.
           if git fetch --no-tags --depth=1 origin "$BASE_SHA" "$HEAD_SHA" 2>&1 \
-            && files=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA") \
+            && files=$(git diff --no-renames --name-only "$BASE_SHA" "$HEAD_SHA") \
             && [ -n "$files" ]; then
             verdict=true
             while IFS= read -r f; do

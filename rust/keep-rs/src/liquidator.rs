@@ -906,6 +906,9 @@ impl LiquidatorBot {
                 log::error!(target: TARGET, "grpc event channel closed, exiting liquidator loop");
                 return;
             }
+            // Refresh on every event batch, not only on user traffic: oracle-only
+            // periods must still pick up a slot duration transition
+            slot_clock = velocity.slot_clock();
             for event in event_buffer.drain(..) {
                 match event {
                     GrpcEvent::UserUpdate {
@@ -922,7 +925,6 @@ impl LiquidatorBot {
                             // Pick up a mid-run slot-duration flip
                             slot_duration =
                                 crate::util::client_slot_duration(velocity, update_slot);
-                            slot_clock = velocity.slot_clock();
                             // re-pace the worker's rate limiter on the flip
                             self.liquidation_slot_duration_ms
                                 .store(slot_duration.as_ms(), std::sync::atomic::Ordering::Relaxed);

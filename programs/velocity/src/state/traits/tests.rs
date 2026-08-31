@@ -79,7 +79,7 @@ mod size {
 ///
 /// * `feature_bit_flags` (byte 1374) — MM-oracle kill switch
 /// * `hot_mm_oracle_crank` (bytes 360..392) — MM-oracle signer
-/// * `hot_amm_spread_adjust` (bytes 392..424) — spread-adjust signer
+/// * `hot_vamm_quote_management` (bytes 392..424) — vAMM quote-management signer
 ///
 /// The `PerpMarket`/`AMM` offsets below are not read by raw index (the handlers
 /// `bytemuck`-cast the account and use typed field access) but are asserted here
@@ -208,13 +208,13 @@ mod native_instruction_offsets {
         );
     }
 
-    /// State.hot_amm_spread_adjust is read at bytes 392..424 by the spread handler.
+    /// State.hot_vamm_quote_management is read at bytes 392..424 by the spread handler.
     #[test]
-    fn state_hot_amm_spread_adjust_offset() {
+    fn state_hot_vamm_quote_management_offset() {
         assert_eq!(
-            std::mem::offset_of!(State, hot_amm_spread_adjust) + DISC,
+            std::mem::offset_of!(State, hot_vamm_quote_management) + DISC,
             392,
-            "State::hot_amm_spread_adjust offset changed — update handle_update_amm_spread_adjustment_native"
+            "State::hot_vamm_quote_management offset changed — update handle_update_amm_spread_adjustment_native"
         );
     }
 }

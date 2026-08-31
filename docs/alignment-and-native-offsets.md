@@ -228,13 +228,13 @@ account bytes** at hardcoded offsets:
   `mm_oracle_sequence_id` into a `PerpMarket` account; reads `feature_bit_flags` and
   `hot_mm_oracle_crank` from a `State` account.
 - `handle_update_amm_spread_adjustment_native` (opcode 1) — writes `amm_spread_adjustment` into a
-  `PerpMarket` account; reads `hot_amm_spread_adjust` from a `State` account.
+  `PerpMarket` account; reads `hot_vamm_quote_management` from a `State` account.
 - `handle_update_mm_oracle_batch_native` (opcode 2) — the same writes as opcode 0, for up to 64
   `PerpMarket` accounts in one instruction.
 
 Opcode 0 and opcode 2 read the `State` auth fields through the shared
 `STATE_FEATURE_BIT_FLAGS_OFFSET` / `STATE_HOT_MM_ORACLE_CRANK_OFFSET` constants in
-`instructions/admin.rs`, and opcode 1 through `STATE_HOT_AMM_SPREAD_ADJUST_OFFSET` in
+`instructions/admin.rs`, and opcode 1 through `STATE_HOT_VAMM_QUOTE_MANAGEMENT_OFFSET` in
 `vlp/amm/admin.rs`, so handlers cannot desync from each other; the constants still have to be kept
 in step with the layout, which is what the offset tests below are for.
 
@@ -259,7 +259,7 @@ moved there in the AMM-decoupling refactor.
 | `MarketStats::mm_oracle_sequence_id` | `PerpMarket` | 816 | same |
 | `AMM::amm_spread_adjustment` | `PerpMarket` | 1282 | `offset_of!(PerpMarket, amm) + offset_of!(AMM, amm_spread_adjustment) + 8` |
 | `State::hot_mm_oracle_crank` | `State` | 360..392 | `offset_of!(State, hot_mm_oracle_crank) + 8` |
-| `State::hot_amm_spread_adjust` | `State` | 392..424 | same |
+| `State::hot_vamm_quote_management` | `State` | 392..424 | same |
 | `State::feature_bit_flags` | `State` | 1374 | same |
 
 Only the `State` offsets are read by raw index. The `PerpMarket` fields are reached through a
@@ -272,7 +272,7 @@ Only the `State` offsets are read by raw index. The `PerpMarket` fields are reac
 - **`amm_zero_copy_offsets`** — asserts the `MarketStats` MM-oracle offsets and
   `AMM::amm_spread_adjustment`.
 - **`state_feature_bit_flags_offset`**, **`state_hot_mm_oracle_crank_offset`**,
-  **`state_hot_amm_spread_adjust_offset`** — assert the `State` offsets the handlers index directly.
+  **`state_hot_vamm_quote_management_offset`** — assert the `State` offsets the handlers index directly.
 
 **If you change any field in `AMM`, `PerpMarket`, or `State`, run `cargo test -p velocity
 native_instruction_offsets` and update both the test expectations and the offset constants used by

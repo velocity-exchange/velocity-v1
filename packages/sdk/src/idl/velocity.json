@@ -19062,7 +19062,7 @@
             "name": "MmOracleCrank"
           },
           {
-            "name": "AmmSpreadAdjust"
+            "name": "VammQuoteManagement"
           },
           {
             "name": "FeeWithdraw"
@@ -24574,7 +24574,12 @@
             "type": "pubkey"
           },
           {
-            "name": "hot_amm_spread_adjust",
+            "name": "hot_vamm_quote_management",
+            "docs": [
+              "Active-management authority for scoped vAMM quoting controls carried by",
+              "`HotAdminUpdatePerpMarket`, plus the low-CU native spread adjustment.",
+              "This may be a multisig PDA; timelock policy lives in that multisig."
+            ],
             "type": "pubkey"
           },
           {

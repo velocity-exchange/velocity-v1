@@ -371,8 +371,8 @@ immediate (JIT, auction-skipping) AMM fills: 0 disables them for the market; neg
 unset (resolving to a 2-slot gap for MM-sourced prices, `constants.rs:281`); a high positive
 value lets JIT fills execute against a price up to 127 slots old (plus up to 2 slots of hidden
 MM-oracle source age, `constants.rs:292-299`), exposing counterparties to stale-price
-arbitrage. Note the accounts struct is named `HotAdminUpdatePerpMarket` but its constraint is
-`check_warm` (`admin.rs:4626`); the real minimum tier is warm.
+arbitrage. These controls remain warm-only and are deliberately excluded from the vAMM
+`VammQuoteManagement` role, along with global oracle guard rails and oracle identity setters.
 
 The field doc comment on `oracle_low_risk_slot_delay_override`
 (`state/perp_market.rs:451-453`) still describes an auction speed-bump override; the code uses

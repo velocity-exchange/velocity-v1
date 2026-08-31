@@ -156,7 +156,7 @@ const HOT_ROLE_CONFIG: Array<{
 	pubkey: PublicKey;
 }> = [
 	{ role: HotRole.MmOracleCrank, field: 'hotMmOracleCrank', pubkey: new PublicKey(process.env.HOT_MM_ORACLE_CRANK ?? MM_ORACLE_CRANK_WALLET) },
-	{ role: HotRole.AmmSpreadAdjust, field: 'hotAmmSpreadAdjust', pubkey: new PublicKey(process.env.HOT_AMM_SPREAD_ADJUST ?? ADMIN_HOT_WALLET) },
+	{ role: HotRole.VammQuoteManagement, field: 'hotVammQuoteManagement', pubkey: new PublicKey(process.env.HOT_VAMM_QUOTE_MANAGEMENT ?? process.env.HOT_AMM_SPREAD_ADJUST ?? ADMIN_HOT_WALLET) },
 	{ role: HotRole.LpSwap, field: 'hotLpSwap', pubkey: new PublicKey(process.env.HOT_LP_SWAP ?? LP_POOL_SWAP_WALLET) },
 	{ role: HotRole.LpCache, field: 'hotLpCache', pubkey: new PublicKey(process.env.HOT_LP_CACHE ?? LP_POOL_HOT_WALLET) },
 	{ role: HotRole.LpSettle, field: 'hotLpSettle', pubkey: new PublicKey(process.env.HOT_LP_SETTLE ?? LP_POOL_HOT_WALLET) },

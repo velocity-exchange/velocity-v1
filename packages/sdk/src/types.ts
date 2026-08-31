@@ -1063,7 +1063,7 @@ export type LPBorrowLendDepositRecord = {
  *
  * **Hot role keys** (`hot*`): purpose-specific bot keys for high-frequency keeper actions (AMM
  * cranking, LP cache/swap/settle, feature-flag toggles, fuel, user-flag updates, vault deposits,
- * mm-oracle cranking, AMM spread adjustment, protocol-fee withdrawal). `PublicKey.default()` means
+ * mm-oracle cranking, vAMM active management, protocol-fee withdrawal). `PublicKey.default()` means
  * the role is unassigned and only `warmAdmin`/`coldAdmin` may call handlers gated on that role.
  */
 export type StateAccount = {
@@ -1079,7 +1079,8 @@ export type StateAccount = {
 	hotUserFlag: PublicKey;
 	hotVaultDeposit: PublicKey;
 	hotMmOracleCrank: PublicKey;
-	hotAmmSpreadAdjust: PublicKey;
+	/** vAMM active-management authority; may be a multisig PDA with its own timelock policy */
+	hotVammQuoteManagement: PublicKey;
 	/** hot key authorized to trigger protocol-fee withdrawals to `protocolFeeRecipientPerp`/`protocolFeeRecipientSpot` */
 	hotFeeWithdraw: PublicKey;
 	/** hot key authorized to grow zero-copy accounts to the deployed program's size (`extendAccount`) */

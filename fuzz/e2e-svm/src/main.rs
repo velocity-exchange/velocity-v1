@@ -162,7 +162,7 @@ fn build_state(signer: Pubkey, signer_nonce: u8, crank: Pubkey) -> State {
     // Route the native hot-key roles to our crank keypair so the native
     // entrypoint's signer check passes regardless of the .so's anchor-test flag.
     s.hot_mm_oracle_crank = anchor_pk(crank);
-    s.hot_amm_spread_adjust = anchor_pk(crank);
+    s.hot_vamm_quote_management = anchor_pk(crank);
     s
 }
 

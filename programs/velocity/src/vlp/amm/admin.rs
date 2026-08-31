@@ -1226,12 +1226,12 @@ pub fn handle_update_perp_market_funding_bias_sensitivity(
     Ok(())
 }
 
-/// Byte offset of `State::hot_amm_spread_adjust` (32 bytes) from the start of
+/// Byte offset of `State::hot_vamm_quote_management` (32 bytes) from the start of
 /// the account data (including the 8-byte Anchor discriminator). Guarded by
 /// `state/traits/tests.rs::native_instruction_offsets`. Only read outside
 /// `anchor-test`, which compiles the signer check out.
 #[cfg_attr(feature = "anchor-test", allow(dead_code))]
-const STATE_HOT_AMM_SPREAD_ADJUST_OFFSET: usize = 392;
+const STATE_HOT_VAMM_QUOTE_MANAGEMENT_OFFSET: usize = 392;
 
 pub fn handle_update_amm_spread_adjustment_native(
     accounts: &[AccountInfo],
@@ -1266,7 +1266,9 @@ pub fn handle_update_amm_spread_adjustment_native(
         let state = accounts[2].try_borrow_data()?;
         let signer_account = &accounts[1];
         let hot_key_bytes: [u8; 32] = state
-            .get(STATE_HOT_AMM_SPREAD_ADJUST_OFFSET..STATE_HOT_AMM_SPREAD_ADJUST_OFFSET + 32)
+            .get(
+                STATE_HOT_VAMM_QUOTE_MANAGEMENT_OFFSET..STATE_HOT_VAMM_QUOTE_MANAGEMENT_OFFSET + 32,
+            )
             .ok_or(ErrorCode::InvalidNativeStateAccount)?
             .try_into()
             .map_err(|_| ErrorCode::InvalidNativeStateAccount)?;
@@ -1627,7 +1629,7 @@ mod native_auth_tests {
     fn spread_native_rejects_forged_state() {
         let attacker = Pubkey::new_unique();
         let mut state = State::default();
-        state.hot_amm_spread_adjust = attacker;
+        state.hot_vamm_quote_management = attacker;
         let mut state_bytes = get_anchor_account_bytes(&mut state);
         let foreign_owner = Pubkey::new_unique();
         let state_key = Pubkey::new_unique();
@@ -1665,7 +1667,7 @@ mod native_auth_tests {
     fn spread_native_rejects_non_perp_market_in_market_slot() {
         let hot_key = Pubkey::new_unique();
         let mut state = State::default();
-        state.hot_amm_spread_adjust = hot_key;
+        state.hot_vamm_quote_management = hot_key;
         create_anchor_account_info!(state, State, state_info);
 
         let mut not_a_market = State::default();
@@ -1685,7 +1687,7 @@ mod native_auth_tests {
     fn spread_native_rejects_unauthorized_signer() {
         let hot_key = Pubkey::new_unique();
         let mut state = State::default();
-        state.hot_amm_spread_adjust = hot_key;
+        state.hot_vamm_quote_management = hot_key;
         create_anchor_account_info!(state, State, state_info);
 
         let mut perp_market = PerpMarket::default();
@@ -1716,7 +1718,7 @@ mod native_auth_tests {
     fn spread_native_rejects_malformed_shape_without_panicking() {
         let hot_key = Pubkey::new_unique();
         let mut state = State::default();
-        state.hot_amm_spread_adjust = hot_key;
+        state.hot_vamm_quote_management = hot_key;
         create_anchor_account_info!(state, State, state_info);
 
         let mut perp_market = PerpMarket::default();
@@ -1747,7 +1749,7 @@ mod native_auth_tests {
     fn spread_native_rejects_truncated_market_account() {
         let hot_key = Pubkey::new_unique();
         let mut state = State::default();
-        state.hot_amm_spread_adjust = hot_key;
+        state.hot_vamm_quote_management = hot_key;
         create_anchor_account_info!(state, State, state_info);
 
         let mut truncated = [0u8; 64];
@@ -1779,7 +1781,7 @@ mod native_auth_tests {
     fn spread_native_happy_path_writes_adjustment() {
         let hot_key = Pubkey::new_unique();
         let mut state = State::default();
-        state.hot_amm_spread_adjust = hot_key;
+        state.hot_vamm_quote_management = hot_key;
         create_anchor_account_info!(state, State, state_info);
 
         let mut perp_market = PerpMarket::default();

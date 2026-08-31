@@ -5,6 +5,7 @@ import { startAnchor } from 'solana-bankrun';
 import {
 	BN,
 	ExchangeStatus,
+	HotRole,
 	getPythLazerOraclePublicKey,
 	getTokenAmount,
 	loadKeypair,
@@ -26,7 +27,7 @@ import {
 	mockUSDCMint,
 	mockUserUSDCAccount,
 } from './testHelpers';
-import { PublicKey } from '@solana/web3.js';
+import { Keypair, PublicKey } from '@solana/web3.js';
 import {
 	BankrunContextWrapper,
 	Connection,
@@ -157,6 +158,82 @@ describe('admin', () => {
 				velocityClient.getPerpMarketAccount(0).amm.ammJitIntensity
 			} \n expected: 50`
 		);
+	});
+
+	it('allows the vAMM active-management role without granting broad admin', async () => {
+		const activeManagementKey = Keypair.generate();
+		await bankrunContextWrapper.fundKeypair(activeManagementKey, 10 ** 9);
+
+		const activeManagementClient = new TestClient({
+			connection: bankrunContextWrapper.connection.toConnection(),
+			wallet: new Wallet(activeManagementKey),
+			programID: chProgram.programId,
+			opts: { commitment: 'confirmed' },
+			activeSubAccountId: 0,
+			perpMarketIndexes: [0],
+			spotMarketIndexes: [0],
+			subAccountIds: [],
+			useHotWalletAdmin: true,
+			accountSubscription: {
+				type: 'polling',
+				accountLoader: bulkAccountLoader,
+			},
+		});
+		await activeManagementClient.subscribe();
+
+		try {
+			let rejectedWhileUnassigned = false;
+			try {
+				await activeManagementClient.updatePerpMarketCurveUpdateIntensity(
+					0,
+					42
+				);
+			} catch (_) {
+				rejectedWhileUnassigned = true;
+			}
+			expect(rejectedWhileUnassigned).to.equal(true);
+
+			await velocityClient.updateHotAdmin(
+				HotRole.VammQuoteManagement,
+				activeManagementKey.publicKey
+			);
+			await velocityClient.fetchAccounts();
+			expect(
+				velocityClient
+					.getStateAccount()
+					.hotVammQuoteManagement.equals(activeManagementKey.publicKey)
+			).to.equal(true);
+
+			await activeManagementClient.updatePerpMarketCurveUpdateIntensity(0, 42);
+			await velocityClient.fetchAccounts();
+			expect(
+				velocityClient.getPerpMarketAccount(0).amm.curveUpdateIntensity
+			).to.equal(42);
+
+			// A broad warm-admin instruction remains unavailable to this role.
+			let broadAdminRejected = false;
+			try {
+				const ix =
+					await activeManagementClient.program.instruction.updatePerpMarketBaseSpread(
+						velocityClient.getPerpMarketAccountOrThrow(0).amm.baseSpread,
+						{
+							accounts: {
+								admin: activeManagementKey.publicKey,
+								state: await activeManagementClient.getStatePublicKey(),
+								perpMarket:
+									velocityClient.getPerpMarketAccountOrThrow(0).pubkey,
+							},
+						}
+					);
+				const tx = await activeManagementClient.buildTransaction(ix);
+				await activeManagementClient.sendTransaction(tx, []);
+			} catch (_) {
+				broadAdminRejected = true;
+			}
+			expect(broadAdminRejected).to.equal(true);
+		} finally {
+			await activeManagementClient.unsubscribe();
+		}
 	});
 
 	it('Update Margin Ratio', async () => {

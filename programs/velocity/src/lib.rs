@@ -1577,7 +1577,7 @@ pub mod velocity {
     }
 
     pub fn update_perp_market_oracle_low_risk_slot_delay_override(
-        ctx: Context<HotAdminUpdatePerpMarket>,
+        ctx: Context<AdminUpdatePerpMarket>,
         oracle_low_risk_slot_delay_override: i8,
     ) -> Result<()> {
         handle_update_perp_market_oracle_low_risk_slot_delay_override(
@@ -1608,7 +1608,7 @@ pub mod velocity {
     }
 
     pub fn update_perp_market_oracle_slot_delay_override(
-        ctx: Context<HotAdminUpdatePerpMarket>,
+        ctx: Context<AdminUpdatePerpMarket>,
         oracle_slot_delay_override: i8,
     ) -> Result<()> {
         handle_update_perp_market_oracle_slot_delay_override(ctx, oracle_slot_delay_override)
@@ -1798,7 +1798,7 @@ pub mod velocity {
         handle_update_feature_bit_flags_mm_oracle(ctx, enable)
     }
 
-    pub fn zero_mm_oracle_fields(ctx: Context<HotAdminUpdatePerpMarket>) -> Result<()> {
+    pub fn zero_mm_oracle_fields(ctx: Context<AdminUpdatePerpMarket>) -> Result<()> {
         handle_zero_mm_oracle_fields(ctx)
     }
 
@@ -2168,7 +2168,7 @@ pub mod velocity {
     }
 
     pub fn update_perp_market_config(
-        ctx: Context<HotAdminUpdatePerpMarket>,
+        ctx: Context<AdminUpdatePerpMarket>,
         market_config: u8,
     ) -> Result<()> {
         handle_update_perp_market_config(ctx, market_config)

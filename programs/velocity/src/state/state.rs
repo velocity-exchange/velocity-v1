@@ -55,7 +55,10 @@ pub struct State {
     pub hot_user_flag: Pubkey,
     pub hot_vault_deposit: Pubkey,
     pub hot_mm_oracle_crank: Pubkey,
-    pub hot_amm_spread_adjust: Pubkey,
+    /// Active-management authority for scoped vAMM quoting controls carried by
+    /// `HotAdminUpdatePerpMarket`, plus the low-CU native spread adjustment.
+    /// This may be a multisig PDA; timelock policy lives in that multisig.
+    pub hot_vamm_quote_management: Pubkey,
 
     pub whitelist_mint: Pubkey,
     pub discount_mint: Pubkey,
@@ -170,7 +173,8 @@ pub enum HotRole {
     UserFlag,
     VaultDeposit,
     MmOracleCrank,
-    AmmSpreadAdjust,
+    /// vAMM active management (spread/JIT/curve and related quoting controls).
+    VammQuoteManagement,
     FeeWithdraw,
     AccountExtension,
 }
@@ -226,7 +230,7 @@ impl Default for State {
             hot_user_flag: Pubkey::default(),
             hot_vault_deposit: Pubkey::default(),
             hot_mm_oracle_crank: Pubkey::default(),
-            hot_amm_spread_adjust: Pubkey::default(),
+            hot_vamm_quote_management: Pubkey::default(),
             whitelist_mint: Pubkey::default(),
             discount_mint: Pubkey::default(),
             signer: Pubkey::default(),
@@ -505,7 +509,7 @@ impl State {
             HotRole::UserFlag => self.hot_user_flag,
             HotRole::VaultDeposit => self.hot_vault_deposit,
             HotRole::MmOracleCrank => self.hot_mm_oracle_crank,
-            HotRole::AmmSpreadAdjust => self.hot_amm_spread_adjust,
+            HotRole::VammQuoteManagement => self.hot_vamm_quote_management,
             HotRole::FeeWithdraw => self.hot_fee_withdraw,
             HotRole::AccountExtension => self.hot_account_extension,
         }
@@ -522,7 +526,7 @@ impl State {
             HotRole::UserFlag => self.hot_user_flag = key,
             HotRole::VaultDeposit => self.hot_vault_deposit = key,
             HotRole::MmOracleCrank => self.hot_mm_oracle_crank = key,
-            HotRole::AmmSpreadAdjust => self.hot_amm_spread_adjust = key,
+            HotRole::VammQuoteManagement => self.hot_vamm_quote_management = key,
             HotRole::FeeWithdraw => self.hot_fee_withdraw = key,
             HotRole::AccountExtension => self.hot_account_extension = key,
         }

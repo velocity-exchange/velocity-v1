@@ -19068,7 +19068,7 @@ export type Velocity = {
             "name": "mmOracleCrank"
           },
           {
-            "name": "ammSpreadAdjust"
+            "name": "vammQuoteManagement"
           },
           {
             "name": "feeWithdraw"
@@ -24580,7 +24580,12 @@ export type Velocity = {
             "type": "pubkey"
           },
           {
-            "name": "hotAmmSpreadAdjust",
+            "name": "hotVammQuoteManagement",
+            "docs": [
+              "Active-management authority for scoped vAMM quoting controls carried by",
+              "`HotAdminUpdatePerpMarket`, plus the low-CU native spread adjustment.",
+              "This may be a multisig PDA; timelock policy lives in that multisig."
+            ],
             "type": "pubkey"
           },
           {

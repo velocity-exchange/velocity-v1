@@ -217,13 +217,12 @@ impl FillerBot {
         let startup_slot = velocity.get_slot().await;
         let mut slot = startup_slot.unwrap_or(0);
         let mut slot_is_known = startup_slot.is_some();
-        let mut slot_duration = crate::util::client_slot_duration(velocity, slot);
         let mut slot_clock = velocity.slot_clock();
         dlob.update_slot_clock(slot_clock);
-        // effective (actual-slot) staleness threshold: the onchain value is in
-        // 400ms baseline units and inflated by slot_duration, mirroring
-        // `oracle_validity`
-        let mut slots_before_stale_for_amm = velocity
+        // AMM staleness window as wall clock: the onchain value is in 400ms
+        // baseline units; oracle age is integrated across slot duration
+        // regimes at the comparison sites, mirroring `oracle_validity`
+        let mut stale_for_amm_threshold = velocity
             .state_account()
             .map(|s| {
                 Millis::from_stored_units(
@@ -232,9 +231,8 @@ impl FillerBot {
                         .slots_before_stale_for_amm
                         .max(0) as u64,
                 )
-                .to_slots(slot_duration) as i64
             })
-            .unwrap_or(10);
+            .unwrap_or(Millis::from_stored_units(10));
         let mut pyth_oracle_prices = BTreeMap::<u16, PythPriceUpdate>::new();
         // per-market consecutive perp-market/oracle cache-miss counters (see slot loop)
         let mut cache_misses = BTreeMap::<u16, u32>::new();
@@ -393,6 +391,11 @@ impl FillerBot {
                     feed_health.touch_slot();
                     log::trace!(target: TARGET, "got slot update: {slot}");
 
+                    // Refresh every slot so a transition is picked up immediately;
+                    // the dlob propagation is a no-op while the clock is unchanged
+                    slot_clock = velocity.slot_clock();
+                    dlob.update_slot_clock(slot_clock);
+
                     let priority_fee = priority_fee_subscriber.priority_fee_nth(0.5) + slot % 2; // add entropy to produce unique tx hash on conseuctive tx resubmission
                     let t0 = std::time::SystemTime::now();
                     let unix_now = t0.duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() as i64;
@@ -427,7 +430,9 @@ impl FillerBot {
                                 continue;
                             }
                         };
-                        let oracle_stale_for_amm = chain_oracle_data.delay > slots_before_stale_for_amm;
+                        let oracle_stale_for_amm = slot_clock
+                            .elapsed_slot_delta(chain_oracle_data.delay.max(0) as u64, slot)
+                            > stale_for_amm_threshold;
                         // Log staleness only on transition; the per-slot price/staleness dump
                         // was pure spam. The oracle price at the moment of an actual decision
                         // is carried on the fill/uncross events below instead.
@@ -617,18 +622,14 @@ impl FillerBot {
                                 .state_account()
                                 .map(|s| s.has_median_trigger_price_feature())
                                 .unwrap_or(false);
-                            slot_duration = crate::util::client_slot_duration(velocity, slot);
-                            slot_clock = velocity.slot_clock();
-                            dlob.update_slot_clock(slot_clock);
-                            slots_before_stale_for_amm = velocity
+                            stale_for_amm_threshold = velocity
                                 .state_account()
                                 .map(|s| {
                                     Millis::from_stored_units(
                                         s.oracle_guard_rails.validity.slots_before_stale_for_amm.max(0) as u64,
                                     )
-                                    .to_slots(slot_duration) as i64
                                 })
-                                .unwrap_or(10);
+                                .unwrap_or(Millis::from_stored_units(10));
                         }
                     }
                     let duration = std::time::SystemTime::now().duration_since(t0).unwrap().as_millis();
@@ -768,7 +769,7 @@ impl FillerBot {
                     oracle_price_data.price,
                     oracle_price_data.delay,
                     landing_slot,
-                    slots_before_stale_for_amm,
+                    stale_for_amm_threshold,
                     slot_clock,
                 ) {
                     SwiftEval::Fillable(crosses) => {
@@ -952,7 +953,7 @@ fn evaluate_swift_crosses(
     oracle_price: i64,
     oracle_delay: i64,
     landing_slot: u64,
-    slots_before_stale_for_amm: i64,
+    stale_for_amm_threshold: Millis,
     slot_clock: SlotClock,
 ) -> SwiftEval {
     let mut order_params = signed_order.order_params();
@@ -1083,7 +1084,8 @@ fn evaluate_swift_crosses(
     // still well-formed, so let the caller place it (it may fill once the oracle refreshes).
     if crosses.orders.is_empty()
         && crosses.has_vamm_cross
-        && oracle_delay > slots_before_stale_for_amm
+        && slot_clock.elapsed_slot_delta(oracle_delay.max(0) as u64, landing_slot)
+            > stale_for_amm_threshold
     {
         return SwiftEval::NotFillable(format!(
             "vAMM-only cross but oracle stale for AMM (delay={oracle_delay} oracle={oracle_price})"

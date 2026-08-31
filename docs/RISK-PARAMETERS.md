@@ -361,7 +361,27 @@ that the setter does not:
   updates, so it halts the market. Any value <= 0 trips on every read with a positive price,
   freezing the market entirely; 0 is also the struct's `#[derive(Default)]` zero-value.
 
-### Per-market slot-delay overrides (warm, unchecked)
+### vAMM quote management hot role (program bounded)
+
+The `VammQuoteManagement` hot role can update only the six active quoting instructions below.
+Calls signed only by that role must remain inside protocol wide constants compiled into the
+program. Warm/cold calls bypass these hot role limits while retaining the setters' original
+semantic checks. There is no per market configuration or mutable baseline for a compromised hot
+key to widen or ratchet.
+
+| Managed value | Existing semantic range | Hot role range |
+| --- | --- | --- |
+| `amm.curve_update_intensity` | `0..=200` | `100..=150` |
+| `amm.reference_price_offset_deadband_pct` | `0..=100` | `0..=25` |
+| `amm.amm_jit_intensity` | `0..=100` | `0..=25` |
+| `amm.max_spread` | `base_spread..=margin_ratio_initial * 100` | `10_000..=20_000`, plus the market dependent semantic range |
+| `amm.amm_spread_adjustment` + `amm.amm_inventory_spread_adjustment` | full i8 for warm/cold (the setter has no semantic check) | both `-100..=100`, checked atomically |
+| `amm.funding_bias_sensitivity` | full u8 | `0..=100` |
+
+Oracle selection/validity, base spread, reserve/peg/k controls, MM-oracle state, and the low-CU
+native spread bot remain outside this role.
+
+### Per-market slot delay overrides (warm, unchecked)
 
 Both are i8 fields on `PerpMarket`, read on every fill, trigger, signed-message placement, AMM
 refresh, and margin calculation. `oracle_low_risk_slot_delay_override` replaces the state-level

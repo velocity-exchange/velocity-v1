@@ -1449,7 +1449,7 @@ export type JitProxy = {
 						name: 'padding';
 						docs: [
 							'168 = the former 244 byte padding minus the 12 staging bytes, the 32 bytes',
-							'used by `slot_duration_transition_slots`, and the 32-byte quote-management',
+							'used by `slot_duration_transition_slots`, and the 32-byte quote management',
 							'authority.',
 							'(`pending_slot_duration_ms` 2 + `slot_duration_pad` 2 + the 8-byte',
 							'`slot_duration_effective_slot`). The padding still absorbs the 8 bytes that',

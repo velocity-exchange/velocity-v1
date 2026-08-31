@@ -218,7 +218,7 @@ mod native_instruction_offsets {
         );
     }
 
-    /// The quote-management authority consumes the first 32 bytes of former padding.
+    /// The quote management authority consumes the first 32 bytes of former padding.
     #[test]
     fn state_hot_vamm_quote_management_offset() {
         assert_eq!(

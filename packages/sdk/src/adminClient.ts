@@ -1821,7 +1821,8 @@ export class AdminClient extends VelocityClient {
 	 * Sets how aggressively a perp market's AMM curve auto-adjusts. Requires the market's
 	 * `HotAdminUpdatePerpMarket` gate: cold, warm, or `HotRole.VammQuoteManagement`. On-chain, values
 	 * `0..=100` control repeg/formulaic-k intensity and `101..=200` additionally enable
-	 * reference-price-offset intensity; values above 200 throw `DefaultError`.
+	 * reference-price-offset intensity; values above 200 throw `DefaultError`. Calls made only by
+	 * the hot role are restricted to the protocol-wide safe range.
 	 * @param perpMarketIndex - Perp market to update.
 	 * @param curveUpdateIntensity - 0-200 intensity knob (see above for the two sub-ranges).
 	 * @returns Transaction signature.
@@ -1876,7 +1877,8 @@ export class AdminClient extends VelocityClient {
 	 * (used to bias the AMM's quoted price away from the raw oracle/mark price) is suppressed.
 	 * Gated the same as `updatePerpMarketCurveUpdateIntensity` (`HotRole.VammQuoteManagement`, warm,
 	 * or cold). Throws `DefaultError` on-chain if
-	 * `referencePriceOffsetDeadbandPct > 100`.
+	 * `referencePriceOffsetDeadbandPct > 100`; hot-only callers are restricted to the
+	 * protocol-wide safe range.
 	 * @param perpMarketIndex - Perp market to update.
 	 * @param referencePriceOffsetDeadbandPct - 0-100 percent dead-band.
 	 * @returns Transaction signature.
@@ -2275,7 +2277,8 @@ export class AdminClient extends VelocityClient {
 	 * Sets how aggressively the AMM just-in-time-fills incoming taker orders against its own
 	 * inventory before routing to the DLOB. Gated the same as `updatePerpMarketCurveUpdateIntensity`
 	 * (`HotRole.VammQuoteManagement`, warm, or cold). Throws
-	 * `DefaultError` on-chain if outside `0..=100`.
+	 * `DefaultError` on-chain if outside `0..=100`; hot-only callers are restricted to the
+	 * protocol-wide safe range.
 	 * @param perpMarketIndex - Perp market to update.
 	 * @param ammJitIntensity - 0-100 intensity; 0 disables AMM JIT fills.
 	 * @returns Transaction signature.
@@ -2461,7 +2464,8 @@ export class AdminClient extends VelocityClient {
 	 * Sets a perp market's maximum allowed total bid/ask spread. Gated the same as
 	 * `updatePerpMarketCurveUpdateIntensity` (`HotRole.VammQuoteManagement`, warm, or cold). Throws
 	 * `DefaultError` on-chain if `maxSpread` is below the
-	 * market's current `baseSpread` or exceeds `marginRatioInitial * 100`.
+	 * market's current `baseSpread` or exceeds `marginRatioInitial * 100`. Hot-only callers are
+	 * additionally restricted to the protocol-wide safe range.
 	 * @param perpMarketIndex - Perp market to update.
 	 * @param maxSpread - New max spread, BID_ASK_SPREAD_PRECISION (1e6). Must be >= `baseSpread` and <= `marginRatioInitial * 100`.
 	 * @returns Transaction signature.
@@ -6056,7 +6060,8 @@ export class AdminClient extends VelocityClient {
 	 * compatibility but ignored on-chain** — `amm.referencePriceOffset` is a per-crank output
 	 * recomputed from inventory and market stats by
 	 * `crate::vlp::amm::math::spread::update_amm_quote_state`, not an admin-settable value; pass
-	 * any value.
+	 * any value. For a hot-only caller, both adjustment values must remain inside the
+	 * protocol-wide safe range or neither write occurs.
 	 * @param perpMarketIndex - Perp market to update.
 	 * @param ammSpreadAdjustment - Signed scalar on the AMM's base spread, same convention as `fee_adjustment` (-100 = spread scaled to 0, 100 = spread doubled, 0 = no adjustment).
 	 * @param ammInventorySpreadAdjustment - Signed scalar on the inventory-skew component of the spread, same -100..100 convention.
@@ -6120,7 +6125,8 @@ export class AdminClient extends VelocityClient {
 	 * Sets how much a perp market's paying-side spread widens while the vAMM's inventory is
 	 * paying funding: `amm.fundingBiasSensitivity = s` gives multiplier `β(f) = 1 + s/100 * ρ(f)`
 	 * (at full ramp, `ρ = 1`: 50 -> 1.5x, 100 -> 2x). Requires `HotRole.VammQuoteManagement`,
-	 * warm, or cold via `HotAdminUpdatePerpMarket`.
+	 * warm, or cold via `HotAdminUpdatePerpMarket`; hot-only callers are restricted to the
+	 * protocol-wide safe range.
 	 * @param perpMarketIndex - Perp market to update.
 	 * @param fundingBiasSensitivity - Sensitivity `s`, in hundredths (value/100 is the multiplier slope); `0` disables the bias. `u8` range caps `s` at 2.55.
 	 * @returns Transaction signature.
@@ -8547,7 +8553,7 @@ export class AdminClient extends VelocityClient {
 
 	/**
 	 * Rotates `state.warmAdmin`, the operational (multisig+timelock) tier that can
-	 * rotate every hot-role key (`updateHotAdmin`). Cold-only: the `UpdateWarmAdmin`
+	 * rotate every hot role key (`updateHotAdmin`). Cold only: the `UpdateWarmAdmin`
 	 * context requires `state.coldAdmin == admin.key()`.
 	 * @param newWarmAdmin - New warm admin pubkey. `PublicKey.default()` unsets the role — only `coldAdmin` can then act where warm was accepted.
 	 * @returns Transaction signature.
@@ -8617,7 +8623,7 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Rotates one purpose-specific hot-role key on `state` (e.g. `hotFeeWithdraw`,
+	 * Rotates one purpose specific hot role key on `state` (e.g. `hotFeeWithdraw`,
 	 * `hotVaultDeposit`). Warm-or-cold: the `UpdateHotAdmin` context requires
 	 * `state.isWarm(admin.key())`. Compromise of one hot key only exposes the
 	 * instructions gated on that specific `HotRole` — rotating it here fully revokes

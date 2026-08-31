@@ -153,7 +153,7 @@ pub struct State {
     /// including `hot_amm_spread_adjust`, retain their offsets.
     pub hot_vamm_quote_management: Pubkey,
     /// 168 = the former 244 byte padding minus the 12 staging bytes, the 32 bytes
-    /// used by `slot_duration_transition_slots`, and the 32-byte quote-management
+    /// used by `slot_duration_transition_slots`, and the 32-byte quote management
     /// authority.
     /// (`pending_slot_duration_ms` 2 + `slot_duration_pad` 2 + the 8-byte
     /// `slot_duration_effective_slot`). The padding still absorbs the 8 bytes that
@@ -625,7 +625,7 @@ impl Size for State {
     // + slot_duration_ms[2] + pending_slot_duration_ms[2] + slot_duration_pad[2]
     // + slot_duration_effective_slot[8] + transition slots[32]
     // + hot_vamm_quote_management[32] + padding[168] = 1752 B.
-    // The quote-management key starts at struct offset 1544, where padding began.
+    // The quote management key starts at struct offset 1544, where padding began.
     // hot_if_rebalance was removed with the if-rebalance machinery (its 32 B went into
     // the padding); protocol_fee_recipient_spot later took 32 B back out; solvency_status
     // took 1 B out of the padding; hot_account_extension took another 32 B out;

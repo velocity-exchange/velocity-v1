@@ -249,16 +249,18 @@ class DLOBBuilder {
 			return;
 		}
 
-		const orderSlot = Math.min(
-			signedMessage.slot.toNumber(),
-			this.slotSubscriber.getSlot()
-		);
-
 		const signedMsgOrder: Order = {
 			status: OrderStatus.OPEN,
 			orderType: signedMsgOrderParams.orderType,
 			orderId: uuid,
-			slot: new BN(orderSlot),
+			// The true message slot, which the UI stamps a few slots ahead of signing
+			// (a signing buffer). It must not be clamped to the current slot: the
+			// program starts the auction at it and rejects a place while
+			// `order_slot > clock.slot`, so a clamped slot made a not-yet-valid order
+			// look immediately fillable and burned the filler's single place+fill
+			// attempt. Auction math reads a future slot as 0% progress, and the DLOB
+			// derives its own max-slot eviction from it, so both need the real value.
+			slot: signedMessage.slot,
 			marketIndex: signedMsgOrderParams.marketIndex,
 			marketType: MarketType.PERP,
 			baseAssetAmount: signedMsgOrderParams.baseAssetAmount,

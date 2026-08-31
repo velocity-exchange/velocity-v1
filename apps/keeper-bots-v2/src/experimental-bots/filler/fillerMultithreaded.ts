@@ -33,6 +33,10 @@ import {
 	UserMap,
 	msToSlotsNum,
 	currentSlotDuration,
+	elapsedMillis,
+	millisFromStoredUnits,
+	slotAtOrAfterDuration,
+	SlotDurationState,
 } from '@velocity-exchange/sdk';
 import { FillerMultiThreadedConfig, GlobalConfig } from '../../config';
 import { JITO_METRIC_TYPES, BundleSender } from '../../bundleSender';
@@ -158,14 +162,65 @@ const MAX_FILL_ATTEMPTS_PER_ORDER = 15;
 // lives at most one auction, so a short TTL reaps entries soon after.
 const FILL_ATTEMPT_COUNTS_TTL_MS = 2 * 60 * 1000;
 const FILL_ATTEMPT_COUNTS_MAX = 10_000;
-// Drop-detection window for an in-flight signed-msg place+fill. A signed-msg
-// node is guarded against re-attempt from the moment it is launched until its
-// tx lands, its send fails, or this TTL elapses. It is deliberately longer than
-// normal confirmation latency (a few seconds) so a slow-but-live tx is not
-// duplicated, and shorter than a typical swift order's lifetime (~25-30s) so a
-// silently-dropped place+fill is retried while the order is still valid and
-// still emitted by the DLOB builder.
-const SIGNED_MSG_FILL_IN_FLIGHT_TTL_MS = 15_000;
+// Upper bound on the drop-detection window for an in-flight signed-msg
+// place+fill. A signed-msg node is guarded against re-attempt from the moment it
+// is launched until its tx resolves (lands, or fails to build/simulate/send) or
+// the per-order TTL below elapses. Shorter than a typical swift order's lifetime
+// (~25-30s) so a silently-dropped place+fill is retried while the order is still
+// valid and still emitted by the DLOB builder.
+const SIGNED_MSG_FILL_IN_FLIGHT_TTL_MAX_MS = 15_000;
+// Lower bound on that window: it must outlast normal confirmation latency (a few
+// seconds), or the ~200ms DLOB re-emit would launch a second place+fill for a
+// tx that is still live.
+const SIGNED_MSG_FILL_IN_FLIGHT_TTL_MIN_MS = 3_000;
+
+/**
+ * Whether a signed-msg order can be placed on-chain yet.
+ *
+ * `place_signed_msg_taker_order` rejects `order_slot > clock.slot`
+ * (InvalidSignedMsgOrderParam), and the UI stamps the message with a signing
+ * buffer of a few slots ahead of its own clock, so a place+fill launched on
+ * arrival is a guaranteed sim failure. Compared as BNs: real slot numbers are far
+ * past `BN.gtn`/`BN.lten`'s 26-bit argument limit. Exported for unit testing.
+ */
+export function signedMsgOrderSlotReached(
+	orderSlot: BN,
+	currentSlot: number
+): boolean {
+	return orderSlot.lte(new BN(currentSlot));
+}
+
+/**
+ * How long to reserve a signed-msg order while its place+fill is in flight: the
+ * wall clock left in the order's own validity window, i.e. up to the program's
+ * `max_slot` (message slot + auction duration). The order is dead past that
+ * slot, so reserving beyond it guards nothing, while a reservation shorter than
+ * confirmation latency risks a second place+fill for a tx that is still live,
+ * hence the bounds.
+ *
+ * Exported for unit testing.
+ */
+export function signedMsgFillInFlightTtlMs(
+	state: SlotDurationState,
+	orderSlot: BN,
+	auctionDuration: number,
+	currentSlot: number
+): number {
+	const maxSlot = slotAtOrAfterDuration(
+		state,
+		orderSlot,
+		millisFromStoredUnits(auctionDuration)
+	);
+	const remainingMs = elapsedMillis(
+		state,
+		new BN(currentSlot),
+		maxSlot
+	).toNumber();
+	return Math.min(
+		Math.max(remainingMs, SIGNED_MSG_FILL_IN_FLIGHT_TTL_MIN_MS),
+		SIGNED_MSG_FILL_IN_FLIGHT_TTL_MAX_MS
+	);
+}
 // Wide-event de-duplication. The DLOB builder re-emits a still-fillable order
 // every ~200ms, so a `fill_decision` per evaluation would be ~5/s/order of pure
 // noise. Each (order, skip reason) pair is therefore wide-logged only the FIRST
@@ -261,6 +316,21 @@ type TxEventStatus =
 	| 'expired'
 	| 'skip_no_sol';
 
+/**
+ * The statuses above that mean no fill tx is in flight: the attempt died before
+ * a tx existed, or the send itself rejected. A signed-msg order's in-flight
+ * reservation is released on these: nothing was sent, so releasing cannot
+ * duplicate a tx, and holding the reservation for the drop-detection TTL instead
+ * costs the order its auction.
+ */
+const NO_TX_IN_FLIGHT_STATUSES: ReadonlySet<string> = new Set<TxEventStatus>([
+	'sim_failed',
+	'sim_rpc_error',
+	'build_error',
+	'send_error',
+	'skip_no_sol',
+]);
+
 /** The statuses above that the chain itself reported, which supersede the rest. */
 const LANDED_TX_STATUSES: ReadonlySet<string> = new Set<TxEventStatus>([
 	'ok',
@@ -281,6 +351,7 @@ type FillDecisionAction =
 	| 'skip_max_attempts'
 	| 'skip_signed_msg_placed'
 	| 'skip_signed_msg_in_flight'
+	| 'skip_signed_msg_slot_not_reached'
 	| 'skip_attempt_interval';
 
 export class FillerMultithreaded {
@@ -325,11 +396,12 @@ export class FillerMultithreaded {
 	// synchronously the instant a fill is launched — before the async
 	// build/sim/send/registration chain runs — so the ~200ms DLOB re-emit cannot
 	// launch a second place+fill for the same order before the first is tracked.
-	// Cleared when the tx lands (confirmPendingTxSigs), when the send definitively
-	// fails, or by the TTL (drop detection). See SIGNED_MSG_FILL_IN_FLIGHT_TTL_MS.
+	// Cleared when the tx lands (confirmPendingTxSigs), when the attempt resolves
+	// without a tx in flight (NO_TX_IN_FLIGHT_STATUSES), or by the per-entry TTL
+	// from signedMsgFillInFlightTtlMs (drop detection).
 	private signedMsgFillsInFlight = new LRUCache<string, true>({
 		max: FILL_ATTEMPT_COUNTS_MAX,
-		ttl: SIGNED_MSG_FILL_IN_FLIGHT_TTL_MS,
+		ttl: SIGNED_MSG_FILL_IN_FLIGHT_TTL_MAX_MS,
 		ttlResolution: 1000,
 	});
 	// Skip reasons already wide-logged for an order, keyed
@@ -1777,6 +1849,24 @@ export class FillerMultithreaded {
 	 *   is retried as the maker set is halved, so without this one fill id would
 	 *   emit a terminal row per retry.
 	 */
+	/**
+	 * Release the in-flight reservation on every signed-msg node in `nodes`,
+	 * because this attempt has no tx in flight.
+	 *
+	 * The reservation is set synchronously at launch, so releasing it after an
+	 * attempt that never sent (build, sim or send failure) cannot let a second
+	 * place+fill race a live one, which is the duplicate it exists to prevent.
+	 * Waiting out the drop-detection TTL instead would hold the order for most or
+	 * all of its auction.
+	 */
+	private releaseSignedMsgFillsInFlight(nodes: Array<NodeToFillWithBuffer>) {
+		for (const node of nodes) {
+			if (node.node.isSignedMsg) {
+				this.signedMsgFillsInFlight.delete(getNodeToFillSignature(node));
+			}
+		}
+	}
+
 	private emitTxEvent(params: {
 		nodes: Array<NodeToFillWithBuffer>;
 		/** Absent when the attempt failed before a fill id was allocated. */
@@ -1793,6 +1883,11 @@ export class FillerMultithreaded {
 		error?: string;
 		errorCode?: number;
 	}) {
+		// Before the de-duplication below: whether this row is the first of its kind
+		// must not decide whether the order stays reserved.
+		if (NO_TX_IN_FLIGHT_STATUSES.has(params.status)) {
+			this.releaseSignedMsgFillsInFlight(params.nodes);
+		}
 		const dedupeKey =
 			params.sig !== undefined
 				? `sig:${params.sig}`
@@ -1930,21 +2025,25 @@ export class FillerMultithreaded {
 
 	// Retry policy differs by node origin:
 	//
-	// - Signed-msg (swift) nodes are submitted as an atomic place+fill. We attempt
-	//   that place+fill only ONCE per order: the node is reserved in
-	//   `signedMsgFillsInFlight` synchronously the moment the fill is launched (so
-	//   the ~200ms DLOB re-emit can't fire a second place+fill before the first is
+	// - Signed-msg (swift) nodes are submitted as an atomic place+fill, and are not
+	//   attempted at all before their message slot arrives: the program starts the
+	//   auction at that slot and rejects an earlier place, so an attempt is a
+	//   guaranteed sim failure. Such a node is skipped without recording an attempt
+	//   or reserving it, so the ~200ms re-emit picks it up the moment its slot lands.
+	// - Once eligible, the place+fill is attempted only ONCE per SENT tx: the node
+	//   is reserved in `signedMsgFillsInFlight` synchronously the moment the fill is
+	//   launched (so the re-emit can't fire a second place+fill before the first is
 	//   even built/sent), and once it lands Ok the order is placed on-chain and the
 	//   node is retired (`placedSignedMsgOrders` + eviction in
 	//   confirmPendingTxSigs). A single-maker signed-msg place+fill carries no
 	//   RevertFill ix (see tryFillPerpNode), so even a 0-base no-op lands Ok and
 	//   places the order; thereafter it fills through its on-chain order node via
-	//   the non-signed path below. Re-attempting the signed node would only re-run
+	//   the non-signed path below. Re-attempting a sent signed node would only re-run
 	//   the heavier place+fill (redundant place ix + ed25519 + oracle updates) and
 	//   race its own on-chain node — which is what produced two concurrent fill txs
-	//   for the same order. A place+fill that fails to send or is dropped releases
-	//   the reservation (send-error path, or SIGNED_MSG_FILL_IN_FLIGHT_TTL_MS) so
-	//   it can be retried while the order is still valid.
+	//   for the same order. An attempt that never put a tx in flight (build, sim or
+	//   send failure) releases the reservation immediately, and a dropped tx releases
+	//   it at the TTL, so either way the order is retried while it is still valid.
 	// - Non-signed nodes (including a signed order's on-chain node once placed)
 	//   keep retrying through the auction, paced to once per fillAttemptIntervalMs
 	//   slots so the fill lands as the Dutch auction ramps into a cross.
@@ -1973,6 +2072,14 @@ export class FillerMultithreaded {
 			}
 
 			if (node.node.isSignedMsg) {
+				// Not yet placeable: the program rejects `order_slot > clock.slot` on
+				// a signed-msg place, and the order carries the UI's signing buffer of
+				// a few slots. Defer without recording an attempt or reserving the
+				// node, so the next re-emit retries it once the slot has arrived.
+				if (!signedMsgOrderSlotReached(node.node.order!.slot, currentSlot)) {
+					this.emitFillDecision(node, 'skip_signed_msg_slot_not_reached');
+					continue;
+				}
 				// Place+fill a signed-msg order at most once: skip while a prior
 				// place+fill is in flight, and skip forever once it has landed
 				// (the order is placed and its on-chain node carries any remaining
@@ -2013,7 +2120,14 @@ export class FillerMultithreaded {
 			// launches, so a subsequent tick can't race a second place+fill in the
 			// window before the tx is registered for confirmation.
 			if (node.node.isSignedMsg) {
-				this.signedMsgFillsInFlight.set(sig, true);
+				this.signedMsgFillsInFlight.set(sig, true, {
+					ttl: signedMsgFillInFlightTtlMs(
+						this.velocityClient.getStateAccount(),
+						node.node.order!.slot,
+						node.node.order!.auctionDuration,
+						currentSlot
+					),
+				});
 			}
 			this.emitFillDecision(node, 'sent', { attempt: attempts + 1 });
 			const attempt =
@@ -2057,6 +2171,8 @@ export class FillerMultithreaded {
 				logger.error(
 					`No makers left to use for multi maker perp node (fillTxId: ${fillTxId})`
 				);
+				// Gives up without a tx and without a terminal `tx` row, so release here.
+				this.releaseSignedMsgFillsInFlight([nodeToFill]);
 				return;
 			}
 		}
@@ -2315,6 +2431,8 @@ export class FillerMultithreaded {
 						[nodeToFill]
 					)}`
 				);
+				// Gives up without a tx and without a terminal `tx` row, so release here.
+				this.releaseSignedMsgFillsInFlight([nodeToFill]);
 				return true;
 			}
 
@@ -2743,16 +2861,8 @@ export class FillerMultithreaded {
 						)}, error: ${simError.message}`
 					);
 
-					// The send definitively failed, so no place+fill is in flight for
-					// these signed-msg orders: release the in-flight guard now (rather
-					// than waiting for the drop-detection TTL) so the order can be
-					// retried while it is still valid.
-					for (const node of nodesSent) {
-						if (node.node.isSignedMsg) {
-							this.signedMsgFillsInFlight.delete(getNodeToFillSignature(node));
-						}
-					}
-
+					// `send_error` is in NO_TX_IN_FLIGHT_STATUSES, so emitting it releases
+					// the in-flight guard for these signed-msg orders.
 					this.emitTxEvent({
 						nodes: nodesSent,
 						fillTxId,

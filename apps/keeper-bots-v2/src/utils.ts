@@ -1372,7 +1372,7 @@ export function getMarketsAndOracleInfosToLoad(
 	perpMarketIndicies: number[] | undefined,
 	spotMarketIndicies: number[] | undefined
 ): {
-	oracleInfos: OracleInfo[];
+	oracleInfos: OracleInfo[] | undefined;
 	perpMarketIndicies: number[] | undefined;
 	spotMarketIndicies: number[] | undefined;
 } {
@@ -1387,7 +1387,7 @@ export function getMarketsAndOracleInfosToLoad(
 			'No perp/spot markets specified; discovering all markets and oracles from on-chain state'
 		);
 		return {
-			oracleInfos: [],
+			oracleInfos: undefined,
 			perpMarketIndicies: undefined,
 			spotMarketIndicies: undefined,
 		};

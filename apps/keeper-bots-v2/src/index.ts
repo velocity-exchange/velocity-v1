@@ -437,7 +437,7 @@ const runBot = async () => {
 		config.global.perpMarketsToLoad,
 		config.global.spotMarketsToLoad
 	);
-	const oracleInfos = marketsAndOracleInfos.oracleInfos;
+	const oracleInfos = marketsAndOracleInfos.oracleInfos ?? [];
 	const velocityClientConfig = {
 		connection,
 		wallet,

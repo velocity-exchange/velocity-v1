@@ -3,8 +3,9 @@ use {
     crate::{
         http::{FeedHealth, Metrics},
         util::{
-            pyth_update_is_fresh, swift_placement_expired, OrderSlotLimiter, PendingTxMeta,
-            PendingTxs, PerpFillFallback, PythPriceUpdate, TxIntent,
+            pyth_update_is_fresh, should_poll_swift, swift_order_expired, swift_slot_wait_if_known,
+            OrderSlotLimiter, PendingTxMeta, PendingTxs, PerpFillFallback, PythPriceUpdate,
+            SwiftSlotWait, TxIntent,
         },
         Config, UseMarkets,
     },
@@ -203,7 +204,6 @@ impl FillerBot {
         let feed_health = Arc::clone(&self.feed_health);
         // reused per-slot scratch buffer for triggerable order ids (avoids per-slot allocation)
         let mut triggerable_buf: Vec<(Pubkey, u32)> = Vec::new();
-        let mut slot = 0;
         // refresh state config on elapsed slots, not `slot % N == 0`: a skipped
         // exact multiple would otherwise stall the refresh for another window.
         const CONFIG_REFRESH_SLOTS: u64 = 300;
@@ -212,6 +212,11 @@ impl FillerBot {
             .state_account()
             .map(|s| s.has_median_trigger_price_feature())
             .unwrap_or(false);
+        // seed with the real chain slot so a bot started after a gate switch
+        // reflects it immediately, not only after the first config refresh
+        let startup_slot = velocity.get_slot().await;
+        let mut slot = startup_slot.unwrap_or(0);
+        let mut slot_is_known = startup_slot.is_some();
         let mut slot_clock = velocity.slot_clock();
         dlob.update_slot_clock(slot_clock);
         // AMM staleness window as wall clock: the onchain value is in 400ms
@@ -253,6 +258,12 @@ impl FillerBot {
 
         // Swift reconnect backoff state (reset on successful resubscribe / first order)
         let mut retries = 0u32;
+        // A disconnected stream stays immediately ready forever and this select is
+        // `biased`, so polling it would starve every arm below it, slots included, for
+        // as long as the feed stayed down. Gate the arm on liveness instead and drive
+        // the retry from its own timer.
+        let mut swift_feed_live = true;
+        let mut swift_reconnect_at = tokio::time::Instant::now();
 
         // Swift-feed liveness. A half-open ws never yields an error or `None` — the
         // stream just goes quiet, which on the order channel is indistinguishable from
@@ -272,121 +283,99 @@ impl FillerBot {
         let mut slot_watchdog = tokio::time::interval(Duration::from_secs(15));
         slot_watchdog.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut last_slot_update = std::time::Instant::now();
+        // Swift orders whose stamped message slot has not arrived yet, held until it
+        // does. The feed delivers each order exactly once, so an order the program
+        // cannot accept yet has to be kept somewhere or it is lost.
+        let mut deferred_swift_orders: Vec<SignedOrderInfo> = Vec::new();
+        // Cap so a stuck slot feed cannot grow the queue without bound.
+        const MAX_DEFERRED_SWIFT_ORDERS: usize = 1_024;
+        // A stamp further ahead than this is not a signing buffer (the UI's is a few
+        // slots); refuse to hold it rather than trust an unbounded future slot.
+        const MAX_SWIFT_ORDER_DEFERRAL: Millis = Millis::from_secs(10);
+        // Swift orders to run the arrival path on: whatever the feed delivered, plus any
+        // deferral whose slot has arrived. Outlives the iteration, so an arm that
+        // short-circuits before the processing pass cannot lose an order.
+        let mut swift_orders: Vec<SignedOrderInfo> = Vec::new();
+        // On contention between an already-buffered slot and an already-ready Swift
+        // order, alternate which stream the biased select lets win. Without this,
+        // either a busy Swift feed or a permanent slot backlog can starve the other.
+        let mut prefer_slot_on_contention = true;
         loop {
+            // Non-blocking because consuming here would skip the per-slot fill work in
+            // the select arm below.
+            let slot_update_pending = !slot_rx.is_empty();
+            let poll_swift = should_poll_swift(
+                swift_feed_live,
+                slot_update_pending,
+                prefer_slot_on_contention,
+            );
+            // Matured deferrals rejoin the arrival path. At the top of the iteration so
+            // no select arm can skip it.
+            if !deferred_swift_orders.is_empty() {
+                let mut waiting = Vec::with_capacity(deferred_swift_orders.len());
+                for order in deferred_swift_orders.drain(..) {
+                    match swift_slot_wait_if_known(
+                        order.slot(),
+                        slot_is_known.then_some(slot),
+                        MAX_SWIFT_ORDER_DEFERRAL,
+                        slot_clock,
+                    ) {
+                        SwiftSlotWait::Ready => swift_orders.push(order),
+                        SwiftSlotWait::Wait => waiting.push(order),
+                        SwiftSlotWait::TooFarAhead => {
+                            log::warn!(target: TARGET, "deferred swift order is too far ahead of slot {slot}, dropping. uuid={}", order.order_uuid_str());
+                            metrics.swift_place_skipped.inc();
+                        }
+                    }
+                }
+                deferred_swift_orders = waiting;
+            }
             tokio::select! {
                 biased;
-                swift_order = swift_order_stream.next() => {
+                swift_order = swift_order_stream.next(), if poll_swift => {
+                    prefer_slot_on_contention = true;
                     match swift_order {
                         Some(signed_order) => {
                             // reset
                             retries = 0;
                             last_swift_msg = std::time::Instant::now();
-
-                            let order_params = signed_order.order_params();
-                            let market_index = order_params.market_index;
-                            log::info!(target: TARGET, "new swift order. uuid={}, market={}", signed_order.order_uuid_str(), market_index);
-                            log::debug!(target: TARGET, "details: {signed_order:?}");
-                            // transient cache misses must not kill the fill loop; drop this
-                            // order (the swift feed keeps flowing) rather than panic
-                            let Ok(perp_market) = velocity.try_get_perp_market_account(market_index) else {
-                                log::warn!(target: TARGET, "no perp market {market_index} for swift order, skipping. uuid={}", signed_order.order_uuid_str());
-                                continue;
-                            };
-                            // a fill tx sent now lands ~1 slot ahead (per tx_event
-                            // latency_slots telemetry); evaluate fillability at landing, on the
-                            // state the program will actually see. Overestimating here assumes a
-                            // higher auction price than the program will compute and sends fill
-                            // legs that no-op on-chain, so stay at the observed latency.
-                            let landing_slot = slot + 1;
-                            let Ok(oracle_price_data) = velocity.try_get_mmoracle_for_perp_market(market_index, landing_slot) else {
-                                log::warn!(target: TARGET, "no oracle price for market {market_index}, skipping swift order. uuid={}", signed_order.order_uuid_str());
-                                continue;
-                            };
-                            // Project the AMM to the state the program quotes at fill time
-                            // (`AmmQuoter::setup`: curve snap + spread refresh). No oracle
-                            // override: swift fill txs don't post the pyth price, so the
-                            // program sees the chain oracle as-is.
-                            let perp_market = velocity
-                                .try_get_projected_perp_market(market_index, landing_slot, None)
-                                .unwrap_or(perp_market);
-
-                            // try an immediate fill against resting liquidity
-                            match evaluate_swift_crosses(dlob, &signed_order, &perp_market, oracle_price_data.price, oracle_price_data.delay, landing_slot, stale_for_amm_threshold, slot_clock) {
-                                SwiftEval::Fillable(crosses) => {
-                                    log::info!(target: TARGET, "found resting cross. market={market_index} oracle={} delay={} crosses={crosses:?}", oracle_price_data.price, oracle_price_data.delay);
-                                    let pf = priority_fee_subscriber.priority_fee_nth(0.6);
-                                    try_swift_fill(
-                                        velocity,
-                                        pf,
-                                        config.swift_cu_limit,
-                                        filler_subaccount,
-                                        signed_order,
-                                        crosses,
-                                        tx_worker_ref.clone(),
-                                    ).await;
-                                }
-                                SwiftEval::NotFillable(reason) => {
-                                    // Well-formed but not marketable yet. Rather than dropping it,
-                                    // place it on-chain (no fill) so it becomes a regular resting
-                                    // order that the normal per-slot fill path will pick up while
-                                    // it remains live. Skip if it can no longer be placed (the
-                                    // program would reject/no-op it) to avoid wasting gas.
-                                    let now_ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
-                                    let order_slot = signed_order.slot();
-                                    let auction_duration = order_params.auction_duration.unwrap_or(0);
-                                    let max_ts = order_params.max_ts.unwrap_or(0);
-                                    if swift_placement_expired(order_slot, auction_duration, max_ts, slot, now_ts, slot_clock) {
-                                        log::debug!(target: TARGET, "swift order past placement window, not placing. uuid={}", signed_order.order_uuid_str());
-                                        metrics.swift_place_skipped.inc();
-                                    } else {
-                                        log::info!(target: TARGET, "swift order not fillable yet ({reason}), placing on-chain. uuid={}", signed_order.order_uuid_str());
-                                        let pf = priority_fee_subscriber.priority_fee_nth(0.6);
-                                        try_swift_place(
-                                            velocity,
-                                            pf,
-                                            config.swift_cu_limit,
-                                            filler_subaccount,
-                                            signed_order,
-                                            slot,
-                                            tx_worker_ref.clone(),
-                                        ).await;
-                                        metrics.swift_placed.inc();
-                                    }
-                                }
-                                SwiftEval::Drop => {
-                                    // malformed / unsupported; already logged in evaluate_swift_crosses
-                                }
-                            }
+                            // handled after the select, together with matured deferrals
+                            swift_orders.push(signed_order);
                         }
                         None => {
                             // Reconnect forever with capped backoff. Giving up after N
                             // retries left the bot permanently deaf to swift flow while
-                            // reporting healthy — a swift-server outage longer than the
+                            // reporting healthy: a swift-server outage longer than the
                             // retry budget must not require a manual restart.
                             feed_health.set_swift_connected(false);
+                            swift_feed_live = false;
                             retries += 1;
                             let backoff = 2u64.saturating_pow(retries.min(5)).min(30);
                             log::warn!(target: "swift", "feed disconnected, retry {retries} in {backoff}s");
-                            tokio::time::sleep(Duration::from_secs(backoff)).await;
-
-                            // keep the same ws url override as the initial subscription,
-                            // otherwise a reconnect silently switches to the default host
-                            match velocity
-                                .subscribe_swift_orders(&market_ids, Some(true), None, std::env::var("SWIFT_WS_URL").ok())
-                                .await
-                            {
-                                Ok(stream) => {
-                                    log::info!(target: "swift", "feed resubscribed after {retries} attempt(s)");
-                                    swift_order_stream = stream;
-                                    retries = 0;
-                                    last_swift_msg = std::time::Instant::now();
-                                    feed_health.set_swift_connected(true);
-                                }
-                                Err(e) => {
-                                    log::error!(target: "swift", "resubscribe failed: {e:?}");
-                                    continue;
-                                }
-                            }
+                            swift_reconnect_at = tokio::time::Instant::now() + Duration::from_secs(backoff);
+                        }
+                    }
+                }
+                _ = tokio::time::sleep_until(swift_reconnect_at), if !swift_feed_live => {
+                    // keep the same ws url override as the initial subscription,
+                    // otherwise a reconnect silently switches to the default host
+                    match velocity
+                        .subscribe_swift_orders(&market_ids, Some(true), None, std::env::var("SWIFT_WS_URL").ok())
+                        .await
+                    {
+                        Ok(stream) => {
+                            log::info!(target: "swift", "feed resubscribed after {retries} attempt(s)");
+                            swift_order_stream = stream;
+                            retries = 0;
+                            last_swift_msg = std::time::Instant::now();
+                            swift_feed_live = true;
+                            feed_health.set_swift_connected(true);
+                        }
+                        Err(e) => {
+                            retries += 1;
+                            let backoff = 2u64.saturating_pow(retries.min(5)).min(30);
+                            log::error!(target: "swift", "resubscribe failed: {e:?}, retry {retries} in {backoff}s");
+                            swift_reconnect_at = tokio::time::Instant::now() + Duration::from_secs(backoff);
                         }
                     }
                 }
@@ -396,6 +385,8 @@ impl FillerBot {
                         break;
                     }
                     slot = new_slot.expect("got slot update");
+                    slot_is_known = true;
+                    prefer_slot_on_contention = false;
                     last_slot_update = std::time::Instant::now();
                     feed_health.touch_slot();
                     log::trace!(target: TARGET, "got slot update: {slot}");
@@ -693,6 +684,133 @@ impl FillerBot {
                     }
                 }
             }
+
+            for signed_order in std::mem::take(&mut swift_orders) {
+                // Until the stamped message slot arrives the program accepts neither a
+                // fill nor a bare placement, so acting now burns a tx and, for a fill,
+                // the order's one place+fill attempt.
+                let order_slot = signed_order.slot();
+                match swift_slot_wait_if_known(
+                    order_slot,
+                    slot_is_known.then_some(slot),
+                    MAX_SWIFT_ORDER_DEFERRAL,
+                    slot_clock,
+                ) {
+                    SwiftSlotWait::Ready => {}
+                    SwiftSlotWait::TooFarAhead => {
+                        log::warn!(target: TARGET, "swift order stamped {} slots ahead of slot {slot}, dropping. uuid={}", order_slot.saturating_sub(slot), signed_order.order_uuid_str());
+                        continue;
+                    }
+                    SwiftSlotWait::Wait => {
+                        if deferred_swift_orders.len() >= MAX_DEFERRED_SWIFT_ORDERS {
+                            log::warn!(target: TARGET, "deferred swift orders at capacity ({MAX_DEFERRED_SWIFT_ORDERS}), dropping. uuid={}", signed_order.order_uuid_str());
+                        } else {
+                            log::info!(target: TARGET, "swift order slot {order_slot} not reached (slot {slot}), deferring. uuid={}", signed_order.order_uuid_str());
+                            deferred_swift_orders.push(signed_order);
+                        }
+                        continue;
+                    }
+                }
+                let order_params = signed_order.order_params();
+                // A held order can age out while the slot feed stalls, and a fresh
+                // feed order can already be late on arrival. Check after the select so
+                // it uses the newest slot handled this iteration, before either the fill
+                // or placement path can spend a transaction.
+                let now_ts = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs() as i64;
+                if swift_order_expired(
+                    order_slot,
+                    order_params.auction_duration.unwrap_or(0),
+                    order_params.max_ts.unwrap_or(0),
+                    slot,
+                    now_ts,
+                    slot_clock,
+                ) {
+                    log::info!(target: TARGET, "swift order expired before processing, dropping. uuid={}", signed_order.order_uuid_str());
+                    metrics.swift_place_skipped.inc();
+                    continue;
+                }
+                let market_index = order_params.market_index;
+                log::info!(target: TARGET, "new swift order. uuid={}, market={}", signed_order.order_uuid_str(), market_index);
+                log::debug!(target: TARGET, "details: {signed_order:?}");
+                // transient cache misses must not kill the fill loop; drop this
+                // order (the swift feed keeps flowing) rather than panic
+                let Ok(perp_market) = velocity.try_get_perp_market_account(market_index) else {
+                    log::warn!(target: TARGET, "no perp market {market_index} for swift order, skipping. uuid={}", signed_order.order_uuid_str());
+                    continue;
+                };
+                // a fill tx sent now lands ~1 slot ahead (per tx_event
+                // latency_slots telemetry); evaluate fillability at landing, on the
+                // state the program will actually see. Overestimating here assumes a
+                // higher auction price than the program will compute and sends fill
+                // legs that no-op on-chain, so stay at the observed latency.
+                let landing_slot = slot + 1;
+                let Ok(oracle_price_data) =
+                    velocity.try_get_mmoracle_for_perp_market(market_index, landing_slot)
+                else {
+                    log::warn!(target: TARGET, "no oracle price for market {market_index}, skipping swift order. uuid={}", signed_order.order_uuid_str());
+                    continue;
+                };
+                // Project the AMM to the state the program quotes at fill time
+                // (`AmmQuoter::setup`: curve snap + spread refresh). No oracle
+                // override: swift fill txs don't post the pyth price, so the
+                // program sees the chain oracle as-is.
+                let perp_market = velocity
+                    .try_get_projected_perp_market(market_index, landing_slot, None)
+                    .unwrap_or(perp_market);
+
+                // try an immediate fill against resting liquidity
+                match evaluate_swift_crosses(
+                    dlob,
+                    &signed_order,
+                    &perp_market,
+                    oracle_price_data.price,
+                    oracle_price_data.delay,
+                    landing_slot,
+                    stale_for_amm_threshold,
+                    slot_clock,
+                ) {
+                    SwiftEval::Fillable(crosses) => {
+                        log::info!(target: TARGET, "found resting cross. market={market_index} oracle={} delay={} crosses={crosses:?}", oracle_price_data.price, oracle_price_data.delay);
+                        let pf = priority_fee_subscriber.priority_fee_nth(0.6);
+                        try_swift_fill(
+                            velocity,
+                            pf,
+                            config.swift_cu_limit,
+                            filler_subaccount,
+                            signed_order,
+                            crosses,
+                            tx_worker_ref.clone(),
+                        )
+                        .await;
+                    }
+                    SwiftEval::NotFillable(reason) => {
+                        // Well-formed but not marketable yet. Rather than dropping it,
+                        // place it on-chain (no fill) so it becomes a regular resting
+                        // order that the normal per-slot fill path will pick up while
+                        // it remains live. Skip if it can no longer be placed (the
+                        // program would reject/no-op it) to avoid wasting gas.
+                        log::info!(target: TARGET, "swift order not fillable yet ({reason}), placing on-chain. uuid={}", signed_order.order_uuid_str());
+                        let pf = priority_fee_subscriber.priority_fee_nth(0.6);
+                        try_swift_place(
+                            velocity,
+                            pf,
+                            config.swift_cu_limit,
+                            filler_subaccount,
+                            signed_order,
+                            slot,
+                            tx_worker_ref.clone(),
+                        )
+                        .await;
+                        metrics.swift_placed.inc();
+                    }
+                    SwiftEval::Drop => {
+                        // malformed / unsupported; already logged in evaluate_swift_crosses
+                    }
+                }
+            }
         }
         velocity.grpc_unsubscribe();
         log::info!(target: TARGET, "filler shutting down...");
@@ -854,8 +972,8 @@ fn evaluate_swift_crosses(
         order_params.auction_duration.unwrap_or_default(),
     );
     // On-chain the auction clock starts at the signed message slot, not when the order is
-    // placed. `min` guards `calculate_auction_price`'s elapsed-slot underflow when the
-    // taker's slot is ahead of our slot subscriber.
+    // placed. Callers defer an order whose message slot has not arrived (`swift_slot_wait`),
+    // so `min` is only a guard against `calculate_auction_price`'s elapsed-slot underflow.
     let order_slot = signed_order.slot().min(landing_slot);
     let order = Order {
         slot: order_slot,

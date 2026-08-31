@@ -125,6 +125,9 @@ velocity-admin program upgrade --buffer <pk> [--spill <pk>] [--dry-run]  # propo
 velocity-admin program halt [--so <path>]                        # deploy sbpf-asm-abort + propose an upgrade that bricks the program
 velocity-admin program close-buffers [--dry-run] [--program-only|--metadata-only]  # reclaim rent from orphaned program + IDL buffers
 
+velocity-admin lut show [address]                                # read-only; capacity, authority, and which live market accounts the table is missing
+velocity-admin lut extend [address] [--dry-run]                  # add every missing market account; the set comes from State's market counts, so it cannot go stale. Signer must be the table authority
+
 velocity-admin multisig create --proposer <pubkey> [--name <name>]  # create a Squads V4 1/1 multisig
 velocity-admin multisig proposals [--limit <n>]                  # recent proposals: status, approvals, timelock ETA
 velocity-admin multisig execute <index> [--cu-limit <units>] [--cu-price <microLamports>]  # execute an approved proposal as a member; sets a CU limit (Squads UI executes at the 200k default, too low for CPI-heavy inner txs)
@@ -168,6 +171,11 @@ default 200k compute budget. Set ~1M in the UI's execute modal, or use `multisig
 from a machine holding a member key. Inner transactions never carry compute-budget
 instructions (not CPI-able) — a red UI simulation on an unapproved proposal is normal;
 verify with `multisig inspect`.
+
+**Listing a new market**: init and parameterise the market, then extend the market
+address lookup table (`lut show` to see what is missing, `lut extend` to add it). Services
+build versioned transactions against that table, so a fill or liquidation touching a market
+missing from it can exceed the transaction size limit. Extend before redeploying the services.
 
 **Reclaim proposal rent**: `multisig set-rent-collector` (config transaction — it marks
 still-Active vault proposals stale, so time it), then `multisig close-accounts`.

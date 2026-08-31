@@ -6092,13 +6092,21 @@ export class AdminClient extends VelocityClient {
 	/**
 	 * Builds the `updatePerpMarketAmmSpreadAdjustment` instruction without sending it. See
 	 * `updatePerpMarketAmmSpreadAdjustment`.
+	 * @param admin - Overrides the `admin` signer account. The instruction accepts the
+	 *   `VammQuoteManagement` hot role as well as warm/cold, so pass the key that will
+	 *   actually sign at execution — e.g. the Squads hot-role vault PDA when the ix is
+	 *   wrapped in a multisig proposal. Defaults to `state.coldAdmin` (or the wallet when
+	 *   `useHotWalletAdmin`).
 	 * @returns The unsigned `updatePerpMarketAmmSpreadAdjustment` instruction.
 	 */
 	public async getUpdatePerpMarketAmmSpreadAdjustmentIx(
 		perpMarketIndex: number,
 		ammSpreadAdjustment: number,
 		ammInventorySpreadAdjustment: number,
-		referencePriceOffset: number
+		referencePriceOffset: number,
+		admin = this.useHotWalletAdmin
+			? this.wallet.publicKey
+			: this.getStateAccount().coldAdmin
 	): Promise<TransactionInstruction> {
 		const perpMarketPublicKey = await getPerpMarketPublicKey(
 			this.program.programId,
@@ -6111,9 +6119,7 @@ export class AdminClient extends VelocityClient {
 			referencePriceOffset,
 			{
 				accounts: {
-					admin: this.useHotWalletAdmin
-						? this.wallet.publicKey
-						: this.getStateAccount().coldAdmin,
+					admin,
 					state: await this.getStatePublicKey(),
 					perpMarket: perpMarketPublicKey,
 				},
@@ -6151,11 +6157,19 @@ export class AdminClient extends VelocityClient {
 	/**
 	 * Builds the `updatePerpMarketFundingBiasSensitivity` instruction without sending it. See
 	 * `updatePerpMarketFundingBiasSensitivity`.
+	 * @param admin - Overrides the `admin` signer account. The instruction accepts the
+	 *   `VammQuoteManagement` hot role as well as warm/cold, so pass the key that will
+	 *   actually sign at execution — e.g. the Squads hot-role vault PDA when the ix is
+	 *   wrapped in a multisig proposal. Defaults to `state.coldAdmin` (or the wallet when
+	 *   `useHotWalletAdmin`).
 	 * @returns The unsigned `updatePerpMarketFundingBiasSensitivity` instruction.
 	 */
 	public async getUpdatePerpMarketFundingBiasSensitivityIx(
 		perpMarketIndex: number,
-		fundingBiasSensitivity: number
+		fundingBiasSensitivity: number,
+		admin = this.useHotWalletAdmin
+			? this.wallet.publicKey
+			: this.getStateAccount().coldAdmin
 	): Promise<TransactionInstruction> {
 		const perpMarketPublicKey = await getPerpMarketPublicKey(
 			this.program.programId,
@@ -6166,9 +6180,7 @@ export class AdminClient extends VelocityClient {
 			fundingBiasSensitivity,
 			{
 				accounts: {
-					admin: this.useHotWalletAdmin
-						? this.wallet.publicKey
-						: this.getStateAccount().coldAdmin,
+					admin,
 					state: await this.getStatePublicKey(),
 					perpMarket: perpMarketPublicKey,
 				},

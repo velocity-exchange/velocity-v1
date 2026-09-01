@@ -570,6 +570,8 @@ export class UserPnlSettlerBot implements Bot {
 			const ixs: TransactionInstruction[] = [
 				ComputeBudgetProgram.setComputeUnitLimit({ units: computeUnits }),
 				ComputeBudgetProgram.setComputeUnitPrice({ microLamports }),
+				// Same-slot AMM crank; see `buildSettlePnlIxs`.
+				await this.velocityClient.getUpdateAMMsIx(marketChunk),
 				await this.velocityClient.settleMultiplePNLsIx(
 					settleeUserAccountPublicKey,
 					settleeUserAccount,
@@ -1420,11 +1422,7 @@ export class UserPnlSettlerBot implements Bot {
 	) {
 		const allTxPromises = [];
 		const pnlIxsBuilder: IxsBuilder = async (usersArg, marketIdx) =>
-			this.velocityClient.getSettlePNLsIxs(
-				usersArg,
-				[marketIdx],
-				this.revenueShareEscrowMap
-			);
+			this.buildSettlePnlIxs(usersArg, [marketIdx]);
 		for (let i = 0; i < users.length; i += SETTLE_USER_CHUNKS) {
 			const usersChunk = users.slice(i, i + SETTLE_USER_CHUNKS);
 			allTxPromises.push(
@@ -1452,6 +1450,27 @@ export class UserPnlSettlerBot implements Bot {
 	// =============================================================================
 	// TRANSACTION SENDING
 	// =============================================================================
+
+	/**
+	 * Builds the settle-PnL instructions for `users` on `marketIndexes`. An `updateAmms` crank for
+	 * the same markets runs first in the transaction. `settle_pnl` accepts a live oracle that has
+	 * moved more than the tier limit from its 5-minute TWAP only if the AMM was updated in the
+	 * same slot. Nothing else cranks the AMM on a quiet market, so a settle sent alone fails with
+	 * `AMMNotUpdatedInSameSlot` for as long as the price stays away from the TWAP.
+	 */
+	private async buildSettlePnlIxs(
+		users: UserToSettle[],
+		marketIndexes: number[]
+	): Promise<TransactionInstruction[]> {
+		return [
+			await this.velocityClient.getUpdateAMMsIx(marketIndexes),
+			...(await this.velocityClient.getSettlePNLsIxs(
+				users,
+				marketIndexes,
+				this.revenueShareEscrowMap
+			)),
+		];
+	}
 
 	async trySendTxForChunk(
 		marketIndex: number,
@@ -1520,11 +1539,7 @@ export class UserPnlSettlerBot implements Bot {
 			try {
 				const extraIxs = buildIxs
 					? await buildIxs(users, marketIndex)
-					: await this.velocityClient.getSettlePNLsIxs(
-							users,
-							[marketIndex],
-							this.revenueShareEscrowMap
-					  );
+					: await this.buildSettlePnlIxs(users, [marketIndex]);
 				ixs.push(...extraIxs);
 			} catch (error) {
 				logger.error(

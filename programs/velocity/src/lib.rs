@@ -2595,6 +2595,12 @@ pub mod velocity {
         handle_resolve_trigger_clob_order(ctx)
     }
 
+    /// Relay resolver for `trigger_order_v1`. Meant to be simulated, not
+    /// landed.
+    pub fn resolve_trigger_order_v1(ctx: Context<ResolveTriggerOrderV1>) -> Result<()> {
+        handle_resolve_trigger_order_v1(ctx)
+    }
+
     /// Rewrite only the liquidation half of a user's condition block.
     /// Prefer `sync_user_conditions` unless the trigger half is known
     /// current. Staged by the block's own self-sync watch on position

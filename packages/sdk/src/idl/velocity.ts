@@ -10108,6 +10108,72 @@ export type Velocity = {
       "args": []
     },
     {
+      "name": "resolveTriggerOrderV1",
+      "docs": [
+        "Relay resolver for `trigger_order_v1`. Meant to be simulated, not",
+        "landed."
+      ],
+      "discriminator": [
+        203,
+        102,
+        5,
+        78,
+        191,
+        104,
+        62,
+        183
+      ],
+      "accounts": [
+        {
+          "name": "scratch",
+          "docs": [
+            "The shared staging account, index 0 by convention — a resolver's",
+            "response pointer is interpreted against it."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  108,
+                  97,
+                  121,
+                  95,
+                  115,
+                  99,
+                  114,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "triggerConditions",
+          "docs": [
+            "Read-only: resolvers stage into the shared scratch account, not into",
+            "the block they read."
+          ]
+        },
+        {
+          "name": "user"
+        },
+        {
+          "name": "oracle"
+        },
+        {
+          "name": "perpMarket"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "resyncLiqConditions",
       "docs": [
         "Relay's unsigned self-maintenance path: rewrite an existing block",

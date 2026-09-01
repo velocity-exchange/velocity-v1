@@ -5479,7 +5479,7 @@ pub fn handle_resolve_trigger_order(ctx: Context<ResolveTriggerOrder>) -> Result
                 &market,
                 &ctx.accounts.oracle,
                 clock.slot,
-                false,
+                crate::instructions::TriggerResolverKind::Flip,
             )?
         };
         let Some(meta) = fired else {

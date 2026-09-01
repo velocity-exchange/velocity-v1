@@ -11,10 +11,16 @@
 //! sources without a raw-price watch layout simply stay on the keeper-bot
 //! path — the correctness floor either way.
 //!
+//! Each fired trigger routes to one of three executors by order type and
+//! whether the market has a CLOB: a trigger-limit rests whole on the book
+//! (`trigger_clob_order`), a stop-market fires and fills against the book
+//! (`trigger_order_v1`), and anything on a market without a CLOB stays on the
+//! plain trigger crank (`trigger_order`) for a keeper bot.
+//!
 //! `remaining_accounts` carry, in any order: the perp markets of the user's
 //! trigger orders, their oracle accounts, their `ClobCrankConditionsV0`
-//! (keeper payment), the markets' CLOB entries (for the trigger-limit →
-//! CLOB executor), and the user's full margin-map section (every spot/perp
+//! (keeper payment), the markets' CLOB entries (for the two CLOB executors),
+//! and the user's full margin-map section (every spot/perp
 //! market + oracle their positions touch — what the SDK's
 //! `getRemainingAccounts` already computes). The margin maps are captured
 //! onto the account for the staged executors; they go stale when positions
@@ -217,16 +223,26 @@ pub fn rewrite_trigger_conditions<'info>(
         };
         let cmp = direction.cmp();
 
-        // Trigger-limits go to the CLOB when the market has one (and the
-        // order has a fixed resting price); everything else through the
-        // plain trigger crank.
-        let clob_path = order.order_type == OrderType::TriggerLimit
+        // Route each fired trigger to its resolver by order type and whether
+        // the market has a CLOB. A trigger-limit with a fixed resting price
+        // rests whole on the book (`trigger_clob_order`). A stop-market fires
+        // and fills against the book (`trigger_order_v1`). Everything else —
+        // any trigger on a market without a CLOB, or a trigger-limit with an
+        // oracle offset that cannot rest at a fixed price — stays on the plain
+        // trigger crank for a keeper bot to fill.
+        let clob_rest = order.order_type == OrderType::TriggerLimit
             && order.oracle_price_offset == 0
             && inputs.clob.is_some();
-        let (resolver_disc, meta) = if clob_path {
+        let clob_fill = order.order_type == OrderType::TriggerMarket && inputs.clob.is_some();
+        let (resolver_disc, meta) = if clob_rest || clob_fill {
             let (entry, book, program) = inputs.clob.unwrap();
+            let disc = if clob_rest {
+                crate::instruction::ResolveTriggerClobOrder::DISCRIMINATOR
+            } else {
+                crate::instruction::ResolveTriggerOrderV1::DISCRIMINATOR
+            };
             (
-                disc8(crate::instruction::ResolveTriggerClobOrder::DISCRIMINATOR)?,
+                disc8(disc)?,
                 TriggerSlotMetaV0 {
                     quoter: entry,
                     clob_market: book,
@@ -254,6 +270,10 @@ pub fn rewrite_trigger_conditions<'info>(
             &[b"perp_market", order.market_index.to_le_bytes().as_ref()],
             &crate::ID,
         );
+        // Every trigger resolver shares one account set: the scratch, the
+        // block, the user, and the slot's own oracle and perp market. The
+        // fire-to-book resolver stages a taker-origin rest, not a fill, so it
+        // reads no book and needs no CLOB accounts of its own.
         let resolvers = conditions.write_slot_resolvers(
             slot_index,
             &[

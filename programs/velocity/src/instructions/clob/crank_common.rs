@@ -477,13 +477,33 @@ pub fn finish_trigger_crank<'info>(
 /// synced slot matches the resolver's executor path (`want_clob_path`).
 /// Everything is re-verified — a stale sync or moved price just returns
 /// `None` and the turner backs off.
+/// Which resolver a fired trigger slot belongs to.
+///
+/// A user can hold several fired triggers on one market at once, and each
+/// resolver runs for its own slots only. The slot's stored meta plus the
+/// order type name the resolver: an empty `quoter` is the plain DLOB flip
+/// (`trigger_order`); a populated `quoter` on a trigger-limit rests the whole
+/// order on the book (`trigger_clob_order`); a populated `quoter` on any other
+/// trigger fires and fills it against the book (`trigger_order_v1`). Without
+/// this a resolver would stage the first fired order that only shares the
+/// coarse CLOB-or-not split, not the one it is meant to run.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TriggerResolverKind {
+    /// `trigger_order` — flip the DLOB order live and leave it for a filler.
+    Flip,
+    /// `trigger_clob_order` — rest the whole trigger-limit on the book.
+    ClobRest,
+    /// `trigger_order_v1` — fire the trigger and fill it against the book.
+    ClobFill,
+}
+
 pub fn find_fired_trigger(
     conditions: &crate::state::user_conditions::UserConditionsV0,
     user: &User,
     market: &PerpMarket,
     oracle_info: &AccountInfo,
     slot: u64,
-    want_clob_path: bool,
+    want: TriggerResolverKind,
 ) -> Result<Option<crate::state::user_conditions::TriggerSlotMetaV0>> {
     validate!(
         oracle_info.key() == market.oracle,
@@ -524,8 +544,14 @@ pub fn find_fired_trigger(
         else {
             continue;
         };
-        let is_clob_path = meta.quoter != Pubkey::default();
-        if is_clob_path == want_clob_path {
+        let kind = if meta.quoter == Pubkey::default() {
+            TriggerResolverKind::Flip
+        } else if order.order_type == crate::state::user::OrderType::TriggerLimit {
+            TriggerResolverKind::ClobRest
+        } else {
+            TriggerResolverKind::ClobFill
+        };
+        if kind == want {
             return Ok(Some(meta));
         }
     }

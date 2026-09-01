@@ -572,7 +572,7 @@ pub fn handle_resolve_trigger_clob_order(ctx: Context<ResolveTriggerClobOrder>) 
                 &market,
                 &ctx.accounts.oracle,
                 clock.slot,
-                true,
+                super::crank_common::TriggerResolverKind::ClobRest,
             )?
         };
         let Some(meta) = fired else {

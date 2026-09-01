@@ -1234,6 +1234,14 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for ResolveTriggerOrder {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct ResolveTriggerOrderV1 {}
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ResolveTriggerOrderV1 {
+        const DISCRIMINATOR: &[u8] = &[203, 102, 5, 78, 191, 104, 62, 183];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for ResolveTriggerOrderV1 {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct ResyncLiqConditions {}
     #[automatically_derived]
     impl anchor_lang::Discriminator for ResyncLiqConditions {
@@ -18729,6 +18737,88 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for ResolveTriggerOrder {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct ResolveTriggerOrderV1 {
+        pub scratch: Pubkey,
+        pub trigger_conditions: Pubkey,
+        pub user: Pubkey,
+        pub oracle: Pubkey,
+        pub perp_market: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ResolveTriggerOrderV1 {
+        const DISCRIMINATOR: &[u8] = &[126, 218, 204, 193, 48, 90, 41, 3];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for ResolveTriggerOrderV1 {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for ResolveTriggerOrderV1 {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for ResolveTriggerOrderV1 {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for ResolveTriggerOrderV1 {}
+    #[automatically_derived]
+    impl ToAccountMetas for ResolveTriggerOrderV1 {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.scratch,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.trigger_conditions,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.user,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.oracle,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.perp_market,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for ResolveTriggerOrderV1 {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for ResolveTriggerOrderV1 {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {

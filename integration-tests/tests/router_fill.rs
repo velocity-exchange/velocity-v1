@@ -5750,7 +5750,12 @@ fn user_conditions_pda(user: &Pubkey) -> Pubkey {
     Pubkey::find_program_address(&[b"user_conditions", user.as_ref()], &velocity_id()).0
 }
 
-fn sync_trigger_conditions(fixture: &mut Fixture, user: Pubkey, market_conditions: Pubkey) {
+fn sync_trigger_conditions(
+    fixture: &mut Fixture,
+    user: Pubkey,
+    market_conditions: Pubkey,
+    with_clob: bool,
+) {
     let mut accounts = velocity::accounts::SyncTriggerConditions {
         payer: fixture.keeper.pubkey(),
         user,
@@ -5766,7 +5771,12 @@ fn sync_trigger_conditions(fixture: &mut Fixture, user: Pubkey, market_condition
     accounts.push(AccountMeta::new(spot_market_pda(0), false));
     accounts.push(AccountMeta::new(perp_market_pda(0), false));
     accounts.push(AccountMeta::new_readonly(market_conditions, false));
-    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    // The market's CLOB entry routes a fired stop-market to the fire-to-book
+    // resolver. Left out, the market reads as book-less and the trigger stays
+    // on the plain flip crank.
+    if with_clob {
+        accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    }
     let ix = Instruction {
         program_id: velocity_id(),
         accounts,
@@ -5776,12 +5786,26 @@ fn sync_trigger_conditions(fixture: &mut Fixture, user: Pubkey, market_condition
     send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
 }
 
+/// Which trigger resolver the turner runs. All three share one account set;
+/// only the instruction discriminator differs.
+#[derive(Clone, Copy)]
+enum TrigResolver {
+    /// `resolve_trigger_order` — the plain DLOB flip.
+    Flip,
+    /// `resolve_trigger_clob_order` — rest a trigger-limit on the book.
+    ClobRest,
+    /// `resolve_trigger_order_v1` — fire a stop-market to the book.
+    ClobFill,
+}
+
 fn run_trigger_resolver(
     fixture: &mut Fixture,
     user: Pubkey,
-    clob_path: bool,
+    which: TrigResolver,
 ) -> Option<velocity::relay_spec::ResolvedCrankV0> {
     let conditions = user_conditions_pda(&user);
+    // All three trigger resolvers share one account set; only the instruction
+    // discriminator picks which one runs.
     let accounts = velocity::accounts::ResolveTriggerOrder {
         scratch: relay_scratch_pda(),
         trigger_conditions: conditions,
@@ -5793,10 +5817,10 @@ fn run_trigger_resolver(
     let ix = Instruction {
         program_id: velocity_id(),
         accounts,
-        data: if clob_path {
-            velocity::instruction::ResolveTriggerClobOrder {}.data()
-        } else {
-            velocity::instruction::ResolveTriggerOrder {}.data()
+        data: match which {
+            TrigResolver::Flip => velocity::instruction::ResolveTriggerOrder {}.data(),
+            TrigResolver::ClobRest => velocity::instruction::ResolveTriggerClobOrder {}.data(),
+            TrigResolver::ClobFill => velocity::instruction::ResolveTriggerOrderV1 {}.data(),
         },
     };
     let keeper = fixture.keeper.insecure_clone();
@@ -5871,7 +5895,7 @@ fn trigger_relay_conditions_fire_an_armed_trigger_unsigned() {
     .0;
     set_user_stats_account(&mut fixture.svm, user_stats, &authority.pubkey());
 
-    sync_trigger_conditions(&mut fixture, user, market_conditions);
+    sync_trigger_conditions(&mut fixture, user, market_conditions, false);
 
     // The sync wrote a value watch at the trigger threshold (lazer exponent
     // 6 = PRICE_PRECISION, so raw == trigger) with the plain trigger
@@ -5901,7 +5925,7 @@ fn trigger_relay_conditions_fire_an_armed_trigger_unsigned() {
         (100 * PRICE_PRECISION) as i64,
         12,
     );
-    assert!(run_trigger_resolver(&mut fixture, user, false).is_none());
+    assert!(run_trigger_resolver(&mut fixture, user, TrigResolver::Flip).is_none());
 
     // Crossed: the resolver stages the executor; a turner-shaped unsigned
     // submission triggers the order and pays the keeper from the reservoir.
@@ -5912,8 +5936,8 @@ fn trigger_relay_conditions_fire_an_armed_trigger_unsigned() {
         (106 * PRICE_PRECISION) as i64,
         13,
     );
-    let resolved =
-        run_trigger_resolver(&mut fixture, user, false).expect("crossed threshold stages");
+    let resolved = run_trigger_resolver(&mut fixture, user, TrigResolver::Flip)
+        .expect("crossed threshold stages");
     let payout = Pubkey::new_unique();
     fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
     let payout_before = fixture.svm.get_balance(&payout).unwrap();
@@ -5976,7 +6000,7 @@ fn trigger_limit_sync_targets_the_clob_executor() {
         ),
     );
 
-    sync_trigger_conditions(&mut fixture, user, market_conditions);
+    sync_trigger_conditions(&mut fixture, user, market_conditions, true);
 
     let acct: UserConditionsV0 = read_zero_copy(&fixture.svm, &user_conditions_pda(&user));
     let (_, block) = velocity::relay_spec::read_block(acct.block(), 0).unwrap();
@@ -5996,6 +6020,142 @@ fn trigger_limit_sync_targets_the_clob_executor() {
     assert_eq!(
         acct.trigger_slots[0].clob_market.to_bytes(),
         fixture.clob_market.to_bytes()
+    );
+}
+
+/// A stop-market on a book market syncs to the fire-to-book resolver, and that
+/// resolver, run turner-shaped, fires the trigger to the book. The staged
+/// executor carries no quoter tail, so it does not fill: the whole fired order
+/// rests taker-origin even though a crossing ask sits on the book, and the
+/// cross crank settles it later at the best price across every source. A
+/// resolver fill would have taken the book alone, blind to the propAMMs.
+#[test]
+fn trigger_market_fires_to_the_book_through_its_resolver() {
+    use velocity::state::user_conditions::{UserConditionsV0, TRIGGER_SLOT_BASE};
+
+    let mut fixture = setup();
+    const PAYMENT: u64 = 25_000;
+    let market_conditions = init_crank_conditions(&mut fixture, PAYMENT);
+    set_protocol_user(&mut fixture.svm);
+    fixture
+        .svm
+        .airdrop(&market_conditions, 1_000_000_000)
+        .unwrap();
+
+    // A resting ask the fired buy-stop crosses, and no vAMM to absorb it first.
+    let maker_stats = Pubkey::find_program_address(
+        &[
+            b"user_stats",
+            fixture.clob_maker_authority.pubkey().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    set_user_stats_account(
+        &mut fixture.svm,
+        maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+    pause_amm_fill(&mut fixture.svm);
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+
+    // A long buy-stop armed below the oracle: it fires when the price reaches
+    // 99 and becomes a live market order.
+    let authority = Keypair::new();
+    fixture
+        .svm
+        .airdrop(&authority.pubkey(), 1_000_000_000)
+        .unwrap();
+    let user = Pubkey::find_program_address(
+        &[
+            b"user",
+            authority.pubkey().as_ref(),
+            0u16.to_le_bytes().as_ref(),
+        ],
+        &velocity_id(),
+    )
+    .0;
+    let mut order = Order::default();
+    order.order_id = 1;
+    order.status = OrderStatus::Open;
+    order.order_type = OrderType::TriggerMarket;
+    order.market_type = MarketType::Perp;
+    order.market_index = 0;
+    order.direction = PositionDirection::Long;
+    order.base_asset_amount = UNIT;
+    order.trigger_price = 99 * PRICE;
+    order.trigger_condition = velocity::state::user::OrderTriggerCondition::Above;
+    let clock: solana_clock::Clock = fixture.svm.get_sysvar();
+    order.max_ts = clock.unix_timestamp + 1_000;
+    let mut state = armed_trigger_user(
+        &authority.pubkey(),
+        10_000 * SPOT_BALANCE_PRECISION_U64,
+        order,
+    );
+    state.next_order_id = 2;
+    set_user_account(&mut fixture.svm, user, &state);
+    let user_stats = Pubkey::find_program_address(
+        &[b"user_stats", authority.pubkey().as_ref()],
+        &velocity_id(),
+    )
+    .0;
+    set_user_stats_account(&mut fixture.svm, user_stats, &authority.pubkey());
+
+    sync_trigger_conditions(&mut fixture, user, market_conditions, true);
+
+    // The sync routes a stop-market on a book market to the v1 resolver.
+    let conditions = user_conditions_pda(&user);
+    let acct: UserConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
+    let (_, block) = velocity::relay_spec::read_block(acct.block(), 0).unwrap();
+    assert_eq!(
+        block[TRIGGER_SLOT_BASE].crank_spec().resolver_disc,
+        velocity::instruction::ResolveTriggerOrderV1::DISCRIMINATOR
+    );
+    assert_eq!(
+        acct.trigger_slots[0].quoter.to_bytes(),
+        fixture.quoter.to_bytes()
+    );
+
+    // Crossed: the resolver stages the fire-to-book executor, and it lands
+    // unsigned. The order leaves the DLOB and rests on the book.
+    fixture.svm.warp_to_slot(13);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        13,
+    );
+    let resolved = run_trigger_resolver(&mut fixture, user, TrigResolver::ClobFill)
+        .expect("crossed threshold stages the fire-to-book executor");
+    let payout = Pubkey::new_unique();
+    fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
+    run_staged_executor(
+        &mut fixture,
+        &resolved,
+        velocity::instruction::TriggerOrderV1::DISCRIMINATOR,
+        payout,
+    );
+
+    let triggered: User = read_zero_copy(&fixture.svm, &user);
+    assert!(
+        triggered
+            .orders
+            .iter()
+            .all(|order| order.status != OrderStatus::Open),
+        "the armed slot is freed: nothing lingers live on the DLOB"
+    );
+    assert_eq!(
+        triggered.perp_positions[0].base_asset_amount, 0,
+        "the resolver stages no fill: nothing is taken against the book alone"
+    );
+    assert_eq!(
+        triggered.perp_positions[0].open_bids, UNIT as i64,
+        "the whole fired order is reserved against the book"
+    );
+    assert_eq!(
+        clob_bid_count(&fixture),
+        1,
+        "the whole fired order rests taker-origin for the cross crank"
     );
 }
 
@@ -6104,7 +6264,9 @@ fn merged_sync_keeps_the_stored_map_section_parseable() {
     assert_eq!(map[3].address, market_conditions.to_bytes());
     assert_eq!(map[4].address, fixture.quoter.to_bytes());
 
-    // And the proof it parses: the staged trigger executor lands.
+    // And the proof it parses: the staged executor lands. The stop-market on
+    // a book market fires to the book (`trigger_order_v1`), so the map section
+    // has to parse for the fill's `load_maps`, not just a plain flip.
     fixture.svm.warp_to_slot(13);
     set_oracle(
         &mut fixture.svm,
@@ -6112,18 +6274,23 @@ fn merged_sync_keeps_the_stored_map_section_parseable() {
         (106 * PRICE_PRECISION) as i64,
         13,
     );
-    let resolved =
-        run_trigger_resolver(&mut fixture, user, false).expect("crossed threshold stages");
+    let resolved = run_trigger_resolver(&mut fixture, user, TrigResolver::ClobFill)
+        .expect("crossed threshold stages");
     let payout = Pubkey::new_unique();
     fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
     run_staged_executor(
         &mut fixture,
         &resolved,
-        velocity::instruction::TriggerOrder::DISCRIMINATOR,
+        velocity::instruction::TriggerOrderV1::DISCRIMINATOR,
         payout,
     );
+    // The fired slot is freed: the trigger fired and the order left the DLOB,
+    // which the executor reaches only after `load_maps` parsed the map.
     let triggered: User = read_zero_copy(&fixture.svm, &user);
-    assert!(triggered.orders[0].triggered());
+    assert!(triggered
+        .orders
+        .iter()
+        .all(|order| order.status != OrderStatus::Open));
 }
 
 // ---------------------------------------------------------------------------

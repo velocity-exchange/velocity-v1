@@ -6,7 +6,7 @@ use {
         events::OrderEvictRecordV0,
         state::{ClobMarketV0, RemovedOrderV0},
     },
-    anchor_lang_v2::prelude::*,
+    anchor_lang::prelude::*,
 };
 
 #[derive(Accounts)]

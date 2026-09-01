@@ -12,7 +12,7 @@ use {
     litesvm::types::{FailedTransactionMetadata, TransactionMetadata},
     midpoint::{
         accounts,
-        anchor_lang_v2::{
+        anchor_lang::{
             prelude::Address,
             solana_program::instruction::{AccountMeta, Instruction},
         },

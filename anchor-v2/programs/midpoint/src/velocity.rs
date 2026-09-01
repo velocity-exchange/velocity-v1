@@ -20,7 +20,7 @@
 
 use {
     crate::error::MidpointError,
-    anchor_lang_v2::{
+    anchor_lang::{
         pinocchio::{account::AccountView, address::Address},
         prelude::*,
     },

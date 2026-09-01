@@ -70,7 +70,7 @@ use {
             USER_CAPS_CAPACITY, USER_EXCLUSION_BITMAP_BYTES, USER_SET_CAPACITY, ZERO_ADDRESS,
         },
     },
-    anchor_lang_v2::{address_eq, prelude::*},
+    anchor_lang::{address_eq, prelude::*},
     quoter_spec::{ExecuteWriter, L3Writer, QuoteWriter},
     relay_spec::ConditionBlock,
 };

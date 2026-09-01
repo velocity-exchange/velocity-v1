@@ -11,13 +11,14 @@ repository = "https://github.com/velocity-exchange/velocity-v1/crates/clob-state
 # interface's types, not this crate's to restate.
 quoter-spec = { path = "../quoter-spec" }
 bytemuck = { version = "1.14", features = ["derive"] }
-anchor-lang-v2 = { git = "https://github.com/velocity-exchange/anchor.git", rev = "2bc4d3c23edc2b63707301ae6d4037b9202ef0cc", optional = true }
 # Spelled `Address` here and `Pubkey` in velocity; one type either way. See
 # `quoter-spec`'s note on the two names.
-solana-address = { version = "~2.6", features = ["bytemuck", "copy"] }
+solana-address = { version = "~2.7", features = ["bytemuck", "copy"] }
 
 [features]
 default = []
 # Neutral flag the fork's `IdlType` derive checks; this crate has no upstream anchor.
 idl-build = []
-idl-build-v2 = ["dep:anchor-lang-v2", "idl-build", "quoter-spec/idl-build-v2"]
+
+[lints.rust.unexpected_cfgs]
+level = "allow"

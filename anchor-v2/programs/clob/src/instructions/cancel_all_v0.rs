@@ -5,7 +5,7 @@ use {
         error::ClobError,
         state::{CancelAllOutcomeV0, CancelSidesV0, ClobMarketV0},
     },
-    anchor_lang_v2::prelude::*,
+    anchor_lang::prelude::*,
 };
 
 #[derive(Accounts)]

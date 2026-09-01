@@ -11,7 +11,7 @@
 
 /// Declared by `clob-wire`.
 pub use clob_wire::OrderRulesV0;
-use {crate::state::ClobMarketV0, anchor_lang_v2::prelude::*};
+use {crate::state::ClobMarketV0, anchor_lang::prelude::*};
 
 #[derive(Accounts)]
 pub struct OrderRulesV0Accounts {

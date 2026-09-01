@@ -1,32 +1,37 @@
-//! The CLOB market account's order-node layout.
-//!
-//! # Why this is a crate and not the book's private business
-//!
-//! `clob-wire` states the rule this crate is the exception to: a caller that
-//! reads the market account's bytes is reading the book's memory rather than
-//! calling it, and on chain that is always wrong — a shared layout is an ABI
-//! two programs can disagree about, and velocity gave up every such read.
-//!
-//! An indexer is the case the rule does not cover. It has to answer "which
-//! orders does this user hold", over every order on the book, at the tick rate
-//! of a live feed. No call answers that: `orders_v0` describes refs a caller
-//! already holds, and `quote_v0` reports the depth a taker of some size would
-//! reach, which is a different question and a truncated answer. What is left
-//! is the account, and the account is public data an indexer already
-//! subscribes to.
-//!
-//! So the layout is declared once, here, and the book uses these types rather
-//! than its own. An indexer that decodes a node cannot drift from the book
-//! that wrote it, because there is one declaration. What this crate must never
-//! become is a way for another *program* to read the book: nothing on chain
-//! depends on it, and [`ORDERS_OFFSET`] is pinned by an assertion inside the
-//! book precisely so the book stays free to move anything above it.
-//!
-//! # What is not here
-//!
-//! The header, the free list, the two sorted lists, and every traversal over
-//! them. A reader wanting the best bid should ask the book; a reader wanting
-//! every live order can walk the arena, which needs no links at all.
+// The CLOB market account's order-node layout.
+//
+// # Why this is a crate and not the book's private business
+//
+// `clob-wire` states the rule this crate is the exception to: a caller that
+// reads the market account's bytes is reading the book's memory rather than
+// calling it, and on chain that is always wrong — a shared layout is an ABI
+// two programs can disagree about, and velocity gave up every such read.
+//
+// An indexer is the case the rule does not cover. It has to answer "which
+// orders does this user hold", over every order on the book, at the tick rate
+// of a live feed. No call answers that: `orders_v0` describes refs a caller
+// already holds, and `quote_v0` reports the depth a taker of some size would
+// reach, which is a different question and a truncated answer. What is left
+// is the account, and the account is public data an indexer already
+// subscribes to.
+//
+// So the layout is declared once, here, and the book uses these types rather
+// than its own. An indexer that decodes a node cannot drift from the book
+// that wrote it, because there is one declaration. What this crate must never
+// become is a way for another *program* to read the book: nothing on chain
+// depends on it, and [`ORDERS_OFFSET`] is pinned by an assertion inside the
+// book precisely so the book stays free to move anything above it.
+//
+// # What is not here
+//
+// The header, the free list, the two sorted lists, and every traversal over
+// them. A reader wanting the best bid should ask the book; a reader wanting
+// every live order can walk the arena, which needs no links at all.
+
+// The v2 IdlType derive emits `anchor_lang::`; point it at the fork when the
+// v2 IDL build is on. Inert (feature undefined) in the v1 crate.
+#[cfg(feature = "idl-build-v2")]
+extern crate anchor_lang_v2 as anchor_lang;
 
 pub use quoter_spec::{SideV0 as Side, UserRefV0};
 use {

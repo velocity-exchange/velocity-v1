@@ -19,7 +19,7 @@ use {
             CANCEL_ALL_ORDERS_CEILING,
         },
     },
-    anchor_lang_v2::prelude::*,
+    anchor_lang::prelude::*,
 };
 
 #[test]

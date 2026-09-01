@@ -18,33 +18,33 @@ profile = ["anchor-v2-testing/profile"]
 
 [dependencies]
 # Anchor v2 alpha (anchor-next). Pinned to an exact rev — the alpha branch moves.
-anchor-lang-v2 = { git = "https://github.com/velocity-exchange/anchor.git", rev = "2bc4d3c23edc2b63707301ae6d4037b9202ef0cc" }
+anchor-lang = { git = "https://github.com/velocity-exchange/anchor.git", rev = "444c6205fd3aa54006cf9d0c232d43471b74b071" }
 bytemuck = { version = "1", features = ["derive", "min_const_generics"] }
 static_assertions = "1.1.0"
-wincode = { version = "0.5", features = ["derive"] }
+wincode = { version = "0.6", features = ["derive"] }
 # Declares the quoter wire types this program writes. `wincode-derive` gives
 # them the same derives the rest of this program's wire structs use. No borsh
 # crate reaches this binary: the spec's anchor derives are behind a feature only
 # velocity turns on. Where a comment on this wire says borsh, it names the byte
 # framing that wincode's `BORSH_CONFIG` produces, never a dependency.
-quoter-spec = { path = "../../../crates/quoter-spec" }
-clob-wire = { path = "../../../crates/clob-wire" }
-clob-state = { path = "../../../crates/clob-state" }
+quoter-spec = { package = "quoter-spec-v2", path = "../../../crates/quoter-spec-v2" }
+clob-wire = { package = "clob-wire-v2", path = "../../../crates/clob-wire-v2" }
+clob-state = { package = "clob-state-v2", path = "../../../crates/clob-state-v2" }
 # The relay condition block this market hosts. Expiry, activation, capacity and
 # a crossed book are facts about this account, so the wakes that watch for them
 # live on it. bytemuck-only, so no framework reaches this binary; the resolver
 # each condition names is registered by the program that owns the book's flow.
-relay-spec = { git = "https://github.com/velocity-exchange/relay", rev = "b0e161554399fafbf600dacfe9507db6f38ee4ea" }
+relay-spec = { git = "https://github.com/velocity-exchange/relay", rev = "7ccfaa8e99235862d814b2d299e0526ea0aca8b8" }
 
 [dev-dependencies]
 # `testing` adds the stack-backed AccountBuffer the src/tests/ unit tests
 # build a real ClobMarketV0 over. Dev-only: with resolver 2 the feature is
 # not enabled for the SBF build of the program itself.
-anchor-lang-v2 = { git = "https://github.com/velocity-exchange/anchor.git", rev = "2bc4d3c23edc2b63707301ae6d4037b9202ef0cc", features = [
+anchor-lang = { git = "https://github.com/velocity-exchange/anchor.git", rev = "444c6205fd3aa54006cf9d0c232d43471b74b071", features = [
     "testing",
 ] }
-anchor-v2-testing = { git = "https://github.com/velocity-exchange/anchor.git", rev = "2bc4d3c23edc2b63707301ae6d4037b9202ef0cc" }
-litesvm = "0.11.0"
+anchor-v2-testing = { git = "https://github.com/velocity-exchange/anchor.git", rev = "444c6205fd3aa54006cf9d0c232d43471b74b071" }
+litesvm = "0.13.1"
 solana-account = "3.2.0"
 solana-clock = "3"
 solana-pubkey = "3.0"

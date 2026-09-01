@@ -5,7 +5,7 @@ use {
         error::ClobError,
         state::{ClobDirectionExt, ClobMarketV0, ResponsePointerV0},
     },
-    anchor_lang_v2::prelude::*,
+    anchor_lang::prelude::*,
 };
 
 #[derive(Accounts)]

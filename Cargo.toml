@@ -7,8 +7,11 @@ members = [
 	"programs/token_faucet",
 	"crates/velocity-macros",
   "crates/quoter-spec",
+  "crates/quoter-spec-v2",
   "crates/clob-wire",
+  "crates/clob-wire-v2",
   "crates/clob-state",
+  "crates/clob-state-v2",
 ]
 # The `rust/` directory is a SEPARATE Cargo workspace (velocity-rs/keep-rs/swift).
 # It is excluded here so its solana-sdk 3.x dependency tree never unifies with

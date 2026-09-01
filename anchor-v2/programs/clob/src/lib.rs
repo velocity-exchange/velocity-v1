@@ -19,7 +19,7 @@
 //! into the market's response region, [`emit`] the allocation-free event log
 //! path, and [`instructions`] one file per instruction.
 
-use anchor_lang_v2::prelude::*;
+use anchor_lang::prelude::*;
 
 pub mod book;
 pub mod emit;
@@ -33,7 +33,7 @@ mod tests;
 
 // Re-exported so integration tests can reach wincode/BORSH_CONFIG through the
 // crate without their own git dep.
-pub use {anchor_lang_v2, instructions::*, relay_spec};
+pub use {anchor_lang, instructions::*, relay_spec};
 
 declare_id!("BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU");
 

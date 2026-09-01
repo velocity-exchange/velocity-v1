@@ -19,7 +19,7 @@ use {
         },
         state::{CancelAllOutcome, CANCEL_ALL_ORDERS_CEILING, EXECUTE_FILLS_CEILING},
     },
-    anchor_lang_v2::prelude::*,
+    anchor_lang::prelude::*,
 };
 
 fn authority() -> Address {

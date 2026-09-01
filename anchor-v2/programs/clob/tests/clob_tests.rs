@@ -7,7 +7,7 @@ use {
     },
     clob::{
         accounts,
-        anchor_lang_v2::{
+        anchor_lang::{
             prelude::Address, solana_program::instruction::Instruction, Discriminator, Event,
         },
         events::{ExecuteRecordV0, FillSlimV0, OrdersCancelRecordV0},
@@ -426,9 +426,9 @@ fn next_removal(ctx: &mut Ctx, kind: ClobRemovalKindV0) -> OrderViewV0 {
         market: addr(ctx.market),
     });
     let meta = send(ctx, ix).expect("next_removal_v0 runs");
-    anchor_lang_v2::wincode::config::deserialize(
+    anchor_lang::wincode::config::deserialize(
         &meta.return_data.data,
-        anchor_lang_v2::BORSH_CONFIG,
+        anchor_lang::BORSH_CONFIG,
     )
     .expect("decodes as NextRemovalV0")
 }
@@ -1179,9 +1179,9 @@ fn orders(ctx: &mut Ctx, refs: &[OrderRefV0]) -> Vec<OrderViewV0> {
         market: addr(ctx.market),
     });
     let meta = send(ctx, ix).expect("orders_v0 runs");
-    let answer: clob::OrdersV0 = anchor_lang_v2::wincode::config::deserialize(
+    let answer: clob::OrdersV0 = anchor_lang::wincode::config::deserialize(
         &meta.return_data.data,
-        anchor_lang_v2::BORSH_CONFIG,
+        anchor_lang::BORSH_CONFIG,
     )
     .expect("decodes as OrdersV0");
     answer.orders

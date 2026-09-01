@@ -5,7 +5,7 @@
 
 use {
     crate::error::MidpointError,
-    anchor_lang_v2::{
+    anchor_lang::{
         address_eq,
         pinocchio::{account::AccountView, address::Address, sysvars::instructions::Instructions},
         prelude::*,

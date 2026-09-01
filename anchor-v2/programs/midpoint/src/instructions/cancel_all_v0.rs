@@ -3,7 +3,7 @@ use {
         error::MidpointError,
         state::{CancelAllOutcomeV0, CancelSidesExt, CancelSidesV0, Direction, MidpointQuoterV0},
     },
-    anchor_lang_v2::prelude::*,
+    anchor_lang::prelude::*,
 };
 
 #[derive(Accounts)]
@@ -19,7 +19,7 @@ pub struct CancelAllV0 {
 }
 
 #[derive(Clone, Copy, wincode::SchemaRead, wincode::SchemaWrite)]
-#[cfg_attr(feature = "idl-build", derive(anchor_lang_v2::IdlType))]
+#[cfg_attr(feature = "idl-build", derive(anchor_lang::IdlType))]
 pub struct CancelAllArgsV0 {
     pub sides: CancelSidesV0,
     /// Also zero the mid, which stops *every* side quoting regardless of what

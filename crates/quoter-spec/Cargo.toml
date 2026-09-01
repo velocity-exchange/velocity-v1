@@ -21,7 +21,7 @@ repository = "https://github.com/velocity-exchange/velocity-v1/crates/quoter-spe
 # unsatisfied bounds; integration-tests hit exactly that. anchor-lang-v2 is
 # pinned to a rev on 0.5, so 2.6 is what all three workspaces can agree on.
 # Move this and the wincode dependency together, or neither.
-solana-address = { version = "~2.6", features = ["bytemuck", "copy", "wincode"] }
+solana-address = { version = "~2.7", features = ["bytemuck", "copy", "wincode"] }
 
 # Serialization is per-consumer, because the two halves of the wire do not agree
 # on a framework: both ends read the responses with wincode, but velocity also
@@ -38,12 +38,7 @@ solana-address = { version = "~2.6", features = ["bytemuck", "copy", "wincode"] 
 # serialization, so the derive and the IDL support are separate features — and
 # the v2 programs enable neither, so no anchor code reaches them.
 anchor-lang = { version = "1.0.2", optional = true }
-# The velocity anchor fork (wincode wire). Optional and only for the v2 programs
-# (CLOB/midpoint) that generate an IDL: their IDL build needs the fork's
-# `IdlType` on every wire type it reaches. Gated so velocity's Anchor 1.0 tree
-# never compiles it. Rev matches the CLOB program.
-anchor-lang-v2 = { git = "https://github.com/velocity-exchange/anchor.git", rev = "2bc4d3c23edc2b63707301ae6d4037b9202ef0cc", optional = true }
-wincode = { version = "0.5", features = ["derive"] }
+wincode = { version = "0.6", features = ["derive"] }
 
 # The records are cast onto the response region at both ends of the wire, so
 # every one of them is `Pod`. The derive is also the layout check: a field
@@ -56,6 +51,6 @@ bytemuck = { version = "1", features = ["derive"] }
 default = []
 anchor-derive = ["dep:anchor-lang", "solana-address/borsh"]
 idl-build = ["anchor-derive", "anchor-lang/idl-build"]
-# The v2-program IDL build turns this on: the fork's `IdlType` derive on the
-# wire types, without pulling in borsh or the upstream anchor.
-idl-build-v2 = ["dep:anchor-lang-v2", "idl-build"]
+
+[lints.rust.unexpected_cfgs]
+level = "allow"

@@ -25,7 +25,7 @@ use {
             TOP_OF_BOOK_BYTES, TOP_OF_BOOK_OFFSET,
         },
     },
-    anchor_lang_v2::prelude::*,
+    anchor_lang::prelude::*,
     relay_spec::{AccountRefV0, ConditionBlock, ConditionV0, CrankSpecV0},
 };
 

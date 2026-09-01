@@ -87,7 +87,7 @@
           "docs": [
             "CHECK: velocity's global `State`, address-locked; see `QuoteV0`."
           ],
-          "address": "VELOCITY_STATE"
+          "address": "2etx5NvPNxeMZ7EfHE6GjJfW2imRYEUANehNS1WB4CVW"
         }
       ],
       "args": [
@@ -219,7 +219,7 @@
             "the current flow key lives there, never on this instance (see",
             "`crate::velocity`). Registered on the quoter entry's quote leg."
           ],
-          "address": "VELOCITY_STATE"
+          "address": "2etx5NvPNxeMZ7EfHE6GjJfW2imRYEUANehNS1WB4CVW"
         }
       ],
       "args": [
@@ -889,7 +889,7 @@
                     "name": "SplineLevelV0"
                   }
                 },
-                0
+                64
               ]
             }
           },
@@ -902,7 +902,7 @@
                     "name": "SplineLevelV0"
                   }
                 },
-                0
+                64
               ]
             }
           },
@@ -915,7 +915,7 @@
             "type": {
               "array": [
                 "u8",
-                0
+                2048
               ]
             }
           }
@@ -1384,7 +1384,7 @@
             "type": {
               "array": [
                 "u8",
-                0
+                6
               ]
             }
           },
@@ -1404,7 +1404,7 @@
                     "name": "UserCapV0"
                   }
                 },
-                0
+                8
               ]
             }
           }

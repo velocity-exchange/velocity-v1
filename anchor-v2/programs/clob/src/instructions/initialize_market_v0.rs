@@ -3,7 +3,7 @@ use {
         book::ClobBook,
         state::{ClobMarketV0, MarketConfigV0},
     },
-    anchor_lang_v2::prelude::*,
+    anchor_lang::prelude::*,
 };
 
 #[derive(Accounts)]

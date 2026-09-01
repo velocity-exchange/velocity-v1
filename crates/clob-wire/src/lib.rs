@@ -1,34 +1,39 @@
-//! The CLOB's instruction arguments and return data.
-//!
-//! # One declaration, two programs
-//!
-//! Velocity reaches the book by CPI — placing, cancelling, evicting,
-//! reclaiming an expired order — and every one of those calls is bytes that
-//! velocity writes and the book reads. Declaring the shape twice leaves
-//! nothing pinning the declarations against each other: a field reordered on
-//! one side gives two self-consistent programs that disagree about the bytes
-//! between them, and the disagreement lands on a placement, where a misread
-//! `base_asset_amount` rests the wrong size against a real user's margin.
-//!
-//! That is the same argument [`quoter_spec`] makes for the quoter interface,
-//! and this crate is its counterpart for the surface a book has *beyond* that
-//! interface. The split matters: `quoter-spec` is what every PropAMM
-//! implements, and these instructions are not part of it.
-//!
-//! # What is not here
-//!
-//! The book's *account layout* — its header offsets and node arena. A caller
-//! that needs to know where a field sits inside the market account is reading
-//! the book's memory rather than calling it, which is what this crate exists
-//! to replace.
-//!
-//! # Serialization
-//!
-//! Per-consumer, as in `quoter-spec`: velocity encodes with anchor's borsh and
-//! needs the IDL plumbing, while the book writes the bytes itself and carries
-//! no borsh crate (its binary size and CU budget are why). The two
-//! encodings are byte-compatible — wincode's configuration here is anchor's
-//! `BORSH_CONFIG` — so one declaration serves both.
+// The CLOB's instruction arguments and return data.
+//
+// # One declaration, two programs
+//
+// Velocity reaches the book by CPI — placing, cancelling, evicting,
+// reclaiming an expired order — and every one of those calls is bytes that
+// velocity writes and the book reads. Declaring the shape twice leaves
+// nothing pinning the declarations against each other: a field reordered on
+// one side gives two self-consistent programs that disagree about the bytes
+// between them, and the disagreement lands on a placement, where a misread
+// `base_asset_amount` rests the wrong size against a real user's margin.
+//
+// That is the same argument [`quoter_spec`] makes for the quoter interface,
+// and this crate is its counterpart for the surface a book has *beyond* that
+// interface. The split matters: `quoter-spec` is what every PropAMM
+// implements, and these instructions are not part of it.
+//
+// # What is not here
+//
+// The book's *account layout* — its header offsets and node arena. A caller
+// that needs to know where a field sits inside the market account is reading
+// the book's memory rather than calling it, which is what this crate exists
+// to replace.
+//
+// # Serialization
+//
+// Per-consumer, as in `quoter-spec`: velocity encodes with anchor's borsh and
+// needs the IDL plumbing, while the book writes the bytes itself and carries
+// no borsh crate (its binary size and CU budget are why). The two
+// encodings are byte-compatible — wincode's configuration here is anchor's
+// `BORSH_CONFIG` — so one declaration serves both.
+
+// The v2 IdlType derive emits `anchor_lang::`; point it at the fork when the
+// v2 IDL build is on. Inert (feature undefined) in the v1 crate.
+#[cfg(feature = "idl-build-v2")]
+extern crate anchor_lang_v2 as anchor_lang;
 
 pub use quoter_spec::{CancelSidesV0, SideV0, UserRefV0};
 

@@ -14,7 +14,7 @@
 //! buffer instead. The types here stay the schema of record for what goes on
 //! the wire, and `tests::emit` pins the two encodings against each other.
 
-use anchor_lang_v2::prelude::*;
+use anchor_lang::prelude::*;
 
 #[event(bytemuck)]
 #[repr(C)]
@@ -128,7 +128,7 @@ pub struct ExecuteRecordV0 {
 }
 
 #[derive(Clone, Copy, wincode::SchemaRead, wincode::SchemaWrite)]
-#[cfg_attr(feature = "idl-build", derive(anchor_lang_v2::IdlType))]
+#[cfg_attr(feature = "idl-build", derive(anchor_lang::IdlType))]
 pub struct FillSlimV0 {
     pub order_id: u64,
     pub base_size: u64,

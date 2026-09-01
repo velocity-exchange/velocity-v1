@@ -11,7 +11,7 @@ use {
             PlaceOrderParams, Side, UserRefV0,
         },
     },
-    anchor_lang_v2::{
+    anchor_lang::{
         prelude::*,
         testing::{AccountBuffer, MIN_ACCOUNT_BUF},
         AnchorAccount,

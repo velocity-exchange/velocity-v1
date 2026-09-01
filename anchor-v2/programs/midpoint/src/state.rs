@@ -28,7 +28,7 @@
 
 use {
     crate::error::MidpointError,
-    anchor_lang_v2::prelude::*,
+    anchor_lang::prelude::*,
     quoter_spec::{ExecuteWriter, QuoteWriter},
     static_assertions::const_assert_eq,
 };
@@ -85,7 +85,7 @@ impl CancelSidesExt for CancelSidesV0 {
 /// the withdrawal itself and reports a number the maker (who wrote the shape)
 /// already knows.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, wincode::SchemaRead, wincode::SchemaWrite)]
-#[cfg_attr(feature = "idl-build", derive(anchor_lang_v2::IdlType))]
+#[cfg_attr(feature = "idl-build", derive(anchor_lang::IdlType))]
 pub struct CancelAllOutcomeV0 {
     /// Rungs withdrawn per side.
     pub bid_rungs: u8,
@@ -132,7 +132,7 @@ pub use quoter_spec::{ExecuteResponseV0, QuoteResponseV0};
 /// `filled` tracking what executes have consumed since the side was written.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, bytemuck::Pod, bytemuck::Zeroable)]
-#[cfg_attr(feature = "idl-build", derive(anchor_lang_v2::IdlType))]
+#[cfg_attr(feature = "idl-build", derive(anchor_lang::IdlType))]
 pub struct SplineLevelV0 {
     /// Distance from mid toward this side, parts-per-million of mid.
     /// Strictly ascending within a side; 0 quotes at mid itself.
@@ -148,7 +148,7 @@ const_assert_eq!(core::mem::size_of::<SplineLevelV0>(), 24);
 /// A maker's spline-level input on the wire: `filled` is program-owned, so
 /// the setter takes only the shape.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
-#[cfg_attr(feature = "idl-build", derive(anchor_lang_v2::IdlType))]
+#[cfg_attr(feature = "idl-build", derive(anchor_lang::IdlType))]
 pub struct SplineLevelInputV0 {
     pub offset_ppm: u64,
     pub size: u64,
@@ -239,7 +239,7 @@ const_assert_eq!(RESPONSE_OFFSET % quoter_spec::LEN_BYTES, 0);
 /// Immutable + rarely-changed config, set at init (the addresses ride the
 /// accounts list — duplicated accounts cost one index byte in the tx).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
-#[cfg_attr(feature = "idl-build", derive(anchor_lang_v2::IdlType))]
+#[cfg_attr(feature = "idl-build", derive(anchor_lang::IdlType))]
 pub struct QuoterConfigV0 {
     pub market_index: u16,
     pub user_sub_account_id: u16,

@@ -4,7 +4,7 @@ use {
         state::{MidpointQuoterV0, ResponsePointerV0, UserRefV0},
         velocity::{hot_flow_authority, VELOCITY_STATE},
     },
-    anchor_lang_v2::prelude::*,
+    anchor_lang::prelude::*,
 };
 
 #[derive(Accounts)]
@@ -48,8 +48,8 @@ pub fn caller_gate(
     quoter: &MidpointQuoterV0,
     users: &[UserRefV0],
     taker: Option<&UserRefV0>,
-    instructions_sysvar: &anchor_lang_v2::pinocchio::account::AccountView,
-    velocity_state: &anchor_lang_v2::pinocchio::account::AccountView,
+    instructions_sysvar: &anchor_lang::pinocchio::account::AccountView,
+    velocity_state: &anchor_lang::pinocchio::account::AccountView,
 ) -> Result<bool> {
     // The caps address a user by its index in this set, and the exclusion
     // bitmap holds one bit per slot up to the capacity. A longer set carries

@@ -6,7 +6,7 @@ use {
         events::FillSlimV0,
         state::{ClobMarketV0, FillOutcomeV0, FilledOrder},
     },
-    anchor_lang_v2::prelude::*,
+    anchor_lang::prelude::*,
 };
 
 #[derive(Accounts)]

@@ -7,7 +7,7 @@ use {
         state::{Direction, MidpointQuoterV0, ResponsePointerV0},
         velocity::VELOCITY_STATE,
     },
-    anchor_lang_v2::prelude::*,
+    anchor_lang::prelude::*,
 };
 
 #[derive(Accounts)]

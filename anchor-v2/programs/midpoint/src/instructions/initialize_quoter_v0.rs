@@ -3,7 +3,7 @@ use {
         error::MidpointError,
         state::{MidpointQuoterV0, QuoterConfigV0},
     },
-    anchor_lang_v2::prelude::*,
+    anchor_lang::prelude::*,
 };
 
 #[derive(Accounts)]

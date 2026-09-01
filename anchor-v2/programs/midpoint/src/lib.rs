@@ -27,7 +27,7 @@
 //! Discriminators stay 8-byte anchor defaults: the velocity quoter registry
 //! stores `[u8; 8]` discriminators.
 
-use anchor_lang_v2::prelude::*;
+use anchor_lang::prelude::*;
 
 pub mod emit;
 pub mod error;
@@ -39,7 +39,7 @@ pub mod velocity;
 
 // Re-exported so integration tests can reach wincode/BORSH_CONFIG through the
 // crate without their own git dep.
-pub use {anchor_lang_v2, instructions::*};
+pub use {anchor_lang, instructions::*};
 
 declare_id!("eb3Kwmht4evPGGonNHCQs1h7ng63ZUwZ9TyV1qPo23D");
 

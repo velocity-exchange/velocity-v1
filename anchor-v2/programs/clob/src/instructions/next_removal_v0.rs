@@ -20,7 +20,7 @@ use {
         book::{ClobBook, NodeArena},
         state::{ClobMarketV0, OrderBitFlag, Side},
     },
-    anchor_lang_v2::prelude::*,
+    anchor_lang::prelude::*,
 };
 
 #[derive(Accounts)]

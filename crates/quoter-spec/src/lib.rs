@@ -1,73 +1,78 @@
-//! Wire format for velocity's quoter interface: the contract between velocity
-//! (the router) and any program registered as a quoter — the CLOB, the
-//! midpoint, and third-party PropAMMs.
-//!
-//! # One declaration, three programs
-//!
-//! This crate is the whole interface: the arguments a quoter is called with
-//! ([`QuoteArgsV0`], [`ExecuteArgsV0`] and the types they carry) and the
-//! responses it must produce. Reading it should be enough to implement one.
-//!
-//! `quote_v0` and `execute_v0` answer across a program boundary in bytes.
-//! Velocity writes the arguments and reads the responses; the quoter does the
-//! reverse. Declaring the shape once per program leaves nothing pinning the
-//! declarations against each other, so a
-//! field added on one side and forgotten on another gives two self-consistent
-//! programs that disagree about the bytes between them — and the disagreement
-//! lands on a value transfer, where a misread `base_size` moves the wrong
-//! amount of a user's collateral. The types live here and all three use them.
-//!
-//! # The responses are read in place
-//!
-//! A response is plain data sitting in the quoter's account, and velocity reads
-//! it there: fixed-width records, little-endian, no length-prefixed nesting and
-//! no deserialization step. That is not only a CU question. Velocity's heap is
-//! 32 KB and never reclaims, and one fill CPIs every registered quoter twice,
-//! so a response that decodes into `Vec`s spends heap per quoter per fill that
-//! nothing gives back.
-//!
-//! Every record is `#[repr(C)]` and free of implicit padding, which is what
-//! both `bytemuck::Pod` and wincode's zero-copy rules require. The `Pod`
-//! derives below are the enforcement: a field reordered into a layout with a
-//! padding hole stops compiling rather than silently changing the wire. Field
-//! order is therefore load-bearing — the `u64`s lead so the 34-byte
-//! [`UserRefV0`] cannot push one out of alignment, and each record carries
-//! explicit tail padding to a multiple of its alignment.
-//!
-//! # Framing
-//!
-//! Each response is a header of counts followed by that many fixed-width
-//! records per section, in declaration order. Sections are contiguous; the
-//! caller owns anything past the last one.
-//!
-//! A quoter does not serialize a response, it streams one: the records come
-//! out of a book walk that does not know a section's count until it ends. The
-//! streaming writers are [`QuoteWriter`] and [`ExecuteWriter`], and they live
-//! here for the reason the records do. A section a quoter forgets to write is
-//! the same disagreement as a field read at the wrong offset. The sections are
-//! `finish`'s parameters, so a new one stops every quoter compiling.
-//!
-//! An execute response is [`ExecuteHeaderV0`], then [`UserBalanceChangeV0`],
-//! then [`CancelledRemainderV0`], then [`CompletedOrderV0`], then
-//! [`PartiallyFilledOrderV0`]. Completed order
-//! ids are their own section rather than a list inside each change: a quoter
-//! aggregates repeated fills into one record per user as it goes, so ids for a
-//! user arrive interleaved with other users' fills. Naming the change from the
-//! id makes appending one an O(1) write at the tail instead of a shift of
-//! everything after it.
-//!
-//! # Addresses
-//!
-//! Velocity names the address type `Pubkey` and the v2 programs name it
-//! `Address`; it is one type, because solana-pubkey re-exports `Address as
-//! Pubkey` and solana-address 1.x is a shim over 2.x. It is spelled `Pubkey`
-//! here because anchor's IDL derive recognizes it by that token rather than by
-//! the type it resolves to, and velocity is the consumer that runs
-//! `anchor idl build`.
+// Wire format for velocity's quoter interface: the contract between velocity
+// (the router) and any program registered as a quoter — the CLOB, the
+// midpoint, and third-party PropAMMs.
+//
+// # One declaration, three programs
+//
+// This crate is the whole interface: the arguments a quoter is called with
+// ([`QuoteArgsV0`], [`ExecuteArgsV0`] and the types they carry) and the
+// responses it must produce. Reading it should be enough to implement one.
+//
+// `quote_v0` and `execute_v0` answer across a program boundary in bytes.
+// Velocity writes the arguments and reads the responses; the quoter does the
+// reverse. Declaring the shape once per program leaves nothing pinning the
+// declarations against each other, so a
+// field added on one side and forgotten on another gives two self-consistent
+// programs that disagree about the bytes between them — and the disagreement
+// lands on a value transfer, where a misread `base_size` moves the wrong
+// amount of a user's collateral. The types live here and all three use them.
+//
+// # The responses are read in place
+//
+// A response is plain data sitting in the quoter's account, and velocity reads
+// it there: fixed-width records, little-endian, no length-prefixed nesting and
+// no deserialization step. That is not only a CU question. Velocity's heap is
+// 32 KB and never reclaims, and one fill CPIs every registered quoter twice,
+// so a response that decodes into `Vec`s spends heap per quoter per fill that
+// nothing gives back.
+//
+// Every record is `#[repr(C)]` and free of implicit padding, which is what
+// both `bytemuck::Pod` and wincode's zero-copy rules require. The `Pod`
+// derives below are the enforcement: a field reordered into a layout with a
+// padding hole stops compiling rather than silently changing the wire. Field
+// order is therefore load-bearing — the `u64`s lead so the 34-byte
+// [`UserRefV0`] cannot push one out of alignment, and each record carries
+// explicit tail padding to a multiple of its alignment.
+//
+// # Framing
+//
+// Each response is a header of counts followed by that many fixed-width
+// records per section, in declaration order. Sections are contiguous; the
+// caller owns anything past the last one.
+//
+// A quoter does not serialize a response, it streams one: the records come
+// out of a book walk that does not know a section's count until it ends. The
+// streaming writers are [`QuoteWriter`] and [`ExecuteWriter`], and they live
+// here for the reason the records do. A section a quoter forgets to write is
+// the same disagreement as a field read at the wrong offset. The sections are
+// `finish`'s parameters, so a new one stops every quoter compiling.
+//
+// An execute response is [`ExecuteHeaderV0`], then [`UserBalanceChangeV0`],
+// then [`CancelledRemainderV0`], then [`CompletedOrderV0`], then
+// [`PartiallyFilledOrderV0`]. Completed order
+// ids are their own section rather than a list inside each change: a quoter
+// aggregates repeated fills into one record per user as it goes, so ids for a
+// user arrive interleaved with other users' fills. Naming the change from the
+// id makes appending one an O(1) write at the tail instead of a shift of
+// everything after it.
+//
+// # Addresses
+//
+// Velocity names the address type `Pubkey` and the v2 programs name it
+// `Address`; it is one type, because solana-pubkey re-exports `Address as
+// Pubkey` and solana-address 1.x is a shim over 2.x. It is spelled `Pubkey`
+// here because anchor's IDL derive recognizes it by that token rather than by
+// the type it resolves to, and velocity is the consumer that runs
+// `anchor idl build`.
 
 // Re-exported so a consumer can write a response without taking its own
 // wincode dependency — the framing is this crate's to define, so the encoder
 // is too.
+// The v2 IdlType derive emits `anchor_lang::`; point it at the fork when the
+// v2 IDL build is on. Inert (feature undefined) in the v1 crate.
+#[cfg(feature = "idl-build-v2")]
+extern crate anchor_lang_v2 as anchor_lang;
+
 pub use wincode;
 pub mod write;
 pub use write::{ExecuteWriter, L3Writer, QuoteWriter};
@@ -985,7 +990,8 @@ pub type ArgsConfig = wincode::config::Configuration<
 >;
 
 /// The one value of [`ArgsConfig`].
-pub const ARGS_CONFIG: ArgsConfig = wincode::config::Configuration::new();
+pub const ARGS_CONFIG: ArgsConfig =
+    unsafe { wincode::config::Configuration::new().disable_zero_copy_align_check() };
 
 /// Bytes `args` takes on the wire.
 ///

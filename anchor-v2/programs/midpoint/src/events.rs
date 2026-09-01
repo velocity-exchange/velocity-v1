@@ -17,7 +17,7 @@
 //! allocates a `Vec` even for a fixed-size record, and the log bytes are
 //! identical either way.
 
-use anchor_lang_v2::prelude::*;
+use anchor_lang::prelude::*;
 
 /// Current semantic revision of every `…RecordV0` in this module.
 pub const MIDPOINT_EVENT_VERSION: u8 = 0;

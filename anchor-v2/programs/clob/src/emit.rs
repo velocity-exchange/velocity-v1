@@ -29,7 +29,7 @@ use {
             EXECUTE_FILLS_CEILING, ORDER_ID_BYTES,
         },
     },
-    anchor_lang_v2::prelude::*,
+    anchor_lang::prelude::*,
 };
 
 /// Anchor derives every event discriminator as the first 8 bytes of
@@ -89,11 +89,11 @@ macro_rules! emit_pod {
         const LOG_BYTES: usize =
             $crate::emit::DISCRIMINATOR_BYTES + ::core::mem::size_of::<$ty>();
         const _: () = ::core::assert!(
-            <$ty as anchor_lang_v2::Discriminator>::DISCRIMINATOR.len()
+            <$ty as anchor_lang::Discriminator>::DISCRIMINATOR.len()
                 == $crate::emit::DISCRIMINATOR_BYTES,
             "event discriminator is not 8 bytes wide",
         );
-        anchor_lang_v2::sol_log_data(&[&$crate::emit::pod_log_bytes::<$ty, LOG_BYTES>(&$ty {
+        anchor_lang::sol_log_data(&[&$crate::emit::pod_log_bytes::<$ty, LOG_BYTES>(&$ty {
             $($field)*
         })]);
     }};

@@ -32,13 +32,13 @@ use {
 
 pub(super) fn encode<T>(value: &T) -> Vec<u8>
 where
-    T: wincode::SchemaWrite<anchor_lang_v2::BorshConfig, Src = T> + ?Sized,
+    T: wincode::SchemaWrite<anchor_lang::BorshConfig, Src = T> + ?Sized,
 {
     let mut bytes = Vec::new();
-    anchor_lang_v2::wincode::config::serialize_into(
+    anchor_lang::wincode::config::serialize_into(
         &mut bytes,
         value,
-        anchor_lang_v2::BORSH_CONFIG,
+        anchor_lang::BORSH_CONFIG,
     )
     .unwrap();
     bytes
@@ -554,7 +554,7 @@ fn the_args_round_trip_with_caps_between_the_set_and_the_taker() {
     };
     let bytes = encode(&args);
     let decoded: QuoteArgsV0 =
-        anchor_lang_v2::wincode::config::deserialize(&bytes, anchor_lang_v2::BORSH_CONFIG).unwrap();
+        anchor_lang::wincode::config::deserialize(&bytes, anchor_lang::BORSH_CONFIG).unwrap();
     assert_eq!(decoded.size, 12);
     assert_eq!(
         decoded.taker,
@@ -616,7 +616,7 @@ fn the_user_set_is_read_in_place_and_costs_only_what_it_carries() {
     );
 
     let decoded: QuoteArgsV0 =
-        anchor_lang_v2::wincode::config::deserialize(&bytes, anchor_lang_v2::BORSH_CONFIG).unwrap();
+        anchor_lang::wincode::config::deserialize(&bytes, anchor_lang::BORSH_CONFIG).unwrap();
     assert_eq!(decoded.users, &users[..]);
     assert_eq!(
         decoded.users.as_ptr() as usize,
@@ -629,7 +629,7 @@ fn the_user_set_is_read_in_place_and_costs_only_what_it_carries() {
     let bytes = encode(&empty);
     assert_eq!(bytes[..4], 0u32.to_le_bytes());
     let decoded: QuoteArgsV0 =
-        anchor_lang_v2::wincode::config::deserialize(&bytes, anchor_lang_v2::BORSH_CONFIG).unwrap();
+        anchor_lang::wincode::config::deserialize(&bytes, anchor_lang::BORSH_CONFIG).unwrap();
     assert!(decoded.users.is_empty());
 }
 

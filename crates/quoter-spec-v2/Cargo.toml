@@ -1,0 +1,16 @@
+[package]
+name = "quoter-spec-v2"
+description = "quoter-spec wire types compiled against the velocity anchor v2 fork, for the CLOB/midpoint IDL. Same source as quoter-spec (via include!), one anchor per crate so v1 and v2 never collide."
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+solana-address = { version = "~2.7", features = ["bytemuck", "copy", "wincode"] }
+wincode = { version = "0.6", features = ["derive"] }
+bytemuck = { version = "1", features = ["derive"] }
+anchor-lang-v2 = { package = "anchor-lang", git = "https://github.com/velocity-exchange/anchor.git", rev = "444c6205fd3aa54006cf9d0c232d43471b74b071", optional = true }
+[features]
+default = []
+idl-build = []
+idl-build-v2 = ["dep:anchor-lang-v2", "idl-build"]
+[lints.rust.unexpected_cfgs]
+level = "allow"

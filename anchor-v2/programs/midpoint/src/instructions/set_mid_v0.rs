@@ -7,7 +7,7 @@
 
 use {
     crate::{error::MidpointError, state::MidpointQuoterV0},
-    anchor_lang_v2::prelude::*,
+    anchor_lang::prelude::*,
 };
 
 #[derive(Accounts)]
@@ -19,7 +19,7 @@ pub struct SetMidV0 {
 }
 
 #[derive(Clone, Copy, wincode::SchemaRead, wincode::SchemaWrite)]
-#[cfg_attr(feature = "idl-build", derive(anchor_lang_v2::IdlType))]
+#[cfg_attr(feature = "idl-build", derive(anchor_lang::IdlType))]
 pub struct SetMidArgsV0 {
     /// PRICE_PRECISION. 0 stops quoting.
     pub mid: u64,

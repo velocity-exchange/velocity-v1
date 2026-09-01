@@ -17,7 +17,7 @@
 //! and the assertion below is what keeps the two honest.
 
 use {
-    anchor_lang_v2::{accounts::Slab, prelude::*},
+    anchor_lang::{accounts::Slab, prelude::*},
     relay_spec::RelayBlockV0,
     static_assertions::{const_assert, const_assert_eq},
 };
@@ -713,7 +713,7 @@ pub struct PlaceOrderParams {
 /// `base_precision` and `market_index` are immutable afterwards; the rest
 /// are updatable via `update_market_v0`.
 #[derive(Clone, Copy, wincode::SchemaRead, wincode::SchemaWrite)]
-#[cfg_attr(feature = "idl-build", derive(anchor_lang_v2::IdlType))]
+#[cfg_attr(feature = "idl-build", derive(anchor_lang::IdlType))]
 pub struct MarketConfigV0 {
     pub market_index: u16,
     pub base_precision: u64,

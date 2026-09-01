@@ -2292,6 +2292,8 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// The fired trigger-limit rests its whole order on the book. Its slot
 		// degrades to a placed-on-clob shadow that still reads status Open, so
 		// the book gaining the order is the signal, not the slot emptying.
+		// Leftover bids from earlier specs share this book, so the fired order
+		// is not necessarily the best bid; the book gaining a bid is the signal.
 		await pollUntil('the trigger-limit to rest on the book', 120_000, async () => {
 			const rested = (await readClob()).bidCount > bidsBefore;
 			return rested ? true : undefined;

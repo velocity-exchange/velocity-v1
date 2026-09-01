@@ -395,6 +395,31 @@ impl FillerBot {
                     let t0 = std::time::SystemTime::now();
                     let unix_now = t0.duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() as i64;
 
+                    // check state config ~every minute (elapsed-slot based), before any
+                    // market decision this tick so one refresh cannot split a slot's
+                    // fill decisions across two clocks or thresholds
+                    if slot.saturating_sub(last_config_refresh_slot) >= CONFIG_REFRESH_SLOTS {
+                        last_config_refresh_slot = slot;
+                        // slot_clock() re-reads State (a full Borsh parse), so refresh it
+                        // here rather than per slot: the cached clock already integrates
+                        // every scheduled transition by slot, and only a newly staged
+                        // transition needs the re-read
+                        slot_clock = velocity.slot_clock();
+                        dlob.update_slot_clock(slot_clock);
+                        use_median_trigger_price = velocity
+                            .state_account()
+                            .map(|s| s.has_median_trigger_price_feature())
+                            .unwrap_or(false);
+                        stale_for_amm_threshold = velocity
+                            .state_account()
+                            .map(|s| {
+                                Millis::from_stored_units(
+                                    s.oracle_guard_rails.validity.slots_before_stale_for_amm.max(0) as u64,
+                                )
+                            })
+                            .unwrap_or(Millis::from_stored_units(10));
+                    }
+
                     // check for auction and limit crosses in all markets
                     for market in &market_ids {
                         let market_index = market.index();
@@ -610,28 +635,6 @@ impl FillerBot {
                             ).await;
                         }
 
-                        // check state config ~every minute (elapsed-slot based)
-                        if slot.saturating_sub(last_config_refresh_slot) >= CONFIG_REFRESH_SLOTS {
-                            last_config_refresh_slot = slot;
-                            // slot_clock() re-reads State (a full Borsh parse), so refresh it
-                            // here rather than per slot: the cached clock already integrates
-                            // every scheduled transition by slot, and only a newly staged
-                            // transition needs the re-read
-                            slot_clock = velocity.slot_clock();
-                            dlob.update_slot_clock(slot_clock);
-                            use_median_trigger_price = velocity
-                                .state_account()
-                                .map(|s| s.has_median_trigger_price_feature())
-                                .unwrap_or(false);
-                            stale_for_amm_threshold = velocity
-                                .state_account()
-                                .map(|s| {
-                                    Millis::from_stored_units(
-                                        s.oracle_guard_rails.validity.slots_before_stale_for_amm.max(0) as u64,
-                                    )
-                                })
-                                .unwrap_or(Millis::from_stored_units(10));
-                        }
                     }
                     let duration = std::time::SystemTime::now().duration_since(t0).unwrap().as_millis();
                     log::trace!(target: TARGET, "⏱️ checked fills at {slot}: {:?}ms", duration);

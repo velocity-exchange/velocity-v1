@@ -53,10 +53,10 @@ bytemuck = { version = "1.4.0", features = ["min_const_generics"] }
 # (which hosts the CLOB crank conditions) and relay's crank turners. bytemuck-only
 # and no_std, so it adds nothing to the SBF build but the layout constants. Pinned
 # by rev: the crank interface must not move underneath a deployed program.
-relay-spec = { git = "https://github.com/velocity-exchange/relay", rev = "88419fd1de3ee189e44ef591d9e8f5c558d58a9d" }
+relay-spec = { git = "https://github.com/velocity-exchange/relay", rev = "0d2c978cd4c7cdb729b03e5a0f79da6752fe1f66" }
 # The anchor 1.0 host wrapper for a relay condition block, from the same
 # rev — velocity's local copy is gone.
-relay-anchor = { git = "https://github.com/velocity-exchange/relay", rev = "88419fd1de3ee189e44ef591d9e8f5c558d58a9d" }
+relay-anchor = { git = "https://github.com/velocity-exchange/relay", rev = "0d2c978cd4c7cdb729b03e5a0f79da6752fe1f66" }
 hex = "0.4.3"
 num-traits = "0.2"
 uint = { version = "0.9.1", default-features = false }

@@ -145,15 +145,12 @@ pub const USER_CONDITIONS: usize = TRIGGER_SLOT_BASE + TRIGGER_CONDITION_SLOTS;
 
 /// Each trigger slot's resolver names that slot's own market oracle and
 /// perp market, so unlike the margin map there is no one list every
-/// condition can share; the region is per slot.
+/// condition can share; the region is per slot. `relay_spec` owns the stride
+/// and offset math (see [`relay_spec::write_resolver_stripe`]); the region is
+/// [`relay_spec::resolver_stripes_len`] bytes, striped by slot.
 pub const TRIGGER_RESOLVERS_PER_SLOT: usize = 5;
-/// 5 refs is 165 bytes; the stride is rounded up so the whole region
-/// keeps `(SIZE - 8) % 16 == 0`. Padding sits between stripes, never
-/// inside one, so each slot's list stays contiguous.
-pub const TRIGGER_RESOLVERS_STRIDE: usize = 168;
-const _: () =
-    assert!(TRIGGER_RESOLVERS_STRIDE >= TRIGGER_RESOLVERS_PER_SLOT * relay_spec::ACCOUNT_REF_LEN);
-pub const TRIGGER_RESOLVERS_LEN: usize = TRIGGER_CONDITION_SLOTS * TRIGGER_RESOLVERS_STRIDE;
+pub const TRIGGER_RESOLVERS_LEN: usize =
+    relay_spec::resolver_stripes_len(TRIGGER_CONDITION_SLOTS, TRIGGER_RESOLVERS_PER_SLOT);
 
 /// Account-data offset of the per-slot trigger resolver lists.
 pub const TRIGGER_RESOLVERS_OFFSET: usize =
@@ -361,19 +358,14 @@ impl UserConditionsV0 {
         index: usize,
         refs: &[relay_spec::AccountRefV0],
     ) -> Result<relay_spec::ResolverListV0> {
-        if index >= TRIGGER_CONDITION_SLOTS || refs.len() > TRIGGER_RESOLVERS_PER_SLOT {
-            return Err(ErrorCode::DefaultError.into());
-        }
-        let base = index * TRIGGER_RESOLVERS_STRIDE;
-        for (i, r) in refs.iter().enumerate() {
-            let at = base + i * relay_spec::ACCOUNT_REF_LEN;
-            self.trigger_resolvers[at..at + 32].copy_from_slice(&r.address);
-            self.trigger_resolvers[at + 32] = r.writable;
-        }
-        Ok(relay_spec::ResolverListV0::new(
-            (TRIGGER_RESOLVERS_OFFSET + base) as u32,
-            refs.len() as u8,
-        ))
+        relay_spec::write_resolver_stripe(
+            &mut self.trigger_resolvers,
+            TRIGGER_RESOLVERS_OFFSET as u32,
+            TRIGGER_RESOLVERS_PER_SLOT,
+            index,
+            refs,
+        )
+        .map_err(|_| ErrorCode::DefaultError.into())
     }
 
     /// Deactivate the trigger slot watching `(market_index, order_id)` —

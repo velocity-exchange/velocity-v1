@@ -34,7 +34,7 @@ clob-state = { path = "../../../crates/clob-state" }
 # a crossed book are facts about this account, so the wakes that watch for them
 # live on it. bytemuck-only, so no framework reaches this binary; the resolver
 # each condition names is registered by the program that owns the book's flow.
-relay-spec = { git = "https://github.com/velocity-exchange/relay", rev = "88419fd1de3ee189e44ef591d9e8f5c558d58a9d" }
+relay-spec = { git = "https://github.com/velocity-exchange/relay", rev = "0d2c978cd4c7cdb729b03e5a0f79da6752fe1f66" }
 
 [dev-dependencies]
 # `testing` adds the stack-backed AccountBuffer the src/tests/ unit tests

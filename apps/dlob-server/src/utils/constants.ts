@@ -36,12 +36,10 @@ export const DEFAULT_AUCTION_PARAMS: Partial<AuctionParamArgs> = {
 	auctionEndPriceOffsetFrom: DEFAULT_AUCTION_END_PRICE_FROM,
 };
 
-// Major tiering now comes from the SDK's `isMajorPerpMarket`, so the definition is
-// shared with the DLOB and UI clients instead of being duplicated per consumer.
-//
 // Intentionally empty: these were hardcoded numeric indices that went stale after
 // on-chain market renumbering (e.g. it listed HYPE as 59, but HYPE is now index 3),
-// silently mis-bucketing whatever market currently occupies each index. Everything
-// that is not a major now takes the non-major default. Re-add by index only if the
-// mapping is re-verified against on-chain market indices.
+// silently mis-bucketing whatever market currently occupies each index. While empty,
+// the mid-major slippage branch is unreachable and every non-major takes the
+// non-major defaults. Re-add by index only if the mapping is re-verified against
+// on-chain market indices.
 export const MID_MAJOR_MARKETS: number[] = [];

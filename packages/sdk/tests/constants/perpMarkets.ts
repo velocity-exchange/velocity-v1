@@ -1,5 +1,10 @@
 import { assert } from 'chai';
-import { isMajorPerpMarket, MAJOR_PERP_MARKET_INDEXES } from '../../src';
+import {
+	DevnetPerpMarkets,
+	isMajorPerpMarket,
+	MAJOR_PERP_MARKET_INDEXES,
+	MainnetPerpMarkets,
+} from '../../src';
 
 describe('isMajorPerpMarket', () => {
 	it('treats SOL, BTC and ETH as majors', () => {
@@ -24,9 +29,30 @@ describe('isMajorPerpMarket', () => {
 		assert.isFalse(isMajorPerpMarket(NaN));
 	});
 
-	it('agrees with the exported index list', () => {
-		MAJOR_PERP_MARKET_INDEXES.forEach((marketIndex) => {
-			assert.isTrue(isMajorPerpMarket(marketIndex));
+	// Tiering is positional, so a renumbering would silently retier production with
+	// every other assertion here still green. Pin the indexes to actual symbols.
+	it('maps the major indexes onto SOL, BTC and ETH in both registries', () => {
+		assert.deepStrictEqual(
+			MAJOR_PERP_MARKET_INDEXES.map(
+				(marketIndex) => MainnetPerpMarkets[marketIndex]?.baseAssetSymbol
+			),
+			['SOL', 'BTC', 'ETH']
+		);
+		assert.deepStrictEqual(
+			MAJOR_PERP_MARKET_INDEXES.map(
+				(marketIndex) => DevnetPerpMarkets[marketIndex]?.baseAssetSymbol
+			),
+			['SOL', 'BTC', 'ETH']
+		);
+	});
+
+	it('classifies every registry index it is asked about', () => {
+		MainnetPerpMarkets.forEach((market) => {
+			assert.equal(
+				isMajorPerpMarket(market.marketIndex),
+				MAJOR_PERP_MARKET_INDEXES.includes(market.marketIndex),
+				`${market.symbol} tiering should match the index list`
+			);
 		});
 	});
 });

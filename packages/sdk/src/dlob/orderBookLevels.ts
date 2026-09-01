@@ -87,9 +87,9 @@ export type L3OrderBook = {
  * `getVammL2Generator` to produce tighter, more granular vAMM levels near the top of the book
  * before falling back to evenly sized levels for the remaining depth.
  *
- * Sized so the first bucket's price impact is negligible against the AMM's own spread, and the
- * last bucket lands just under the evenly sized level that follows it, so the ladder ramps
- * instead of stepping down.
+ * The first bucket is small enough that its price impact stays negligible against the AMM's own
+ * spread. The rest ramp toward the evenly sized levels that follow, though how closely they meet
+ * depends on the market's open liquidity, so the fit is not uniform across markets.
  */
 export const DEFAULT_TOP_OF_BOOK_QUOTE_AMOUNTS = [
 	new BN(250).mul(QUOTE_PRECISION),

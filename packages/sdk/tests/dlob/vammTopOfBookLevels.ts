@@ -26,7 +26,9 @@ describe('vAMM top-of-book level selection', () => {
 			writable: true,
 			value: (args: { topOfBookQuoteAmounts?: BN[] }) => {
 				seenTopOfBookQuoteAmounts = args.topOfBookQuoteAmounts;
-				return { getL2Levels: () => [] };
+				// Matches L2OrderBookGenerator; nothing consumes it here, but a
+				// wrong-shaped double would hide a change to that contract.
+				return { getL2Bids: () => [], getL2Asks: () => [] };
 			},
 		});
 	});

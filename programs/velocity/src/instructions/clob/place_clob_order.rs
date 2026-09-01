@@ -51,8 +51,17 @@ use {
 /// it for the activation window, and re-place it as `taker_origin`, so a later
 /// cross would charge the maker taker fees on a quote it posted as a maker. A
 /// maker order belongs where its owner placed it.
-pub fn restable_remainder_price(order: &crate::state::user::Order) -> Option<u64> {
-    use crate::state::user::{OrderStatus, OrderType};
+pub fn restable_remainder_price(
+    order: &crate::state::user::Order,
+    // The oracle price a fired trigger-market's auction is relative to. An
+    // `OracleTriggerMarket` stores its auction bound as an offset from the
+    // oracle, not an absolute price (`calculate_auction_price_with_progress`
+    // reads it that way), so its rest price cannot be recovered without the
+    // oracle. Every other order type ignores this, so callers that never rest
+    // a fired trigger pass `None`.
+    oracle_price: Option<i64>,
+) -> Option<u64> {
+    use crate::state::user::{OrderBitFlag, OrderStatus, OrderType};
     if order.status != OrderStatus::Open || order.has_oracle_price_offset() || order.post_only {
         return None;
     }
@@ -64,7 +73,17 @@ pub fn restable_remainder_price(order: &crate::state::user::Order) -> Option<u64
         // started as a conditional; once it fires, its remainder belongs on the
         // book like any other.
         OrderType::Market | OrderType::TriggerMarket => {
-            order.auction_end_price.max(0).unsigned_abs()
+            if order.is_bit_flag_set(OrderBitFlag::OracleTriggerMarket) {
+                // The bound is an offset from the oracle. A short's is negative,
+                // so reading it as absolute would clamp it to zero and drop the
+                // rest; the absolute the fill settles at is oracle plus offset.
+                oracle_price?
+                    .checked_add(order.auction_end_price)?
+                    .max(0)
+                    .unsigned_abs()
+            } else {
+                order.auction_end_price.max(0).unsigned_abs()
+            }
         }
         _ => return None,
     };
@@ -364,4 +383,62 @@ pub fn try_place_remainder_on_clob<'info>(
         order_ref.node_index
     );
     Ok(Some(order_ref.order_id))
+}
+
+#[cfg(test)]
+mod restable_remainder_price_tests {
+    use {
+        super::restable_remainder_price,
+        crate::{
+            controller::position::PositionDirection,
+            state::user::{Order, OrderBitFlag, OrderStatus, OrderType},
+        },
+    };
+
+    fn fired_trigger(direction: PositionDirection, offset: i64) -> Order {
+        Order {
+            status: OrderStatus::Open,
+            order_type: OrderType::TriggerMarket,
+            direction,
+            bit_flags: OrderBitFlag::OracleTriggerMarket as u8,
+            auction_end_price: offset,
+            ..Order::default()
+        }
+    }
+
+    #[test]
+    fn short_fired_trigger_rests_at_oracle_plus_offset() {
+        // A short's auction bound is a negative offset. Read as an absolute
+        // price it clamps to zero and the rest is dropped; the fix adds the
+        // oracle to recover the price the fill settles at.
+        let order = fired_trigger(PositionDirection::Short, -1_371_000);
+        assert_eq!(
+            restable_remainder_price(&order, Some(106_000_000)),
+            Some(104_629_000)
+        );
+        // The offset cannot be resolved without the oracle.
+        assert_eq!(restable_remainder_price(&order, None), None);
+    }
+
+    #[test]
+    fn long_fired_trigger_rests_at_oracle_plus_offset() {
+        let order = fired_trigger(PositionDirection::Long, 1_371_000);
+        assert_eq!(
+            restable_remainder_price(&order, Some(106_000_000)),
+            Some(107_371_000)
+        );
+    }
+
+    #[test]
+    fn plain_market_uses_the_absolute_auction_bound() {
+        // No OracleTriggerMarket flag: the auction bound is already absolute,
+        // and no oracle is needed.
+        let order = Order {
+            status: OrderStatus::Open,
+            order_type: OrderType::Market,
+            auction_end_price: 104_000_000,
+            ..Order::default()
+        };
+        assert_eq!(restable_remainder_price(&order, None), Some(104_000_000));
+    }
 }

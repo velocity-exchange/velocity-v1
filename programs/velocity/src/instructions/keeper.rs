@@ -429,7 +429,8 @@ fn fill_order<'c: 'info, 'info>(
                 .get_perp_position(market_index)
                 .map(|position| position.base_asset_amount)
                 .unwrap_or(0);
-            let Some(rest_price) = crate::instructions::restable_remainder_price(order) else {
+            let Some(rest_price) = crate::instructions::restable_remainder_price(order, None)
+            else {
                 return Ok(());
             };
             Some((
@@ -1168,7 +1169,7 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
         let unfilled = order
             .get_base_asset_amount_unfilled(Some(position_base))
             .unwrap_or(0);
-        crate::instructions::restable_remainder_price(order)
+        crate::instructions::restable_remainder_price(order, None)
             .map(|price| (order.direction, price, unfilled, order.max_ts))
     };
 

@@ -316,6 +316,12 @@ pub fn handle_trigger_order_v1<'c: 'info, 'info>(
     // only because a migrated remainder is taker-origin: a cross settles at the
     // counterparty's price, so a maker arriving in the activation window
     // competes on price rather than on transaction landing.
+    // A fired trigger-market's auction bound is stored relative to the oracle,
+    // so the rest price is read against the live oracle.
+    let rest_oracle_price = {
+        let oracle_id = perp_market_map.get_ref(&market_index)?.oracle_id();
+        oracle_map.get_price_data(&oracle_id)?.price
+    };
     let remainder = {
         let user = load!(ctx.accounts.user)?;
         if user.is_being_liquidated() {
@@ -328,7 +334,7 @@ pub fn handle_trigger_order_v1<'c: 'info, 'info>(
             let unfilled = fired
                 .get_base_asset_amount_unfilled(Some(position_base))
                 .unwrap_or(0);
-            crate::instructions::restable_remainder_price(&fired)
+            crate::instructions::restable_remainder_price(&fired, Some(rest_oracle_price))
                 .map(|price| (fired.direction, price, unfilled, fired.max_ts))
         }
     };

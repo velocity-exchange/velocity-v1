@@ -3598,7 +3598,7 @@ pub fn place_and_take_perp_order<'c: 'info, 'info>(
                             .ok()
                     })
                     .unwrap_or(0);
-                crate::instructions::restable_remainder_price(order).map(|price| {
+                crate::instructions::restable_remainder_price(order, None).map(|price| {
                     (
                         order.direction,
                         price,

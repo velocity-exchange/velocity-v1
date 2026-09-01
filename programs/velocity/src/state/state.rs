@@ -55,6 +55,7 @@ pub struct State {
     pub hot_user_flag: Pubkey,
     pub hot_vault_deposit: Pubkey,
     pub hot_mm_oracle_crank: Pubkey,
+    /// Bot authority for the low-CU native AMM spread-adjustment crank.
     pub hot_amm_spread_adjust: Pubkey,
 
     pub whitelist_mint: Pubkey,
@@ -146,15 +147,21 @@ pub struct State {
     /// interval piecewise instead of multiplying its whole slot delta by the
     /// duration at one endpoint.
     pub slot_duration_transition_slots: [u64; 4],
-    /// 200 = the former 244 byte padding minus the 12 staging bytes and the 32
-    /// bytes used by `slot_duration_transition_slots`.
+    /// Active-management authority for scoped vAMM quoting controls carried by
+    /// `HotAdminUpdatePerpMarket`. This may be a multisig PDA; timelock policy
+    /// lives in that multisig. Added from former padding so existing fields,
+    /// including `hot_amm_spread_adjust`, retain their offsets.
+    pub hot_vamm_quote_management: Pubkey,
+    /// 168 = the former 244 byte padding minus the 12 staging bytes, the 32 bytes
+    /// used by `slot_duration_transition_slots`, and the 32-byte quote management
+    /// authority.
     /// (`pending_slot_duration_ms` 2 + `slot_duration_pad` 2 + the 8-byte
     /// `slot_duration_effective_slot`). The padding still absorbs the 8 bytes that
     /// were previously *implicit* trailing padding on x86_64 (State contains a
     /// u128, align 16 on the host but 8 on SBF; explicit padding keeps
     /// `size_of::<State>()` 1744 on both targets, per the alignment invariant in
     /// docs/alignment-and-native-offsets.md).
-    pub padding: [u8; 200],
+    pub padding: [u8; 168],
 }
 
 /// Purpose-specific hot role keys held on `State`. Each variant maps to one of the
@@ -173,6 +180,9 @@ pub enum HotRole {
     AmmSpreadAdjust,
     FeeWithdraw,
     AccountExtension,
+    /// vAMM active management (spread/JIT/curve and related quoting controls).
+    /// Appended to preserve every existing role's serialized ordinal.
+    VammQuoteManagement,
 }
 
 #[derive(BitFlags, Clone, Copy, PartialEq, Debug, Eq)]
@@ -262,7 +272,8 @@ impl Default for State {
             slot_duration_pad: [0; 2],
             slot_duration_effective_slot: 0,
             slot_duration_transition_slots: [0; 4],
-            padding: [0; 200],
+            hot_vamm_quote_management: Pubkey::default(),
+            padding: [0; 168],
         }
     }
 }
@@ -508,6 +519,7 @@ impl State {
             HotRole::AmmSpreadAdjust => self.hot_amm_spread_adjust,
             HotRole::FeeWithdraw => self.hot_fee_withdraw,
             HotRole::AccountExtension => self.hot_account_extension,
+            HotRole::VammQuoteManagement => self.hot_vamm_quote_management,
         }
     }
 
@@ -525,6 +537,7 @@ impl State {
             HotRole::AmmSpreadAdjust => self.hot_amm_spread_adjust = key,
             HotRole::FeeWithdraw => self.hot_fee_withdraw = key,
             HotRole::AccountExtension => self.hot_account_extension = key,
+            HotRole::VammQuoteManagement => self.hot_vamm_quote_management = key,
         }
     }
 
@@ -610,17 +623,18 @@ impl Size for State {
     // + protocol_fee_recipient_perp/_spot + hot_fee_withdraw + hot_account_extension, 256 B)
     // + 2*FeeStructure + OracleGuardRails + scalars + solvency_status[1] + promo_fee_tier[1]
     // + slot_duration_ms[2] + pending_slot_duration_ms[2] + slot_duration_pad[2]
-    // + slot_duration_effective_slot[8] + transition slots[32] + padding[200] = 1752 B.
-    // The padding starts at struct offset 1544 after the transition archive.
+    // + slot_duration_effective_slot[8] + transition slots[32]
+    // + hot_vamm_quote_management[32] + padding[168] = 1752 B.
+    // The quote management key starts at struct offset 1544, where padding began.
     // hot_if_rebalance was removed with the if-rebalance machinery (its 32 B went into
     // the padding); protocol_fee_recipient_spot later took 32 B back out; solvency_status
     // took 1 B out of the padding; hot_account_extension took another 32 B out;
     // slot_duration_ms took 2 B out (promo_fee_tier ends at an odd offset, so the u16
     // starts at the even byte right after it — no implicit padding, pinned below); the
     // staging fields (pending_slot_duration_ms[2] + slot_duration_pad[2] +
-    // slot_duration_effective_slot[8]) took another 12 B out; and the padding absorbed
-    // the 8 formerly-implicit trailing bytes (see the field doc) so sizeof is
-    // target-independent.
+    // slot_duration_effective_slot[8]) took another 12 B out; quote management took
+    // another 32 B; and the padding absorbed the 8 formerly-implicit trailing bytes
+    // (see the field doc) so sizeof is target-independent.
     // SIZE stays constant and (SIZE - 8) % 16 == 0 holds (1744).
     const SIZE: usize = 1752;
 }

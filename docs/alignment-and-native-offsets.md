@@ -260,6 +260,7 @@ moved there in the AMM-decoupling refactor.
 | `AMM::amm_spread_adjustment` | `PerpMarket` | 1282 | `offset_of!(PerpMarket, amm) + offset_of!(AMM, amm_spread_adjustment) + 8` |
 | `State::hot_mm_oracle_crank` | `State` | 360..392 | `offset_of!(State, hot_mm_oracle_crank) + 8` |
 | `State::hot_amm_spread_adjust` | `State` | 392..424 | same |
+| `State::hot_vamm_quote_management` | `State` | 1552..1584 | `offset_of!(State, hot_vamm_quote_management) + 8`; allocated from former padding |
 | `State::feature_bit_flags` | `State` | 1374 | same |
 
 Only the `State` offsets are read by raw index. The `PerpMarket` fields are reached through a
@@ -273,6 +274,7 @@ Only the `State` offsets are read by raw index. The `PerpMarket` fields are reac
   `AMM::amm_spread_adjustment`.
 - **`state_feature_bit_flags_offset`**, **`state_hot_mm_oracle_crank_offset`**,
   **`state_hot_amm_spread_adjust_offset`** — assert the `State` offsets the handlers index directly.
+- **`state_hot_vamm_quote_management_offset`** — asserts the new authority remains in former padding.
 
 **If you change any field in `AMM`, `PerpMarket`, or `State`, run `cargo test -p velocity
 native_instruction_offsets` and update both the test expectations and the offset constants used by

@@ -3408,6 +3408,7 @@ pub mod types {
         AmmSpreadAdjust,
         FeeWithdraw,
         AccountExtension,
+        VammQuoteManagement,
     }
     #[repr(C)]
     #[derive(
@@ -5240,8 +5241,9 @@ pub mod types {
         pub slot_duration_pad: [u8; 2],
         pub slot_duration_effective_slot: u64,
         pub slot_duration_transition_slots: [u64; 4],
+        pub hot_vamm_quote_management: Pubkey,
         #[serde(skip)]
-        pub padding: Padding<200>,
+        pub padding: Padding<168>,
     }
     #[repr(C)]
     #[derive(
@@ -6593,8 +6595,9 @@ pub mod accounts {
         pub slot_duration_pad: [u8; 2],
         pub slot_duration_effective_slot: u64,
         pub slot_duration_transition_slots: [u64; 4],
+        pub hot_vamm_quote_management: Pubkey,
         #[serde(skip)]
-        pub padding: Padding<200>,
+        pub padding: Padding<168>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for State {
@@ -26916,6 +26919,8 @@ pub mod errors {
         UnsettledRevenueShareOnDelist,
         #[msg("Revenue share order can still be paid; settle it instead of forfeiting")]
         RevenueShareOrderNotForfeitable,
+        #[msg("vAMM quote management value is outside the hot role bounds")]
+        VammQuoteManagementValueOutOfBounds,
     }
 }
 pub mod events {

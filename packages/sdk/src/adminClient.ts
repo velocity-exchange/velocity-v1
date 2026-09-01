@@ -1819,10 +1819,10 @@ export class AdminClient extends VelocityClient {
 
 	/**
 	 * Sets how aggressively a perp market's AMM curve auto-adjusts. Requires the market's
-	 * `HotAdminUpdatePerpMarket` gate — the `check_warm` constraint on that context currently
-	 * accepts cold or warm admin only (no dedicated hot role is wired to it). On-chain, values
+	 * `HotAdminUpdatePerpMarket` gate: cold, warm, or `HotRole.VammQuoteManagement`. On-chain, values
 	 * `0..=100` control repeg/formulaic-k intensity and `101..=200` additionally enable
-	 * reference-price-offset intensity; values above 200 throw `DefaultError`.
+	 * reference-price-offset intensity; values above 200 throw `DefaultError`. Calls made only by
+	 * the hot role are restricted to the protocol-wide safe range.
 	 * @param perpMarketIndex - Perp market to update.
 	 * @param curveUpdateIntensity - 0-200 intensity knob (see above for the two sub-ranges).
 	 * @returns Transaction signature.
@@ -1875,9 +1875,10 @@ export class AdminClient extends VelocityClient {
 	/**
 	 * Sets the dead-band, as a percent of price, within which the AMM's reference-price offset
 	 * (used to bias the AMM's quoted price away from the raw oracle/mark price) is suppressed.
-	 * Gated the same as `updatePerpMarketCurveUpdateIntensity` (warm admin via
-	 * `HotAdminUpdatePerpMarket`'s `check_warm` constraint). Throws `DefaultError` on-chain if
-	 * `referencePriceOffsetDeadbandPct > 100`.
+	 * Gated the same as `updatePerpMarketCurveUpdateIntensity` (`HotRole.VammQuoteManagement`, warm,
+	 * or cold). Throws `DefaultError` on-chain if
+	 * `referencePriceOffsetDeadbandPct > 100`; hot-only callers are restricted to the
+	 * protocol-wide safe range.
 	 * @param perpMarketIndex - Perp market to update.
 	 * @param referencePriceOffsetDeadbandPct - 0-100 percent dead-band.
 	 * @returns Transaction signature.
@@ -2275,8 +2276,9 @@ export class AdminClient extends VelocityClient {
 	/**
 	 * Sets how aggressively the AMM just-in-time-fills incoming taker orders against its own
 	 * inventory before routing to the DLOB. Gated the same as `updatePerpMarketCurveUpdateIntensity`
-	 * (warm admin via `HotAdminUpdatePerpMarket`'s `check_warm` constraint). Throws
-	 * `DefaultError` on-chain if outside `0..=100`.
+	 * (`HotRole.VammQuoteManagement`, warm, or cold). Throws
+	 * `DefaultError` on-chain if outside `0..=100`; hot-only callers are restricted to the
+	 * protocol-wide safe range.
 	 * @param perpMarketIndex - Perp market to update.
 	 * @param ammJitIntensity - 0-100 intensity; 0 disables AMM JIT fills.
 	 * @returns Transaction signature.
@@ -2460,9 +2462,10 @@ export class AdminClient extends VelocityClient {
 
 	/**
 	 * Sets a perp market's maximum allowed total bid/ask spread. Gated the same as
-	 * `updatePerpMarketCurveUpdateIntensity` (warm admin via `HotAdminUpdatePerpMarket`'s
-	 * `check_warm` constraint). Throws `DefaultError` on-chain if `maxSpread` is below the
-	 * market's current `baseSpread` or exceeds `marginRatioInitial * 100`.
+	 * `updatePerpMarketCurveUpdateIntensity` (`HotRole.VammQuoteManagement`, warm, or cold). Throws
+	 * `DefaultError` on-chain if `maxSpread` is below the
+	 * market's current `baseSpread` or exceeds `marginRatioInitial * 100`. Hot-only callers are
+	 * additionally restricted to the protocol-wide safe range.
 	 * @param perpMarketIndex - Perp market to update.
 	 * @param maxSpread - New max spread, BID_ASK_SPREAD_PRECISION (1e6). Must be >= `baseSpread` and <= `marginRatioInitial * 100`.
 	 * @returns Transaction signature.
@@ -2497,9 +2500,9 @@ export class AdminClient extends VelocityClient {
 
 		return await this.program.instruction.updatePerpMarketMaxSpread(maxSpread, {
 			accounts: {
-				admin: this.isSubscribed
-					? this.getStateAccount().coldAdmin
-					: this.wallet.publicKey,
+				admin: this.useHotWalletAdmin
+					? this.wallet.publicKey
+					: this.getStateAccount().coldAdmin,
 				state: await this.getStatePublicKey(),
 				perpMarket: perpMarketPublicKey,
 			},
@@ -5941,9 +5944,8 @@ export class AdminClient extends VelocityClient {
 	/**
 	 * Overrides how many slots of oracle delay a perp market tolerates before its "low-risk"
 	 * oracle-staleness check (`OracleValidity`'s `is_stale_for_amm_low_risk`, consumed by margin
-	 * calculations, order fills, AMM repeg/refresh, and the AMM cache) trips. Gated on
-	 * `HotAdminUpdatePerpMarket`, whose account constraint is actually `check_warm` — this
-	 * requires **warm** admin (or cold), not a dedicated hot key, despite the struct's name.
+	 * calculations, order fills, AMM repeg/refresh, and the AMM cache) trips. Requires warm or
+	 * cold admin; oracle-staleness controls are deliberately excluded from vAMM active management.
 	 * `0` (the default) means no override — the market falls back to the global
 	 * `state.oracleGuardRails.validity.slotsBeforeStaleForAmm`; a nonzero value is clamped to
 	 * `>= 0` and used as the slot threshold directly.
@@ -5986,9 +5988,9 @@ export class AdminClient extends VelocityClient {
 			oracleLowRiskSlotDelayOverride,
 			{
 				accounts: {
-					admin: this.useHotWalletAdmin
-						? this.wallet.publicKey
-						: this.getStateAccount().coldAdmin,
+					admin: this.isSubscribed
+						? this.getStateAccount().coldAdmin
+						: this.wallet.publicKey,
 					state: await this.getStatePublicKey(),
 					perpMarket: perpMarketPublicKey,
 				},
@@ -5999,10 +6001,9 @@ export class AdminClient extends VelocityClient {
 	/**
 	 * Overrides how many slots of oracle delay a perp market tolerates before its "immediate"
 	 * per-fill staleness check trips (used for AMM-immediate fills; the on-chain field is
-	 * `perpMarket.oracleSlotDelayOverride`, default `-1`). Gated on `HotAdminUpdatePerpMarket`,
-	 * whose account constraint is actually `check_warm` — this requires **warm** admin (or
-	 * cold), not a dedicated hot key. `0` means the market is always treated as stale for
-	 * immediate AMM actions; any other value is clamped to `>= 0` and used as the slot threshold
+	 * `perpMarket.oracleSlotDelayOverride`, default `-1`). Requires warm or cold admin;
+	 * oracle-staleness controls are deliberately excluded from vAMM active management. `0` means
+	 * the market is always treated as stale for immediate AMM actions; any other value is clamped to `>= 0` and used as the slot threshold
 	 * (delay > threshold is stale).
 	 * @param perpMarketIndex - Perp market to update.
 	 * @param oracleSlotDelay - Slots of oracle delay tolerated before the immediate-fill staleness check trips. `0` = always stale; negative input is clamped to `0` on-chain.
@@ -6043,9 +6044,9 @@ export class AdminClient extends VelocityClient {
 			oracleSlotDelay,
 			{
 				accounts: {
-					admin: this.useHotWalletAdmin
-						? this.wallet.publicKey
-						: this.getStateAccount().coldAdmin,
+					admin: this.isSubscribed
+						? this.getStateAccount().coldAdmin
+						: this.wallet.publicKey,
 					state: await this.getStatePublicKey(),
 					perpMarket: perpMarketPublicKey,
 				},
@@ -6054,13 +6055,13 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Sets a perp market's manual spread-widening scalars. Gated on `HotAdminUpdatePerpMarket`,
-	 * whose account constraint is actually `check_warm` — this requires **warm** admin (or
-	 * cold), not a dedicated hot key. **`referencePriceOffset` is accepted for wire/IDL
+	 * Sets a perp market's manual spread-widening scalars. Requires `HotRole.VammQuoteManagement`,
+	 * warm, or cold via `HotAdminUpdatePerpMarket`. **`referencePriceOffset` is accepted for wire/IDL
 	 * compatibility but ignored on-chain** — `amm.referencePriceOffset` is a per-crank output
 	 * recomputed from inventory and market stats by
 	 * `crate::vlp::amm::math::spread::update_amm_quote_state`, not an admin-settable value; pass
-	 * any value.
+	 * any value. For a hot-only caller, both adjustment values must remain inside the
+	 * protocol-wide safe range or neither write occurs.
 	 * @param perpMarketIndex - Perp market to update.
 	 * @param ammSpreadAdjustment - Signed scalar on the AMM's base spread, same convention as `fee_adjustment` (-100 = spread scaled to 0, 100 = spread doubled, 0 = no adjustment).
 	 * @param ammInventorySpreadAdjustment - Signed scalar on the inventory-skew component of the spread, same -100..100 convention.
@@ -6091,13 +6092,21 @@ export class AdminClient extends VelocityClient {
 	/**
 	 * Builds the `updatePerpMarketAmmSpreadAdjustment` instruction without sending it. See
 	 * `updatePerpMarketAmmSpreadAdjustment`.
+	 * @param admin - Overrides the `admin` signer account. The instruction accepts the
+	 *   `VammQuoteManagement` hot role as well as warm/cold, so pass the key that will
+	 *   actually sign at execution — e.g. the Squads hot-role vault PDA when the ix is
+	 *   wrapped in a multisig proposal. Defaults to `state.coldAdmin` (or the wallet when
+	 *   `useHotWalletAdmin`).
 	 * @returns The unsigned `updatePerpMarketAmmSpreadAdjustment` instruction.
 	 */
 	public async getUpdatePerpMarketAmmSpreadAdjustmentIx(
 		perpMarketIndex: number,
 		ammSpreadAdjustment: number,
 		ammInventorySpreadAdjustment: number,
-		referencePriceOffset: number
+		referencePriceOffset: number,
+		admin = this.useHotWalletAdmin
+			? this.wallet.publicKey
+			: this.getStateAccount().coldAdmin
 	): Promise<TransactionInstruction> {
 		const perpMarketPublicKey = await getPerpMarketPublicKey(
 			this.program.programId,
@@ -6110,9 +6119,7 @@ export class AdminClient extends VelocityClient {
 			referencePriceOffset,
 			{
 				accounts: {
-					admin: this.useHotWalletAdmin
-						? this.wallet.publicKey
-						: this.getStateAccount().coldAdmin,
+					admin,
 					state: await this.getStatePublicKey(),
 					perpMarket: perpMarketPublicKey,
 				},
@@ -6123,9 +6130,9 @@ export class AdminClient extends VelocityClient {
 	/**
 	 * Sets how much a perp market's paying-side spread widens while the vAMM's inventory is
 	 * paying funding: `amm.fundingBiasSensitivity = s` gives multiplier `β(f) = 1 + s/100 * ρ(f)`
-	 * (at full ramp, `ρ = 1`: 50 -> 1.5x, 100 -> 2x). Gated on `HotAdminUpdatePerpMarket`, whose
-	 * account constraint is actually `check_warm` — this requires **warm** admin (or cold), not
-	 * a dedicated hot key.
+	 * (at full ramp, `ρ = 1`: 50 -> 1.5x, 100 -> 2x). Requires `HotRole.VammQuoteManagement`,
+	 * warm, or cold via `HotAdminUpdatePerpMarket`; hot-only callers are restricted to the
+	 * protocol-wide safe range.
 	 * @param perpMarketIndex - Perp market to update.
 	 * @param fundingBiasSensitivity - Sensitivity `s`, in hundredths (value/100 is the multiplier slope); `0` disables the bias. `u8` range caps `s` at 2.55.
 	 * @returns Transaction signature.
@@ -6150,11 +6157,19 @@ export class AdminClient extends VelocityClient {
 	/**
 	 * Builds the `updatePerpMarketFundingBiasSensitivity` instruction without sending it. See
 	 * `updatePerpMarketFundingBiasSensitivity`.
+	 * @param admin - Overrides the `admin` signer account. The instruction accepts the
+	 *   `VammQuoteManagement` hot role as well as warm/cold, so pass the key that will
+	 *   actually sign at execution — e.g. the Squads hot-role vault PDA when the ix is
+	 *   wrapped in a multisig proposal. Defaults to `state.coldAdmin` (or the wallet when
+	 *   `useHotWalletAdmin`).
 	 * @returns The unsigned `updatePerpMarketFundingBiasSensitivity` instruction.
 	 */
 	public async getUpdatePerpMarketFundingBiasSensitivityIx(
 		perpMarketIndex: number,
-		fundingBiasSensitivity: number
+		fundingBiasSensitivity: number,
+		admin = this.useHotWalletAdmin
+			? this.wallet.publicKey
+			: this.getStateAccount().coldAdmin
 	): Promise<TransactionInstruction> {
 		const perpMarketPublicKey = await getPerpMarketPublicKey(
 			this.program.programId,
@@ -6165,9 +6180,7 @@ export class AdminClient extends VelocityClient {
 			fundingBiasSensitivity,
 			{
 				accounts: {
-					admin: this.useHotWalletAdmin
-						? this.wallet.publicKey
-						: this.getStateAccount().coldAdmin,
+					admin,
 					state: await this.getStatePublicKey(),
 					perpMarket: perpMarketPublicKey,
 				},
@@ -6290,10 +6303,9 @@ export class AdminClient extends VelocityClient {
 
 	/**
 	 * Resets a perp market's push-oracle ("MM oracle") state — `marketStats.mmOraclePrice`,
-	 * `mmOracleSequenceId`, and `mmOracleSlot` — all to `0`. Requires warm admin (the
-	 * `HotAdminUpdatePerpMarket` context's `check_warm` constraint — despite the name,
-	 * no dedicated hot role is wired to it; see `updatePerpMarketCurveUpdateIntensity`
-	 * for the same gate). Use to force the next `updateMmOracleNative` push to be
+	 * `mmOracleSequenceId`, and `mmOracleSlot` — all to `0`. Requires warm or cold admin and is
+	 * deliberately excluded from vAMM active management because it bypasses the next MM-oracle
+	 * step-size clamp. Use to force the next `updateMmOracleNative` push to be
 	 * treated as a fresh bootstrap (its step-size cap is skipped when the previous
 	 * price is `0`).
 	 * @param marketIndex - Perp market whose MM oracle fields to zero.
@@ -6322,9 +6334,9 @@ export class AdminClient extends VelocityClient {
 	): Promise<TransactionInstruction> {
 		return await this.program.instruction.zeroMmOracleFields({
 			accounts: {
-				admin: this.useHotWalletAdmin
-					? this.wallet.publicKey
-					: this.getStateAccount().coldAdmin,
+				admin: this.isSubscribed
+					? this.getStateAccount().coldAdmin
+					: this.wallet.publicKey,
 				state: await this.getStatePublicKey(),
 				perpMarket: await getPerpMarketPublicKey(
 					this.program.programId,
@@ -8256,8 +8268,7 @@ export class AdminClient extends VelocityClient {
 	/**
 	 * Sets a perp market's `marketConfig` bitmask (currently one bit:
 	 * `MarketConfigFlag.DisableFormulaicKUpdate`, which turns off the AMM's automatic
-	 * k-adjustment for the market). Requires warm admin (the `HotAdminUpdatePerpMarket`
-	 * context's `check_warm` constraint), but **setting any bit (a non-zero value)
+	 * k-adjustment for the market). Requires warm or cold admin, but **setting any bit (a non-zero value)
 	 * requires `state.coldAdmin` specifically** — a warm-only signer may only pass `0`
 	 * (clear all bits). Unknown bits are rejected (`InvalidPerpMarketConfig`).
 	 * @param marketIndex - Perp market to update.
@@ -8289,9 +8300,9 @@ export class AdminClient extends VelocityClient {
 		const perpMarketAccount = this.getPerpMarketAccountOrThrow(marketIndex);
 		return this.program.instruction.updatePerpMarketConfig(marketConfig, {
 			accounts: {
-				admin: this.useHotWalletAdmin
-					? this.wallet.publicKey
-					: this.getStateAccount().coldAdmin,
+				admin: this.isSubscribed
+					? this.getStateAccount().coldAdmin
+					: this.wallet.publicKey,
 				state: await this.getStatePublicKey(),
 				perpMarket: perpMarketAccount.pubkey,
 			},
@@ -8554,7 +8565,7 @@ export class AdminClient extends VelocityClient {
 
 	/**
 	 * Rotates `state.warmAdmin`, the operational (multisig+timelock) tier that can
-	 * rotate every hot-role key (`updateHotAdmin`). Cold-only: the `UpdateWarmAdmin`
+	 * rotate every hot role key (`updateHotAdmin`). Cold only: the `UpdateWarmAdmin`
 	 * context requires `state.coldAdmin == admin.key()`.
 	 * @param newWarmAdmin - New warm admin pubkey. `PublicKey.default()` unsets the role — only `coldAdmin` can then act where warm was accepted.
 	 * @returns Transaction signature.
@@ -8624,7 +8635,7 @@ export class AdminClient extends VelocityClient {
 	}
 
 	/**
-	 * Rotates one purpose-specific hot-role key on `state` (e.g. `hotFeeWithdraw`,
+	 * Rotates one purpose specific hot role key on `state` (e.g. `hotFeeWithdraw`,
 	 * `hotVaultDeposit`). Warm-or-cold: the `UpdateHotAdmin` context requires
 	 * `state.isWarm(admin.key())`. Compromise of one hot key only exposes the
 	 * instructions gated on that specific `HotRole` — rotating it here fully revokes
@@ -8686,6 +8697,8 @@ export enum HotRole {
 	AmmSpreadAdjust = 'ammSpreadAdjust',
 	FeeWithdraw = 'feeWithdraw',
 	AccountExtension = 'accountExtension',
+	/** vAMM active-management authority (spread/JIT/curve and related quoting controls). */
+	VammQuoteManagement = 'vammQuoteManagement',
 }
 
 /** Anchor encodes Rust enums as `{ <variant>: {} }`. */

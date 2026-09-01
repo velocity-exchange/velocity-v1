@@ -49,6 +49,74 @@ export type JitProxy = {
 			discriminator: [183, 174, 142, 245, 5, 29, 207, 2];
 			accounts: [
 				{
+					name: 'state';
+					docs: [
+						"Velocity's `State`, read for the live slot duration so the oracle",
+						'staleness windows here match the ones velocity itself applies. The PDA',
+						'belongs to the velocity program, so the derivation names it explicitly.',
+					];
+					pda: {
+						seeds: [
+							{
+								kind: 'const';
+								value: [
+									118,
+									101,
+									108,
+									111,
+									99,
+									105,
+									116,
+									121,
+									95,
+									115,
+									116,
+									97,
+									116,
+									101,
+								];
+							},
+						];
+						program: {
+							kind: 'const';
+							value: [
+								13,
+								162,
+								222,
+								50,
+								93,
+								130,
+								241,
+								222,
+								120,
+								205,
+								77,
+								177,
+								103,
+								33,
+								15,
+								103,
+								45,
+								147,
+								250,
+								167,
+								129,
+								184,
+								165,
+								217,
+								84,
+								183,
+								159,
+								1,
+								88,
+								249,
+								227,
+								150,
+							];
+						};
+					};
+				},
+				{
 					name: 'user';
 				},
 			];
@@ -258,7 +326,8 @@ export type JitProxy = {
 							'Share of the trade-fee *remainder* (taker fee after maker rebate, referral,',
 							'referee discount, and filler reward are taken off the top) provisioned to',
 							'the AMM as liquidity (its backstop-of-last-resort tranche, tracked in',
-							'`PerpMarket.fee_ledger.amm_protocol_fees_received`). precision:',
+							'`PerpMarket.fee_ledger.amm_protocol_fees_received` alongside the vAMM',
+							'maker rebate when that feature is enabled). precision:',
 							'FEE_PERCENTAGE_DENOMINATOR. `amm_fee_numerator + if_fee_numerator` must',
 							'be <= FEE_PERCENTAGE_DENOMINATOR; the protocol receives the residual',
 							'(`remainder − amm − if`) into its withdrawable `protocol_fee_pool`.',
@@ -623,13 +692,19 @@ export type JitProxy = {
 					},
 					{
 						name: 'auctionDuration';
-						docs: ['How many slots the auction lasts'];
+						docs: [
+							'Auction length in wall clock 400ms units (one slot at the 400ms',
+							'baseline, where the raw value is identical to the historical slot',
+							"count). Progress compares `SlotClock::elapsed` against this value's",
+							'wall clock length, so the ramp holds at every slot duration and the',
+							'u8 keeps the full historical 72s range.',
+						];
 						type: 'u8';
 					},
 					{
 						name: 'postedSlotTail';
 						docs: [
-							'Last 8 bits of the slot the order was posted on-chain (not order slot for signed msg orders)',
+							'Last 8 bits of the slot the order was posted onchain (not order slot for signed msg orders)',
 						];
 						type: 'u8';
 					},
@@ -1066,7 +1141,7 @@ export type JitProxy = {
 					{
 						name: 'pauseAdmin';
 						docs: [
-							'Emergency-pause authority. No on-chain timelock — intended to live behind a',
+							'Emergency pause authority. No onchain timelock — intended to live behind a',
 							'fast-acting multisig that can flip pause flags without delay. May only *add*',
 							'pause bits (never clear them); cold/warm retain full pause + unpause power.',
 							'`Pubkey::default()` means unassigned (only cold/warm can pause).',
@@ -1115,6 +1190,9 @@ export type JitProxy = {
 					},
 					{
 						name: 'hotAmmSpreadAdjust';
+						docs: [
+							'Bot authority for the low-CU native AMM spread-adjustment crank.',
+						];
 						type: 'pubkey';
 					},
 					{
@@ -1187,14 +1265,27 @@ export type JitProxy = {
 					},
 					{
 						name: 'minPerpAuctionDuration';
+						docs: [
+							'Compact wall-clock duration encoded in historical 400ms slot quanta.',
+						];
 						type: 'u8';
 					},
 					{
 						name: 'defaultMarketOrderTimeInForce';
+						docs: [
+							'Default time-in-force for market orders, in seconds. `Order.max_ts` is a',
+							'unix timestamp, so this never converts through the slot length and stays',
+							'a raw integer. It currently has no onchain reader.',
+						];
 						type: 'u8';
 					},
 					{
 						name: 'defaultSpotAuctionDuration';
+						docs: [
+							'An actual slot-count setting, not a wall-clock duration. It currently has',
+							'no onchain reader (spot DLOB trading is disabled), so it intentionally',
+							'remains raw rather than using `StoredSlotDuration`.',
+						];
 						type: 'u8';
 					},
 					{
@@ -1203,6 +1294,9 @@ export type JitProxy = {
 					},
 					{
 						name: 'liquidationDuration';
+						docs: [
+							'Compact wall-clock duration encoded in historical 400ms slot quanta.',
+						];
 						type: 'u8';
 					},
 					{
@@ -1265,9 +1359,107 @@ export type JitProxy = {
 						type: 'pubkey';
 					},
 					{
-						name: 'padding';
+						name: 'hotAccountExtension';
+						docs: [
+							'Hot key authorized for the `AccountExtension` role (grows zero-copy',
+							"accounts to the deployed program's size after a struct-extending",
+							'upgrade).',
+						];
+						type: 'pubkey';
+					},
+					{
+						name: 'promoFeeTier';
+						docs: [
+							'Promotional fee-tier floor applied to every account: the effective',
+							'perp fee tier is `max(volume tier, promo_fee_tier)` (clamped to the',
+							'configured tier count), so nobody is downgraded by it. 0 = no-op',
+							'(disabled), also what pre-upgrade accounts read from former padding.',
+							'Reset to 0 and every account is back on its volume tier at its next',
+							'fill; no per-user state.',
+						];
+						type: 'u8';
+					},
+					{
+						name: 'slotDurationMs';
+						docs: [
+							'Legacy current slot duration field in milliseconds, kept coherent by',
+							'the permissionless sync as the IBRL feature gates activate',
+							'(400 -> 350 -> 300 -> 250 -> 200). `0` means unset (what pre upgrade',
+							'accounts read out of former padding) and is interpreted as the 400ms',
+							'baseline. Never read this field directly, use [`State::slot_clock`] /',
+							'[`State::slot_duration`]; once any `slot_duration_transition_slots`',
+							'entry is set the archive is authoritative over this field.',
+						];
+						type: 'u16';
+					},
+					{
+						name: 'pendingSlotDurationMs';
+						docs: [
+							'Legacy staged next slot duration in ms, kept coherent by the',
+							'permissionless sync for older readers. `0` means nothing is staged. Once',
+							'`slot_duration_effective_slot` is reached, the legacy resolution returns',
+							'this value instead of `slot_duration_ms`. Superseded by the transition',
+							'archive.',
+						];
+						type: 'u16';
+					},
+					{
+						name: 'slotDurationPad';
+						docs: [
+							'Explicit padding so `slot_duration_effective_slot` (u64) lands on its',
+							'8-byte alignment with no *implicit* padding (see the alignment invariant).',
+						];
 						type: {
-							array: ['u8', 271];
+							array: ['u8', 2];
+						};
+					},
+					{
+						name: 'slotDurationEffectiveSlot';
+						docs: [
+							'Slot at which `pending_slot_duration_ms` takes effect: the first slot of',
+							"the epoch after the target gate's activation epoch, derived from the",
+							'`EpochSchedule` sysvar at sync time. `0` when nothing is staged.',
+						];
+						type: 'u64';
+					},
+					{
+						name: 'slotDurationTransitionSlots';
+						docs: [
+							'First slot of each post baseline IBRL regime, ordered as',
+							'`[350ms, 300ms, 250ms, 200ms]`. Zero means that transition has not been',
+							'synchronized yet. These anchors let elapsed time math integrate an',
+							'interval piecewise instead of multiplying its whole slot delta by the',
+							'duration at one endpoint.',
+						];
+						type: {
+							array: ['u64', 4];
+						};
+					},
+					{
+						name: 'hotVammQuoteManagement';
+						docs: [
+							'Active-management authority for scoped vAMM quoting controls carried by',
+							'`HotAdminUpdatePerpMarket`. This may be a multisig PDA; timelock policy',
+							'lives in that multisig. Added from former padding so existing fields,',
+							'including `hot_amm_spread_adjust`, retain their offsets.',
+						];
+						type: 'pubkey';
+					},
+					{
+						name: 'padding';
+						docs: [
+							'168 = the former 244 byte padding minus the 12 staging bytes, the 32 bytes',
+							'used by `slot_duration_transition_slots`, and the 32-byte quote management',
+							'authority.',
+							'(`pending_slot_duration_ms` 2 + `slot_duration_pad` 2 + the 8-byte',
+							'`slot_duration_effective_slot`). The padding still absorbs the 8 bytes that',
+							'were previously *implicit* trailing padding on x86_64 (State contains a',
+							'u128, align 16 on the host but 8 on SBF; explicit padding keeps',
+							'`size_of::<State>()` 1744 on both targets, per the alignment invariant in',
+							'docs/alignment-and-native-offsets.md).',
+						];
+						type: {
+							array: ['u8', 168];
 						};
 					},
 				];
@@ -1479,8 +1671,31 @@ export type JitProxy = {
 					{
 						name: 'padding';
 						type: {
-							array: ['u8', 14];
+							array: ['u8', 3];
 						};
+					},
+					{
+						name: 'equityFloor';
+						docs: [
+							'Minimum account net equity (unweighted assets plus perp pnl minus',
+							'spot liabilities, see `calculate_user_equity`). Below this the',
+							'permissionless breaker can trip. Risk-increasing orders, fills,',
+							'withdrawals and deposit transfers must clear `equity_floor +',
+							'equity_floor_buffer`. Settable only by the warm/cold admin; 0 disables',
+							'both checks.',
+							'precision: QUOTE_PRECISION',
+						];
+						type: 'u64';
+					},
+					{
+						name: 'equityFloorBuffer';
+						docs: [
+							'Extra headroom above `equity_floor` required by risk-increasing',
+							'actions, so an account cannot legally end an action at the trip',
+							'threshold. No effect while `equity_floor` is 0.',
+							'precision: QUOTE_PRECISION',
+						];
+						type: 'u64';
 					},
 				];
 			};
@@ -1641,9 +1856,29 @@ export type JitProxy = {
 						type: 'u8';
 					},
 					{
+						name: 'equityBreakerTripped';
+						docs: [
+							'Set by the permissionless `trip_equity_floor_breaker` instruction when',
+							"any of the authority's subaccounts falls below its equity floor.",
+							'While set, every subaccount of the authority rejects risk-increasing',
+							'fills, withdrawals and transfers out. Cleared only by the warm admin.',
+						];
+						type: 'u8';
+					},
+					{
+						name: 'acceleratedReferralStatus';
+						docs: [
+							'Persistent referral reward status. See [`AcceleratedReferralStatus`]. Kept',
+							'separate from `referrer_status`, which describes whether this authority',
+							'refers or was referred by somebody else. Carved out of former padding so',
+							'preupgrade accounts read `0` (standard, automatic enrollment allowed).',
+						];
+						type: 'u8';
+					},
+					{
 						name: 'padding';
 						type: {
-							array: ['u8', 63];
+							array: ['u8', 61];
 						};
 					},
 				];
@@ -1659,10 +1894,16 @@ export type JitProxy = {
 				fields: [
 					{
 						name: 'slotsBeforeStaleForAmm';
+						docs: [
+							'Compact wall-clock duration encoded in historical 400ms slot quanta.',
+						];
 						type: 'i64';
 					},
 					{
 						name: 'slotsBeforeStaleForMargin';
+						docs: [
+							'Compact wall-clock duration encoded in historical 400ms slot quanta.',
+						];
 						type: 'i64';
 					},
 					{

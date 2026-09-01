@@ -44,8 +44,52 @@ use {
     },
     anchor_lang::{prelude::*, Discriminator},
     anchor_spl::token_interface::{TokenAccount, TokenInterface},
-    std::convert::TryInto,
+    std::{convert::TryInto, fmt::Display},
 };
+
+// Protocol wide limits for calls made only by the VammQuoteManagement hot role.
+// Warm and cold governance retain the setters' full semantic ranges.
+pub const VAMM_QUOTE_MIN_CURVE_UPDATE_INTENSITY: u8 = 100;
+pub const VAMM_QUOTE_MAX_CURVE_UPDATE_INTENSITY: u8 = 150;
+pub const VAMM_QUOTE_MIN_REFERENCE_PRICE_OFFSET_DEADBAND_PCT: u8 = 0;
+pub const VAMM_QUOTE_MAX_REFERENCE_PRICE_OFFSET_DEADBAND_PCT: u8 = 25;
+pub const VAMM_QUOTE_MIN_AMM_JIT_INTENSITY: u8 = 0;
+pub const VAMM_QUOTE_MAX_AMM_JIT_INTENSITY: u8 = 25;
+pub const VAMM_QUOTE_MIN_MAX_SPREAD: u32 = 10_000;
+pub const VAMM_QUOTE_MAX_MAX_SPREAD: u32 = 20_000;
+pub const VAMM_QUOTE_MIN_AMM_SPREAD_ADJUSTMENT: i8 = -100;
+pub const VAMM_QUOTE_MAX_AMM_SPREAD_ADJUSTMENT: i8 = 100;
+pub const VAMM_QUOTE_MIN_AMM_INVENTORY_SPREAD_ADJUSTMENT: i8 = -100;
+pub const VAMM_QUOTE_MAX_AMM_INVENTORY_SPREAD_ADJUSTMENT: i8 = 100;
+pub const VAMM_QUOTE_MIN_FUNDING_BIAS_SENSITIVITY: u8 = 0;
+pub const VAMM_QUOTE_MAX_FUNDING_BIAS_SENSITIVITY: u8 = 100;
+
+fn validate_vamm_quote_management_hot_value<T>(
+    state: &AccountLoader<'_, State>,
+    signer: Pubkey,
+    value: T,
+    min: T,
+    max: T,
+    name: &str,
+) -> Result<()>
+where
+    T: Copy + Display + PartialOrd,
+{
+    if state.load()?.is_warm(&signer) {
+        return Ok(());
+    }
+
+    validate!(
+        value >= min && value <= max,
+        ErrorCode::VammQuoteManagementValueOutOfBounds,
+        "{} {} outside hot role bounds [{}, {}]",
+        name,
+        value,
+        min,
+        max
+    )?;
+    Ok(())
+}
 
 pub fn handle_initialize_amm_cache(ctx: Context<InitializeAmmCache>) -> Result<()> {
     let amm_cache = &mut ctx.accounts.amm_cache;
@@ -987,6 +1031,14 @@ pub fn handle_update_perp_market_curve_update_intensity(
         "invalid curve_update_intensity",
     )?;
     let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
+    validate_vamm_quote_management_hot_value(
+        &ctx.accounts.state,
+        ctx.accounts.admin.key(),
+        curve_update_intensity,
+        VAMM_QUOTE_MIN_CURVE_UPDATE_INTENSITY,
+        VAMM_QUOTE_MAX_CURVE_UPDATE_INTENSITY,
+        "curve_update_intensity",
+    )?;
     msg!("perp market {}", perp_market.market_index);
 
     msg!(
@@ -1012,6 +1064,14 @@ pub fn handle_update_perp_market_reference_price_offset_deadband_pct(
         "invalid reference_price_offset_deadband_pct",
     )?;
     let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
+    validate_vamm_quote_management_hot_value(
+        &ctx.accounts.state,
+        ctx.accounts.admin.key(),
+        reference_price_offset_deadband_pct,
+        VAMM_QUOTE_MIN_REFERENCE_PRICE_OFFSET_DEADBAND_PCT,
+        VAMM_QUOTE_MAX_REFERENCE_PRICE_OFFSET_DEADBAND_PCT,
+        "reference_price_offset_deadband_pct",
+    )?;
     msg!("perp market {}", perp_market.market_index);
 
     msg!(
@@ -1079,6 +1139,14 @@ pub fn handle_update_amm_jit_intensity(
     )?;
 
     let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
+    validate_vamm_quote_management_hot_value(
+        &ctx.accounts.state,
+        ctx.accounts.admin.key(),
+        amm_jit_intensity,
+        VAMM_QUOTE_MIN_AMM_JIT_INTENSITY,
+        VAMM_QUOTE_MAX_AMM_JIT_INTENSITY,
+        "amm_jit_intensity",
+    )?;
     msg!("perp market {}", perp_market.market_index);
 
     msg!(
@@ -1100,6 +1168,14 @@ pub fn handle_update_perp_market_max_spread(
     max_spread: u32,
 ) -> Result<()> {
     let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
+    validate_vamm_quote_management_hot_value(
+        &ctx.accounts.state,
+        ctx.accounts.admin.key(),
+        max_spread,
+        VAMM_QUOTE_MIN_MAX_SPREAD,
+        VAMM_QUOTE_MAX_MAX_SPREAD,
+        "max_spread",
+    )?;
     msg!("perp market {}", perp_market.market_index);
 
     validate!(
@@ -1177,6 +1253,22 @@ pub fn handle_update_perp_market_amm_spread_adjustment(
     reference_price_offset: i32,
 ) -> Result<()> {
     let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
+    validate_vamm_quote_management_hot_value(
+        &ctx.accounts.state,
+        ctx.accounts.admin.key(),
+        amm_spread_adjustment,
+        VAMM_QUOTE_MIN_AMM_SPREAD_ADJUSTMENT,
+        VAMM_QUOTE_MAX_AMM_SPREAD_ADJUSTMENT,
+        "amm_spread_adjustment",
+    )?;
+    validate_vamm_quote_management_hot_value(
+        &ctx.accounts.state,
+        ctx.accounts.admin.key(),
+        amm_inventory_spread_adjustment,
+        VAMM_QUOTE_MIN_AMM_INVENTORY_SPREAD_ADJUSTMENT,
+        VAMM_QUOTE_MAX_AMM_INVENTORY_SPREAD_ADJUSTMENT,
+        "amm_inventory_spread_adjustment",
+    )?;
     msg!("perp market {}", perp_market.market_index);
 
     msg!(
@@ -1214,6 +1306,14 @@ pub fn handle_update_perp_market_funding_bias_sensitivity(
     funding_bias_sensitivity: u8,
 ) -> Result<()> {
     let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
+    validate_vamm_quote_management_hot_value(
+        &ctx.accounts.state,
+        ctx.accounts.admin.key(),
+        funding_bias_sensitivity,
+        VAMM_QUOTE_MIN_FUNDING_BIAS_SENSITIVITY,
+        VAMM_QUOTE_MAX_FUNDING_BIAS_SENSITIVITY,
+        "funding_bias_sensitivity",
+    )?;
     msg!("perp market {}", perp_market.market_index);
 
     msg!(

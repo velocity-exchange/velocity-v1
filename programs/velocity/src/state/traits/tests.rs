@@ -79,7 +79,7 @@ mod size {
 ///
 /// * `feature_bit_flags` (byte 1374) — MM-oracle kill switch
 /// * `hot_mm_oracle_crank` (bytes 360..392) — MM-oracle signer
-/// * `hot_amm_spread_adjust` (bytes 392..424) — spread-adjust signer
+/// * `hot_amm_spread_adjust` (bytes 392..424) — native spread-adjustment bot signer
 ///
 /// The `PerpMarket`/`AMM` offsets below are not read by raw index (the handlers
 /// `bytemuck`-cast the account and use typed field access) but are asserted here
@@ -216,6 +216,34 @@ mod native_instruction_offsets {
             392,
             "State::hot_amm_spread_adjust offset changed — update handle_update_amm_spread_adjustment_native"
         );
+    }
+
+    /// The quote management authority consumes the first 32 bytes of former padding.
+    #[test]
+    fn state_hot_vamm_quote_management_offset() {
+        assert_eq!(
+            std::mem::offset_of!(State, hot_vamm_quote_management) + DISC,
+            1552,
+            "State::hot_vamm_quote_management must remain in former padding"
+        );
+    }
+}
+
+mod hot_role_ordinals {
+    use {crate::state::state::HotRole, anchor_lang::AnchorSerialize};
+
+    fn encode(role: HotRole) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        role.serialize(&mut bytes).unwrap();
+        bytes
+    }
+
+    #[test]
+    fn preserves_existing_roles_and_appends_quote_management() {
+        assert_eq!(encode(HotRole::AmmSpreadAdjust), vec![9]);
+        assert_eq!(encode(HotRole::FeeWithdraw), vec![10]);
+        assert_eq!(encode(HotRole::AccountExtension), vec![11]);
+        assert_eq!(encode(HotRole::VammQuoteManagement), vec![12]);
     }
 }
 

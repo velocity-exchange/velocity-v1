@@ -138,6 +138,7 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         hot_vault_deposit: Pubkey::default(),
         hot_mm_oracle_crank: Pubkey::default(),
         hot_amm_spread_adjust: Pubkey::default(),
+        hot_vamm_quote_management: Pubkey::default(),
         exchange_status: ExchangeStatus::active(),
         whitelist_mint: Pubkey::default(),
         discount_mint: Pubkey::default(),
@@ -173,7 +174,7 @@ pub fn handle_initialize(ctx: Context<Initialize>) -> Result<()> {
         slot_duration_pad: [0; 2],
         slot_duration_effective_slot: 0,
         slot_duration_transition_slots: [0; 4],
-        padding: [0; 200],
+        padding: [0; 168],
     };
 
     Ok(())
@@ -3326,7 +3327,7 @@ pub fn handle_update_perp_market_lp_pool_paused_operations(
     perp_market_valid(&ctx.accounts.perp_market)
 )]
 pub fn handle_update_perp_market_oracle_low_risk_slot_delay_override(
-    ctx: Context<HotAdminUpdatePerpMarket>,
+    ctx: Context<AdminUpdatePerpMarket>,
     oracle_low_risk_slot_delay_override: i8,
 ) -> Result<()> {
     let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
@@ -3346,7 +3347,7 @@ pub fn handle_update_perp_market_oracle_low_risk_slot_delay_override(
     perp_market_valid(&ctx.accounts.perp_market)
 )]
 pub fn handle_update_perp_market_oracle_slot_delay_override(
-    ctx: Context<HotAdminUpdatePerpMarket>,
+    ctx: Context<AdminUpdatePerpMarket>,
     oracle_slot_delay_override: i8,
 ) -> Result<()> {
     let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
@@ -3834,7 +3835,7 @@ pub fn handle_admin_deposit<'c: 'info, 'info>(
     Ok(())
 }
 
-pub fn handle_zero_mm_oracle_fields(ctx: Context<HotAdminUpdatePerpMarket>) -> Result<()> {
+pub fn handle_zero_mm_oracle_fields(ctx: Context<AdminUpdatePerpMarket>) -> Result<()> {
     let mut perp_market = load_mut!(ctx.accounts.perp_market)?;
     perp_market.market_stats.mm_oracle_price = 0;
     perp_market.market_stats.mm_oracle_sequence_id = 0;
@@ -4650,7 +4651,7 @@ pub fn handle_update_feature_bit_flags_mint_redeem_lp_pool(
     perp_market_valid(&ctx.accounts.perp_market)
 )]
 pub fn handle_update_perp_market_config(
-    ctx: Context<HotAdminUpdatePerpMarket>,
+    ctx: Context<AdminUpdatePerpMarket>,
     market_config: u8,
 ) -> Result<()> {
     let allowed_bits = MarketConfigFlag::DisableFormulaicKUpdate as u8;
@@ -5006,7 +5007,9 @@ pub struct AdminUpdatePerpMarket<'info> {
 
 #[derive(Accounts)]
 pub struct HotAdminUpdatePerpMarket<'info> {
-    #[account(constraint = check_warm(&admin.key(), &state)?)]
+    // Active-management authority for scoped vAMM quoting controls. Cold and
+    // warm admins remain valid through `check_hot`'s additive tiering.
+    #[account(constraint = check_hot(&admin.key(), &state, HotRole::VammQuoteManagement)?)]
     pub admin: Signer<'info>,
     pub state: AccountLoader<'info, State>,
     #[account(mut)]

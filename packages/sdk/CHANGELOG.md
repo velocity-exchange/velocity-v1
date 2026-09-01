@@ -1,5 +1,21 @@
 # @velocity-exchange/sdk
 
+## 0.19.0
+
+### Minor Changes
+
+- [#473](https://github.com/velocity-exchange/velocity-v1/pull/473) [`106aaeb`](https://github.com/velocity-exchange/velocity-v1/commit/106aaeb44eb4a3d0a6f1ad5f0c767b6f1e5adebe) Thanks [@ChesterSim](https://github.com/ChesterSim)! - Retune the vAMM top-of-book quote breakpoints to $250/$750/$2000/$5000 on both the default and majors ladders, and add `isMajorPerpMarket` / `MAJOR_PERP_MARKET_INDEXES` as one definition of major-market tiering for SDK consumers.
+
+  Consumers that read `DEFAULT_TOP_OF_BOOK_QUOTE_AMOUNTS` or `MAJORS_TOP_OF_BOOK_QUOTE_AMOUNTS` will see the retuned values on upgrade, which shifts near-touch level sizing on any locally derived vAMM book. `DLOBSubscriber.getL2` now selects between the two via `isMajorPerpMarket` instead of a `marketIndex < 3` literal, so market index 3 (HYPE) is no longer treated as a major.
+
+### Patch Changes
+
+- [#470](https://github.com/velocity-exchange/velocity-v1/pull/470) [`a720d5b`](https://github.com/velocity-exchange/velocity-v1/commit/a720d5b5abdc6258fd6a171282c7e46c5378be4e) Thanks [@ChesterSim](https://github.com/ChesterSim)! - Expose the signed-message placement deadline helper so fillers and DLOB expiry use the same slot-duration-aware validity window.
+
+- [#472](https://github.com/velocity-exchange/velocity-v1/pull/472) [`7e8ff7c`](https://github.com/velocity-exchange/velocity-v1/commit/7e8ff7ca876aad9e985d6fa0a1fd060614df4b8d) Thanks [@ChesterSim](https://github.com/ChesterSim)! - Expose signedMsgOrderSlotReached, the placement-readiness half of the signed-message slot window, so every consumer gates place attempts with the same predicate the program enforces.
+
+- [#467](https://github.com/velocity-exchange/velocity-v1/pull/467) [`be89e60`](https://github.com/velocity-exchange/velocity-v1/commit/be89e60ce61d33653817e35bcd2c640fc9204c6f) Thanks [@0xahzam](https://github.com/0xahzam)! - Authorize the `VammQuoteManagement` hot role for scoped vAMM quoting setters, enforce protocol wide safety bounds for every hot role value, and keep oracle, MM reset, and formulaic k controls on warm/cold admin. Adds a direct `perp-market set-spread-adjustment` admin CLI command, tightens every `perp-market` positional to a strict decimal-integer parse (previously `Number('')`/`parseInt('0x10', 10)` silently resolved to market 0, and `new BN(' ')` hung the process), and lets `getUpdatePerpMarketAmmSpreadAdjustmentIx` / `getUpdatePerpMarketFundingBiasSensitivityIx` take an explicit `admin` authority so the CLI can route these setters through the hot role Squads vault instead of defaulting to cold admin.
+
 ## 0.18.0
 
 ### Minor Changes

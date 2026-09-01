@@ -1,5 +1,18 @@
 # @velocity-exchange/admin-cli
 
+## 0.14.0
+
+### Minor Changes
+
+- [#465](https://github.com/velocity-exchange/velocity-v1/pull/465) [`6f4deee`](https://github.com/velocity-exchange/velocity-v1/commit/6f4deeec6997c868403bb7138dd847ead6176b11) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `lut show` and `lut extend`: inspect and extend the market address lookup table. The market account set is derived from `State`'s spot and perp market counts rather than a hardcoded list, so it cannot go stale when a market is added, and addresses already present are skipped. Defaults to the environment's configured table, refuses a frozen table, and checks the resulting size against the 256 entry limit.
+
+### Patch Changes
+
+- [#467](https://github.com/velocity-exchange/velocity-v1/pull/467) [`be89e60`](https://github.com/velocity-exchange/velocity-v1/commit/be89e60ce61d33653817e35bcd2c640fc9204c6f) Thanks [@0xahzam](https://github.com/0xahzam)! - Authorize the `VammQuoteManagement` hot role for scoped vAMM quoting setters, enforce protocol wide safety bounds for every hot role value, and keep oracle, MM reset, and formulaic k controls on warm/cold admin. Adds a direct `perp-market set-spread-adjustment` admin CLI command, tightens every `perp-market` positional to a strict decimal-integer parse (previously `Number('')`/`parseInt('0x10', 10)` silently resolved to market 0, and `new BN(' ')` hung the process), and lets `getUpdatePerpMarketAmmSpreadAdjustmentIx` / `getUpdatePerpMarketFundingBiasSensitivityIx` take an explicit `admin` authority so the CLI can route these setters through the hot role Squads vault instead of defaulting to cold admin.
+
+- Updated dependencies [[`a720d5b`](https://github.com/velocity-exchange/velocity-v1/commit/a720d5b5abdc6258fd6a171282c7e46c5378be4e), [`7e8ff7c`](https://github.com/velocity-exchange/velocity-v1/commit/7e8ff7ca876aad9e985d6fa0a1fd060614df4b8d), [`106aaeb`](https://github.com/velocity-exchange/velocity-v1/commit/106aaeb44eb4a3d0a6f1ad5f0c767b6f1e5adebe), [`be89e60`](https://github.com/velocity-exchange/velocity-v1/commit/be89e60ce61d33653817e35bcd2c640fc9204c6f)]:
+  - @velocity-exchange/sdk@0.19.0
+
 ## 0.13.0
 
 ### Minor Changes

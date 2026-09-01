@@ -11,7 +11,7 @@ repository = "https://github.com/velocity-exchange/velocity-v1/crates/clob-state
 # interface's types, not this crate's to restate.
 quoter-spec = { path = "../quoter-spec" }
 bytemuck = { version = "1.14", features = ["derive"] }
-anchor-lang-v2 = { git = "https://github.com/velocity-exchange/anchor.git", rev = "a8e619f32fcfea63244bc84773edb8a3a6cc140c", optional = true }
+anchor-lang-v2 = { git = "https://github.com/velocity-exchange/anchor.git", rev = "2bc4d3c23edc2b63707301ae6d4037b9202ef0cc", optional = true }
 # Spelled `Address` here and `Pubkey` in velocity; one type either way. See
 # `quoter-spec`'s note on the two names.
 solana-address = { version = "~2.6", features = ["bytemuck", "copy"] }

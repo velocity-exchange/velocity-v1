@@ -150,9 +150,9 @@ dependencies = [
 [[package]]
 name = "anchor-derive-accounts-v2"
 version = "2.0.0"
-source = "git+https://github.com/velocity-exchange/anchor.git?rev=a8e619f32fcfea63244bc84773edb8a3a6cc140c#a8e619f32fcfea63244bc84773edb8a3a6cc140c"
+source = "git+https://github.com/velocity-exchange/anchor.git?rev=2bc4d3c23edc2b63707301ae6d4037b9202ef0cc#2bc4d3c23edc2b63707301ae6d4037b9202ef0cc"
 dependencies = [
- "anchor-lang-idl 0.1.2 (git+https://github.com/velocity-exchange/anchor.git?rev=a8e619f32fcfea63244bc84773edb8a3a6cc140c)",
+ "anchor-lang-idl 0.1.2 (git+https://github.com/velocity-exchange/anchor.git?rev=2bc4d3c23edc2b63707301ae6d4037b9202ef0cc)",
  "bs58",
  "curve25519-dalek",
  "proc-macro2",
@@ -249,9 +249,9 @@ dependencies = [
 [[package]]
 name = "anchor-lang-idl"
 version = "0.1.2"
-source = "git+https://github.com/velocity-exchange/anchor.git?rev=a8e619f32fcfea63244bc84773edb8a3a6cc140c#a8e619f32fcfea63244bc84773edb8a3a6cc140c"
+source = "git+https://github.com/velocity-exchange/anchor.git?rev=2bc4d3c23edc2b63707301ae6d4037b9202ef0cc#2bc4d3c23edc2b63707301ae6d4037b9202ef0cc"
 dependencies = [
- "anchor-lang-idl-spec 0.1.0 (git+https://github.com/velocity-exchange/anchor.git?rev=a8e619f32fcfea63244bc84773edb8a3a6cc140c)",
+ "anchor-lang-idl-spec 0.1.0 (git+https://github.com/velocity-exchange/anchor.git?rev=2bc4d3c23edc2b63707301ae6d4037b9202ef0cc)",
  "anyhow",
  "heck 0.3.3",
  "serde",
@@ -272,7 +272,7 @@ dependencies = [
 [[package]]
 name = "anchor-lang-idl-spec"
 version = "0.1.0"
-source = "git+https://github.com/velocity-exchange/anchor.git?rev=a8e619f32fcfea63244bc84773edb8a3a6cc140c#a8e619f32fcfea63244bc84773edb8a3a6cc140c"
+source = "git+https://github.com/velocity-exchange/anchor.git?rev=2bc4d3c23edc2b63707301ae6d4037b9202ef0cc#2bc4d3c23edc2b63707301ae6d4037b9202ef0cc"
 dependencies = [
  "anyhow",
  "serde",
@@ -281,7 +281,7 @@ dependencies = [
 [[package]]
 name = "anchor-lang-v2"
 version = "2.0.0"
-source = "git+https://github.com/velocity-exchange/anchor.git?rev=a8e619f32fcfea63244bc84773edb8a3a6cc140c#a8e619f32fcfea63244bc84773edb8a3a6cc140c"
+source = "git+https://github.com/velocity-exchange/anchor.git?rev=2bc4d3c23edc2b63707301ae6d4037b9202ef0cc#2bc4d3c23edc2b63707301ae6d4037b9202ef0cc"
 dependencies = [
  "anchor-derive-accounts-v2",
  "bytemuck",

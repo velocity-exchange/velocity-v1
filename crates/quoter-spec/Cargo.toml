@@ -42,7 +42,7 @@ anchor-lang = { version = "1.0.2", optional = true }
 # (CLOB/midpoint) that generate an IDL: their IDL build needs the fork's
 # `IdlType` on every wire type it reaches. Gated so velocity's Anchor 1.0 tree
 # never compiles it. Rev matches the CLOB program.
-anchor-lang-v2 = { git = "https://github.com/velocity-exchange/anchor.git", rev = "a8e619f32fcfea63244bc84773edb8a3a6cc140c", optional = true }
+anchor-lang-v2 = { git = "https://github.com/velocity-exchange/anchor.git", rev = "2bc4d3c23edc2b63707301ae6d4037b9202ef0cc", optional = true }
 wincode = { version = "0.5", features = ["derive"] }
 
 # The records are cast onto the response region at both ends of the wire, so

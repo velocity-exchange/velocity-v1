@@ -448,7 +448,8 @@ const runBot = async () => {
 		userStats: true,
 		perpMarketIndexes: marketsAndOracleInfos.perpMarketIndicies,
 		spotMarketIndexes: marketsAndOracleInfos.spotMarketIndicies,
-		oracleInfos: oracleInfos.length > 0 ? oracleInfos : undefined,
+		oracleInfos:
+			oracleInfos && oracleInfos.length > 0 ? oracleInfos : undefined,
 		activeSubAccountId: config.global.subaccounts![0],
 		subAccountIds: config.global.subaccounts ?? [0],
 		txVersion: 0 as TransactionVersion,

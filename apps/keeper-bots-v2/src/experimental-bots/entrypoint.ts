@@ -12,7 +12,6 @@ import {
 	VelocityClient,
 	VelocityClientSubscriptionConfig,
 	FastSingleTxSender,
-	getMarketsAndOraclesForSubscription,
 	loadKeypair,
 	PublicKey,
 	RetryTxSender,
@@ -223,10 +222,6 @@ const runBot = async () => {
 		resubTimeoutMs: config.global.resubTimeoutMs,
 	};
 
-	const { perpMarketIndexes, spotMarketIndexes, oracleInfos } =
-		getMarketsAndOraclesForSubscription(
-			config.global.velocityEnv || 'mainnet-beta'
-		);
 	const marketLookupTables = configs[
 		config.global.velocityEnv || 'mainnet-beta'
 	].MARKET_LOOKUP_TABLES.map((lut) => new PublicKey(lut));
@@ -237,9 +232,10 @@ const runBot = async () => {
 		opts,
 		accountSubscription,
 		env: config.global.velocityEnv,
-		perpMarketIndexes,
-		spotMarketIndexes,
-		oracleInfos,
+		// Leaving perpMarketIndexes/spotMarketIndexes/oracleInfos undefined makes
+		// VelocityClient discover all markets and oracles from on-chain state
+		// (findAllMarketAndOracles) instead of the SDK's static registry, so a
+		// newly listed market needs no bot release to be picked up.
 		txVersion: 0 as TransactionVersion,
 		txSender,
 		marketLookupTables,

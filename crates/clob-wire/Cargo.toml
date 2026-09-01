@@ -16,9 +16,11 @@ quoter-spec = { path = "../quoter-spec" }
 # velocity encodes with anchor's borsh and needs the IDL plumbing, and the
 # book writes the bytes itself and must not be handed a borsh dependency.
 anchor-lang = { version = "1.0.2", optional = true }
+anchor-lang-v2 = { git = "https://github.com/velocity-exchange/anchor.git", rev = "a8e619f32fcfea63244bc84773edb8a3a6cc140c", optional = true }
 wincode = { version = "0.5", features = ["derive"] }
 
 [features]
 default = []
 anchor-derive = ["dep:anchor-lang", "quoter-spec/anchor-derive"]
 idl-build = ["anchor-derive", "anchor-lang/idl-build", "quoter-spec/idl-build"]
+idl-build-v2 = ["dep:anchor-lang-v2", "idl-build", "quoter-spec/idl-build-v2"]

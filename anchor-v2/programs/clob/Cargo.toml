@@ -13,7 +13,7 @@ default = []
 no-entrypoint = []
 cpi = ["no-entrypoint"]
 no-log-ix-name = []
-idl-build = []
+idl-build = ["quoter-spec/idl-build-v2", "clob-wire/idl-build-v2", "clob-state/idl-build-v2", "relay-spec/idl-build-v2"]
 profile = ["anchor-v2-testing/profile"]
 
 [dependencies]
@@ -34,7 +34,7 @@ clob-state = { path = "../../../crates/clob-state" }
 # a crossed book are facts about this account, so the wakes that watch for them
 # live on it. bytemuck-only, so no framework reaches this binary; the resolver
 # each condition names is registered by the program that owns the book's flow.
-relay-spec = { git = "https://github.com/velocity-exchange/relay", rev = "0d2c978cd4c7cdb729b03e5a0f79da6752fe1f66" }
+relay-spec = { git = "https://github.com/velocity-exchange/relay", rev = "b50bf99d016a712e8dbd07a3d5c22fce96e21678" }
 
 [dev-dependencies]
 # `testing` adds the stack-backed AccountBuffer the src/tests/ unit tests

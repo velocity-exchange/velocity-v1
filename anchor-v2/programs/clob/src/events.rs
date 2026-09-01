@@ -128,6 +128,7 @@ pub struct ExecuteRecordV0 {
 }
 
 #[derive(Clone, Copy, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build", derive(anchor_lang_v2::IdlType))]
 pub struct FillSlimV0 {
     pub order_id: u64,
     pub base_size: u64,

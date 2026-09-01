@@ -19,6 +19,7 @@ pub struct CancelAllV0 {
 }
 
 #[derive(Clone, Copy, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build", derive(anchor_lang_v2::IdlType))]
 pub struct CancelAllArgsV0 {
     pub sides: CancelSidesV0,
     /// Also zero the mid, which stops *every* side quoting regardless of what

@@ -15,6 +15,7 @@ pub struct ResizeMarketV0 {
 }
 
 #[derive(Clone, Copy, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build", derive(anchor_lang_v2::IdlType))]
 pub struct ResizeMarketArgsV0 {
     pub new_capacity: u32,
 }

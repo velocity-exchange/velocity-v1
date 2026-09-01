@@ -46,6 +46,7 @@ pub use quoter_spec::{CancelSidesV0, SideV0, UserRefV0};
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct ClobOrderRefV0 {
     pub node_index: u32,
     pub order_id: u64,
@@ -57,6 +58,7 @@ pub struct ClobOrderRefV0 {
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct PlaceOrderArgsV0 {
     pub side: SideV0,
     pub price: u64,
@@ -105,6 +107,7 @@ pub struct PlaceOrderArgsV0 {
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct CancelOrderArgsV0 {
     pub order_ref: ClobOrderRefV0,
     /// Owner of the order, verified against the node.
@@ -122,6 +125,7 @@ pub struct CancelOrderArgsV0 {
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct FillRequestV0 {
     pub order_ref: ClobOrderRefV0,
     pub base_asset_amount: u64,
@@ -142,6 +146,7 @@ pub struct FillRequestV0 {
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct FillArgsV0 {
     pub fills: Vec<FillRequestV0>,
 }
@@ -152,6 +157,7 @@ pub struct FillArgsV0 {
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct FilledOrderV0 {
     pub order_id: u64,
     /// The placing caller's own id, so a caller joins this to its own order
@@ -172,6 +178,7 @@ pub struct FilledOrderV0 {
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct FillOutcomeV0 {
     pub filled: Vec<FilledOrderV0>,
 }
@@ -182,6 +189,7 @@ pub struct FillOutcomeV0 {
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct EvictWorstArgsV0 {
     pub side: SideV0,
 }
@@ -192,6 +200,7 @@ pub struct EvictWorstArgsV0 {
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct RemoveExpiredArgsV0 {
     pub order_ref: ClobOrderRefV0,
 }
@@ -202,6 +211,7 @@ pub struct RemoveExpiredArgsV0 {
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct CancelAllArgsV0 {
     /// Whose orders to withdraw, verified against each node.
     pub user: UserRefV0,
@@ -223,6 +233,7 @@ pub struct CancelAllArgsV0 {
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct RemovedOrderV0 {
     pub user: UserRefV0,
     pub order_id: u64,
@@ -259,6 +270,7 @@ pub struct RemovedOrderV0 {
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct CancelAllOutcomeV0 {
     pub user: UserRefV0,
     pub bid_base_asset_amount: u64,
@@ -289,6 +301,7 @@ pub struct CancelAllOutcomeV0 {
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct CrankResolverV0 {
     pub program: [u8; 32],
     pub disc: [u8; 8],
@@ -302,6 +315,7 @@ pub struct CrankResolverV0 {
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct CrankAccountV0 {
     pub address: [u8; 32],
     /// 0 = readonly, nonzero = writable.
@@ -330,6 +344,7 @@ pub struct CrankAccountV0 {
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct CrankConditionsArgsV0 {
     pub expiry: CrankResolverV0,
     pub activation: CrankResolverV0,
@@ -362,6 +377,7 @@ pub const CRANK_SLOT_CROSS: u8 = 3;
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct CrankBlockV0 {
     /// Where the condition block starts.
     pub block_offset: u32,
@@ -386,6 +402,7 @@ pub struct CrankBlockV0 {
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct OrderRulesV0 {
     /// Floor on a resting order's size. A remainder below it cannot rest —
     /// the book culls one on its own fills — so a caller re-placing a
@@ -447,6 +464,7 @@ pub struct OrderRulesV0 {
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct OrderViewV0 {
     pub order_ref: ClobOrderRefV0,
     /// The caller's own id for this order, as supplied at placement.
@@ -515,6 +533,7 @@ impl OrderViewV0 {
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct NextCrossV0 {
     pub bid: OrderViewV0,
     pub ask: OrderViewV0,
@@ -552,6 +571,7 @@ pub const ORDER_VIEW_CEILING: usize = 12;
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct OrdersArgsV0 {
     /// At most [`ORDER_VIEW_CEILING`] refs.
     pub refs: Vec<ClobOrderRefV0>,
@@ -569,6 +589,7 @@ pub struct OrdersArgsV0 {
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct OrdersV0 {
     pub orders: Vec<OrderViewV0>,
 }
@@ -584,6 +605,7 @@ pub struct OrdersV0 {
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub enum ClobRemovalKindV0 {
     /// An order past its `max_ts`. Quote and execute already skip these; the
     /// order still holds a node and its owner's reservation until removed.
@@ -601,6 +623,7 @@ pub enum ClobRemovalKindV0 {
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct NextRemovalArgsV0 {
     pub kind: ClobRemovalKindV0,
 }

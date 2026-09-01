@@ -1,0 +1,1320 @@
+{
+  "address": "eb3Kwmht4evPGGonNHCQs1h7ng63ZUwZ9TyV1qPo23D",
+  "metadata": {
+    "name": "midpoint",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Velocity midpoint (spline) quoter program"
+  },
+  "instructions": [
+    {
+      "name": "initialize_quoter_v0",
+      "discriminator": [
+        140,
+        164,
+        95,
+        35,
+        70,
+        88,
+        137,
+        38
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "docs": [
+            "The maker's config key: pause, reconfigure, rotate the hot key. Free of",
+            "the quoted user \u2014 a desk can run this cold, or share one operator key",
+            "across the wallets it quotes for."
+          ]
+        },
+        {
+          "name": "user_authority",
+          "signer": true,
+          "docs": [
+            "The quoted wallet. Its signature is the consent to quote for its",
+            "sub-account \u2014 the same rule the velocity registry enforces on",
+            "Custom-entry creation \u2014 and it rides the seeds, so one instance exists",
+            "per (market, quoted wallet, sub-account) and nobody can squat another",
+            "maker's address. Consent survives the split from `authority` precisely",
+            "because it is *this* key, not the config key, that seeds the PDA and",
+            "signs here: an operator who wants to quote a wallet's sub-account must",
+            "get that wallet to sign creation, and the binding is immutable",
+            "afterwards (a different quoted user means a new instance, signed for",
+            "again)."
+          ]
+        },
+        {
+          "name": "execute_authority",
+          "docs": [
+            "The only signer `execute_v0` accepts (velocity's quoter CPI signer PDA).",
+            "Immutable after init. Accounts, not args: duplicated accounts cost",
+            "one index byte in the tx."
+          ]
+        },
+        {
+          "name": "hot_authority",
+          "docs": [
+            "Hot key for mid/level writes; rotatable by `authority`."
+          ]
+        },
+        {
+          "name": "quoter",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  109,
+                  105,
+                  100,
+                  112,
+                  111,
+                  105,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "expr"
+              },
+              {
+                "kind": "account",
+                "path": "user_authority"
+              },
+              {
+                "kind": "expr"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "config",
+          "type": {
+            "defined": {
+              "name": "QuoterConfigV0"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "update_quoter_v0",
+      "discriminator": [
+        78,
+        58,
+        212,
+        64,
+        132,
+        118,
+        108,
+        105
+      ],
+      "accounts": [
+        {
+          "name": "quoter",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "quoter"
+          ],
+          "docs": [
+            "The maker's config key \u2014 the only key allowed to reconfigure.",
+            "Deliberately not reassignable: the maker's kill switch must stay",
+            "theirs. Note this is *not* the quoted wallet: the quoted user is fixed",
+            "at creation (it seeds the PDA), so no config update can redirect fills",
+            "to a different `User`."
+          ]
+        },
+        {
+          "name": "new_hot_authority",
+          "optional": true,
+          "docs": [
+            "Present = becomes the new hot key."
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "UpdateQuoterArgsV0"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "set_mid_v0",
+      "discriminator": [
+        78,
+        138,
+        55,
+        191,
+        247,
+        87,
+        154,
+        171
+      ],
+      "accounts": [
+        {
+          "name": "quoter",
+          "writable": true
+        },
+        {
+          "name": "hot_authority",
+          "signer": true,
+          "relations": [
+            "quoter"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "SetMidArgsV0"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "set_levels_v0",
+      "discriminator": [
+        83,
+        20,
+        137,
+        119,
+        85,
+        40,
+        252,
+        138
+      ],
+      "accounts": [
+        {
+          "name": "quoter",
+          "writable": true
+        },
+        {
+          "name": "hot_authority",
+          "signer": true,
+          "relations": [
+            "quoter"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "SetLevelsArgsV0"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "cancel_all_v0",
+      "discriminator": [
+        212,
+        11,
+        203,
+        11,
+        184,
+        40,
+        88,
+        95
+      ],
+      "accounts": [
+        {
+          "name": "quoter",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "docs": [
+            "Either of the maker's keys \u2014 matched in the handler, since anchor's",
+            "`address =` locks to one. The hot key because withdrawing quotes is part",
+            "of the quoting loop and must not need the cold key; the config key",
+            "because a maker's panic button must work when the hot key is exactly",
+            "what they no longer trust."
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "CancelAllArgsV0"
+            }
+          }
+        }
+      ],
+      "returns": {
+        "defined": {
+          "name": "CancelAllOutcomeV0"
+        }
+      }
+    },
+    {
+      "name": "quote_v0",
+      "discriminator": [
+        235,
+        142,
+        54,
+        188,
+        148,
+        254,
+        155,
+        241
+      ],
+      "accounts": [
+        {
+          "name": "quoter",
+          "writable": true,
+          "docs": [
+            "mut only for the response tail \u2014 the ladder is not touched."
+          ]
+        },
+        {
+          "name": "instructions_sysvar",
+          "docs": [
+            "CHECK: the instructions sysvar; `Instructions::try_from` inside the",
+            "attestation check verifies the address, and it is only read when the",
+            "quoter requires attested flow."
+          ]
+        },
+        {
+          "name": "velocity_state",
+          "address": "VELOCITY_STATE",
+          "docs": [
+            "CHECK: velocity's global `State`, address-locked. Read only for",
+            "`hot_flow_authority` and only when the quoter requires attested flow \u2014",
+            "the current flow key lives there, never on this instance (see",
+            "`crate::velocity`). Registered on the quoter entry's quote leg."
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "QuoteArgsV0"
+            }
+          }
+        }
+      ],
+      "returns": {
+        "defined": {
+          "name": "ResponsePointerV0"
+        }
+      }
+    },
+    {
+      "name": "execute_v0",
+      "discriminator": [
+        5,
+        160,
+        11,
+        102,
+        140,
+        248,
+        144,
+        42
+      ],
+      "accounts": [
+        {
+          "name": "quoter",
+          "writable": true
+        },
+        {
+          "name": "execute_authority",
+          "signer": true,
+          "relations": [
+            "quoter"
+          ]
+        },
+        {
+          "name": "instructions_sysvar",
+          "docs": [
+            "CHECK: the instructions sysvar; see `QuoteV0`."
+          ]
+        },
+        {
+          "name": "velocity_state",
+          "address": "VELOCITY_STATE",
+          "docs": [
+            "CHECK: velocity's global `State`, address-locked; see `QuoteV0`."
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "ExecuteArgsV0"
+            }
+          }
+        }
+      ],
+      "returns": {
+        "defined": {
+          "name": "ResponsePointerV0"
+        }
+      }
+    }
+  ],
+  "accounts": [
+    {
+      "discriminator": [
+        20,
+        248,
+        215,
+        56,
+        82,
+        220,
+        184,
+        164
+      ],
+      "name": "MidpointQuoterV0"
+    }
+  ],
+  "types": [
+    {
+      "docs": [
+        "A maker's spline-level input on the wire: `filled` is program-owned, so",
+        "the setter takes only the shape."
+      ],
+      "name": "SplineLevelInputV0",
+      "type": {
+        "fields": [
+          {
+            "name": "offset_ppm",
+            "type": "u64"
+          },
+          {
+            "name": "size",
+            "type": "u64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "docs": [
+        "A velocity user in derivable form: the wallet and sub-account index that",
+        "both the `User` and `UserStats` PDAs derive from.",
+        "",
+        "Stored rather than the `User` key so an off-chain reader \u2014 a relay resolver",
+        "staging a crank \u2014 can reach every user-derived account from a quoter's",
+        "state alone. A stored `User` key is a dead end, because its authority lives",
+        "inside account data the reader cannot load. Velocity matches refs against",
+        "its loaded users by field, never by derivation, so the hot path pays",
+        "nothing for this."
+      ],
+      "name": "UserRefV0",
+      "type": {
+        "fields": [
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "sub_account_id",
+            "type": "u16"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "docs": [
+        "Arguments to `execute_v0`: commit a fill.",
+        "",
+        "[`QuoteArgsV0`] without the price bound, because it answers the same",
+        "question having committed to it: `size` is already only the depth the",
+        "caller chose off the ladder, so the walk that fills it visits no level a",
+        "bound would have cut. A quoter may fill less than `size`; what it actually",
+        "filled is whatever its returned balance changes sum to."
+      ],
+      "name": "ExecuteArgsV0",
+      "type": {
+        "fields": [
+          {
+            "docs": [
+              "Same contract as [`QuoteArgsV0::users`], and it leads for the same",
+              "reason."
+            ],
+            "name": "users",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "UserRefV0"
+                }
+              }
+            }
+          },
+          {
+            "name": "direction",
+            "type": {
+              "defined": {
+                "name": "DirectionV0"
+              }
+            }
+          },
+          {
+            "name": "size",
+            "type": "u64"
+          },
+          {
+            "name": "caps",
+            "type": {
+              "defined": {
+                "name": "UserCapsV0"
+              }
+            }
+          },
+          {
+            "docs": [
+              "The same mark the quote was taken against. A quoter that spends",
+              "budgets must be handed the identical price here, or it passes over a",
+              "different set of orders than the one it quoted."
+            ],
+            "name": "reference_price",
+            "type": "i64"
+          },
+          {
+            "name": "taker",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "UserRefV0"
+                }
+              }
+            }
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "docs": [
+        "Arguments to `quote_v0`: what a taker wants, and who the caller can settle",
+        "against.",
+        "",
+        "A quote is a promise about what `execute_v0` will deliver, so it is given",
+        "the same `users` and `caps` and must spend them the same way. A ladder",
+        "standing on liquidity the matching execute would decline is a ladder its",
+        "reader cannot route against.",
+        "",
+        "Read in place, like the responses: `users` is a slice into the caller's",
+        "instruction data, so a quoter walks the set without allocating and without",
+        "standing a copy of it in a 4 KB frame. It leads the struct for that to be",
+        "sound \u2014 the count puts the refs four bytes in, which is the two-byte",
+        "alignment a [`UserRefV0`] reference needs. A field added ahead of it must",
+        "keep that offset even."
+      ],
+      "name": "QuoteArgsV0",
+      "type": {
+        "fields": [
+          {
+            "docs": [
+              "The loaded-user set, at most [`USER_SET_CAPACITY`] entries \u2014 which a",
+              "reader checks with [`user_set_within_capacity`], since the count comes",
+              "off the wire."
+            ],
+            "name": "users",
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "UserRefV0"
+                }
+              }
+            }
+          },
+          {
+            "name": "direction",
+            "type": {
+              "defined": {
+                "name": "DirectionV0"
+              }
+            }
+          },
+          {
+            "docs": [
+              "Base the taker wants filled."
+            ],
+            "name": "size",
+            "type": "u64"
+          },
+          {
+            "name": "caps",
+            "type": {
+              "defined": {
+                "name": "UserCapsV0"
+              }
+            }
+          },
+          {
+            "docs": [
+              "The price the caller marks a filled position at, in PRICE_PRECISION.",
+              "Only [`UserCapV0`] budgets are spent against it; it does not bound",
+              "what a quoter may fill at."
+            ],
+            "name": "reference_price",
+            "type": "i64"
+          },
+          {
+            "docs": [
+              "The taker's own user, whose resting liquidity is skipped",
+              "unconditionally (self-trade prevention)."
+            ],
+            "name": "taker",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "UserRefV0"
+                }
+              }
+            }
+          },
+          {
+            "docs": [
+              "The worst price the caller will fill at, in PRICE_PRECISION. Zero",
+              "means no bound.",
+              "",
+              "A ladder is walked best price first, so a quoter may stop as soon as a",
+              "level is worse than this: the caller discards those levels anyway. The",
+              "walk is what a quoter is charged for, and a transaction is charged for",
+              "the compute limit it requests, so a bound the quoter ignores is paid",
+              "for by whoever sent the transaction.",
+              "",
+              "**Not a trust boundary**, like the caps above. Honouring it saves the",
+              "caller compute; ignoring it wastes the caller's compute and returns",
+              "levels the caller drops. It never widens what a quoter may fill."
+            ],
+            "name": "limit_price",
+            "type": "u64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "docs": [
+        "Immutable + rarely-changed config, set at init (the addresses ride the",
+        "accounts list \u2014 duplicated accounts cost one index byte in the tx)."
+      ],
+      "name": "QuoterConfigV0",
+      "type": {
+        "fields": [
+          {
+            "name": "market_index",
+            "type": "u16"
+          },
+          {
+            "name": "user_sub_account_id",
+            "type": "u16"
+          },
+          {
+            "name": "base_precision",
+            "type": "u64"
+          },
+          {
+            "name": "max_mid_staleness_slots",
+            "type": "u64"
+          },
+          {
+            "name": "price_tick_size",
+            "type": "u64"
+          },
+          {
+            "name": "size_step",
+            "type": "u64"
+          },
+          {
+            "name": "min_quote_size",
+            "type": "u64"
+          },
+          {
+            "name": "require_attested_flow",
+            "type": "bool"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "docs": [
+        "One rung of the spline: standing intent `size` at `mid \u00b1 offset`, with",
+        "`filled` tracking what executes have consumed since the side was written."
+      ],
+      "name": "SplineLevelV0",
+      "type": {
+        "fields": [
+          {
+            "docs": [
+              "Distance from mid toward this side, parts-per-million of mid.",
+              "Strictly ascending within a side; 0 quotes at mid itself."
+            ],
+            "name": "offset_ppm",
+            "type": "u64"
+          },
+          {
+            "docs": [
+              "Intent size, in the market's base precision."
+            ],
+            "name": "size",
+            "type": "u64"
+          },
+          {
+            "docs": [
+              "Consumed since the side was last written."
+            ],
+            "name": "filled",
+            "type": "u64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "docs": [
+        "Per-user room, parallel to the caller's user set.",
+        "",
+        "A user absent from all of this is unconstrained. An excluded user has",
+        "their orders passed over entirely \u2014 the caller has said it cannot settle a",
+        "fill against them, so quoting depth standing on their orders would promise",
+        "depth the fill declines.",
+        "",
+        "Distinct from membership of the user set: absent from *that* means the",
+        "caller's account set is stale and, past the grace window, the whole call",
+        "fails. An exclusion is a deliberate constraint, not a mistake, and never",
+        "fails the call.",
+        "",
+        "**Not a trust boundary.** A quoter that ignores these leaves its caller",
+        "exactly where it stands without them \u2014 the caller's own post-fill checks",
+        "still refuse the fill. What honouring them buys is that the honest case",
+        "stops reverting. The exclusions are firmer than the budgets: a caller may",
+        "also refuse a response that names an excluded user, while a budget it",
+        "cannot reprice is left to those post-fill checks."
+      ],
+      "name": "UserCapsV0",
+      "type": {
+        "fields": [
+          {
+            "docs": [
+              "One bit per index in the set: set means no room on the swept side, so",
+              "pass that user's orders over."
+            ],
+            "name": "excluded",
+            "type": {
+              "array": [
+                "u8",
+                0
+              ]
+            }
+          },
+          {
+            "docs": [
+              "Live entries at the head of `caps`; the tail is undefined."
+            ],
+            "name": "len",
+            "type": "u8"
+          },
+          {
+            "name": "caps",
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "UserCapV0"
+                  }
+                },
+                0
+              ]
+            }
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "docs": [
+        "Taker direction, from the taker's perspective.",
+        "",
+        "Encoded as its discriminant, `Long = 0`, and every program on this wire",
+        "reads the same declaration \u2014 a taker direction inverted across the",
+        "boundary would fill the wrong side of a book."
+      ],
+      "name": "DirectionV0",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Long"
+          },
+          {
+            "name": "Short"
+          }
+        ]
+      }
+    },
+    {
+      "docs": [
+        "What a `cancel_all_v0` withdrew.",
+        "",
+        "Rung counts and nothing more, deliberately. Unlike the CLOB's, this sweep",
+        "reserves nothing on velocity's side \u2014 spline depth is standing intent,",
+        "margin-clamped at execute \u2014 so no caller has aggregates to unwind and the",
+        "response is informational. Totalling the withdrawn intent as well would mean",
+        "reading every rung back before zeroing it, which costs more per rung than",
+        "the withdrawal itself and reports a number the maker (who wrote the shape)",
+        "already knows."
+      ],
+      "name": "CancelAllOutcomeV0",
+      "type": {
+        "fields": [
+          {
+            "docs": [
+              "Rungs withdrawn per side."
+            ],
+            "name": "bid_rungs",
+            "type": "u8"
+          },
+          {
+            "name": "ask_rungs",
+            "type": "u8"
+          },
+          {
+            "docs": [
+              "Whether the mid was zeroed too."
+            ],
+            "name": "mid_cleared",
+            "type": "bool"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "docs": [
+        "What one named user may still lose on the side this call sweeps, in quote.",
+        "",
+        "A budget rather than a base amount, because the caller cannot convert the",
+        "one into the other. What a fill costs a maker is collateral, and the",
+        "conversion needs the price each order fills at \u2014 which the caller does not",
+        "have and the quoter does. So the caller sends what it knows and the quoter",
+        "spends it:",
+        "",
+        "```text",
+        "cost = base * |price - reference_price| / BASE_PRECISION",
+        "```",
+        "",
+        "counted only where the fill moves against the owner: an order resting on",
+        "the bid side costs its owner when it fills *above* the reference, an ask",
+        "when it fills *below*. An order priced in the owner's favour costs nothing",
+        "and is filled whole. Once the budget is spent, that user's remaining",
+        "orders are passed over and the depth behind them is still filled.",
+        "",
+        "Why this is the cost that matters: a resting order is normally already",
+        "collateralized against the position it would become, priced at the",
+        "reference. Filling it converts that reservation into the position it stood",
+        "for. What the reservation does not price is the owner paying its own limit",
+        "price for a position marked at the reference, and that difference scales",
+        "with size.",
+        "",
+        "One number, not one per side, because a call sweeps one side of the book:",
+        "[`QuoteArgsV0::direction`] says which, and the budget is for that side.",
+        "",
+        "`u64::MAX` means unbounded. Zero means the user is excluded outright, and",
+        "belongs in the bitmap rather than here."
+      ],
+      "name": "UserCapV0",
+      "type": {
+        "fields": [
+          {
+            "docs": [
+              "Quote this user may lose filling on the swept side."
+            ],
+            "name": "budget",
+            "type": "u64"
+          },
+          {
+            "docs": [
+              "The most base the book may fill against this user's **reduce-only**",
+              "resting orders on the swept side. `u64::MAX` means no reduce-only cap.",
+              "",
+              "Unlike [`Self::budget`], this **is** a trust boundary. The book is",
+              "position-blind, so a reduce-only order can only be safe if the caller",
+              "bounds its fill to the position it may reduce. The book enforces it at",
+              "match time and never fills a reduce-only order past it. A reduce-only",
+              "order whose owner carries no cap here is not filled at all."
+            ],
+            "name": "base_cover",
+            "type": "u64"
+          },
+          {
+            "docs": [
+              "Index into the accompanying user set."
+            ],
+            "name": "index",
+            "type": "u8"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "docs": [
+        "Where in the quoter's response account it wrote the response. Return data",
+        "of `quote_v0` and `execute_v0`.",
+        "",
+        "The one shape a caller reads back from every quoter, whatever it is: the",
+        "response itself lives in an account the caller then borrows, and this says",
+        "where to look. Declared here rather than per program for the same reason",
+        "the rest of the wire is \u2014 three copies of two `u32`s are three chances to",
+        "disagree about which comes first."
+      ],
+      "name": "ResponsePointerV0",
+      "type": {
+        "fields": [
+          {
+            "name": "offset",
+            "type": "u32"
+          },
+          {
+            "name": "len",
+            "type": "u32"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "docs": [
+        "Which sides a `cancel_all_v0` withdraws.",
+        "",
+        "Named sides rather than a pair of bools, because the wire must not be able",
+        "to express \"neither\" \u2014 that is a maker believing their quotes are gone",
+        "when nothing happened.",
+        "",
+        "What the sides *mean* differs by who is reading: a book walks them as book",
+        "sides, a caller unwinds them as position directions, a spline reads them as",
+        "taker directions. Each program adds that reading itself; the tags are the",
+        "part that has to agree."
+      ],
+      "name": "CancelSidesV0",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Bids"
+          },
+          {
+            "name": "Asks"
+          },
+          {
+            "name": "Both"
+          }
+        ]
+      }
+    },
+    {
+      "name": "CancelAllArgsV0",
+      "type": {
+        "fields": [
+          {
+            "name": "sides",
+            "type": {
+              "defined": {
+                "name": "CancelSidesV0"
+              }
+            }
+          },
+          {
+            "docs": [
+              "Also zero the mid, which stops *every* side quoting regardless of what",
+              "the ladders hold (see `MidpointQuoterV0::is_quoting`). Cheap belt to the",
+              "braces when withdrawing both sides.",
+              "",
+              "Not a durable kill: the hot key can stamp a new mid straight after. The",
+              "durable one is `update_quoter_v0 { is_paused: true }`, which only the",
+              "config key can set and only the config key can undo."
+            ],
+            "name": "clear_mid",
+            "type": "bool"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "MidpointQuoterV0",
+      "repr": {
+        "kind": "c"
+      },
+      "serialization": "bytemuck",
+      "type": {
+        "fields": [
+          {
+            "docs": [
+              "The maker's config key: pause, reconfigure, rotate the hot key. Signs",
+              "creation. Never reassigned \u2014 the maker's kill switch stays theirs.",
+              "Independent of `user_authority`: a desk can hold this cold."
+            ],
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "docs": [
+              "Hot key allowed to write mid/levels. Rotatable by `authority`, so the",
+              "key that signs thousands of mid updates a day carries no other power."
+            ],
+            "name": "hot_authority",
+            "type": "pubkey"
+          },
+          {
+            "docs": [
+              "Only signer allowed to execute (velocity's quoter CPI signer PDA \u2014",
+              "velocity clamps size to the quoted user's margin before CPI'ing here).",
+              "Immutable after init."
+            ],
+            "name": "execute_authority",
+            "type": "pubkey"
+          },
+          {
+            "docs": [
+              "Wallet half of the quoted velocity `User` \u2014 fills settle against",
+              "`(user_authority, user_sub_account_id)`. It signs creation (consent)",
+              "and rides the PDA seeds, so it is fixed for the life of the instance;",
+              "quoting a different wallet means a new instance that wallet signs for."
+            ],
+            "name": "user_authority",
+            "type": "pubkey"
+          },
+          {
+            "docs": [
+              "Mid price, in the market's price precision (velocity perps:",
+              "PRICE_PRECISION = 1e6). 0 = not quoting."
+            ],
+            "name": "mid_price",
+            "type": "u64"
+          },
+          {
+            "docs": [
+              "Slot of the last mid write \u2014 the staleness gate's input."
+            ],
+            "name": "mid_slot",
+            "type": "u64"
+          },
+          {
+            "docs": [
+              "Monotonic guard for racing mid writers (see",
+              "[`MidpointQuoterV0::set_mid`])."
+            ],
+            "name": "mid_sequence",
+            "type": "u64"
+          },
+          {
+            "docs": [
+              "Quotes go empty once `mid_slot` falls this many slots behind."
+            ],
+            "name": "max_mid_staleness_slots",
+            "type": "u64"
+          },
+          {
+            "docs": [
+              "Quote prices round to a multiple of this, away from mid (same price",
+              "precision as `mid_price`)."
+            ],
+            "name": "price_tick_size",
+            "type": "u64"
+          },
+          {
+            "docs": [
+              "Quoted sizes floor to a multiple of this (base precision)."
+            ],
+            "name": "size_step",
+            "type": "u64"
+          },
+          {
+            "docs": [
+              "Level remainders below this are not quoted. Base precision \u2014 a floor",
+              "on the *base* size of a rung, despite the name."
+            ],
+            "name": "min_quote_size",
+            "type": "u64"
+          },
+          {
+            "docs": [
+              "Base units per whole unit (velocity perps: 1e9)."
+            ],
+            "name": "base_precision",
+            "type": "u64"
+          },
+          {
+            "docs": [
+              "Sub-account half of the quoted user's identity (`user_authority`",
+              "above is the wallet half)."
+            ],
+            "name": "user_sub_account_id",
+            "type": "u16"
+          },
+          {
+            "docs": [
+              "Velocity perp market index this quoter serves."
+            ],
+            "name": "market_index",
+            "type": "u16"
+          },
+          {
+            "docs": [
+              "Maker kill switch (config path; the registry's `is_active` is the",
+              "velocity-side one)."
+            ],
+            "name": "is_paused",
+            "type": "u8"
+          },
+          {
+            "docs": [
+              "Quote only flow attested by velocity's current `hot_flow_authority`",
+              "(see `crate::velocity`)."
+            ],
+            "name": "require_attested_flow",
+            "type": "u8"
+          },
+          {
+            "name": "bid_count",
+            "type": "u8"
+          },
+          {
+            "name": "ask_count",
+            "type": "u8"
+          },
+          {
+            "docs": [
+              "Max `|mid \u2212 reference_price| / reference_price` the quoter fills at,",
+              "parts per million. 0 disables the bound. Owned by the config key, not",
+              "the hot key. A compromised hot key cannot move mid past this band of",
+              "velocity's oracle, so a bad mid quotes and fills nothing rather than",
+              "draining the maker's collateral at an off-market price."
+            ],
+            "name": "max_mid_deviation_ppm",
+            "type": "u64"
+          },
+          {
+            "docs": [
+              "Room for two more pubkeys plus a scalar or two, so a future field",
+              "lands without moving the ladders or the response tail."
+            ],
+            "name": "padding",
+            "type": {
+              "array": [
+                "u8",
+                64
+              ]
+            }
+          },
+          {
+            "name": "bids",
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "SplineLevelV0"
+                  }
+                },
+                0
+              ]
+            }
+          },
+          {
+            "name": "asks",
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "SplineLevelV0"
+                  }
+                },
+                0
+              ]
+            }
+          },
+          {
+            "docs": [
+              "Scratch region `quote_v0`/`execute_v0` stream their borsh response",
+              "into; return data carries a [`ResponsePointerV0`] locating it."
+            ],
+            "name": "response",
+            "type": {
+              "array": [
+                "u8",
+                0
+              ]
+            }
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "SetLevelsArgsV0",
+      "type": {
+        "fields": [
+          {
+            "docs": [
+              "Present = also stamp a new mid in the same write (atomic shape+mid",
+              "moves); the sequence rule from `set_mid_v0` applies."
+            ],
+            "name": "mid",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "sequence",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "docs": [
+              "Sides to replace. Writing a side resets its `filled` counters."
+            ],
+            "name": "bids",
+            "type": {
+              "option": {
+                "vec": {
+                  "defined": {
+                    "name": "SplineLevelInputV0"
+                  }
+                }
+              }
+            }
+          },
+          {
+            "name": "asks",
+            "type": {
+              "option": {
+                "vec": {
+                  "defined": {
+                    "name": "SplineLevelInputV0"
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "SetMidArgsV0",
+      "type": {
+        "fields": [
+          {
+            "docs": [
+              "PRICE_PRECISION. 0 stops quoting."
+            ],
+            "name": "mid",
+            "type": "u64"
+          },
+          {
+            "docs": [
+              "Opt-in monotonic guard for racing writers: nonzero must strictly",
+              "increase; zero skips the check."
+            ],
+            "name": "sequence",
+            "type": "u64"
+          }
+        ],
+        "kind": "struct"
+      }
+    },
+    {
+      "name": "UpdateQuoterArgsV0",
+      "type": {
+        "fields": [
+          {
+            "name": "max_mid_staleness_slots",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "price_tick_size",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "size_step",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "name": "min_quote_size",
+            "type": {
+              "option": "u64"
+            }
+          },
+          {
+            "docs": [
+              "Attested flow is gated on velocity's live `State.hot_flow_authority`,",
+              "so turning it on takes no local key \u2014 and an unassigned role on",
+              "velocity's side silences the book rather than opening it."
+            ],
+            "name": "require_attested_flow",
+            "type": {
+              "option": "bool"
+            }
+          },
+          {
+            "name": "is_paused",
+            "type": {
+              "option": "bool"
+            }
+          },
+          {
+            "docs": [
+              "Max mid deviation from velocity's oracle, parts per million. 0 disables",
+              "the bound."
+            ],
+            "name": "max_mid_deviation_ppm",
+            "type": {
+              "option": "u64"
+            }
+          }
+        ],
+        "kind": "struct"
+      }
+    }
+  ]
+}

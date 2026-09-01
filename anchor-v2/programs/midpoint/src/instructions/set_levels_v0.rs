@@ -15,6 +15,7 @@ pub struct SetLevelsV0 {
 }
 
 #[derive(Clone, Default, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build", derive(anchor_lang_v2::IdlType))]
 pub struct SetLevelsArgsV0 {
     /// Present = also stamp a new mid in the same write (atomic shape+mid
     /// moves); the sequence rule from `set_mid_v0` applies.

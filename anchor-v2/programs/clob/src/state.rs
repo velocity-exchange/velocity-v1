@@ -713,6 +713,7 @@ pub struct PlaceOrderParams {
 /// `base_precision` and `market_index` are immutable afterwards; the rest
 /// are updatable via `update_market_v0`.
 #[derive(Clone, Copy, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build", derive(anchor_lang_v2::IdlType))]
 pub struct MarketConfigV0 {
     pub market_index: u16,
     pub base_precision: u64,

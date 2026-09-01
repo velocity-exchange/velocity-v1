@@ -50,6 +50,7 @@ pub const ORDERS_OFFSET: usize = 9624;
 /// Flags on a node's `bit_flags` byte.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub enum OrderBitFlag {
     /// Node holds a live order (clear = node is on the free list).
     Open = 1,
@@ -89,6 +90,7 @@ impl OrderBitFlag {
 /// than `padding0` needs an `OrderNodeV1` arena.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Pod, Zeroable)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct OrderNodeV0 {
     /// Authority wallet of the velocity `User` fills settle against
     /// (velocity verifies control before it CPIs place/cancel). Paired with

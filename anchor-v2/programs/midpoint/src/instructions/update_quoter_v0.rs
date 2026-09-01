@@ -19,6 +19,7 @@ pub struct UpdateQuoterV0 {
 }
 
 #[derive(Clone, Default, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build", derive(anchor_lang_v2::IdlType))]
 pub struct UpdateQuoterArgsV0 {
     pub max_mid_staleness_slots: Option<u64>,
     pub price_tick_size: Option<u64>,

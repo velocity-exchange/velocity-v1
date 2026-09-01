@@ -15,6 +15,7 @@ pub struct UpdateMarketV0 {
 }
 
 #[derive(Clone, Default, wincode::SchemaRead, wincode::SchemaWrite)]
+#[cfg_attr(feature = "idl-build", derive(anchor_lang_v2::IdlType))]
 pub struct UpdateMarketArgsV0 {
     pub order_tick_size: Option<u64>,
     pub order_step_size: Option<u64>,

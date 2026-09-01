@@ -93,6 +93,7 @@ use {
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Pod, Zeroable, SchemaRead, SchemaWrite)]
 #[wincode(assert_zero_copy)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct UserRefV0 {
     pub authority: Pubkey,
     pub sub_account_id: u16,
@@ -126,6 +127,7 @@ impl UserRefV0 {
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Pod, Zeroable, SchemaRead, SchemaWrite)]
 #[wincode(assert_zero_copy)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct UserBalanceChangeV0 {
     pub base_size: u64,
     pub quote_size: u64,
@@ -142,6 +144,7 @@ pub struct UserBalanceChangeV0 {
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Pod, Zeroable, SchemaRead, SchemaWrite)]
 #[wincode(assert_zero_copy)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct CancelledRemainderV0 {
     pub order_id: u64,
     pub base_asset_amount: u64,
@@ -168,6 +171,7 @@ pub struct CancelledRemainderV0 {
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Pod, Zeroable, SchemaRead, SchemaWrite)]
 #[wincode(assert_zero_copy)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct CompletedOrderV0 {
     pub order_id: u64,
     /// Which entry of [`ExecuteResponseV0::changes`] this order belongs to.
@@ -227,6 +231,7 @@ pub struct CompletedOrderV0 {
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Pod, Zeroable, SchemaRead, SchemaWrite)]
 #[wincode(assert_zero_copy)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct PartiallyFilledOrderV0 {
     pub order_id: u64,
     pub base_filled: u64,
@@ -242,6 +247,7 @@ pub struct PartiallyFilledOrderV0 {
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Pod, Zeroable, SchemaRead, SchemaWrite)]
 #[wincode(assert_zero_copy)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct PriceLevelV0 {
     pub price: u64,
     pub size: u64,
@@ -287,6 +293,7 @@ const _: () = {
 /// The fields borrow straight out of the quoter's account — reading one
 /// allocates nothing.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, SchemaRead, SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct ExecuteResponseV0<'a> {
     pub changes: &'a [UserBalanceChangeV0],
     pub cancelled: &'a [CancelledRemainderV0],
@@ -362,6 +369,7 @@ impl<'a> ExecuteResponseV0<'a> {
 /// What `quote_v0` answers: the ladder the quoter is standing behind, and
 /// what it had to leave out.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, SchemaRead, SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct QuoteResponseV0<'a> {
     pub levels: &'a [PriceLevelV0],
     /// The best price this quoter could have offered but did not, and the base
@@ -475,6 +483,7 @@ pub const USER_EXCLUSION_BITMAP_BYTES: usize = USER_SET_CAPACITY.div_ceil(8);
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub enum DirectionV0 {
     Long,
     Short,
@@ -504,6 +513,7 @@ impl DirectionV0 {
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, SchemaRead, SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct ResponsePointerV0 {
     pub offset: u32,
     pub len: u32,
@@ -524,6 +534,7 @@ pub struct ResponsePointerV0 {
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub enum CancelSidesV0 {
     Bids,
     Asks,
@@ -536,6 +547,7 @@ pub enum CancelSidesV0 {
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub enum SideV0 {
     Bid,
     Ask,
@@ -582,6 +594,7 @@ pub const BASE_PRECISION: u64 = 1_000_000_000;
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, SchemaRead, SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct UserCapV0 {
     /// Quote this user may lose filling on the swept side.
     pub budget: u64,
@@ -622,6 +635,7 @@ pub struct UserCapV0 {
     derive(anchor_lang::AnchorSerialize, anchor_lang::AnchorDeserialize)
 )]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct UserCapsV0 {
     /// One bit per index in the set: set means no room on the swept side, so
     /// pass that user's orders over.
@@ -783,6 +797,7 @@ pub fn user_set_within_capacity(users: &[UserRefV0]) -> bool {
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Pod, Zeroable, SchemaRead, SchemaWrite)]
 #[wincode(assert_zero_copy)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct L3RowV0 {
     pub price: u64,
     pub size: u64,
@@ -851,6 +866,7 @@ pub const L3_ROW_BYTES: usize = core::mem::size_of::<L3RowV0>();
 /// Read in place out of the quoter's response account, like every response
 /// here.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct L3ResponseV0<'a> {
     pub rows: &'a [L3RowV0],
     /// The walk stopped on a bound rather than on the end of the book, so
@@ -872,6 +888,7 @@ impl<'a> L3ResponseV0<'a> {
 /// know yet whose accounts to bring — so the filtering a quote applies is the
 /// reader's to apply here.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct L3ArgsV0 {
     pub direction: DirectionV0,
     /// Stop once this much base is described. Zero describes the side up to
@@ -896,6 +913,7 @@ pub struct L3ArgsV0 {
 /// alignment a [`UserRefV0`] reference needs. A field added ahead of it must
 /// keep that offset even.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct QuoteArgsV0<'a> {
     /// The loaded-user set, at most [`USER_SET_CAPACITY`] entries — which a
     /// reader checks with [`user_set_within_capacity`], since the count comes
@@ -935,6 +953,7 @@ pub struct QuoteArgsV0<'a> {
 /// bound would have cut. A quoter may fill less than `size`; what it actually
 /// filled is whatever its returned balance changes sum to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, SchemaRead, SchemaWrite)]
+#[cfg_attr(feature = "idl-build-v2", derive(anchor_lang_v2::IdlType))]
 pub struct ExecuteArgsV0<'a> {
     /// Same contract as [`QuoteArgsV0::users`], and it leads for the same
     /// reason.

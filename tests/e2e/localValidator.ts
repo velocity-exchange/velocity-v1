@@ -11,10 +11,12 @@
  * ticking against the validator over RPC and writing the Redis wire while
  * its cross fast path watches for crossed books.
  *
- * Velocity instructions go through the SDK wherever it has a builder. The
- * CLOB, midpoint and relay programs ship no TS client, so their anchor wire
- * (discriminator + borsh args) is hand-encoded in the `clobIx` / `midpointIx`
- * / `relayIx` helpers below.
+ * Velocity instructions go through the SDK. The CLOB and midpoint ship no TS
+ * client, so their IDLs are generated from the programs (tests/e2e/idl, built
+ * by anchor-v2/scripts/gen-quoter-idls.sh) and driven through anchor's
+ * `Program` — `clobProgram` and `midpointProgram`. The relay program is on a
+ * different anchor fork; its one instruction here (`register_watch_v0`) stays
+ * hand-encoded in the `relayIx` helper below.
  */
 import * as anchor from '@coral-xyz/anchor';
 import { Program } from '@coral-xyz/anchor';
@@ -22,6 +24,7 @@ import { assert } from 'chai';
 import { createHash } from 'crypto';
 import { spawn, ChildProcess } from 'child_process';
 import * as fs from 'fs';
+import * as path from 'path';
 import Redis from 'ioredis';
 import {
 	AccountMeta,
@@ -192,51 +195,6 @@ type ClobRow = { price: BN; size: BN; orderId: BN };
 
 /** The CLOB program's anchor wire (it has no TS client). */
 const clobIx = {
-	/** `initialize_market_v0` over market 0, with the admin CLI's defaults. */
-	initializeMarket(
-		payer: PublicKey,
-		placeAuthority: PublicKey,
-		book: PublicKey,
-		// The book's grid must equal the market's, or velocity rejects the
-		// quoter registration. Read them off the market rather than hardcode.
-		tickSize: BN,
-		stepSize: BN
-	): TransactionInstruction {
-		return new TransactionInstruction({
-			programId: CLOB_ID,
-			keys: [signerRo(payer), ro(placeAuthority), rw(book)],
-			data: Buffer.concat([
-				ixDiscriminator('initialize_market_v0'),
-				u16(0), // market_index
-				u64(UNIT), // base_precision
-				u64(tickSize), // order_tick_size — matches the market
-				u64(stepSize), // order_step_size — matches the market
-				u64(stepSize), // min_order_size
-				u64(0), // blocking_min_size (0 = disabled)
-				u32(0), // default_activation_delay_slots
-				u32(20), // max_activation_delay_slots
-				u32(2), // unknown_user_grace_slots
-				u32(768), // evict_threshold_per_side
-				u16(128), // max_quote_levels
-				u16(64), // max_execute_fills
-				u16(32), // max_execute_users
-			]),
-		});
-	},
-	/** `quote_l3_v0`: one row per resting order on a side, best price first. */
-	quoteL3(book: PublicKey, direction: 0 | 1, maxRows: number) {
-		return new TransactionInstruction({
-			programId: CLOB_ID,
-			// Writable for the response tail the rows stream into.
-			keys: [rw(book)],
-			data: Buffer.concat([
-				ixDiscriminator('quote_l3_v0'),
-				Buffer.from([direction]), // 0 = long (consumes asks), 1 = short
-				u64(0), // size: zero describes the side up to max_rows
-				u16(maxRows),
-			]),
-		});
-	},
 	/**
 	 * Bytes for a market account holding at least `capacity` orders.
 	 *
@@ -259,108 +217,6 @@ const midpointIx = {
 			[Buffer.from('midpoint'), u16(0), maker.toBuffer(), u16(0)],
 			MIDPOINT_ID
 		)[0];
-	},
-	/** `initialize_quoter_v0`: market u16, sub u16, base_precision u64,
-	 * staleness u64, tick u64, step u64, min u64, attested bool.
-	 *
-	 * `config` and `maker` are separate signers: the config key reconfigures
-	 * and rotates the hot key, while the quoted wallet's signature is the
-	 * consent to quote for its sub-account (and seeds the instance). They must
-	 * be distinct keys — anchor v2 rejects duplicate account metas. */
-	initializeQuoter(accounts: {
-		payer: PublicKey;
-		config: PublicKey;
-		maker: PublicKey;
-		executeAuthority: PublicKey;
-		hot: PublicKey;
-		instance: PublicKey;
-	}): TransactionInstruction {
-		return new TransactionInstruction({
-			programId: MIDPOINT_ID,
-			keys: [
-				signerRw(accounts.payer),
-				signerRo(accounts.config),
-				signerRo(accounts.maker),
-				ro(accounts.executeAuthority),
-				ro(accounts.hot),
-				rw(accounts.instance),
-				ro(SystemProgram.programId),
-			],
-			data: Buffer.concat([
-				ixDiscriminator('initialize_quoter_v0'),
-				u16(0),
-				u16(0),
-				u64(UNIT),
-				u64(1000), // max_mid_staleness_slots — generous for a slow tick
-				u64(100), // price_tick_size
-				u64(100000), // size_step
-				u64(100000), // min_quote_size
-				Buffer.from([0]), // require_attested_flow
-			]),
-		});
-	},
-	setMid(instance: PublicKey, hot: PublicKey, mid: BN): TransactionInstruction {
-		return new TransactionInstruction({
-			programId: MIDPOINT_ID,
-			keys: [rw(instance), signerRo(hot)],
-			data: Buffer.concat([
-				ixDiscriminator('set_mid_v0'),
-				u64(mid),
-				u64(0), // sequence guard: off
-			]),
-		});
-	},
-	setLevels(
-		instance: PublicKey,
-		hot: PublicKey,
-		mid: BN,
-		levels: SplineLevel[]
-	): TransactionInstruction {
-		const side = Buffer.concat([
-			Buffer.from([1]), // Some(levels)
-			u32(levels.length),
-			...levels.flatMap((level) => [u64(level.offsetPpm), u64(level.size)]),
-		]);
-		return new TransactionInstruction({
-			programId: MIDPOINT_ID,
-			keys: [rw(instance), signerRo(hot)],
-			data: Buffer.concat([
-				ixDiscriminator('set_levels_v0'),
-				Buffer.from([1]), // mid: Some
-				u64(mid),
-				Buffer.from([0]), // sequence: None
-				side, // bids
-				side, // asks
-			]),
-		});
-	},
-	/** `update_quoter_v0` with `require_attested_flow = Some(true)` and every
-	 * other field absent. Signed by the config key, not the quoted wallet.
-	 * No flow-authority account: the instance stores no copy of that key —
-	 * it reads the live one off velocity's State at quote time. */
-	requireAttestedFlow(
-		instance: PublicKey,
-		config: PublicKey
-	): TransactionInstruction {
-		return new TransactionInstruction({
-			programId: MIDPOINT_ID,
-			keys: [
-				rw(instance),
-				signerRo(config),
-				// Absent optional hot authority = the program id.
-				ro(MIDPOINT_ID),
-			],
-			data: Buffer.concat([
-				ixDiscriminator('update_quoter_v0'),
-				Buffer.from([0]), // max_mid_staleness_slots: None
-				Buffer.from([0]), // price_tick_size: None
-				Buffer.from([0]), // size_step: None
-				Buffer.from([0]), // min_quote_size: None
-				Buffer.from([1, 1]), // require_attested_flow: Some(true)
-				Buffer.from([0]), // is_paused: None
-				Buffer.from([0]), // max_mid_deviation_ppm: None
-			]),
-		});
 	},
 };
 
@@ -386,6 +242,13 @@ const relayIx = {
 	},
 };
 
+const CLOB_IDL = JSON.parse(
+	fs.readFileSync(path.join(__dirname, 'idl', 'clob.json'), 'utf8')
+);
+const MIDPOINT_IDL = JSON.parse(
+	fs.readFileSync(path.join(__dirname, 'idl', 'midpoint.json'), 'utf8')
+);
+
 describe('e2e localnet: programs + publisher + redis', function () {
 	const connection = new Connection(RPC_URL, 'confirmed');
 	const payer = Keypair.generate();
@@ -393,6 +256,15 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		commitment: 'confirmed',
 		preflightCommitment: 'confirmed',
 	});
+	// Generated clients for the CLOB and midpoint. Their wire is the fork's
+	// wincode, which is byte-identical to borsh for these fixed and
+	// option/vec-of-fixed args, so the upstream Program coder encodes them
+	// correctly. See tests/e2e/idl and anchor-v2/scripts/gen-quoter-idls.sh.
+	const clobProgram = new anchor.Program(CLOB_IDL as anchor.Idl, provider);
+	const midpointProgram = new anchor.Program(
+		MIDPOINT_IDL as anchor.Idl,
+		provider
+	);
 
 	// Actors.
 	const clobMakerKp = Keypair.generate();
@@ -778,13 +650,28 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		await send(
 			[
 				await createAccount(clobBook.publicKey, space, CLOB_ID),
-				clobIx.initializeMarket(
-					payer.publicKey,
-					clobAuthority,
-					clobBook.publicKey,
-					market.orderTickSize,
-					market.orderStepSize
-				),
+				await clobProgram.methods
+					.initializeMarketV0({
+						marketIndex: 0,
+						basePrecision: UNIT,
+						orderTickSize: market.orderTickSize,
+						orderStepSize: market.orderStepSize,
+						minOrderSize: market.orderStepSize,
+						blockingMinSize: new BN(0),
+						defaultActivationDelaySlots: 0,
+						maxActivationDelaySlots: 20,
+						unknownUserGraceSlots: 2,
+						evictThresholdPerSide: 768,
+						maxQuoteLevels: 128,
+						maxExecuteFills: 64,
+						maxExecuteUsers: 32,
+					})
+					.accountsStrict({
+						authority: payer.publicKey,
+						placeAuthority: clobAuthority,
+						market: clobBook.publicKey,
+					})
+					.instruction(),
 			],
 			[clobBook]
 		);
@@ -861,14 +748,27 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		midQuoterSigner = getQuoterSignerPublicKey(VELOCITY_ID, midEntry);
 		await send(
 			[
-				midpointIx.initializeQuoter({
-					payer: payer.publicKey,
-					config: midConfigKp.publicKey,
-					maker: midMakerKp.publicKey,
-					executeAuthority: midQuoterSigner,
-					hot: midHotKp.publicKey,
-					instance: midInstance,
-				}),
+				await midpointProgram.methods
+					.initializeQuoterV0({
+						marketIndex: 0,
+						userSubAccountId: 0,
+						basePrecision: UNIT,
+						maxMidStalenessSlots: new BN(1000),
+						priceTickSize: new BN(100),
+						sizeStep: new BN(100000),
+						minQuoteSize: new BN(100000),
+						requireAttestedFlow: false,
+					})
+					.accountsStrict({
+						payer: payer.publicKey,
+						authority: midConfigKp.publicKey,
+						userAuthority: midMakerKp.publicKey,
+						executeAuthority: midQuoterSigner,
+						hotAuthority: midHotKp.publicKey,
+						quoter: midInstance,
+						systemProgram: SystemProgram.programId,
+					})
+					.instruction(),
 			],
 			[midConfigKp, midMakerKp]
 		);
@@ -902,14 +802,32 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		await send(registration.ixs, [midMakerKp]);
 	};
 
-	const setMidpointMid = (mid: BN) =>
-		send([midpointIx.setMid(midInstance, midHotKp.publicKey, mid)], [midHotKp]);
-
-	const setMidpointLevels = (mid: BN, levels: SplineLevel[]) =>
+	const setMidpointMid = async (mid: BN) =>
 		send(
-			[midpointIx.setLevels(midInstance, midHotKp.publicKey, mid, levels)],
+			[
+				await midpointProgram.methods
+					.setMidV0({ mid, sequence: new BN(0) })
+					.accountsStrict({ quoter: midInstance, hotAuthority: midHotKp.publicKey })
+					.instruction(),
+			],
 			[midHotKp]
 		);
+
+	const setMidpointLevels = async (mid: BN, levels: SplineLevel[]) => {
+		const rungs = levels.map((l) => ({
+			offsetPpm: new BN(l.offsetPpm),
+			size: l.size,
+		}));
+		return send(
+			[
+				await midpointProgram.methods
+					.setLevelsV0({ mid, sequence: null, bids: rungs, asks: rungs })
+					.accountsStrict({ quoter: midInstance, hotAuthority: midHotKp.publicKey })
+					.instruction(),
+			],
+			[midHotKp]
+		);
+	};
 
 	/** The protocol-owned User (velocity signer's sub-account 0) for cranks. */
 	const initProtocolUser = async () => {
@@ -989,7 +907,16 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		const message = new TransactionMessage({
 			payerKey: payer.publicKey,
 			recentBlockhash: (await connection.getLatestBlockhash()).blockhash,
-			instructions: [clobIx.quoteL3(clobBook.publicKey, direction, 128)],
+			instructions: [
+				await clobProgram.methods
+					.quoteL3V0({
+						direction: direction === 0 ? { long: {} } : { short: {} },
+						size: new BN(0),
+						maxRows: 128,
+					})
+					.accountsStrict({ market: clobBook.publicKey })
+					.instruction(),
+			],
 		}).compileToV0Message();
 		const sim = await connection.simulateTransaction(
 			new VersionedTransaction(message),
@@ -2404,7 +2331,24 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// midpoint's participation below an on-chain proof that the
 		// co-signature carried, not just that the endpoints answered.
 		await send(
-			[midpointIx.requireAttestedFlow(midInstance, midConfigKp.publicKey)],
+			[
+				await midpointProgram.methods
+					.updateQuoterV0({
+						maxMidStalenessSlots: null,
+						priceTickSize: null,
+						sizeStep: null,
+						minQuoteSize: null,
+						requireAttestedFlow: true,
+						isPaused: null,
+						maxMidDeviationPpm: null,
+					})
+					.accountsStrict({
+						quoter: midInstance,
+						authority: midConfigKp.publicKey,
+						newHotAuthority: null,
+					})
+					.instruction(),
+			],
 			[midConfigKp]
 		);
 

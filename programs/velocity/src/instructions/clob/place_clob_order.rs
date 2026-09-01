@@ -90,6 +90,24 @@ pub fn restable_remainder_price(
     (price != 0).then_some(price)
 }
 
+/// Snap a rest price to the book's `tick_size`, within the order's own auction
+/// bound. The book rejects a price that is not a multiple of the tick
+/// (PriceNotTickAligned), and a fired trigger-market rests at the oracle plus an
+/// arbitrary offset. Round toward the price the order already agreed to, never
+/// past it: a short's ask rounds up, so the rest never sits below the floor it
+/// agreed to sell at; a long's bid rounds down, so the rest never sits above
+/// the ceiling it agreed to pay. A `tick_size` of zero or one aligns every
+/// price, so the round is a no-op.
+pub fn align_rest_price_to_tick(price: u64, tick_size: u64, direction: PositionDirection) -> u64 {
+    if tick_size <= 1 {
+        return price;
+    }
+    match direction {
+        PositionDirection::Short => price.div_ceil(tick_size).saturating_mul(tick_size),
+        PositionDirection::Long => (price / tick_size).saturating_mul(tick_size),
+    }
+}
+
 /// Gate a below-default activation delay on the flow authority's attestation.
 ///
 /// The speed bump is the taker protection that replaced JIT. Skipping it is
@@ -232,13 +250,26 @@ pub fn try_place_remainder_on_clob<'info>(
     // plain cancel here instead of failing the fill. Off-tick / off-step
     // remainders cannot arise: the attach pins the book's tick and step to the
     // market's, so a remainder aligned to the market is aligned to the book.
-    let min_order_size = clob.reader().order_rules()?.min_order_size;
+    let (min_order_size, order_tick_size) = {
+        let rules = clob.reader().order_rules()?;
+        (rules.min_order_size, rules.tick_size)
+    };
     if min_order_size != 0 && base_asset_amount < min_order_size {
         msg!(
             "remainder {} is below the book minimum {}; stays cancelled",
             base_asset_amount,
             min_order_size
         );
+        return Ok(None);
+    }
+
+    // Snap the rest price to the book's tick. A remainder migrated from a DLOB
+    // order is already tick-aligned, so this is a no-op for it. A fired
+    // trigger-market is not: it rests at the oracle plus its auction offset, an
+    // arbitrary value the book rejects as off-tick (PriceNotTickAligned).
+    let price = align_rest_price_to_tick(price, order_tick_size, direction);
+    if price == 0 {
+        msg!("remainder rounds to a zero rest price; stays cancelled");
         return Ok(None);
     }
 
@@ -383,6 +414,55 @@ pub fn try_place_remainder_on_clob<'info>(
         order_ref.node_index
     );
     Ok(Some(order_ref.order_id))
+}
+
+#[cfg(test)]
+mod align_rest_price_to_tick_tests {
+    use {super::align_rest_price_to_tick, crate::controller::position::PositionDirection};
+
+    #[test]
+    fn short_rounds_the_ask_up_to_the_next_tick() {
+        // A short rests as an ask. Rounding up keeps the ask on a tick without
+        // ever resting below the floor it agreed to sell at.
+        assert_eq!(
+            align_rest_price_to_tick(104_629_001, 1_000, PositionDirection::Short),
+            104_630_000
+        );
+    }
+
+    #[test]
+    fn long_rounds_the_bid_down_to_the_prev_tick() {
+        // A long rests as a bid. Rounding down keeps the bid on a tick without
+        // ever resting above the ceiling it agreed to pay.
+        assert_eq!(
+            align_rest_price_to_tick(107_371_999, 1_000, PositionDirection::Long),
+            107_371_000
+        );
+    }
+
+    #[test]
+    fn an_already_aligned_price_is_unchanged() {
+        assert_eq!(
+            align_rest_price_to_tick(104_630_000, 1_000, PositionDirection::Short),
+            104_630_000
+        );
+        assert_eq!(
+            align_rest_price_to_tick(104_630_000, 1_000, PositionDirection::Long),
+            104_630_000
+        );
+    }
+
+    #[test]
+    fn a_unit_tick_aligns_every_price() {
+        assert_eq!(
+            align_rest_price_to_tick(104_629_001, 1, PositionDirection::Short),
+            104_629_001
+        );
+        assert_eq!(
+            align_rest_price_to_tick(104_629_001, 0, PositionDirection::Long),
+            104_629_001
+        );
+    }
 }
 
 #[cfg(test)]

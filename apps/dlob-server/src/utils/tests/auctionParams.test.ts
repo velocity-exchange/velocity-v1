@@ -17,8 +17,8 @@ import {
 
 describe('Auction Parameters Functions', () => {
 	describe('createMarketBasedAuctionParams', () => {
-		it('should apply market-based logic for major PERP markets (0, 1, 2, 3)', () => {
-			[0, 1, 2, 3].forEach((marketIndex) => {
+		it('should apply market-based logic for major PERP markets (0, 1, 2)', () => {
+			[0, 1, 2].forEach((marketIndex) => {
 				const args = {
 					marketIndex,
 					marketType: 'perp' as any,
@@ -36,8 +36,8 @@ describe('Auction Parameters Functions', () => {
 			});
 		});
 
-		it('should apply market-based logic for minor PERP markets (>3)', () => {
-			[4, 5, 10].forEach((marketIndex) => {
+		it('should apply market-based logic for minor PERP markets (>2, incl. HYPE)', () => {
+			[3, 4, 5, 10].forEach((marketIndex) => {
 				const args = {
 					marketIndex,
 					marketType: 'perp' as any,

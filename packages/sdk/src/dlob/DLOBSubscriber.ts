@@ -9,6 +9,7 @@ import {
 } from './types';
 import { VelocityClient } from '../velocityClient';
 import { isVariant, MarketType } from '../types';
+import { isMajorPerpMarket } from '../constants/perpMarkets';
 import {
 	DEFAULT_TOP_OF_BOOK_QUOTE_AMOUNTS,
 	MAJORS_TOP_OF_BOOK_QUOTE_AMOUNTS,
@@ -167,10 +168,9 @@ export class DLOBSubscriber {
 							this.slotSource.getSlot()
 						),
 						numOrders: numVammOrders ?? depth,
-						topOfBookQuoteAmounts:
-							marketIndex < 3
-								? MAJORS_TOP_OF_BOOK_QUOTE_AMOUNTS
-								: DEFAULT_TOP_OF_BOOK_QUOTE_AMOUNTS,
+						topOfBookQuoteAmounts: isMajorPerpMarket(marketIndex)
+							? MAJORS_TOP_OF_BOOK_QUOTE_AMOUNTS
+							: DEFAULT_TOP_OF_BOOK_QUOTE_AMOUNTS,
 						latestSlot,
 						slotDurationState: this.velocityClient.getStateAccount(),
 					}),

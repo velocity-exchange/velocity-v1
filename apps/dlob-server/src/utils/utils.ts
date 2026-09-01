@@ -22,6 +22,7 @@ import {
 	MainnetSpotMarkets,
 	DevnetSpotMarkets,
 	PERCENTAGE_PRECISION_EXP,
+	isMajorPerpMarket,
 } from '@velocity-exchange/sdk';
 import { RedisClient } from '@velocity-exchange/common/clients';
 import { TradeOffsetPrice } from '@velocity-exchange/common';
@@ -35,7 +36,6 @@ import {
 	DEFAULT_MARKET_AUCTION_DURATION_MS,
 	FAST_FILL_AUCTION_DURATION_MS,
 	FAST_FILL_AUCTION_START_PRICE_OFFSET,
-	MAJOR_MARKETS,
 	MID_MAJOR_MARKETS,
 } from './constants';
 import { AuctionParamArgs } from './types';
@@ -657,10 +657,10 @@ export function createMarketBasedAuctionParams(
 	overrideDefaults?: Partial<AuctionParamArgs>,
 	version: number = 1
 ): AuctionParamArgs {
-	// Determine if this is a major market (PERP: SOL, BTC, ETH, HYPE)
+	// Determine if this is a major market (PERP: SOL, BTC, ETH)
 	const isMajorMarket =
 		args.marketType?.toLowerCase() === 'perp' &&
-		MAJOR_MARKETS.includes(args.marketIndex);
+		isMajorPerpMarket(args.marketIndex);
 
 	// Version 3+ weights toward fast fills: start just inside the touch on all
 	// markets and run a short auction, rather than fishing for price improvement
@@ -1533,9 +1533,9 @@ export const calculateDynamicSlippage = (
 	worstPrice: BN,
 	apiVersion?: number
 ): number => {
-	// Determine if this is a major market (PERP: SOL, BTC, ETH, HYPE)
+	// Determine if this is a major market (PERP: SOL, BTC, ETH)
 	const isPerp = marketType.toLowerCase() === 'perp';
-	const isMajor = isPerp && MAJOR_MARKETS.includes(marketIndex);
+	const isMajor = isPerp && isMajorPerpMarket(marketIndex);
 	const isMidMajor = isPerp && MID_MAJOR_MARKETS.includes(marketIndex);
 
 	const baseSlippage = isMajor

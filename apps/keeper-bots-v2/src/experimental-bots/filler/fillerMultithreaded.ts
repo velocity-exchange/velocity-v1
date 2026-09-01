@@ -176,6 +176,25 @@ const SIGNED_MSG_FILL_IN_FLIGHT_TTL_MIN_MS = 3_000;
 // `InvalidSignedMsgOrderParam`, which `place_signed_msg_taker_order` returns when
 // the order's slot is ahead of the clock the simulating node sees.
 const SIGNED_MSG_SLOT_AHEAD_ERROR_CODE = 6288;
+// How many slot-ahead sim failures per order get their attempt refunded and their
+// pacing rewound. A sim node normally trails the bot's slot subscriber by a slot
+// or two, so a handful of fast retries recovers the fill; past this many, the lag
+// exceeds anything a fast retry can outrun, and refunding further would leave the
+// retry loop with no bound at all (the refund restores the attempt budget and the
+// rewind defeats the pacing interval). Exported for unit testing.
+export const MAX_SIGNED_MSG_ATTEMPT_REFUNDS = 5;
+
+/**
+ * The rewound pacing anchor for a refunded slot-ahead attempt: reopens the pacing
+ * gate one slot after the failed attempt, never on the same slot. Exported for
+ * unit testing.
+ */
+export function refundedLastAttemptSlot(
+	lastAttemptSlot: number,
+	pacingSlots: number
+): number {
+	return lastAttemptSlot - Math.max(pacingSlots - 1, 0);
+}
 
 /**
  * How long to reserve a signed-msg order while its place+fill is in flight.
@@ -383,10 +402,12 @@ export class FillerMultithreaded {
 	private lookupTableAccounts: AddressLookupTableAccount[];
 	private lastSettlePnl = Date.now() - SETTLE_POSITIVE_PNL_COOLDOWN_MS;
 	// Per-order fill-attempt state, keyed by getNodeToFillSignature. `count` feeds
-	// the MAX_FILL_ATTEMPTS_PER_ORDER backstop; `lastAttemptSlot` feeds the pacing.
+	// the MAX_FILL_ATTEMPTS_PER_ORDER backstop; `lastAttemptSlot` feeds the pacing;
+	// `refunds` counts slot-ahead refunds so a persistent slot-ahead failure
+	// cannot retry unboundedly (see refundFillAttempt).
 	private fillAttempts = new LRUCache<
 		string,
-		{ count: number; lastAttemptSlot: number }
+		{ count: number; lastAttemptSlot: number; refunds?: number }
 	>({
 		max: FILL_ATTEMPT_COUNTS_MAX,
 		ttl: FILL_ATTEMPT_COUNTS_TTL_MS,
@@ -1856,8 +1877,8 @@ export class FillerMultithreaded {
 	 *   reported `expired`.
 	 * - Before a signature exists (`sim_failed`, `sim_rpc_error`, `build_error`,
 	 *   `skip_no_sol`), it is keyed by `(fill id, status)`. `buildTxWithMakerInfos`
-	 *   is retried as the maker set is halved, so without this one fill id would
-	 *   emit a terminal row per retry.
+	 *   is retried as makers are trimmed off an oversized tx, so without this one
+	 *   fill id would emit a terminal row per retry.
 	 */
 	/**
 	 * Release the in-flight reservation on every signed-msg node in `nodes`,
@@ -1890,8 +1911,13 @@ export class FillerMultithreaded {
 	 * `lastAttemptSlot` is rewound so the pacing gate reopens one slot after the
 	 * failed attempt rather than a full fillAttemptIntervalMs later: the RPC node
 	 * catches up within a slot or two, and a 2s pacing delay on a refunded attempt
-	 * would eat a large fraction of a 2-8s auction window. One slot of pacing still
-	 * caps the retry rate below the ~200ms DLOB re-emit cadence.
+	 * would eat a large fraction of a 2-8s auction window.
+	 *
+	 * At most MAX_SIGNED_MSG_ATTEMPT_REFUNDS per order: the refund restores the
+	 * attempt budget and the rewind defeats the pacing interval, so an uncapped
+	 * refund would leave a persistently trailing sim node (more than the signing
+	 * buffer behind) rebuilding and re-simulating the fill every slot for the
+	 * whole auction. Past the cap the failure counts and paces like any other.
 	 */
 	private refundFillAttempt(nodes: Array<NodeToFillWithBuffer>) {
 		const pacingSlots = msToSlotsNum(
@@ -1907,9 +1933,17 @@ export class FillerMultithreaded {
 			if (prior === undefined || prior.count === 0) {
 				continue;
 			}
+			const refunds = (prior.refunds ?? 0) + 1;
+			if (refunds > MAX_SIGNED_MSG_ATTEMPT_REFUNDS) {
+				continue;
+			}
 			this.fillAttempts.set(sig, {
 				count: prior.count - 1,
-				lastAttemptSlot: prior.lastAttemptSlot - Math.max(pacingSlots - 1, 0),
+				lastAttemptSlot: refundedLastAttemptSlot(
+					prior.lastAttemptSlot,
+					pacingSlots
+				),
+				refunds,
 			});
 		}
 	}
@@ -2170,9 +2204,12 @@ export class FillerMultithreaded {
 			}
 
 			// Record before attempting so a failed/no-op attempt still counts.
+			// `refunds` carries across attempts: the refund cap exists to bound a
+			// persistent slot-ahead failure, which by nature spans attempts.
 			this.fillAttempts.set(sig, {
 				count: attempts + 1,
 				lastAttemptSlot: currentSlot,
+				refunds: prior?.refunds ?? 0,
 			});
 			// Reserve the signed-msg order synchronously, before the async fill
 			// launches, so a subsequent tick can't race a second place+fill in the
@@ -2464,6 +2501,14 @@ export class FillerMultithreaded {
 				);
 				makerInfosToUse = makerInfosToUse.slice(0, makerInfosToUse.length - 1);
 				simResult = await buildTxWithMakerInfos(makerInfosToUse);
+				if (simResult === undefined) {
+					break;
+				}
+				// Recompute from the rebuilt tx, or the trim can never succeed and
+				// the loop drains every maker before giving up.
+				txAccounts = simResult.tx.message.getAccountKeys({
+					addressLookupTableAccounts: this.lookupTableAccounts,
+				}).length;
 			}
 
 			if (makerInfosToUse.length === 0) {

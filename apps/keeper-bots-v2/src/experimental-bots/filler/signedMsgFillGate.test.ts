@@ -5,6 +5,8 @@ import {
 	signedMsgOrderSlotReached,
 } from '@velocity-exchange/sdk';
 import {
+	MAX_SIGNED_MSG_ATTEMPT_REFUNDS,
+	refundedLastAttemptSlot,
 	shouldRefundSignedMsgFillAttempt,
 	signedMsgFillInFlightTtlMs,
 	txStatusProvesNoTransactionWasSent,
@@ -101,5 +103,27 @@ describe('signed-msg terminal fill state', () => {
 		expect(shouldRefundSignedMsgFillAttempt('sim_failed', 6288)).to.be.true;
 		expect(shouldRefundSignedMsgFillAttempt('sim_failed', 6001)).to.be.false;
 		expect(shouldRefundSignedMsgFillAttempt('send_error', 6288)).to.be.false;
+	});
+});
+
+describe('refundedLastAttemptSlot', () => {
+	it('reopens the pacing gate one slot after the failed attempt', () => {
+		// Gate: currentSlot - lastAttemptSlot < pacingSlots. 2000ms at 400ms
+		// baseline = 5 pacing slots; a rewind of 4 makes the very next slot pass.
+		const rewound = refundedLastAttemptSlot(CURRENT_SLOT, 5);
+		expect(rewound).to.equal(CURRENT_SLOT - 4);
+		expect(CURRENT_SLOT - rewound < 5).to.be.true;
+		expect(CURRENT_SLOT + 1 - rewound < 5).to.be.false;
+	});
+
+	it('never rewinds past the attempt slot at 1-slot pacing', () => {
+		expect(refundedLastAttemptSlot(CURRENT_SLOT, 1)).to.equal(CURRENT_SLOT);
+		expect(refundedLastAttemptSlot(CURRENT_SLOT, 0)).to.equal(CURRENT_SLOT);
+	});
+
+	it('caps refunds so a persistent slot-ahead failure stays bounded', () => {
+		// Not a behavior test (the cap lives in refundFillAttempt); pin the
+		// constant so a change to it is a deliberate diff.
+		expect(MAX_SIGNED_MSG_ATTEMPT_REFUNDS).to.equal(5);
 	});
 });

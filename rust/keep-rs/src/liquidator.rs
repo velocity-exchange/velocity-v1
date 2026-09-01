@@ -914,11 +914,17 @@ impl LiquidatorBot {
                 return;
             }
             // Refresh on wall clock, not only on user traffic: oracle-only periods
-            // must still pick up a newly staged slot duration transition
-            let now_ms = current_time_millis();
-            if now_ms.saturating_sub(last_slot_clock_refresh_ms) >= SLOT_CLOCK_REFRESH_INTERVAL_MS {
-                last_slot_clock_refresh_ms = now_ms;
-                slot_clock = velocity.slot_clock();
+            // must still pick up a newly staged slot duration transition. On a
+            // transient State cache miss keep the previous clock; slot_clock()
+            // would substitute the 400ms baseline until the next refresh
+            let batch_now_ms = current_time_millis();
+            if batch_now_ms.saturating_sub(last_slot_clock_refresh_ms)
+                >= SLOT_CLOCK_REFRESH_INTERVAL_MS
+            {
+                last_slot_clock_refresh_ms = batch_now_ms;
+                if let Ok(state) = velocity.state_account() {
+                    slot_clock = velocity_rs::slot_clock_from_state(&state);
+                }
             }
             for event in event_buffer.drain(..) {
                 match event {

@@ -41,6 +41,12 @@ pub struct Config {
     /// Use spot liquidation in liquidator
     #[clap(long, env = "USE_SPOT_LIQUIDATION", default_value = "true")]
     pub use_spot_liquidation: bool,
+
+    /// Base URL of the dlob-server. The liquidator reads a liquidatee's resting
+    /// CLOB orders from its `/userOrders` feed to force-cancel them before a
+    /// perp liquidation.
+    #[clap(long, env = "DLOB_SERVER_URL", default_value = "http://localhost:6969")]
+    pub dlob_url: String,
     /// Run perp filler bot
     #[clap(long, default_value = "true")]
     pub filler: bool,

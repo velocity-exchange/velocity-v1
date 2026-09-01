@@ -94,6 +94,11 @@ export type SubaccountConfig = {
 };
 
 export type LiquidatorConfig = BaseBotConfig & {
+	/// dlob-server base URL, used to read a liquidatee's resting CLOB orders so
+	/// they can be force-cancelled before a perp liquidation (which reverts
+	/// while the account holds CLOB orders). When unset, the liquidator skips
+	/// the force-cancel and relies on the on-chain revert as the backstop.
+	dlobServerHttpUrl?: string;
 	disableAutoDerisking: boolean;
 	/// Skip the startup sweep that deposits idle wallet token balances into
 	/// liquidation subaccounts that have no free collateral.

@@ -2437,7 +2437,6 @@ impl<'a> TransactionBuilder<'a> {
         self
     }
 
-
     /// Cancel all orders for account
     pub fn cancel_all_orders(mut self) -> Self {
         let accounts = build_accounts(
@@ -2463,6 +2462,58 @@ impl<'a> TransactionBuilder<'a> {
         };
         self.ixs.push(ix);
 
+        self
+    }
+
+    /// Force-cancel a deteriorated account's resting CLOB orders — the CLOB arm
+    /// of `force_cancel_orders`, and the precondition a perp liquidation of an
+    /// account holding book orders must run first. Cranked as the caller's own
+    /// filler, which earns the flat per-order fee from the user's quote deposit.
+    ///
+    /// * `user_account` - the deteriorated account whose orders are cancelled
+    /// * `order_refs` - the account's resting CLOB orders, read off the book feed
+    /// * `clob` - the market's book, its registry entry and the CLOB program
+    pub fn force_cancel_clob_orders(
+        mut self,
+        user_account: &User,
+        order_refs: Vec<program::instructions::ForceCancelClobRefV0>,
+        clob: ClobFillAccounts,
+    ) -> Self {
+        let accounts = build_accounts(
+            self.program_data,
+            program::accounts::ForceCancelClobOrders {
+                state: *state_account(),
+                authority: self.authority,
+                filler: self.sub_account,
+                filler_stats: Wallet::derive_stats_account(&self.owner()),
+                user: Wallet::derive_user_account(
+                    &user_account.authority,
+                    user_account.sub_account_id,
+                ),
+                user_stats: Wallet::derive_stats_account(&user_account.authority),
+                quoter: clob.quoter,
+                clob_market: clob.clob_market,
+                clob_program: clob.clob_program,
+                clob_authority: clob.clob_authority,
+                crank_conditions: clob.crank_conditions,
+            },
+            [&self.account_data, user_account].into_iter(),
+            std::iter::empty(),
+            [
+                MarketId::perp(clob.market_index),
+                MarketId::spot(program::math::constants::QUOTE_SPOT_MARKET_INDEX),
+            ]
+            .iter(),
+        );
+
+        self.ixs.push(Instruction {
+            program_id: constants::PROGRAM_ID,
+            accounts,
+            data: InstructionData::data(&program::instruction::ForceCancelClobOrders {
+                market_index: clob.market_index,
+                order_refs,
+            }),
+        });
         self
     }
 

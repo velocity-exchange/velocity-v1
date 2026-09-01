@@ -28,6 +28,7 @@ use {
     },
     tokio::sync::mpsc::error::TryRecvError,
     velocity_rs::{
+        constants::{derive_clob_authority, derive_clob_crank_conditions},
         dlob::{DLOBNotifier, L3Order, DLOB},
         grpc::{
             grpc_subscriber::{AccountFilter, GrpcConnectionOpts},
@@ -44,12 +45,16 @@ use {
             tiers::{perp_tier_is_as_safe_as, AssetTierExt, ContractTierExt},
         },
         priority_fee_subscriber::PriorityFeeSubscriber,
-        program::math::{
-            oracle::{
-                is_oracle_valid_for_action, oracle_validity, LogMode, OracleValidity,
-                VelocityAction,
+        program::{
+            instructions::ForceCancelClobRefV0,
+            math::{
+                oracle::{
+                    is_oracle_valid_for_action, oracle_validity, LogMode, OracleValidity,
+                    VelocityAction,
+                },
+                time::{Millis, SlotDuration},
             },
-            time::{Millis, SlotDuration},
+            state::prop_amm::{ClobOrderRefV0, ClobSide, QuoterV0},
         },
         titan::{self, TitanSwapApi},
         types::{
@@ -58,7 +63,8 @@ use {
             OracleSource, OrderParams, OrderType, PerpPosition, PositionDirection, SpotBalanceType,
             SpotPosition,
         },
-        GrpcSubscribeOpts, MarketState, Pubkey, TransactionBuilder, VelocityClient,
+        ClobFillAccounts, GrpcSubscribeOpts, MarketState, Pubkey, TransactionBuilder,
+        VelocityClient,
     },
 };
 
@@ -683,6 +689,7 @@ impl LiquidatorBot {
                 subaccounts: subaccounts.clone(),
                 metrics: Arc::clone(&metrics),
                 use_spot_liquidation: config.use_spot_liquidation,
+                dlob_url: config.dlob_url.clone(),
                 txs_in_flight: Arc::clone(&txs_in_flight),
                 tx_sig_to_collateral: Arc::clone(&tx_sig_to_collateral),
                 free_collateral_per_subaccount: Arc::clone(&free_collateral_per_subaccount),
@@ -1962,6 +1969,9 @@ pub struct PrimaryLiquidationStrategy {
     pub subaccounts: Vec<Pubkey>,
     pub metrics: Arc<Metrics>,
     pub use_spot_liquidation: bool,
+    /// Base URL of the dlob-server, source of a liquidatee's resting CLOB
+    /// orders for force-cancel before a perp liquidation.
+    pub dlob_url: String,
     pub txs_in_flight: Arc<DashMap<Pubkey, HashSet<Signature>>>,
     // Map(Signature,(collateral, ts))
     pub tx_sig_to_collateral: Arc<DashMap<Signature, (u128, u64)>>,
@@ -2686,6 +2696,7 @@ impl PrimaryLiquidationStrategy {
         cu_limit: u32,
         slot: u64,
         pyth_price_update: Option<PythPriceUpdate>,
+        dlob_url: &str,
     ) -> LiquidationOutcome {
         if top_makers.is_empty() {
             log::debug!(target: TARGET, "skip empty maker cross. market={market_index} user={liquidatee_subaccount}");
@@ -2716,11 +2727,30 @@ impl PrimaryLiquidationStrategy {
                 tx_builder.post_pyth_lazer_oracle_update(&[update.feed_id], &update.message);
         }
 
-        tx_builder = tx_builder.liquidate_perp_with_fill(
+        let liquidatee_data = liquidatee_subaccount_data.unwrap();
+
+        // A perp liquidation reverts if the account holds resting CLOB orders.
+        // Force-cancel them first, in the same transaction. On a feed failure
+        // the account may still hold orders, so skip this attempt and retry.
+        match resolve_clob_force_cancel(
+            velocity,
+            dlob_url,
+            liquidatee_subaccount,
+            &liquidatee_data,
             market_index,
-            &liquidatee_subaccount_data.unwrap(),
-            top_makers,
-        );
+        )
+        .await
+        {
+            Ok(Some((order_refs, clob_fill))) => {
+                tx_builder =
+                    tx_builder.force_cancel_clob_orders(&liquidatee_data, order_refs, clob_fill);
+            }
+            Ok(None) => {}
+            Err(()) => return LiquidationOutcome::Skipped("clob_force_cancel_unavailable"),
+        }
+
+        tx_builder =
+            tx_builder.liquidate_perp_with_fill(market_index, &liquidatee_data, top_makers);
 
         // Ask for the ceiling here and let the send path size it down. It
         // simulates before it signs, so the limit that gets signed comes from
@@ -2773,6 +2803,7 @@ impl PrimaryLiquidationStrategy {
         cu_limit: u32,
         slot: u64,
         pyth_price_update: Option<PythPriceUpdate>,
+        dlob_url: &str,
     ) -> LiquidationOutcome {
         let keeper_account_data = velocity.try_get_account::<User>(&subaccount);
         if keeper_account_data.is_err() {
@@ -2798,12 +2829,30 @@ impl PrimaryLiquidationStrategy {
                 tx_builder.post_pyth_lazer_oracle_update(&[update.feed_id], &update.message);
         }
 
-        tx_builder = tx_builder.liquidate_perp(
+        let liquidatee_data = liquidatee_subaccount_data.unwrap();
+
+        // A perp liquidation reverts if the account holds resting CLOB orders.
+        // Force-cancel them first, in the same transaction. On a feed failure
+        // the account may still hold orders, so skip this attempt and retry.
+        match resolve_clob_force_cancel(
+            velocity,
+            dlob_url,
+            liquidatee_subaccount,
+            &liquidatee_data,
             market_index,
-            &liquidatee_subaccount_data.unwrap(),
-            base_asset_amount,
-            None,
-        );
+        )
+        .await
+        {
+            Ok(Some((order_refs, clob_fill))) => {
+                tx_builder =
+                    tx_builder.force_cancel_clob_orders(&liquidatee_data, order_refs, clob_fill);
+            }
+            Ok(None) => {}
+            Err(()) => return LiquidationOutcome::Skipped("clob_force_cancel_unavailable"),
+        }
+
+        tx_builder =
+            tx_builder.liquidate_perp(market_index, &liquidatee_data, base_asset_amount, None);
 
         // Ask for the ceiling here and let the send path size it down. It
         // simulates before it signs, so the limit that gets signed comes from
@@ -2956,6 +3005,7 @@ impl PrimaryLiquidationStrategy {
                     cu_limit,
                     slot,
                     pyth_update,
+                    &self.dlob_url,
                 )
                 .await
             }
@@ -2982,6 +3032,7 @@ impl PrimaryLiquidationStrategy {
                     cu_limit,
                     slot,
                     pyth_update,
+                    &self.dlob_url,
                 )
                 .await
             }
@@ -4446,4 +4497,125 @@ mod tests {
         assert!(tx_sig_to_collateral.is_empty());
         assert!(txs_in_flight.get(&subaccount).unwrap().is_empty());
     }
+}
+
+/// The dlob-server `/userOrders` row, narrowed to the fields a force-cancel
+/// needs: the book node the order rests at, its book id, and its side. The
+/// numeric fields arrive as JSON numbers or strings, so they stay untyped here.
+#[derive(serde::Deserialize)]
+struct UserClobOrderRow {
+    #[serde(rename = "nodeIndex")]
+    node_index: serde_json::Value,
+    #[serde(rename = "clobOrderId")]
+    clob_order_id: serde_json::Value,
+    direction: String,
+}
+
+#[derive(serde::Deserialize)]
+struct UserOrdersResponse {
+    orders: Vec<UserClobOrderRow>,
+}
+
+/// Read a JSON value that may be a number or a decimal string into a `u64`.
+fn json_u64(value: &serde_json::Value) -> Option<u64> {
+    value
+        .as_u64()
+        .or_else(|| value.as_str().and_then(|s| s.parse().ok()))
+}
+
+/// Read a liquidatee's resting CLOB orders in one market from the dlob-server
+/// feed and turn them into force-cancel refs. The book id is the CLOB's own
+/// `clobOrderId`, not velocity's client order id.
+async fn fetch_clob_force_cancel_refs(
+    dlob_url: &str,
+    liquidatee: &Pubkey,
+    market_index: u16,
+) -> reqwest::Result<Vec<ForceCancelClobRefV0>> {
+    let url = format!(
+        "{}/userOrders?userPubkey={}&marketIndexes={}",
+        dlob_url.trim_end_matches('/'),
+        liquidatee,
+        market_index,
+    );
+    let response: UserOrdersResponse = reqwest::get(&url).await?.json().await?;
+    Ok(response
+        .orders
+        .iter()
+        .filter_map(|row| {
+            let node_index = u32::try_from(json_u64(&row.node_index)?).ok()?;
+            let order_id = json_u64(&row.clob_order_id)?;
+            let side = if row.direction == "long" {
+                ClobSide::Bid
+            } else {
+                ClobSide::Ask
+            };
+            Some(ForceCancelClobRefV0 {
+                order_ref: ClobOrderRefV0 {
+                    node_index,
+                    order_id,
+                },
+                side,
+            })
+        })
+        .collect())
+}
+
+/// Resolve a liquidatee's resting CLOB orders in `market_index` into a
+/// force-cancel: the order refs to cancel and the book accounts to cancel them
+/// with. `Ok(None)` means the account has no CLOB orders to clear, so a plain
+/// liquidation runs. `Err(())` means the account may hold book orders but the
+/// feed was unreachable. A perp liquidation then reverts, so the caller skips
+/// the attempt and retries later.
+async fn resolve_clob_force_cancel(
+    velocity: &VelocityClient,
+    dlob_url: &str,
+    liquidatee: Pubkey,
+    liquidatee_user: &User,
+    market_index: u16,
+) -> Result<Option<(Vec<ForceCancelClobRefV0>, ClobFillAccounts)>, ()> {
+    // Cheap gate: an account with no resting perp exposure in the market has no
+    // resting CLOB orders there. Skip the feed round trip in the common case.
+    let has_resting_exposure = liquidatee_user.perp_positions.iter().any(|position| {
+        position.market_index == market_index
+            && (position.open_bids != 0 || position.open_asks != 0)
+    });
+    if !has_resting_exposure {
+        return Ok(None);
+    }
+
+    let order_refs = fetch_clob_force_cancel_refs(dlob_url, &liquidatee, market_index)
+        .await
+        .map_err(|error| {
+            log::warn!(
+                target: TARGET,
+                "userOrders fetch for {liquidatee} market {market_index} failed: {error}; \
+                 skip liquidation attempt (perp liquidation reverts on resting CLOB orders)"
+            );
+        })?;
+    if order_refs.is_empty() {
+        return Ok(None);
+    }
+
+    // Book accounts for the force-cancel, read from the market's CLOB entry.
+    let clob_quoter = velocity
+        .try_get_perp_market_account(market_index)
+        .map_err(|error| {
+            log::warn!(target: TARGET, "perp market {market_index} unavailable for force-cancel: {error}");
+        })?
+        .clob_quoter;
+    let entry = velocity
+        .get_account_value::<QuoterV0>(&clob_quoter)
+        .await
+        .map_err(|error| {
+            log::warn!(target: TARGET, "quoter {clob_quoter} unavailable for force-cancel: {error}");
+        })?;
+    let clob_fill = ClobFillAccounts {
+        market_index,
+        quoter: clob_quoter,
+        clob_market: entry.response_account,
+        clob_program: entry.program_id,
+        clob_authority: derive_clob_authority(),
+        crank_conditions: Some(derive_clob_crank_conditions(market_index)),
+    };
+    Ok(Some((order_refs, clob_fill)))
 }

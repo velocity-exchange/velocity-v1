@@ -61,6 +61,7 @@ import {
 	SignedMsgNetwork,
 	getMarketOrderParams,
 	getTriggerMarketOrderParams,
+	getTriggerLimitOrderParams,
 	isVariant,
 	OrderTriggerCondition,
 	getUserAccountPublicKeySync,
@@ -195,7 +196,11 @@ const clobIx = {
 	initializeMarket(
 		payer: PublicKey,
 		placeAuthority: PublicKey,
-		book: PublicKey
+		book: PublicKey,
+		// The book's grid must equal the market's, or velocity rejects the
+		// quoter registration. Read them off the market rather than hardcode.
+		tickSize: BN,
+		stepSize: BN
 	): TransactionInstruction {
 		return new TransactionInstruction({
 			programId: CLOB_ID,
@@ -204,9 +209,10 @@ const clobIx = {
 				ixDiscriminator('initialize_market_v0'),
 				u16(0), // market_index
 				u64(UNIT), // base_precision
-				u64(100), // order_tick_size
-				u64(100000), // order_step_size
-				u64(100000), // min_order_size
+				u64(tickSize), // order_tick_size — matches the market
+				u64(stepSize), // order_step_size — matches the market
+				u64(stepSize), // min_order_size
+				u64(0), // blocking_min_size (0 = disabled)
 				u32(0), // default_activation_delay_slots
 				u32(20), // max_activation_delay_slots
 				u32(2), // unknown_user_grace_slots
@@ -352,6 +358,7 @@ const midpointIx = {
 				Buffer.from([0]), // min_quote_size: None
 				Buffer.from([1, 1]), // require_attested_flow: Some(true)
 				Buffer.from([0]), // is_paused: None
+				Buffer.from([0]), // max_mid_deviation_ppm: None
 			]),
 		});
 	},
@@ -765,13 +772,18 @@ describe('e2e localnet: programs + publisher + redis', function () {
 	const clobBringUp = async () => {
 		const space = clobIx.space(1024);
 		clobBook = Keypair.generate();
+		// The market is already initialized; its grid is what the book must use.
+		await admin.fetchAccounts();
+		const market = admin.getPerpMarketAccount(0)!;
 		await send(
 			[
 				await createAccount(clobBook.publicKey, space, CLOB_ID),
 				clobIx.initializeMarket(
 					payer.publicKey,
 					clobAuthority,
-					clobBook.publicKey
+					clobBook.publicKey,
+					market.orderTickSize,
+					market.orderStepSize
 				),
 			],
 			[clobBook]
@@ -938,31 +950,30 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		size: BN,
 		maxTs: BN = new BN(0)
 	) => {
-		const ix = client.program.instruction.placeClobOrder(
-			{
+		// `place_clob_order` folded into `place_and_make_perp_order_v1`, the
+		// general maker-rest verb. A plain limit (post-only `None`) rests even
+		// when crossed, which is what these CLOB makers want. Every call site
+		// passes `kp`'s own client, so the SDK method's `this.wallet` is `kp`.
+		assert.isTrue(
+			client.wallet.publicKey.equals(kp.publicKey),
+			'placeClobOrder expects kp to own the client'
+		);
+		const ix = await client.getPlaceAndMakePerpOrderIx(
+			getLimitOrderParams({
 				marketIndex: 0,
 				direction,
-				price,
 				baseAssetAmount: size,
-				maxTs,
-				activationDelaySlots: 0,
-				rejectIfCrossed: false,
-			},
+				price,
+				postOnly: PostOnlyParams.NONE,
+				...(maxTs.isZero() ? {} : { maxTs }),
+			}),
 			{
-				accounts: {
-					state: await client.getStatePublicKey(),
-					user: userOf(kp.publicKey),
-					authority: kp.publicKey,
-					quoter: clobEntry,
-					clobMarket: clobBook.publicKey,
-					clobProgram: CLOB_ID,
-					clobAuthority,
-					// No fast activation here: absent, encoded as the
-					// program id (anchor's `None`).
-					instructionsSysvar: VELOCITY_ID,
-				},
-				remainingAccounts: marginMap(),
+				quoter: clobEntry,
+				clobMarket: clobBook.publicKey,
+				clobProgram: CLOB_ID,
+				clobAuthority,
 			}
+			// activationDelaySlots omitted: the book's default, no attestation.
 		);
 		await client.sendTransaction(new Transaction().add(ix));
 	};
@@ -1181,6 +1192,10 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		ro(clobAuthority),
 		ro(CLOB_ID),
 		rw(midInstance),
+		// Velocity signs the midpoint execute CPI as this quoter-signer PDA;
+		// the quoter's registered execute leg names it, so the router needs it
+		// in the account map.
+		ro(midQuoterSigner),
 		ro(SYSVAR_INSTRUCTIONS_PUBKEY),
 		// Midpoint reads the live flow authority off velocity's State on both
 		// legs. The ix's own `state` account is not in the CPI account map —
@@ -1201,7 +1216,12 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		 * signed message. The program checks it against the digest stamped on
 		 * the order and requires every entry to be in the transaction, so a
 		 * keeper cannot quietly route somewhere else. */
-		signedRoute: PublicKey[] = []
+		signedRoute: PublicKey[] = [],
+		/** Who fills. Defaults to the keeper (`payer`). Pass the taker's own
+		 * authority for a self-fill: the taker then endorses the account list,
+		 * so the filler obligation to carry every reachable maker does not
+		 * apply. The caller must also sign the transaction with this key. */
+		fillerAuthority: PublicKey = payer.publicKey
 	) =>
 		// The v1 route: a restable remainder of the filled order rests on the
 		// book instead of staying in `User.orders`. Keepers use it in
@@ -1214,9 +1234,9 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			{
 				accounts: {
 					state: await admin.getStatePublicKey(),
-					authority: payer.publicKey,
-					filler: userOf(payer.publicKey),
-					fillerStats: statsOf(payer.publicKey),
+					authority: fillerAuthority,
+					filler: userOf(fillerAuthority),
+					fillerStats: statsOf(fillerAuthority),
 					user: userOf(takerAuthority),
 					userStats: statsOf(takerAuthority),
 					quoter: clobEntry,
@@ -1224,6 +1244,9 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					clobProgram: CLOB_ID,
 					clobAuthority,
 					crankConditions: conditions,
+					// Read for the filler obligation: whether the taker signed
+					// and how many accounts the transaction locks.
+					instructionsSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
 				},
 				remainingAccounts: routerTail(makerKps),
 			}
@@ -1248,30 +1271,30 @@ describe('e2e localnet: programs + publisher + redis', function () {
 	/** Opt a user into relay coverage: liquidation thresholds and triggers,
 	 * one instruction over one account. `extra` appends to the condition
 	 * pass's own accounts (e.g. a quoter entry for trigger routing). */
-	const syncUserConditions = (user: PublicKey, extra: AccountMeta[] = []) =>
-		send([
-			admin.program.instruction.syncUserConditions(
-				{
-					// Cost units the staged self-sync requests; the lamport fee is
-					// derived on chain from State.transactionFeeRails and paid from
-					// this account's own lamports.
-					syncCostUnits: 20_000,
-					syncFallbackSlots: new BN(3000), // coarse fallback poll
+	const syncUserConditions = async (user: PublicKey, extra: AccountMeta[] = []) => {
+		const ix = admin.program.instruction.syncUserConditions(
+			{
+				// Cost units the staged self-sync requests; the lamport fee is
+				// derived on chain from State.transactionFeeRails and paid from
+				// this account's own lamports.
+				syncCostUnits: 20_000,
+				syncFallbackSlots: new BN(3000), // coarse fallback poll
+			},
+			{
+				accounts: {
+					payer: payer.publicKey,
+					state: statePdaCache,
+					user,
+					userConditions: getUserConditionsPublicKey(VELOCITY_ID, user),
+					rent: SYSVAR_RENT_PUBKEY,
+					systemProgram: SystemProgram.programId,
 				},
-				{
-					accounts: {
-						payer: payer.publicKey,
-						state: statePdaCache,
-						user,
-						userConditions: getUserConditionsPublicKey(VELOCITY_ID, user),
-						rent: SYSVAR_RENT_PUBKEY,
-						systemProgram: SystemProgram.programId,
-					},
-					// Margin maps, then the market's reservoir (keeper fee).
-					remainingAccounts: [...marginMap(), ro(conditions), ...extra],
-				}
-			),
-		]);
+				// Margin maps, then the market's reservoir (keeper fee).
+				remainingAccounts: [...marginMap(), ro(conditions), ...extra],
+			}
+		);
+		return send([ix]);
+	};
 
 	before(async function () {
 		this.timeout(600_000);
@@ -1422,20 +1445,35 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// its slot ages out of every validity gate no matter how often the
 		// price is rewritten.
 		oracleRefresher = (async () => {
+			// Fire-and-forget rather than the confirming `send`: the price only
+			// has to stay put (a trigger tolerates a stale oracle slot), and a
+			// confirming write each beat competes with the turner's cranks for
+			// the same accounts, delaying them. A dropped beat leaves the last
+			// price in place, which is still the target.
+			let blockhash = (await connection.getLatestBlockhash()).blockhash;
+			let beat = 0;
 			while (!stopOracleRefresher) {
 				try {
-					await send([
+					if (beat++ % 20 === 0)
+						blockhash = (await connection.getLatestBlockhash()).blockhash;
+					const tx = new Transaction().add(
 						pythProgram.instruction.setPriceInfo(
 							usd(oracleTargetPrice),
 							usd(0.01),
 							new BN(await connection.getSlot()),
 							{ accounts: { price: oracle } }
-						),
-					]);
+						)
+					);
+					tx.feePayer = payer.publicKey;
+					tx.recentBlockhash = blockhash;
+					tx.sign(payer);
+					void connection
+						.sendRawTransaction(tx.serialize(), { skipPreflight: true })
+						.catch(() => {});
 				} catch {
-					// transient send failures are fine; the next beat retries
+					// transient failures are fine; the next beat retries
 				}
-				await sleep(1000);
+				await sleep(300);
 			}
 		})();
 
@@ -2099,52 +2137,170 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		);
 	});
 
-	it('fires an armed trigger order when the oracle crosses', async function () {
+	it('fires a stop-market to the book, and the cross crank fills it', async function () {
+		this.timeout(300_000);
+		// A fresh account so the fired order rests against clean margin — the
+		// shared taker carries orders and equity floors from earlier specs that
+		// would fail the rest's placement gate.
+		const stopperKp = Keypair.generate();
+		await airdrop(stopperKp.publicKey, 10);
+		const stopper = newClient(stopperKp);
+		await stopper.subscribe();
+		const stopperUsdc = await fundUsdc(stopperKp.publicKey, new BN(1_000).mul(USDC));
+		await stopper.initializeUserAccountAndDepositCollateral(
+			new BN(1_000).mul(USDC),
+			stopperUsdc
+		);
+		const stopperUser = userOf(stopperKp.publicKey);
+
+		// A fired stop rests on the book taker-origin — it does not fill
+		// synchronously — and the cross crank fills it. Isolate that path the
+		// same way the taker-origin cross spec does: pause the curve so nothing
+		// fills the rested order at placement, and park the midpoint wide so it
+		// is not the counterparty either. The sole cross is the maker placed
+		// below.
+		await admin.updatePerpMarketPausedOperations(
+			0,
+			PerpOperation.AMM_FILL | PerpOperation.AMM_IMMEDIATE_FILL
+		);
+		try {
+			await setMidpointLevels(usd(100), [
+				{ offsetPpm: 200_000, size: UNIT.muln(2) },
+			]);
+			// A stop: sell 1.0 if the oracle climbs through 104.
+			await stopper.placePerpOrder(
+				getTriggerMarketOrderParams({
+					marketIndex: 0,
+					direction: PositionDirection.SHORT,
+					baseAssetAmount: UNIT,
+					triggerPrice: usd(104),
+					triggerCondition: OrderTriggerCondition.ABOVE,
+				})
+			);
+			await stopper.fetchAccounts();
+			const armed = stopper
+				.getUserAccount()!
+				.orders.find(
+					(o) => isVariant(o.status, 'open') && o.triggerPrice.eq(usd(104))
+				)!;
+			assert.isOk(armed, 'trigger order is armed');
+
+			// One conditions account per user — the same one the liquidation
+			// thresholds live on — so one sync covers both halves.
+			await syncUserConditions(stopperUser, [ro(clobEntry)]);
+			await registerWatch(getUserConditionsPublicKey(VELOCITY_ID, stopperUser));
+
+			const asksBefore = (await readClob()).askCount;
+			const relayPaid0 = await relayPayoutBalance();
+
+			// Move the oracle through the trigger. Nobody submits a trigger ix:
+			// the turner fires `resolve_trigger_order_v1`, which rests the whole
+			// fired order taker-origin on the book rather than filling it.
+			await setOraclePrice(106);
+			await pollUntil('the fired stop to rest on the book', 200_000, async () => {
+				await stopper.fetchAccounts();
+				const stillArmed = stopper
+					.getUserAccount()!
+					.orders.find(
+						(o) => o.orderId === armed.orderId && isVariant(o.status, 'open')
+					);
+				const rested = (await readClob()).askCount > asksBefore;
+				return !stillArmed && rested ? true : undefined;
+			});
+			// The DLOB slot is freed and the order rests on the book, unfilled:
+			// a fire-to-book stops here, where the v0 flip would leave it live.
+			await stopper.fetchAccounts();
+			assert.equal(
+				(
+					stopper.getUser().getPerpPosition(0)?.baseAssetAmount ?? new BN(0)
+				).toString(),
+				'0',
+				'the fired stop rests; it does not fill against the book alone'
+			);
+
+			// A maker bid crosses the resting sell; the cross crank settles it.
+			await placeClobOrder(
+				crosser,
+				crosserKp,
+				PositionDirection.LONG,
+				usd(106),
+				UNIT
+			);
+			await pollUntil('the cross crank to fill the fired stop', 60_000, async () => {
+				await stopper.fetchAccounts();
+				const pos =
+					stopper.getUser().getPerpPosition(0)?.baseAssetAmount ?? new BN(0);
+				return pos.ltn(0) ? true : undefined;
+			});
+			await stopper.fetchAccounts();
+			assert.isTrue(
+				stopper.getUser().getPerpPosition(0)!.baseAssetAmount.ltn(0),
+				'the fired stop sold into the crossing bid'
+			);
+			assert.isAbove(
+				await relayPayoutBalance(),
+				relayPaid0,
+				'relay cranked both the fire and the cross'
+			);
+		} finally {
+			await admin.updatePerpMarketPausedOperations(0, 0);
+			await setMidpointLevels(usd(100), [
+				{ offsetPpm: 1000, size: UNIT.muln(2) },
+			]);
+			await setOraclePrice(100);
+		}
+	});
+
+	it('fires a trigger-limit onto the book through its own resolver', async function () {
 		this.timeout(180_000);
-		// A stop: sell 0.5 if the oracle climbs through 104.
+		// A trigger-limit rests its whole order on the book when it fires — the
+		// `resolve_trigger_clob_order` path, distinct from the stop-market's
+		// `resolve_trigger_order_v1`. A buy-limit at 99, armed to fire when the
+		// oracle falls through 98.
 		await taker.placePerpOrder(
-			getTriggerMarketOrderParams({
+			getTriggerLimitOrderParams({
 				marketIndex: 0,
-				direction: PositionDirection.SHORT,
-				baseAssetAmount: UNIT.divn(2),
-				triggerPrice: usd(104),
-				triggerCondition: OrderTriggerCondition.ABOVE,
+				direction: PositionDirection.LONG,
+				baseAssetAmount: UNIT,
+				price: usd(99),
+				triggerPrice: usd(98),
+				triggerCondition: OrderTriggerCondition.BELOW,
 			})
 		);
 		await taker.fetchAccounts();
 		const armed = taker
 			.getUserAccount()!
 			.orders.find(
-				(o) => isVariant(o.status, 'open') && o.triggerPrice.eq(usd(104))
+				(o) =>
+					isVariant(o.status, 'open') &&
+					isVariant(o.orderType, 'triggerLimit') &&
+					o.triggerPrice.eq(usd(98))
 			)!;
-		assert.isOk(armed, 'trigger order is armed');
+		assert.isOk(armed, 'trigger-limit is armed');
 
-		// Sync its relay conditions (an OnValueCross watch at the trigger
-		// threshold), register the watch, and let the turner have it. One
-		// conditions account per user now — the same one the liquidation
-		// thresholds live on, so one sync covers both halves.
 		const takerUser = userOf(takerKp.publicKey);
 		await syncUserConditions(takerUser, [ro(clobEntry)]);
 		await registerWatch(getUserConditionsPublicKey(VELOCITY_ID, takerUser));
 
-		const payoutBefore = await relayPayoutBalance();
-		// Move the oracle through the trigger. Nobody submits a trigger ix.
-		await setOraclePrice(106);
+		const bidsBefore = (await readClob()).bidCount;
+		const relayPaid0 = await relayPayoutBalance();
 
-		await pollUntil('relay to fire the trigger', 120_000, async () => {
-			await taker.fetchAccounts();
-			const order = taker
-				.getUserAccount()!
-				.orders.find((o) => o.orderId === armed.orderId);
-			// Triggered orders either carry a Triggered* condition or have
-			// already filled and freed the slot.
-			const fired =
-				!order ||
-				!isVariant(order.status, 'open') ||
-				isVariant(order.triggerCondition, 'triggeredAbove');
-			return fired ? true : undefined;
+		// Drop the oracle through the trigger. The turner fires
+		// `resolve_trigger_clob_order`, which rests the whole order on the book;
+		// the DLOB slot degrades to a placed-on-clob shadow, no longer armed.
+		await setOraclePrice(97);
+		// The fired trigger-limit rests its whole order on the book. Its slot
+		// degrades to a placed-on-clob shadow that still reads status Open, so
+		// the book gaining the order is the signal, not the slot emptying.
+		await pollUntil('the trigger-limit to rest on the book', 120_000, async () => {
+			const rested = (await readClob()).bidCount > bidsBefore;
+			return rested ? true : undefined;
 		});
-		assert.isAbove(await relayPayoutBalance(), payoutBefore);
+		assert.isAbove(
+			await relayPayoutBalance(),
+			relayPaid0,
+			'relay cranked the trigger-limit onto the book'
+		);
 		await setOraclePrice(100);
 	});
 
@@ -2355,7 +2511,9 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// Compute budget parses no accounts, so the co-signer meta rides
 		// here inertly — exactly how keep-rs marks an attested fill.
 		cuLimit.keys.push(signerRo(flowAuthorityKp.publicKey));
-		const [ed25519Ix, placeIx] = await admin.getPlaceSignedMsgTakerPerpOrderIxs(
+		// One instruction: the signed message is verified in-program
+		// (brine-ed25519), so there is no separate ed25519 precompile.
+		const [placeIx] = await admin.getPlaceSignedMsgTakerPerpOrderIxs(
 			signed,
 			0,
 			{
@@ -2366,26 +2524,33 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			},
 			[cuLimit]
 		);
-		// Name the order id the swift placement will take: with `null` the
-		// fill picks the user's first fillable order, which here is a
-		// leftover triggered short from an earlier scenario.
-		//
-		// Both makers: the CLOB carries resting orders from earlier
-		// scenarios, and a quote whose user set omits them fails
+		// The v1 signed-message ix places, fills, and rests in one call, so it
+		// carries the same maker maps and quoter tail a keeper fill does. The
+		// SDK convenience builds only the map section; keep-rs appends the rest
+		// the same way. Both makers ride along: the CLOB carries resting orders
+		// from earlier scenarios, and a quote whose user set omits them fails
 		// `StaleUserSet` once they age past the grace window.
-		const fillIx = await fillPerpOrderIx(
-			taker.getUserAccount()!.nextOrderId,
-			takerKp.publicKey,
-			[clobMakerKp, midMakerKp],
-			// The taker signed for the midpoint above; a fill that ignored it
-			// is refused, so pass it exactly as keep-rs does.
-			[midEntry]
+		placeIx.keys.push(
+			...[clobMakerKp, midMakerKp].flatMap((kp) => [
+				rw(userOf(kp.publicKey)),
+				rw(statsOf(kp.publicKey)),
+			]),
+			ro(clobEntry),
+			ro(midEntry),
+			rw(clobBook.publicKey),
+			ro(clobAuthority),
+			ro(CLOB_ID),
+			rw(midInstance),
+			ro(midQuoterSigner),
+			ro(SYSVAR_INSTRUCTIONS_PUBKEY),
+			ro(statePdaCache),
+			ro(MIDPOINT_ID)
 		);
 		const blockhash = await connection.getLatestBlockhash();
 		const message = new TransactionMessage({
 			payerKey: payer.publicKey,
 			recentBlockhash: blockhash.blockhash,
-			instructions: [cuLimit, ed25519Ix, placeIx, fillIx],
+			instructions: [cuLimit, placeIx],
 		}).compileToV0Message([lookupTable]);
 		const tx = new VersionedTransaction(message);
 		tx.sign([payer]);
@@ -2516,12 +2681,23 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			})
 		);
 
-		// The whole point: `clobMaker2Kp` is deliberately absent.
-		const signature = await sendFill(
-			await fillPerpOrderIx(orderId, takerKp.publicKey, [
-				clobMakerKp,
-				midMakerKp,
-			])
+		// The whole point: `clobMaker2Kp` is deliberately absent. The taker
+		// fills its own order, so it endorses the account list and the filler
+		// obligation to carry every reachable maker does not apply — this
+		// isolates the reserve behavior from that guard. A keeper that omitted
+		// a maker it had room for would be refused instead.
+		const signature = await send(
+			[
+				ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }),
+				await fillPerpOrderIx(
+					orderId,
+					takerKp.publicKey,
+					[clobMakerKp, midMakerKp],
+					[],
+					takerKp.publicKey
+				),
+			],
+			[takerKp]
 		);
 
 		// Read off the fill itself rather than off positions afterwards. The
@@ -2638,11 +2814,22 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			(p) => p.marketIndex === 0
 		)!.baseAssetAmount;
 
-		await sendFill(
-			await fillPerpOrderIx(orderId, takerKp.publicKey, [
-				...namedKps,
-				midMakerKp,
-			])
+		// The taker fills its own order from the endpoint's account list — the
+		// realistic use of /route. It is taker-signed, so the fill is held only
+		// to whether the endpoint's accounts let it land, not to the filler
+		// obligation a keeper owes on withheld depth.
+		await send(
+			[
+				ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }),
+				await fillPerpOrderIx(
+					orderId,
+					takerKp.publicKey,
+					[...namedKps, midMakerKp],
+					[],
+					takerKp.publicKey
+				),
+			],
+			[takerKp]
 		);
 
 		await taker.fetchAccounts();

@@ -125,3 +125,26 @@ export const PerpMarkets: { [key in VelocityEnv]: PerpMarketConfig[] } = {
 	devnet: DevnetPerpMarkets,
 	'mainnet-beta': MainnetPerpMarkets,
 };
+
+/**
+ * Perp market indexes treated as "majors": the deepest, most liquid listings
+ * (SOL, BTC, ETH). Call `isMajorPerpMarket` rather than reading this array or
+ * comparing indexes directly, so the definition lives in one place.
+ */
+export const MAJOR_PERP_MARKET_INDEXES: readonly number[] = [0, 1, 2];
+
+/**
+ * Whether a perp market is a "major". Intended as the one definition of
+ * major/non-major tiering for the SDK and its consumers, replacing the separate
+ * copies each carried before: the DLOB server listed indexes 0-3 while the SDK
+ * compared `marketIndex < 3`, so the two disagreed about HYPE.
+ *
+ * Tiering is by market index, so it does not survive on-chain renumbering. If
+ * markets are reindexed, update `MAJOR_PERP_MARKET_INDEXES` in the same change.
+ *
+ * @param marketIndex perp market index to classify
+ * @returns true for a major market; false otherwise, including non-integer and negative indexes, which never match
+ */
+export function isMajorPerpMarket(marketIndex: number): boolean {
+	return MAJOR_PERP_MARKET_INDEXES.includes(marketIndex);
+}

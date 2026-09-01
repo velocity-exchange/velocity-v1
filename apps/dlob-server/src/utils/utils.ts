@@ -22,6 +22,7 @@ import {
 	MainnetSpotMarkets,
 	DevnetSpotMarkets,
 	PERCENTAGE_PRECISION_EXP,
+	isMajorPerpMarket,
 } from '@velocity-exchange/sdk';
 import { RedisClient } from '@velocity-exchange/common/clients';
 import { TradeOffsetPrice } from '@velocity-exchange/common';
@@ -35,7 +36,6 @@ import {
 	DEFAULT_MARKET_AUCTION_DURATION_MS,
 	FAST_FILL_AUCTION_DURATION_MS,
 	FAST_FILL_AUCTION_START_PRICE_OFFSET,
-	MAJOR_MARKETS,
 	MID_MAJOR_MARKETS,
 } from './constants';
 import { AuctionParamArgs } from './types';
@@ -652,15 +652,26 @@ export const selectMostRecentBySlot = (
 	}, null);
 };
 
+/**
+ * Resolves `'marketBased'` (and undefined) auction fields into concrete values, keyed off the
+ * market's tier and the requested params version. Majors start the auction at mark with no
+ * offset; everything else starts at the best offer, stepped 0.1 inside it. Version 3+ ignores
+ * tier entirely and takes the fast-fill path on all markets.
+ *
+ * @param args caller-supplied auction params; `'marketBased'` fields are the ones resolved here
+ * @param overrideDefaults values that win over the market-specific defaults, but not over explicit `args`
+ * @param version auction params version; 3+ selects fast-fill behavior
+ * @returns the params with every `'marketBased'` field resolved to a concrete value
+ */
 export function createMarketBasedAuctionParams(
 	args: AuctionParamArgs,
 	overrideDefaults?: Partial<AuctionParamArgs>,
 	version: number = 1
 ): AuctionParamArgs {
-	// Determine if this is a major market (PERP: SOL, BTC, ETH, HYPE)
+	// Determine if this is a major market (PERP: SOL, BTC, ETH)
 	const isMajorMarket =
 		args.marketType?.toLowerCase() === 'perp' &&
-		MAJOR_MARKETS.includes(args.marketIndex);
+		isMajorPerpMarket(args.marketIndex);
 
 	// Version 3+ weights toward fast fills: start just inside the touch on all
 	// markets and run a short auction, rather than fishing for price improvement
@@ -1524,6 +1535,22 @@ export const getVammSideQuoteWithMargin = (
 	}
 };
 
+/**
+ * Suggests a slippage tolerance for a quote, as a percentage. Sums a tier-based floor with the
+ * book's observed spread, widens to cover the distance to the worst fill price when order size
+ * is known, scales by a tier multiplier, then clamps to the configured min/max. Every tier
+ * constant is env-tunable (`DYNAMIC_BASE_SLIPPAGE_*`, `DYNAMIC_SLIPPAGE_MULTIPLIER_*`,
+ * `DYNAMIC_SLIPPAGE_MIN`/`_MAX`).
+ *
+ * @param marketIndex market being quoted; tiered via `isMajorPerpMarket` for perps
+ * @param marketType `'perp'` or `'spot'`; only perps are tiered
+ * @param velocityClient client used to read oracle price data
+ * @param l2Formatted the L2 book the spread component is measured from
+ * @param startPrice best available price for the order
+ * @param worstPrice worst price the order would reach, used for the size-adjusted component
+ * @param apiVersion when >= 2, scales the result by a further 1.2x, applied after the clamp
+ * @returns slippage tolerance as a percentage
+ */
 export const calculateDynamicSlippage = (
 	marketIndex: number,
 	marketType: string,
@@ -1533,9 +1560,9 @@ export const calculateDynamicSlippage = (
 	worstPrice: BN,
 	apiVersion?: number
 ): number => {
-	// Determine if this is a major market (PERP: SOL, BTC, ETH, HYPE)
+	// Determine if this is a major market (PERP: SOL, BTC, ETH)
 	const isPerp = marketType.toLowerCase() === 'perp';
-	const isMajor = isPerp && MAJOR_MARKETS.includes(marketIndex);
+	const isMajor = isPerp && isMajorPerpMarket(marketIndex);
 	const isMidMajor = isPerp && MID_MAJOR_MARKETS.includes(marketIndex);
 
 	const baseSlippage = isMajor

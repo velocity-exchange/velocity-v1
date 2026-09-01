@@ -61,7 +61,7 @@ jobs:
   build-ts:
     needs: route
     if: needs.route.outputs.lang == 'ts'
-    uses: velocity-exchange/infrastructure-v3/.github/workflows/publish-image.yml@master
+    uses: velocity-exchange/shared-workflows/.github/workflows/publish-image.yml@master
     with:
       ecr_repository: ${{ needs.route.outputs.ecr }}
       image_tag: ${{ needs.route.outputs.version }}
@@ -80,7 +80,7 @@ jobs:
   build-rust:
     needs: route
     if: needs.route.outputs.lang == 'rust'
-    uses: velocity-exchange/infrastructure-v3/.github/workflows/publish-image.yml@master
+    uses: velocity-exchange/shared-workflows/.github/workflows/publish-image.yml@master
     with:
       ecr_repository: ${{ needs.route.outputs.ecr }}
       image_tag: ${{ needs.route.outputs.version }}

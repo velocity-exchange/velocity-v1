@@ -358,6 +358,10 @@ export class DLOB {
 	 * `signedMsg` bid/ask list, unconditionally (no status/order-type filtering, unlike
 	 * `insertOrder`). Lazily creates the market's `MarketNodeLists` on first insert.
 	 *
+	 * No slot gating: the program rejects a place while `order.slot > clock.slot`, so callers
+	 * that act on inserted signed-msg orders (e.g. fillers) should hold an order back until
+	 * `signedMsgOrderSlotReached(order.slot, currentSlot)` (from `math/orders`) is true.
+	 *
 	 * @param order the signed-message order to insert
 	 * @param userAccount base58 pubkey string of the order's owner
 	 * @param baseAssetAmount remaining fillable base amount, BASE_PRECISION (1e9); defaults to `order.baseAssetAmount`

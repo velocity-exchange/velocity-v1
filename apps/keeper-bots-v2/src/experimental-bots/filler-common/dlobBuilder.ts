@@ -33,6 +33,7 @@ import {
 	elapsedMillis,
 	currentSlotDuration,
 	signedMsgOrderMaxSlot,
+	signedMsgOrderSlotReached,
 } from '@velocity-exchange/sdk';
 import { Connection, PublicKey } from '@solana/web3.js';
 import dotenv from 'dotenv';
@@ -164,7 +165,7 @@ class DLOBBuilder {
 			// liquidity and mark that liquidity filled in this snapshot, hiding a fill
 			// that could have happened. It stays cached and is inserted once its slot
 			// lands.
-			if (signedMsgNode.order.slot.gt(new BN(slot))) {
+			if (!signedMsgOrderSlotReached(signedMsgNode.order.slot, slot)) {
 				continue;
 			}
 			dlob.insertSignedMsgOrder(signedMsgNode.order, signedMsgNode.userAccount);

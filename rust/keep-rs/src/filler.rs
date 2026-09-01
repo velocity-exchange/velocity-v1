@@ -45,6 +45,7 @@ use {
             constants::MM_ORACLE_MIN_WRITE_GAP,
             time::{Millis, SlotClock},
         },
+        slot_clock_from_state,
         swift_order_subscriber::{SignedOrderInfo, SwiftOrderStream},
         types::{
             accounts::{PerpMarket, User, UserStats},
@@ -391,14 +392,39 @@ impl FillerBot {
                     feed_health.touch_slot();
                     log::trace!(target: TARGET, "got slot update: {slot}");
 
-                    // Refresh every slot so a transition is picked up immediately;
-                    // the dlob propagation is a no-op while the clock is unchanged
-                    slot_clock = velocity.slot_clock();
-                    dlob.update_slot_clock(slot_clock);
-
                     let priority_fee = priority_fee_subscriber.priority_fee_nth(0.5) + slot % 2; // add entropy to produce unique tx hash on conseuctive tx resubmission
                     let t0 = std::time::SystemTime::now();
                     let unix_now = t0.duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() as i64;
+
+                    // check state config every ~1-2 minutes depending on the slot
+                    // duration (elapsed-slot based), before any
+                    // market decision this tick so one refresh cannot split a slot's
+                    // fill decisions across two clocks or thresholds
+                    if slot.saturating_sub(last_config_refresh_slot) >= CONFIG_REFRESH_SLOTS {
+                        last_config_refresh_slot = slot;
+                        // state_account() is a full Borsh parse of State, so refresh the
+                        // clock here rather than per slot: the cached clock already
+                        // integrates every scheduled transition by slot, and only a newly
+                        // staged transition needs the re-read. On a transient cache miss
+                        // keep the previous clock; slot_clock() would substitute the
+                        // 400ms baseline until the next refresh
+                        if let Ok(state) = velocity.state_account() {
+                            slot_clock = slot_clock_from_state(&state);
+                            dlob.update_slot_clock(slot_clock);
+                        }
+                        use_median_trigger_price = velocity
+                            .state_account()
+                            .map(|s| s.has_median_trigger_price_feature())
+                            .unwrap_or(false);
+                        stale_for_amm_threshold = velocity
+                            .state_account()
+                            .map(|s| {
+                                Millis::from_stored_units(
+                                    s.oracle_guard_rails.validity.slots_before_stale_for_amm.max(0) as u64,
+                                )
+                            })
+                            .unwrap_or(Millis::from_stored_units(10));
+                    }
 
                     // check for auction and limit crosses in all markets
                     for market in &market_ids {
@@ -615,22 +641,6 @@ impl FillerBot {
                             ).await;
                         }
 
-                        // check state config ~every minute (elapsed-slot based)
-                        if slot.saturating_sub(last_config_refresh_slot) >= CONFIG_REFRESH_SLOTS {
-                            last_config_refresh_slot = slot;
-                            use_median_trigger_price = velocity
-                                .state_account()
-                                .map(|s| s.has_median_trigger_price_feature())
-                                .unwrap_or(false);
-                            stale_for_amm_threshold = velocity
-                                .state_account()
-                                .map(|s| {
-                                    Millis::from_stored_units(
-                                        s.oracle_guard_rails.validity.slots_before_stale_for_amm.max(0) as u64,
-                                    )
-                                })
-                                .unwrap_or(Millis::from_stored_units(10));
-                        }
                     }
                     let duration = std::time::SystemTime::now().duration_since(t0).unwrap().as_millis();
                     log::trace!(target: TARGET, "⏱️ checked fills at {slot}: {:?}ms", duration);

@@ -391,11 +391,6 @@ impl FillerBot {
                     feed_health.touch_slot();
                     log::trace!(target: TARGET, "got slot update: {slot}");
 
-                    // Refresh every slot so a transition is picked up immediately;
-                    // the dlob propagation is a no-op while the clock is unchanged
-                    slot_clock = velocity.slot_clock();
-                    dlob.update_slot_clock(slot_clock);
-
                     let priority_fee = priority_fee_subscriber.priority_fee_nth(0.5) + slot % 2; // add entropy to produce unique tx hash on conseuctive tx resubmission
                     let t0 = std::time::SystemTime::now();
                     let unix_now = t0.duration_since(std::time::SystemTime::UNIX_EPOCH).unwrap().as_secs() as i64;
@@ -618,6 +613,12 @@ impl FillerBot {
                         // check state config ~every minute (elapsed-slot based)
                         if slot.saturating_sub(last_config_refresh_slot) >= CONFIG_REFRESH_SLOTS {
                             last_config_refresh_slot = slot;
+                            // slot_clock() re-reads State (a full Borsh parse), so refresh it
+                            // here rather than per slot: the cached clock already integrates
+                            // every scheduled transition by slot, and only a newly staged
+                            // transition needs the re-read
+                            slot_clock = velocity.slot_clock();
+                            dlob.update_slot_clock(slot_clock);
                             use_median_trigger_price = velocity
                                 .state_account()
                                 .map(|s| s.has_median_trigger_price_feature())

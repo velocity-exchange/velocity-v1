@@ -1,9 +1,12 @@
 import { expect } from 'chai';
-import { BN, SlotDurationState } from '@velocity-exchange/sdk';
+import {
+	BN,
+	SlotDurationState,
+	signedMsgOrderSlotReached,
+} from '@velocity-exchange/sdk';
 import {
 	shouldRefundSignedMsgFillAttempt,
 	signedMsgFillInFlightTtlMs,
-	signedMsgOrderSlotReached,
 	txStatusProvesNoTransactionWasSent,
 } from './fillerMultithreaded';
 

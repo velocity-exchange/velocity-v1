@@ -400,6 +400,24 @@ export function signedMsgOrderMaxSlot(
 	);
 }
 
+/**
+ * Whether a signed message (swift) order can be placed on-chain yet, mirroring the gate in
+ * the program's `place_signed_msg_taker_order`: it rejects `order_slot > clock.slot`
+ * (`InvalidSignedMsgOrderParam`), and the taker client stamps the message a few slots ahead
+ * of its own clock as a signing buffer, so a place launched on arrival fails until the slot
+ * arrives. Compared as BNs: real slot numbers are far past `BN.gtn`/`BN.lten`'s 26-bit
+ * argument limit.
+ * @param orderSlot The order's signed message slot (`Order.slot` on a synthetic signed-msg node).
+ * @param currentSlot The current cluster slot.
+ * @returns True once the order may be placed on-chain.
+ */
+export function signedMsgOrderSlotReached(
+	orderSlot: BN,
+	currentSlot: number
+): boolean {
+	return orderSlot.lte(new BN(currentSlot));
+}
+
 /** True if `order.orderType` is `market`, `triggerMarket`, or `oracle`. */
 export function isMarketOrder(order: Order): boolean {
 	return isOneOfVariant(order.orderType, ['market', 'triggerMarket', 'oracle']);

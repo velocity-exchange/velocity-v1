@@ -774,6 +774,13 @@ impl LiquidatorBot {
         /// alone has no time bound (one cycle per recv_many batch)
         const FULL_RECHECK_INTERVAL_MS: u64 = 30_000;
 
+        // slot_clock() re-reads State (a full Borsh parse) and the cached clock
+        // already integrates every scheduled transition by slot, so refresh on a
+        // wall-clock cadence rather than on every event batch; only a newly
+        // staged transition needs the re-read
+        const SLOT_CLOCK_REFRESH_INTERVAL_MS: u64 = 30_000;
+        let mut last_slot_clock_refresh_ms: u64 = current_time_millis();
+
         let mut cycle_count = 0u32;
         let mut last_full_recheck_ms: u64 = current_time_millis();
 
@@ -906,9 +913,13 @@ impl LiquidatorBot {
                 log::error!(target: TARGET, "grpc event channel closed, exiting liquidator loop");
                 return;
             }
-            // Refresh on every event batch, not only on user traffic: oracle-only
-            // periods must still pick up a slot duration transition
-            slot_clock = velocity.slot_clock();
+            // Refresh on wall clock, not only on user traffic: oracle-only periods
+            // must still pick up a newly staged slot duration transition
+            let now_ms = current_time_millis();
+            if now_ms.saturating_sub(last_slot_clock_refresh_ms) >= SLOT_CLOCK_REFRESH_INTERVAL_MS {
+                last_slot_clock_refresh_ms = now_ms;
+                slot_clock = velocity.slot_clock();
+            }
             for event in event_buffer.drain(..) {
                 match event {
                     GrpcEvent::UserUpdate {

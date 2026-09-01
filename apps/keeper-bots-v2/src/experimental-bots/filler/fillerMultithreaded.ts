@@ -35,6 +35,7 @@ import {
 	currentSlotDuration,
 	elapsedMillis,
 	signedMsgOrderMaxSlot,
+	signedMsgOrderSlotReached,
 	SlotDurationState,
 } from '@velocity-exchange/sdk';
 import { FillerMultiThreadedConfig, GlobalConfig } from '../../config';
@@ -175,22 +176,6 @@ const SIGNED_MSG_FILL_IN_FLIGHT_TTL_MIN_MS = 3_000;
 // `InvalidSignedMsgOrderParam`, which `place_signed_msg_taker_order` returns when
 // the order's slot is ahead of the clock the simulating node sees.
 const SIGNED_MSG_SLOT_AHEAD_ERROR_CODE = 6288;
-
-/**
- * Whether a signed-msg order can be placed on-chain yet.
- *
- * `place_signed_msg_taker_order` rejects `order_slot > clock.slot`
- * (InvalidSignedMsgOrderParam), and the UI stamps the message with a signing
- * buffer of a few slots ahead of its own clock, so a place+fill launched on
- * arrival is a guaranteed sim failure. Compared as BNs: real slot numbers are far
- * past `BN.gtn`/`BN.lten`'s 26-bit argument limit. Exported for unit testing.
- */
-export function signedMsgOrderSlotReached(
-	orderSlot: BN,
-	currentSlot: number
-): boolean {
-	return orderSlot.lte(new BN(currentSlot));
-}
 
 /**
  * How long to reserve a signed-msg order while its place+fill is in flight.
@@ -1900,9 +1885,19 @@ export class FillerMultithreaded {
 	 * node that can be a slot behind, so this failure is a timing mismatch, not the
 	 * order being unfillable. Counting it would let a few hundred milliseconds of
 	 * disagreement exhaust MAX_FILL_ATTEMPTS_PER_ORDER and retire the order for
-	 * good. `lastAttemptSlot` is kept so the pacing above still applies.
+	 * good.
+	 *
+	 * `lastAttemptSlot` is rewound so the pacing gate reopens one slot after the
+	 * failed attempt rather than a full fillAttemptIntervalMs later: the RPC node
+	 * catches up within a slot or two, and a 2s pacing delay on a refunded attempt
+	 * would eat a large fraction of a 2-8s auction window. One slot of pacing still
+	 * caps the retry rate below the ~200ms DLOB re-emit cadence.
 	 */
 	private refundFillAttempt(nodes: Array<NodeToFillWithBuffer>) {
+		const pacingSlots = msToSlotsNum(
+			this.fillAttemptIntervalMs,
+			currentSlotDuration(this.velocityClient, this.slotSubscriber.getSlot())
+		);
 		for (const node of nodes) {
 			if (!node.node.isSignedMsg) {
 				continue;
@@ -1914,7 +1909,7 @@ export class FillerMultithreaded {
 			}
 			this.fillAttempts.set(sig, {
 				count: prior.count - 1,
-				lastAttemptSlot: prior.lastAttemptSlot,
+				lastAttemptSlot: prior.lastAttemptSlot - Math.max(pacingSlots - 1, 0),
 			});
 		}
 	}
@@ -2218,33 +2213,13 @@ export class FillerMultithreaded {
 
 	protected async tryFillMultiMakerPerpNodes(nodeToFill: NodeToFillWithBuffer) {
 		const fillTxId = this.fillTxId++;
-
-		let nodeWithMakerSet = nodeToFill;
-		// Inert as written: fillMultiMakerPerpNodes returns true on every path, so the
-		// maker set is never halved and the body below never runs.
-		while (!(await this.fillMultiMakerPerpNodes(fillTxId, nodeWithMakerSet))) {
-			const newMakerSet = nodeWithMakerSet.makerNodes
-				.sort(() => 0.5 - Math.random())
-				.slice(0, Math.ceil(nodeWithMakerSet.makerNodes.length / 2));
-			nodeWithMakerSet = {
-				userAccountData: nodeWithMakerSet.userAccountData,
-				makerAccountData: nodeWithMakerSet.makerAccountData,
-				node: nodeWithMakerSet.node,
-				makerNodes: newMakerSet,
-			};
-			if (newMakerSet.length === 0) {
-				logger.error(
-					`No makers left to use for multi maker perp node (fillTxId: ${fillTxId})`
-				);
-				return;
-			}
-		}
+		await this.fillMultiMakerPerpNodes(fillTxId, nodeToFill);
 	}
 
 	private async fillMultiMakerPerpNodes(
 		fillTxId: number,
 		nodeToFill: NodeToFillWithBuffer
-	): Promise<boolean> {
+	): Promise<void> {
 		try {
 			const buildForBundle = this.shouldBuildForBundle();
 
@@ -2473,7 +2448,7 @@ export class FillerMultithreaded {
 				// Either no makers resolved (no tx, and no terminal `tx` row) or the sim
 				// call itself failed, which already released. Release is idempotent.
 				this.releaseSignedMsgFillsInFlight([nodeToFill]);
-				return true;
+				return;
 			}
 			let txAccounts = simResult.tx.message.getAccountKeys({
 				addressLookupTableAccounts: this.lookupTableAccounts,
@@ -2499,7 +2474,7 @@ export class FillerMultithreaded {
 				);
 				// Gives up without a tx and without a terminal `tx` row, so release here.
 				this.releaseSignedMsgFillsInFlight([nodeToFill]);
-				return true;
+				return;
 			}
 
 			if (simResult === undefined) {
@@ -2509,7 +2484,7 @@ export class FillerMultithreaded {
 					)}`
 				);
 				this.releaseSignedMsgFillsInFlight([nodeToFill]);
-				return true;
+				return;
 			}
 
 			txAccounts = simResult.tx.message.getAccountKeys({
@@ -2600,7 +2575,6 @@ export class FillerMultithreaded {
 				error: e instanceof Error ? e.message : `${e}`,
 			});
 		}
-		return true;
 	}
 
 	protected async tryFillPerpNode(nodeToFill: NodeToFillWithBuffer) {

@@ -422,12 +422,11 @@ export function signedMsgOrderSlotReached(
 }
 
 /**
- * Wall-clock distance a signed message slot may sit from the current slot before
- * `place_signed_msg_taker_order` refuses it: the ~200s staleness bound on a slot
- * behind the chain, also applied as the lead bound on a resting limit order stamped
- * ahead of it.
+ * How far ahead of the current slot a resting limit's signed message slot may be before
+ * `place_signed_msg_taker_order` refuses to place it early (30s; the UI stamps ~14s ahead).
+ * Mirrors `max_resting_limit_lead` in the program.
  */
-export const SIGNED_MSG_MAX_ORDER_AGE_MS = 200_000;
+export const SIGNED_MSG_RESTING_LIMIT_MAX_LEAD_MS = 30_000;
 
 /**
  * True if a signed message (swift) order is a limit order with no auction. Such an order
@@ -446,8 +445,8 @@ export function isRestingSignedMsgLimitOrder(
  * the slot gates in the program's `place_signed_msg_taker_order`. An auction order must wait
  * for its message slot (see signedMsgOrderSlotReached). A resting limit order (see
  * isRestingSignedMsgLimitOrder) may be placed ahead of its message slot, as long as that slot
- * is within SIGNED_MSG_MAX_ORDER_AGE_MS of the current one. Expiry (`max_slot` passed) is a
- * separate check: see signedMsgOrderMaxSlot.
+ * is within SIGNED_MSG_RESTING_LIMIT_MAX_LEAD_MS of the current one. Expiry (`max_slot`
+ * passed) is a separate check: see signedMsgOrderMaxSlot.
  * @param state The State account (or its slot-duration fields), for the wall-clock conversion.
  * @param order The order's message slot, type and auction duration (`Order` fields on a synthetic signed-msg node).
  * @param currentSlot The current cluster slot.
@@ -469,7 +468,7 @@ export function signedMsgOrderPlaceable(
 		return false;
 	}
 	return elapsedMillis(state, new BN(currentSlot), order.slot).lten(
-		SIGNED_MSG_MAX_ORDER_AGE_MS
+		SIGNED_MSG_RESTING_LIMIT_MAX_LEAD_MS
 	);
 }
 

@@ -1199,12 +1199,12 @@ describe('place and make signedMsg order', () => {
 			postOnly: PostOnlyParams.NONE,
 		}) as OrderParams;
 
-		// 600 baseline slots = 240s, past the program's ~200s window either side of now.
+		// 100 baseline slots = 40s, past the program's 30s lead bound for a resting limit.
 		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
 		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
 			signedMsgOrderParams: takerOrderParams,
 			subAccountId: 0,
-			slot: slot.addn(600),
+			slot: slot.addn(100),
 			uuid,
 			takeProfitOrderParams: null,
 			stopLossOrderParams: null,

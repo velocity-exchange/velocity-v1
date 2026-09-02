@@ -2,7 +2,7 @@ import { assert } from 'chai';
 import { BN, OrderType } from '../../src';
 import { SlotDurationState } from '../../src/math/time';
 import {
-	SIGNED_MSG_MAX_ORDER_AGE_MS,
+	SIGNED_MSG_RESTING_LIMIT_MAX_LEAD_MS,
 	isRestingSignedMsgLimitOrder,
 	signedMsgOrderPlaceable,
 	signedMsgOrderSlotReached,
@@ -10,13 +10,13 @@ import {
 
 // Pins the signed-msg placement predicate against the slot gates in the program's
 // `place_signed_msg_taker_order` (instructions/keeper.rs): an auction order waits for
-// its message slot; a resting limit may be placed ahead of it within the ~200s window.
+// its message slot; a resting limit may be placed ahead of it within the 30s lead bound.
 
 // No transitions synchronized: every slot is the 400ms baseline.
 const BASELINE_STATE: SlotDurationState = {};
 // Production-scale slot numbers, so comparisons must go through BN.
 const CURRENT_SLOT = 443_673_929;
-const MAX_LEAD_SLOTS = SIGNED_MSG_MAX_ORDER_AGE_MS / 400;
+const MAX_LEAD_SLOTS = SIGNED_MSG_RESTING_LIMIT_MAX_LEAD_MS / 400;
 
 describe('signed-msg placement gate (program parity)', () => {
 	it('classifies a resting limit as a limit with no auction', () => {
@@ -88,12 +88,12 @@ describe('signed-msg placement gate (program parity)', () => {
 	});
 
 	it('converts the lead through the live slot duration', () => {
-		// At 200ms slots the same ~200s window is 1000 slots wide.
+		// At 200ms slots the same 30s bound is 150 slots wide.
 		const state: SlotDurationState = {
 			slotDurationTransitionSlots: [new BN(1), new BN(2), new BN(3), new BN(4)],
 		};
 		const restingLimit = {
-			slot: new BN(CURRENT_SLOT + 1000),
+			slot: new BN(CURRENT_SLOT + 150),
 			orderType: OrderType.LIMIT,
 			auctionDuration: null,
 		};
@@ -101,7 +101,7 @@ describe('signed-msg placement gate (program parity)', () => {
 		assert.isFalse(
 			signedMsgOrderPlaceable(
 				state,
-				{ ...restingLimit, slot: new BN(CURRENT_SLOT + 1001) },
+				{ ...restingLimit, slot: new BN(CURRENT_SLOT + 151) },
 				CURRENT_SLOT
 			)
 		);

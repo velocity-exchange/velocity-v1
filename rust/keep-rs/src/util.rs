@@ -470,6 +470,12 @@ impl<const N: usize> PendingTxs<N> {
 /// (programs/velocity/src/instructions/keeper.rs).
 pub const SWIFT_SIGNED_MSG_MAX_AGE: Millis = Millis::from_secs(200);
 
+/// Max lead of a resting swift limit's message slot over the current slot before the
+/// program refuses to place it early (~30s; the UI stamps ~14s ahead).
+///
+/// Mirrors `max_resting_limit_lead` in `place_signed_msg_taker_order`.
+pub const SWIFT_RESTING_LIMIT_MAX_LEAD: Millis = Millis::from_secs(30);
+
 /// How to treat a swift order whose signed message may be stamped ahead of the chain.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SwiftSlotWait {
@@ -502,8 +508,8 @@ pub fn is_resting_swift_limit(order_params: &OrderParams) -> bool {
 /// A resting limit (`resting_limit`, see [`is_resting_swift_limit`]) has no auction to
 /// start: its message slot is the placement deadline (`max_slot`), stamped a whole signing
 /// budget ahead, and the program places it before that slot as long as the stamp is within
-/// [`SWIFT_SIGNED_MSG_MAX_AGE`]. Waiting would leave a single slot to land the tx, so it is
-/// ready on arrival.
+/// [`SWIFT_RESTING_LIMIT_MAX_LEAD`]. Waiting would leave a single slot to land the tx, so it
+/// is ready on arrival.
 pub fn swift_slot_wait(
     order_slot: u64,
     current_slot: u64,
@@ -516,7 +522,7 @@ pub fn swift_slot_wait(
     }
     let lead = slot_clock.elapsed(current_slot, order_slot);
     if resting_limit {
-        return if lead > SWIFT_SIGNED_MSG_MAX_AGE {
+        return if lead > SWIFT_RESTING_LIMIT_MAX_LEAD {
             SwiftSlotWait::TooFarAhead
         } else {
             SwiftSlotWait::Ready
@@ -1245,13 +1251,13 @@ mod tests {
             swift_slot_wait(135, 100, Millis::from_secs(10), true, SlotClock::baseline()),
             SwiftSlotWait::Ready
         );
-        // The program's ~200s window (500 baseline slots) still bounds the stamp.
+        // The program's 30s lead bound (75 baseline slots) still bounds the stamp.
         assert_eq!(
-            swift_slot_wait(600, 100, Millis::from_secs(10), true, SlotClock::baseline()),
+            swift_slot_wait(175, 100, Millis::from_secs(10), true, SlotClock::baseline()),
             SwiftSlotWait::Ready
         );
         assert_eq!(
-            swift_slot_wait(601, 100, Millis::from_secs(10), true, SlotClock::baseline()),
+            swift_slot_wait(176, 100, Millis::from_secs(10), true, SlotClock::baseline()),
             SwiftSlotWait::TooFarAhead
         );
         // A stamp at or behind the chain is ready either way.

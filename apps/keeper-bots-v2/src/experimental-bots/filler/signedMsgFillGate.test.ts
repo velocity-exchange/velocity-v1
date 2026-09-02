@@ -64,11 +64,11 @@ describe('signedMsgOrderPlaceable', () => {
 		};
 		expect(signedMsgOrderPlaceable(BASELINE_STATE, restingLimit, CURRENT_SLOT))
 			.to.be.true;
-		// but not one stamped past the program's ~200s window (500 baseline slots)
+		// but not one stamped past the program's 30s lead bound (75 baseline slots)
 		expect(
 			signedMsgOrderPlaceable(
 				BASELINE_STATE,
-				{ ...restingLimit, slot: new BN(CURRENT_SLOT + 501) },
+				{ ...restingLimit, slot: new BN(CURRENT_SLOT + 76) },
 				CURRENT_SLOT
 			)
 		).to.be.false;

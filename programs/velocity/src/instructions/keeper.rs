@@ -690,10 +690,11 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
     };
     // A limit order with no auction rests from placement, so its message slot is
     // a placement deadline (`max_slot` below equals it), not an auction start.
-    // Clients stamp that deadline ahead as the signing budget, so the order may
-    // be placed before the slot arrives, within the same window as the age check.
+    // Clients stamp that deadline ahead as the signing budget (~14s), so the
+    // order may be placed before the slot arrives, within a bounded lead.
     let is_resting_limit =
         matching_taker_order_params.order_type == OrderType::Limit && auction_duration_units == 0;
+    let max_resting_limit_lead = Millis::from_secs(30);
     // ~200s of wall clock, integrated per slot duration regime
     let max_order_age = Millis::from_secs(200);
 
@@ -708,11 +709,11 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
             );
             return Err(print_error!(ErrorCode::InvalidSignedMsgOrderParam)().into());
         }
-        if state.slot_clock().elapsed(clock.slot, order_slot) > max_order_age {
+        if state.slot_clock().elapsed(clock.slot, order_slot) > max_resting_limit_lead {
             msg!(
                 "SignedMsg resting limit order slot {} is too far ahead: must be within {}ms of current slot {}",
                 order_slot,
-                max_order_age.as_ms(),
+                max_resting_limit_lead.as_ms(),
                 clock.slot
             );
             return Err(print_error!(ErrorCode::InvalidSignedMsgOrderParam)().into());

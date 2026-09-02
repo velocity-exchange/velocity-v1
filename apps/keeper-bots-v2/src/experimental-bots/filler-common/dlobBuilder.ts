@@ -33,7 +33,7 @@ import {
 	elapsedMillis,
 	currentSlotDuration,
 	signedMsgOrderMaxSlot,
-	signedMsgOrderSlotReached,
+	signedMsgOrderPlaceable,
 } from '@velocity-exchange/sdk';
 import { Connection, PublicKey } from '@solana/web3.js';
 import dotenv from 'dotenv';
@@ -159,13 +159,20 @@ class DLOBBuilder {
 			});
 		});
 		for (const signedMsgNode of this.signedMsgOrders.values()) {
-			// Hold back an order whose signed message slot has not arrived: the program
-			// starts its auction there and rejects a place before it, so it cannot fill
-			// yet. Inserting it early lets the taking pass match it against resting
-			// liquidity and mark that liquidity filled in this snapshot, hiding a fill
-			// that could have happened. It stays cached and is inserted once its slot
-			// lands.
-			if (!signedMsgOrderSlotReached(signedMsgNode.order.slot, slot)) {
+			// Hold back an auction order whose signed message slot has not arrived: the
+			// program starts its auction there and rejects a place before it, so it
+			// cannot fill yet. Inserting it early lets the taking pass match it against
+			// resting liquidity and mark that liquidity filled in this snapshot, hiding
+			// a fill that could have happened. It stays cached and is inserted once its
+			// slot lands. A resting limit (no auction) may be placed ahead of its slot,
+			// though this builder never caches one (insertSignedMsgOrder skips it).
+			if (
+				!signedMsgOrderPlaceable(
+					dlob.slotDurationState,
+					signedMsgNode.order,
+					slot
+				)
+			) {
 				continue;
 			}
 			dlob.insertSignedMsgOrder(signedMsgNode.order, signedMsgNode.userAccount);

@@ -260,10 +260,51 @@ jobs:
     runs-on: ubicloud
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Cache cargo-deny version
+      - name: Cache cargo-deny/cargo-audit versions
         uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1 # v2.8.1
+      # Pinned: the DB hand-off below depends on both tools' exact on-disk
+      # layout and hashing behaviour (see the "Expose the database" step).
       - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
+        run: cargo install cargo-deny --version 0.20.2 --locked
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --version 0.22.2 --locked
+      # cargo-deny 0.20.x fetches the RustSec advisory DB by shelling out to
+      # the git CLI (its CHANGELOG PR#830 dropped the previous gix-library
+      # path, and there is no config switch back). GitHub rejects that
+      # unauthenticated git-CLI clone from this runner, and we do not want to
+      # hand the job a GITHUB_TOKEN. cargo-audit fetches the same DB with the
+      # `rustsec` crate's gix-library path, which GitHub does accept, so use
+      # cargo-audit purely as the fetch mechanism and point cargo-deny at its
+      # clone (offline, below). The audit *result* is gated by the separate
+      # Cargo audit job above; here only the clone matters.
+      - name: Fetch advisory database
+        run: |
+          ADVISORY_DB="$RUNNER_TEMP/advisory-db"
+          cargo audit --db "$ADVISORY_DB" >/dev/null 2>&1 || true
+          test -d "$ADVISORY_DB/.git" || { echo "::error::advisory database was not fetched"; exit 1; }
+      # cargo-deny stores its DB at <db-path>/<last URL path segment>-<xxhash64
+      # of the lowercased URL, seed 0xca80de71> (cargo-deny's url_to_db_path,
+      # src/advisories/helpers/db.rs). For the default RustSec URL that is
+      # `advisory-db-3157b0e258782691` -- pinned to cargo-deny 0.20.2, hence
+      # the version pin above. Symlink cargo-audit's clone in under that name
+      # so cargo-deny's offline open finds it, and point deny.toml's
+      # `db-path` (via CARGO_DENY_DB_PATH) at the scratch dir holding it.
+      - name: Expose the database to cargo-deny
+        run: |
+          DENY_DBS="$RUNNER_TEMP/advisory-dbs"
+          mkdir -p "$DENY_DBS"
+          LINK="$DENY_DBS/advisory-db-3157b0e258782691"
+          rm -rf "$LINK"
+          ln -s "$RUNNER_TEMP/advisory-db" "$LINK"
+          test -L "$LINK" && test "$(readlink "$LINK")" = "$RUNNER_TEMP/advisory-db"
+          echo "CARGO_DENY_DB_PATH=$DENY_DBS" >> "$GITHUB_ENV"
+      # `--offline` below also makes cargo-deny's own `cargo metadata`
+      # resolution offline, so prefetch both workspaces' crates.io deps first
+      # (that part of the fetch is plain HTTPS and works fine on the runner).
+      - name: Prefetch crates
+        run: |
+          cargo fetch --locked --manifest-path Cargo.toml
+          cargo fetch --locked --manifest-path rust/Cargo.toml
       # `sources` is the reason this job exists: a dependency may only come from
       # crates.io or from a git remote explicitly allowlisted in deny.toml, so a
       # new git dependency cannot land unreviewed. `licenses` and `bans` ride
@@ -274,10 +315,13 @@ jobs:
       # `cargo metadata`, which will happily re-resolve from the manifests when a
       # lockfile is out of sync. That would check a graph nobody committed, and the
       # new-dependency gate (which diffs lockfiles) would never see it either.
+      # `--offline` skips cargo-deny's own (git-CLI) advisory-DB fetch and reads
+      # the clone staged above instead; it enforces `maximum-db-staleness`
+      # against that clone's local git metadata, no network needed.
       - name: Run cargo-deny (program workspace) # Using args from deny.toml
-        run: cargo deny --locked --manifest-path Cargo.toml --config deny.toml check
+        run: cargo deny --offline --locked --manifest-path Cargo.toml --config deny.toml check
       - name: Run cargo-deny (rust workspace) # Using args from deny.toml
-        run: cargo deny --locked --manifest-path rust/Cargo.toml --config deny.toml check
+        run: cargo deny --offline --locked --manifest-path rust/Cargo.toml --config deny.toml check
   prettier:
     runs-on: ubicloud
     steps:
@@ -1088,6 +1132,8 @@ jobs:
       - verified-build
       - docker-images-ts
       - docker-images-rust
+      - cargo-audit
+      - cargo-deny
     runs-on: ubicloud
     steps:
       - name: Require upstream jobs to have succeeded or been skipped

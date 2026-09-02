@@ -8,6 +8,7 @@ import {
 	PositionDirection,
 	MarketTypeStr,
 	OrderBitFlag,
+	OrderType,
 	StateAccount,
 } from '../types';
 import {
@@ -20,6 +21,7 @@ import { BN } from '../isomorphic/anchor';
 import { MMOraclePriceData, OraclePriceData } from '../oracles/types';
 import {
 	SlotDurationState,
+	elapsedMillis,
 	millisFromStoredUnits,
 	slotAtOrAfterDuration,
 } from './time';
@@ -416,6 +418,58 @@ export function signedMsgOrderSlotReached(
 	currentSlot: number
 ): boolean {
 	return orderSlot.lte(new BN(currentSlot));
+}
+
+/**
+ * Wall-clock distance a signed message slot may sit from the current slot before
+ * `place_signed_msg_taker_order` refuses it: the ~200s staleness bound on a slot
+ * behind the chain, also applied as the lead bound on a resting limit order stamped
+ * ahead of it.
+ */
+export const SIGNED_MSG_MAX_ORDER_AGE_MS = 200_000;
+
+/**
+ * True if a signed message (swift) order is a limit order with no auction. Such an order
+ * rests from placement, so the program treats its message slot as a placement deadline
+ * (`max_slot` equals it) rather than as an auction start.
+ */
+export function isRestingSignedMsgLimitOrder(
+	orderType: OrderType,
+	auctionDuration: number | null | undefined
+): boolean {
+	return isVariant(orderType, 'limit') && !auctionDuration;
+}
+
+/**
+ * Whether a signed message (swift) order can be placed on-chain at `currentSlot`, mirroring
+ * the slot gates in the program's `place_signed_msg_taker_order`. An auction order must wait
+ * for its message slot (see signedMsgOrderSlotReached). A resting limit order (see
+ * isRestingSignedMsgLimitOrder) may be placed ahead of its message slot, as long as that slot
+ * is within SIGNED_MSG_MAX_ORDER_AGE_MS of the current one. Expiry (`max_slot` passed) is a
+ * separate check: see signedMsgOrderMaxSlot.
+ * @param state The State account (or its slot-duration fields), for the wall-clock conversion.
+ * @param order The order's message slot, type and auction duration (`Order` fields on a synthetic signed-msg node).
+ * @param currentSlot The current cluster slot.
+ * @returns True once the order may be placed on-chain.
+ */
+export function signedMsgOrderPlaceable(
+	state: SlotDurationState,
+	order: {
+		slot: BN;
+		orderType: OrderType;
+		auctionDuration: number | null | undefined;
+	},
+	currentSlot: number
+): boolean {
+	if (signedMsgOrderSlotReached(order.slot, currentSlot)) {
+		return true;
+	}
+	if (!isRestingSignedMsgLimitOrder(order.orderType, order.auctionDuration)) {
+		return false;
+	}
+	return elapsedMillis(state, new BN(currentSlot), order.slot).lten(
+		SIGNED_MSG_MAX_ORDER_AGE_MS
+	);
 }
 
 /** True if `order.orderType` is `market`, `triggerMarket`, or `oracle`. */

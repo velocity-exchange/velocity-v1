@@ -1,7 +1,9 @@
 import { expect } from 'chai';
 import {
 	BN,
+	OrderType,
 	SlotDurationState,
+	signedMsgOrderPlaceable,
 	signedMsgOrderSlotReached,
 } from '@velocity-exchange/sdk';
 import {
@@ -35,6 +37,41 @@ describe('signedMsgOrderSlotReached', () => {
 			.true;
 		expect(signedMsgOrderSlotReached(new BN(CURRENT_SLOT - 5), CURRENT_SLOT)).to
 			.be.true;
+	});
+});
+
+describe('signedMsgOrderPlaceable', () => {
+	it('holds an auction order until its message slot, like the slot gate', () => {
+		const auctionOrder = {
+			slot: new BN(CURRENT_SLOT + 7),
+			orderType: OrderType.MARKET,
+			auctionDuration: 20,
+		};
+		expect(signedMsgOrderPlaceable(BASELINE_STATE, auctionOrder, CURRENT_SLOT))
+			.to.be.false;
+		expect(
+			signedMsgOrderPlaceable(BASELINE_STATE, auctionOrder, CURRENT_SLOT + 7)
+		).to.be.true;
+	});
+
+	it('places a resting limit ahead of its message slot', () => {
+		// The UI stamps a no-auction limit its whole signing budget (~14s) ahead: the
+		// program treats that slot as the placement deadline and places before it.
+		const restingLimit = {
+			slot: new BN(CURRENT_SLOT + 35),
+			orderType: OrderType.LIMIT,
+			auctionDuration: null,
+		};
+		expect(signedMsgOrderPlaceable(BASELINE_STATE, restingLimit, CURRENT_SLOT))
+			.to.be.true;
+		// but not one stamped past the program's ~200s window (500 baseline slots)
+		expect(
+			signedMsgOrderPlaceable(
+				BASELINE_STATE,
+				{ ...restingLimit, slot: new BN(CURRENT_SLOT + 501) },
+				CURRENT_SLOT
+			)
+		).to.be.false;
 	});
 });
 

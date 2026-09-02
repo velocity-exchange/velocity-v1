@@ -35,7 +35,7 @@ import {
 	currentSlotDuration,
 	elapsedMillis,
 	signedMsgOrderMaxSlot,
-	signedMsgOrderSlotReached,
+	signedMsgOrderPlaceable,
 	SlotDurationState,
 } from '@velocity-exchange/sdk';
 import { FillerMultiThreadedConfig, GlobalConfig } from '../../config';
@@ -2159,10 +2159,18 @@ export class FillerMultithreaded {
 
 			if (node.node.isSignedMsg) {
 				// Not yet placeable: the program rejects `order_slot > clock.slot` on
-				// a signed-msg place, and the order carries the UI's signing buffer of
-				// a few slots. Defer without recording an attempt or reserving the
-				// node, so the next re-emit retries it once the slot has arrived.
-				if (!signedMsgOrderSlotReached(node.node.order!.slot, currentSlot)) {
+				// a signed-msg place of an auction order, and the order carries the
+				// UI's signing buffer of a few slots. Defer without recording an
+				// attempt or reserving the node, so the next re-emit retries it once
+				// the slot has arrived. (A resting limit may be placed ahead of its
+				// slot, but the DLOB builder never emits one without an auction.)
+				if (
+					!signedMsgOrderPlaceable(
+						this.velocityClient.getStateAccount(),
+						node.node.order!,
+						currentSlot
+					)
+				) {
 					this.emitFillDecision(node, 'skip_signed_msg_slot_not_reached');
 					continue;
 				}

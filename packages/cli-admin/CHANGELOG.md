@@ -1,5 +1,14 @@
 # @velocity-exchange/admin-cli
 
+## 0.14.2
+
+### Patch Changes
+
+- [#482](https://github.com/velocity-exchange/velocity-v1/pull/482) [`a7fecad`](https://github.com/velocity-exchange/velocity-v1/commit/a7fecadb09b37c0fd247eba376d11e705429db3e) Thanks [@0xahzam](https://github.com/0xahzam)! - Add `velocity-admin show state`: dumps every field of the singleton State account, with the `exchangeStatus`, `featureBitFlags`, `lpPoolFeatureBitFlags` and `solvencyStatus` bitmasks decoded to their bit names. The `feature-flags` subcommands only write bits; there was no way to read the current ones back.
+
+- Updated dependencies [[`eaa0664`](https://github.com/velocity-exchange/velocity-v1/commit/eaa06645a8ae137ce4e8ca606b2a65d3a24980cd), [`033237b`](https://github.com/velocity-exchange/velocity-v1/commit/033237bb975692bcce5bd540b3b015aba29463f3), [`e2b86d3`](https://github.com/velocity-exchange/velocity-v1/commit/e2b86d3ddba2c3e903ce70da835314a16ebed8e3)]:
+  - @velocity-exchange/sdk@0.21.0
+
 ## 0.14.1
 
 ### Patch Changes

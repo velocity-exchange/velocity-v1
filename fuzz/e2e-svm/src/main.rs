@@ -44,9 +44,9 @@ use {
         state::{
             market_status::MarketStatus,
             oracle::OracleSource,
-            perp_market::PerpMarket,
+            perp_market::{ContractTier, PerpMarket},
             pyth_lazer_oracle::PythLazerOracle,
-            spot_market::{SpotBalanceType, SpotMarket},
+            spot_market::{AssetTier, SpotBalanceType, SpotMarket},
             state::State,
             user::User,
         },
@@ -151,6 +151,12 @@ const D_END_SWAP: [u8; 8] = [177, 184, 27, 193, 34, 13, 210, 145];
 const D_LIQUIDATE_SPOT_WITH_SWAP_BEGIN: [u8; 8] = [12, 43, 176, 83, 156, 251, 117, 13];
 const D_LIQUIDATE_SPOT_WITH_SWAP_END: [u8; 8] = [142, 88, 163, 160, 223, 75, 55, 225];
 const D_TRANSFER_POOLS: [u8; 8] = [197, 103, 154, 25, 107, 90, 60, 94];
+// Bankruptcy resolution. Neither was reachable from this harness before, so the
+// whole waterfall in controller/liquidation.rs (pending_if_fee tranche, the
+// shared IF vault draw, the AMM clawback, and socialization onto depositors) was
+// 0% covered here.
+const D_RESOLVE_PERP_BANKRUPTCY: [u8; 8] = [224, 16, 176, 214, 162, 213, 183, 222];
+const D_RESOLVE_SPOT_BANKRUPTCY: [u8; 8] = [124, 194, 240, 254, 198, 213, 52, 122];
 // Signed-message account lifecycle: plain account create/resize/delete.
 // (The ORDER-placing signed-msg instructions additionally need an ed25519
 // pre-instruction — see `build_signed_msg_envelope`.)
@@ -517,6 +523,21 @@ fn inject_pyth_lazer_storage(ctx: &mut TestContext, trusted_signer: Pubkey, expi
         .expect("inject pyth lazer storage");
 }
 
+/// Which market's guard rails classify a given injected oracle.
+///
+/// The confidence bound is NOT a property of the oracle account — it is
+/// `guard_rails.confidence_interval_max_size * market.max_confidence_interval_multiplier`,
+/// and the perp and spot multiplier tables are DIFFERENT. Binding the oracle to
+/// its owning market here makes a mismatched (oracle, multiplier) pair
+/// unrepresentable rather than merely discouraged; two of the call sites sit in
+/// the same boolean chain and need different multipliers, which is exactly the
+/// asymmetry a shared constant would erase.
+#[derive(Clone, Copy)]
+enum OracleOwner {
+    Perp,
+    Spot1,
+}
+
 #[derive(Clone)]
 struct UserAcct {
     keypair: Rc<Keypair>,
@@ -608,10 +629,13 @@ struct Fixture {
     /// Liquidations that the protocol REFUSED (error 6004 SufficientCollateral)
     /// against a victim that is structurally insolvent. See Family XVIII.
     liq_refusals: Vec<&'static str>,
-    /// Last observed cumulative interest indices per spot market, for the
-    /// monotonicity invariant. `None` until the first observation, so the check
-    /// never fires on the very first sample (an initial-state false positive).
-    last_interest: [Option<(u128, u128)>; 2],
+    /// Last observed `(cumulative_deposit_interest, cumulative_borrow_interest,
+    /// total_social_loss)` per spot market, for the monotonicity invariant.
+    /// `None` until the first observation, so the check never fires on the very
+    /// first sample (an initial-state false positive). `total_social_loss` is
+    /// carried because it is the exact witness for the one LAWFUL decrease of
+    /// the deposit index — see the invariant.
+    last_interest: [Option<(u128, u128, u128)>; 2],
     /// Per-user perp-exposure snapshot from the PREVIOUS invariant poll:
     /// `(open_bids, open_asks, base_asset_amount, was_at_risk)` for market 0.
     ///
@@ -675,6 +699,16 @@ fn build_state(signer: Pubkey, signer_nonce: u8, crank: Pubkey, admin: Pubkey) -
     // default.
     s.liquidation_margin_buffer_ratio =
         velocity::math::constants::DEFAULT_LIQUIDATION_MARGIN_BUFFER_RATIO;
+    // PARTIAL-LIQUIDATION RAMP. `State::default()` leaves both of these 0
+    // (state/state.rs:252-253). `calculate_max_pct_to_liquidate`
+    // (math/liquidation.rs:469-478) then divides by a zero duration, hits
+    // `.unwrap_or(LIQUIDATION_PCT_PRECISION)`, and pins `pct_freeable` at 100% —
+    // so every liquidation here was one full-size step and the whole ramp, plus
+    // the `liquidation_margin_freed` accumulation family VIII.c watches, was
+    // unreachable. Same dead path as e2e-svm-liq, reached a different way (there
+    // the field was set, but to 100%).
+    s.initial_pct_to_liquidate = 1_000; // 10% of LIQUIDATION_PCT_PRECISION (10_000)
+    s.liquidation_duration = velocity::math::time::legacy_slot_duration_u8(150);
     // Route EVERY hot-key role to our crank keypair.
     //
     // Handlers guarded by `check_hot(&keeper.key(), &state, HotRole::X)` are
@@ -732,6 +766,15 @@ fn build_spot_market_usdc(
     m.market_index = 0;
     m.decimals = 6;
     m.status = MarketStatus::Active;
+    // The realistic quote tier. Market 0 is the QUOTE spot market, which
+    // `check_spot_oracle_validity` short-circuits to Valid, so this cannot gate
+    // an oracle path -- it exists so `safest_tier_spot_liablity` and the
+    // bankruptcy tier ordering take a non-default arm. This builder is REUSED for
+    // the pool-1 mirror markets, so it sets their tier too.
+    //
+    // Was left at `SpotMarket::default()`'s `AssetTier::Unlisted`, whose
+    // confidence multiplier is 50 -- a 100%-of-price band no real market runs.
+    m.asset_tier = AssetTier::Collateral;
     m.cumulative_deposit_interest = SPOT_CUMULATIVE_INTEREST_PRECISION;
     m.cumulative_borrow_interest = SPOT_CUMULATIVE_INTEREST_PRECISION;
     m.initial_asset_weight = SPOT_WEIGHT_PRECISION;
@@ -781,6 +824,16 @@ fn build_spot_market_sol(
     m.market_index = 1;
     m.decimals = 9;
     m.status = MarketStatus::Active;
+    // Multiplier 5 -> a 10% confidence band. Deliberately DIFFERENT from the
+    // perp market's 2% (ContractTier::B) so a single `conf` draw can be valid for
+    // spot and invalid for perp -- the asymmetric-validity path (spot crank
+    // proceeds, perp crank refuses) that a uniform tier can never produce. It
+    // also flips `get_sanitize_clamp_denominator` from None to Some(5), covering
+    // the Some arm of the TWAP price-band clamp.
+    //
+    // Safe for the borrow paths this market exists to exercise: borrowing is only
+    // barred for `Protected`, and the `Isolated`-only margin gates are untouched.
+    m.asset_tier = AssetTier::Cross;
     m.cumulative_deposit_interest = SPOT_CUMULATIVE_INTEREST_PRECISION;
     m.cumulative_borrow_interest = SPOT_CUMULATIVE_INTEREST_PRECISION;
     // Weights that actually bite (SPOT_WEIGHT_PRECISION = 1e4).
@@ -838,6 +891,18 @@ fn build_perp_market(pubkey: Pubkey, quote_spot_index: u16, oracle: Pubkey) -> P
     m.market_index = 0;
     m.quote_spot_market_index = quote_spot_index;
     m.status = MarketStatus::Active;
+    // Multiplier 1 -> a 2% confidence band, which is what real markets run.
+    // (Precedent in this repo: fuzz/oracle/src/main.rs uses ContractTier::B.)
+    //
+    // Was left at `PerpMarket::default()`'s `HighlySpeculative`, multiplier 50 --
+    // a 100%-of-price band, so `is_conf_too_large` could never trip no matter
+    // what confidence the fuzzer wrote, and the entire TooUncertain branch plus
+    // every downstream oracle-invalid path was unreachable.
+    //
+    // Verified not to start blocking fills: the A|B drawdown quote gate is
+    // `<= K*400` vs `<= K*200` for HighlySpeculative with K negative, i.e. B is
+    // HARDER to breach, not easier.
+    m.contract_tier = ContractTier::B;
     m.oracle_source = OracleSource::PythLazer;
     m.margin_ratio_initial = 1_000; // 10%
     m.margin_ratio_maintenance = 500; // 5%
@@ -1477,16 +1542,31 @@ impl Fixture {
         // the protocol could really be in, large enough that a handful of steps
         // crosses a maintenance-margin boundary instead of needing dozens.
         #[range(0..200u64)] bps: u64,
-        #[range(0..1_000_000u64)] conf: u64,
+        // Confidence as PPM OF PRICE, which is the unit the program compares in
+        // (`conf * BID_ASK_SPREAD_PRECISION / price`). An ABSOLUTE conf decouples
+        // from the bound as the price walks, which is half of why the old
+        // hard-coded 0.1% check in `oracle_is_fresh` was so far off.
+        //
+        // `wide_conf == 0` writes conf = 0: a pristine oracle, so the common case
+        // keeps full downstream coverage of every margin/funding path. Without
+        // this split, a flat draw against a 2% band would make ~98% of oracle
+        // writes reject downstream -- the mirror image of the old bug.
+        // `wide_conf == 1` straddles the guard rail: 0..5% of price, against a 2%
+        // perp band (ContractTier::B) and a 10% spot band (AssetTier::Cross), so
+        // BOTH sides of `is_conf_too_large` get explored, and asymmetrically
+        // between the two markets.
+        #[range(0..2u8)] wide_conf: u8,
+        #[range(0..50_000u64)] conf_ppm: u64,
         #[range(0..40u64)] slot_lag: u64,
     ) -> bool {
         let pda = self.perp_oracle_pda;
-        self.step_oracle(pda, up == 1, bps, conf, slot_lag)
+        let conf_ppm = if wide_conf == 1 { conf_ppm } else { 0 };
+        self.step_oracle(pda, up == 1, bps, conf_ppm, slot_lag)
     }
 
     /// Apply a bounded RELATIVE step to an oracle account.
     ///
-    /// Deliberately capped at 99bps (<1%) per step, and applied to the CURRENT
+    /// Deliberately capped at 199bps (<2%) per step, and applied to the CURRENT
     /// price rather than as an absolute jump. Two reasons this is better than a
     /// free-range absolute price, beyond realism:
     ///
@@ -1496,16 +1576,27 @@ impl Fixture {
     ///    before reaching the logic under test — it buys a rejection branch, not
     ///    coverage.
     ///  * Real insolvency comes from a levered account meeting a small move, not
-    ///    from a 10x gap. Compounding sub-1% steps walks the price to any level
+    ///    from a 10x gap. Compounding sub-2% steps walks the price to any level
     ///    the fuzzer needs while every intermediate state stays one the protocol
     ///    could actually be in, so a violation found here is reachable in
     ///    production rather than an artifact of an impossible print.
-    fn step_oracle(&mut self, pda: Pubkey, up: bool, bps: u64, conf: u64, slot_lag: u64) -> bool {
+    /// `conf_ppm` is confidence in PARTS PER MILLION OF THE RESULTING PRICE, not
+    /// an absolute value — that is the unit `is_conf_too_large` compares in, so
+    /// expressing it this way keeps the draw meaningful as the price walks.
+    fn step_oracle(
+        &mut self,
+        pda: Pubkey,
+        up: bool,
+        bps: u64,
+        conf_ppm: u64,
+        slot_lag: u64,
+    ) -> bool {
         let current = match read_zc::<PythLazerOracle>(&self.ctx, &pda) {
             Some(o) => o.price.max(1),
             None => return false,
         };
-        // bps is 0..=99, so |delta| < 1% of the current price.
+        // bps is 0..=199 (both callers draw `#[range(0..200u64)]`), so
+        // |delta| < 2% of the current price.
         let delta = (current as i128 * bps as i128 / 10_000).max(if bps > 0 { 1 } else { 0 });
         let next = if up {
             (current as i128).saturating_add(delta)
@@ -1513,8 +1604,12 @@ impl Fixture {
             (current as i128).saturating_sub(delta).max(1)
         };
         let slot = self.ctx.slot();
+        // Derive the absolute confidence from the NEW price, so `conf_ppm` means
+        // the same thing at every point in the walk.
+        let price_out = next.clamp(1, i64::MAX as i128) as i64;
+        let conf = ((price_out as u128).saturating_mul(conf_ppm as u128) / 1_000_000) as u64;
         let mut oracle = build_pyth_lazer_oracle(
-            next.clamp(1, i64::MAX as i128) as i64,
+            price_out,
             conf,
             slot.saturating_sub(slot_lag),
             self.oracle_seq,
@@ -1611,8 +1706,8 @@ impl Fixture {
     ) -> bool {
         let user = self.users[user_idx].clone();
         let should_work = self.user_is_live(&user.user_pda)
-            && self.oracle_is_fresh(self.perp_oracle_pda)
-            && self.oracle_is_fresh(self.spot_1_oracle_pda)
+            && self.oracle_is_fresh(OracleOwner::Perp)
+            && self.oracle_is_fresh(OracleOwner::Spot1)
             && self
                 .read_perp_market()
                 .map(|pm| pm.status == MarketStatus::Active)
@@ -1671,7 +1766,7 @@ impl Fixture {
                             >= pm.market_stats.funding_period.saturating_mul(2)
                 })
                 .unwrap_or(false)
-            && self.oracle_is_fresh(self.perp_oracle_pda);
+            && self.oracle_is_fresh(OracleOwner::Perp);
         let ok = self
             .ctx
             .raw_call(Instruction {
@@ -1709,25 +1804,94 @@ impl Fixture {
         }
     }
 
-    /// Is an injected oracle fresh enough that margin/AMM reads will accept it?
+    /// Is an injected oracle valid enough that the program's margin / funding
+    /// reads will accept it?
     ///
-    /// Staleness is `clock_slot - posted_slot`. Anything within a few slots is
-    /// unambiguously fresh; this is deliberately conservative so the liveness
-    /// preconditions never claim "must work" on a borderline-stale price.
-    fn oracle_is_fresh(&self, pda: Pubkey) -> bool {
-        read_zc::<PythLazerOracle>(&self.ctx, &pda)
-            .map(|o| {
-                // Fresh...
-                let fresh = self.ctx.slot().saturating_sub(o.posted_slot) <= 2;
-                // ...AND confident. A wide confidence interval is a lawful
-                // reason for the protocol to refuse to fund, settle or value a
-                // position ("Confidence Too Large"), so a liveness precondition
-                // that ignores it reports correct behaviour as a break.
-                // Require conf below 0.1% of price — well inside any guard rail.
-                let confident = o.price > 0 && (o.conf as i128) * 1000 <= o.price as i128;
-                fresh && confident
-            })
-            .unwrap_or(false)
+    /// Mirrors `math::oracle::oracle_validity` on the verdicts every
+    /// crank-liveness caller cares about — NonPositive, StaleFor*, TooUncertain,
+    /// TooVolatile — and is deliberately conservative on each, so a "must work"
+    /// precondition never claims liveness on a borderline price.
+    ///
+    /// PREVIOUSLY WRONG, and it silenced this whole family. The confidence test
+    /// was a hard-coded `conf * 1000 <= price` (0.1% of price) — 500x tighter
+    /// than any guard rail the program applies. `action_move_oracle_price` draws
+    /// confidence across the full width of a price, so ~99.9% of draws made this
+    /// return false and every gated check (crank liveness, family XVIII) was
+    /// vacuous. The bound now comes from the exchange's OWN
+    /// `State::oracle_guard_rails` and the owning market's tier multiplier, which
+    /// is the same product `is_conf_too_large` compares against.
+    fn oracle_is_fresh(&self, owner: OracleOwner) -> bool {
+        let Some(state) = read_zc::<State>(&self.ctx, &self.state_pda()) else {
+            return false;
+        };
+        let rails = state.oracle_guard_rails.validity;
+
+        // (oracle pda, the owning market's tier multiplier, the TWAP the program
+        // compares the live price against for volatility).
+        let (pda, max_mult, risk_ema) = match owner {
+            OracleOwner::Perp => {
+                let Some(m) = self.read_perp_market() else {
+                    return false;
+                };
+                let Ok(mult) = m.get_max_confidence_interval_multiplier() else {
+                    return false;
+                };
+                (
+                    self.perp_oracle_pda,
+                    mult,
+                    m.market_stats.historical_oracle_data.last_oracle_price_twap,
+                )
+            }
+            OracleOwner::Spot1 => {
+                let Some(m) = self.read_spot_market_1() else {
+                    return false;
+                };
+                let Ok(mult) = m.get_max_confidence_interval_multiplier() else {
+                    return false;
+                };
+                (
+                    self.spot_1_oracle_pda,
+                    mult,
+                    m.historical_oracle_data.last_oracle_price_twap,
+                )
+            }
+        };
+
+        let Some(o) = read_zc::<PythLazerOracle>(&self.ctx, &pda) else {
+            return false;
+        };
+
+        // NonPositive.
+        if o.price <= 0 {
+            return false;
+        }
+
+        // StaleForMargin / StaleForAMM. The program's thresholds are far looser
+        // than 2 slots; being well inside both is the point.
+        if self.ctx.slot().saturating_sub(o.posted_slot) > 2 {
+            return false;
+        }
+
+        // TooUncertain — the program's exact arithmetic. BID_ASK_SPREAD_PRECISION
+        // and PERCENTAGE_PRECISION are the same constant.
+        let conf_pct_of_price =
+            (o.conf as u128).saturating_mul(PERCENTAGE_PRECISION) / (o.price as u128);
+        if conf_pct_of_price > (rails.confidence_interval_max_size as u128) * (max_mult as u128) {
+            return false;
+        }
+
+        // TooVolatile. `step_oracle` walks the price in <=2% compounding steps
+        // against a TWAP no action here refreshes, so a long enough action chain
+        // CAN cross `too_volatile_ratio` — a lawful refusal that would otherwise
+        // be reported as a liveness break. Cheap insurance today; load-bearing
+        // the moment the per-iteration action cap is raised.
+        let hi = o.price.max(risk_ema) as i128;
+        let lo = o.price.min(risk_ema).max(1) as i128;
+        if hi / lo > rails.too_volatile_ratio as i128 {
+            return false;
+        }
+
+        true
     }
 
     /// `update_perp_bid_ask_twap` — `[state, perp_market(w), oracle,
@@ -2160,40 +2324,92 @@ impl Fixture {
         }
     }
 
-    /// Is this account structurally insolvent — a spot BORROW with no assets
-    /// anywhere to back it?
+    /// Is this account insolvent under ANY valuation the margin engine could
+    /// choose — i.e. do its liabilities exceed its assets even when both are
+    /// priced as generously as possible for the account?
     ///
-    /// Deliberately not a margin calculation. It asks only whether liabilities
-    /// exist while every asset bucket the account can hold is empty: spot
-    /// deposits, isolated perp collateral, and perp exposure. An account in that
-    /// shape is insolvent under ANY valuation — no oracle price, weight or
-    /// staleness rule can make a liability with zero assets healthy — so a
-    /// judgement here cannot disagree with the program's margin engine.
-    fn is_structurally_insolvent(&self, user_pda: &Pubkey) -> bool {
+    /// REPLACES `is_structurally_insolvent`, WHICH WAS VACUOUS. That predicate
+    /// required "a borrow with NO deposit anywhere". But `liquidate_spot`
+    /// validates the ASSET side first — `WrongSpotBalanceType` if the asset
+    /// market's position is not a Deposit, then `InvalidSpotPosition` if its
+    /// token amount is zero — both roughly 130 lines BEFORE the margin
+    /// calculation that can emit 6004 `SufficientCollateral`. So a victim with no
+    /// deposit never reaches 6004, and one that does reach it has a deposit by
+    /// construction. The two conditions were mutually exclusive: `liq_refusals`
+    /// could never be pushed to, and the family XVIII assertion never fired.
+    ///
+    /// SOUNDNESS. Assets are summed at weight 1.0 and liabilities at weight 1.0 —
+    /// the most generous treatment of the account that exists. The program uses
+    /// `maintenance_asset_weight <= 1` and `maintenance_liability_weight >= 1`,
+    /// so its collateral is <= ours and its requirement is >= ours. Therefore
+    /// `liabs > assets` here IMPLIES the account fails maintenance, with no
+    /// oracle, weight or staleness assumption of our own.
+    ///
+    /// Both sides use the LIVE oracle price. The program prices under
+    /// `StrictOraclePrice`: assets at `min(live, twap)` (<= ours) and liabilities
+    /// at `max(live, twap)` (>= ours), so strict pricing only widens the gap in
+    /// the same direction. Unsettled funding and open-order reservations only ADD
+    /// to the program's requirement. Every divergence is one-directional and
+    /// conservative.
+    fn is_unconditionally_insolvent(&self, user_pda: &Pubkey) -> bool {
         let Some(user) = self.read_user(user_pda) else {
             return false;
         };
-        let mut has_borrow = false;
-        let mut has_deposit = false;
+        // Live prices, QUOTE_PRECISION. Markets 0/2/3 are QuoteAsset ($1); market
+        // 1 and the perp read their injected PythLazer accounts. No price means
+        // no judgement -- refusing to judge is the conservative direction here.
+        let px_1 = match read_zc::<PythLazerOracle>(&self.ctx, &self.spot_1_oracle_pda) {
+            Some(o) if o.price > 0 => o.price as i128,
+            _ => return false,
+        };
+        let px_perp = match read_zc::<PythLazerOracle>(&self.ctx, &self.perp_oracle_pda) {
+            Some(o) if o.price > 0 => o.price as i128,
+            _ => return false,
+        };
+        let (Some(sm0), Some(sm1)) = (self.read_spot_market(), self.read_spot_market_1()) else {
+            return false;
+        };
+
+        let mut assets: i128 = 0;
+        let mut liabs: i128 = 0;
         for sp in user.spot_positions.iter() {
             if sp.scaled_balance == 0 {
                 continue;
             }
+            // Markets 2/3 mirror 0/1 by mint but are QuoteAsset-priced.
+            let (m, px, dec) = match sp.market_index {
+                1 => (&sm1, px_1, 9u32),
+                3 => (&sm0, PRICE_PRECISION as i128, 9u32),
+                _ => (&sm0, PRICE_PRECISION as i128, 6u32),
+            };
+            let tok = velocity::math::spot_balance::get_token_amount(
+                sp.scaled_balance as u128,
+                m,
+                &sp.balance_type,
+            )
+            .unwrap_or(0) as i128;
+            let value = tok * px / 10i128.pow(dec);
             match sp.balance_type {
-                SpotBalanceType::Borrow => has_borrow = true,
-                SpotBalanceType::Deposit => has_deposit = true,
+                SpotBalanceType::Deposit => assets += value,
+                SpotBalanceType::Borrow => liabs += value,
             }
         }
-        let isolated: u64 = user
-            .perp_positions
-            .iter()
-            .map(|pp| pp.isolated_position_scaled_balance)
-            .sum();
-        let perp_exposure = user
-            .perp_positions
-            .iter()
-            .any(|pp| pp.base_asset_amount != 0 || pp.quote_asset_amount > 0);
-        has_borrow && !has_deposit && isolated == 0 && !perp_exposure
+        for pp in user.perp_positions.iter() {
+            // Isolated collateral is quote-denominated, at index precision.
+            assets += (pp.isolated_position_scaled_balance as i128)
+                * (sm0.cumulative_deposit_interest as i128)
+                / 10i128.pow(13);
+            let base_value = (pp.base_asset_amount as i128) * px_perp
+                / (BASE_PRECISION as i128)
+                / (PRICE_PRECISION as i128 / QUOTE_PRECISION as i128);
+            let net = base_value + pp.quote_asset_amount as i128;
+            if net > 0 {
+                assets += net
+            } else {
+                liabs += -net
+            }
+        }
+        liabs > assets
     }
 
     /// Pick a REAL open order id belonging to `user_idx`, or `None`.
@@ -2770,7 +2986,7 @@ impl Fixture {
             let _ = self.action_borrow_to_margin_limit(target_idx, 100);
             // Push the borrowed asset up so initial margin actually breaks.
             for _ in 0..12 {
-                let _ = self.action_move_spot_1_oracle_price(1, 99, 0, 0);
+                let _ = self.action_move_spot_1_oracle_price(1, 99, 0, 0, 0);
             }
         }
         self.send_filler_ix(target_idx, filler_idx, D_FORCE_CANCEL_ORDERS)
@@ -3662,11 +3878,26 @@ impl Fixture {
         // the protocol could really be in, large enough that a handful of steps
         // crosses a maintenance-margin boundary instead of needing dozens.
         #[range(0..200u64)] bps: u64,
-        #[range(0..1_000_000u64)] conf: u64,
+        // Confidence as PPM OF PRICE, which is the unit the program compares in
+        // (`conf * BID_ASK_SPREAD_PRECISION / price`). An ABSOLUTE conf decouples
+        // from the bound as the price walks, which is half of why the old
+        // hard-coded 0.1% check in `oracle_is_fresh` was so far off.
+        //
+        // `wide_conf == 0` writes conf = 0: a pristine oracle, so the common case
+        // keeps full downstream coverage of every margin/funding path. Without
+        // this split, a flat draw against a 2% band would make ~98% of oracle
+        // writes reject downstream -- the mirror image of the old bug.
+        // `wide_conf == 1` straddles the guard rail: 0..5% of price, against a 2%
+        // perp band (ContractTier::B) and a 10% spot band (AssetTier::Cross), so
+        // BOTH sides of `is_conf_too_large` get explored, and asymmetrically
+        // between the two markets.
+        #[range(0..2u8)] wide_conf: u8,
+        #[range(0..50_000u64)] conf_ppm: u64,
         #[range(0..40u64)] slot_lag: u64,
     ) -> bool {
         let pda = self.spot_1_oracle_pda;
-        self.step_oracle(pda, up == 1, bps, conf, slot_lag)
+        let conf_ppm = if wide_conf == 1 { conf_ppm } else { 0 };
+        self.step_oracle(pda, up == 1, bps, conf_ppm, slot_lag)
     }
 
     /// Borrow market 1 up to (a fraction of) the initial-margin limit.
@@ -3776,7 +4007,7 @@ impl Fixture {
         accounts.extend(self.market_ras(true));
         // Judge the victim BEFORE the call — a successful liquidation changes
         // the very state the judgement is about.
-        let insolvent_before = self.is_structurally_insolvent(&victim.user_pda);
+        let insolvent_before = self.is_unconditionally_insolvent(&victim.user_pda);
         let out = self
             .ctx
             .raw_call(Instruction {
@@ -3804,10 +4035,16 @@ impl Fixture {
                 if !o.is_success()
                     && o.error_code() == Some(6004)
                     && insolvent_before
-                    && self.oracle_is_fresh(self.spot_1_oracle_pda)
+                    // BOTH oracles: the new predicate values perp exposure too,
+                    // so a stale/uncertain perp oracle would make its verdict
+                    // unsound, not just incomplete.
+                    && self.oracle_is_fresh(OracleOwner::Spot1)
+                    && self.oracle_is_fresh(OracleOwner::Perp)
                 {
-                    self.liq_refusals
-                        .push("liquidate_spot refused (SufficientCollateral) on a borrow-with-no-assets account");
+                    self.liq_refusals.push(
+                        "liquidate_spot refused (SufficientCollateral) on an account whose \
+                         liabilities exceed its assets at weight 1.0",
+                    );
                 }
                 o.is_success()
             }
@@ -3865,6 +4102,112 @@ impl Fixture {
     /// No third-party swap runs in between, so the token deltas are zero and
     /// `end_swap` exercises its reconciliation/limit-price logic against a
     /// no-op swap.
+    /// Shared account list for `resolve_spot_bankruptcy` / `resolve_perp_bankruptcy`
+    /// (both take the `ResolveBankruptcy` context), plus remaining accounts:
+    /// oracles -> spot markets -> perp market -> mint. `load_maps` consumes the
+    /// remaining accounts by discriminator and `get_token_mint` then reads the
+    /// next one, which is why the mint goes last.
+    fn resolve_accounts(
+        &self,
+        liq: &UserAcct,
+        victim: &UserAcct,
+        market_index: u16,
+    ) -> Vec<AccountMeta> {
+        let (_m, vault, if_vault, _ta) = self.spot_of(market_index, victim);
+        let mint = if market_index == 1 {
+            self.sol_mint
+        } else {
+            self.usdc_mint
+        };
+        let mut a = vec![
+            AccountMeta::new_readonly(self.state_pda(), false),
+            AccountMeta::new_readonly(liq.keypair.pubkey(), true),
+            AccountMeta::new(liq.user_pda, false),
+            AccountMeta::new(liq.stats_pda, false),
+            AccountMeta::new(victim.user_pda, false),
+            AccountMeta::new(victim.stats_pda, false),
+            AccountMeta::new(vault, false),
+            AccountMeta::new(if_vault, false),
+            AccountMeta::new_readonly(self.signer_pda, false),
+            AccountMeta::new_readonly(token_program_id(), false),
+        ];
+        a.extend(self.market_ras(true));
+        a.push(AccountMeta::new_readonly(mint, false));
+        a
+    }
+
+    /// `resolve_spot_bankruptcy(market_index)` — clear a bankrupt account's spot
+    /// borrow out of the revenue pool, then the shared IF vault, then by
+    /// socializing whatever remains onto that market's depositors.
+    ///
+    /// REACHABLE FROM THIS FIXTURE'S OWN ACTIONS, which is why it is worth
+    /// adding: `action_deposit` on market 0 -> `action_borrow_to_margin_limit`
+    /// on market 1 -> `action_move_spot_1_oracle_price` upward ->
+    /// `action_liquidate_spot` seizes the collateral and flags the victim
+    /// Bankrupt (`liquidation_mode.enter_bankruptcy`). Everything downstream of
+    /// that flag — `attempt_settle_revenue_to_insurance_fund`, the bankruptcy
+    /// tranches, the cumulative-deposit-interest haircut, and `total_social_loss`
+    /// accounting — was 0% covered in this harness.
+    ///
+    /// NOTE the coupling to the interest-monotonicity check in the invariant: this
+    /// action makes `cumulative_deposit_interest` able to DECREASE, which that
+    /// check previously (and wrongly) asserted was impossible.
+    pub fn action_resolve_spot_bankruptcy(
+        &mut self,
+        #[range(0..NUM_USERS)] victim_idx: usize,
+        #[range(0..NUM_USERS)] liq_idx: usize,
+        #[range(0..2u16)] market_index: u16,
+    ) -> bool {
+        let victim = self.users[victim_idx].clone();
+        let liq = self.users[(liq_idx + 1) % NUM_USERS].clone();
+        if liq.user_pda == victim.user_pda {
+            return false; // UserCantLiquidateThemself
+        }
+        let accounts = self.resolve_accounts(&liq, &victim, market_index);
+        self.ctx
+            .raw_call(Instruction {
+                program_id: self.program_id,
+                accounts,
+                data: ix_data(D_RESOLVE_SPOT_BANKRUPTCY, &market_index.to_le_bytes()),
+            })
+            .signers(&[&liq.keypair])
+            .send()
+            .map(|o| o.is_success())
+            .unwrap_or(false)
+    }
+
+    /// `resolve_perp_bankruptcy(quote_spot_market_index, market_index)` — the perp
+    /// waterfall: the `pending_if_fee` tranche, the shared IF vault draw, the AMM
+    /// fee-provision clawback, then socialization via the cumulative-funding-rate
+    /// bump.
+    ///
+    /// `quote_spot_market_index` is fixed at 0: the vault seeds in
+    /// `ResolveBankruptcy` derive from it, and perp pnl is quote-denominated.
+    pub fn action_resolve_perp_bankruptcy(
+        &mut self,
+        #[range(0..NUM_USERS)] victim_idx: usize,
+        #[range(0..NUM_USERS)] liq_idx: usize,
+    ) -> bool {
+        let victim = self.users[victim_idx].clone();
+        let liq = self.users[(liq_idx + 1) % NUM_USERS].clone();
+        if liq.user_pda == victim.user_pda {
+            return false;
+        }
+        let accounts = self.resolve_accounts(&liq, &victim, 0);
+        let mut args = 0u16.to_le_bytes().to_vec(); // quote_spot_market_index
+        args.extend_from_slice(&0u16.to_le_bytes()); // perp market_index
+        self.ctx
+            .raw_call(Instruction {
+                program_id: self.program_id,
+                accounts,
+                data: ix_data(D_RESOLVE_PERP_BANKRUPTCY, &args),
+            })
+            .signers(&[&liq.keypair])
+            .send()
+            .map(|o| o.is_success())
+            .unwrap_or(false)
+    }
+
     pub fn action_swap(
         &mut self,
         #[range(0..NUM_USERS)] user_idx: usize,
@@ -4006,7 +4349,7 @@ impl Fixture {
                 self.action_deposit((victim_idx + 1) % NUM_USERS, 900 * BASE_PRECISION_U64, 1, 0);
             let _ = self.action_borrow_to_margin_limit(victim_idx, 100);
             for _ in 0..14 {
-                let _ = self.action_move_spot_1_oracle_price(1, 99, 0, 0);
+                let _ = self.action_move_spot_1_oracle_price(1, 99, 0, 0, 0);
             }
         }
         let victim = self.users[victim_idx].clone();
@@ -4102,10 +4445,17 @@ impl Fixture {
         &mut self,
         #[range(0..NUM_USERS)] user_idx: usize,
         #[range(1..4u16)] sub_account_id: u16,
-        #[range(0..2u16)] deposit_from: u16,
-        #[range(0..2u16)] deposit_to: u16,
-        #[range(0..2u16)] borrow_from: u16,
-        #[range(0..2u16)] borrow_to: u16,
+        // Which mint carries the DEPOSIT leg: 0 = USDC (markets 0 <-> 2),
+        // 1 = SOL (markets 1 <-> 3). The borrow leg takes the other mint, which
+        // is what keeps all four vault slots distinct — anchor rejects the same
+        // mutable account twice, and that rejection never reaches the program.
+        #[range(0..2u16)] deposit_leg: u16,
+        // Bit 0 flips the deposit leg's direction, bit 1 the borrow leg's.
+        // Variant 0 is the canonical pool-0 -> pool-1 migration (the one that can
+        // succeed); the other three cross the legs across pools, so they reach
+        // the handler and trip its pool-id validates
+        // (instructions/user.rs:1648-1664) rather than dying in anchor.
+        #[range(0..4u8)] leg_variant: u8,
         #[range(0..2u8)] with_deposit_amount: u8,
         #[range(1..1_000_000_000u64)] deposit_amount: u64,
         #[range(0..2u8)] with_borrow_amount: u8,
@@ -4143,8 +4493,28 @@ impl Fixture {
         // All FOUR vault slots must be distinct accounts (anchor rejects the
         // same mutable account twice), and the legs must cross pools: deposit
         // 0 -> 2 and borrow 1 -> 3 maps pool 0 onto pool 1.
-        let (deposit_from, deposit_to) = (0u16, 2u16);
-        let (borrow_from, borrow_to) = (1u16, 3u16);
+        //
+        // WAS: four `#[range(0..2u16)]` market-index params SHADOWED right here
+        // by hard-coded `(0, 2)` / `(1, 3)` — four fuzz dimensions drawn and
+        // discarded on every call, against a range that could not reach markets
+        // 2/3 in the first place. Derived from the two live params instead, which
+        // keeps the mint pairing (and therefore vault distinctness) an invariant
+        // of the construction rather than something the fuzzer has to guess.
+        let (d_lo, b_lo) = if deposit_leg == 0 {
+            (0u16, 1u16)
+        } else {
+            (1u16, 0u16)
+        };
+        let (deposit_from, deposit_to) = if leg_variant & 1 == 0 {
+            (d_lo, d_lo + 2)
+        } else {
+            (d_lo + 2, d_lo)
+        };
+        let (borrow_from, borrow_to) = if leg_variant & 2 == 0 {
+            (b_lo, b_lo + 2)
+        } else {
+            (b_lo + 2, b_lo)
+        };
         let mut args = deposit_from.to_le_bytes().to_vec();
         args.extend_from_slice(&deposit_to.to_le_bytes());
         args.extend_from_slice(&borrow_from.to_le_bytes());
@@ -5499,7 +5869,7 @@ mod smoke {
         // Moving the oracle is a host-side account rewrite; it must always apply
         // and must leave the account readable by the program.
         assert!(
-            f.action_move_oracle_price(1, 50, 0, 0),
+            f.action_move_oracle_price(1, 50, 0, 0, 0),
             "oracle move (+0.50%)"
         );
         let acct = f
@@ -5587,7 +5957,7 @@ mod smoke {
             .price;
         for _ in 0..40 {
             assert!(
-                f.action_move_spot_1_oracle_price(1, 99, 0, 0),
+                f.action_move_spot_1_oracle_price(1, 99, 0, 0, 0),
                 "move market 1 oracle (+0.99%)"
             );
         }
@@ -5615,7 +5985,7 @@ mod smoke {
         let _ = f.action_liquidate_borrow_for_perp_pnl(0, 0, 1, 1_000_000_000, 0, 1_000_000);
         let _ = f.action_liquidate_spot_with_swap(0, 0, 0, 1, 1_000_000, 1);
         let _ = f.action_swap(0, 0, 1, 1_000_000, 1_000_000, 0, 1_000_000, 0);
-        let _ = f.action_transfer_pools(0, 1, 0, 1, 1, 0, 0, 1_000_000, 0, 1_000_000);
+        let _ = f.action_transfer_pools(0, 1, 0, 0, 0, 1_000_000, 0, 1_000_000);
         let _ = f.action_update_spot_market_cumulative_interest();
     }
 
@@ -5739,7 +6109,7 @@ mod smoke {
         // breaks. From the initial limit (1.2x) to maintenance (1.1x) is ~9%.
         let mut liquidated = false;
         for _ in 0..40 {
-            assert!(f.action_move_spot_1_oracle_price(1, 99, 0, 0));
+            assert!(f.action_move_spot_1_oracle_price(1, 99, 0, 0, 0));
             if f.action_liquidate_spot(0, 0, 0, 1, 1_000_000_000_000, 0, 0) {
                 liquidated = true;
                 break;
@@ -5966,10 +6336,13 @@ mod smoke {
         run!("update_user_idle", f.action_update_user_idle(0, 1, 1, 0));
         run!("native_mm_oracle", f.action_native_mm_oracle(1_000_000));
         run!("native_spread_adjust", f.action_native_spread_adjust(5));
-        run!("move_oracle_price", f.action_move_oracle_price(1, 50, 0, 0));
+        run!(
+            "move_oracle_price",
+            f.action_move_oracle_price(1, 50, 0, 0, 0)
+        );
         run!(
             "move_spot_1_oracle",
-            f.action_move_spot_1_oracle_price(1, 50, 0, 0)
+            f.action_move_spot_1_oracle_price(1, 50, 0, 0, 0)
         );
 
         // ---- user config ----
@@ -6108,7 +6481,7 @@ mod smoke {
         // freezes its pool_id), so sub 2 is the next clean destination.
         run!(
             "transfer_pools",
-            f.action_transfer_pools(0, 2, 0, 0, 0, 0, 1, 1_000_000, 1, 1_000)
+            f.action_transfer_pools(0, 2, 0, 0, 1, 1_000_000, 1, 1_000)
         );
         run!(
             "swap",
@@ -6121,6 +6494,14 @@ mod smoke {
         run!(
             "liquidate_borrow_for_perp_pnl",
             f.action_liquidate_borrow_for_perp_pnl(0, 0, 1, 1_000_000_000, 0, 1_000_000)
+        );
+        run!(
+            "resolve_spot_bankruptcy",
+            f.action_resolve_spot_bankruptcy(0, 0, 1)
+        );
+        run!(
+            "resolve_perp_bankruptcy",
+            f.action_resolve_perp_bankruptcy(0, 0)
         );
         run!(
             "liquidate_spot_with_swap",
@@ -6171,6 +6552,13 @@ mod smoke {
             "liquidate_spot",
             "liquidate_borrow_for_perp_pnl",
             "liquidate_spot_with_swap",
+            // Need a victim the census pipeline has actually driven into
+            // Bankrupt. The census account is healthy, so both resolve paths
+            // bail at `UserNotBankrupt`. The fuzzer CAN reach the state:
+            // deposit -> borrow_to_margin_limit -> walk market 1's oracle up ->
+            // liquidate_spot seizes the collateral and sets the flag.
+            "resolve_spot_bankruptcy",
+            "resolve_perp_bankruptcy",
             // Needs an undercollateralized account with open orders.
             "force_cancel_orders",
             // Needs the vault/accounting to actually disagree.
@@ -6185,9 +6573,15 @@ mod smoke {
             "remove_if_stake",
             // Needs revenue settled and the APR cap to allow a transfer.
             "settle_revenue_to_if",
-            // Needs FOUR distinct spot markets: Anchor rejects the same vault in
-            // two mutable slots, and the deposit+borrow legs need 4 vaults.
-            // Unreachable with the current 2-market fixture.
+            // Needs the source sub-account to already hold BOTH legs (a market-0
+            // deposit and a market-1 borrow) and a destination sub-account whose
+            // pool_id is still unfrozen. The fuzzer also draws three
+            // deliberately-invalid pool-id variants that reject lawfully.
+            //
+            // (The old note here — "Unreachable with the current 2-market
+            // fixture" — was stale: the fixture builds FOUR spot markets, and
+            // Anchor's same-vault-twice rejection is exactly what the
+            // mint-paired leg selection avoids.)
             "transfer_pools",
             // Needs the account to have gone untouched for the idle window.
             "update_user_idle",
@@ -6314,9 +6708,11 @@ fn invariant_solvency(fixture: &mut Fixture) {
             // tokens it pays (controller/spot_balance.rs:319-320 forces
             // `round_up` on every Borrow-type reduction), so each repay leaves
             // the vault exactly 1 unit short. That bug is FILED; leaving the
-            // assertion strict here means every iteration that repays aborts at
-            // the violation, which truncates the action sequence and stops the
-            // fuzzer from ever exploring what comes after a repay.
+            // assertion strict here means every iteration that repays RECORDS a
+            // violation, and `#[invariant_test]` then breaks the action loop on
+            // `has_violation()` (crucible-invariant-macro/src/lib.rs:1416-1424),
+            // which truncates the action sequence and stops the fuzzer from ever
+            // exploring what comes after a repay.
             //
             // So tolerate ONLY that signature: at most one unit per action, and
             // crucible caps an iteration at `max_actions` (8), so a shortfall
@@ -6396,13 +6792,27 @@ fn invariant_solvency(fixture: &mut Fixture) {
             KNOWN_REPAY_ROUNDING_SLACK_2
         );
 
-        // Borrows are only ever backed by deposits in the same market.
-        fuzz_assert!(
-            spot_market_1.borrow_balance <= spot_market_1.deposit_balance,
-            "spot market 1: borrow_balance {} exceeds deposit_balance {}",
-            spot_market_1.borrow_balance,
-            spot_market_1.deposit_balance
-        );
+        // BORROW-VS-DEPOSIT — REMOVED HERE, owned by Family XIX below.
+        //
+        // This was a byte-for-byte duplicate of XIX's predicate on the SAME
+        // market ("spot market 1", which XIX covers in its market table) with two
+        // differences that made it actively harmful: it was EXACT (no slack) and
+        // it ran ~400 lines EARLIER.
+        //
+        // XIX deliberately tolerates a bounded shortfall — the same
+        // issue-01-spot-repay-overcredits-borrow-ledger suppression as the guard
+        // above, signature `borrow 30000001 vs deposit 30000000`, one unit per
+        // repay, bounded by twice the per-iteration action cap. This copy did
+        // not, so every iteration containing a repay recorded a violation here.
+        // Under crucible that is not a cosmetic mislabel: `record_violation`
+        // keeps only the FIRST message (crucible-test-context/src/lib.rs:
+        // 1120-1132) and `#[invariant_test]` then BREAKS the action loop
+        // (crucible-invariant-macro/src/lib.rs:1416-1424). So one tolerated dust
+        // shortfall both masked every family below this point AND truncated the
+        // action sequence.
+        //
+        // Do not re-add. If this property needs strengthening, strengthen XIX,
+        // where the known-bug suppression lives.
     }
 
     // --- Family I: per-spot-market solvency (the vault covers all claims). ---
@@ -6556,8 +6966,24 @@ fn invariant_solvency(fixture: &mut Fixture) {
 
     // =====================================================================
     // TEMPORAL: interest indices are monotonically non-decreasing (T11 /
-    // Class 11). Interest only ever accrues; an index that moves BACKWARDS
+    // Class 11), EXCEPT for socialized loss. An index that moves BACKWARDS
     // silently re-values every deposit and borrow in that market.
+    //
+    // "Interest only ever accrues" is NOT true of the program: resolving a spot
+    // bankruptcy SUBTRACTS
+    // `calculate_cumulative_deposit_interest_delta_to_resolve_bankruptcy` from
+    // the deposit index — that IS how a depositor haircut is applied, not a bug.
+    // The old form of this check was accidentally sound only because no action in
+    // this harness could reach that path; `action_resolve_spot_bankruptcy` now
+    // can, so the exception has to be explicit or the check would fire on correct
+    // protocol behaviour the first time a bankruptcy resolves.
+    //
+    // The discriminator is exact rather than heuristic: the same block that
+    // subtracts from the index increments `total_social_loss`, so an increase
+    // there is a precise witness that a socialization happened this step. Any
+    // OTHER decrease is real.
+    //
+    // The BORROW index needs no such exception — `safe_add` is its only writer.
     //
     // FP GUARD: skip the first observation — there is no prior sample to
     // compare against, which is the classic initial-state false positive.
@@ -6572,14 +6998,18 @@ fn invariant_solvency(fixture: &mut Fixture) {
             let now = (
                 sm.cumulative_deposit_interest,
                 sm.cumulative_borrow_interest,
+                sm.total_social_loss,
             );
-            if let Some((prev_d, prev_b)) = fixture.last_interest[idx] {
+            if let Some((prev_d, prev_b, prev_loss)) = fixture.last_interest[idx] {
+                let socialized = now.2 > prev_loss;
                 fuzz_assert!(
-                    now.0 >= prev_d,
-                    "spot market {}: cumulative_deposit_interest went backwards {} -> {}",
+                    now.0 >= prev_d || socialized,
+                    "spot market {}: cumulative_deposit_interest went backwards {} -> {} with \
+                     NO socialized loss (total_social_loss unchanged at {})",
                     idx,
                     prev_d,
-                    now.0
+                    now.0,
+                    now.2
                 );
                 fuzz_assert!(
                     now.1 >= prev_b,
@@ -6700,16 +7130,23 @@ fn invariant_solvency(fixture: &mut Fixture) {
             // which is what family V and XVIII already cover. VIII.b and VIII.c
             // below are unaffected: neither depends on that counter being nonzero.
 
-            // VIII.b — bankruptcy implies liquidation. The protocol reaches
-            // Bankrupt only THROUGH the being-liquidated state
-            // (`resolve_*_bankruptcy` runs on an account already flagged), so a
-            // bankrupt-but-not-liquidating account is an unreachable state
-            // machine position — T5/Class 3 (state-transition gap).
-            fuzz_assert!(
-                !(user.is_bankrupt() && !flagged),
-                "family VIII.b: user {} is bankrupt but not flagged being-liquidated",
-                u.user_pda
-            );
+            // VIII.b — REMOVED. Tautologically true, therefore dead code.
+            //
+            // It asserted `!(user.is_bankrupt() && !user.is_being_liquidated())`.
+            // But `is_cross_margin_being_liquidated()` is
+            // `status & (BeingLiquidated | Bankrupt) > 0` (state/user.rs:173-175),
+            // `PerpPosition::is_being_liquidated()` is the analogous flag OR
+            // (state/user.rs:1347-1350), and `User::is_being_liquidated()` is the
+            // OR of the two (state/user.rs:169-171). So `is_bankrupt()` implies
+            // `is_being_liquidated()` for EVERY representable status byte — the
+            // predicate cannot be false, and no action (including the
+            // `resolve_*_bankruptcy` pair added alongside this removal) can make
+            // it fire.
+            //
+            // The property it MEANT to state — "the protocol only reaches
+            // Bankrupt through a real liquidation" — is a transition property,
+            // not a state property, and cannot be expressed as a predicate over
+            // one snapshot of `status`. VIII.c below is unaffected.
 
             // VIII.c — margin freed is only meaningful mid-liquidation.
             // `liquidation_margin_freed` accumulates as a liquidation retires
@@ -6839,9 +7276,16 @@ fn invariant_solvency(fixture: &mut Fixture) {
     // counts — the protocol explicitly asserting the victim is healthy — so
     // every other lawful refusal is excluded by construction rather than by a
     // guard list.
+    //
+    // WAS VACUOUS until the insolvency predicate was rewritten: the old
+    // `is_structurally_insolvent` required a borrow with NO deposit, but
+    // `liquidate_spot` rejects exactly that shape on the asset side long before
+    // it can emit 6004, so the two conditions were mutually exclusive and this
+    // could never fire. See `is_unconditionally_insolvent`.
     fuzz_assert!(
         fixture.liq_refusals.is_empty(),
-        "family XVIII: liquidation REFUSED on a structurally insolvent account — {:?}",
+        "family XVIII: liquidation REFUSED (SufficientCollateral) on an account whose \
+         liabilities exceed its assets at weight 1.0 — {:?}",
         fixture.liq_refusals
     );
 
@@ -7067,45 +7511,30 @@ fn invariant_solvency(fixture: &mut Fixture) {
         }
     }
 
-    // --- Family XIV: spot-position order reservations. ---
+    // --- Family XIV: spot-position order reservations — REMOVED (unreachable). ---
     //
-    // BLIND SPOT this closes: Family XII covers PERP positions only, but
-    // `SpotPosition` carries the same `{open_orders, open_bids, open_asks}`
-    // reservation triple and feeds the same margin calculation. Spot orders are
-    // reachable (`place_orders` takes a `MarketType`), so the spot half of that
-    // accounting was unverified.
+    // It asserted that `SpotPosition::{open_orders, open_bids, open_asks}` agrees
+    // with the user's open SPOT orders. There can never be one in this fork:
     //
-    // Count-based for the same reason as Family XII.
-    for u in &fixture.users {
-        let Some(user) = fixture.read_user(&u.user_pda) else {
-            continue;
-        };
-        for sp in user.spot_positions.iter() {
-            if sp.open_orders == 0 && sp.open_bids == 0 && sp.open_asks == 0 {
-                continue;
-            }
-            let actual = user
-                .orders
-                .iter()
-                .filter(|o| {
-                    o.status == velocity::state::user::OrderStatus::Open
-                        && o.market_type == velocity::state::user::MarketType::Spot
-                        && o.market_index == sp.market_index
-                })
-                .count();
-            fuzz_assert!(
-                actual == sp.open_orders as usize,
-                "family XIV: user {} spot market {} reserves open_orders={} but holds {} open \
-                 spot orders (open_bids={} open_asks={})",
-                u.user_pda,
-                sp.market_index,
-                sp.open_orders,
-                actual,
-                sp.open_bids,
-                sp.open_asks
-            );
-        }
-    }
+    //   * `place_orders` calls `validate_spot_dlob_trading_enabled_for_market_type`,
+    //     which returns `SpotDlobTradingDisabled` for `MarketType::Spot`
+    //     unconditionally (controller/orders.rs:850-857; call sites orders.rs:935,
+    //     instructions/keeper.rs:235, instructions/user.rs:3120).
+    //   * `place_perp_order` rejects a non-perp market type at
+    //     controller/orders.rs:298-302 (`InvalidOrderMarketType`).
+    //   * There is no `place_spot_order` instruction.
+    //   * The ONLY write to a spot `open_orders` anywhere in the program is a
+    //     DECREMENT, on the cancel path at controller/orders.rs:838. There is no
+    //     increment outside math/orders/tests.rs. So the triple is pinned at 0 and
+    //     the guard at the top of the loop `continue`d on every position, every
+    //     iteration — the assert never evaluated once.
+    //
+    // The original rationale ("spot orders are reachable, `place_orders` takes a
+    // `MarketType`") confused the parameter existing with the value being
+    // accepted. Family XII covers the perp triple, which IS reachable.
+    //
+    // Do not re-add unless spot DLOB trading is enabled in the program; at that
+    // point restore it as a near-copy of Family XII.
 
     // --- Family XV: market accounts live at their canonical PDAs. ---
     //

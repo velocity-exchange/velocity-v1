@@ -49,9 +49,21 @@ def strings(path):
     except Exception:
         pass
     try:                                    # busybox / no binutils fallback
-        data = open(path, "rb").read()
-        return "\n".join(re.findall(rb"[\x20-\x7e]{4,}", data).__iter__().__str__()
-                         for _ in [0])
+        # WAS: `"\n".join(findall(...).__iter__().__str__() for _ in [0])`, which
+        # returned the 37-character repr of a list_iterator
+        # ("<list_iterator object at 0x...>") instead of the strings. Both callers
+        # take the result as text, so on any box without `strings` GATE A
+        # hard-failed with "the fuzz test is not registered" against a binary that
+        # was fine, and GATE B found no *.rs paths, warned, and `continue`d --
+        # thereby silently skipping the source-staging loop below that
+        # .github/workflows/fuzz-deploy.yml depends on.
+        #
+        # finditer, not findall: the symbols .so is ~71 MB and findall would
+        # materialise every match as a separate bytes object first.
+        with open(path, "rb") as fh:
+            data = fh.read()
+        return "\n".join(m.group().decode("ascii")
+                         for m in re.finditer(rb"[\x20-\x7e]{4,}", data))
     except Exception:
         return ""
 
@@ -193,7 +205,12 @@ for lin in man.get("Lineages", []):
             except Exception:
                 di = dl = ""
             comp = {c for c in re.findall(r'DW_AT_comp_dir\s*\("([^"]*)"\)', di)
-                    if not re.search(r'\.cargo|/rustc/|toolchain|bpf-tools|platform-tools', c)}
+                    # `\.cargo` alone never matched the container's
+                    # /usr/local/cargo/registry/... (no leading dot). Harmless
+                    # here because this is a SET, but keep it textually aligned
+                    # with fuzz/verify-coverage.sh, which uses head -1 semantics
+                    # where it mattered.
+                    if not re.search(r'(^|/)\.?cargo/registry|/rustc/|toolchain|bpf-tools|platform-tools', c)}
             dirs = re.findall(r'include_directories\[\s*\d+\]\s*=\s*"([^"]*)"', dl)
             keys = set()
             for d in dirs:

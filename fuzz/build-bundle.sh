@@ -43,7 +43,20 @@
 #   --skip-build    Do not run cargo; assume each fuzz/<crate>/target/release binary
 #                   already exists. Still stages + regenerates the manifest.
 #   --zip           After staging, zip the bundle to dist/velocity-fuzz-bundle.zip.
+#                   LOCAL CONVENIENCE ONLY. The archive is taken BEFORE
+#                   fuzz/bundle-guard.sh stages missing sources into the bundle,
+#                   so it is not what a deploy uploads (fuzz-deploy.yml uploads
+#                   the DIRECTORY). Never point upload_path at the zip.
+#   --fresh         Do not reuse ANY pre-existing SBF artifacts: wipe
+#                   target/sbpf-solana-solana, target/sbf-solana-solana and
+#                   target/deploy/velocity{,.debug}.so before the container build.
+#                   Mirrors test-scripts/ci-local.sh -- the SBF incremental cache
+#                   poisons across feature-flavor switches and the resulting .so
+#                   dies at entry with "Access violation in unknown section"
+#                   (see CLAUDE.md).
 #   --out DIR       Bundle staging dir (default: fuzz/dist/bundle).
+#                   Requires --native/--zigbuild: the containerized path does not
+#                   forward it to the inner invocation, so it would be ignored.
 #   --commit SHA    Revision.Commit to embed (default: git HEAD of the repo).
 #   --docker        Force the linux/amd64 container cross-build (see below).
 #   --native        Force a native build (skip the container even on macOS).
@@ -73,6 +86,8 @@ committed_manifest="$here/manifest.fc.json"
 placeholder_commit="0000000"
 
 out_dir="$here/dist/bundle"
+out_dir_set=0
+fresh=0
 mode_check=0
 mode_write_manifest=0
 no_svm=0
@@ -94,12 +109,16 @@ while [ $# -gt 0 ]; do
     --zigbuild) zigbuild=1; force_native=1 ;;
     --skip-build) skip_build=1 ;;
     --zip) do_zip=1 ;;
-    --out) out_dir="$2"; shift ;;
+    --fresh) fresh=1 ;;
+    --out) out_dir="$2"; out_dir_set=1; shift ;;
     --commit) commit="$2"; shift ;;
     --docker) force_docker=1 ;;
     --native) force_native=1 ;;
     --image) image="$2"; shift ;;
-    -h|--help) sed -n '2,49p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    # Anchored, not a line count: `sed -n '2,49p'` silently truncated --image and
+    # --help itself out of the help text, and any line added to the header above
+    # would shift it further.
+    -h|--help) sed -n '2,/^# Cross-build:/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
   shift
@@ -112,6 +131,21 @@ fi
 
 if [ "$no_svm" -eq 1 ] && [ "$svm_only" -eq 1 ]; then
   echo "--no-svm and --svm-only are mutually exclusive" >&2
+  exit 2
+fi
+
+# `--out` on the containerized path was silently ignored: the `inner` array below
+# does not carry it, so the container stages at the default /src/fuzz/dist/bundle
+# while the host went on to verify $out_dir -- producing nothing at the requested
+# path and no error. Fail loudly instead of pretending to honour the flag.
+if [ "$out_dir_set" -eq 1 ] && [ "$force_native" -eq 0 ] && [ "$mode_check" -eq 0 ] \
+   && [ "$mode_write_manifest" -eq 0 ] && [ "${FUZZ_BUNDLE_IN_CONTAINER:-0}" != "1" ] \
+   && [ "$(uname -s)/$(uname -m)" != "Linux/x86_64" ]; then
+  echo "--out is not supported on the containerized build path." >&2
+  echo "  The inner (in-container) invocation is not given --out, so it would stage at" >&2
+  echo "  the default fuzz/dist/bundle while this shell verified \$out_dir -- silently" >&2
+  echo "  producing nothing there. Pass --native (or --zigbuild) with --out, or drop" >&2
+  echo "  --out and use the default fuzz/dist/bundle." >&2
   exit 2
 fi
 
@@ -261,6 +295,22 @@ if [ "$mode_write_manifest" -eq 1 ]; then
   exit 0
 fi
 
+# Archive the staged bundle. LOCAL CONVENIENCE ONLY -- this snapshot is taken
+# before fuzz/bundle-guard.sh stages missing sources into the bundle, so it is
+# NOT what a deploy uploads. Defined here because the containerized path calls it
+# after the container exits, well before the end of the script.
+make_zip() {
+  [ "$do_zip" -eq 1 ] || return 0
+  if ! command -v zip >/dev/null 2>&1; then
+    echo "   note: zip not installed; skipping archive (fuzz-up accepts the bundle dir directly)" >&2
+    return 0
+  fi
+  local zip_path="$here/dist/velocity-fuzz-bundle.zip"
+  rm -f "$zip_path"
+  ( cd "$out_dir" && zip -qr "$zip_path" . )
+  echo ">> zipped $zip_path"
+}
+
 # ----------------------------------------------------------------------------
 # Build mode.
 # ----------------------------------------------------------------------------
@@ -302,8 +352,61 @@ if [ "$skip_build" -eq 0 ] && [ "$in_container" != "1" ] && [ "$force_native" -e
   if [ "$no_svm" -eq 0 ] && grep -qE '^[[:space:]]*svm[[:space:]]' "$targets_file"; then
     has_svm_bundle=1
   fi
-  if [ "$has_svm_bundle" -eq 1 ] && [ ! -f "$repo_root/target/deploy/velocity.so" ]; then
-    sbf_img="${sbf_image:-solanafoundation/solana-verifiable-build:3.1.14}"
+  # Whether a pre-existing target/deploy/velocity.so may be REUSED.
+  #
+  # The old check was `[ ! -f target/deploy/velocity.so ]` -- pure existence. On
+  # any dev box that has ever run `bun run program:build` or `anchor build`, that
+  # file is a HOST build, and the staging step below then copied it into the
+  # bundle. Its DWARF bakes the developer's absolute path as comp_dir, which
+  # "/src" does not prefix -- exactly what the SourcesOriginalPath note above
+  # forbids ("never ship a pre-staged host-built .so for coverage"). CI is
+  # unaffected (fresh checkout, empty target/), so this only ever bit local runs,
+  # silently, until verify-coverage.sh caught it at the very end of a long build.
+  #
+  # Existence is not enough for a SECOND reason: velocity.so and velocity.debug.so
+  # must come from ONE build or their PC addresses do not line up and the coverage
+  # symbols describe a different binary.
+  #
+  # So: reuse only when both halves exist and the DWARF proves the container
+  # produced them (comp_dir == "/src"). comp_dir is the right provenance oracle
+  # precisely because it is the same property the manifest's SourcesOriginalPath
+  # depends on. --recurse-depth=0 keeps this to CU-level DIEs.
+  sbf_img="solanafoundation/solana-verifiable-build:3.1.14"
+  so_path="$repo_root/target/deploy/velocity.so"
+  dbg_path="$repo_root/target/deploy/velocity.debug.so"
+
+  if [ "$fresh" -eq 1 ]; then
+    echo ">> --fresh: wiping SBF artifacts (flavor-poisoning guard, cf. test-scripts/ci-local.sh)"
+    rm -rf "$repo_root/target/sbpf-solana-solana" "$repo_root/target/sbf-solana-solana"
+    rm -f "$so_path" "$dbg_path"
+  fi
+
+  reuse_so=0
+  if [ -f "$so_path" ] && [ -f "$dbg_path" ]; then
+    dw="$(command -v llvm-dwarfdump || command -v dwarfdump || true)"
+    if [ -z "$dw" ]; then
+      for c in /usr/lib/llvm-*/bin/llvm-dwarfdump /usr/bin/llvm-dwarfdump-*; do
+        [ -x "$c" ] && dw="$c" && break
+      done
+    fi
+    if [ -z "$dw" ]; then
+      echo ">> cannot verify the provenance of the existing target/deploy/velocity.so" >&2
+      echo "   (no llvm-dwarfdump). Rebuilding in the container rather than risking a" >&2
+      echo "   host-built .so whose source coverage renders empty." >&2
+    elif ! "$dw" --debug-info --recurse-depth=0 "$dbg_path" 2>/dev/null \
+           | grep -qE 'DW_AT_comp_dir[[:space:]]*\("/src"\)'; then
+      echo ">> existing target/deploy/velocity.debug.so is NOT a container build" >&2
+      echo "   (no DW_AT_comp_dir \"/src\") -- almost certainly from \`bun run program:build\`" >&2
+      echo "   or \`anchor build\`. Rebuilding: a host-built .so bakes an absolute machine" >&2
+      echo "   path into its DWARF and ships a bundle whose source coverage renders EMPTY." >&2
+    else
+      reuse_so=1
+      echo ">> reusing target/deploy/velocity.so (DWARF comp_dir=/src: container-built)"
+    fi
+  fi
+
+  if [ "$has_svm_bundle" -eq 1 ] && [ "$reuse_so" -eq 0 ]; then
+    rm -f "$so_path" "$dbg_path"
     echo ">> building velocity.so (+ DWARF symbols) in $runtime ($sbf_img)"
     mkdir -p "$repo_root/target/deploy"
     # Two artifacts from ONE build (PC addresses must match): the stripped deploy .so
@@ -314,10 +417,16 @@ if [ "$skip_build" -eq 0 ] && [ "$in_container" != "1" ] && [ "$force_native" -e
     # matches no source file) => no server-side FCOV. v1.52 platform-tools (this image)
     # is >= v1.51, avoiding the SBF-linker DWARF-corruption bug. Named volume caches the
     # build; the image runs as root so we chown the outputs back to the host user.
+    # The named volumes are keyed to the image TAG: a platform-tools bump changes
+    # rustc, and a cache populated by the previous toolchain is exactly the
+    # "Access violation in unknown section" class CLAUDE.md documents. Docker
+    # creates a new volume on first use, so a bump self-heals rather than
+    # poisoning. (Orphaned older volumes are harmless; `docker volume rm` to
+    # reclaim.)
     "$runtime" run --rm --platform linux/amd64 \
       -v "$repo_root":/src \
-      -v velocity-sbf-cache:/src/programs/velocity/target \
-      -v velocity-sbf-cargo:/root/.cargo \
+      -v "velocity-sbf-cache-${sbf_img##*:}":/src/programs/velocity/target \
+      -v "velocity-sbf-cargo-${sbf_img##*:}":/root/.cargo \
       -w /src/programs/velocity \
       -e CARGO_PROFILE_RELEASE_OPT_LEVEL=1 \
       -e CARGO_PROFILE_RELEASE_DEBUG=2 \
@@ -352,7 +461,9 @@ if [ "$skip_build" -eq 0 ] && [ "$in_container" != "1" ] && [ "$force_native" -e
   [ "$no_svm" -eq 1 ] && inner+=(--no-svm)
   [ "$svm_only" -eq 1 ] && inner+=(--svm-only)
   [ "$zigbuild" -eq 1 ] && inner+=(--zigbuild)
-  [ "$do_zip" -eq 1 ] && inner+=(--zip)
+  # --zip is deliberately NOT forwarded: the rust image ships no `zip`, so the
+  # inner invocation just printed "zip not installed; skipping archive" into a log
+  # nobody reads. Archiving happens on the host after the container exits.
   # The coverage-prefix gate runs in the INNER (containerized) invocation, but the
   # rust image ships no llvm-dwarfdump and the container runs as a non-root user, so
   # it cannot apt-get one. Installing llvm on the runner is therefore not enough --
@@ -373,8 +484,14 @@ if [ "$skip_build" -eq 0 ] && [ "$in_container" != "1" ] && [ "$force_native" -e
   rc=$?
   [ "$rc" -ne 0 ] && exit "$rc"
   # Verify coverage on the host, where llvm-dwarfdump actually runs.
-  bash "$here/verify-coverage.sh" "${out_dir_override:-$here/dist/bundle}"
-  exit $?
+  bash "$here/verify-coverage.sh" "$out_dir"
+  rc=$?
+  [ "$rc" -ne 0 ] && exit "$rc"
+  # Archive on the HOST: --zip is not forwarded into the container (no `zip` in
+  # the rust image). Still a pre-bundle-guard snapshot -- see the --zip note in
+  # the header.
+  make_zip
+  exit 0
 fi
 
 # Native build (this host, or inside the cross-build container).
@@ -517,105 +634,26 @@ gen_manifest "$commit" "$no_svm" "$svm_only" > "$out_dir/manifest.fc.json"
 echo "   wrote manifest.fc.json ($(grep -c '"Name"' "$out_dir/manifest.fc.json") entries incl. confs)"
 
 # --- Coverage sanity gate ------------------------------------------------------
-# Runs on the HOST, never inside the build container. The container image ships
-# no llvm-dwarfdump, it runs as a non-root user so it cannot install one, and a
-# host llvm bind-mounted in does not execute (Ubuntu-noble binaries against a
-# Debian-bookworm runtime) -- it returns EMPTY output, which made this gate
-# report "no compile-unit paths readable" for a .so that is in fact perfect
-# (60 compile units, DW_AT_comp_dir "/src"). The outer invocation re-runs the
-# script with --verify-coverage once the container exits.
+# ONE implementation, on the HOST, in fuzz/verify-coverage.sh.
+#
+# It cannot run in-container: the rust image ships no llvm-dwarfdump, runs as a
+# non-root user so it cannot install one, and a host llvm bind-mounted in does not
+# execute (Ubuntu-noble binaries against a Debian-bookworm runtime) -- it returns
+# EMPTY output. That empty output, NOT an absent comp_dir, is what made the old
+# inline copy of this gate report "no compile-unit paths readable" for a .so that
+# is in fact perfect (60 compile units, 2 carrying DW_AT_comp_dir "/src").
+#
+# The inline copy that used to live here was a byte-duplicate of verify-coverage.sh
+# and unreachable in CI (every CI build is containerized, so the branch below
+# short-circuited it) -- but a --native/--zigbuild build DID run it, i.e. the one
+# path that reached it got the buggy copy. Deleting it is the fix.
 if [ "${FUZZ_BUNDLE_IN_CONTAINER:-0}" = "1" ]; then
   echo "   coverage gate deferred to the host (no usable dwarfdump in-container)"
 else
-# The #1 way a bundle ships with EMPTY source-level coverage: the manifest's
-# SourcesOriginalPath does not match the DWARF the .so carries. The crucible LCOV
-# keys each line on an absolute path = <DW_AT_comp_dir> + relative-file, and the
-# driver strips SourcesOriginalPath from it. If SourcesOriginalPath and comp_dir
-# don't share a root (e.g. a host-built .so with comp_dir=/Users/... while the
-# manifest says /src), the cover task fails "does not match any source file" and
-# coverage renders 0 lines — silently. Catch it here, at build time.
-sym="$out_dir/symbols/velocity.debug.so"
-if [ -f "$sym" ]; then
-  dwdump="$(command -v llvm-dwarfdump || command -v dwarfdump || true)"
-  # Debian's `llvm` package installs a VERSIONED llvm-dwarfdump-<N> and NO
-  # unsuffixed alias, so `command -v llvm-dwarfdump` finds nothing on a runner
-  # that did install llvm -- and this gate then silently skips itself, which is
-  # how two other harnesses in this fleet shipped bundles that render empty.
-  if [ -z "$dwdump" ]; then
-    for c in /usr/lib/llvm-*/bin/llvm-dwarfdump /usr/bin/llvm-dwarfdump-*; do
-      [ -x "$c" ] && dwdump="$c" && break
-    done
-  fi
-  if [ -n "$dwdump" ]; then
-    # `|| true` on every one of these: with `set -o pipefail` a grep that matches
-    # nothing fails the whole pipeline, the assignment fails, and `set -e` kills the
-    # script SILENTLY -- no message, exit 1, right after "wrote manifest.fc.json".
-    # That is exactly what happened here: velocity's DWARF carries no comp_dir, the
-    # comp_dir grep matched nothing, and the gate aborted the build without saying so.
-    sop="$(grep -oE '"SourcesOriginalPath": *"[^"]*"' "$out_dir/manifest.fc.json" | head -1 | sed -E 's/.*"SourcesOriginalPath": *"([^"]*)".*/\1/' || true)"
-    # The program crate's own comp_dir (exclude dependency/toolchain units).
-    compdir="$("$dwdump" --debug-info "$sym" 2>/dev/null | grep -oE 'DW_AT_comp_dir[^"]*"[^"]+"' | sed -E 's/.*"([^"]+)".*/\1/' | grep -viE '\.cargo|/rustc|/toolchains|platform-tools|bpf-tools' | head -1 || true)"
-    if [ -n "$sop" ] && [ -n "$compdir" ]; then
-      case "$compdir" in "$sop"*) ok=1 ;; *) case "$sop" in "$compdir"*) ok=1 ;; *) ok=0 ;; esac ;; esac
-      if [ "${ok:-0}" -ne 1 ]; then
-        echo "" >&2
-        echo "ERROR: coverage would render EMPTY. SourcesOriginalPath ('$sop') and the .so's DWARF" >&2
-        echo "       comp_dir ('$compdir') do not share a root. Build the coverage .so at a fixed" >&2
-        echo "       root (container /src or --remap-path-prefix) and set SourcesOriginalPath to match." >&2
-        echo "       See fuzz/README.md (coverage build + SourcesOriginalPath)." >&2
-        exit 1
-      fi
-      echo "   coverage sanity OK (SourcesOriginalPath '$sop' consistent with comp_dir '$compdir')"
-    else
-      # comp_dir is FREQUENTLY ABSENT from SBF DWARF -- verified on real artifacts,
-      # where the compile-unit paths are a mixture of repo-relative and bare
-      # `src/lib.rs` (dependencies) with no comp_dir at all. Skipping here is what
-      # let two sibling harnesses upload bundles the server then rejected with
-      # "SourcesOriginalPath ... does not match any source file", rendering
-      # lines_found: 0 while every CI step stayed green. So fall back to the
-      # authoritative check: does the prefix actually match a compile-unit path?
-      if [ -z "$sop" ]; then
-        echo "ERROR: no SourcesOriginalPath in the manifest -- coverage cannot render." >&2
-        exit 1
-      fi
-      units="$("$dwdump" --debug-info "$sym" 2>/dev/null \
-        | grep -oE 'DW_AT_name[[:space:]]*\("[^"]*\.rs[^"]*"\)' \
-        | sed -E 's/.*\("([^"]*)"\)/\1/; s#/@/.*##' | sort -u || true)"
-      if [ -z "$units" ]; then
-        echo "ERROR: no compile-unit paths readable from $sym; cannot prove that" >&2
-        echo "       SourcesOriginalPath ('$sop') matches the coverage profile." >&2
-        echo "       Refusing to ship a bundle whose coverage may render empty." >&2
-        exit 1
-      fi
-      if printf '%s\n' "$units" | grep -q "^${sop%/}/"; then
-        echo "   coverage sanity OK (no comp_dir; '$sop' matches $(printf '%s\n' "$units" | grep -c "^${sop%/}/") compile-unit paths)"
-      else
-        echo "ERROR: coverage would render EMPTY. SourcesOriginalPath ('$sop') prefixes NONE" >&2
-        echo "       of the $(printf '%s\n' "$units" | wc -l | tr -d ' ') compile-unit paths in the DWARF, e.g.:" >&2
-        printf '%s\n' "$units" | head -3 | sed 's/^/         /' >&2
-        exit 1
-      fi
-    fi
-  else
-    echo "ERROR: no llvm-dwarfdump/dwarfdump available, so the coverage prefix cannot be" >&2
-    echo "       verified. That check is the only thing standing between a green build and" >&2
-    echo "       a campaign that renders no coverage at all -- install llvm and re-run." >&2
-    exit 1
-  fi
-fi
+  bash "$here/verify-coverage.sh" "$out_dir"
 fi
 # -------------------------------------------------------------------------------
 
-if [ "$do_zip" -eq 1 ] && ! command -v zip >/dev/null 2>&1; then
-  echo "   note: zip not installed; skipping archive (fuzz-up accepts the bundle dir directly)" >&2
-  do_zip=0
-fi
-if [ "$do_zip" -eq 1 ]; then
-  dist="$here/dist"
-  zip_path="$dist/velocity-fuzz-bundle.zip"
-  rm -f "$zip_path"
-  ( cd "$out_dir" && zip -qr "$zip_path" . )
-  echo ">> zipped $zip_path"
-fi
+make_zip
 
 echo ">> done."

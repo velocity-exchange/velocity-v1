@@ -104,9 +104,21 @@ const BANKRUPTCY_IF_FLOOR_PCT: u32 = 300_000;
 /// injected open interest: 10 base units long, matched short.
 const OI_BASE: i128 = 10 * BASE_PRECISION as i128;
 
-/// the victim's spot borrow (1 USDC) and negative perp pnl (-1 USDC).
+/// the victim's spot borrow (1 USDC) and negative perp pnl (-750 USDC).
 const VICTIM_BORROW_TOKENS: u64 = QUOTE_PRECISION as u64;
-const VICTIM_PERP_QUOTE: i64 = -(QUOTE_PRECISION as i64);
+/// The perp debt must EXCEED `PENDING_IF_FEE` (500 USDC), or the first
+/// bankruptcy tranche — `min(|loss|, pending_if_fee)`, controller/
+/// liquidation.rs:4356-4370, with no floor cap — absorbs the whole loss,
+/// `loss_after_pending` is 0, and tranches 2/3/4 stay dead no matter what
+/// `quote_max_insurance` says. It was -1 USDC, which is why the entire IF
+/// waterfall below tranche 1 was unreachable.
+///
+/// 750 USDC leaves a 250 USDC residual: tranche 2 draws it from the IF vault,
+/// and if the vault is already drawn down, tranche 3 (the AMM clawback, capped
+/// at `amm_protocol_fees_received` = 0 here) falls through to tranche 4
+/// socialization. The dedicated `regr_306` harness makes the same move by hand
+/// for exactly this reason.
+const VICTIM_PERP_QUOTE: i64 = -(750 * QUOTE_PRECISION as i64);
 /// IF vault seed funding.
 const IF_VAULT_FUNDING: u64 = 1_000 * QUOTE_PRECISION as u64;
 
@@ -246,7 +258,18 @@ fn build_state(signer: Pubkey, signer_nonce: u8) -> State {
     s.number_of_markets = 1;
     // Liquidation config used by liquidate_perp_pnl_for_deposit.
     s.liquidation_margin_buffer_ratio = 50; // 0.5%
-    s.initial_pct_to_liquidate = 10_000; // 10% (PERCENTAGE-ish)
+                                            // 10% of LIQUIDATION_PCT_PRECISION (= 10_000, math/constants.rs:46).
+                                            //
+                                            // WAS `10_000` with the comment "10% (PERCENTAGE-ish)" — that is 100%, not
+                                            // 10%. `calculate_max_pct_to_liquidate` (math/liquidation.rs:453-489) then
+                                            // pinned `pct_freeable` at 10_000 via the `.min()` on the next line and the
+                                            // `liquidation_margin_freed` ramp could never bind, so every liquidation was
+                                            // one full-size step and the partial path was dead.
+                                            //
+                                            // Note this only bites when `margin_shortage >= 50 * QUOTE_PRECISION`:
+                                            // liquidation.rs:461-463 short-circuits smaller shortages to full precision,
+                                            // so both the ramped and the accelerated branch stay reachable.
+    s.initial_pct_to_liquidate = 1_000;
     s.liquidation_duration = legacy_slot_duration_u8(150);
     s
 }
@@ -325,11 +348,57 @@ fn build_perp_market(f: &Fixture) -> PerpMarket {
     m.fee_ledger.amm_protocol_fees_received = 0;
     m.bankruptcy_if_floor_pct = BANKRUPTCY_IF_FLOOR_PCT;
 
+    // INSURANCE CLAIM. `PerpMarket::default()` zeroes all of these
+    // (state/perp_market.rs:1591-1608, all QUOTE_PRECISION), which made the
+    // ENTIRE second bankruptcy tranche dead: `if_payment` is
+    // `min(loss_after_pending, if_vault_balance - 1, quote_max_insurance -
+    // quote_settled_insurance)` (controller/liquidation.rs:4374-4386) and the
+    // last term was always 0, so the shared IF vault was never drawn on — which
+    // is the family this harness exists for.
+    //
+    // 2000 USDC is deliberately ABOVE the IF vault seed (IF_VAULT_FUNDING =
+    // 1000 USDC): that makes `insurance_fund_vault_balance - 1` the BINDING
+    // term, which is the guard `check_if_vault_not_overspent` exists to test. A
+    // value below the vault would leave that invariant vacuous, because the
+    // lifetime cap rather than the vault would always be the min.
+    m.insurance_claim.quote_max_insurance = 2_000 * QUOTE_PRECISION as u64;
+    m.insurance_claim.quote_settled_insurance = 0;
+    // Per-period revenue cap for `resolve_perp_pnl_deficit`
+    // (controller/insurance.rs:839-854). 250 USDC is deliberately SMALL relative
+    // to `quote_max_insurance`, so a second draw in the same period hits
+    // `MaxRevenueWithdrawPerPeriodReached` and warping past
+    // `insurance_fund.revenue_settle_period` exercises the period reset. Eight
+    // successful draws then exhaust the 2000 lifetime cap and cover
+    // `MaxIFWithdrawReached` (insurance.rs:861-867). Both sides of both caps.
+    m.insurance_claim.max_revenue_withdraw_per_period = 250 * QUOTE_PRECISION as u64;
+
     // Open interest so get_bankruptcy_if_floor() > 0 (OI conserved: long+short = 0).
     m.base_asset_amount_long = OI_BASE;
     m.base_asset_amount_short = -OI_BASE;
-    m.quote_asset_amount = 0;
     m.net_unsettled_funding_pnl = 0;
+
+    // `resolve_perp_pnl_deficit` (controller/insurance.rs:759-930) was 100%
+    // dead, and NOT for the reason the field name suggests. Its gate chain, in
+    // the order the handler evaluates it:
+    //   1. `amm.is_underwater()` -> total_fee_minus_distributions < 0  (:768-773)
+    //   2. pnl_pool_token_amount < net_user_pnl                        (:799-804)
+    //   3. unrealized_pnl_max_imbalance > 0 && excess > 0              (:808-825)
+    //   4. max_revenue_withdraw_per_period > 0                         (:849-854)
+    //   5. quote_max_insurance - quote_settled_insurance > 0           (:861-867)
+    // 4 and 5 are set above; without 1-3 the handler never reaches them, so
+    // setting the insurance_claim fields alone would have changed nothing.
+    //
+    // `net_user_pnl` is `base_asset_amount_with_amm * price + quote_asset_amount
+    // + net_unsettled_funding_pnl`. The AMM is net flat here (OI conservation
+    // above), so `quote_asset_amount` IS the whole figure: 3000 USDC of user
+    // claims against a 1000 USDC pnl pool is a genuine 2000 USDC deficit — the
+    // exact state this instruction exists to resolve.
+    //
+    // `curve_update_intensity = 0` above additionally keeps `is_curve_update_enabled()`
+    // false, so the handler skips the oracle-freshness block — one fewer blocker.
+    m.amm.total_fee_minus_distributions = -(1_000 * QUOTE_PRECISION as i128);
+    m.quote_asset_amount = 3_000 * QUOTE_PRECISION as i128;
+    m.unrealized_pnl_max_imbalance = 1_000 * QUOTE_PRECISION as u64;
 
     // pnl-pool backing that the floored tranche relies on.
     m.pnl_pool.scaled_balance = tokens_to_scaled(PNL_POOL_TOKENS as u128);
@@ -759,9 +828,24 @@ impl Fixture {
             .unwrap_or(false)
     }
 
-    /// liquidate_spot (asset market 0, liability market 0 — a self-market call
-    /// that the program rejects; kept for coverage of the reject path since the
-    /// harness only injects a single spot market).
+    /// `liquidate_spot` (asset market 0, liability market 0).
+    ///
+    /// PRE-EXISTING BUG, now fixed: this account list omitted `liquidator_stats`
+    /// (`LiquidateSpot` is `[state, authority, liquidator, liquidator_stats,
+    /// user]`, instructions/keeper.rs:4089-4103). Every meta after `liquidator`
+    /// shifted up one, so `victim.user_pda` landed in the `liquidator_stats`
+    /// slot and Anchor failed to deserialize a `User` as `AccountLoader<UserStats>`.
+    /// The handler was never entered AT ALL — the old comment's claim that this
+    /// covered "the self-market reject path" was wrong; the reject path it
+    /// actually covered was Anchor's. `fuzz/e2e-svm/src/main.rs` builds the same
+    /// call with the correct list.
+    ///
+    /// With a single spot market this still cannot SUCCEED (a `SpotPosition`
+    /// holds one balance type, so asset == liability == 0 always hits
+    /// `WrongSpotBalanceType` at controller/liquidation.rs:2062-2066, or
+    /// `UserBankrupt` for the seed victim). But the handler prologue now runs:
+    /// account loading, both `SpotOperation::Liquidation` pause checks, the
+    /// pool-id check, `check_spot_oracle_validity`, and the asset-side validates.
     pub fn action_liquidate_spot(
         &mut self,
         #[range(1..1_000_000u64)] max_liab: u64,
@@ -780,6 +864,9 @@ impl Fixture {
                     AccountMeta::new_readonly(self.state_pda(), false),
                     AccountMeta::new_readonly(liq.keypair.pubkey(), true),
                     AccountMeta::new(liq.user_pda, false),
+                    // `liquidator_stats` — readonly here (unlike
+                    // `LiquidateBorrowForPerpPnl`, which marks it `mut`).
+                    AccountMeta::new_readonly(liq.stats_pda, false),
                     AccountMeta::new(victim.user_pda, false),
                     AccountMeta::new(self.perp_oracle_pda, false),
                     AccountMeta::new(self.spot_market_pda, false),
@@ -1669,6 +1756,12 @@ mod smoke {
         const EXPECTED_CONDITIONAL: &[&str] = &[
             // Ordering: the victim is already flagged by the fixture, and each
             // resolve/liquidate consumes the state the next one needs.
+            //
+            // `liquidate_spot` now REACHES the handler (the account list was
+            // missing `liquidator_stats`, so it used to die in Anchor), but it
+            // still cannot succeed with one spot market: asset == liability == 0
+            // and a `SpotPosition` holds a single balance type, so it lands on
+            // `WrongSpotBalanceType` (controller/liquidation.rs:2062-2066).
             "liquidate_spot",
             "liquidate_pnl_for_deposit",
             "resolve_spot_bankruptcy",

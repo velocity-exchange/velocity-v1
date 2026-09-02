@@ -93,10 +93,19 @@ jobs:
       # image for the crucible harnesses and the SBF-builder image for velocity.so.
       # Docker is preinstalled on ubuntu-latest. The final coverage-sanity gate fails
       # the build if source-level coverage would render empty (see build-bundle.sh).
+      #
+      # No --zip. Nothing consumes fuzz/dist/velocity-fuzz-bundle.zip -- the
+      # upload step below takes the DIRECTORY, fuzz/dist/bundle -- and the zip was
+      # written BEFORE the bundle guard runs, while the guard MUTATES the bundle
+      # (it copies in any first-party source root the DWARF references but the
+      # bundle is missing, which the upload step relies on). So the archive was a
+      # pre-staging snapshot that diverged from what actually ships: a trap for
+      # whoever later points upload_path at it. See the triage artifacts below for
+      # the post-guard replacement.
       - name: Build bundle
         run: |
           set -euo pipefail
-          bash fuzz/build-bundle.sh --svm-only --zip
+          bash fuzz/build-bundle.sh --svm-only
 
       # Fail-closed pre-upload checks. Everything this catches is otherwise SILENT:
       # the bundle validates, uploads, runs and quietly produces nothing. It also
@@ -105,6 +114,34 @@ jobs:
       # one entirely, and those lines are measured and then dropped.
       - name: Bundle guard (pre-upload)
         run: ./fuzz/bundle-guard.sh fuzz/dist/bundle .
+
+      # The manifest is tiny and is the single most useful artifact when a deploy
+      # fails or the dashboard renders empty coverage. Always keep it.
+      - name: Upload bundle manifest (diagnostics)
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bundle-manifest
+          path: fuzz/dist/bundle/manifest.fc.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      # On failure only, and WITHOUT symbols/ (~71 MB of DWARF) or srcs/ (the
+      # whole Rust source tree): what is left is the manifest, the harness
+      # binaries and the stripped .so, which is what you need to reproduce a
+      # guard failure locally. This is the POST-guard bundle -- exactly what
+      # would have uploaded -- which the old --zip snapshot never was.
+      - name: Upload bundle for triage (on failure)
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bundle-failed-deploy
+          path: |
+            fuzz/dist/bundle
+            !fuzz/dist/bundle/symbols
+            !fuzz/dist/bundle/srcs
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Upload bundle to AR fuzzing
       # v2.1.0, not v2.0.0. The older pin fetches a `fuzz-up` release that no longer

@@ -187,8 +187,11 @@ jobs:
               - 'packages/**'
               - 'package.json'
               - 'bun.lock'
+              - 'bunfig.toml'
               - 'turbo.json'
               - 'docker/ts-app.Dockerfile'
+              - 'docker/ts-app.Dockerfile.dockerignore'
+              - '.dockerignore'
               - 'docker-info.json'
             # rust app docker images (keep-rs/swift) build the rust workspace, which
             # consumes the velocity program as a host path-dep.
@@ -197,7 +200,12 @@ jobs:
               - 'programs/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
+              # velocity-rs's build.rs regenerates velocity_idl.rs from this IDL,
+              # so an IDL-only change does change the built binaries.
+              - 'packages/sdk/src/idl/velocity.json'
               - 'docker/rust-app.Dockerfile'
+              - 'docker/rust-app.Dockerfile.dockerignore'
+              - '.dockerignore'
               - 'docker-info.json'
   fmt-clippy:
     name: fmt & clippy

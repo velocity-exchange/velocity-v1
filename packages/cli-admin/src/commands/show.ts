@@ -7,6 +7,7 @@ import {
 	FeeStructure,
 	FeeTier,
 	HotRole,
+	LpPoolFeatureBitFlags,
 	SolvencyStatus,
 	decodeName,
 	getTokenAmount,
@@ -74,13 +75,6 @@ function printFillerReward(structure: FeeStructure): void {
 		)})`
 	);
 }
-
-/** `State.lpPoolFeatureBitFlags` bits (mirror of the Rust `LpPoolFeatureBitFlags`; not exported by the SDK). */
-const LP_POOL_FEATURE_BITS: Record<string, number> = {
-	SETTLE_LP_POOL: 0b001,
-	SWAP_LP_POOL: 0b010,
-	MINT_REDEEM_LP_POOL: 0b100,
-};
 
 /** Render a bitmask as its raw value, binary form, and the names of the set bits. */
 function describeBitmask(
@@ -202,7 +196,7 @@ export function registerShow(parent: Command): void {
 				),
 				lpPoolFeatureBitFlags: describeBitmask(
 					state.lpPoolFeatureBitFlags,
-					LP_POOL_FEATURE_BITS
+					LpPoolFeatureBitFlags as unknown as Record<string, number>
 				),
 				solvencyStatus: describeBitmask(
 					state.solvencyStatus,

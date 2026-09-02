@@ -3,9 +3,9 @@ use {
     crate::{
         http::{FeedHealth, Metrics},
         util::{
-            pyth_update_is_fresh, should_poll_swift, swift_order_expired, swift_slot_wait_if_known,
-            OrderSlotLimiter, PendingTxMeta, PendingTxs, PerpFillFallback, PythPriceUpdate,
-            SwiftSlotWait, TxIntent,
+            is_resting_swift_limit, pyth_update_is_fresh, should_poll_swift, swift_order_expired,
+            swift_slot_wait_if_known, OrderSlotLimiter, PendingTxMeta, PendingTxs,
+            PerpFillFallback, PythPriceUpdate, SwiftSlotWait, TxIntent,
         },
         Config, UseMarkets,
     },
@@ -290,8 +290,9 @@ impl FillerBot {
         let mut deferred_swift_orders: Vec<SignedOrderInfo> = Vec::new();
         // Cap so a stuck slot feed cannot grow the queue without bound.
         const MAX_DEFERRED_SWIFT_ORDERS: usize = 1_024;
-        // A stamp further ahead than this is not a signing buffer (the UI's is a few
-        // slots); refuse to hold it rather than trust an unbounded future slot.
+        // An auction order stamped further ahead than this is not a signing buffer (the
+        // UI's is a few slots); refuse to hold it rather than trust an unbounded future
+        // slot. A resting limit is never held: see `swift_slot_wait`.
         const MAX_SWIFT_ORDER_DEFERRAL: Millis = Millis::from_secs(10);
         // Swift orders to run the arrival path on: whatever the feed delivered, plus any
         // deferral whose slot has arrived. Outlives the iteration, so an arm that
@@ -319,6 +320,7 @@ impl FillerBot {
                         order.slot(),
                         slot_is_known.then_some(slot),
                         MAX_SWIFT_ORDER_DEFERRAL,
+                        is_resting_swift_limit(&order.order_params()),
                         slot_clock,
                     ) {
                         SwiftSlotWait::Ready => swift_orders.push(order),
@@ -697,13 +699,15 @@ impl FillerBot {
 
             for signed_order in std::mem::take(&mut swift_orders) {
                 // Until the stamped message slot arrives the program accepts neither a
-                // fill nor a bare placement, so acting now burns a tx and, for a fill,
-                // the order's one place+fill attempt.
+                // fill nor a bare placement of an auction order, so acting now burns a tx
+                // and, for a fill, the order's one place+fill attempt. A resting limit is
+                // the exception: its stamp is a deadline, and it is placed right away.
                 let order_slot = signed_order.slot();
                 match swift_slot_wait_if_known(
                     order_slot,
                     slot_is_known.then_some(slot),
                     MAX_SWIFT_ORDER_DEFERRAL,
+                    is_resting_swift_limit(&signed_order.order_params()),
                     slot_clock,
                 ) {
                     SwiftSlotWait::Ready => {}
@@ -981,9 +985,11 @@ fn evaluate_swift_crosses(
         order_params.auction_end_price.unwrap_or_default(),
         order_params.auction_duration.unwrap_or_default(),
     );
-    // On-chain the auction clock starts at the signed message slot, not when the order is
-    // placed. Callers defer an order whose message slot has not arrived (`swift_slot_wait`),
-    // so `min` is only a guard against `calculate_auction_price`'s elapsed-slot underflow.
+    // On-chain the order slot is `min(clock.slot, message slot)` (`get_order_slot`), so
+    // the auction clock starts at the message slot, never before. Callers defer an auction
+    // order whose message slot has not arrived (`swift_slot_wait`), but a resting limit is
+    // forwarded early, so `min` mirrors that clamp as well as guarding
+    // `calculate_auction_price`'s elapsed-slot underflow.
     let order_slot = signed_order.slot().min(landing_slot);
     let order = Order {
         slot: order_slot,

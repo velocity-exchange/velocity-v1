@@ -485,7 +485,7 @@ These public exports were **added** (or restored) relative to the fork point:
   a cache TTL) substitutes when `currentSlotClock` reports `isLive: false`, since the 400ms
   baseline would promise up to twice the wall clock actually available.
 - `signedMsgOrderMaxSlot` and `signedMsgOrderSlotReached` (`math/orders`, #470 swift-slot-gate +
-  follow-up). The off-chain mirrors of `place_signed_msg_taker_order`'s placement window:
+  follow-up; the "placed yet" half is superseded by `signedMsgOrderPlaceable`, next bullet). The off-chain mirrors of `place_signed_msg_taker_order`'s placement window:
   `signedMsgOrderMaxSlot(state, orderSlot, auctionDuration)` is the last slot the order may still
   be placed (message slot plus auction duration, integrated across slot duration transitions), and
   `signedMsgOrderSlotReached(orderSlot, currentSlot)` is whether it may be placed *yet* (the
@@ -493,6 +493,13 @@ These public exports were **added** (or restored) relative to the fork point:
   the message a few slots ahead as a signing buffer). `DLOB.insertSignedMsgOrder` does no slot
   gating of its own, so consumers acting on inserted signed-msg orders should hold an order back
   until `signedMsgOrderSlotReached` is true.
+- `signedMsgOrderPlaceable`, `isRestingSignedMsgLimitOrder` and `SIGNED_MSG_RESTING_LIMIT_MAX_LEAD_MS`
+  (`math/orders`, swift-resting-limit-placement). `signedMsgOrderPlaceable(state, order,
+  currentSlot)` supersedes `signedMsgOrderSlotReached` as the "may be placed yet" predicate: an
+  auction order still waits for its message slot, but a resting limit (limit order with no
+  auction, `isRestingSignedMsgLimitOrder`) may be placed ahead of it, as long as the stamp is
+  within `SIGNED_MSG_RESTING_LIMIT_MAX_LEAD_MS` (30s) of the current slot. Consumers building on
+  `DLOB.insertSignedMsgOrder` should gate on `signedMsgOrderPlaceable`.
 - `getPerpFeeTierIndex`, `PERP_FEE_TIER_VOLUME_THRESHOLDS` and `PERP_FEE_TIER_MAX_INDEX`
   (`math/fees`, promo-fee-tier). The mirror of the program's `determine_perp_fee_tier`, factored
   out so the tier rule has one definition: the trailing-30d volume breakpoints, then the
@@ -501,6 +508,15 @@ These public exports were **added** (or restored) relative to the fork point:
   rank the tier itself (highlighting the active row of a fee schedule, progress to the next tier)
   should call it, or `User.getUserPerpFeeTierIndex`, instead of re-deriving the ladder.
 - `User.getUserPerpFeeTierIndex(now?)` — the index `getUserFeeTier` reads its rates from.
+- `getMarketFeesForFeeTier` (`math/fees`, market-fees-for-tier). The per-market and per-account
+  modifiers the program applies on top of a tier's own rates, in program order: the market's
+  `takerFeeAddonTenthBps` surcharge (taker leg, perp only), its `feeAdjustment` percentage (both
+  legs), the referee discount (taker leg), then the builder fee (taker leg, unscaled).
+  `VelocityClient.getMarketFees` is now this function with the tier and the account-derived inputs
+  resolved, and takes a fifth argument `feeTierOverride` that prices a given tier instead of the
+  account's, with every other modifier unchanged. Use it to quote a tier an account is not on (for
+  example the saving a promo makes against a volume tier) so both figures come from one pipeline.
+  Existing calls are unaffected.
 - Several types were added by the `types.ts` ↔ IDL reconciliation — see §4.7.
 
 ### 4.7 SDK type reconciliation (`types.ts` ↔ IDL)
@@ -1011,6 +1027,8 @@ accounts/events with the previous TS shapes should note:
 | #470 swift-slot-gate (+ follow-up) | Off-chain only: fillers no longer burn their single signed-msg place+fill attempt on a future-stamped message slot. `place_signed_msg_taker_order` rejects `order_slot > clock.slot` (`InvalidSignedMsgOrderParam`, 6288) and takers stamp the message a few slots ahead as a signing buffer, so the TS filler and keep-rs now defer the place+fill until the slot arrives instead of attempting on arrival. New SDK exports `signedMsgOrderMaxSlot` / `signedMsgOrderSlotReached` (`math/orders`, §4.6) mirror the program's placement window for any consumer building on `DLOB.insertSignedMsgOrder`, which does no slot gating of its own. No program, layout, IDL, or error-code change |
 | promo-fee-tier | SDK-only follow-up to #388. `VelocityClient.getMarketFees` ignored the `State.promoFeeTier` floor when called without a `user`, so the generic schedule quoted the entry tier (4bps) while a promo had every account on a better one, disagreeing with the same call made with a user. The floor plus the volume ladder now live in one place, `getPerpFeeTierIndex` (`math/fees`), which `getUserFeeTier`, `getMarketFees` and `DLOB.getMakerRebate` all select through; `PERP_FEE_TIER_VOLUME_THRESHOLDS`, `PERP_FEE_TIER_MAX_INDEX` and `User.getUserPerpFeeTierIndex` are exported with it so consumers that rank the tier stop re-deriving the ladder (§4.6). No program or layout change. |
 | ci-cargo-deny-offline-db | CI-only, no program/SDK surface change. The `Cargo deny` job's cargo-deny 0.20.x fetches the RustSec advisory DB by shelling out to the git CLI, and GitHub rejects that unauthenticated clone from the CI runner (no `GITHUB_TOKEN` is given to this job). `cargo-audit` fetches the same DB fine, via the `rustsec` crate's gix-library path, so the job now runs `cargo audit --db <tmp>` purely to populate a clone, symlinks it under cargo-deny's own hashed DB directory name, and runs both `cargo deny --offline` checks against it; `test-scripts/ci-local.sh` mirrors the same handoff in a `mktemp` scratch dir. `cargo-deny` and `cargo-audit` are pinned to exact versions (0.20.2 / 0.22.2) since the handoff depends on both tools' on-disk layout, and both now gate the required `ci-gate` check. `deny.toml`'s policy (sources/licenses/bans/advisory ignores) and `.cargo/audit.toml` are unchanged. |
+| swift-resting-limit-placement | `place_signed_msg_taker_order` accepts a **resting limit** (limit order with no auction) ahead of its message slot. For such an order the message slot is the placement deadline, not an auction start: `max_slot = order_slot + 0`, so with the #470 gate (`order_slot > clock.slot` rejected) the order was placeable in exactly one slot and never landed. Clients stamp a no-auction limit its whole signing budget (~14s) ahead (`@velocity-exchange/common` `MINIMUM_SWIFT_NON_AUCTION_ORDER_SIGNING_BUDGET_MS`), which under Drift was placed before the stamp arrived. The future-slot rejection now applies only to orders with an auction; a resting limit stamped ahead is accepted while the lead is within 30s (`max_resting_limit_lead`; the UI stamps ~14s), and still rejected (`InvalidSignedMsgOrderParam`, 6288) beyond it. The stored order slot is unchanged (`min(clock.slot, message slot)`), and the `max_slot < clock.slot` no-op still applies after the stamp. keep-rs places a resting limit on arrival instead of deferring it (its 10s deferral bound dropped the ~14s stamp outright); the TS filler mirrors the gate via the new SDK `signedMsgOrderPlaceable` (§4.6) but still ignores no-auction signed-msg orders in `dlobBuilder`, so keep-rs remains the placer of resting swift limits. **Rollout:** deploy the program upgrade before the keep-rs release; keep-rs against the old program sends a place tx per resting swift limit that fails with 6288 (same net outcome as dropping it, plus the fee). **Side effect:** a resting limit's `SignedMsgOrderId.max_slot` is now its future stamp, so the entry occupies the per-user id ring for lead + eviction buffer (~18s for the UI's stamp, up to ~34s at the bound) instead of ~4s; a burst of resting swift limits can reach `SignedMsgUserOrdersAccountFull` sooner. No account-layout, IDL, or error-code change |
+| market-fees-for-tier | SDK-only. `getMarketFees` could only price the tier the account was on, so a client had no way to ask what a market would charge at another tier (needed to show what a promo saves against a volume tier). The modifier pipeline (surcharge, `feeAdjustment`, referee discount, builder fee) is extracted as the exported `getMarketFeesForFeeTier` (`math/fees`), and `getMarketFees` delegates to it and accepts a `feeTierOverride` fifth argument (§4.6). No program or layout change, and no behaviour change for existing calls. |
 
 ---
 

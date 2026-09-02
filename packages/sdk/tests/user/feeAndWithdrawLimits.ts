@@ -8,6 +8,8 @@ import {
 	UserStatsAccount,
 	SPOT_MARKET_BALANCE_PRECISION,
 	QUOTE_PRECISION,
+	getMarketFeesForFeeTier,
+	PerpMarketAccount,
 	PERP_FEE_TIER_MAX_INDEX,
 	VIP_FEE_TIER_TWO_VOLUME_QUOTE,
 } from '../../src';
@@ -382,6 +384,166 @@ describe('Promo fee tier floor', () => {
 			Math.abs(takerFee - 0.03) < 1e-12,
 			`expected the spot entry-tier fee 0.03, got ${takerFee}`
 		);
+	});
+});
+
+// A tier whose four modifiers are all visible in the result: 10bps taker,
+// 1bp maker rebate, 25% referee discount.
+const modifierTestFeeTier = {
+	...mockFeeTier,
+	feeNumerator: 10,
+	feeDenominator: 10_000,
+	makerRebateNumerator: 1,
+	makerRebateDenominator: 10_000,
+	refereeFeeNumerator: 25,
+	refereeFeeDenominator: 100,
+};
+
+const makeMarket = (
+	takerFeeAddonTenthBps = 0,
+	feeAdjustment = 0
+): PerpMarketAccount =>
+	({
+		marketIndex: 0,
+		takerFeeAddonTenthBps,
+		feeAdjustment,
+	}) as PerpMarketAccount;
+
+const closeTo = (actual: number, expected: number, what: string) =>
+	assert(
+		Math.abs(actual - expected) < 1e-12,
+		`expected ${what} ${expected}, got ${actual}`
+	);
+
+describe('getMarketFeesForFeeTier', () => {
+	it('returns the tier rates untouched without a market', () => {
+		const { takerFee, makerFee } = getMarketFeesForFeeTier(
+			modifierTestFeeTier,
+			MarketType.PERP
+		);
+
+		closeTo(takerFee, 0.001, 'taker fee');
+		closeTo(makerFee, 0.0001, 'maker rebate');
+	});
+
+	it('adds the market surcharge to the taker leg only', () => {
+		const { takerFee, makerFee } = getMarketFeesForFeeTier(
+			modifierTestFeeTier,
+			MarketType.PERP,
+			makeMarket(10)
+		);
+
+		// 10bps + 1bp surcharge
+		closeTo(takerFee, 0.0011, 'taker fee');
+		closeTo(makerFee, 0.0001, 'maker rebate');
+	});
+
+	it('leaves the surcharge out of spot fees', () => {
+		const { takerFee } = getMarketFeesForFeeTier(
+			modifierTestFeeTier,
+			MarketType.SPOT,
+			makeMarket(10)
+		);
+
+		closeTo(takerFee, 0.001, 'taker fee');
+	});
+
+	it('scales both legs by feeAdjustment, after the surcharge', () => {
+		const { takerFee, makerFee } = getMarketFeesForFeeTier(
+			modifierTestFeeTier,
+			MarketType.PERP,
+			makeMarket(10, 50)
+		);
+
+		// (10bps + 1bp) * 1.5, not 10bps * 1.5 + 1bp
+		closeTo(takerFee, 0.00165, 'taker fee');
+		closeTo(makerFee, 0.00015, 'maker rebate');
+	});
+
+	it('discounts a referee after feeAdjustment, taker leg only', () => {
+		const { takerFee, makerFee } = getMarketFeesForFeeTier(
+			modifierTestFeeTier,
+			MarketType.PERP,
+			makeMarket(10, 50),
+			{ isReferee: true }
+		);
+
+		// 0.00165 * 0.75
+		closeTo(takerFee, 0.0012375, 'taker fee');
+		closeTo(makerFee, 0.00015, 'maker rebate');
+	});
+
+	it('adds the builder fee last, unscaled', () => {
+		const { takerFee } = getMarketFeesForFeeTier(
+			modifierTestFeeTier,
+			MarketType.PERP,
+			makeMarket(10, 50),
+			{ isReferee: true, builderFeeTenthBps: 10 }
+		);
+
+		// 0.0012375 + 1bp flat: the builder fee is not scaled or discounted
+		closeTo(takerFee, 0.0013375, 'taker fee');
+	});
+});
+
+describe('getMarketFees fee-tier override', () => {
+	// Pricing a tier the account is not on is what lets a UI show the fee a
+	// promotion is saving someone against their own volume tier.
+	it('prices the override instead of the account tier', async () => {
+		const user = await makeFeeMockUser(0);
+		const doubleFeeTier = { ...mockFeeTier, feeNumerator: 2 };
+
+		const { takerFee: ownTakerFee } = user.velocityClient.getMarketFees(
+			MarketType.PERP,
+			0,
+			user
+		);
+		const { takerFee: overriddenTakerFee } = user.velocityClient.getMarketFees(
+			MarketType.PERP,
+			0,
+			user,
+			undefined,
+			doubleFeeTier
+		);
+
+		closeTo(ownTakerFee, 0.001, 'account tier taker fee');
+		closeTo(overriddenTakerFee, 0.002, 'overridden taker fee');
+	});
+
+	it('keeps every other modifier the account carries', async () => {
+		const referred = await makeFeeMockUser(ReferrerStatus.IsReferred);
+		const doubleFeeTier = { ...mockFeeTier, feeNumerator: 2 };
+
+		const { takerFee } = referred.velocityClient.getMarketFees(
+			MarketType.PERP,
+			0,
+			referred,
+			undefined,
+			doubleFeeTier
+		);
+
+		// 0.002 less the override tier's own 25% referee discount
+		closeTo(takerFee, 0.0015, 'overridden taker fee');
+	});
+
+	it('agrees with the unoverridden call when handed the account tier', async () => {
+		const user = await makeFeeMockUser(ReferrerStatus.IsReferred);
+		const ownFeeTier = user.getUserFeeTier(MarketType.PERP);
+
+		const { takerFee: withoutOverride } = user.velocityClient.getMarketFees(
+			MarketType.PERP,
+			0,
+			user
+		);
+		const { takerFee: withOverride } = user.velocityClient.getMarketFees(
+			MarketType.PERP,
+			0,
+			user,
+			undefined,
+			ownFeeTier
+		);
+
+		closeTo(withOverride, withoutOverride, 'overridden taker fee');
 	});
 });
 

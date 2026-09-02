@@ -67,6 +67,16 @@ export enum FeatureBitFlags {
 }
 
 /**
+ * Bitmask mirror of `StateAccount.lpPoolFeatureBitFlags`, gating the LP-pool operations
+ * (settlement, swaps, mint/redeem) independently of the protocol-wide `FeatureBitFlags`.
+ */
+export enum LpPoolFeatureBitFlags {
+	SETTLE_LP_POOL = 1,
+	SWAP_LP_POOL = 2,
+	MINT_REDEEM_LP_POOL = 4,
+}
+
+/**
  * Mirrors the Rust `MarketStatus` enum on `PerpMarketAccount.status` / `SpotMarketAccount.status`.
  * Controls which operations a market allows: `INITIALIZED` (warm-up, fills paused), `ACTIVE` (all
  * operations allowed), `REDUCE_ONLY` (fills may only shrink a liability), `SETTLEMENT` (market has

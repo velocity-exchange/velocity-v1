@@ -283,6 +283,7 @@ import { TakerInfo } from './types';
 import { getOracleConfidenceFromMMOracleData } from './oracles/utils';
 import { ConstituentMap } from './constituentMap/constituentMap';
 import { hasBuilder } from './math/orders';
+import { getPerpFeeTierIndex } from './math/fees';
 import { RevenueShareEscrowMap } from './userMap/revenueShareEscrowMap';
 import {
 	isBuilderOrderReferral,
@@ -13489,9 +13490,14 @@ export class VelocityClient {
 		if (user) {
 			feeTier = user.getUserFeeTier(marketType);
 		} else {
+			// No account to rank on, so perps quote the entry tier. The
+			// `promoFeeTier` floor applies to every account while it is set, so
+			// it is part of the generic schedule too: reading tier 0 here
+			// unconditionally quoted the undiscounted fee during a promo,
+			// disagreeing with the `user` branch above for the same market.
 			const state = this.getStateAccount();
 			feeTier = isVariant(marketType, 'perp')
-				? state.perpFeeStructure.feeTiers[0]
+				? state.perpFeeStructure.feeTiers[getPerpFeeTierIndex(undefined, state)]
 				: state.spotFeeStructure.feeTiers[0];
 		}
 

@@ -56,8 +56,6 @@ import {
 	TWO,
 	ZERO,
 	ACCOUNT_AGE_DELETION_CUTOFF_SECONDS,
-	VIP_FEE_TIER_ONE_VOLUME_QUOTE,
-	VIP_FEE_TIER_TWO_VOLUME_QUOTE,
 } from './constants/numericConstants';
 import {
 	DataAndSlot,
@@ -85,7 +83,7 @@ import {
 	getStrictTokenValue,
 	getTokenValue,
 } from './math/spotBalance';
-import { getUser30dRollingVolumeEstimate } from './math/trade';
+import { getPerpFeeTierIndex } from './math/fees';
 import {
 	MarketType,
 	PositionDirection,
@@ -4363,16 +4361,10 @@ export class User {
 	 * mirroring the program's `determine_perp_fee_tier`.
 	 *
 	 * For perp markets, the tier is selected by the user's trailing 30-day
-	 * volume projected to `now` (`getUser30dRollingVolumeEstimate`,
-	 * QUOTE_PRECISION — the stored rolling sum decays lazily on-chain, so the
-	 * read applies the same decay virtually) against fixed breakpoints — $5M,
-	 * $80M — picking the lowest-index tier whose breakpoint the volume is
-	 * still under. Tiers 0/1/2 are named Regular / VIP 1 / VIP 2 (VIP 2, the
-	 * lowest fees, at or above the top breakpoint); names are presentation
-	 * only, selection is index-based.
-	 * While `state.promoFeeTier` is non-zero it floors everyone's tier at that
-	 * index (0 = disabled; nobody is downgraded by it). Spot markets always
-	 * use tier 0 (no volume-based discount).
+	 * volume and the `state.promoFeeTier` floor (see `getPerpFeeTierIndex`,
+	 * which this shares with `VelocityClient.getMarketFees` so the selection
+	 * rule lives in one place). Spot markets always use tier 0 (no volume-based
+	 * discount).
 	 * @param marketType `MarketType.PERP` or `MarketType.SPOT`.
 	 * @param now Optional unix timestamp (seconds) to evaluate the rolling volume window as of; defaults to current time.
 	 * @returns The matching `FeeTier` (numerator/denominator fee fractions and referee-discount fractions).
@@ -4385,36 +4377,28 @@ export class User {
 				.getUserStatsOrThrow()
 				.getAccountOrThrow();
 
-			const total30dVolume = getUser30dRollingVolumeEstimate(
-				userStatsAccount,
-				now
-			);
-
-			const volumeThresholds = [
-				VIP_FEE_TIER_ONE_VOLUME_QUOTE,
-				VIP_FEE_TIER_TWO_VOLUME_QUOTE,
+			return state.perpFeeStructure.feeTiers[
+				getPerpFeeTierIndex(userStatsAccount, state, now)
 			];
-
-			let feeTierIndex = volumeThresholds.length;
-			for (let i = 0; i < volumeThresholds.length; i++) {
-				if (total30dVolume.lt(volumeThresholds[i])) {
-					feeTierIndex = i;
-					break;
-				}
-			}
-
-			// promo tier floor: everyone gets at least `state.promoFeeTier`
-			// while it is set (0 = disabled/no-op), mirroring
-			// `determine_perp_fee_tier`
-			feeTierIndex = Math.max(
-				feeTierIndex,
-				Math.min(state.promoFeeTier, volumeThresholds.length)
-			);
-
-			return state.perpFeeStructure.feeTiers[feeTierIndex];
 		}
 
 		return state.spotFeeStructure.feeTiers[0];
+	}
+
+	/**
+	 * The user's perp fee-tier index, the rung `getUserFeeTier` reads its rates
+	 * from. Exposed for surfaces that rank the tier itself (highlighting the
+	 * active row of a fee schedule, progress toward the next tier) rather than
+	 * just charging it.
+	 * @param now Optional unix timestamp (seconds) to evaluate the rolling volume window as of; defaults to current time.
+	 * @returns The index into `state.perpFeeStructure.feeTiers`.
+	 */
+	public getUserPerpFeeTierIndex(now?: BN): number {
+		return getPerpFeeTierIndex(
+			this.velocityClient.getUserStatsOrThrow().getAccountOrThrow(),
+			this.velocityClient.getStateAccount(),
+			now
+		);
 	}
 
 	/**

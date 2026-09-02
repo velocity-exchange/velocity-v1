@@ -1245,6 +1245,84 @@ describe('place and make signedMsg order', () => {
 		await takerVelocityClient.unsubscribe();
 	});
 
+	it('still rejects an auction order stamped ahead of the current slot', async () => {
+		slot = new BN(
+			await bankrunContextWrapper.connection.toConnection().getSlot()
+		);
+		const [takerVelocityClient, takerVelocityClientUser] =
+			await initializeNewTakerClientAndUser(
+				bankrunContextWrapper,
+				chProgram,
+				usdcMint,
+				usdcAmount,
+				marketIndexes,
+				spotMarketIndexes,
+				oracleInfos,
+				bulkAccountLoader
+			);
+		await takerVelocityClientUser.fetchAccounts();
+
+		const marketIndex = 0;
+		const takerOrderParams = getMarketOrderParams({
+			marketIndex,
+			direction: PositionDirection.LONG,
+			baseAssetAmount: BASE_PRECISION,
+			price: new BN(84).mul(PRICE_PRECISION),
+			auctionStartPrice: new BN(83).mul(PRICE_PRECISION),
+			auctionEndPrice: new BN(84).mul(PRICE_PRECISION),
+			auctionDuration: 10,
+			userOrderId: 1,
+			postOnly: PostOnlyParams.NONE,
+			marketType: MarketType.PERP,
+		}) as OrderParams;
+
+		// The UI's signing buffer: a few slots ahead. An auction starts at its
+		// message slot, so the program still refuses to place it before then.
+		const uuid = Uint8Array.from(Buffer.from(nanoid(8)));
+		const takerOrderParamsMessage: SignedMsgOrderParamsMessage = {
+			signedMsgOrderParams: takerOrderParams,
+			subAccountId: 0,
+			slot: slot.addn(7),
+			uuid,
+			takeProfitOrderParams: null,
+			stopLossOrderParams: null,
+		};
+		const signedOrderParams =
+			takerVelocityClient.signSignedMsgOrderParamsMessage(
+				takerOrderParamsMessage
+			);
+
+		let rejected = false;
+		try {
+			await makerVelocityClient.placeSignedMsgTakerOrder(
+				signedOrderParams,
+				marketIndex,
+				{
+					taker: await takerVelocityClient.getUserAccountPublicKey(),
+					takerUserAccount: takerVelocityClient.getUserAccount(),
+					takerStats: takerVelocityClient.getUserStatsAccountPublicKey(),
+					signingAuthority: takerVelocityClient.wallet.publicKey,
+				},
+				undefined,
+				2
+			);
+		} catch (e) {
+			rejected = true;
+			// InvalidSignedMsgOrderParam
+			assert(
+				e.toString().includes('6288') || e.toString().includes('0x1890'),
+				e.toString()
+			);
+		}
+		assert(rejected);
+
+		await takerVelocityClientUser.fetchAccounts();
+		assert(takerVelocityClient.getUser().getOpenOrders().length == 0);
+
+		await takerVelocityClientUser.unsubscribe();
+		await takerVelocityClient.unsubscribe();
+	});
+
 	it('should work with off-chain auctions', async () => {
 		const slot = new BN(
 			await bankrunContextWrapper.connection.toConnection().getSlot()

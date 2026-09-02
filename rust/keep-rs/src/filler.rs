@@ -985,9 +985,11 @@ fn evaluate_swift_crosses(
         order_params.auction_end_price.unwrap_or_default(),
         order_params.auction_duration.unwrap_or_default(),
     );
-    // On-chain the auction clock starts at the signed message slot, not when the order is
-    // placed. Callers defer an order whose message slot has not arrived (`swift_slot_wait`),
-    // so `min` is only a guard against `calculate_auction_price`'s elapsed-slot underflow.
+    // On-chain the order slot is `min(clock.slot, message slot)` (`get_order_slot`), so
+    // the auction clock starts at the message slot, never before. Callers defer an auction
+    // order whose message slot has not arrived (`swift_slot_wait`), but a resting limit is
+    // forwarded early, so `min` mirrors that clamp as well as guarding
+    // `calculate_auction_price`'s elapsed-slot underflow.
     let order_slot = signed_order.slot().min(landing_slot);
     let order = Order {
         slot: order_slot,

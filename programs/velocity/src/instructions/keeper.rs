@@ -44,6 +44,7 @@ use {
             },
             position::calculate_base_asset_value_and_pnl_with_oracle_price,
             safe_math::SafeMath,
+            safe_unwrap::SafeUnwrap,
             spot_withdraw::validate_spot_market_vault_amount,
             time::Millis,
         },
@@ -681,13 +682,11 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
         return Err(print_error!(ErrorCode::InvalidOrderIOC)().into());
     }
 
-    // `auction_duration` is in wall clock 400ms units. Resolve the first slot
-    // reaching that duration across every known future transition so placement
-    // expiry cannot disagree with auction completion at a gate boundary.
+    // `auction_duration` is in wall clock 400ms units.
     let auction_duration_units = if matching_taker_order_params.order_type == OrderType::Limit {
         matching_taker_order_params.auction_duration.unwrap_or(0)
     } else {
-        matching_taker_order_params.auction_duration.unwrap()
+        matching_taker_order_params.auction_duration.safe_unwrap()?
     };
     // A limit order with no auction rests from placement, so its message slot is
     // a placement deadline (`max_slot` below equals it), not an auction start.
@@ -729,6 +728,9 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
         return Err(print_error!(ErrorCode::InvalidSignedMsgOrderParam)().into());
     }
     let market_index = matching_taker_order_params.market_index;
+    // Resolve the first slot reaching the auction duration across every known
+    // future transition so placement expiry cannot disagree with auction
+    // completion at a gate boundary.
     let max_slot = state.slot_clock().slot_at_or_after_duration(
         order_slot,
         Millis::from_stored_units(auction_duration_units as u64),

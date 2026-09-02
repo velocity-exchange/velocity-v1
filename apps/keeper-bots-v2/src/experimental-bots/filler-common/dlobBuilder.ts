@@ -164,7 +164,8 @@ class DLOBBuilder {
 			// cannot fill yet. Inserting it early lets the taking pass match it against
 			// resting liquidity and mark that liquidity filled in this snapshot, hiding
 			// a fill that could have happened. It stays cached and is inserted once its
-			// slot lands. A resting limit (no auction) may be placed ahead of its slot.
+			// slot lands. A resting limit (no auction) may be placed ahead of its slot,
+			// though this builder never caches one (insertSignedMsgOrder skips it).
 			if (
 				!signedMsgOrderPlaceable(
 					dlob.slotDurationState,

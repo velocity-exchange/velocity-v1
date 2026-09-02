@@ -1,9 +1,13 @@
 import { Command } from 'commander';
 import { PublicKey } from '@solana/web3.js';
+import { BN } from '@coral-xyz/anchor';
 import {
+	ExchangeStatus,
+	FeatureBitFlags,
 	FeeStructure,
 	FeeTier,
 	HotRole,
+	SolvencyStatus,
 	decodeName,
 	getTokenAmount,
 	SpotBalanceType,
@@ -71,6 +75,49 @@ function printFillerReward(structure: FeeStructure): void {
 	);
 }
 
+/** `State.lpPoolFeatureBitFlags` bits (mirror of the Rust `LpPoolFeatureBitFlags`; not exported by the SDK). */
+const LP_POOL_FEATURE_BITS: Record<string, number> = {
+	SETTLE_LP_POOL: 0b001,
+	SWAP_LP_POOL: 0b010,
+	MINT_REDEEM_LP_POOL: 0b100,
+};
+
+/** Render a bitmask as its raw value, binary form, and the names of the set bits. */
+function describeBitmask(
+	value: number,
+	bits: Record<string, number>,
+	zeroLabel = 'none set'
+): string {
+	const set = Object.entries(bits)
+		.filter(([, bit]) => bit !== 0 && (value & bit) === bit)
+		.map(([name]) => name);
+	const names = set.length > 0 ? set.join(' | ') : zeroLabel;
+	return `${value} (0b${value.toString(2).padStart(8, '0')}) = ${names}`;
+}
+
+/** Render any decoded account field: pubkeys as base58, BNs as decimals, arrays/structs inline. */
+function formatField(value: unknown): string {
+	if (value === undefined || value === null) {
+		return '(none)';
+	}
+	if (value instanceof PublicKey) {
+		return value.equals(PublicKey.default) ? '(unset)' : value.toBase58();
+	}
+	if (BN.isBN(value)) {
+		return value.toString();
+	}
+	if (Array.isArray(value)) {
+		return `[${value.map(formatField).join(', ')}]`;
+	}
+	if (typeof value === 'object') {
+		const entries = Object.entries(value as Record<string, unknown>).map(
+			([k, v]) => `${k}: ${formatField(v)}`
+		);
+		return `{ ${entries.join(', ')} }`;
+	}
+	return String(value);
+}
+
 export function registerShow(parent: Command): void {
 	const show = parent
 		.command('show')
@@ -127,6 +174,55 @@ export function registerShow(parent: Command): void {
 				`${state.perpFeeStructure.ifFeeNumerator}%,`,
 				'protocol = residual'
 			);
+		} finally {
+			await client.unsubscribe();
+		}
+	});
+
+	withGlobalOptions(
+		show
+			.command('state')
+			.description(
+				'Dump every field of the singleton State account, with the exchange-status, feature, LP-pool feature, and solvency bitmasks decoded to bit names.'
+			)
+	).action(async (_flags, cmd: Command) => {
+		const opts = readGlobalOpts(cmd);
+		const client = await buildAdminClient(opts);
+		try {
+			const state = client.getStateAccount();
+			const decoded: Record<string, string> = {
+				exchangeStatus: describeBitmask(
+					state.exchangeStatus,
+					ExchangeStatus as unknown as Record<string, number>,
+					'ACTIVE'
+				),
+				featureBitFlags: describeBitmask(
+					state.featureBitFlags,
+					FeatureBitFlags as unknown as Record<string, number>
+				),
+				lpPoolFeatureBitFlags: describeBitmask(
+					state.lpPoolFeatureBitFlags,
+					LP_POOL_FEATURE_BITS
+				),
+				solvencyStatus: describeBitmask(
+					state.solvencyStatus,
+					SolvencyStatus as unknown as Record<string, number>,
+					'ACTIVE'
+				),
+			};
+
+			const statePk = await client.getStatePublicKey();
+			console.log('state account:', statePk.toBase58());
+			const width = Math.max(
+				...Object.keys(state as unknown as object).map((k) => k.length)
+			);
+			for (const [key, value] of Object.entries(
+				state as unknown as Record<string, unknown>
+			)) {
+				console.log(
+					`  ${key.padEnd(width)}  ${decoded[key] ?? formatField(value)}`
+				);
+			}
 		} finally {
 			await client.unsubscribe();
 		}

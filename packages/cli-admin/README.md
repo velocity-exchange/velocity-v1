@@ -59,6 +59,7 @@ velocity-admin config init|list|set-rpc|set-default|remove   # connection profil
 velocity-admin whoami                                # which on-chain authorities the signer holds
 
 velocity-admin show config
+velocity-admin show state   # every field of the State account, with the exchange-status, feature, LP-pool feature and solvency bitmasks decoded to bit names
 velocity-admin show fees    # every fee users pay: trading tiers, filler reward, split, per-market adjustments + liquidation fees
 velocity-admin show perp-markets [market]  # per-market risk + quoting params: OI cap, margins, spreads, jit/curve intensity, funding clamp, fee/pnl pool balances (the vAMM capital view)
 velocity-admin show spot-markets [market]  # per-market lending params: deposit cap + headroom, weights, rate curve, withdraw guard, IF vault balance

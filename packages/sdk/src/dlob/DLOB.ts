@@ -63,6 +63,7 @@ import {
 	mergeL2LevelGenerators,
 } from './orderBookLevels';
 import { isFallbackAvailableLiquiditySource } from '../math/auction';
+import { getPerpFeeTierIndex } from '../math/fees';
 import { convertToNumber } from '../math/conversion';
 
 /** An on-chain order paired with the pubkey of its owning `User` account. */
@@ -726,7 +727,7 @@ export class DLOB {
 	}
 
 	/**
-	 * Reads the tier-0 maker rebate fraction (`makerRebateNumerator / makerRebateDenominator`)
+	 * Reads the entry-tier maker rebate fraction (`makerRebateNumerator / makerRebateDenominator`)
 	 * for a market from `stateAccount`'s perp/spot fee structure, then scales the numerator up by
 	 * the market's `feeAdjustment` percentage if one is set. Used by `findRestingLimitOrderNodesToFill`
 	 * to size the buffer added to fallback prices so fallback fills aren't triggered by rebate-sized
@@ -745,10 +746,15 @@ export class DLOB {
 		let makerRebateNumerator: number;
 		let makerRebateDenominator: number;
 		if (isVariant(marketType, 'perp')) {
-			makerRebateNumerator =
-				stateAccount.perpFeeStructure.feeTiers[0].makerRebateNumerator;
-			makerRebateDenominator =
-				stateAccount.perpFeeStructure.feeTiers[0].makerRebateDenominator;
+			// The DLOB does not know a given maker's volume, so the buffer is
+			// sized on the lowest rebate any maker earns. A `promoFeeTier` floor
+			// raises that lower bound for everyone, so it belongs here too.
+			const feeTier =
+				stateAccount.perpFeeStructure.feeTiers[
+					getPerpFeeTierIndex(undefined, stateAccount)
+				];
+			makerRebateNumerator = feeTier.makerRebateNumerator;
+			makerRebateDenominator = feeTier.makerRebateDenominator;
 		} else {
 			makerRebateNumerator =
 				stateAccount.spotFeeStructure.feeTiers[0].makerRebateNumerator;

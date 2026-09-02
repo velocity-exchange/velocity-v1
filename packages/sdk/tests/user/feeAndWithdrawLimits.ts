@@ -8,6 +8,8 @@ import {
 	UserStatsAccount,
 	SPOT_MARKET_BALANCE_PRECISION,
 	QUOTE_PRECISION,
+	PERP_FEE_TIER_MAX_INDEX,
+	VIP_FEE_TIER_TWO_VOLUME_QUOTE,
 } from '../../src';
 import { assert } from '../../src/assert/assert';
 import { mockPerpMarkets, mockSpotMarkets } from '../dlob/helpers';
@@ -238,6 +240,147 @@ describe('User fee calculation', () => {
 		assert(
 			fee.eq(new BN(1100)),
 			`expected market-index fee incl. builder 1100, got ${fee.toString()}`
+		);
+	});
+});
+
+// The promo fee tier (`State.promoFeeTier`) floors every account's perp tier at
+// the configured index while it is set. These tiers differ per index so the
+// selected index is observable in the returned rates.
+const tieredFeeStructure = {
+	...mockFeeStructure,
+	feeTiers: [
+		{ ...mockFeeTier, feeNumerator: 30, makerRebateNumerator: 1 },
+		{ ...mockFeeTier, feeNumerator: 20, makerRebateNumerator: 2 },
+		{ ...mockFeeTier, feeNumerator: 10, makerRebateNumerator: 3 },
+		// Spare slots the program never selects, left with the zeroed
+		// denominators an unwritten slot really carries.
+		...Array.from({ length: 3 }, () => ({
+			...mockFeeTier,
+			feeNumerator: 0,
+			feeDenominator: 0,
+			makerRebateDenominator: 0,
+		})),
+	],
+};
+
+async function makePromoMockUser(
+	promoFeeTier: number,
+	takerVolume30D: BN = ZERO
+): Promise<User> {
+	const user = await makeMockUser(
+		_.cloneDeep(mockPerpMarkets),
+		_.cloneDeep(mockSpotMarkets),
+		_.cloneDeep(baseMockUserAccount),
+		[1, 1, 1, 1, 1, 1, 1, 1],
+		[1, 1, 1, 1, 1, 1, 1, 1]
+	);
+
+	user.velocityClient.getStateAccount = () =>
+		({
+			perpFeeStructure: tieredFeeStructure,
+			spotFeeStructure: tieredFeeStructure,
+			promoFeeTier,
+		}) as any;
+
+	const userStatsAccount = {
+		..._.cloneDeep(mockUserStatsAccount),
+		takerVolume30D,
+		// The rolling estimate decays from the last update, so stamp it now to
+		// keep the full volume inside the window.
+		lastTakerVolume30DTs: new BN(Math.floor(Date.now() / 1000)),
+	};
+	user.velocityClient.getUserStatsOrThrow = () =>
+		({
+			getAccountOrThrow: () => userStatsAccount,
+		}) as any;
+	user.velocityClient.getUserStats = () =>
+		({
+			getAccount: () => userStatsAccount,
+		}) as any;
+	user.velocityClient.getPerpMarketAccountOrThrow = () =>
+		({
+			marketIndex: 0,
+			feeAdjustment: 0,
+			takerFeeAddonTenthBps: 0,
+		}) as any;
+
+	return user;
+}
+
+describe('Promo fee tier floor', () => {
+	it('lifts a zero-volume user to the promo tier', async () => {
+		const user = await makePromoMockUser(2);
+
+		const feeTier = user.getUserFeeTier(MarketType.PERP);
+		assert(
+			feeTier.feeNumerator === 10,
+			`expected the promo tier's fee, got ${feeTier.feeNumerator}`
+		);
+		assert(user.getUserPerpFeeTierIndex() === 2);
+	});
+
+	it('does not downgrade a user whose volume already earns a better tier', async () => {
+		const user = await makePromoMockUser(
+			1,
+			VIP_FEE_TIER_TWO_VOLUME_QUOTE.muln(2)
+		);
+
+		assert(
+			user.getUserPerpFeeTierIndex() === 2,
+			'the volume tier must win over a lower promo floor'
+		);
+	});
+
+	it('is a no-op when disabled', async () => {
+		const user = await makePromoMockUser(0);
+
+		assert(user.getUserPerpFeeTierIndex() === 0);
+	});
+
+	it('clamps a promo above the live tiers to the top live tier', async () => {
+		const user = await makePromoMockUser(5);
+
+		// Slots past the ladder have zeroed denominators; selecting one would
+		// divide to NaN rather than charge a fee.
+		assert(user.getUserPerpFeeTierIndex() === PERP_FEE_TIER_MAX_INDEX);
+		assert(user.getUserFeeTier(MarketType.PERP).feeDenominator === 1000);
+	});
+
+	// The regression: getMarketFees with no user quoted the entry tier during a
+	// promo, disagreeing with the same call made with a user.
+	it('applies to getMarketFees when no user is passed', async () => {
+		const user = await makePromoMockUser(2);
+
+		const { takerFee: genericTakerFee, makerFee: genericMakerFee } =
+			user.velocityClient.getMarketFees(MarketType.PERP, 0);
+		const { takerFee: userTakerFee } = user.velocityClient.getMarketFees(
+			MarketType.PERP,
+			0,
+			user
+		);
+
+		assert(
+			Math.abs(genericTakerFee - 0.01) < 1e-12,
+			`expected the promo tier's taker fee 0.01, got ${genericTakerFee}`
+		);
+		assert(
+			Math.abs(genericMakerFee - 0.003) < 1e-12,
+			`expected the promo tier's maker rebate 0.003, got ${genericMakerFee}`
+		);
+		assert(
+			Math.abs(genericTakerFee - userTakerFee) < 1e-12,
+			'the generic schedule must agree with a zero-volume user under a promo'
+		);
+	});
+
+	it('leaves spot fees on the entry tier', async () => {
+		const user = await makePromoMockUser(2);
+
+		const { takerFee } = user.velocityClient.getMarketFees(MarketType.SPOT);
+		assert(
+			Math.abs(takerFee - 0.03) < 1e-12,
+			`expected the spot entry-tier fee 0.03, got ${takerFee}`
 		);
 	});
 });

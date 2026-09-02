@@ -1,5 +1,21 @@
 # @velocity-exchange/sdk
 
+## 0.21.0
+
+### Minor Changes
+
+- [#481](https://github.com/velocity-exchange/velocity-v1/pull/481) [`033237b`](https://github.com/velocity-exchange/velocity-v1/commit/033237bb975692bcce5bd540b3b015aba29463f3) Thanks [@ChesterSim](https://github.com/ChesterSim)! - Add `getMarketFeesForFeeTier` and a fee-tier override on `VelocityClient.getMarketFees`, so a caller can price a market at a tier the account is not on.
+
+  `getMarketFees` computed the fee for whichever tier the account was on and applied the market surcharge, `feeAdjustment`, referee discount and builder fee on the way. There was no way to ask what the same market would charge at a different tier, which is what a UI needs to show the saving a fee promotion is making against someone's own volume tier. Deriving the second figure from the raw tier rate instead gives two numbers computed by different formulas, so the difference between them is not the saving.
+
+  The modifier pipeline is now the exported `getMarketFeesForFeeTier(feeTier, marketType, marketAccount?, { isReferee, builderFeeTenthBps })`, and `getMarketFees` resolves the tier and the account-derived inputs and delegates to it. Passing `feeTierOverride` (the new fifth argument) prices that tier with everything else unchanged; the referee discount comes from the tier being priced, as it does on chain. No behaviour change for existing calls.
+
+### Patch Changes
+
+- [#482](https://github.com/velocity-exchange/velocity-v1/pull/482) [`eaa0664`](https://github.com/velocity-exchange/velocity-v1/commit/eaa06645a8ae137ce4e8ca606b2a65d3a24980cd) Thanks [@0xahzam](https://github.com/0xahzam)! - Export `LpPoolFeatureBitFlags`, the missing mirror of the onchain `State.lpPoolFeatureBitFlags` bits (`SETTLE_LP_POOL`, `SWAP_LP_POOL`, `MINT_REDEEM_LP_POOL`), alongside the existing `FeatureBitFlags`.
+
+- [#484](https://github.com/velocity-exchange/velocity-v1/pull/484) [`e2b86d3`](https://github.com/velocity-exchange/velocity-v1/commit/e2b86d3ddba2c3e903ce70da835314a16ebed8e3) Thanks [@ChesterSim](https://github.com/ChesterSim)! - Add `signedMsgOrderPlaceable` and `isRestingSignedMsgLimitOrder` (with `SIGNED_MSG_RESTING_LIMIT_MAX_LEAD_MS`), mirroring the program's `place_signed_msg_taker_order` slot gates: a limit order with no auction may now be placed ahead of its message slot, which is its placement deadline, within a 30s lead bound; auction orders still wait for their message slot (`signedMsgOrderSlotReached`).
+
 ## 0.20.0
 
 ### Minor Changes

@@ -264,6 +264,11 @@ const tieredFeeStructure = {
 	],
 };
 
+/**
+ * A user on the tiered fee structure above, under a promo floor at
+ * `promoFeeTier`, whose 30d taker volume is `takerVolume30D` (QUOTE_PRECISION)
+ * and stamped as of now so none of it has decayed out of the window.
+ */
 async function makePromoMockUser(
 	promoFeeTier: number,
 	takerVolume30D: BN = ZERO

@@ -4,7 +4,15 @@ import {
 	VIP_FEE_TIER_ONE_VOLUME_QUOTE,
 	VIP_FEE_TIER_TWO_VOLUME_QUOTE,
 } from '../constants/numericConstants';
-import { StateAccount, UserStatsAccount } from '../types';
+import {
+	FeeTier,
+	isVariant,
+	MarketType,
+	PerpMarketAccount,
+	SpotMarketAccount,
+	StateAccount,
+	UserStatsAccount,
+} from '../types';
 import { getUser30dRollingVolumeEstimate } from './trade';
 
 /**
@@ -78,4 +86,68 @@ export function getPerpFeeTierIndex(
 		feeTierIndex,
 		Math.min(state.promoFeeTier ?? 0, PERP_FEE_TIER_MAX_INDEX)
 	);
+}
+
+/**
+ * Applies every per-market and per-account modifier the program applies on top
+ * of a fee tier's own rates, in the program's order (`calculate_taker_fee` and
+ * `calculate_referee_fee_and_referrer_reward`, `math/fees.rs`):
+ *
+ * 1. the market's `takerFeeAddonTenthBps` surcharge, taker leg only (perp only)
+ * 2. the market's `feeAdjustment` percentage, scaling both legs
+ * 3. the referee discount, taker leg only
+ * 4. the builder fee, taker leg only
+ *
+ * `VelocityClient.getMarketFees` is this function with the tier and the
+ * account-derived inputs resolved for you. Call this directly to price a tier
+ * the account is not on, e.g. to show what a fee promotion is saving someone
+ * against their own volume tier; both figures then come out of the same
+ * pipeline and differ only by the tier.
+ *
+ * @param feeTier The tier to price.
+ * @param marketType `MarketType.PERP` or `MarketType.SPOT`.
+ * @param marketAccount The market whose surcharge and `feeAdjustment` apply.
+ *   Omit for the market-independent schedule.
+ * @param opts.isReferee Whether the taker is a referee, which discounts the
+ *   taker fee by the tier's referee fraction.
+ * @param opts.builderFeeTenthBps A builder fee to add to the taker leg, in
+ *   tenth-bps. Omit when no builder fee is charged; the caller decides that,
+ *   since the program waives it for a taker below initial margin.
+ * @returns Taker fee and maker rebate as fractions of notional (0.0001 = 1bp).
+ */
+export function getMarketFeesForFeeTier(
+	feeTier: FeeTier,
+	marketType: MarketType,
+	marketAccount?: PerpMarketAccount | SpotMarketAccount,
+	opts?: {
+		isReferee?: boolean;
+		builderFeeTenthBps?: number;
+	}
+): { takerFee: number; makerFee: number } {
+	let takerFee = feeTier.feeNumerator / feeTier.feeDenominator;
+	let makerFee = feeTier.makerRebateNumerator / feeTier.makerRebateDenominator;
+
+	if (marketAccount) {
+		// The surcharge is unsigned tenth-bps and lands on the tier fee BEFORE
+		// feeAdjustment scales the sum. Taker only; the maker rebate sees
+		// feeAdjustment alone.
+		if (isVariant(marketType, 'perp')) {
+			takerFee +=
+				(marketAccount as PerpMarketAccount).takerFeeAddonTenthBps / 100_000;
+		}
+		takerFee += (takerFee * marketAccount.feeAdjustment) / 100;
+		makerFee += (makerFee * marketAccount.feeAdjustment) / 100;
+	}
+
+	// After feeAdjustment and taker-only, matching the program's ordering.
+	if (opts?.isReferee && feeTier.refereeFeeDenominator > 0) {
+		takerFee -=
+			(takerFee * feeTier.refereeFeeNumerator) / feeTier.refereeFeeDenominator;
+	}
+
+	if (opts?.builderFeeTenthBps) {
+		takerFee += opts.builderFeeTenthBps / 100_000;
+	}
+
+	return { takerFee, makerFee };
 }

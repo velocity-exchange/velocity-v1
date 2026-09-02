@@ -733,6 +733,12 @@ export class DLOB {
 	 * to size the buffer added to fallback prices so fallback fills aren't triggered by rebate-sized
 	 * noise.
 	 *
+	 * One rebate is priced for the whole book. The program charges each maker their own tier, which
+	 * the DLOB cannot know without every maker's `UserStats`, so this is exact only while the tiers
+	 * share a maker rebate (they do: `FeeStructure::perps_default` sets a flat -0.25bp across all
+	 * three). If a future schedule varies the rebate by tier, this has to become per-maker or a
+	 * deliberate bound, or a maker above the floor will be buffered at the wrong rebate.
+	 *
 	 * @param marketType `MarketType.PERP` or `MarketType.SPOT`
 	 * @param stateAccount global protocol state holding the perp/spot fee tier tables
 	 * @param marketAccount the specific market, whose optional `feeAdjustment` (percent) scales the rebate
@@ -746,9 +752,10 @@ export class DLOB {
 		let makerRebateNumerator: number;
 		let makerRebateDenominator: number;
 		if (isVariant(marketType, 'perp')) {
-			// The DLOB does not know a given maker's volume, so the buffer is
-			// sized on the lowest rebate any maker earns. A `promoFeeTier` floor
-			// raises that lower bound for everyone, so it belongs here too.
+			// The DLOB cannot know a given maker's tier, so it has always priced
+			// the buffer off one tier for the whole book. A `promoFeeTier` floor
+			// moves that tier for everyone, so read the floor rather than tier 0,
+			// which under a promo is a rebate no maker earns.
 			const feeTier =
 				stateAccount.perpFeeStructure.feeTiers[
 					getPerpFeeTierIndex(undefined, stateAccount)

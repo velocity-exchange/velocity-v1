@@ -9,6 +9,7 @@ import {
 	SPOT_MARKET_BALANCE_PRECISION,
 	QUOTE_PRECISION,
 	PERP_FEE_TIER_MAX_INDEX,
+	PERP_FEE_TIER_VOLUME_THRESHOLDS,
 	VIP_FEE_TIER_TWO_VOLUME_QUOTE,
 } from '../../src';
 import { assert } from '../../src/assert/assert';
@@ -265,9 +266,16 @@ const tieredFeeStructure = {
 };
 
 /**
+ * Read the tier as of the same timestamp the volume is stamped at, so the
+ * rolling-volume decay is exactly zero and a breakpoint can be tested on its
+ * boundary rather than a hair under it.
+ */
+const NOW = new BN(Math.floor(Date.now() / 1000));
+
+/**
  * A user on the tiered fee structure above, under a promo floor at
  * `promoFeeTier`, whose 30d taker volume is `takerVolume30D` (QUOTE_PRECISION)
- * and stamped as of now so none of it has decayed out of the window.
+ * as of `NOW`.
  */
 async function makePromoMockUser(
 	promoFeeTier: number,
@@ -291,9 +299,7 @@ async function makePromoMockUser(
 	const userStatsAccount = {
 		..._.cloneDeep(mockUserStatsAccount),
 		takerVolume30D,
-		// The rolling estimate decays from the last update, so stamp it now to
-		// keep the full volume inside the window.
-		lastTakerVolume30DTs: new BN(Math.floor(Date.now() / 1000)),
+		lastTakerVolume30DTs: NOW,
 	};
 	user.velocityClient.getUserStatsOrThrow = () =>
 		({
@@ -346,10 +352,61 @@ describe('Promo fee tier floor', () => {
 	it('clamps a promo above the live tiers to the top live tier', async () => {
 		const user = await makePromoMockUser(5);
 
+		// Asserted against the literal, not `PERP_FEE_TIER_MAX_INDEX`: the
+		// constant is derived from the same array the clamp reads, so comparing
+		// the two would hold even if the ladder drifted from the program's.
+		assert(user.getUserPerpFeeTierIndex() === 2);
 		// Slots past the ladder have zeroed denominators; selecting one would
 		// divide to NaN rather than charge a fee.
-		assert(user.getUserPerpFeeTierIndex() === PERP_FEE_TIER_MAX_INDEX);
 		assert(user.getUserFeeTier(MarketType.PERP).feeDenominator === 1000);
+	});
+
+	// The ladder is a hand-maintained mirror of `determine_perp_fee_tier`
+	// (`math/fees.rs`) and its `VOLUME_THRESHOLDS`, which are hardcoded on chain
+	// and cannot be read back from the state account. Pin the values so a change
+	// on either side has to be deliberate.
+	it('mirrors the program tier ladder', async () => {
+		assert(
+			PERP_FEE_TIER_MAX_INDEX === 2,
+			`expected 3 live tiers (max index 2), got ${PERP_FEE_TIER_MAX_INDEX}`
+		);
+		assert(
+			PERP_FEE_TIER_VOLUME_THRESHOLDS.length === PERP_FEE_TIER_MAX_INDEX,
+			'a ladder of N tiers has N-1 breakpoints'
+		);
+		assert(
+			PERP_FEE_TIER_VOLUME_THRESHOLDS[0].eq(
+				new BN(5_000_000).mul(QUOTE_PRECISION)
+			),
+			'VIP 1 breakpoint must be $5M'
+		);
+		assert(
+			PERP_FEE_TIER_VOLUME_THRESHOLDS[1].eq(
+				new BN(80_000_000).mul(QUOTE_PRECISION)
+			),
+			'VIP 2 breakpoint must be $80M'
+		);
+	});
+
+	it('selects each rung of the ladder by volume', async () => {
+		const justUnderVipOne = await makePromoMockUser(
+			0,
+			new BN(4_999_999).mul(QUOTE_PRECISION)
+		);
+		const atVipOne = await makePromoMockUser(
+			0,
+			new BN(5_000_000).mul(QUOTE_PRECISION)
+		);
+		const atVipTwo = await makePromoMockUser(
+			0,
+			new BN(80_000_000).mul(QUOTE_PRECISION)
+		);
+
+		// Each breakpoint is inclusive: at exactly $5M the user is VIP 1, and a
+		// dollar under it they are not.
+		assert(justUnderVipOne.getUserPerpFeeTierIndex(NOW) === 0);
+		assert(atVipOne.getUserPerpFeeTierIndex(NOW) === 1);
+		assert(atVipTwo.getUserPerpFeeTierIndex(NOW) === 2);
 	});
 
 	// The regression: getMarketFees with no user quoted the entry tier during a

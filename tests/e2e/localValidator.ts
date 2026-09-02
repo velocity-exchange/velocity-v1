@@ -427,6 +427,47 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			.map((maker) => maker.toBase58());
 	};
 
+	/** The maker->base fills one transaction settled, read off its
+	 * `OrderActionRecord`s. Exact and race-free: it reads the transaction's own
+	 * effect, not post-state a later crank can move. `taker`/`maker` on the
+	 * record are the User PDAs. */
+	const fillsBy = async (signature: string) => {
+		const tx = await connection.getTransaction(signature, {
+			commitment: 'confirmed',
+			maxSupportedTransactionVersion: 0,
+		});
+		const logs = tx?.meta?.logMessages ?? [];
+		return parseLogs(admin.program, logs)
+			.filter((event) => event.name === 'orderActionRecord')
+			.map(
+				(event) =>
+					event.data as {
+						taker?: PublicKey | null;
+						maker?: PublicKey | null;
+						baseAssetAmountFilled?: BN | null;
+					}
+			)
+			.filter((r) => r.baseAssetAmountFilled != null);
+	};
+
+	/** Base a maker settled in one transaction (exact, race-free). */
+	const makerFilledBase = async (
+		signature: string,
+		makerUser: PublicKey
+	): Promise<BN> =>
+		(await fillsBy(signature))
+			.filter((r) => r.maker != null && r.maker.equals(makerUser))
+			.reduce((sum, r) => sum.add(r.baseAssetAmountFilled!), new BN(0));
+
+	/** Base a taker settled in one transaction (exact, race-free). */
+	const takerFilledBase = async (
+		signature: string,
+		takerUser: PublicKey
+	): Promise<BN> =>
+		(await fillsBy(signature))
+			.filter((r) => r.maker != null && r.taker != null && r.taker.equals(takerUser))
+			.reduce((sum, r) => sum.add(r.baseAssetAmountFilled!), new BN(0));
+
 	/** Fills route through every quoter, well past the default CU budget. */
 	const sendFill = (ix: TransactionInstruction) =>
 		send([ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }), ix]);
@@ -2371,9 +2412,6 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		const takerUser = userOf(takerKp.publicKey);
 		const positionBefore =
 			taker.getUser().getPerpPosition(0)?.baseAssetAmount ?? new BN(0);
-		await midMaker.fetchAccounts();
-		const midBefore =
-			midMaker.getUser().getPerpPosition(0)?.baseAssetAmount ?? new BN(0);
 
 		// A v0 message over a lookup table, the way a real keeper sends a
 		// swift fill: the ed25519 instruction carries the whole signed
@@ -2565,14 +2603,16 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				.sub(positionBefore)
 				.toString()})`
 		);
-		// The attestation reached the midpoint: its books only open to
-		// co-signed flow now, and its maker went short against the taker.
-		await midMaker.fetchAccounts();
-		const midAfter =
-			midMaker.getUser().getPerpPosition(0)?.baseAssetAmount ?? new BN(0);
+		// The attestation reached the midpoint: its books only open to co-signed
+		// flow now, and its maker settled part of the fill. Read that off the
+		// transaction, not off a position a later crank could move.
+		const midFilled = await makerFilledBase(
+			signature,
+			userOf(midMakerKp.publicKey)
+		);
 		assert.isTrue(
-			midAfter.lt(midBefore),
-			`midpoint maker filled attested flow (before=${midBefore} after=${midAfter})`
+			midFilled.gt(new BN(0)),
+			`midpoint maker filled the attested flow (got ${midFilled})`
 		);
 	});
 	it('forfeits book depth it cannot carry rather than routing it worse', async function () {
@@ -2756,15 +2796,11 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				price: worstQuoted.muln(102).divn(100),
 			})
 		);
-		const before = (await taker.forceGetUserAccount())!.perpPositions.find(
-			(p) => p.marketIndex === 0
-		)!.baseAssetAmount;
-
 		// The taker fills its own order from the endpoint's account list — the
 		// realistic use of /route. It is taker-signed, so the fill is held only
 		// to whether the endpoint's accounts let it land, not to the filler
 		// obligation a keeper owes on withheld depth.
-		await send(
+		const fillSig = await send(
 			[
 				ComputeBudgetProgram.setComputeUnitLimit({ units: 800_000 }),
 				await fillPerpOrderIx(
@@ -2778,14 +2814,25 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			[takerKp]
 		);
 
-		await taker.fetchAccounts();
-		const filled = taker
-			.getUser()
-			.getPerpPosition(0)!
-			.baseAssetAmount.sub(before);
+		// Read the fill off its own transaction, not off a position a cross
+		// crank on the rested remainder could move a slot later. The taker got
+		// base, and every maker that settled the fill was one the endpoint
+		// named: the account list it answered with is exactly what filled.
+		const takerGot = await takerFilledBase(fillSig, userOf(takerKp.publicKey));
 		assert.isTrue(
-			filled.gt(new BN(0)),
+			takerGot.gt(new BN(0)),
 			"a fill built from the endpoint's account list lands and fills"
 		);
+		const namedUsers = new Set(
+			namedKps.map((kp) => userOf(kp.publicKey).toBase58())
+		);
+		const settled = await makersFilledBy(fillSig);
+		assert.isNotEmpty(settled, 'the endpoint-named makers settled the fill');
+		for (const maker of settled) {
+			assert.isTrue(
+				namedUsers.has(maker),
+				`maker ${maker} settled the fill but the endpoint did not name it`
+			);
+		}
 	});
 });

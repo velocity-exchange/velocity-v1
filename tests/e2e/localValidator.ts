@@ -825,19 +825,13 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			quoterProgram: MIDPOINT_ID,
 			responseAccount: midInstance,
 			user: userOf(midMakerKp.publicKey),
-			// Both legs end with velocity's State: midpoint reads the live
-			// `hot_flow_authority` off it rather than caching a copy, so the
-			// key can rotate without every instance being reconfigured.
-			quoteLeg: [
-				{ pubkey: midInstance, isWritable: true },
-				{ pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isWritable: false },
-				{ pubkey: statePda, isWritable: false },
-			],
+			// The protected-flow fact rides the quoter wire
+			// (`taker_served_window`), so the legs carry no sysvar and no
+			// velocity State.
+			quoteLeg: [{ pubkey: midInstance, isWritable: true }],
 			executeLeg: [
 				{ pubkey: midInstance, isWritable: true },
 				{ pubkey: midQuoterSigner, isWritable: false },
-				{ pubkey: SYSVAR_INSTRUCTIONS_PUBKEY, isWritable: false },
-				{ pubkey: statePda, isWritable: false },
 			],
 		});
 		await send(registration.ixs, [midMakerKp]);
@@ -1194,7 +1188,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// The v1 route: a restable remainder of the filled order rests on the
 		// book instead of staying in `User.orders`. Keepers use it in
 		// production (keep-rs's swift path), so the suite fills the same way.
-		admin.program.instruction.fillPerpOrderV1(
+		admin.program.instruction.fillLegacyDlobOrder(
 			orderId,
 			null,
 			signedRoute,
@@ -1211,7 +1205,6 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					clobMarket: clobBook.publicKey,
 					clobProgram: CLOB_ID,
 					clobAuthority,
-					crankConditions: conditions,
 					// Read for the filler obligation: whether the taker signed
 					// and how many accounts the transaction locks.
 					instructionsSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
@@ -1750,7 +1743,6 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				clobMarket: clobBook.publicKey,
 				clobProgram: CLOB_ID,
 				clobAuthority,
-				crankConditions: conditions,
 			}
 		);
 		await taker.sendTransaction(new Transaction().add(ix));
@@ -1885,7 +1877,6 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					clobMarket: clobBook.publicKey,
 					clobProgram: CLOB_ID,
 					clobAuthority,
-					crankConditions: conditions,
 				}
 			);
 			await taker.sendTransaction(new Transaction().add(ix));
@@ -2162,7 +2153,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			const relayPaid0 = await relayPayoutBalance();
 
 			// Move the oracle through the trigger. Nobody submits a trigger ix:
-			// the turner fires `resolve_trigger_order_v1`, which rests the whole
+			// the turner fires `resolve_trigger_market_order_v1`, which rests the whole
 			// fired order taker-origin on the book rather than filling it.
 			await setOraclePrice(106);
 			await pollUntil('the fired stop to rest on the book', 200_000, async () => {
@@ -2222,8 +2213,8 @@ describe('e2e localnet: programs + publisher + redis', function () {
 	it('fires a trigger-limit onto the book through its own resolver', async function () {
 		this.timeout(180_000);
 		// A trigger-limit rests its whole order on the book when it fires — the
-		// `resolve_trigger_clob_order` path, distinct from the stop-market's
-		// `resolve_trigger_order_v1`. A buy-limit at 99, armed to fire when the
+		// `resolve_trigger_limit_order_v1` path, distinct from the stop-market's
+		// `resolve_trigger_market_order_v1`. A buy-limit at 99, armed to fire when the
 		// oracle falls through 98.
 		await taker.placePerpOrder(
 			getTriggerLimitOrderParams({
@@ -2254,7 +2245,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		const relayPaid0 = await relayPayoutBalance();
 
 		// Drop the oracle through the trigger. The turner fires
-		// `resolve_trigger_clob_order`, which rests the whole order on the book;
+		// `resolve_trigger_limit_order_v1`, which rests the whole order on the book;
 		// the DLOB slot degrades to a placed-on-clob shadow, no longer armed.
 		await setOraclePrice(97);
 		// The fired trigger-limit rests its whole order on the book. Its slot

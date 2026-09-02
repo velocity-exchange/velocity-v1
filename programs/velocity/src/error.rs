@@ -863,6 +863,10 @@ pub enum ErrorCode {
         "A quoter reported more base or more retired orders than velocity reserved for that user"
     )]
     QuoterReportExceedsReservation,
+    #[msg(
+        "The book runs an activation speed bump; an unattested taker rests on the book instead of filling synchronously"
+    )]
+    UnattestedSynchronousTake,
 }
 
 #[macro_export]

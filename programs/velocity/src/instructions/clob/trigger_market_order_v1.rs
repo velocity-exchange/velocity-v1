@@ -1,8 +1,8 @@
-//! `trigger_order_v1` — fire a DLOB trigger straight to the book.
+//! `trigger_market_order_v1` — fire a DLOB trigger straight to the book.
 //!
 //! A stop-market on the DLOB rests as an armed trigger in `User.orders`. The v0
 //! `trigger_order` crank flips it live and leaves it there for a later
-//! `fill_perp_order_v1` crank to fill. This crank fires it and rests it on the
+//! `fill_legacy_dlob_order` crank to fill. This crank fires it and rests it on the
 //! book in one instruction: it validates the trigger, transforms the slot's
 //! order into a live market order, frees the slot, and rests the order as a
 //! taker-origin order. Nothing lingers live in `User.orders`.
@@ -15,8 +15,8 @@
 //! crank fills it across every source at the best price.
 //!
 //! The account set is the v0 trigger keeper set plus the market's CLOB accounts
-//! the rest needs, the same superset `trigger_clob_order` and
-//! `fill_perp_order_v1` carry. CLOB trigger-limits keep their own path: they
+//! the rest needs, the same superset `trigger_limit_order_v1` and
+//! `fill_legacy_dlob_order` carry. CLOB trigger-limits keep their own path: they
 //! rest their whole order and never take a fill here.
 
 use {
@@ -25,7 +25,6 @@ use {
         error::ErrorCode,
         instructions::constraints::*,
         load,
-        signer::CLOB_AUTHORITY_SEED,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             fill_mode::FillMode,
@@ -40,7 +39,7 @@ use {
 
 #[derive(Accounts)]
 #[instruction(market_index: u16, order_id: u32, signed_route: Vec<Pubkey>)]
-pub struct TriggerOrderV1<'info> {
+pub struct TriggerMarketOrderV1<'info> {
     pub state: AccountLoader<'info, State>,
     /// CHECK: in signed-keeper mode this must sign for `filler`; in
     /// program-keeper mode (protocol `User` as filler, relay turners) it is
@@ -77,7 +76,7 @@ pub struct TriggerOrderV1<'info> {
     /// CHECK: the CLOB place authority PDA — a book's `place_authority`, which
     /// may place and cancel on any book for any user. Distinct from the
     /// per-entry signer a third-party quoter is handed.
-    #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
+    #[account(address = crate::signer::CLOB_AUTHORITY)]
     pub clob_authority: UncheckedAccount<'info>,
     /// Wake-hint host for the rested remainder, optional as on every CLOB
     /// placement path.
@@ -104,7 +103,7 @@ pub struct TriggerOrderV1<'info> {
         Option<AccountLoader<'info, crate::state::user_conditions::UserConditionsV0>>,
     /// CHECK: address-locked to the instructions sysvar. Read for whether the
     /// owner signed the transaction and how many accounts it locks — the same
-    /// filler-obligation facts `fill_perp_order_v1` needs. Optional, and it
+    /// filler-obligation facts `fill_legacy_dlob_order` needs. Optional, and it
     /// costs one lock: a fill needs it only when a book withholds depth for an
     /// owner the transaction does not carry, and the owner did not sign. A
     /// trigger crank's owner never signs, so a fill that reaches a withheld
@@ -116,8 +115,8 @@ pub struct TriggerOrderV1<'info> {
 #[access_control(
     fill_not_paused(&ctx.accounts.state)
 )]
-pub fn handle_trigger_order_v1<'c: 'info, 'info>(
-    ctx: Context<'info, TriggerOrderV1<'info>>,
+pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
+    ctx: Context<'info, TriggerMarketOrderV1<'info>>,
     market_index: u16,
     order_id: u32,
     signed_route: Vec<Pubkey>,
@@ -211,8 +210,17 @@ pub fn handle_trigger_order_v1<'c: 'info, 'info>(
     // book, not the propAMMs, so a fill it stages would take a worse price than
     // the full router. The whole order rests taker-origin instead, and the
     // cross crank fills it across every source at the best price.
-    if unfilled > 0 && !tail.is_empty() {
-        let (clob_authority, clob_authority_nonce) = crate::signer::find_clob_authority();
+    //
+    // Maker priority gates the staged fill the same way it gates every taker
+    // route: on a book with a speed bump, only attested flow fills
+    // synchronously. An unattested keeper's tail is ignored and the fired
+    // order rests whole, exactly as the relay path does.
+    // A trigger crank is keeper-built and carries no attestation transport,
+    // so its flow never counts as protected.
+    let taker_served_window = false;
+    let synchronous_take =
+        crate::instructions::synchronous_take_allowed(taker_served_window, &ctx.accounts.quoter)?;
+    if unfilled > 0 && !tail.is_empty() && synchronous_take {
         let route_reference_price = {
             let oracle_id = perp_market_map.get_ref(&market_index)?.oracle_id();
             oracle_map.get_price_data(&oracle_id)?.price
@@ -233,8 +241,7 @@ pub fn handle_trigger_order_v1<'c: 'info, 'info>(
             reference_price: route_reference_price,
             taker: taker_ref,
             limit_price: quote_limit_price,
-            clob_authority,
-            clob_authority_nonce,
+            taker_served_window,
         };
         let inputs = crate::instructions::QuoteInputs {
             caps: crate::instructions::build_user_caps(
@@ -340,14 +347,12 @@ pub fn handle_trigger_order_v1<'c: 'info, 'info>(
     };
     if let Some((direction, price, unfilled, max_ts)) = remainder {
         if unfilled > 0 {
-            let (_, clob_authority_nonce) = crate::signer::find_clob_authority();
             crate::instructions::try_place_remainder_on_clob(
                 &ctx.accounts.user,
                 &ctx.accounts.quoter,
                 &ctx.accounts.clob_market.to_account_info(),
                 &ctx.accounts.clob_program.to_account_info(),
                 &ctx.accounts.clob_authority.to_account_info(),
-                clob_authority_nonce,
                 &perp_market_map,
                 &spot_market_map,
                 &mut oracle_map,
@@ -369,7 +374,7 @@ pub fn handle_trigger_order_v1<'c: 'info, 'info>(
     // ---- Pay the reservoir and release the trigger wake slot. ----
     // Drop the state borrow first: the reservoir payout loads state itself.
     drop(state);
-    super::crank_common::finish_trigger_crank(
+    super::helpers::crank_common::finish_trigger_crank(
         &ctx.accounts.state,
         &ctx.accounts.filler,
         &ctx.accounts.authority,
@@ -383,7 +388,7 @@ pub fn handle_trigger_order_v1<'c: 'info, 'info>(
     Ok(())
 }
 
-/// The relay resolver for `trigger_order_v1` (`Resolve<EndpointName>`):
+/// The relay resolver for `trigger_market_order_v1` (`Resolve<EndpointName>`):
 /// simulation-only, staged from the user's synced trigger conditions. It fires
 /// a DLOB stop-market to the book.
 ///
@@ -395,7 +400,7 @@ pub fn handle_trigger_order_v1<'c: 'info, 'info>(
 /// behind. A DLOB trigger carries no signed route, so the staged call claims
 /// none.
 #[derive(Accounts)]
-pub struct ResolveTriggerOrderV1<'info> {
+pub struct ResolveTriggerMarketOrderV1<'info> {
     /// The shared staging account, index 0 by convention — a resolver's
     /// response pointer is interpreted against it.
     #[account(mut, seeds = [crate::state::relay_scratch::RELAY_SCRATCH_PDA_SEED], bump)]
@@ -410,7 +415,9 @@ pub struct ResolveTriggerOrderV1<'info> {
     pub perp_market: AccountLoader<'info, crate::state::perp_market::PerpMarket>,
 }
 
-pub fn handle_resolve_trigger_order_v1(ctx: Context<ResolveTriggerOrderV1>) -> Result<()> {
+pub fn handle_resolve_trigger_market_order_v1(
+    ctx: Context<ResolveTriggerMarketOrderV1>,
+) -> Result<()> {
     crate::instructions::resolve_into(&ctx.accounts.scratch, || {
         let clock = Clock::get()?;
         let (fired, quote_spot_market_index) = {
@@ -418,13 +425,13 @@ pub fn handle_resolve_trigger_order_v1(ctx: Context<ResolveTriggerOrderV1>) -> R
             let user = load!(ctx.accounts.user)?;
             let market = ctx.accounts.perp_market.load()?;
             (
-                super::crank_common::find_fired_trigger(
+                super::helpers::crank_common::find_fired_trigger(
                     &conditions,
                     &user,
                     &market,
                     &ctx.accounts.oracle,
                     clock.slot,
-                    super::crank_common::TriggerResolverKind::ClobFill,
+                    super::helpers::crank_common::TriggerResolverKind::ClobFill,
                 )?,
                 market.quote_spot_market_index,
             )
@@ -436,7 +443,7 @@ pub fn handle_resolve_trigger_order_v1(ctx: Context<ResolveTriggerOrderV1>) -> R
         let (protocol_user, protocol_user_stats) = crate::state::pdas::protocol_user_pair();
         let user_stats = crate::state::pdas::user_stats(&load!(ctx.accounts.user)?.authority);
         Ok(Some(
-            crate::staged_call!(TriggerOrderV1 {
+            crate::staged_call!(TriggerMarketOrderV1 {
                 state: crate::state::pdas::state(),
                 authority: crate::state::pdas::keeper_placeholder(),
                 filler: protocol_user,

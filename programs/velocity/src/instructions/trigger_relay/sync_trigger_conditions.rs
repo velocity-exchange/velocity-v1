@@ -13,8 +13,8 @@
 //!
 //! Each fired trigger routes to one of three executors by order type and
 //! whether the market has a CLOB: a trigger-limit rests whole on the book
-//! (`trigger_clob_order`), a stop-market fires and fills against the book
-//! (`trigger_order_v1`), and anything on a market without a CLOB stays on the
+//! (`trigger_limit_order_v1`), a stop-market fires and fills against the book
+//! (`trigger_market_order_v1`), and anything on a market without a CLOB stays on the
 //! plain trigger crank (`trigger_order`) for a keeper bot.
 //!
 //! `remaining_accounts` carry, in any order: the perp markets of the user's
@@ -195,7 +195,7 @@ pub fn rewrite_trigger_conditions<'info>(
         }
         // Skip a trigger already resting on a book: it deliberately reads
         // as untriggered, so without this the watch re-fires every round
-        // and `trigger_clob_order` rejects the staged crank each time.
+        // and `trigger_limit_order_v1` rejects the staged crank each time.
         if order.status != OrderStatus::Open
             || !order.must_be_triggered()
             || order.triggered()
@@ -225,8 +225,8 @@ pub fn rewrite_trigger_conditions<'info>(
 
         // Route each fired trigger to its resolver by order type and whether
         // the market has a CLOB. A trigger-limit with a fixed resting price
-        // rests whole on the book (`trigger_clob_order`). A stop-market fires
-        // and fills against the book (`trigger_order_v1`). Everything else —
+        // rests whole on the book (`trigger_limit_order_v1`). A stop-market fires
+        // and fills against the book (`trigger_market_order_v1`). Everything else —
         // any trigger on a market without a CLOB, or a trigger-limit with an
         // oracle offset that cannot rest at a fixed price — stays on the plain
         // trigger crank for a keeper bot to fill.
@@ -237,9 +237,9 @@ pub fn rewrite_trigger_conditions<'info>(
         let (resolver_disc, meta) = if clob_rest || clob_fill {
             let (entry, book, program) = inputs.clob.unwrap();
             let disc = if clob_rest {
-                crate::instruction::ResolveTriggerClobOrder::DISCRIMINATOR
+                crate::instruction::ResolveTriggerLimitOrderV1::DISCRIMINATOR
             } else {
-                crate::instruction::ResolveTriggerOrderV1::DISCRIMINATOR
+                crate::instruction::ResolveTriggerMarketOrderV1::DISCRIMINATOR
             };
             (
                 disc8(disc)?,

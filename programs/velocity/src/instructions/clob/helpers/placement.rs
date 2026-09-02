@@ -11,7 +11,7 @@ use {
         },
         error::ErrorCode,
         load_mut,
-        math::{margin::meets_place_order_margin_requirement, orders::is_order_position_reducing},
+        math::orders::is_order_position_reducing,
         msg,
         state::{
             prop_amm::{ClobMarket, ClobPlaceOrderArgsV0, ClobSide, QuoterV0},
@@ -39,12 +39,16 @@ use {
 /// on transaction landing. Without that protection this would be a free
 /// option written at the taker's own worst price.
 ///
-/// Everything else stays behind. An oracle-floating price has nothing fixed
-/// to rest at, and a trigger-limit has its own placement path. A fired
-/// trigger-market does rest: once it fires it is a plain market order, and its
-/// remainder belongs on the book. A reduce-only order rests too: the router
-/// carries an authoritative `base_cover`, so the book clamps every fill against
-/// it to the position it may reduce.
+/// Everything else stays behind. An `OrderType::Oracle` order prices its
+/// bound relative to the oracle for its whole life, so it has nothing fixed
+/// to rest at — the type match refuses it. (It is the one order type that
+/// still carries `oracle_price_offset`: validation refuses the field on
+/// every other type, so no separate offset check is needed here.) A
+/// trigger-limit has its own placement path. A fired trigger-market does
+/// rest: once it fires it is a plain market order, and its remainder
+/// belongs on the book. A reduce-only order rests too: the router carries
+/// an authoritative `base_cover`, so the book clamps every fill against it
+/// to the position it may reduce.
 ///
 /// A `post_only` order never migrates either. It is a maker's own quote, not a
 /// taker remainder — migrating it would cancel the maker's resting order, hide
@@ -62,7 +66,7 @@ pub fn restable_remainder_price(
     oracle_price: Option<i64>,
 ) -> Option<u64> {
     use crate::state::user::{OrderBitFlag, OrderStatus, OrderType};
-    if order.status != OrderStatus::Open || order.has_oracle_price_offset() || order.post_only {
+    if order.status != OrderStatus::Open || order.post_only {
         return None;
     }
     let price = match order.order_type {
@@ -112,57 +116,55 @@ pub fn align_rest_price_to_tick(price: u64, tick_size: u64, direction: PositionD
 ///
 /// The speed bump is the taker protection that replaced JIT. Skipping it is
 /// reserved for attested flow: a transaction the flow authority (swift)
-/// co-signed after serving the hold window off-chain. A delay at or above the
-/// book's default needs no attestation, and `None` takes the default.
-#[allow(clippy::too_many_arguments)]
-pub fn attest_activation_delay<'info>(
-    state: &crate::state::state::State,
-    quoter_loader: &AccountLoader<'info, QuoterV0>,
-    clob_market: &AccountInfo<'info>,
-    clob_program: &AccountInfo<'info>,
-    clob_authority: &AccountInfo<'info>,
-    clob_authority_nonce: u8,
-    market_index: u16,
+/// signed as a named account after serving the hold window off-chain. A
+/// delay at or above the book's default needs no attestation, and `None`
+/// takes the default.
+pub fn attest_activation_delay(
+    quoter_loader: &AccountLoader<QuoterV0>,
     requested: Option<u32>,
-    instructions_sysvar: Option<&AccountInfo<'info>>,
+    // Whether the transaction is attested flow: the flow authority signs
+    // swift-built transactions as a named account, so the caller reads the
+    // presence of that signer rather than introspecting the sysvar.
+    attested: bool,
 ) -> Result<()> {
     let Some(requested) = requested else {
         return Ok(());
     };
-    let clob = {
-        let quoter = quoter_loader.load()?;
-        ClobMarket::from_quoter(
-            &quoter,
-            market_index,
-            clob_market,
-            clob_program,
-            clob_authority,
-            clob_authority_nonce,
-        )?
-    };
-    let default_delay = clob.reader().order_rules()?.default_activation_delay_slots;
+    // The attach-written mirror, not a CPI (see `QuoterV0::book_tick_size`).
+    let default_delay = quoter_loader.load()?.book_default_activation_delay_slots;
     if requested >= default_delay {
         return Ok(());
     }
-    let flow_authority = state.hot_key(crate::state::state::HotRole::FlowAuthority);
     validate!(
-        flow_authority != Pubkey::default(),
+        attested,
         ErrorCode::UnattestedFastActivation,
-        "no flow authority is configured; fast activation is disabled"
-    )?;
-    let sysvar = instructions_sysvar.ok_or_else(|| {
-        msg!("fast activation needs the instructions sysvar for attestation");
-        ErrorCode::UnattestedFastActivation
-    })?;
-    validate!(
-        crate::instructions::optional_accounts::tx_co_signed_by(sysvar, &flow_authority)?,
-        ErrorCode::UnattestedFastActivation,
-        "activation delay {} is below the default {} and the transaction is not \
-         co-signed by the flow authority",
+        "activation delay {} is below the default {} and the transaction is \
+         not signed by the flow authority",
         requested,
         default_delay
     )?;
     Ok(())
+}
+
+/// Whether this transaction may fill against the market's book in the same
+/// transaction. Attested flow may. Unattested flow may only when the book
+/// runs no speed bump: with a nonzero default activation delay, an
+/// unattested taker rests taker-origin through the activation window and
+/// the cross cranks fill it — a maker can always reprice ahead of
+/// aggression it never agreed to fill instantly. This is the take-side
+/// half of the activation window; [`attest_activation_delay`] is the
+/// placement-side half.
+#[allow(clippy::too_many_arguments)]
+pub fn synchronous_take_allowed(
+    taker_served_window: bool,
+    quoter_loader: &AccountLoader<QuoterV0>,
+) -> Result<bool> {
+    if taker_served_window {
+        return Ok(true);
+    }
+    // The attach-written mirror, not a CPI: the entry is already loaded on
+    // every path that asks.
+    Ok(quoter_loader.load()?.book_default_activation_delay_slots == 0)
 }
 
 /// Rest an unfilled taker remainder on the CLOB: if it can rest and be
@@ -181,7 +183,7 @@ pub fn attest_activation_delay<'info>(
 /// that cannot rest never reverts it.
 ///
 /// Reached from the routes that hold CLOB accounts: `place_and_take_perp_order_v1`,
-/// `place_and_make_perp_order_v1`, `fill_perp_order_v1`, and
+/// `place_and_make_perp_order_v1`, `fill_legacy_dlob_order`, and
 /// `place_signed_msg_taker_order`.
 #[allow(clippy::too_many_arguments)]
 pub fn try_place_remainder_on_clob<'info>(
@@ -190,7 +192,6 @@ pub fn try_place_remainder_on_clob<'info>(
     clob_market: &AccountInfo<'info>,
     clob_program: &AccountInfo<'info>,
     clob_authority: &AccountInfo<'info>,
-    clob_authority_nonce: u8,
     perp_market_map: &crate::state::perp_market_map::PerpMarketMap,
     spot_market_map: &crate::state::spot_market_map::SpotMarketMap,
     oracle_map: &mut crate::state::oracle_map::OracleMap,
@@ -235,7 +236,6 @@ pub fn try_place_remainder_on_clob<'info>(
             clob_market,
             clob_program,
             clob_authority,
-            clob_authority_nonce,
         )?;
         if !(quoter.is_active && quoter.is_approved) {
             msg!("clob quoter inactive; remainder stays cancelled");
@@ -251,8 +251,8 @@ pub fn try_place_remainder_on_clob<'info>(
     // remainders cannot arise: the attach pins the book's tick and step to the
     // market's, so a remainder aligned to the market is aligned to the book.
     let (min_order_size, order_tick_size) = {
-        let rules = clob.reader().order_rules()?;
-        (rules.min_order_size, rules.tick_size)
+        let quoter = quoter_loader.load()?;
+        (quoter.book_min_order_size, quoter.book_tick_size)
     };
     if min_order_size != 0 && base_asset_amount < min_order_size {
         msg!(
@@ -273,9 +273,12 @@ pub fn try_place_remainder_on_clob<'info>(
         return Ok(None);
     }
 
-    // Reserve the worst-case aggregates and re-run the placement margin
-    // gate BEFORE the CPI, so a failure can skip resting (remainder stays
-    // cancelled) rather than unwind external state.
+    // ---- Validate: can the user carry this order? Nothing is committed
+    // here. The margin engine prices the user with the prospective
+    // exposure, so the check models the reservation and reverses it — the
+    // same reserve/check/reverse `create_ephemeral_perp_order` runs. The
+    // user claims the order only after the book holds it (the commit
+    // below), so a refused placement has nothing to unwind.
     let user_ref = {
         let mut user = load_mut!(user_loader)?;
         if user.is_bankrupt() {
@@ -291,42 +294,26 @@ pub fn try_place_remainder_on_clob<'info>(
             base_asset_amount,
             user.perp_positions[position_index].base_asset_amount,
         )?;
-        increase_open_bids_and_asks(
-            &mut user.perp_positions[position_index],
-            &direction,
-            base_asset_amount,
-            true,
-        )?;
-        user.perp_positions[position_index].open_orders += 1;
-        user.increment_open_orders(false);
-
         let isolated_market_index = (risk_increasing
             && user.perp_positions[position_index].is_isolated())
         .then_some(market_index);
-        if meets_place_order_margin_requirement(
-            &user,
+        if crate::controller::orders::check_prospective_order_margin(
+            &mut user,
+            position_index,
+            &direction,
+            base_asset_amount,
+            true,
+            risk_increasing,
+            isolated_market_index,
             perp_market_map,
             spot_market_map,
             oracle_map,
-            risk_increasing,
-            isolated_market_index,
         )
         .is_err()
         {
-            crate::controller::position::decrease_open_bids_and_asks(
-                &mut user.perp_positions[position_index],
-                &direction,
-                base_asset_amount,
-                true,
-            )?;
-            user.perp_positions[position_index].open_orders = user.perp_positions[position_index]
-                .open_orders
-                .saturating_sub(1);
-            user.decrement_open_orders(false);
             msg!("remainder fails the placement margin gate; stays cancelled");
             return Ok(None);
         }
-        user.update_last_active_slot(clock.slot);
         crate::state::prop_amm::ClobUserRefV0 {
             authority: user.authority,
             sub_account_id: user.sub_account_id.into(),
@@ -363,33 +350,38 @@ pub fn try_place_remainder_on_clob<'info>(
         Err(_) => {
             // The book cannot hold the remainder: the side is full, or a maker
             // remainder would rest crossed. The fill that carried it already
-            // stands, so unwind the reserved aggregates and leave the remainder
-            // cancelled rather than revert the fill. A full side would otherwise
-            // let anyone stall every place-and-take whose remainder must rest.
-            let mut user = load_mut!(user_loader)?;
-            let position_index = get_position_index(&user.perp_positions, market_index)?;
-            crate::controller::position::decrease_open_bids_and_asks(
-                &mut user.perp_positions[position_index],
-                &direction,
-                base_asset_amount,
-                true,
-            )?;
-            user.perp_positions[position_index].open_orders = user.perp_positions[position_index]
-                .open_orders
-                .saturating_sub(1);
-            user.decrement_open_orders(false);
+            // stands, so leave the remainder cancelled rather than revert the
+            // fill — nothing was committed, so there is nothing to unwind. A
+            // full side would otherwise let anyone stall every place-and-take
+            // whose remainder must rest.
             msg!("book cannot hold the remainder; stays cancelled");
             return Ok(None);
         }
     };
 
-    // The remainder now rests. A reduce-only rest arms the position's counter,
-    // so the router caps its fills to the position it may reduce until it
-    // leaves the book.
-    if reduce_only {
+    // ---- Commit: the book holds the order, so the user now claims it —
+    // the aggregate reservation, the order counters, and the reduce-only
+    // arm. The validate above reversed its model, so a position it freshly
+    // added reads as available again and `get_position_index` skips it;
+    // re-adding finds or revives the same slot.
+    {
         let mut user = load_mut!(user_loader)?;
-        let position_index = get_position_index(&user.perp_positions, market_index)?;
-        user.perp_positions[position_index].arm_reduce_only_clob();
+        let position_index = get_position_index(&user.perp_positions, market_index)
+            .or_else(|_| add_new_position(&mut user.perp_positions, market_index))?;
+        increase_open_bids_and_asks(
+            &mut user.perp_positions[position_index],
+            &direction,
+            base_asset_amount,
+            true,
+        )?;
+        user.perp_positions[position_index].open_orders += 1;
+        user.increment_open_orders(false);
+        // A reduce-only rest arms the position's counter, so the router caps
+        // its fills to the position it may reduce until it leaves the book.
+        if reduce_only {
+            user.perp_positions[position_index].arm_reduce_only_clob();
+        }
+        user.update_last_active_slot(clock.slot);
     }
 
     super::emit_clob_place_record(

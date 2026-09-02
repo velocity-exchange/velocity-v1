@@ -168,18 +168,35 @@ pub struct QuoterV0 {
     ///
     /// `Custom` entries only. A book fills third parties, so a band on one
     /// would let its entry authority revert other people's fills.
+    /// The book's placement rules, mirrored here by the attach
+    /// (`update_perp_market_clob_quoter`) so the hot paths read a loaded
+    /// field instead of CPI'ing `order_rules_v0` — the take gate, the
+    /// route's maker-priority skip, and the remainder rest each paid that
+    /// round trip. Zero for non-`Clob` entries and for a book no market has
+    /// attached. Changing the book's rules requires re-running the attach:
+    /// a stale mirror degrades gracefully (a wrong tick or minimum drops
+    /// the remainder to the plain cancel; a stale-zero delay routes an
+    /// unattested taker synchronously where it should have rested), but the
+    /// attach is the supported way to change an attached book's rules.
+    pub book_tick_size: u64,
+    pub book_min_order_size: u64,
     pub max_oracle_deviation_bps: u32,
-    pub padding: [u8; 12],
+    pub book_default_activation_delay_slots: u32,
+    pub padding: [u8; 8],
 }
 
 // Zero-copy layout invariant (see docs/alignment-and-native-offsets.md):
 // no u128 fields, size (incl. 8-byte discriminator) ≡ 8 (mod 16).
-const_assert_eq!(std::mem::size_of::<QuoterV0>(), 2784);
+const_assert_eq!(std::mem::size_of::<QuoterV0>(), 2800);
 const_assert_eq!((QuoterV0::SIZE - 8) % 16, 0);
 
 impl Size for QuoterV0 {
-    const SIZE: usize = 2792;
+    const SIZE: usize = 2808;
 }
+
+// `SIZE` is the allocation (discriminator + struct); a literal that drifts
+// from the struct allocates short and the loader panics at runtime.
+const_assert_eq!(QuoterV0::SIZE, 8 + std::mem::size_of::<QuoterV0>());
 
 impl QuoterV0 {
     /// The oracle deviation a fill on this entry may reach, in
@@ -529,7 +546,7 @@ pub const CLOB_CPI_DATA_CAPACITY: usize = 8 + 1 + 8 + 8 + 5 + 8 + CLOB_USER_REF_
 /// The caller reserves exactly this much in one shot. Every field the args
 /// serializer writes has to be counted here: one byte short and the `Vec`
 /// doubles, which on this heap means the fill runs out of memory rather than
-/// slowing down.
+/// slowing down. The trailing byte is `taker_served_window`.
 pub const fn quoter_cpi_data_len(users: usize, taker: bool) -> usize {
     8 + 1
         + 8
@@ -538,6 +555,7 @@ pub const fn quoter_cpi_data_len(users: usize, taker: bool) -> usize {
         + 8
         + 1
         + if taker { CLOB_USER_REF_BYTES } else { 0 }
+        + 1
 }
 
 /// The same for a quote, which also carries the caller's worst acceptable
@@ -854,7 +872,6 @@ pub struct ClobMarket<'a, 'info> {
     /// argument), so a quoter that received it and also held a book in its
     /// account list could rest unreserved orders on that book or wipe it.
     pub clob_authority: &'a AccountInfo<'info>,
-    pub clob_authority_nonce: u8,
 }
 
 impl<'a, 'info> ClobMarket<'a, 'info> {
@@ -872,14 +889,12 @@ impl<'a, 'info> ClobMarket<'a, 'info> {
         market: &'a AccountInfo<'info>,
         program: &'a AccountInfo<'info>,
         clob_authority: &'a AccountInfo<'info>,
-        clob_authority_nonce: u8,
     ) -> Result<Self> {
         quoter.validate_clob_book(market_index, &market.key())?;
         Ok(Self {
             market,
             program,
             clob_authority,
-            clob_authority_nonce,
         })
     }
 
@@ -986,7 +1001,9 @@ impl<'a, 'info> ClobMarket<'a, 'info> {
                 self.clob_authority.clone(),
                 self.program.clone(),
             ],
-            &[&get_clob_authority_seeds(&self.clob_authority_nonce)],
+            &[&get_clob_authority_seeds(
+                &crate::signer::CLOB_AUTHORITY_NONCE,
+            )],
         )?;
 
         clob_response(&self.program.key(), what)
@@ -1489,9 +1506,12 @@ impl QuoterV0 {
     /// entry signs as a key derived from the entry itself, which is what keeps a
     /// quoter's signature from authenticating anywhere but at that quoter — not
     /// at a book, and not at a second quoter the same maker controls.
-    pub fn cpi_signer(&self, entry: &Pubkey, clob_authority: (Pubkey, u8)) -> (Pubkey, u8) {
+    pub fn cpi_signer(&self, entry: &Pubkey) -> (Pubkey, u8) {
         match self.quoter_type {
-            QuoterType::Clob => clob_authority,
+            QuoterType::Clob => (
+                crate::signer::CLOB_AUTHORITY,
+                crate::signer::CLOB_AUTHORITY_NONCE,
+            ),
             _ => crate::signer::find_quoter_signer(entry),
         }
     }

@@ -80,6 +80,7 @@ import {
 	ConstituentAccount,
 	ConstituentTargetBaseAccount,
 	AmmCache,
+	FlowAttestationV0,
 } from './types';
 import { VelocityCore } from './core/VelocityCore';
 
@@ -8570,9 +8571,9 @@ export class VelocityClient {
 	 * order and rests only its remainder as a taker-origin order on the market's
 	 * CLOB, in one instruction. Unlike `triggerOrder`, nothing is left live in
 	 * `User.orders` for a later fill crank. For DLOB trigger-market orders only.
-	 * See `getTriggerOrderV1Ix`.
+	 * See `getTriggerMarketOrderV1Ix`.
 	 */
-	public async triggerOrderV1(
+	public async triggerMarketOrderV1(
 		marketIndex: number,
 		userAccountPublicKey: PublicKey,
 		userAccount: UserAccount,
@@ -8588,7 +8589,7 @@ export class VelocityClient {
 	): Promise<TransactionSignature> {
 		const { txSig } = await this.sendTransaction(
 			await this.buildTransaction(
-				await this.getTriggerOrderV1Ix(
+				await this.getTriggerMarketOrderV1Ix(
 					marketIndex,
 					userAccountPublicKey,
 					userAccount,
@@ -8606,7 +8607,7 @@ export class VelocityClient {
 	}
 
 	/**
-	 * Builds the `triggerOrderV1` instruction. See `triggerOrderV1` for semantics.
+	 * Builds the `triggerMarketOrderV1` instruction. See `triggerMarketOrderV1` for semantics.
 	 * @param marketIndex - The order's perp market.
 	 * @param userAccountPublicKey - Public key of the order owner's user account.
 	 * @param userAccount - Decoded user account for the order owner.
@@ -8616,7 +8617,7 @@ export class VelocityClient {
 	 * @param fillerPublicKey - Filler's user account public key; defaults to this client's own user account.
 	 * @returns The instruction.
 	 */
-	public async getTriggerOrderV1Ix(
+	public async getTriggerMarketOrderV1Ix(
 		marketIndex: number,
 		userAccountPublicKey: PublicKey,
 		userAccount: UserAccount,
@@ -8636,7 +8637,7 @@ export class VelocityClient {
 			writablePerpMarketIndexes: [order.marketIndex],
 		});
 
-		return await VelocityCore.buildTriggerOrderV1Instruction({
+		return await VelocityCore.buildTriggerMarketOrderV1Instruction({
 			program: this.program,
 			marketIndex,
 			orderId: order.orderId,
@@ -9461,7 +9462,6 @@ export class VelocityClient {
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 			clobAuthority: PublicKey;
-			crankConditions?: PublicKey;
 		},
 		// Additional quoter entries and their registered CPI accounts, for a
 		// taker routing across PropAMMs beyond the mandatory CLOB + vAMM
@@ -9575,7 +9575,6 @@ export class VelocityClient {
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 			clobAuthority: PublicKey;
-			crankConditions?: PublicKey;
 		},
 		txParams?: TxParams,
 		subAccountId?: number,
@@ -9615,7 +9614,6 @@ export class VelocityClient {
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 			clobAuthority: PublicKey;
-			crankConditions?: PublicKey;
 		},
 		subAccountId?: number,
 		activationDelaySlots?: number | null
@@ -9818,8 +9816,8 @@ export class VelocityClient {
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 			clobAuthority: PublicKey;
-			crankConditions?: PublicKey;
-		}
+		},
+		flowAttestation?: FlowAttestationV0
 	): Promise<TransactionSignature> {
 		const ixs = await this.getPlaceSignedMsgTakerPerpOrderIxs(
 			signedSignedMsgOrderParams,
@@ -9828,7 +9826,8 @@ export class VelocityClient {
 			precedingIxs,
 			overrideCustomIxIndex,
 			fillerInfo,
-			clobAccounts
+			clobAccounts,
+			flowAttestation
 		);
 		const { txSig } = await this.sendTransaction(
 			await this.buildTransaction(ixs, txParams),
@@ -9872,8 +9871,9 @@ export class VelocityClient {
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 			clobAuthority: PublicKey;
-			crankConditions?: PublicKey;
-		}
+		},
+		/** Swift's detached attestation (`/attest`) for this order; absent rests the whole order on a bumped book. */
+		flowAttestation?: FlowAttestationV0
 	): Promise<TransactionInstruction[]> {
 		// Both default to what the client can derive: the caller's own margin
 		// account is the filler, and the market's registry entry names its own
@@ -9943,6 +9943,10 @@ export class VelocityClient {
 			this.program.instruction.placeSignedMsgTakerOrder(
 				signedMsgIxData,
 				isDelegateSigner,
+				// Swift's detached attestation for this order (`/attest`). On a
+				// book with a speed bump, `null` rests the whole order instead
+				// of filling synchronously.
+				flowAttestation ?? null,
 				{
 					accounts: {
 						state: await this.getStatePublicKey(),
@@ -9960,9 +9964,6 @@ export class VelocityClient {
 						clobMarket: clob.clobMarket,
 						clobProgram: clob.clobProgram,
 						clobAuthority: clob.clobAuthority,
-						// An omitted `Option` account is encoded as the program
-						// id, which the program decodes as `None`.
-						crankConditions: clob.crankConditions ?? this.program.programId,
 					},
 					remainingAccounts,
 				}
@@ -14234,7 +14235,6 @@ export class VelocityClient {
 		clobMarket: PublicKey;
 		clobProgram: PublicKey;
 		clobAuthority: PublicKey;
-		crankConditions: PublicKey;
 	}> {
 		const perpMarket = this.getPerpMarketAccount(marketIndex);
 		if (!perpMarket) {
@@ -14252,10 +14252,6 @@ export class VelocityClient {
 			clobMarket: entry.responseAccount,
 			clobProgram: entry.programId,
 			clobAuthority: this.getClobAuthorityPublicKey(),
-			crankConditions: getClobCrankConditionsPublicKey(
-				this.program.programId,
-				marketIndex
-			),
 		};
 	}
 
@@ -14326,13 +14322,13 @@ export class VelocityClient {
 	 *
 	 * @param params - Market, the order's handle, and the fields to change.
 	 * @param subAccountId - Sub-account holding the order; defaults to the active one.
-	 * @param instructionsSysvar - Pass when asking for a below-default activation delay.
+	 * @param flowAuthority - The flow authority, when it signs this transaction; required for a below-default activation delay.
 	 * @returns The instruction.
 	 */
 	public async getModifyOrderV1Ix(
 		params: ModifyOrderV1Params,
 		subAccountId?: number,
-		instructionsSysvar?: PublicKey
+		flowAuthority?: PublicKey
 	): Promise<TransactionInstruction> {
 		const clob = await this.getClobAccounts(params.marketIndex);
 		return await this.program.instruction.modifyOrderV1(params, {
@@ -14344,7 +14340,7 @@ export class VelocityClient {
 				clobMarket: clob.clobMarket,
 				clobProgram: clob.clobProgram,
 				clobAuthority: clob.clobAuthority,
-				instructionsSysvar: instructionsSysvar ?? null,
+				flowAuthority: flowAuthority ?? null,
 			},
 		});
 	}
@@ -14395,7 +14391,6 @@ export class VelocityClient {
 				clobMarket: clob.clobMarket,
 				clobProgram: clob.clobProgram,
 				clobAuthority: clob.clobAuthority,
-				crankConditions: clob.crankConditions,
 			},
 		});
 	}

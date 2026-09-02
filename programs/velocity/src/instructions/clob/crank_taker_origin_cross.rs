@@ -45,7 +45,7 @@
 //! the existing wakes already cover this crank.
 
 use {
-    super::crank_common::ResolveClobCrank,
+    super::helpers::crank_common::ResolveClobCrank,
     crate::{
         controller::{
             self,
@@ -67,7 +67,6 @@ use {
             safe_math::SafeMath,
         },
         msg,
-        signer::CLOB_AUTHORITY_SEED,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             events::TakerOriginCrossRecordV1,
@@ -137,7 +136,7 @@ pub struct CrankTakerOriginCross<'info> {
     pub clob_program: UncheckedAccount<'info>,
     /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
     /// is set to, and nothing a third-party quoter is ever handed.
-    #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
+    #[account(address = crate::signer::CLOB_AUTHORITY)]
     pub clob_authority: UncheckedAccount<'info>,
     /// The market's relay conditions account: the wake-hint host and the
     /// lamport reservoir. Optional so a signed keeper can crank a market whose
@@ -223,8 +222,6 @@ fn read_book_rows<'info>(
     quoter: &QuoterV0,
     market_index: u16,
     entry: &Pubkey,
-    clob_authority: &Pubkey,
-    clob_authority_nonce: u8,
     rows: u16,
     accounts: &[AccountInfo<'info>],
     scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
@@ -241,8 +238,8 @@ fn read_book_rows<'info>(
                     max_rows: rows.min(MAX_CROSS_ROWS),
                 },
                 entry,
-                clob_authority,
-                clob_authority_nonce,
+                &quoter.cpi_signer(entry).0,
+                quoter.cpi_signer(entry).1,
                 accounts,
                 scratch,
             )?
@@ -384,8 +381,6 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         &quoter,
         market_index,
         &ctx.accounts.quoter.key(),
-        &ctx.accounts.clob_authority.key(),
-        ctx.bumps.clob_authority,
         cross_rows,
         &[
             ctx.accounts.clob_market.to_account_info(),
@@ -498,7 +493,6 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
 
     let tail_from = ctx.remaining_accounts.len() - remaining_accounts_iter.len();
     let tail = &ctx.remaining_accounts[tail_from..];
-    let (clob_authority_key, clob_authority_nonce) = crate::signer::find_clob_authority();
     let route_reference_price = {
         let oracle_id = perp_market_map.get_ref(&market_index)?.oracle_id();
         oracle_map.get_price_data(&oracle_id)?.price
@@ -524,8 +518,14 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         reference_price: route_reference_price,
         taker: taker_ref,
         limit_price: subject_order.price,
-        clob_authority: clob_authority_key,
-        clob_authority_nonce,
+        // The crank vouches for measured rest, not for its own nature: on a
+        // zero-delay book "rested through placement" is a zero-length
+        // window, and a caller could place and crank back-to-back. The
+        // subject is the flow this fill transmits, so its age is the claim.
+        taker_served_window: crate::math::crosses::served_window(
+            subject_order.placed_slot,
+            clock.slot,
+        ),
     };
     let inputs = crate::instructions::QuoteInputs {
         caps: crate::instructions::build_user_caps(
@@ -660,7 +660,6 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
             &ctx.accounts.clob_market,
             &ctx.accounts.clob_program,
             &ctx.accounts.clob_authority,
-            ctx.bumps.clob_authority,
         )?;
         clob.fill(ClobFillArgsV0 {
             fills: vec![ClobFillRequestV0 {
@@ -1018,7 +1017,6 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
             &ctx.accounts.clob_market,
             &ctx.accounts.clob_program,
             &ctx.accounts.clob_authority,
-            ctx.bumps.clob_authority,
         )?;
         clob.fill(ClobFillArgsV0 {
             fills: vec![
@@ -1177,7 +1175,6 @@ pub(super) fn stage_taker_origin_cross(
 
     // The resolver runs under simulation, so it reads the whole window the
     // crank could ever be asked for and hands back the depth that matters.
-    let (clob_authority, clob_authority_nonce) = crate::signer::find_clob_authority();
     let book_accounts = [
         ctx.accounts.clob_market.to_account_info(),
         ctx.accounts.clob_program.to_account_info(),
@@ -1187,8 +1184,6 @@ pub(super) fn stage_taker_origin_cross(
         &quoter,
         market_index,
         &ctx.accounts.quoter.key(),
-        &clob_authority,
-        clob_authority_nonce,
         MAX_CROSS_ROWS,
         &book_accounts,
         &mut cpi_scratch,

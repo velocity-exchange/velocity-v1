@@ -1,42 +1,34 @@
-//! `/attest` — the flow-authority co-signature that marks a transaction as
+//! `/attest` — the detached flow attestation that marks an order's flow as
 //! attested retail flow.
 //!
 //! The CLOB's activation delay is the taker protection that replaced JIT;
 //! orders that arrived through swift get to skip it because swift *is* the
 //! protection — the order was held (and broadcast to every subscribed
 //! keeper) for the hold window before anything could execute it. The
-//! attestation is the proof: a keeper builds its fill transaction, posts it
-//! here after the hold, and swift co-signs with the flow-authority key —
-//! the key registered on-chain as `State.hot_flow_authority` and checked by
-//! `place_and_make_perp_order_v1`'s fast-activation gate and by quoters (the midpoint's
-//! `require_attested_flow`) via instructions-sysvar introspection.
+//! attestation is the proof: after the hold, this endpoint signs the flow
+//! authority's key over the order's own signature plus an expiry, and the
+//! keeper passes the blob as the fill's `flow_attestation` argument.
+//! Velocity verifies it in-program, next to the taker signature it binds
+//! to, and forwards the fact to quoters on the wire (`taker_served_window`).
 //!
-//! The signature authorizes nothing by itself, but a Solana signer is
-//! transaction-global — a malicious transaction could move the key's
-//! lamports — so co-signing is gated hard: the flow authority must appear
-//! as a *read-only, non-fee-payer* signer, every invoked program must be on
-//! the allowlist (velocity, compute budget), the transaction must demonstrably
-//! fill the held order (its taker signature must appear in an instruction's
-//! data — the velocity fill instruction carries it), and it must not place or
-//! modify a CLOB order — those carry the fast activation the co-signature
-//! unlocks, and a retail fill never rests one. Same drain-vector analysis as
-//! relay's payment guards.
+//! The flow authority signs no transaction. A transaction signer is
+//! transaction-global — the fill transaction is keeper-built, and a
+//! co-signature on it needed an allowlist, a shape proof, and a
+//! drain-vector analysis. A detached signature over one order's signature
+//! authorizes exactly one thing, costs no signature fee, and needs no
+//! custody of the keeper's transaction: the endpoint returns the same blob
+//! to every asker, and the order still fills only once on-chain.
 
 use {
-    anchor_lang::Discriminator,
     axum::{extract::State, http::StatusCode, response::IntoResponse, Json},
     base64::Engine,
     dashmap::DashMap,
     serde::{Deserialize, Serialize},
     solana_keypair::Keypair,
-    solana_pubkey::Pubkey,
     solana_signer::Signer,
-    solana_transaction::versioned::VersionedTransaction,
     std::time::{SystemTime, UNIX_EPOCH},
-    velocity_rs::velocity_idl::instructions::{ModifyOrderV1, PlaceAndMakePerpOrderV1},
+    velocity_rs::program::FLOW_ATTESTATION_DOMAIN,
 };
-
-const COMPUTE_BUDGET_ID: &str = "ComputeBudget111111111111111111111111111111";
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -118,22 +110,34 @@ impl AttestContext {
     }
 }
 
+/// The attestation message: the domain, the order's own signature, and the
+/// expiry. Public so a test can verify what this endpoint signs against
+/// velocity's own verifier.
+pub fn attestation_message(order_signature: &[u8; 64], expiry_ts: i64) -> Vec<u8> {
+    let mut message = Vec::with_capacity(FLOW_ATTESTATION_DOMAIN.len() + order_signature.len() + 8);
+    message.extend_from_slice(FLOW_ATTESTATION_DOMAIN);
+    message.extend_from_slice(order_signature);
+    message.extend_from_slice(&expiry_ts.to_le_bytes());
+    message
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttestRequest {
     /// The order's uuid, as delivered in the keeper feed.
     uuid: String,
-    /// The keeper's fully built fill transaction (base64, legacy or v0),
-    /// with a signature slot for the flow authority.
-    transaction: String,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttestResponse {
-    /// The same transaction, co-signed by the flow authority.
-    transaction: String,
     flow_authority: String,
+    /// The detached attestation signature, base64. Passed to
+    /// `place_signed_msg_taker_order` as `flow_attestation.signature`.
+    signature: String,
+    /// Unix seconds the attestation is good until. Passed as
+    /// `flow_attestation.expiry_ts`.
+    expiry_ts: i64,
 }
 
 pub async fn attest(
@@ -166,53 +170,27 @@ pub async fn attest(
         )
             .into_response();
     }
-    if now > held.received_ms.saturating_add(ctx.expiry_ms) {
+    let expiry_at = held.received_ms.saturating_add(ctx.expiry_ms);
+    if now > expiry_at {
         return err(StatusCode::GONE, "order is past the attestation window");
     }
 
-    let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(&request.transaction) else {
-        return err(StatusCode::BAD_REQUEST, "transaction is not valid base64");
-    };
-    let Ok(mut tx) = bincode::deserialize::<VersionedTransaction>(&raw) else {
-        return err(StatusCode::BAD_REQUEST, "transaction does not deserialize");
-    };
-
-    let order_signature = held.order_signature;
-    // Release the borrow before consuming the entry below.
-    drop(held);
-
-    if let Err(reason) = validate_attestable(&tx, &keypair.pubkey(), &order_signature) {
-        log::warn!(target: "attest", "refused attestation: {reason}");
-        return err(StatusCode::UNPROCESSABLE_ENTITY, &reason);
-    }
-
-    // One co-signature per held order. The order signature the binding checks is
-    // public — swift broadcasts it — so anyone can build a transaction that
-    // carries it; consuming the entry on the first successful sign stops one
-    // uuid from yielding many distinct co-signed transactions across the hold
-    // window. A lost response is a lost fill, not a reuse: the taker re-signs.
-    if ctx.held.remove(&uuid).is_none() {
-        return err(StatusCode::CONFLICT, "order was already attested");
-    }
-
-    // Partial-sign: fill only our slot, leaving the keeper's signatures
-    // (present or not) untouched.
-    let flow_index = tx
-        .message
-        .static_account_keys()
-        .iter()
-        .position(|key| *key == keypair.pubkey())
-        .expect("validated above");
-    let signature = keypair.sign_message(&tx.message.serialize());
-    tx.signatures[flow_index] = signature;
+    // The expiry derives from the receive timestamp, not from this call, so
+    // every request for the same order gets the identical blob. That makes
+    // retries free: the attestation authorizes only "this order's flow
+    // served the hold, until this time", and the order fills once on-chain
+    // regardless of how many keepers hold the blob.
+    let expiry_ts = (expiry_at / 1_000) as i64;
+    let signature = keypair.sign_message(&attestation_message(&held.order_signature, expiry_ts));
 
     (
         StatusCode::OK,
         Json(
             serde_json::to_value(AttestResponse {
-                transaction: base64::engine::general_purpose::STANDARD
-                    .encode(bincode::serialize(&tx).expect("round-trips")),
                 flow_authority: keypair.pubkey().to_string(),
+                signature: base64::engine::general_purpose::STANDARD
+                    .encode(<[u8; 64]>::from(signature)),
+                expiry_ts,
             })
             .expect("serializes"),
         ),
@@ -224,194 +202,43 @@ fn err(status: StatusCode, message: &str) -> axum::response::Response {
     (status, Json(serde_json::json!({ "error": message }))).into_response()
 }
 
-/// The whole safety argument for lending out a signature, in one place.
-fn validate_attestable(
-    tx: &VersionedTransaction,
-    flow_authority: &Pubkey,
-    order_signature: &[u8; 64],
-) -> Result<(), String> {
-    let message = &tx.message;
-    let keys = message.static_account_keys();
-    let header = message.header();
-
-    // Our slot: a required signer, never the fee payer, and read-only —
-    // writable-signer status is what makes a signature drainable.
-    let index = keys
-        .iter()
-        .position(|key| key == flow_authority)
-        .ok_or("flow authority is not among the transaction's accounts")?;
-    let signers = header.num_required_signatures as usize;
-    let readonly_signed_start = signers - header.num_readonly_signed_accounts as usize;
-    // A well-formed transaction carries one signature slot per required signer.
-    // The signing path writes tx.signatures[index]; a short vector would panic
-    // there. This request is unauthenticated, so reject the mismatch here.
-    if tx.signatures.len() != signers {
-        return Err("signature count does not match the required signers".into());
-    }
-    if index == 0 {
-        return Err("flow authority must not be the fee payer".into());
-    }
-    if index >= signers {
-        return Err("flow authority is not a required signer".into());
-    }
-    if index < readonly_signed_start {
-        return Err("flow authority must be a read-only signer".into());
-    }
-
-    // Invoked programs are always static keys; every one must be expected.
-    // An unknown program given a transaction-global signer is exactly the
-    // drain vector this guards.
-    let velocity = velocity_rs::constants::PROGRAM_ID;
-    let compute_budget: Pubkey = COMPUTE_BUDGET_ID.parse().expect("const");
-    for instruction in message.instructions() {
-        let program = keys
-            .get(instruction.program_id_index as usize)
-            .ok_or("instruction names a program outside the static keys")?;
-        if *program != velocity && *program != compute_budget {
-            return Err(format!("program {program} is not attestable"));
-        }
-        // A retail fill never places or modifies a resting CLOB order. Those
-        // are the fast-activation instructions: the co-signature lets one skip
-        // the speed bump. Refusing them stops a maker-run keeper from smuggling
-        // its own fast placement into a transaction co-signed for the fill —
-        // the order signature the binding below checks is public, so the tx is
-        // otherwise the keeper's to shape.
-        if *program == velocity {
-            let discriminator = instruction.data.get(..8);
-            if discriminator == Some(PlaceAndMakePerpOrderV1::DISCRIMINATOR)
-                || discriminator == Some(ModifyOrderV1::DISCRIMINATOR)
-            {
-                return Err("an attested transaction cannot place or modify a CLOB order".into());
-            }
-        }
-    }
-
-    // The transaction must actually fill the held order: its taker signature
-    // travels in the velocity fill instruction's data.
-    let binds = message.instructions().iter().any(|instruction| {
-        instruction
-            .data
-            .windows(64)
-            .any(|window| window == order_signature)
-    });
-    if !binds {
-        return Err("transaction does not contain the held order's signature".into());
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use {
         super::*,
-        solana_hash::Hash,
-        solana_instruction::{AccountMeta, Instruction},
-        solana_message::{v0, VersionedMessage},
-        solana_signer::Signer as _,
+        velocity_rs::program::{verify_flow_attestation, FlowAttestationV0},
     };
 
-    fn fill_like_tx(
-        flow: &Pubkey,
-        order_signature: &[u8; 64],
-        flow_writable: bool,
-        program_override: Option<Pubkey>,
-    ) -> VersionedTransaction {
-        let payer = Keypair::new();
-        let velocity = velocity_rs::constants::PROGRAM_ID;
-        // The taker signature rides the velocity instruction's own data, the
-        // way place_signed_msg_taker_order carries it. No ed25519 instruction.
-        let mut data = vec![0u8; 8];
-        data.extend_from_slice(order_signature);
-        let ixs = vec![Instruction {
-            program_id: program_override.unwrap_or(velocity),
-            accounts: vec![if flow_writable {
-                AccountMeta::new(*flow, true)
-            } else {
-                AccountMeta::new_readonly(*flow, true)
-            }],
-            data,
-        }];
-        let message = v0::Message::try_compile(&payer.pubkey(), &ixs, &[], Hash::default())
-            .expect("compiles");
-        VersionedTransaction {
-            signatures: vec![Default::default(); message.header.num_required_signatures as usize],
-            message: VersionedMessage::V0(message),
-        }
-    }
-
+    /// What this endpoint signs is what velocity's verifier accepts — bound
+    /// to the order signature, the key, and the expiry, and refused for any
+    /// other.
     #[test]
-    fn attestable_only_when_readonly_signer_allowlisted_and_bound() {
+    fn the_attestation_round_trips_through_velocitys_verifier() {
         let flow = Keypair::new();
         let order_sig = [7u8; 64];
-
-        let good = fill_like_tx(&flow.pubkey(), &order_sig, false, None);
-        assert!(validate_attestable(&good, &flow.pubkey(), &order_sig).is_ok());
-
-        // Writable signer: a drainable signature. Refused.
-        let writable = fill_like_tx(&flow.pubkey(), &order_sig, true, None);
-        assert!(validate_attestable(&writable, &flow.pubkey(), &order_sig)
-            .unwrap_err()
-            .contains("read-only"));
-
-        // Unknown program with our signer in play. Refused.
-        let foreign = fill_like_tx(
-            &flow.pubkey(),
-            &order_sig,
-            false,
-            Some(Pubkey::new_unique()),
-        );
-        assert!(validate_attestable(&foreign, &flow.pubkey(), &order_sig)
-            .unwrap_err()
-            .contains("not attestable"));
-
-        // A transaction for some other order. Refused.
-        assert!(validate_attestable(&good, &flow.pubkey(), &[9u8; 64])
-            .unwrap_err()
-            .contains("held order"));
-
-        // Flow authority absent entirely. Refused.
-        let stranger = Keypair::new();
-        assert!(validate_attestable(&good, &stranger.pubkey(), &order_sig)
-            .unwrap_err()
-            .contains("not among"));
-    }
-
-    #[test]
-    fn attested_tx_cannot_place_a_clob_order() {
-        let flow = Keypair::new();
-        let order_sig = [7u8; 64];
-        let payer = Keypair::new();
-        let velocity = velocity_rs::constants::PROGRAM_ID;
-        // A place_and_make_perp_order_v1 carries the fast-activation gate, and the
-        // order signature rides its data.
-        let mut place_data = PlaceAndMakePerpOrderV1::DISCRIMINATOR.to_vec();
-        place_data.extend_from_slice(&order_sig);
-        let ixs = vec![Instruction {
-            program_id: velocity,
-            accounts: vec![AccountMeta::new_readonly(flow.pubkey(), true)],
-            data: place_data,
-        }];
-        let message = v0::Message::try_compile(&payer.pubkey(), &ixs, &[], Hash::default())
-            .expect("compiles");
-        let tx = VersionedTransaction {
-            signatures: vec![Default::default(); message.header.num_required_signatures as usize],
-            message: VersionedMessage::V0(message),
+        let expiry_ts = 1_700_000_000i64;
+        let signature = flow.sign_message(&attestation_message(&order_sig, expiry_ts));
+        let attestation = FlowAttestationV0 {
+            signature: <[u8; 64]>::from(signature),
+            expiry_ts,
         };
-        assert!(validate_attestable(&tx, &flow.pubkey(), &order_sig)
-            .unwrap_err()
-            .contains("CLOB order"));
-    }
+        let authority = anchor_lang::prelude::Pubkey::new_from_array(flow.pubkey().to_bytes());
 
-    #[test]
-    fn short_signature_vector_is_refused_not_panicked() {
-        let flow = Keypair::new();
-        let order_sig = [7u8; 64];
-        let mut short = fill_like_tx(&flow.pubkey(), &order_sig, false, None);
-        // A malformed transaction with no signature slots. Indexing the vector
-        // in the signing path would panic; validation must reject it first.
-        short.signatures.clear();
-        assert!(validate_attestable(&short, &flow.pubkey(), &order_sig)
-            .unwrap_err()
-            .contains("signature count"));
+        verify_flow_attestation(&attestation, &authority, &order_sig, expiry_ts - 5)
+            .expect("verifies for the order it binds to");
+        assert!(
+            verify_flow_attestation(&attestation, &authority, &[8u8; 64], expiry_ts - 5).is_err(),
+            "another order's signature must not verify"
+        );
+        assert!(
+            verify_flow_attestation(&attestation, &authority, &order_sig, expiry_ts + 1).is_err(),
+            "an expired attestation must not verify"
+        );
+        let stranger =
+            anchor_lang::prelude::Pubkey::new_from_array(Keypair::new().pubkey().to_bytes());
+        assert!(
+            verify_flow_attestation(&attestation, &stranger, &order_sig, expiry_ts - 5).is_err(),
+            "a stranger's key must not verify"
+        );
     }
 }

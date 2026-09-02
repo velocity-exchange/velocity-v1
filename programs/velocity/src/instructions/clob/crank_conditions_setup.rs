@@ -74,7 +74,7 @@ impl ClobCrankConditionKeys {
     /// it. The book stores the same list, so both sides of the split call
     /// velocity's resolvers with identical accounts.
     ///
-    /// [`ResolveClobCrank`]: super::crank_common::ResolveClobCrank
+    /// [`ResolveClobCrank`]: super::helpers::crank_common::ResolveClobCrank
     fn resolver_accounts(&self) -> [AccountRefV0; 7] {
         [
             AccountRefV0::writable(crate::state::pdas::relay_scratch().to_bytes()),

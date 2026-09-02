@@ -2547,7 +2547,6 @@ pub fn handle_update_perp_market_clob_quoter(
             &ctx.accounts.clob_market,
             &ctx.accounts.clob_program,
             &ctx.accounts.clob_authority,
-            ctx.bumps.clob_authority,
         )?
         .reader()
         .order_rules()?;
@@ -2591,6 +2590,16 @@ pub fn handle_update_perp_market_clob_quoter(
             rules.step_size,
             perp_market.order_step_size
         )?;
+        // Mirror the placement rules onto the entry: the take gate, the
+        // route's maker-priority skip, and the remainder rest read these
+        // fields instead of CPI'ing `order_rules_v0` per fill. The attach is
+        // the supported way to change an attached book's rules, so this
+        // write is where the mirror stays current.
+        drop(quoter);
+        let mut quoter = ctx.accounts.quoter.load_mut()?;
+        quoter.book_tick_size = rules.tick_size;
+        quoter.book_min_order_size = rules.min_order_size;
+        quoter.book_default_activation_delay_slots = rules.default_activation_delay_slots;
     }
 
     // The book's own conditions first: velocity registers which resolver
@@ -2606,7 +2615,6 @@ pub fn handle_update_perp_market_clob_quoter(
             &ctx.accounts.clob_market,
             &ctx.accounts.clob_program,
             &ctx.accounts.clob_authority,
-            ctx.bumps.clob_authority,
         )?
         .set_crank_conditions(crate::instructions::clob_crank_registration(
             &keys, payments,
@@ -5333,6 +5341,10 @@ pub struct AdminUpdatePerpMarketClobQuoter<'info> {
     pub state: AccountLoader<'info, State>,
     #[account(mut)]
     pub perp_market: AccountLoader<'info, PerpMarket>,
+    /// Writable: the attach mirrors the book's placement rules onto the
+    /// entry, so the hot paths read a loaded field instead of CPI'ing
+    /// `order_rules_v0`.
+    #[account(mut)]
     pub quoter: AccountLoader<'info, crate::state::prop_amm::QuoterV0>,
     /// CHECK: validated against the quoter entry's registered execute
     /// accounts in the handler. Writable because the attach registers
@@ -5345,7 +5357,7 @@ pub struct AdminUpdatePerpMarketClobQuoter<'info> {
     pub clob_program: UncheckedAccount<'info>,
     /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
     /// is set to, and therefore the only key that may register its cranks.
-    #[account(seeds = [crate::signer::CLOB_AUTHORITY_SEED], bump)]
+    #[account(address = crate::signer::CLOB_AUTHORITY)]
     pub clob_authority: UncheckedAccount<'info>,
     /// The market's relay conditions + keeper reservoir, stood up (or
     /// re-priced) as part of the attach so a new market needs no separate

@@ -48,7 +48,6 @@ use {
             safe_math::SafeMath,
         },
         msg,
-        signer::CLOB_AUTHORITY_SEED,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             events::OrderActionExplanation,
@@ -129,7 +128,7 @@ pub struct ForceCancelClobOrders<'info> {
     /// is set to. Its own key, distinct from the per-entry signer a
     /// third-party quoter is handed: signer privilege is inherited by a
     /// callee, and this one may place and cancel on any book, for any user.
-    #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
+    #[account(address = crate::signer::CLOB_AUTHORITY)]
     pub clob_authority: UncheckedAccount<'info>,
     /// Wake-hint host; optional like every other CLOB path.
     #[account(
@@ -184,7 +183,6 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
         &ctx.accounts.clob_market,
         &ctx.accounts.clob_program,
         &ctx.accounts.clob_authority,
-        ctx.bumps.clob_authority,
     )?;
 
     // ---- Gate: the account must actually be failing, same as the DLOB

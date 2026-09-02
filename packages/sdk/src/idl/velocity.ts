@@ -839,29 +839,7 @@ export type Velocity = {
             "third-party quoter is handed: signer privilege is inherited by a",
             "callee, and this one may place and cancel on any book, for any user."
           ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  108,
-                  111,
-                  98,
-                  95,
-                  97,
-                  117,
-                  116,
-                  104,
-                  111,
-                  114,
-                  105,
-                  116,
-                  121
-                ]
-              }
-            ]
-          }
+          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
         }
       ],
       "args": [
@@ -1013,74 +991,7 @@ export type Velocity = {
             "third-party quoter is handed: signer privilege is inherited by a",
             "callee, and this one may place and cancel on any book, for any user."
           ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  108,
-                  111,
-                  98,
-                  95,
-                  97,
-                  117,
-                  116,
-                  104,
-                  111,
-                  114,
-                  105,
-                  116,
-                  121
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "crankConditions",
-          "docs": [
-            "Wake-hint host; optional like every other CLOB path. Pulling orders can",
-            "only *relax* the expiry and activation hints, so a caller that omits it",
-            "leaves the cranks waking earlier than they need to — latency, not",
-            "liveness."
-          ],
-          "writable": true,
-          "optional": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  108,
-                  111,
-                  98,
-                  95,
-                  99,
-                  114,
-                  97,
-                  110,
-                  107,
-                  95,
-                  99,
-                  111,
-                  110,
-                  100,
-                  105,
-                  116,
-                  105,
-                  111,
-                  110,
-                  115
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "params.market_index"
-              }
-            ]
-          }
+          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
         }
       ],
       "args": [
@@ -1445,29 +1356,7 @@ export type Velocity = {
             "third-party quoter is handed: signer privilege is inherited by a",
             "callee, and this one may place and cancel on any book, for any user."
           ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  108,
-                  111,
-                  98,
-                  95,
-                  97,
-                  117,
-                  116,
-                  104,
-                  111,
-                  114,
-                  105,
-                  116,
-                  121
-                ]
-              }
-            ]
-          }
+          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
         },
         {
           "name": "crankConditions",
@@ -1599,29 +1488,7 @@ export type Velocity = {
             "third-party quoter is handed: signer privilege is inherited by a",
             "callee, and this one may place and cancel on any book, for any user."
           ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  108,
-                  111,
-                  98,
-                  95,
-                  97,
-                  117,
-                  116,
-                  104,
-                  111,
-                  114,
-                  105,
-                  116,
-                  121
-                ]
-              }
-            ]
-          }
+          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
         },
         {
           "name": "crankConditions",
@@ -1865,29 +1732,7 @@ export type Velocity = {
           "docs": [
             "is set to, and nothing a third-party quoter is ever handed."
           ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  108,
-                  111,
-                  98,
-                  95,
-                  97,
-                  117,
-                  116,
-                  104,
-                  111,
-                  114,
-                  105,
-                  116,
-                  121
-                ]
-              }
-            ]
-          }
+          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
         },
         {
           "name": "crankConditions",
@@ -3206,6 +3051,118 @@ export type Velocity = {
       ]
     },
     {
+      "name": "fillLegacyDlobOrder",
+      "docs": [
+        "`fill_perp_order` with the market's CLOB accounts required: a restable",
+        "remainder of the filled order migrates to the book instead of resting",
+        "in `User.orders`. v0's account list is frozen, so this is a separate",
+        "endpoint. Only the legacy placement and trigger endpoints create live",
+        "orders in `User.orders`, so this endpoint fills legacy orders only.",
+        "It is deleted together with that legacy surface. `market_index` is an",
+        "argument because the crank-conditions PDA seed needs it before any",
+        "account is loaded; it is checked against the order's own market."
+      ],
+      "discriminator": [
+        167,
+        0,
+        20,
+        164,
+        143,
+        13,
+        165,
+        169
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "authority",
+          "signer": true
+        },
+        {
+          "name": "filler",
+          "writable": true
+        },
+        {
+          "name": "fillerStats",
+          "writable": true
+        },
+        {
+          "name": "user",
+          "writable": true
+        },
+        {
+          "name": "userStats",
+          "writable": true
+        },
+        {
+          "name": "quoter",
+          "docs": [
+            "The market's CLOB registry entry — a remainder only ever rests on a",
+            "vetted book."
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "docs": [
+            "(`ClobMarket::from_quoter`), so a valid entry cannot be pointed at an",
+            "arbitrary account."
+          ],
+          "writable": true
+        },
+        {
+          "name": "clobProgram"
+        },
+        {
+          "name": "clobAuthority",
+          "docs": [
+            "is, and nothing a third-party quoter is ever handed."
+          ],
+          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
+        },
+        {
+          "name": "instructionsSysvar",
+          "docs": [
+            "fill cannot get anywhere else: whether the taker signed this",
+            "transaction, and how many accounts the transaction locks.",
+            "",
+            "Optional, and it costs one of those locks. A fill needs it only when a",
+            "book withholds depth for an owner the transaction does not carry, and",
+            "only when the taker did not sign. A fill that meets neither condition",
+            "passes `None` and spends nothing. A fill that meets both and passes",
+            "`None` is refused, because the obligation cannot be checked."
+          ],
+          "optional": true,
+          "address": "Sysvar1nstructions1111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "orderId",
+          "type": {
+            "option": "u32"
+          }
+        },
+        {
+          "name": "makerOrderId",
+          "type": {
+            "option": "u32"
+          }
+        },
+        {
+          "name": "signedRoute",
+          "type": {
+            "vec": "pubkey"
+          }
+        },
+        {
+          "name": "marketIndex",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "fillPerpOrder",
       "docs": [
         "`signed_route` is the route the order's signer chose, as the filler",
@@ -3215,8 +3172,8 @@ export type Velocity = {
         "their flow, not the filler. Empty for an order with no signed route.",
         "@deprecated Legacy fill, kept for ABI compatibility. It routes the fill",
         "through the vAMM + DLOB makers but carries no CLOB books, and a restable",
-        "remainder stays on the DLOB. New integrations use `fill_perp_order_v1`,",
-        "which carries the market's CLOB and migrates the remainder to the book."
+        "remainder stays on the DLOB. `fill_legacy_dlob_order` carries the",
+        "market's CLOB and migrates the remainder to the book."
       ],
       "discriminator": [
         13,
@@ -3279,182 +3236,6 @@ export type Velocity = {
           "type": {
             "vec": "pubkey"
           }
-        }
-      ]
-    },
-    {
-      "name": "fillPerpOrderV1",
-      "docs": [
-        "`fill_perp_order` with the market's CLOB accounts required: a restable",
-        "remainder of the filled order migrates to the book instead of resting",
-        "in `User.orders`. v0's account list is frozen, so this is a separate",
-        "endpoint. `market_index` is an argument because the crank-conditions",
-        "PDA seed needs it before any account is loaded; it is checked against",
-        "the order's own market."
-      ],
-      "discriminator": [
-        88,
-        149,
-        73,
-        149,
-        110,
-        236,
-        243,
-        188
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "authority",
-          "signer": true
-        },
-        {
-          "name": "filler",
-          "writable": true
-        },
-        {
-          "name": "fillerStats",
-          "writable": true
-        },
-        {
-          "name": "user",
-          "writable": true
-        },
-        {
-          "name": "userStats",
-          "writable": true
-        },
-        {
-          "name": "quoter",
-          "docs": [
-            "The market's CLOB registry entry — a remainder only ever rests on a",
-            "vetted book."
-          ]
-        },
-        {
-          "name": "clobMarket",
-          "docs": [
-            "(`ClobMarket::from_quoter`), so a valid entry cannot be pointed at an",
-            "arbitrary account."
-          ],
-          "writable": true
-        },
-        {
-          "name": "clobProgram"
-        },
-        {
-          "name": "clobAuthority",
-          "docs": [
-            "is, and nothing a third-party quoter is ever handed."
-          ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  108,
-                  111,
-                  98,
-                  95,
-                  97,
-                  117,
-                  116,
-                  104,
-                  111,
-                  114,
-                  105,
-                  116,
-                  121
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "crankConditions",
-          "docs": [
-            "Wake-hint host for the rested remainder. Optional as on every CLOB",
-            "placement path: a market whose conditions were never initialized must",
-            "still be fillable, and a missed hint costs crank latency, not liveness."
-          ],
-          "writable": true,
-          "optional": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  108,
-                  111,
-                  98,
-                  95,
-                  99,
-                  114,
-                  97,
-                  110,
-                  107,
-                  95,
-                  99,
-                  111,
-                  110,
-                  100,
-                  105,
-                  116,
-                  105,
-                  111,
-                  110,
-                  115
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "marketIndex"
-              }
-            ]
-          }
-        },
-        {
-          "name": "instructionsSysvar",
-          "docs": [
-            "fill cannot get anywhere else: whether the taker signed this",
-            "transaction, and how many accounts the transaction locks.",
-            "",
-            "Optional, and it costs one of those locks. A fill needs it only when a",
-            "book withholds depth for an owner the transaction does not carry, and",
-            "only when the taker did not sign. A fill that meets neither condition",
-            "passes `None` and spends nothing. A fill that meets both and passes",
-            "`None` is refused, because the obligation cannot be checked."
-          ],
-          "optional": true,
-          "address": "Sysvar1nstructions1111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "orderId",
-          "type": {
-            "option": "u32"
-          }
-        },
-        {
-          "name": "makerOrderId",
-          "type": {
-            "option": "u32"
-          }
-        },
-        {
-          "name": "signedRoute",
-          "type": {
-            "vec": "pubkey"
-          }
-        },
-        {
-          "name": "marketIndex",
-          "type": "u16"
         }
       ]
     },
@@ -3531,29 +3312,7 @@ export type Velocity = {
             "third-party quoter is handed: signer privilege is inherited by a",
             "callee, and this one may place and cancel on any book, for any user."
           ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  108,
-                  111,
-                  98,
-                  95,
-                  97,
-                  117,
-                  116,
-                  104,
-                  111,
-                  114,
-                  105,
-                  116,
-                  121
-                ]
-              }
-            ]
-          }
+          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
         },
         {
           "name": "crankConditions",
@@ -7517,37 +7276,18 @@ export type Velocity = {
             "third-party quoter is handed: signer privilege is inherited by a",
             "callee, and this one may place and cancel on any book, for any user."
           ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  108,
-                  111,
-                  98,
-                  95,
-                  97,
-                  117,
-                  116,
-                  104,
-                  111,
-                  114,
-                  105,
-                  116,
-                  121
-                ]
-              }
-            ]
-          }
+          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
         },
         {
-          "name": "instructionsSysvar",
+          "name": "flowAuthority",
           "docs": [
-            "faster-than-default activation delay on the replacement."
+            "The flow authority, signing this transaction as a named account.",
+            "Required only for a faster-than-default activation delay on the",
+            "replacement — presence is the attestation. The zero key cannot sign,",
+            "so an unset flow authority admits nobody."
           ],
-          "optional": true,
-          "address": "Sysvar1nstructions1111111111111111111111111"
+          "signer": true,
+          "optional": true
         }
       ],
       "args": [
@@ -7782,82 +7522,18 @@ export type Velocity = {
           "docs": [
             "is set to, and nothing a third-party quoter is ever handed."
           ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  108,
-                  111,
-                  98,
-                  95,
-                  97,
-                  117,
-                  116,
-                  104,
-                  111,
-                  114,
-                  105,
-                  116,
-                  121
-                ]
-              }
-            ]
-          }
+          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
         },
         {
-          "name": "crankConditions",
+          "name": "flowAuthority",
           "docs": [
-            "Wake-hint host for the rested maker. Optional like every other CLOB",
-            "placement path: a market whose conditions were never initialized must",
-            "still be tradeable, and a missed hint costs crank latency, not liveness."
+            "The flow authority, signing this transaction as a named account.",
+            "Required only for a faster-than-default activation delay — presence",
+            "is the attestation. The zero key cannot sign, so an unset flow",
+            "authority admits nobody."
           ],
-          "writable": true,
-          "optional": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  108,
-                  111,
-                  98,
-                  95,
-                  99,
-                  114,
-                  97,
-                  110,
-                  107,
-                  95,
-                  99,
-                  111,
-                  110,
-                  100,
-                  105,
-                  116,
-                  105,
-                  111,
-                  110,
-                  115
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "params.market_index"
-              }
-            ]
-          }
-        },
-        {
-          "name": "instructionsSysvar",
-          "docs": [
-            "faster-than-default activation delay: the handler introspects it for the",
-            "flow-authority co-signer (the attestation)."
-          ],
-          "optional": true,
-          "address": "Sysvar1nstructions1111111111111111111111111"
+          "signer": true,
+          "optional": true
         }
       ],
       "args": [
@@ -7987,74 +7663,19 @@ export type Velocity = {
             "third-party quoter is handed: signer privilege is inherited by a",
             "callee, and this one may place and cancel on any book, for any user."
           ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  108,
-                  111,
-                  98,
-                  95,
-                  97,
-                  117,
-                  116,
-                  104,
-                  111,
-                  114,
-                  105,
-                  116,
-                  121
-                ]
-              }
-            ]
-          }
+          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
         },
         {
-          "name": "crankConditions",
+          "name": "flowAuthority",
           "docs": [
-            "Wake-hint host for the rested remainder. Optional like every other",
-            "CLOB placement path: a market whose conditions were never initialized",
-            "must still be tradeable, and a missed hint costs crank latency, not",
-            "liveness (the fallback poll is the floor)."
+            "The flow authority, signing this transaction as a named account —",
+            "swift builds and signs its own user transactions, so presence marks",
+            "the flow attested. Absent reads as unattested, which on a book with",
+            "a speed bump rests the order whole instead of filling. The zero key",
+            "cannot sign, so an unset flow authority admits nobody."
           ],
-          "writable": true,
-          "optional": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  108,
-                  111,
-                  98,
-                  95,
-                  99,
-                  114,
-                  97,
-                  110,
-                  107,
-                  95,
-                  99,
-                  111,
-                  110,
-                  100,
-                  105,
-                  116,
-                  105,
-                  111,
-                  110,
-                  115
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "params.market_index"
-              }
-            ]
-          }
+          "signer": true,
+          "optional": true
         }
       ],
       "args": [
@@ -8198,7 +7819,12 @@ export type Velocity = {
         "The keeper that builds the transaction is a filler: the taker signed a",
         "message, not a transaction, so the keeper answers for the account list",
         "it chose. It must carry every quoter the message named, and it owes the",
-        "taker every maker it had room for."
+        "taker every maker it had room for.",
+        "`flow_attestation` is swift's detached signature over the order's own",
+        "signature plus an expiry: proof the order served the hold, without",
+        "the flow authority signing this keeper-built transaction. Absent",
+        "reads as unattested — on a book with a speed bump the order rests",
+        "whole instead of filling."
       ],
       "discriminator": [
         32,
@@ -8300,74 +7926,7 @@ export type Velocity = {
             "third-party quoter is handed: signer privilege is inherited by a",
             "callee, and this one may place and cancel on any book, for any user."
           ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  108,
-                  111,
-                  98,
-                  95,
-                  97,
-                  117,
-                  116,
-                  104,
-                  111,
-                  114,
-                  105,
-                  116,
-                  121
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "crankConditions",
-          "docs": [
-            "Wake-hint host for the rested remainder. Optional like every other CLOB",
-            "placement path: a market whose conditions were never initialized must",
-            "still be tradeable, and a missed hint costs crank latency rather than",
-            "liveness, because the fallback poll is the floor."
-          ],
-          "writable": true,
-          "optional": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  108,
-                  111,
-                  98,
-                  95,
-                  99,
-                  114,
-                  97,
-                  110,
-                  107,
-                  95,
-                  99,
-                  111,
-                  110,
-                  100,
-                  105,
-                  116,
-                  105,
-                  111,
-                  110,
-                  115
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "quoter"
-              }
-            ]
-          }
+          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
         }
       ],
       "args": [
@@ -8378,6 +7937,16 @@ export type Velocity = {
         {
           "name": "isDelegateSigner",
           "type": "bool"
+        },
+        {
+          "name": "flowAttestation",
+          "type": {
+            "option": {
+              "defined": {
+                "name": "flowAttestationV0"
+              }
+            }
+          }
         }
       ]
     },
@@ -9977,20 +9546,20 @@ export type Velocity = {
       ]
     },
     {
-      "name": "resolveTriggerClobOrder",
+      "name": "resolveTriggerLimitOrderV1",
       "docs": [
-        "Relay resolver for `trigger_clob_order`. Meant to be simulated, not",
+        "Relay resolver for `trigger_limit_order_v1`. Meant to be simulated, not",
         "landed."
       ],
       "discriminator": [
-        21,
-        250,
-        194,
-        125,
-        230,
-        11,
-        202,
-        66
+        207,
+        143,
+        198,
+        105,
+        218,
+        207,
+        43,
+        27
       ],
       "accounts": [
         {
@@ -10028,6 +9597,72 @@ export type Velocity = {
           "docs": [
             "Read-only: resolvers stage into the shared scratch account, not",
             "into the block they read."
+          ]
+        },
+        {
+          "name": "user"
+        },
+        {
+          "name": "oracle"
+        },
+        {
+          "name": "perpMarket"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "resolveTriggerMarketOrderV1",
+      "docs": [
+        "Relay resolver for `trigger_market_order_v1`. Meant to be simulated, not",
+        "landed."
+      ],
+      "discriminator": [
+        12,
+        180,
+        48,
+        230,
+        39,
+        213,
+        101,
+        242
+      ],
+      "accounts": [
+        {
+          "name": "scratch",
+          "docs": [
+            "The shared staging account, index 0 by convention — a resolver's",
+            "response pointer is interpreted against it."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  108,
+                  97,
+                  121,
+                  95,
+                  115,
+                  99,
+                  114,
+                  97,
+                  116,
+                  99,
+                  104
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "triggerConditions",
+          "docs": [
+            "Read-only: resolvers stage into the shared scratch account, not into",
+            "the block they read."
           ]
         },
         {
@@ -10093,72 +9728,6 @@ export type Velocity = {
           "docs": [
             "Read-only: resolvers stage into the shared scratch account, not",
             "into the block they read."
-          ]
-        },
-        {
-          "name": "user"
-        },
-        {
-          "name": "oracle"
-        },
-        {
-          "name": "perpMarket"
-        }
-      ],
-      "args": []
-    },
-    {
-      "name": "resolveTriggerOrderV1",
-      "docs": [
-        "Relay resolver for `trigger_order_v1`. Meant to be simulated, not",
-        "landed."
-      ],
-      "discriminator": [
-        203,
-        102,
-        5,
-        78,
-        191,
-        104,
-        62,
-        183
-      ],
-      "accounts": [
-        {
-          "name": "scratch",
-          "docs": [
-            "The shared staging account, index 0 by convention — a resolver's",
-            "response pointer is interpreted against it."
-          ],
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  114,
-                  101,
-                  108,
-                  97,
-                  121,
-                  95,
-                  115,
-                  99,
-                  114,
-                  97,
-                  116,
-                  99,
-                  104
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "triggerConditions",
-          "docs": [
-            "Read-only: resolvers stage into the shared scratch account, not into",
-            "the block they read."
           ]
         },
         {
@@ -12065,21 +11634,21 @@ export type Velocity = {
       ]
     },
     {
-      "name": "triggerClobOrder",
+      "name": "triggerLimitOrderV1",
       "docs": [
         "Crank an armed trigger-limit order onto the market's CLOB once its",
         "trigger condition is met (permissionless; keeper earns the flat",
         "reward from the user). Stop-markets go through `trigger_order`."
       ],
       "discriminator": [
-        4,
-        206,
-        255,
-        121,
-        250,
-        102,
-        163,
-        14
+        238,
+        119,
+        143,
+        92,
+        79,
+        248,
+        199,
+        152
       ],
       "accounts": [
         {
@@ -12118,7 +11687,7 @@ export type Velocity = {
           "name": "quoter",
           "docs": [
             "The market's CLOB registry entry — placement is only allowed on a",
-            "vetted book, same as a direct `place_clob_order`."
+            "vetted book, same as a maker's own `place_and_make_perp_order_v1`."
           ]
         },
         {
@@ -12138,34 +11707,12 @@ export type Velocity = {
             "third-party quoter is handed: signer privilege is inherited by a",
             "callee, and this one may place and cancel on any book, for any user."
           ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  108,
-                  111,
-                  98,
-                  95,
-                  97,
-                  117,
-                  116,
-                  104,
-                  111,
-                  114,
-                  105,
-                  116,
-                  121
-                ]
-              }
-            ]
-          }
+          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
         },
         {
           "name": "crankConditions",
           "docs": [
-            "Expiry-hint host, same optional contract as `place_clob_order`."
+            "Expiry-hint host, same optional contract as `place_and_make_perp_order_v1`."
           ],
           "writable": true,
           "optional": true,
@@ -12255,11 +11802,193 @@ export type Velocity = {
       ]
     },
     {
+      "name": "triggerMarketOrderV1",
+      "docs": [
+        "Fire a DLOB trigger order straight to the book. Unlike `trigger_order`,",
+        "it fills the fired order in the same instruction and rests only the",
+        "remainder as a taker-origin order, so nothing lingers live in",
+        "`User.orders`."
+      ],
+      "discriminator": [
+        126,
+        192,
+        210,
+        218,
+        108,
+        177,
+        5,
+        42
+      ],
+      "accounts": [
+        {
+          "name": "state"
+        },
+        {
+          "name": "authority",
+          "docs": [
+            "program-keeper mode (protocol `User` as filler, relay turners) it is",
+            "only the lamport payout target and no signature is required."
+          ],
+          "writable": true
+        },
+        {
+          "name": "filler",
+          "writable": true
+        },
+        {
+          "name": "fillerStats",
+          "writable": true
+        },
+        {
+          "name": "user",
+          "docs": [
+            "The owner of the armed trigger order."
+          ],
+          "writable": true
+        },
+        {
+          "name": "userStats",
+          "writable": true
+        },
+        {
+          "name": "quoter",
+          "docs": [
+            "The market's CLOB registry entry — the remainder only ever rests on a",
+            "vetted book."
+          ]
+        },
+        {
+          "name": "clobMarket",
+          "writable": true
+        },
+        {
+          "name": "clobProgram"
+        },
+        {
+          "name": "clobAuthority",
+          "docs": [
+            "may place and cancel on any book for any user. Distinct from the",
+            "per-entry signer a third-party quoter is handed."
+          ],
+          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
+        },
+        {
+          "name": "crankConditions",
+          "docs": [
+            "Wake-hint host for the rested remainder, optional as on every CLOB",
+            "placement path."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  108,
+                  111,
+                  98,
+                  95,
+                  99,
+                  114,
+                  97,
+                  110,
+                  107,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "marketIndex"
+              }
+            ]
+          }
+        },
+        {
+          "name": "triggerConditions",
+          "docs": [
+            "The user's relay trigger conditions: the fired slot is released so its",
+            "level-triggered wake goes quiet. Optional, like everything relay-side."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  117,
+                  115,
+                  101,
+                  114,
+                  95,
+                  99,
+                  111,
+                  110,
+                  100,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110,
+                  115
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "user"
+              }
+            ]
+          }
+        },
+        {
+          "name": "ixSysvar",
+          "docs": [
+            "owner signed the transaction and how many accounts it locks — the same",
+            "filler-obligation facts `fill_legacy_dlob_order` needs. Optional, and it",
+            "costs one lock: a fill needs it only when a book withholds depth for an",
+            "owner the transaction does not carry, and the owner did not sign. A",
+            "trigger crank's owner never signs, so a fill that reaches a withheld",
+            "order and passes `None` here is refused."
+          ],
+          "optional": true,
+          "address": "Sysvar1nstructions1111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "marketIndex",
+          "type": "u16"
+        },
+        {
+          "name": "orderId",
+          "type": "u32"
+        },
+        {
+          "name": "signedRoute",
+          "type": {
+            "vec": "pubkey"
+          }
+        }
+      ]
+    },
+    {
       "name": "triggerOrder",
       "docs": [
         "@deprecated Legacy trigger, kept for ABI compatibility. It flips the",
         "fired order live and leaves it on the DLOB for a later fill crank. New",
-        "integrations use `trigger_order_v1`, which fires and fills the order",
+        "integrations use `trigger_market_order_v1`, which fires and fills the order",
         "straight to the book in one instruction."
       ],
       "discriminator": [
@@ -12349,210 +12078,6 @@ export type Velocity = {
         {
           "name": "orderId",
           "type": "u32"
-        }
-      ]
-    },
-    {
-      "name": "triggerOrderV1",
-      "docs": [
-        "Fire a DLOB trigger order straight to the book. Unlike `trigger_order`,",
-        "it fills the fired order in the same instruction and rests only the",
-        "remainder as a taker-origin order, so nothing lingers live in",
-        "`User.orders`."
-      ],
-      "discriminator": [
-        229,
-        234,
-        130,
-        57,
-        54,
-        247,
-        245,
-        202
-      ],
-      "accounts": [
-        {
-          "name": "state"
-        },
-        {
-          "name": "authority",
-          "docs": [
-            "program-keeper mode (protocol `User` as filler, relay turners) it is",
-            "only the lamport payout target and no signature is required."
-          ],
-          "writable": true
-        },
-        {
-          "name": "filler",
-          "writable": true
-        },
-        {
-          "name": "fillerStats",
-          "writable": true
-        },
-        {
-          "name": "user",
-          "docs": [
-            "The owner of the armed trigger order."
-          ],
-          "writable": true
-        },
-        {
-          "name": "userStats",
-          "writable": true
-        },
-        {
-          "name": "quoter",
-          "docs": [
-            "The market's CLOB registry entry — the remainder only ever rests on a",
-            "vetted book."
-          ]
-        },
-        {
-          "name": "clobMarket",
-          "writable": true
-        },
-        {
-          "name": "clobProgram"
-        },
-        {
-          "name": "clobAuthority",
-          "docs": [
-            "may place and cancel on any book for any user. Distinct from the",
-            "per-entry signer a third-party quoter is handed."
-          ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  108,
-                  111,
-                  98,
-                  95,
-                  97,
-                  117,
-                  116,
-                  104,
-                  111,
-                  114,
-                  105,
-                  116,
-                  121
-                ]
-              }
-            ]
-          }
-        },
-        {
-          "name": "crankConditions",
-          "docs": [
-            "Wake-hint host for the rested remainder, optional as on every CLOB",
-            "placement path."
-          ],
-          "writable": true,
-          "optional": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  108,
-                  111,
-                  98,
-                  95,
-                  99,
-                  114,
-                  97,
-                  110,
-                  107,
-                  95,
-                  99,
-                  111,
-                  110,
-                  100,
-                  105,
-                  116,
-                  105,
-                  111,
-                  110,
-                  115
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "marketIndex"
-              }
-            ]
-          }
-        },
-        {
-          "name": "triggerConditions",
-          "docs": [
-            "The user's relay trigger conditions: the fired slot is released so its",
-            "level-triggered wake goes quiet. Optional, like everything relay-side."
-          ],
-          "writable": true,
-          "optional": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  117,
-                  115,
-                  101,
-                  114,
-                  95,
-                  99,
-                  111,
-                  110,
-                  100,
-                  105,
-                  116,
-                  105,
-                  111,
-                  110,
-                  115
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "user"
-              }
-            ]
-          }
-        },
-        {
-          "name": "ixSysvar",
-          "docs": [
-            "owner signed the transaction and how many accounts it locks — the same",
-            "filler-obligation facts `fill_perp_order_v1` needs. Optional, and it",
-            "costs one lock: a fill needs it only when a book withholds depth for an",
-            "owner the transaction does not carry, and the owner did not sign. A",
-            "trigger crank's owner never signs, so a fill that reaches a withheld",
-            "order and passes `None` here is refused."
-          ],
-          "optional": true,
-          "address": "Sysvar1nstructions1111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "marketIndex",
-          "type": "u16"
-        },
-        {
-          "name": "orderId",
-          "type": "u32"
-        },
-        {
-          "name": "signedRoute",
-          "type": {
-            "vec": "pubkey"
-          }
         }
       ]
     },
@@ -14207,7 +13732,13 @@ export type Velocity = {
           "writable": true
         },
         {
-          "name": "quoter"
+          "name": "quoter",
+          "docs": [
+            "Writable: the attach mirrors the book's placement rules onto the",
+            "entry, so the hot paths read a loaded field instead of CPI'ing",
+            "`order_rules_v0`."
+          ],
+          "writable": true
         },
         {
           "name": "clobMarket",
@@ -14227,29 +13758,7 @@ export type Velocity = {
           "docs": [
             "is set to, and therefore the only key that may register its cranks."
           ],
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  99,
-                  108,
-                  111,
-                  98,
-                  95,
-                  97,
-                  117,
-                  116,
-                  104,
-                  111,
-                  114,
-                  105,
-                  116,
-                  121
-                ]
-              }
-            ]
-          }
+          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
         },
         {
           "name": "crankConditions",
@@ -21949,6 +21458,11 @@ export type Velocity = {
       "code": 6402,
       "name": "quoterReportExceedsReservation",
       "msg": "A quoter reported more base or more retired orders than velocity reserved for that user"
+    },
+    {
+      "code": 6403,
+      "name": "unattestedSynchronousTake",
+      "msg": "The book runs an activation speed bump; an unattested taker rests on the book instead of filling synchronously"
     }
   ],
   "types": [
@@ -23512,7 +23026,7 @@ export type Velocity = {
           {
             "name": "trigger",
             "docs": [
-              "`trigger_order` / `trigger_clob_order` in program-keeper mode."
+              "`trigger_order` / `trigger_limit_order_v1` in program-keeper mode."
             ],
             "type": "u32"
           },
@@ -24119,6 +23633,42 @@ export type Velocity = {
               "Slot of the condition within the block."
             ],
             "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "flowAttestationV0",
+      "docs": [
+        "A flow attestation: the flow authority's detached signature over one",
+        "order's own signature plus an expiry. It marks the order's flow as",
+        "having served the swift hold, without the flow authority signing the",
+        "transaction. A transaction signer is transaction-global — the fill",
+        "transaction is keeper-built, and a co-signature on it needed an",
+        "allowlist, a shape proof, and a drain-vector analysis. A detached",
+        "signature over one order's signature authorizes exactly one thing.",
+        "It also costs no signature fee: it is verified in-program, like the",
+        "taker signature it binds to."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "signature",
+            "type": {
+              "array": [
+                "u8",
+                64
+              ]
+            }
+          },
+          {
+            "name": "expiryTs",
+            "docs": [
+              "Unix seconds this attestation is good until. Bounds how long a",
+              "keeper can sit on a released attestation before filling."
+            ],
+            "type": "i64"
           }
         ]
       }
@@ -26151,7 +25701,7 @@ export type Velocity = {
           {
             "name": "activationDelaySlots",
             "docs": [
-              "Same rule as `place_clob_order`: `None` takes the book's default speed",
+              "Same rule as `place_and_make_perp_order_v1`: `None` takes the book's default speed",
               "bump, anything below it needs the flow-authority attestation."
             ],
             "type": {
@@ -26161,7 +25711,7 @@ export type Velocity = {
           {
             "name": "rejectIfCrossed",
             "docs": [
-              "Same rule as `place_clob_order`: refuse the replacement rather than",
+              "Same rule as `place_and_make_perp_order_v1`: refuse the replacement rather than",
               "rest it crossed. The original is already off the book when this fires,",
               "so a refused replacement leaves the maker with no order — which is what",
               "a maker repricing into a crossed book is asking for."
@@ -28558,6 +28108,19 @@ export type Velocity = {
             "type": "u8"
           },
           {
+            "name": "takerServedWindow",
+            "docs": [
+              "Whether the flow this view prices for served a protection window —",
+              "the swift hold, or the book's activation delay. What the real route",
+              "asks: a bumped book quotes no depth to unprotected flow, and a",
+              "protected-flow quoter (the midpoint's `require_attested_flow`)",
+              "refuses it, so a view for unprotected flow must show the same books",
+              "the fill would get. Swift and the book publisher price protected",
+              "flow and pass `true`."
+            ],
+            "type": "bool"
+          },
+          {
             "name": "includeVamm",
             "docs": [
               "Quote the vAMM into the buffer as well.",
@@ -29140,7 +28703,7 @@ export type Velocity = {
             "type": "u64"
           },
           {
-            "name": "maxOracleDeviationBps",
+            "name": "bookTickSize",
             "docs": [
               "The furthest from oracle a fill on this entry may price, in",
               "MARGIN_PRECISION units, so one unit is one basis point. Zero means the",
@@ -29157,8 +28720,30 @@ export type Velocity = {
               "an incident must not have to wait for re-vetting.",
               "",
               "`Custom` entries only. A book fills third parties, so a band on one",
-              "would let its entry authority revert other people's fills."
+              "would let its entry authority revert other people's fills.",
+              "The book's placement rules, mirrored here by the attach",
+              "(`update_perp_market_clob_quoter`) so the hot paths read a loaded",
+              "field instead of CPI'ing `order_rules_v0` — the take gate, the",
+              "route's maker-priority skip, and the remainder rest each paid that",
+              "round trip. Zero for non-`Clob` entries and for a book no market has",
+              "attached. Changing the book's rules requires re-running the attach:",
+              "a stale mirror degrades gracefully (a wrong tick or minimum drops",
+              "the remainder to the plain cancel; a stale-zero delay routes an",
+              "unattested taker synchronously where it should have rested), but the",
+              "attach is the supported way to change an attached book's rules."
             ],
+            "type": "u64"
+          },
+          {
+            "name": "bookMinOrderSize",
+            "type": "u64"
+          },
+          {
+            "name": "maxOracleDeviationBps",
+            "type": "u32"
+          },
+          {
+            "name": "bookDefaultActivationDelaySlots",
             "type": "u32"
           },
           {
@@ -29166,7 +28751,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                12
+                8
               ]
             }
           }
@@ -31454,12 +31039,23 @@ export type Velocity = {
             "name": "hotFlowAuthority",
             "docs": [
               "The retail-flow attestation key (swift's). Not a signer of any admin",
-              "instruction: transactions *co-signed* by this key are attested flow —",
-              "`place_clob_order` accepts a faster-than-default activation delay",
-              "only when instructions-sysvar introspection finds it among the",
-              "transaction's signers, and quoters (e.g. the midpoint) apply their",
-              "own equivalent check. `Pubkey::default()` (unset) disables fast",
-              "activation entirely rather than leaving it open."
+              "instruction. It attests flow through two transports. On a",
+              "swift-built transaction it signs as a named `flow_authority`",
+              "account — a CLOB placement (`place_and_make_perp_order_v1`, a",
+              "modify's replacement leg) accepts a faster-than-default activation",
+              "delay only when that signer is present, and",
+              "`place_and_take_perp_order_v1` takes synchronously on a bumped book",
+              "only with it. For a keeper-built swift fill it signs a detached",
+              "attestation over the order's own signature (`FlowAttestationV0`),",
+              "verified in-program — the key never signs a transaction it did not",
+              "build. Velocity forwards the verdict to quoters on the wire",
+              "(`taker_served_window`); a quoter checks nothing itself. On a book",
+              "with a nonzero default activation delay, only attested flow fills",
+              "against the book in the same transaction; an unattested taker rests",
+              "whole through the window (maker priority — a maker can always",
+              "reprice ahead of unattested aggression). `Pubkey::default()` (unset)",
+              "disables fast activation entirely rather than leaving it open — the",
+              "zero key can neither sign an account nor an attestation."
             ],
             "type": "pubkey"
           },
@@ -32043,7 +31639,7 @@ export type Velocity = {
             "name": "quoter",
             "docs": [
               "The market's canonical CLOB entry / book / program — set when this",
-              "slot's executor is `trigger_clob_order`, zeroed for `trigger_order`."
+              "slot's executor is `trigger_limit_order_v1`, zeroed for `trigger_order`."
             ],
             "type": "pubkey"
           },

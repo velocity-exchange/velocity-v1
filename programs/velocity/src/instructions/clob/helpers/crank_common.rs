@@ -37,7 +37,6 @@ use {
         error::ErrorCode,
         instructions::{constraints::*, relay_harness::StagedCall},
         load_mut, msg,
-        signer::CLOB_AUTHORITY_SEED,
         state::{
             clob_crank::{ClobCrankConditionsV0, CrankPaymentsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             events::OrderActionExplanation,
@@ -102,7 +101,7 @@ pub struct CrankClobOrderRemoval<'info> {
     /// is set to. Its own key, distinct from the per-entry signer a
     /// third-party quoter is handed: signer privilege is inherited by a
     /// callee, and this one may place and cancel on any book, for any user.
-    #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
+    #[account(address = crate::signer::CLOB_AUTHORITY)]
     pub clob_authority: UncheckedAccount<'info>,
     /// The market's relay conditions account: the expiry-hint host and the
     /// lamport reservoir. Optional so signed keepers can crank markets whose
@@ -162,7 +161,6 @@ pub fn crank_clob_removal(
         &ctx.accounts.clob_market,
         &ctx.accounts.clob_program,
         &ctx.accounts.clob_authority,
-        ctx.bumps.clob_authority,
     )?;
 
     // CPI while no user borrows are held.
@@ -414,7 +412,7 @@ pub fn removal_call<I: anchor_lang::Discriminator>(
 }
 
 /// Shared tail of the trigger cranks (`trigger_order`,
-/// `trigger_clob_order`): release the fired slot on the user's relay
+/// `trigger_limit_order_v1`): release the fired slot on the user's relay
 /// trigger conditions so its level-triggered wake goes quiet, and in
 /// program-keeper mode pay the caller from the fired market's reservoir.
 #[allow(clippy::too_many_arguments)]
@@ -483,17 +481,17 @@ pub fn finish_trigger_crank<'info>(
 /// resolver runs for its own slots only. The slot's stored meta plus the
 /// order type name the resolver: an empty `quoter` is the plain DLOB flip
 /// (`trigger_order`); a populated `quoter` on a trigger-limit rests the whole
-/// order on the book (`trigger_clob_order`); a populated `quoter` on any other
-/// trigger fires and fills it against the book (`trigger_order_v1`). Without
+/// order on the book (`trigger_limit_order_v1`); a populated `quoter` on any other
+/// trigger fires and fills it against the book (`trigger_market_order_v1`). Without
 /// this a resolver would stage the first fired order that only shares the
 /// coarse CLOB-or-not split, not the one it is meant to run.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TriggerResolverKind {
     /// `trigger_order` — flip the DLOB order live and leave it for a filler.
     Flip,
-    /// `trigger_clob_order` — rest the whole trigger-limit on the book.
+    /// `trigger_limit_order_v1` — rest the whole trigger-limit on the book.
     ClobRest,
-    /// `trigger_order_v1` — fire the trigger and fill it against the book.
+    /// `trigger_market_order_v1` — fire the trigger and fill it against the book.
     ClobFill,
 }
 
@@ -522,7 +520,7 @@ pub fn find_fired_trigger(
         // work: it deliberately reads as *untriggered* so every DLOB matching
         // path ignores it, which means the `triggered()` test below does not
         // exclude it. Without this, discovery keeps re-firing an order that is
-        // already resting on the book — `trigger_clob_order` then rejects the
+        // already resting on the book — `trigger_limit_order_v1` then rejects the
         // staged crank with `OrderPlacedOnClob` every round, burning turner
         // work and starving genuinely armed triggers behind it.
         if order.status != crate::state::user::OrderStatus::Open

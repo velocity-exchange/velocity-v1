@@ -11,7 +11,7 @@ levels and the split walks priority tiers ascending — vAMM, then a book, then 
 within a tier. AMM JIT is gone with `PerpFulfillmentMethod`, and integrators reproducing fills
 off-chain must model the vAMM as a level ladder rather than a curve swap: `splitAcrossQuoters` and
 `vammQuoteLevels` mirror the program's own math. `placeAndTakePerpOrderV1`, `placeAndMakePerpOrderV1`
-and `fillPerpOrderV1` rest an unfilled restable remainder on the market's book instead of cancelling
+and `fillLegacyDlobOrder` rest an unfilled restable remainder on the market's book instead of cancelling
 it or leaving it in `User.orders`; the v0 instructions keep their pre-CLOB account lists. Signed-msg
 orders carry a `network` tag and an optional signed route that binds the filler to it. A quoter
 reports depth it could not reach (`withheldPrice` / `withheldBase`) and the router reserves it, so a
@@ -31,7 +31,7 @@ CLOB's instruction wire and nothing about its account layout. One resolver,
 condition that fired, so the three per-condition resolvers it replaces are gone from the IDL.
 `placeClobOrder` and `modifyClobOrder` therefore take no crank-conditions account, and
 `updatePerpMarketClobQuoter` takes the book's program and the quoter signer. Plain limits live
-only there. A trigger order becomes a book order through `trigger_clob_order`, leaving a shadow in `User.orders` that frees on
+only there. A trigger order becomes a book order through `trigger_limit_order_v1`, leaving a shadow in `User.orders` that frees on
 fill, cull, expiry or cancel and re-arms on eviction. An activation-slot speed bump replaces JIT, so
 the `jit-proxy` package and program are deleted.
 

@@ -11,7 +11,6 @@ use {
         error::ErrorCode,
         instructions::constraints::*,
         load_mut, msg,
-        signer::CLOB_AUTHORITY_SEED,
         state::{
             perp_market::PerpMarket,
             prop_amm::{
@@ -54,7 +53,7 @@ pub struct CancelOrderV1<'info> {
     /// is set to. Its own key, distinct from the per-entry signer a
     /// third-party quoter is handed: signer privilege is inherited by a
     /// callee, and this one may place and cancel on any book, for any user.
-    #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
+    #[account(address = crate::signer::CLOB_AUTHORITY)]
     pub clob_authority: UncheckedAccount<'info>,
 }
 
@@ -77,7 +76,6 @@ pub fn handle_cancel_order_v1(
         &ctx.accounts.clob_market,
         &ctx.accounts.clob_program,
         &ctx.accounts.clob_authority,
-        ctx.bumps.clob_authority,
     )?;
 
     // CPI cancel; ownership travels in the args in derivable form and the

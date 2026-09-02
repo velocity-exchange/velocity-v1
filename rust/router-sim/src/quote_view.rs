@@ -391,6 +391,11 @@ pub struct QuoteRouterParams<'a> {
     /// Quote the vAMM into this pass. Exactly one pass of a market should,
     /// because the vAMM shades against the books carried alongside it.
     pub include_vamm: bool,
+    /// Whether the flow this view prices for served a protection window —
+    /// the swift hold, or the book's activation delay. A bumped book and a
+    /// protected-flow quoter show no depth when this is false, exactly as
+    /// the fill's route would.
+    pub taker_served_window: bool,
 }
 
 pub async fn build_quote_router_ix<S: ChainSource>(
@@ -408,6 +413,7 @@ pub async fn build_quote_router_ix<S: ChainSource>(
         exclude,
         only,
         include_vamm,
+        taker_served_window,
     } = *params;
     let perp_market_key = perp_market_pda(velocity, market_index);
     let perp_market_account = source
@@ -514,6 +520,7 @@ pub async fn build_quote_router_ix<S: ChainSource>(
                     size,
                     quoter_count: entries.len() as u8,
                     include_vamm,
+                    taker_served_window,
                 },
             }
             .data(),

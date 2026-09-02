@@ -314,6 +314,7 @@ fn quote_meta_limited(
 ) -> Result<TransactionMetadata, FailedTransactionMetadata> {
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
+            taker_served_window: true,
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction,
@@ -365,6 +366,7 @@ fn execute_meta_users(
 ) -> Result<TransactionMetadata, FailedTransactionMetadata> {
     let ix = instruction::ExecuteV0 {
         args: ExecuteArgsV0 {
+            taker_served_window: true,
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction,
@@ -426,11 +428,8 @@ fn next_removal(ctx: &mut Ctx, kind: ClobRemovalKindV0) -> OrderViewV0 {
         market: addr(ctx.market),
     });
     let meta = send(ctx, ix).expect("next_removal_v0 runs");
-    anchor_lang::wincode::config::deserialize(
-        &meta.return_data.data,
-        anchor_lang::BORSH_CONFIG,
-    )
-    .expect("decodes as NextRemovalV0")
+    anchor_lang::wincode::config::deserialize(&meta.return_data.data, anchor_lang::BORSH_CONFIG)
+        .expect("decodes as NextRemovalV0")
 }
 
 fn remove_expired(
@@ -756,6 +755,7 @@ fn execute_rejects_unauthorized_caller() {
     ctx.svm.warp_to_slot(11);
 
     let args = || ExecuteArgsV0 {
+        taker_served_window: true,
         caps: UserCapsV0::EMPTY,
         reference_price: 0,
         direction: Direction::Long,
@@ -1722,6 +1722,7 @@ fn cu_benchmarks() {
     // Quote sweeping the entire side (level cap applies).
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
+            taker_served_window: true,
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction: Direction::Short,
@@ -1945,6 +1946,7 @@ fn an_execute_at_the_ceilings_fits_the_response_and_emits_the_record() {
 
     let ix = instruction::ExecuteV0 {
         args: ExecuteArgsV0 {
+            taker_served_window: true,
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction: Direction::Long,
@@ -2047,6 +2049,7 @@ fn resize_grows_arena_and_per_side_capacity() {
 fn quote_taker(ctx: &mut Ctx, direction: Direction, size: u64, taker: Address) -> Vec<(u64, u64)> {
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
+            taker_served_window: true,
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction,
@@ -2071,6 +2074,7 @@ fn execute_taker(
 ) -> Vec<([u8; 32], u64, u64, Vec<u64>)> {
     let ix = instruction::ExecuteV0 {
         args: ExecuteArgsV0 {
+            taker_served_window: true,
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction,
@@ -2371,6 +2375,7 @@ fn cu_benchmark_quote_with_a_taker_origin_head() {
 
     let ix = instruction::QuoteV0 {
         args: QuoteArgsV0 {
+            taker_served_window: true,
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             direction: Direction::Short,

@@ -634,9 +634,6 @@ mod regr_271_pause {
                     AccountMeta::new(self.clob_market_pda, false),
                     AccountMeta::new_readonly(self.clob_program_id, false),
                     AccountMeta::new_readonly(self.clob_authority_pda, false),
-                    // Optional `crank_conditions`, absent: the program id encodes
-                    // `None`.
-                    AccountMeta::new_readonly(self.program_id, false),
                     // remaining_accounts, in load_maps order [oracles, spot, perp]:
                     // quote spot market (w) then perp market (w). ($1 QuoteAsset
                     // oracle path needs no oracle account.)

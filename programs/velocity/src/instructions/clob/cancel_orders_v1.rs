@@ -26,9 +26,7 @@ use {
         error::ErrorCode,
         instructions::constraints::*,
         load_mut, msg,
-        signer::CLOB_AUTHORITY_SEED,
         state::{
-            clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             prop_amm::{
                 ClobCancelAllArgsV0, ClobCancelAllOutcomeExt, ClobCancelSides, ClobCancelSidesExt,
                 ClobMarket, ClobUserRefV0, QuoterV0,
@@ -42,7 +40,6 @@ use {
 };
 
 #[derive(Accounts)]
-#[instruction(params: CancelOrdersV1Params)]
 pub struct CancelOrdersV1<'info> {
     pub state: AccountLoader<'info, State>,
     #[account(
@@ -63,21 +60,8 @@ pub struct CancelOrdersV1<'info> {
     /// is set to. Its own key, distinct from the per-entry signer a
     /// third-party quoter is handed: signer privilege is inherited by a
     /// callee, and this one may place and cancel on any book, for any user.
-    #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
+    #[account(address = crate::signer::CLOB_AUTHORITY)]
     pub clob_authority: UncheckedAccount<'info>,
-    /// Wake-hint host; optional like every other CLOB path. Pulling orders can
-    /// only *relax* the expiry and activation hints, so a caller that omits it
-    /// leaves the cranks waking earlier than they need to — latency, not
-    /// liveness.
-    #[account(
-        mut,
-        seeds = [
-            CLOB_CRANK_CONDITIONS_PDA_SEED,
-            params.market_index.to_le_bytes().as_ref(),
-        ],
-        bump
-    )]
-    pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
 }
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
@@ -98,7 +82,6 @@ pub fn handle_cancel_orders_v1(
         &ctx.accounts.clob_market,
         &ctx.accounts.clob_program,
         &ctx.accounts.clob_authority,
-        ctx.bumps.clob_authority,
     )?;
 
     // CPI the sweep with no user borrow held; ownership travels in the args in

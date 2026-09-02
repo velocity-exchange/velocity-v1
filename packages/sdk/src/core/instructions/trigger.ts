@@ -57,13 +57,13 @@ export async function buildTriggerOrderInstruction(args: {
 }
 
 /**
- * Builds a `triggerOrderV1` instruction, firing a resting DLOB stop-market
+ * Builds a `triggerMarketOrderV1` instruction, firing a resting DLOB stop-market
  * straight to the book. Unlike `triggerOrder`, it fills the fired order in the
  * same instruction and rests any restable remainder as a taker-origin order on
  * the market's CLOB, so nothing lingers live in `User.orders`. Permissionless:
  * `user` (the order owner) does not sign — only `authority` (owner/delegate of
  * `filler`) does. For DLOB trigger-market orders only; a trigger-limit uses
- * `triggerClobOrder`.
+ * `triggerLimitOrderV1`.
  * @param args.program - Anchor `Program<Velocity>` used to build the instruction.
  * @param args.marketIndex - the order's perp market; checked on-chain and used by the crank-conditions PDA seed.
  * @param args.orderId - the trigger order's on-chain order ID.
@@ -81,9 +81,9 @@ export async function buildTriggerOrderInstruction(args: {
  * @param args.signedRoute - must be empty. A DLOB trigger carries no signed route; the keeper answers for its account list through the filler obligation.
  * @param args.crankConditions - the market's crank-conditions PDA (wake hint); omitted = program-id placeholder.
  * @param args.triggerConditions - the user's relay trigger conditions PDA; omitted = placeholder.
- * @returns the unsigned `triggerOrderV1` `TransactionInstruction`.
+ * @returns the unsigned `triggerMarketOrderV1` `TransactionInstruction`.
  */
-export async function buildTriggerOrderV1Instruction(args: {
+export async function buildTriggerMarketOrderV1Instruction(args: {
 	program: VelocityProgram;
 	marketIndex: number;
 	orderId: number;
@@ -104,7 +104,7 @@ export async function buildTriggerOrderV1Instruction(args: {
 }): Promise<TransactionInstruction> {
 	// An omitted optional account is encoded as the program id — anchor's `None`.
 	const omitted = args.program.programId;
-	return await (args.program.instruction as any).triggerOrderV1(
+	return await (args.program.instruction as any).triggerMarketOrderV1(
 		args.marketIndex,
 		args.orderId,
 		args.signedRoute ?? [],

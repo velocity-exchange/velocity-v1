@@ -93,8 +93,6 @@ pub use program::{
         },
     },
 };
-// What `place_clob_order` takes. It lives beside the instruction rather than in
-// `state`, and the builder needs callers to be able to name it.
 // SwapReduceOnly is IDL-only from velocity-rs's perspective — velocity puts it
 // under `instructions::user` which is not `pub mod`-visible externally.
 pub use crate::velocity_idl::types::SwapReduceOnly;

@@ -70,13 +70,21 @@ pub fn find_quoter_signer(entry: &Pubkey) -> (Pubkey, u8) {
     Pubkey::find_program_address(&[QUOTER_SIGNER_SEED, entry.as_ref()], &crate::ID)
 }
 
-/// Derive the CLOB place authority and its bump.
+/// The CLOB place authority PDA. Precomputed: the seeds and the program id
+/// are both fixed, so a runtime `find_program_address` paid the full bump
+/// loop for a constant. `clob_authority_matches_the_derivation` pins it.
 ///
 /// Global rather than per book: one key drives every market's book, and the
 /// books are velocity's own program. What matters is that it is not the key any
 /// third-party quoter is handed.
+pub const CLOB_AUTHORITY: Pubkey =
+    solana_program::pubkey!("D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj");
+/// [`CLOB_AUTHORITY`]'s bump.
+pub const CLOB_AUTHORITY_NONCE: u8 = 253;
+
+/// The CLOB place authority and its bump.
 pub fn find_clob_authority() -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[CLOB_AUTHORITY_SEED], &crate::ID)
+    (CLOB_AUTHORITY, CLOB_AUTHORITY_NONCE)
 }
 
 #[cfg(test)]
@@ -92,6 +100,16 @@ mod tests {
     /// `find_clob_authority` (the book). This pins the separation the whole
     /// quoter safety model rests on: a seed change that collided any of them
     /// with `velocity_signer` fails here.
+    /// The precomputed authority must be the PDA the seeds derive. A change
+    /// to the program id or the seed lands here before it lands on-chain.
+    #[test]
+    fn clob_authority_matches_the_derivation() {
+        assert_eq!(
+            Pubkey::find_program_address(&[CLOB_AUTHORITY_SEED], &crate::ID),
+            (CLOB_AUTHORITY, CLOB_AUTHORITY_NONCE)
+        );
+    }
+
     #[test]
     fn quoter_signers_are_never_the_vault_authority() {
         let (velocity_signer, _) =

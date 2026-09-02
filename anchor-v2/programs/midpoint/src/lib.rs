@@ -19,10 +19,11 @@
 //! Two authorities are held per instance and neither derives from the other:
 //! the maker's config key (`authority`) and the quoted velocity `User`'s
 //! wallet (`user_authority`, which signs creation and seeds the PDA). Nothing
-//! *trust*-bearing is configured locally: the attested-flow gate reads
-//! velocity's live `State.hot_flow_authority` on every quote (see
-//! [`velocity`]), so rotating a compromised flow key is one velocity admin
-//! call, not a per-maker migration.
+//! *trust*-bearing is configured locally: the protected-flow gate reads
+//! `taker_served_window` off the quoter wire — velocity's assertion that the
+//! flow served the swift hold or the book's activation delay. Velocity reads
+//! the flow co-signature once, at its own boundary, so rotating a compromised
+//! flow key is one velocity admin call, not a per-maker migration.
 //!
 //! Discriminators stay 8-byte anchor defaults: the velocity quoter registry
 //! stores `[u8; 8]` discriminators.
@@ -33,9 +34,7 @@ pub mod emit;
 pub mod error;
 pub mod events;
 pub mod instructions;
-pub mod introspection;
 pub mod state;
-pub mod velocity;
 
 // Re-exported so integration tests can reach wincode/BORSH_CONFIG through the
 // crate without their own git dep.

@@ -318,7 +318,7 @@ export class OrderBitFlag {
 	static readonly NewTriggerReduceOnly = 8;
 	static readonly HasBuilder = 16;
 	static readonly IsIsolatedPosition = 32;
-	/** the slot is a shadow of a trigger-limit resting on the CLOB (`triggerClobOrder`); it keeps the trigger params + the CLOB order ref in the auction price fields and deliberately reads as untriggered, so DLOB matching ignores it */
+	/** the slot is a shadow of a trigger-limit resting on the CLOB (`triggerLimitOrderV1`); it keeps the trigger params + the CLOB order ref in the auction price fields and deliberately reads as untriggered, so DLOB matching ignores it */
 	static readonly PlacedOnClob = 64;
 	/** set when an evicted placed trigger re-arms: it may not re-fire until a crank observes the price back on the non-trigger side (edge-triggering) */
 	static readonly AwaitingTriggerRecross = 128;
@@ -577,7 +577,7 @@ export type CrankPaymentsV0 = {
 	cross: number;
 	/** `crankTakerOriginCross` */
 	takerOriginCross: number;
-	/** `triggerOrder` / `triggerClobOrder` in program-keeper mode */
+	/** `triggerOrder` / `triggerLimitOrderV1` in program-keeper mode */
 	trigger: number;
 	/** `liquidatePerpWithFill` in program-keeper mode */
 	liquidation: number;
@@ -634,6 +634,18 @@ export class ClobSide {
  * Returned by `placeAndMakePerpOrderV1` and carried on every row of the user-orders
  * feed, so a client cancelling or modifying an order never has to find one.
  */
+/**
+ * Swift's detached flow attestation: the flow authority's signature over an
+ * order's own signature plus an expiry (unix seconds). Passed to
+ * `placeSignedMsgTakerOrder`; the program verifies it in-program, so a fill on
+ * a book with a speed bump can take synchronously without the flow authority
+ * signing the keeper's transaction.
+ */
+export type FlowAttestationV0 = {
+	signature: number[];
+	expiryTs: BN;
+};
+
 export type ClobOrderRefV0 = {
 	nodeIndex: number;
 	orderId: BN;
@@ -2239,7 +2251,7 @@ export type OrderParams = {
 	/** PRICE_PRECISION (1e6); only used for trigger orders */
 	triggerPrice: BN | null;
 	triggerCondition: OrderTriggerCondition;
-	/** signed offset from the oracle price, PRICE_PRECISION (1e6); when set, the order's effective limit price tracks the oracle */
+	/** signed offset from the oracle price, PRICE_PRECISION (1e6); when set, the order's effective limit price tracks the oracle. Only `ORACLE` orders accept it — the program refuses a `LIMIT` order with an offset (`InvalidOrderOracleOffset`) */
 	oraclePriceOffset: BN | null;
 	/** wall clock 400ms units (one slot at the 400ms baseline); only used for market/oracle orders */
 	auctionDuration: number | null;
@@ -3282,5 +3294,11 @@ export type QuoterV0Account = {
 	 * not reset `isApproved`. Custom entries only.
 	 */
 	maxOracleDeviationBps: number;
+	/** the book's tick size, mirrored from `order_rules_v0` by the attach; zero for non-CLOB entries and unattached books */
+	bookTickSize: BN;
+	/** the book's minimum order size, mirrored by the attach */
+	bookMinOrderSize: BN;
+	/** the book's default activation delay in slots, mirrored by the attach; nonzero marks the book speed-bumped for unattested flow */
+	bookDefaultActivationDelaySlots: number;
 	padding: number[];
 };

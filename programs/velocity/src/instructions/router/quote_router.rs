@@ -76,6 +76,14 @@ pub struct QuoteRouterArgs {
     /// `QuoterV0` entries at the head of the quoter section of
     /// `remaining_accounts`; the rest of that section is their CPI accounts.
     pub quoter_count: u8,
+    /// Whether the flow this view prices for served a protection window —
+    /// the swift hold, or the book's activation delay. What the real route
+    /// asks: a bumped book quotes no depth to unprotected flow, and a
+    /// protected-flow quoter (the midpoint's `require_attested_flow`)
+    /// refuses it, so a view for unprotected flow must show the same books
+    /// the fill would get. Swift and the book publisher price protected
+    /// flow and pass `true`.
+    pub taker_served_window: bool,
     /// Quote the vAMM into the buffer as well.
     ///
     /// A market with more quoters than one view can carry is read in several
@@ -143,7 +151,6 @@ pub fn handle_quote_router<'c: 'info, 'info>(
     // A book is read straight out of the quoter's response account and copied
     // once, into the buffer. Nothing holds a second copy: velocity's heap is
     // 32 KB and never reclaims, and this runs once per quoter.
-    let clob_authority = crate::signer::find_clob_authority();
     // One set of CPI buffers for every entry this view quotes.
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
     for loader in &quoters {
@@ -168,8 +175,16 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                 continue;
             }
             let entry_key = loader.key();
-            let (quoter_signer, quoter_signer_nonce) =
-                quoter.cpi_signer(&entry_key, clob_authority);
+            // Maker priority, as the fill's route applies it: a book with a
+            // speed bump quotes no depth to unprotected flow, so this view
+            // must not show it any.
+            if quoter.quoter_type == QuoterType::Clob
+                && !args.taker_served_window
+                && quoter.book_default_activation_delay_slots > 0
+            {
+                continue;
+            }
+            let (quoter_signer, quoter_signer_nonce) = quoter.cpi_signer(&entry_key);
             let located = quoter
                 .quote_in_place(
                     market_index,
@@ -189,6 +204,7 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                         // caller reads this view to decide what to route,
                         // which needs the depth a bound would cut.
                         limit_price: 0,
+                        taker_served_window: args.taker_served_window,
                     },
                     &entry_key,
                     &quoter_signer,

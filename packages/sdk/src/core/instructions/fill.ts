@@ -21,7 +21,7 @@ import type { VelocityProgram } from '../../config';
  * @param args.userStats - the taker's `UserStats` PDA.
  * @param args.authority - signer that must own or be a registered delegate of `filler`.
  * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for the order's market, followed by any maker/referrer `(User, UserStats)` account pairs, followed by the taker's `RevenueShareEscrow` account if builder codes are enabled protocol-wide, and, when that taker is referred, the referrer's readonly `UserStats` after the escrow, followed by the quoter section (each `QuoterV0` entry plus the accounts its CPI resolves against).
- * @param args.clobAccounts - pass the market's CLOB accounts to use `fillPerpOrderV1`, whose restable remainder of the filled order migrates to the book instead of resting in `User.orders`. `crankConditions` is optional (it only maintains the crank wake hint); `marketIndex` is required by the conditions PDA seed and is checked against the order's own market on-chain.
+ * @param args.clobAccounts - pass the market's CLOB accounts to use `fillLegacyDlobOrder`, whose restable remainder of the filled order migrates to the book instead of resting in `User.orders`. `marketIndex` is checked against the order's own market on-chain.
  * @param args.signedRoute - must be empty. A DLOB order carries no route: only a signed message names one, and such an order routes at placement and rests any remainder on the market's CLOB, so what a route binds is the fill of that remainder rather than this call. A non-empty claim is rejected on-chain.
  * @returns the unsigned `fillPerpOrder` `TransactionInstruction`.
  */
@@ -42,14 +42,10 @@ export async function buildFillPerpOrderInstruction(args: {
 		clobMarket: PublicKey;
 		clobProgram: PublicKey;
 		clobAuthority: PublicKey;
-		crankConditions?: PublicKey;
 	};
 }): Promise<TransactionInstruction> {
 	if (args.clobAccounts) {
-		// An omitted `Option` account is encoded as the program id, which the
-		// program decodes as `None`.
-		const omitted = args.program.programId;
-		return await (args.program.instruction as any).fillPerpOrderV1(
+		return await (args.program.instruction as any).fillLegacyDlobOrder(
 			args.orderId,
 			null,
 			args.signedRoute ?? [],
@@ -66,7 +62,6 @@ export async function buildFillPerpOrderInstruction(args: {
 					clobMarket: args.clobAccounts.clobMarket,
 					clobProgram: args.clobAccounts.clobProgram,
 					clobAuthority: args.clobAccounts.clobAuthority,
-					crankConditions: args.clobAccounts.crankConditions ?? omitted,
 					// Always named. A fill that leaves a book short of an owner
 					// is refused unless velocity can count the transaction's
 					// accounts, and only this sysvar tells it. It costs one

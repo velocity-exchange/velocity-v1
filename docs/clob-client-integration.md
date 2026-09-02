@@ -5,7 +5,8 @@ behind these choices is [`clob-client-surface.md`](./clob-client-surface.md), wh
 section lists what is not closed yet — read it before building on the feed. This is the working
 reference.
 
-The one thing to internalise: **a resting CLOB order has no `User.orders` slot.** `place_clob_order`
+The one thing to internalise: **a resting CLOB order has no `User.orders` slot.** Placement
+(`place_and_make_perp_order_v1`, or a taker route resting its remainder)
 reserves the account's open-order aggregates and the order itself lives on the book. So
 `user.getOpenOrders()` does not return it, and never will. Everything below follows from that.
 

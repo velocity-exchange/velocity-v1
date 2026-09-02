@@ -188,7 +188,6 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
                 },
             ),
     )?;
-    let (clob_authority, clob_authority_nonce) = crate::signer::find_clob_authority();
     // One set of CPI buffers for the whole crank, as the router fill uses.
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
     // A crossed taker remainder is not this crank's to touch. The book's own
@@ -213,6 +212,15 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
     // Refusing rather than skipping, because the caller has a correct
     // instruction to send instead: `crank_taker_origin_cross` resolves this
     // book and pays the taker the difference.
+    // Whether every book order this cross could consume has measurably
+    // rested (`served_window`). The cranks cannot vouch by construction: on
+    // a zero-delay book, place-then-crank is two back-to-back transactions,
+    // and fresh informed flow would wear the protected flag into a quoter
+    // that only serves protected flow. Measured over the consumable depth —
+    // the first `size` base of each side — on the same L3 walk the guard
+    // below already runs, so a fresh order beyond what the cross could
+    // touch defers nothing.
+    let mut flow_served = true;
     for clob in quoted
         .iter()
         .filter(|quoted| quoted.quoter_type == QuoterType::Clob)
@@ -230,11 +238,20 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
             &entry,
             &clob.entry.key(),
             market_index,
-            clob_authority,
-            clob_authority_nonce,
             &sides,
             &mut cpi_scratch,
         )?;
+        for side in [&bids, &asks] {
+            let mut depth = 0u64;
+            for order in side {
+                if depth >= size {
+                    break;
+                }
+                depth = depth.saturating_add(order.base_asset_amount);
+                flow_served = flow_served
+                    && crate::math::crosses::served_window(order.placed_slot, clock.slot);
+            }
+        }
         validate!(
             !strips_taker_origin_gate(&bids, &asks, size),
             ErrorCode::CrossedTakerRemainderPending,
@@ -249,10 +266,11 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         quoted: &quoted,
         market_index,
         accounts: tail,
-        clob_authority,
-        clob_authority_nonce,
         users: &users,
         taker: taker_ref,
+        // Not by construction: measured rest over the consumable depth,
+        // computed on the guard walk above.
+        taker_served_window: flow_served,
         slot: clock.slot,
         now: clock.unix_timestamp,
     };
@@ -462,11 +480,10 @@ fn clob_rows<'info>(
     entry: &Pubkey,
     market_index: u16,
     direction: crate::state::prop_amm::Direction,
-    clob_authority: &Pubkey,
-    clob_authority_nonce: u8,
     accounts: &[AccountInfo<'info>],
     scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
 ) -> Result<Vec<crate::state::prop_amm::L3RowV0>> {
+    let (cpi_signer, cpi_signer_nonce) = quoter.cpi_signer(entry);
     let located = quoter.quote_l3(
         market_index,
         crate::state::prop_amm::L3ArgsV0 {
@@ -478,8 +495,8 @@ fn clob_rows<'info>(
             max_rows: CROSS_ROWS_PER_SIDE,
         },
         entry,
-        clob_authority,
-        clob_authority_nonce,
+        &cpi_signer,
+        cpi_signer_nonce,
         accounts,
         scratch,
     )?;
@@ -531,8 +548,6 @@ fn book_sides<'info>(
     quoter: &QuoterV0,
     entry: &Pubkey,
     market_index: u16,
-    clob_authority: Pubkey,
-    clob_authority_nonce: u8,
     accounts: &[AccountInfo<'info>],
     scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
 ) -> Result<(
@@ -550,8 +565,8 @@ fn book_sides<'info>(
                 max_rows: CROSS_ROWS_PER_SIDE,
             },
             entry,
-            &clob_authority,
-            clob_authority_nonce,
+            &quoter.cpi_signer(entry).0,
+            quoter.cpi_signer(entry).1,
             accounts,
             scratch,
         )?;
@@ -674,7 +689,6 @@ fn find_clob_cross(ctx: &Context<ResolveClobCrank>) -> Result<ClobCross> {
         return Ok(cross_prefix(&[], &[]));
     }
     let market_index = ctx.accounts.crank_conditions.load()?.market_index;
-    let (clob_authority, clob_authority_nonce) = crate::signer::find_clob_authority();
     let clob_entry_key = ctx.accounts.quoter.key();
     let accounts = [
         ctx.accounts.clob_market.to_account_info(),
@@ -689,8 +703,6 @@ fn find_clob_cross(ctx: &Context<ResolveClobCrank>) -> Result<ClobCross> {
         &clob_entry_key,
         market_index,
         crate::state::prop_amm::Direction::Long,
-        &clob_authority,
-        clob_authority_nonce,
         &accounts,
         &mut cpi_scratch,
     )?;
@@ -699,8 +711,6 @@ fn find_clob_cross(ctx: &Context<ResolveClobCrank>) -> Result<ClobCross> {
         &clob_entry_key,
         market_index,
         crate::state::prop_amm::Direction::Short,
-        &clob_authority,
-        clob_authority_nonce,
         &accounts,
         &mut cpi_scratch,
     )?;
@@ -761,8 +771,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
         let clob_authority = crate::signer::find_clob_authority();
         let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
         let quoter_entry_key = ctx.accounts.quoter.key();
-        let (quoter_signer, quoter_signer_nonce) =
-            quoter.cpi_signer(&quoter_entry_key, clob_authority);
+        let (quoter_signer, quoter_signer_nonce) = quoter.cpi_signer(&quoter_entry_key);
         // The resolver's own tail, searched rather than indexed: it is a
         // handful of accounts and this reads a few of them.
         let accounts: Vec<AccountInfo<'info>> = ctx
@@ -794,6 +803,9 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
                         // neither side has a price to stop at until the other
                         // has been read.
                         limit_price: 0,
+                        // A crank's discovery read: what it stages settles only
+                        // orders that rested through placement.
+                        taker_served_window: true,
                     },
                     &quoter_entry_key,
                     &quoter_signer,
@@ -836,8 +848,6 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
                 &clob_entry_key,
                 market_index,
                 direction,
-                &clob_authority.0,
-                clob_authority.1,
                 &clob_accounts,
                 &mut cpi_scratch,
             )

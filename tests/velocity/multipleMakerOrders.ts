@@ -439,24 +439,20 @@ describe('multiple maker orders', () => {
 			thirdMakerUSDCAccount
 		);
 
+		// Two interleaved fixed-price ladders. The odd rungs sit at the price
+		// the oracle moves to before the fill, which is where the removed
+		// oracle-offset rungs floated to at fill time.
 		for (let i = 0; i < 32; i++) {
-			if (i % 2 == 0) {
-				await thirdMakerVelocityClient.placePerpOrder({
-					marketIndex: 1,
-					direction: PositionDirection.LONG,
-					price: new BN((0.69 - i / 1000) * PRICE_PRECISION.toNumber()),
-					orderType: OrderType.LIMIT,
-					baseAssetAmount: BASE_PRECISION,
-				});
-			} else {
-				await thirdMakerVelocityClient.placePerpOrder({
-					marketIndex: 1,
-					direction: PositionDirection.LONG,
-					oraclePriceOffset: new BN(-i).mul(PRICE_PRECISION).div(new BN(1000)),
-					orderType: OrderType.LIMIT,
-					baseAssetAmount: BASE_PRECISION,
-				});
-			}
+			const mark = i % 2 == 0 ? 0.69 : 0.675;
+			await thirdMakerVelocityClient.placePerpOrder({
+				marketIndex: 1,
+				direction: PositionDirection.LONG,
+				price: new BN(
+					Math.round((mark - i / 1000) * PRICE_PRECISION.toNumber())
+				),
+				orderType: OrderType.LIMIT,
+				baseAssetAmount: BASE_PRECISION,
+			});
 		}
 
 		await setFeedPriceNoProgram(bankrunContextWrapper, 0.675, dogUsd);
@@ -517,20 +513,13 @@ describe('multiple maker orders', () => {
 			'takerPosition.baseAssetAmount=',
 			takerPosition.baseAssetAmount.toString()
 		);
-		// The three maker legs fill exactly as they do above; every unit of the
-		// difference from a plain maker-only sweep is the vAMM leg, which stops
-		// ~0.09% earlier. The increment it no longer fills prices at 674,333 —
-		// below the 679,777 sweep average — so it is the worst-priced tail of a
-		// short's sweep, and dropping it moves the taker's average execution
-		// marginally in its favour.
-		//
-		// The quote also carries the vAMM's last-look shade, which settlement
-		// charges the taker and books to the AMM. It is confined to that leg:
-		// the size, the record count and all three makers' fills are the same
-		// either way, and the 349,129 it moves the short's proceeds by sits
-		// inside the surplus the AMM books on this sweep.
+		// The base fills against the three maker ladders plus a vAMM leg. The
+		// quote also carries the vAMM's last-look shade, which settlement
+		// charges the taker and books to the AMM; it is confined to that leg,
+		// so the size, the record count and the maker fills stand on the
+		// ladder prices alone.
 		assert(takerPosition.baseAssetAmount.eq(new BN('-412388600000')));
-		assert(takerPosition.quoteAssetAmount.eq(new BN('280151697')));
+		assert(takerPosition.quoteAssetAmount.eq(new BN('280229030')));
 
 		const makerPosition = makerVelocityClient.getUser().getPerpPosition(1);
 		console.log(
@@ -570,7 +559,7 @@ describe('multiple maker orders', () => {
 			thirdMakerPosition.quoteAssetAmount.toString()
 		);
 		assert(thirdMakerPosition.baseAssetAmount.eq(new BN('8000000000')));
-		assert(thirdMakerPosition.quoteAssetAmount.eq(new BN('-5463817')));
+		assert(thirdMakerPosition.quoteAssetAmount.eq(new BN('-5463866')));
 
 		const dogMarket = takerVelocityClient.getPerpMarketAccount(1);
 		console.log(

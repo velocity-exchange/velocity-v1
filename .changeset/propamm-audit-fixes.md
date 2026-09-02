@@ -47,7 +47,7 @@ parameter, and `RouterReserve` is removed.
 
 What replaces it is an obligation on whoever built the transaction. When a book
 withholds depth and the taker did not sign, `fill_perp_order` and
-`fill_perp_order_v1` require that the transaction was full and that every loaded
+`fill_legacy_dlob_order` require that the transaction was full and that every loaded
 user did something. Three new errors say which rule failed:
 `FillerOmittedReachableMaker` (6395), `FillerPaddedTheUserSet` (6396), and
 `FillerObligationUncountable` (6397).

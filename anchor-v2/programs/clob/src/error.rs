@@ -18,7 +18,7 @@ pub enum ClobError {
     OrderUserMismatch,
     #[msg("Math overflow")]
     MathError,
-    #[msg("Activation delay outside [default, max_activation_delay_slots]")]
+    #[msg("Activation delay above max_activation_delay_slots")]
     InvalidActivationDelay,
     #[msg("max_ts is in the past")]
     MaxTsInPast,

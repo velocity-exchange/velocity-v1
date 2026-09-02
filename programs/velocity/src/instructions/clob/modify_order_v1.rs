@@ -2,7 +2,7 @@
 //!
 //! `modify_order` only ever touched `User.orders`, so a maker whose order
 //! lives on the book had no modify route at all: they had to send
-//! `cancel_order_v1` and `place_clob_order` as two instructions, which
+//! `cancel_order_v1` and `place_and_make_perp_order_v1` as two instructions, which
 //! surrenders queue position between them and can leave the maker flat if the
 //! second one fails.
 //!
@@ -14,7 +14,8 @@
 //! same-size reprice never has to pass margin for double the exposure the way
 //! place-then-cancel would.
 //!
-//! Semantics deliberately mirror `place_clob_order` for the replacement leg
+//! Semantics deliberately mirror `place_and_make_perp_order_v1` for the
+//! replacement leg
 //! (same margin gate, same activation-delay attestation rule, same wake
 //! hints) and `cancel_order_v1` for the removal leg (not gated on the
 //! quoter entry's active/approved flags — but the *replacement* is, so a
@@ -41,7 +42,6 @@ use {
         load_mut,
         math::{margin::meets_place_order_margin_requirement, orders::is_order_position_reducing},
         msg,
-        signer::CLOB_AUTHORITY_SEED,
         state::{
             market_status::MarketStatus,
             perp_market_map::MarketSet,
@@ -81,12 +81,18 @@ pub struct ModifyOrderV1<'info> {
     /// is set to. Its own key, distinct from the per-entry signer a
     /// third-party quoter is handed: signer privilege is inherited by a
     /// callee, and this one may place and cancel on any book, for any user.
-    #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
+    #[account(address = crate::signer::CLOB_AUTHORITY)]
     pub clob_authority: UncheckedAccount<'info>,
-    /// CHECK: the instructions sysvar, locked by address. Required only for a
-    /// faster-than-default activation delay on the replacement.
-    #[account(address = solana_program::sysvar::instructions::ID)]
-    pub instructions_sysvar: Option<UncheckedAccount<'info>>,
+    /// The flow authority, signing this transaction as a named account.
+    /// Required only for a faster-than-default activation delay on the
+    /// replacement — presence is the attestation. The zero key cannot sign,
+    /// so an unset flow authority admits nobody.
+    #[account(
+        constraint = flow_authority.key()
+            == state.load()?.hot_key(crate::state::state::HotRole::FlowAuthority)
+            @ crate::error::ErrorCode::UnattestedFastActivation
+    )]
+    pub flow_authority: Option<Signer<'info>>,
 }
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
@@ -104,10 +110,10 @@ pub struct ModifyOrderV1Params {
     /// cancel — the CLOB's removal response doesn't carry it). `Some(0)` makes
     /// the replacement good-till-cancelled.
     pub max_ts: Option<i64>,
-    /// Same rule as `place_clob_order`: `None` takes the book's default speed
+    /// Same rule as `place_and_make_perp_order_v1`: `None` takes the book's default speed
     /// bump, anything below it needs the flow-authority attestation.
     pub activation_delay_slots: Option<u32>,
-    /// Same rule as `place_clob_order`: refuse the replacement rather than
+    /// Same rule as `place_and_make_perp_order_v1`: refuse the replacement rather than
     /// rest it crossed. The original is already off the book when this fires,
     /// so a refused replacement leaves the maker with no order — which is what
     /// a maker repricing into a crossed book is asking for.
@@ -153,7 +159,6 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
             &ctx.accounts.clob_market,
             &ctx.accounts.clob_program,
             &ctx.accounts.clob_authority,
-            ctx.bumps.clob_authority,
         )?
     };
     validate!(
@@ -168,23 +173,18 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
     // The attestation rule is the replacement's, not the original's: a modify
     // that asks for a faster-than-default bump is a new fast placement.
     if let Some(requested) = params.activation_delay_slots {
-        let default_delay = clob.reader().order_rules()?.default_activation_delay_slots;
+        // The attach-written mirror, not a CPI (see `QuoterV0::book_tick_size`).
+        let default_delay = ctx
+            .accounts
+            .quoter
+            .load()?
+            .book_default_activation_delay_slots;
         if requested < default_delay {
-            let flow_authority = state.hot_key(crate::state::state::HotRole::FlowAuthority);
             validate!(
-                flow_authority != Pubkey::default(),
+                ctx.accounts.flow_authority.is_some(),
                 ErrorCode::UnattestedFastActivation,
-                "no flow authority is configured; fast activation is disabled"
-            )?;
-            let sysvar = ctx.accounts.instructions_sysvar.as_ref().ok_or_else(|| {
-                msg!("fast activation needs the instructions sysvar for attestation");
-                ErrorCode::UnattestedFastActivation
-            })?;
-            validate!(
-                crate::instructions::optional_accounts::tx_co_signed_by(sysvar, &flow_authority)?,
-                ErrorCode::UnattestedFastActivation,
-                "activation delay {} is below the default {} and the transaction is not \
-                 co-signed by the flow authority",
+                "activation delay {} is below the default {} and the transaction is \
+                 not signed by the flow authority",
                 requested,
                 default_delay
             )?;

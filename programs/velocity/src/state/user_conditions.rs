@@ -43,7 +43,7 @@ use {
 #[repr(C)]
 pub struct TriggerSlotMetaV0 {
     /// The market's canonical CLOB entry / book / program — set when this
-    /// slot's executor is `trigger_clob_order`, zeroed for `trigger_order`.
+    /// slot's executor is `trigger_limit_order_v1`, zeroed for `trigger_order`.
     pub quoter: Pubkey,
     pub clob_market: Pubkey,
     pub clob_program: Pubkey,

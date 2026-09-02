@@ -143,8 +143,18 @@ pub struct QuoteInputs<'a> {
     /// other entry signs as a key derived from its own registry entry
     /// (`QuoterV0::cpi_signer`), so no quoter ever holds a signature that
     /// authenticates at a book or at another quoter.
-    pub clob_authority: Pubkey,
-    pub clob_authority_nonce: u8,
+
+    /// Whether the taker's flow served a protection window: the swift hold
+    /// (the flow authority signed a swift-built transaction as a named
+    /// account, or signed a detached attestation over the order's own
+    /// signature for a keeper-built fill), or the book's
+    /// activation delay (a protocol crank fills an order that rested
+    /// through it, so the cranks pass `true`). Forwarded to every quoter on
+    /// the wire — a quoter that only serves protected flow trusts this the
+    /// way it trusts `users` and `caps`. It also drives the maker-priority
+    /// skip in [`QuotedRoute::assemble`]: a book with a nonzero default
+    /// activation delay quotes no depth when this is false.
+    pub taker_served_window: bool,
 }
 
 impl<'info> QuotedRoute<'info> {
@@ -254,10 +264,24 @@ impl<'info> QuotedRoute<'info> {
                     );
                     continue;
                 }
-                let (cpi_signer, cpi_signer_nonce) = quoter.cpi_signer(
-                    &entry_key,
-                    (inputs.clob_authority, inputs.clob_authority_nonce),
-                );
+                // Maker priority: a book with a speed bump quotes no depth
+                // to an unattested taker. The entry stays carried — the
+                // baseline is presence, and the rest leg still uses it — but
+                // it offers nothing to execute, so unattested aggression
+                // rests through the activation window, where a maker can
+                // reprice or cross it first. Skipped like a dead entry
+                // rather than failing, so the fill's other sources stand.
+                if quoter.quoter_type == QuoterType::Clob
+                    && !inputs.taker_served_window
+                    && quoter.book_default_activation_delay_slots > 0
+                {
+                    msg!(
+                        "book {} runs a speed bump; no depth for an unattested taker",
+                        entry_key
+                    );
+                    continue;
+                }
+                let (cpi_signer, cpi_signer_nonce) = quoter.cpi_signer(&entry_key);
                 let levels = quoter.quote(
                     inputs.market_index,
                     QuoteArgsV0 {
@@ -268,6 +292,7 @@ impl<'info> QuotedRoute<'info> {
                         users: inputs.users,
                         taker: Some(inputs.taker),
                         limit_price: inputs.limit_price,
+                        taker_served_window: inputs.taker_served_window,
                     },
                     &entry_key,
                     &cpi_signer,
@@ -419,10 +444,9 @@ impl<'info> QuotedRoute<'info> {
             quoted: &self.quoted,
             market_index: inputs.market_index,
             accounts: self.accounts,
-            clob_authority: inputs.clob_authority,
-            clob_authority_nonce: inputs.clob_authority_nonce,
             users: inputs.users,
             taker: inputs.taker,
+            taker_served_window: inputs.taker_served_window,
             slot,
             now,
         }

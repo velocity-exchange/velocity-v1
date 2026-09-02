@@ -18,9 +18,7 @@ use {
             try_place_remainder_on_clob,
         },
         load, load_mut,
-        signer::{find_clob_authority, CLOB_AUTHORITY_SEED},
         state::{
-            clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             order_params::{OrderParams, PlaceOrderOptions, PostOnlyParam},
             perp_market_map::{get_writable_perp_market_set, MarketSet},
             prop_amm::QuoterV0,
@@ -33,7 +31,6 @@ use {
 };
 
 #[derive(Accounts)]
-#[instruction(params: OrderParams)]
 pub struct PlaceAndMakeV1<'info> {
     pub state: AccountLoader<'info, State>,
     #[account(
@@ -60,25 +57,18 @@ pub struct PlaceAndMakeV1<'info> {
     pub clob_program: UncheckedAccount<'info>,
     /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
     /// is set to, and nothing a third-party quoter is ever handed.
-    #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
+    #[account(address = crate::signer::CLOB_AUTHORITY)]
     pub clob_authority: UncheckedAccount<'info>,
-    /// Wake-hint host for the rested maker. Optional like every other CLOB
-    /// placement path: a market whose conditions were never initialized must
-    /// still be tradeable, and a missed hint costs crank latency, not liveness.
+    /// The flow authority, signing this transaction as a named account.
+    /// Required only for a faster-than-default activation delay — presence
+    /// is the attestation. The zero key cannot sign, so an unset flow
+    /// authority admits nobody.
     #[account(
-        mut,
-        seeds = [
-            CLOB_CRANK_CONDITIONS_PDA_SEED,
-            params.market_index.to_le_bytes().as_ref(),
-        ],
-        bump
+        constraint = flow_authority.key()
+            == state.load()?.hot_key(crate::state::state::HotRole::FlowAuthority)
+            @ crate::error::ErrorCode::UnattestedFastActivation
     )]
-    pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
-    /// CHECK: the instructions sysvar, locked by address. Required only for a
-    /// faster-than-default activation delay: the handler introspects it for the
-    /// flow-authority co-signer (the attestation).
-    #[account(address = ::solana_program::sysvar::instructions::ID)]
-    pub instructions_sysvar: Option<UncheckedAccount<'info>>,
+    pub flow_authority: Option<Signer<'info>>,
 }
 
 #[access_control(
@@ -125,7 +115,19 @@ pub fn handle_place_and_make_perp_order_v1<'c: 'info, 'info>(
     // the order's own reservation on the book.
     let placed = {
         let mut user = load_mut!(ctx.accounts.user)?;
-        controller::orders::place_ephemeral_perp_order(
+        // Sweep expired slot orders first: their reservations release, which
+        // can be what lets the new order pass the margin gate. The create
+        // never touches `user.orders`, so the sweep is the caller's.
+        controller::orders::expire_orders(
+            &mut user,
+            &user_key,
+            &perp_market_map,
+            &spot_market_map,
+            &mut oracle_map,
+            clock.unix_timestamp,
+            clock.slot,
+        )?;
+        controller::orders::create_ephemeral_perp_order(
             &state,
             &mut user,
             user_key,
@@ -169,21 +171,11 @@ pub fn handle_place_and_make_perp_order_v1<'c: 'info, 'info>(
         .get_base_asset_amount_unfilled(Some(position_base))
         .unwrap_or(order.base_asset_amount);
 
-    let (_, clob_authority_nonce) = find_clob_authority();
     // A below-default activation delay is reserved for attested flow.
     crate::instructions::attest_activation_delay(
-        &state,
         &ctx.accounts.quoter,
-        &ctx.accounts.clob_market.to_account_info(),
-        &ctx.accounts.clob_program.to_account_info(),
-        &ctx.accounts.clob_authority.to_account_info(),
-        clob_authority_nonce,
-        params.market_index,
         activation_delay_slots,
-        ctx.accounts
-            .instructions_sysvar
-            .as_ref()
-            .map(|sysvar| sysvar.as_ref()),
+        ctx.accounts.flow_authority.is_some(),
     )?;
     try_place_remainder_on_clob(
         &ctx.accounts.user,
@@ -191,7 +183,6 @@ pub fn handle_place_and_make_perp_order_v1<'c: 'info, 'info>(
         &ctx.accounts.clob_market.to_account_info(),
         &ctx.accounts.clob_program.to_account_info(),
         &ctx.accounts.clob_authority.to_account_info(),
-        clob_authority_nonce,
         &perp_market_map,
         &spot_market_map,
         &mut oracle_map,

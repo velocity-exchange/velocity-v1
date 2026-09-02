@@ -35,8 +35,9 @@ pub struct CpiQuoterExecutor<'a, 'info> {
     /// The CLOB place authority and its bump — what a `Clob` entry's CPI legs
     /// are signed as. Every other entry signs as a key derived from its own
     /// registry entry (`QuoterV0::cpi_signer`).
-    pub clob_authority: Pubkey,
-    pub clob_authority_nonce: u8,
+    /// Forwarded on every quote and execute leg — see
+    /// [`crate::instructions::QuoteInputs::taker_served_window`].
+    pub taker_served_window: bool,
     /// The loaded-user set forwarded on every execute (quoters must not fill
     /// anyone else), in the wire's derivable form.
     pub users: &'a [ClobUserRefV0],
@@ -132,10 +133,11 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                         // The bound is the fill's own, applied by the caller
                         // against the ladder that comes back.
                         limit_price: 0,
+                        taker_served_window: self.taker_served_window,
                     },
                     &loader.key(),
-                    &self.clob_authority,
-                    self.clob_authority_nonce,
+                    &crate::signer::CLOB_AUTHORITY,
+                    crate::signer::CLOB_AUTHORITY_NONCE,
                     self.accounts,
                     self.scratch,
                     &mut levels,
@@ -196,19 +198,13 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
             );
             ErrorCode::DefaultError
         })?;
-        let signer = find_account(self.accounts, &self.clob_authority).ok_or_else(|| {
-            msg!("clob place authority missing from the account map");
-            ErrorCode::DefaultError
-        })?;
-        let clob = ClobMarket::from_quoter(
-            &quoter,
-            self.market_index,
-            book,
-            program,
-            signer,
-            self.clob_authority_nonce,
-        )
-        .map_err(|_| ErrorCode::DefaultError)?;
+        let signer =
+            find_account(self.accounts, &crate::signer::CLOB_AUTHORITY).ok_or_else(|| {
+                msg!("clob place authority missing from the account map");
+                ErrorCode::DefaultError
+            })?;
+        let clob = ClobMarket::from_quoter(&quoter, self.market_index, book, program, signer)
+            .map_err(|_| ErrorCode::DefaultError)?;
         clob.cancel_all(ClobCancelAllArgsV0 {
             user,
             sides,
@@ -240,8 +236,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
             ErrorCode::DefaultError
         })?;
         let entry_key = loader.key();
-        let (cpi_signer, cpi_signer_nonce) =
-            quoter.cpi_signer(&entry_key, (self.clob_authority, self.clob_authority_nonce));
+        let (cpi_signer, cpi_signer_nonce) = quoter.cpi_signer(&entry_key);
         quoter
             .execute(
                 self.market_index,
@@ -252,6 +247,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                     size,
                     users: self.users,
                     taker: Some(self.taker),
+                    taker_served_window: self.taker_served_window,
                 },
                 &entry_key,
                 &cpi_signer,

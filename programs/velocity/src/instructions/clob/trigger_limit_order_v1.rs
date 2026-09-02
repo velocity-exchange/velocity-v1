@@ -38,9 +38,9 @@
 //! that window; liquidation force-cancel stays exempt, and `max_ts` still
 //! bounds its life.
 //!
-//! Stop-markets never come here: a triggered stop-market becomes plain
-//! taker flow through `trigger_order` and takes the CLOB speed bump like
-//! any unattested taker.
+//! Stop-markets never come here: `trigger_market_order_v1` fires them,
+//! fills them through the router, and rests only the remainder. A fired
+//! market order fills first; a fired limit rests whole.
 
 use {
     crate::{
@@ -68,7 +68,6 @@ use {
             orders::{is_oracle_too_divergent_with_twap_5min, order_satisfies_trigger_condition},
         },
         msg,
-        signer::CLOB_AUTHORITY_SEED,
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             events::OrderActionExplanation,
@@ -86,7 +85,7 @@ use {
 
 #[derive(Accounts)]
 #[instruction(market_index: u16)]
-pub struct TriggerClobOrder<'info> {
+pub struct TriggerLimitOrderV1<'info> {
     pub state: AccountLoader<'info, State>,
     /// CHECK: in signed-keeper mode this must sign for `filler`; in
     /// program-keeper mode (protocol `User` as filler, relay turners) it is
@@ -110,7 +109,7 @@ pub struct TriggerClobOrder<'info> {
     #[account(constraint = is_stats_for_user(&user, &user_stats)?)]
     pub user_stats: AccountLoader<'info, UserStats>,
     /// The market's CLOB registry entry — placement is only allowed on a
-    /// vetted book, same as a direct `place_clob_order`.
+    /// vetted book, same as a maker's own `place_and_make_perp_order_v1`.
     pub quoter: AccountLoader<'info, QuoterV0>,
     /// CHECK: validated against the quoter entry's registered execute
     /// accounts in the handler.
@@ -123,9 +122,9 @@ pub struct TriggerClobOrder<'info> {
     /// is set to. Its own key, distinct from the per-entry signer a
     /// third-party quoter is handed: signer privilege is inherited by a
     /// callee, and this one may place and cancel on any book, for any user.
-    #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
+    #[account(address = crate::signer::CLOB_AUTHORITY)]
     pub clob_authority: UncheckedAccount<'info>,
-    /// Expiry-hint host, same optional contract as `place_clob_order`.
+    /// Expiry-hint host, same optional contract as `place_and_make_perp_order_v1`.
     #[account(
         mut,
         seeds = [
@@ -153,8 +152,8 @@ pub struct TriggerClobOrder<'info> {
 #[access_control(
     fill_not_paused(&ctx.accounts.state)
 )]
-pub fn handle_trigger_clob_order<'c: 'info, 'info>(
-    ctx: Context<'info, TriggerClobOrder<'info>>,
+pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
+    ctx: Context<'info, TriggerLimitOrderV1<'info>>,
     market_index: u16,
     order_id: u32,
 ) -> Result<()> {
@@ -192,7 +191,6 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
             &ctx.accounts.clob_market,
             &ctx.accounts.clob_program,
             &ctx.accounts.clob_authority,
-            ctx.bumps.clob_authority,
         )?
     };
 
@@ -213,7 +211,8 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
         validate!(
             user.orders[order_index].order_type == OrderType::TriggerLimit,
             ErrorCode::OrderNotTriggerable,
-            "only trigger-limit orders place on the CLOB (stop-markets go through trigger_order)"
+            "only trigger-limit orders place on the CLOB (stop-markets go through \
+             trigger_market_order_v1)"
         )?;
         validate!(
             !user.orders[order_index].is_placed_on_clob(),
@@ -520,7 +519,7 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
         },
     )?;
 
-    super::crank_common::finish_trigger_crank(
+    super::helpers::crank_common::finish_trigger_crank(
         &ctx.accounts.state,
         &ctx.accounts.filler,
         &ctx.accounts.authority,
@@ -541,10 +540,10 @@ pub fn handle_trigger_clob_order<'c: 'info, 'info>(
     Ok(())
 }
 
-/// The relay resolver for `trigger_clob_order` (`Resolve<EndpointName>`):
+/// The relay resolver for `trigger_limit_order_v1` (`Resolve<EndpointName>`):
 /// simulation-only, staged from the user's synced trigger conditions.
 #[derive(Accounts)]
-pub struct ResolveTriggerClobOrder<'info> {
+pub struct ResolveTriggerLimitOrderV1<'info> {
     /// The shared staging account, index 0 by convention — a resolver's
     /// response pointer is interpreted against it.
     #[account(mut, seeds = [crate::state::relay_scratch::RELAY_SCRATCH_PDA_SEED], bump)]
@@ -559,20 +558,22 @@ pub struct ResolveTriggerClobOrder<'info> {
     pub perp_market: AccountLoader<'info, crate::state::perp_market::PerpMarket>,
 }
 
-pub fn handle_resolve_trigger_clob_order(ctx: Context<ResolveTriggerClobOrder>) -> Result<()> {
+pub fn handle_resolve_trigger_limit_order_v1(
+    ctx: Context<ResolveTriggerLimitOrderV1>,
+) -> Result<()> {
     crate::instructions::resolve_into(&ctx.accounts.scratch, || {
         let clock = Clock::get()?;
         let fired = {
             let conditions = ctx.accounts.trigger_conditions.load()?;
             let user = crate::load!(ctx.accounts.user)?;
             let market = ctx.accounts.perp_market.load()?;
-            super::crank_common::find_fired_trigger(
+            super::helpers::crank_common::find_fired_trigger(
                 &conditions,
                 &user,
                 &market,
                 &ctx.accounts.oracle,
                 clock.slot,
-                super::crank_common::TriggerResolverKind::ClobRest,
+                super::helpers::crank_common::TriggerResolverKind::ClobRest,
             )?
         };
         let Some(meta) = fired else {
@@ -583,7 +584,7 @@ pub fn handle_resolve_trigger_clob_order(ctx: Context<ResolveTriggerClobOrder>) 
         let user_stats =
             crate::state::pdas::user_stats(&crate::load!(ctx.accounts.user)?.authority);
         Ok(Some(
-            crate::staged_call!(TriggerClobOrder {
+            crate::staged_call!(TriggerLimitOrderV1 {
                 state: crate::state::pdas::state(),
                 authority: crate::state::pdas::keeper_placeholder(),
                 filler: protocol_user,

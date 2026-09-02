@@ -12,7 +12,7 @@ CLOB, because three things are missing on this side of the boundary.
 2. Velocity emits no record when an order is placed, cancelled, evicted or expired on the CLOB, so
    the order-history pipeline never sees it.
 3. Nothing serves a user their own resting orders. `User.orders` holds none of them —
-   `place_clob_order` reserves the aggregates and writes no slot.
+   placement reserves the aggregates and writes no slot.
 
 This document covers only velocity-v1. The client work, and the indexer work in infrastructure-v3,
 are out of scope.
@@ -29,7 +29,7 @@ A client gets a resting order the same way it gets a DLOB order today:
 
 ## W1 — Order identity
 
-Velocity mints the id. `place_clob_order` takes it from `User.next_order_id`, the same counter that
+Velocity mints the id. Placement takes it from `User.next_order_id`, the same counter that
 numbers DLOB orders, and passes it to the book.
 
 - `PlaceOrderArgsV0` gains `client_order_id: u32`.
@@ -59,8 +59,8 @@ Each record carries a synthesized `Order`: `order_id` = the client order id, `or
 
 | Instruction | Record |
 | --- | --- |
-| `place_clob_order`, `trigger_clob_order`, `modify_clob_order` | `OrderRecord` |
-| `cancel_clob_order`, `cancel_all_clob_orders` | `OrderActionRecord`, action Cancel |
+| `place_and_make_perp_order_v1`, `trigger_limit_order_v1`, `modify_order_v1` | `OrderRecord` |
+| `cancel_order_v1`, `cancel_orders_v1` | `OrderActionRecord`, action Cancel |
 | `crank_clob_evict` | `OrderActionRecord`, explanation `ClobOrderEvicted` |
 | `crank_clob_remove_expired` | `OrderActionRecord`, explanation `OrderExpired` |
 | `force_cancel_clob_orders` | `OrderActionRecord`, explanation `InsufficientFreeCollateral` |
@@ -147,8 +147,8 @@ public on-chain state, so the endpoint needs no auth.
 ## W4 — SDK surface
 
 - `placeClobOrder`, `cancelClobOrder`, `modifyClobOrder`, `cancelAllClobOrders` on
-  `VelocityClient`, each resolving `quoter`, `clobMarket`, `clobProgram`, `quoterSigner` and
-  `crankConditions` from `PerpMarket.clob_quoter` and the PDAs. A caller passes an order and a
+  `VelocityClient`, each resolving `quoter`, `clobMarket`, `clobProgram` and the CLOB authority
+  from `PerpMarket.clob_quoter` and the PDAs. A caller passes an order and a
   market, nothing else.
 - Cancel and modify take the order object from the feed, which already holds `nodeIndex`. Re-resolve
   once and retry on a stale-hint failure, because a fill can move a node between read and send.
@@ -168,7 +168,7 @@ on both legs, which is who pays the taker fees. A post-only order is never taker
 becomes the aggressor in a cross. `MUST_POST_ONLY` is satisfied by construction.
 
 What was missing is the placement ergonomic, and it ships as `reject_if_crossed` on
-`place_clob_order` and `modify_clob_order`: an order that would cross the opposite best is refused
+`place_and_make_perp_order_v1` and `modify_order_v1`: an order that would cross the opposite best is refused
 rather than rested crossed. Measured against the opposite best whatever its state — an order still
 inside its activation delay is resting liquidity a moment from now, and a caller asking not to cross
 does not want to cross that either.

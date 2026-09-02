@@ -37,6 +37,23 @@ use crate::state::prop_amm::{
 #[cfg(test)]
 mod tests;
 
+/// Slots an order must have rested before a crank may mark its flow as
+/// having served a protection window (`taker_served_window` on the quoter
+/// wire). The cranks cannot vouch by construction alone: on a book whose
+/// default activation delay is zero, "rested through placement" is a
+/// zero-length window, and a caller could place a crossing order and crank
+/// the cross in the next transaction — fresh informed flow wearing the
+/// protected flag. Measured age closes that: two slots (~800ms) is above
+/// the swift hold, so the crank path never vouches for less protection
+/// than the attested path does.
+pub const SERVED_WINDOW_MIN_SLOTS: u64 = 2;
+
+/// Whether an order placed at `placed_slot` has rested long enough that a
+/// crank may mark its flow as protected.
+pub fn served_window(placed_slot: u64, slot: u64) -> bool {
+    slot.saturating_sub(placed_slot) >= SERVED_WINDOW_MIN_SLOTS
+}
+
 /// One resting order, reduced to what matching needs.
 ///
 /// `order_id` doubles as rest time: a book hands out ids from a counter that

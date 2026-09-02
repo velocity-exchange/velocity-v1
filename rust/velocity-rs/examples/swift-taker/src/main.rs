@@ -4,7 +4,7 @@ use base64::Engine;
 use nanoid::nanoid;
 use reqwest::header;
 use velocity_rs::{
-    constants::{derive_clob_authority, derive_clob_crank_conditions},
+    constants::derive_clob_authority,
     program::state::prop_amm::QuoterV0,
     swift_order_subscriber::{SignedOrderInfo, SignedOrderType},
     types::{MarketType, OrderParams, OrderType, PositionDirection, SignedMsgOrderParamsMessage},
@@ -165,7 +165,7 @@ async fn swift_deposit_trade(
         clob_market: clob_entry.response_account,
         clob_program: clob_entry.program_id,
         clob_authority: derive_clob_authority(),
-        crank_conditions: Some(derive_clob_crank_conditions(perp_market_index)),
+        crank_conditions: None,
     };
 
     let unsigned_tx = TransactionBuilder::new(
@@ -177,7 +177,7 @@ async fn swift_deposit_trade(
     // .add_ix(additional_setup_ixs)
     .add_ix(create_ata_ix)
     .deposit(deposit_amount, deposit_market_index, None, None)
-    .place_swift_order(&signed_order_info, &taker_account_data, clob)
+    .place_swift_order(&signed_order_info, &taker_account_data, clob, None)
     // .add_ix(additional_clean_up_ixs)
     .build();
     let signed_tx = velocity

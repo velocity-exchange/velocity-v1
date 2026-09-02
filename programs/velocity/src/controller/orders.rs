@@ -582,20 +582,73 @@ pub fn place_perp_order(
     })
 }
 
-/// Place a perp order without persisting it to `user.orders`.
-///
-/// The straight-to-book path: build the order, run the same preconditions,
-/// margin gate, open-interest guard, and place records `place_perp_order` runs,
-/// but write no slot and reserve no `open_bids`/`open_asks`. The caller routes
-/// the returned order through `FillTarget::Detached { reserved: false }` and
-/// rests only its remainder on the CLOB. Returns `None` on the same soft-skips
-/// as `place_perp_order` (expired `max_ts`, `TryPostOnly` that would cross).
-///
-/// The margin gate models the order's worst-case reservation on the position
-/// for the check, then reverses it, so the check is byte-for-byte as strong as
-/// `place_perp_order`'s while the order carries no reservation into the fill.
+/// Whether `user` can carry one more order of this shape, without keeping
+/// any of it. The margin engine prices the user *with* the prospective
+/// exposure, so the check models the reservation — the aggregates and the
+/// per-open-order flat term — and reverses it either way: validation, not a
+/// state change. Both the ephemeral create and the remainder rest gate
+/// through here, so the two paths cannot drift.
 #[allow(clippy::too_many_arguments)]
-pub fn place_ephemeral_perp_order(
+pub fn check_prospective_order_margin(
+    user: &mut User,
+    position_index: usize,
+    direction: &PositionDirection,
+    base_asset_amount: u64,
+    update_open_bids_and_asks: bool,
+    risk_increasing: bool,
+    isolated_market_index: Option<u16>,
+    perp_market_map: &PerpMarketMap,
+    spot_market_map: &SpotMarketMap,
+    oracle_map: &mut OracleMap,
+) -> VelocityResult<()> {
+    increase_open_bids_and_asks(
+        &mut user.perp_positions[position_index],
+        direction,
+        base_asset_amount,
+        update_open_bids_and_asks,
+    )?;
+    // The requirement carries a flat term per open order, so the model
+    // counts the prospective one too.
+    let open_orders_before = user.perp_positions[position_index].open_orders;
+    user.perp_positions[position_index].open_orders = open_orders_before.saturating_add(1);
+    let checked = meets_place_order_margin_requirement(
+        user,
+        perp_market_map,
+        spot_market_map,
+        oracle_map,
+        risk_increasing,
+        isolated_market_index,
+    );
+    user.perp_positions[position_index].open_orders = open_orders_before;
+    decrease_open_bids_and_asks(
+        &mut user.perp_positions[position_index],
+        direction,
+        base_asset_amount,
+        update_open_bids_and_asks,
+    )?;
+    checked
+}
+
+/// Validate and create a perp order that never touches `user.orders`.
+///
+/// The straight-to-book path: run the same preconditions, margin gate,
+/// open-interest guard, and place records `place_perp_order` runs, and
+/// return the order as a value. Nothing is placed: no slot is written and
+/// no `open_bids`/`open_asks` reservation is kept. What does change on the
+/// user are the facts of the order coming into existence — the id counter,
+/// a builder-order row when one applies, and the activity stamp. The
+/// caller routes the returned order through
+/// `FillTarget::Detached { reserved: false }` and rests only its remainder
+/// on the CLOB. Returns `None` on the same soft-skips as `place_perp_order`
+/// (expired `max_ts`, `TryPostOnly` that would cross).
+///
+/// Expired slot orders are the caller's to sweep first (`expire_orders`):
+/// this function never touches `user.orders`, and the sweep matters to the
+/// gate — an expired order still holds its reservation, and releasing it
+/// can be what lets the new order pass. `options.try_expire_orders` is not
+/// read here.
+#[allow(clippy::too_many_arguments)]
+pub fn create_ephemeral_perp_order(
     state: &State,
     user: &mut User,
     user_key: Pubkey,
@@ -621,18 +674,6 @@ pub fn place_ephemeral_perp_order(
     }
 
     validate!(!user.is_bankrupt(), ErrorCode::UserBankrupt)?;
-
-    if options.try_expire_orders {
-        expire_orders(
-            user,
-            &user_key,
-            perp_market_map,
-            spot_market_map,
-            oracle_map,
-            now,
-            slot,
-        )?;
-    }
 
     if user.is_reduce_only() {
         validate!(
@@ -673,34 +714,23 @@ pub fn place_ephemeral_perp_order(
         None
     };
 
-    // Model the worst-case reservation on the position for the margin check,
-    // then reverse it. The ephemeral order never carries a reservation into the
-    // fill: the fill unwinds nothing for it, and only the rested remainder
-    // reserves (`try_place_remainder_on_clob`). The check itself is identical to
-    // `place_perp_order`'s. On failure the whole transaction reverts, so the
-    // reversal only has to hold for the success path.
+    // The ephemeral order never carries a reservation into the fill: the
+    // fill unwinds nothing for it, and only the rested remainder reserves
+    // (`try_place_remainder_on_clob`). The check itself is identical to
+    // `place_perp_order`'s.
     if options.enforce_margin_check && !options.is_liquidation() {
-        increase_open_bids_and_asks(
-            &mut user.perp_positions[position_index],
+        check_prospective_order_margin(
+            user,
+            position_index,
             &order.direction,
             order.base_asset_amount,
             order.update_open_bids_and_asks(),
-        )?;
-        let checked = meets_place_order_margin_requirement(
-            user,
+            options.risk_increasing,
+            isolated_market_index,
             perp_market_map,
             spot_market_map,
             oracle_map,
-            options.risk_increasing,
-            isolated_market_index,
-        );
-        decrease_open_bids_and_asks(
-            &mut user.perp_positions[position_index],
-            &order.direction,
-            order.base_asset_amount,
-            order.update_open_bids_and_asks(),
         )?;
-        checked?;
     }
 
     if force_reduce_only {

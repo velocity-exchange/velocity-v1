@@ -36,9 +36,7 @@ use {
         RouteContext,
     },
     velocity_rs::{
-        constants::{
-            derive_clob_authority, derive_clob_crank_conditions, derive_quoter_signer, PROGRAM_ID,
-        },
+        constants::{derive_clob_authority, derive_quoter_signer, PROGRAM_ID},
         dlob::{
             CrossesAndTopMakers, CrossingRegion, DLOBNotifier, L3Order, MakerCrosses, OrderKind,
             TakerOrder, DLOB,
@@ -1230,7 +1228,7 @@ async fn try_swift_fill(
         clob_market: entry.response_account,
         clob_program: entry.program_id,
         clob_authority: derive_clob_authority(),
-        crank_conditions: Some(derive_clob_crank_conditions(taker_order.market_index)),
+        crank_conditions: None,
     });
     // The placement routes and rests on the book, so it cannot be built at all
     // without the book's accounts. A market whose registry entry is missing has
@@ -1279,7 +1277,7 @@ async fn try_swift_fill(
         );
         let tx_builder = tx_builder
             .with_priority_fee(priority_fee, Some(cu_limit))
-            .place_swift_order(&swift_order, &taker_account_data, clob_place);
+            .place_swift_order(&swift_order, &taker_account_data, clob_place, None);
         // A borrow whose spot market has not accrued interest recently is
         // valued too low in the fill's margin check. Crank the stale markets
         // in the same transaction, ahead of the fill.
@@ -1617,7 +1615,7 @@ async fn try_swift_place(
         clob_market: clob_entry.response_account,
         clob_program: clob_entry.program_id,
         clob_authority: derive_clob_authority(),
-        crank_conditions: Some(derive_clob_crank_conditions(market_index)),
+        crank_conditions: None,
     };
 
     let tx = TransactionBuilder::new(
@@ -1627,7 +1625,7 @@ async fn try_swift_place(
         false,
     )
     .with_priority_fee(priority_fee, Some(cu_limit))
-    .place_swift_order(&swift_order, &taker_account_data, clob_place)
+    .place_swift_order(&swift_order, &taker_account_data, clob_place, None)
     .build();
 
     tx_worker_ref

@@ -147,12 +147,23 @@ pub struct State {
     /// duration at one endpoint.
     pub slot_duration_transition_slots: [u64; 4],
     /// The retail-flow attestation key (swift's). Not a signer of any admin
-    /// instruction: transactions *co-signed* by this key are attested flow —
-    /// `place_clob_order` accepts a faster-than-default activation delay
-    /// only when instructions-sysvar introspection finds it among the
-    /// transaction's signers, and quoters (e.g. the midpoint) apply their
-    /// own equivalent check. `Pubkey::default()` (unset) disables fast
-    /// activation entirely rather than leaving it open.
+    /// instruction. It attests flow through two transports. On a
+    /// swift-built transaction it signs as a named `flow_authority`
+    /// account — a CLOB placement (`place_and_make_perp_order_v1`, a
+    /// modify's replacement leg) accepts a faster-than-default activation
+    /// delay only when that signer is present, and
+    /// `place_and_take_perp_order_v1` takes synchronously on a bumped book
+    /// only with it. For a keeper-built swift fill it signs a detached
+    /// attestation over the order's own signature (`FlowAttestationV0`),
+    /// verified in-program — the key never signs a transaction it did not
+    /// build. Velocity forwards the verdict to quoters on the wire
+    /// (`taker_served_window`); a quoter checks nothing itself. On a book
+    /// with a nonzero default activation delay, only attested flow fills
+    /// against the book in the same transaction; an unattested taker rests
+    /// whole through the window (maker priority — a maker can always
+    /// reprice ahead of unattested aggression). `Pubkey::default()` (unset)
+    /// disables fast activation entirely rather than leaving it open — the
+    /// zero key can neither sign an account nor an attestation.
     pub hot_flow_authority: Pubkey,
     /// What one transaction costs the account that sends it, as the network
     /// prices it now. Every relay crank payment is derived from this, so a

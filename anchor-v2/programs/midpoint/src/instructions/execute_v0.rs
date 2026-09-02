@@ -5,7 +5,6 @@ use {
         events::{MidpointExecuteRecordV0, MIDPOINT_EVENT_VERSION},
         instructions::quote_v0::caller_gate,
         state::{Direction, MidpointQuoterV0, ResponsePointerV0},
-        velocity::VELOCITY_STATE,
     },
     anchor_lang::prelude::*,
 };
@@ -16,11 +15,6 @@ pub struct ExecuteV0 {
     pub quoter: Account<MidpointQuoterV0>,
     #[account(address = quoter.execute_authority @ MidpointError::InvalidAuthority)]
     pub execute_authority: Signer,
-    /// CHECK: the instructions sysvar; see `QuoteV0`.
-    pub instructions_sysvar: UncheckedAccount,
-    /// CHECK: velocity's global `State`, address-locked; see `QuoteV0`.
-    #[account(address = VELOCITY_STATE @ MidpointError::InvalidVelocityState)]
-    pub velocity_state: UncheckedAccount,
 }
 
 /// Declared by `quoter-spec`; see [`crate::instructions::quote_v0`] for why
@@ -40,8 +34,7 @@ pub fn handle_execute_v0(
         &ctx.accounts.quoter,
         args.users,
         args.taker.as_ref(),
-        ctx.accounts.instructions_sysvar.account(),
-        ctx.accounts.velocity_state.account(),
+        args.taker_served_window,
     )?;
     // A mid outside the band of velocity's oracle fills nothing, so a
     // compromised hot key cannot settle the maker at an off-market price.

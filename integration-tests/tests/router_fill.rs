@@ -533,8 +533,7 @@ fn place_clob_order_ix(
         clob_market,
         clob_program: clob_id(),
         clob_authority,
-        crank_conditions: None,
-        instructions_sysvar: None,
+        flow_authority: None,
     }
     .to_account_metas(None);
     // Margin maps: oracle, spot market, perp market.
@@ -766,6 +765,20 @@ fn set_clob_default_activation_delay(fixture: &mut Fixture, slots: u32) {
         ],
     );
     send(&mut fixture.svm, &admin, ix, &[]).unwrap();
+
+    // Velocity's gates read the entry's attach-written mirror, not the book.
+    // Production re-runs `update_perp_market_clob_quoter` after a rules
+    // change; the fixture writes the mirror directly.
+    let mut quoter: velocity::state::prop_amm::QuoterV0 =
+        read_zero_copy(&fixture.svm, &fixture.quoter);
+    quoter.book_default_activation_delay_slots = slots;
+    set_zero_copy_account(
+        &mut fixture.svm,
+        fixture.quoter,
+        velocity::state::prop_amm::QuoterV0::DISCRIMINATOR,
+        &quoter,
+        velocity::state::prop_amm::QuoterV0::SIZE,
+    );
 }
 
 #[test]
@@ -778,7 +791,7 @@ fn fast_activation_requires_the_flow_authority_attestation() {
     // below-default is expressible.
     set_clob_default_activation_delay(&mut fixture, 2);
 
-    let place = |fixture: &Fixture, delay: Option<u32>, with_sysvar: bool| {
+    let place = |fixture: &Fixture, delay: Option<u32>, flow: Option<Pubkey>| {
         let mut ix = place_clob_order_ix(
             fixture.clob_maker_user,
             &fixture.clob_maker_authority,
@@ -795,40 +808,47 @@ fn fast_activation_requires_the_flow_authority_attestation() {
                 reject_if_crossed: false,
             },
         );
-        if with_sysvar {
-            // The optional slot is encoded as a program-id placeholder;
-            // swap the real sysvar in.
+        if let Some(flow_key) = flow {
+            // The optional `flow_authority` slot is encoded as a program-id
+            // placeholder; provide the account, as a signer — presence of
+            // the signing flow authority is the attestation.
             let placeholder = ix
                 .accounts
                 .iter()
                 .rposition(|meta| meta.pubkey == velocity_id() && !meta.is_writable)
                 .expect("optional placeholder present");
-            ix.accounts[placeholder].pubkey = "Sysvar1nstructions1111111111111111111111111"
-                .parse()
-                .unwrap();
+            ix.accounts[placeholder] = AccountMeta::new_readonly(flow_key, true);
         }
         ix
     };
 
     // At-or-above the default: permissionless, exactly as before.
     let keeper = fixture.clob_maker_authority.insecure_clone();
-    let default_delay_ix = place(&fixture, None, false);
-    let at_default_ix = place(&fixture, Some(2), false);
-    let fast_ix = place(&fixture, Some(0), true);
+    let default_delay_ix = place(&fixture, None, None);
+    let at_default_ix = place(&fixture, Some(2), None);
     send(&mut fixture.svm, &keeper, default_delay_ix, &[]).unwrap();
     send(&mut fixture.svm, &keeper, at_default_ix, &[]).unwrap();
 
-    // Below the default with no flow authority configured: refused.
-    let err = send(&mut fixture.svm, &keeper, fast_ix.clone(), &[]).unwrap_err();
+    // Below the default with no flow authority named: refused.
+    let no_flow_ix = place(&fixture, Some(0), None);
+    let err = send(&mut fixture.svm, &keeper, no_flow_ix, &[]).unwrap_err();
     assert!(
         format!("{:?}", err.err).contains("6381"),
         "expected UnattestedFastActivation, got {:?}",
         err.err
     );
 
-    // Configure the flow authority.
+    // A signer that is not the configured flow authority fails the account
+    // constraint — and with no flow authority configured, the zero key on
+    // `State` matches no signer at all.
     let flow = Keypair::new();
     fixture.svm.airdrop(&flow.pubkey(), 1_000_000_000).unwrap();
+    let impostor_ix = place(&fixture, Some(0), Some(flow.pubkey()));
+    let err = send(&mut fixture.svm, &keeper, impostor_ix, &[&flow]).unwrap_err();
+    assert!(format!("{:?}", err.err).contains("6381"));
+
+    // Configure the flow authority; the same signer now attests the fast
+    // placement and it lands.
     let mut state: State = read_zero_copy(&fixture.svm, &state_pda());
     state.set_hot_key(HotRole::FlowAuthority, flow.pubkey());
     set_zero_copy_account(
@@ -838,18 +858,8 @@ fn fast_activation_requires_the_flow_authority_attestation() {
         &state,
         State::SIZE,
     );
-
-    // Still refused when the transaction is not co-signed.
-    let err = send(&mut fixture.svm, &keeper, fast_ix.clone(), &[]).unwrap_err();
-    assert!(format!("{:?}", err.err).contains("6381"));
-
-    // Co-signed by the flow authority (a signer meta anywhere in the
-    // transaction — here, appended to the placement's own accounts): the
-    // fast activation is attested and lands.
-    let mut ix = fast_ix;
-    ix.accounts
-        .push(AccountMeta::new_readonly(flow.pubkey(), true));
-    send(&mut fixture.svm, &keeper, ix, &[&flow]).unwrap();
+    let attested_ix = place(&fixture, Some(0), Some(flow.pubkey()));
+    send(&mut fixture.svm, &keeper, attested_ix, &[&flow]).unwrap();
 }
 
 /// A keeper cannot route around the book by leaving its makers' accounts at
@@ -1121,6 +1131,142 @@ fn a_taker_that_signs_fills_in_full_at_the_price_present() {
     assert_eq!(
         taker.perp_positions[0].base_asset_amount, UNIT as i64,
         "a taker that signs fills in full at the price present"
+    );
+}
+
+/// The keeper fill is how a legacy order progresses, so it still runs
+/// unattested — but on a book with a speed bump the route quotes the book
+/// as empty. The fill reaches the vAMM and the DLOB maker only, and the
+/// book's resting quote stands: maker priority holds on the path that
+/// cannot rest its taker.
+#[test]
+fn an_unattested_keeper_fill_gets_no_book_depth_on_a_bumped_book() {
+    let mut fixture = setup();
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT);
+    set_clob_default_activation_delay(&mut fixture, 5);
+
+    let dlob_maker_authority = Keypair::new();
+    let dlob_maker_user = Pubkey::new_unique();
+    let dlob_maker_stats = Pubkey::new_unique();
+    let mut dlob_order = Order::default();
+    dlob_order.order_id = 1;
+    dlob_order.status = OrderStatus::Open;
+    dlob_order.order_type = OrderType::Limit;
+    dlob_order.market_type = MarketType::Perp;
+    dlob_order.market_index = 0;
+    dlob_order.direction = PositionDirection::Short;
+    dlob_order.post_only = true;
+    dlob_order.base_asset_amount = UNIT;
+    dlob_order.price = 100 * PRICE;
+    set_user_account(
+        &mut fixture.svm,
+        dlob_maker_user,
+        &trading_user(
+            &dlob_maker_authority.pubkey(),
+            10_000 * SPOT_BALANCE_PRECISION_U64,
+            Some(dlob_order),
+        ),
+    );
+    set_user_stats_account(
+        &mut fixture.svm,
+        dlob_maker_stats,
+        &dlob_maker_authority.pubkey(),
+    );
+
+    let taker_authority = Keypair::new();
+    let taker_user = Pubkey::new_unique();
+    let taker_stats = Pubkey::new_unique();
+    let mut taker_order = Order::default();
+    taker_order.order_id = 1;
+    taker_order.status = OrderStatus::Open;
+    taker_order.order_type = OrderType::Limit;
+    taker_order.market_type = MarketType::Perp;
+    taker_order.market_index = 0;
+    taker_order.direction = PositionDirection::Long;
+    taker_order.base_asset_amount = UNIT;
+    taker_order.price = 105 * PRICE;
+    set_user_account(
+        &mut fixture.svm,
+        taker_user,
+        &trading_user(
+            &taker_authority.pubkey(),
+            100 * SPOT_BALANCE_PRECISION_U64,
+            Some(taker_order),
+        ),
+    );
+    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
+
+    // The one difference from the case above: the taker's own authority signs,
+    // and so it is also the filler's authority. A taker that signs chose the
+    // account list, and no filler owes it anything.
+    fixture
+        .svm
+        .airdrop(&taker_authority.pubkey(), 10_000_000_000)
+        .unwrap();
+    let filler_user = Pubkey::new_unique();
+    let filler_stats = Pubkey::new_unique();
+    set_user_account(
+        &mut fixture.svm,
+        filler_user,
+        &trading_user(&taker_authority.pubkey(), 0, None),
+    );
+    set_user_stats_account(&mut fixture.svm, filler_stats, &taker_authority.pubkey());
+
+    fixture.svm.warp_to_slot(30);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        30,
+    );
+
+    let (clob_authority, _) = clob_authority_pda();
+    let mut accounts = velocity::accounts::FillOrder {
+        state: state_pda(),
+        authority: taker_authority.pubkey(),
+        filler: filler_user,
+        filler_stats,
+        user: taker_user,
+        user_stats: taker_stats,
+        instructions_sysvar: Some(instructions_sysvar()),
+    }
+    .to_account_metas(None);
+    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+    accounts.push(AccountMeta::new(spot_market_pda(0), false));
+    accounts.push(AccountMeta::new(perp_market_pda(0), false));
+    accounts.push(AccountMeta::new(dlob_maker_user, false));
+    accounts.push(AccountMeta::new(dlob_maker_stats, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new(fixture.clob_market, false));
+    accounts.push(AccountMeta::new_readonly(clob_authority, false));
+    accounts.push(AccountMeta::new_readonly(clob_id(), false));
+
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data: velocity::instruction::FillPerpOrder {
+            order_id: Some(1),
+            _maker_order_id: None,
+            signed_route: vec![],
+        }
+        .data(),
+    };
+    send(&mut fixture.svm, &taker_authority, ix, &[]).unwrap();
+
+    let taker: User = read_zero_copy(&fixture.svm, &taker_user);
+    assert_eq!(
+        taker.perp_positions[0].base_asset_amount, UNIT as i64,
+        "the fill still lands, off the sources that are not bumped"
+    );
+    assert_eq!(
+        clob_ask_count(&fixture),
+        1,
+        "the book's quote was not taken"
+    );
+    let book_maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(
+        book_maker.perp_positions[0].base_asset_amount, 0,
+        "the book's maker traded nothing"
     );
 }
 
@@ -1469,7 +1615,6 @@ fn cancel_all_clob_ix(fixture: &Fixture, sides: ClobCancelSides) -> Instruction 
             clob_market: fixture.clob_market,
             clob_program: clob_id(),
             clob_authority,
-            crank_conditions: None,
         }
         .to_account_metas(None),
         data: velocity::instruction::CancelOrdersV1 {
@@ -2153,6 +2298,7 @@ fn quote_router_returns_verified_books_for_every_source() {
         accounts,
         data: velocity::instruction::QuoteRouter {
             args: velocity::instructions::QuoteRouterArgs {
+                taker_served_window: true,
                 market_index: 0,
                 direction: Direction::Long,
                 size: 2 * UNIT,
@@ -2355,6 +2501,12 @@ fn attach_clob(
     let meta = send(&mut fixture.svm, &admin, ix, &[]).unwrap();
     // The book reports where its block sits; the registrant does not derive it.
     fixture.crank_block_offset = u32::from_le_bytes(meta.return_data.data[..4].try_into().unwrap());
+    // The attach mirrors the book's placement rules onto the entry — the
+    // values `clob_market_config` configured.
+    let quoter: velocity::state::prop_amm::QuoterV0 = read_zero_copy(&fixture.svm, &fixture.quoter);
+    assert_eq!(quoter.book_tick_size, 1, "attach mirrors the tick");
+    assert_eq!(quoter.book_min_order_size, 1, "attach mirrors the minimum");
+
     conditions
 }
 
@@ -2542,6 +2694,33 @@ fn run_staged_executor(
     };
     let keeper = fixture.keeper.insecure_clone();
     send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
+}
+
+/// The staged executor as an instruction, for a test that expects it to fail.
+fn staged_executor_ix(
+    resolved: &velocity::relay_spec::ResolvedCrankV0,
+    payout: Pubkey,
+) -> Instruction {
+    let accounts = resolved
+        .accounts
+        .iter()
+        .map(|a| AccountMeta {
+            pubkey: if a.address == velocity::relay_spec::KEEPER_PLACEHOLDER {
+                payout
+            } else {
+                Pubkey::new_from_array(a.address)
+            },
+            is_signer: false,
+            is_writable: a.is_writable(),
+        })
+        .collect();
+    let mut data = resolved.executor_disc.to_vec();
+    data.extend_from_slice(&resolved.data);
+    Instruction {
+        program_id: velocity_id(),
+        accounts,
+        data,
+    }
 }
 
 /// The attach prices each crank off what it requests, and writes the same
@@ -3132,7 +3311,7 @@ fn armed_trigger_user(authority: &Pubkey, deposit: u64, order: Order) -> User {
     user
 }
 
-fn trigger_clob_order_ix(
+fn trigger_limit_order_v1_ix(
     fixture: &Fixture,
     order_id: u32,
     filler: Pubkey,
@@ -3140,7 +3319,7 @@ fn trigger_clob_order_ix(
     maker_stats: Pubkey,
 ) -> Instruction {
     let (clob_authority, _) = clob_authority_pda();
-    let mut accounts = velocity::accounts::TriggerClobOrder {
+    let mut accounts = velocity::accounts::TriggerLimitOrderV1 {
         trigger_conditions: None,
         state: state_pda(),
         authority: fixture.keeper.pubkey(),
@@ -3161,7 +3340,7 @@ fn trigger_clob_order_ix(
     Instruction {
         program_id: velocity_id(),
         accounts,
-        data: velocity::instruction::TriggerClobOrder {
+        data: velocity::instruction::TriggerLimitOrderV1 {
             market_index: 0,
             order_id,
         }
@@ -3219,7 +3398,7 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
 
     // Above the trigger: no fire.
     let keeper = fixture.keeper.insecure_clone();
-    let ix = trigger_clob_order_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
+    let ix = trigger_limit_order_v1_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
     let err = send(&mut fixture.svm, &keeper, ix, &[]).expect_err("price above trigger");
     assert!(
         format!("{:?}", err.meta.logs).contains("did not satisfy trigger condition"),
@@ -3235,7 +3414,7 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
         12,
     );
     fixture.svm.warp_to_slot(12);
-    let ix = trigger_clob_order_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
+    let ix = trigger_limit_order_v1_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
     send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
     let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert!(maker.orders[0].is_placed_on_clob());
@@ -3267,7 +3446,7 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
     );
 
     // A second trigger attempt on the placed slot fails.
-    let ix = trigger_clob_order_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
+    let ix = trigger_limit_order_v1_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
     let err = send(&mut fixture.svm, &keeper, ix, &[]).expect_err("already placed");
     assert!(format!("{:?}", err.meta.logs).contains("already rests on the CLOB"));
 
@@ -3311,7 +3490,7 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
     assert_eq!(clob_ask_count(&fixture), 0);
 
     // Still through the trigger: the edge gate refuses to re-fire.
-    let ix = trigger_clob_order_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
+    let ix = trigger_limit_order_v1_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
     let err = send(&mut fixture.svm, &keeper, ix, &[]).expect_err("no recross yet");
     assert!(format!("{:?}", err.meta.logs).contains("never crossed back"));
 
@@ -3324,7 +3503,7 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
         13,
     );
     fixture.svm.warp_to_slot(13);
-    let ix = trigger_clob_order_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
+    let ix = trigger_limit_order_v1_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
     send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
     let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert!(!maker.orders[0].is_bit_flag_set(OrderBitFlag::AwaitingTriggerRecross));
@@ -3338,7 +3517,7 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
         14,
     );
     fixture.svm.warp_to_slot(14);
-    let ix = trigger_clob_order_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
+    let ix = trigger_limit_order_v1_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
     send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
     let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     assert!(maker.orders[0].is_placed_on_clob());
@@ -3436,7 +3615,7 @@ fn cancel_all_frees_placed_trigger_shadows() {
     );
     fixture.svm.warp_to_slot(12);
     let keeper = fixture.keeper.insecure_clone();
-    let ix = trigger_clob_order_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
+    let ix = trigger_limit_order_v1_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
     send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
 
     // A plain book order alongside the shadowed one, so the sweep takes both
@@ -3509,7 +3688,7 @@ fn placed_trigger_cancels_through_the_clob_only() {
     );
     fixture.svm.warp_to_slot(12);
     let keeper = fixture.keeper.insecure_clone();
-    let ix = trigger_clob_order_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
+    let ix = trigger_limit_order_v1_ix(&fixture, 1, filler_user, filler_stats, maker_stats);
     send(&mut fixture.svm, &keeper, ix, &[]).unwrap();
     let maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
     let (node_index, clob_order_id) = maker.orders[0].clob_order_ref();
@@ -4342,7 +4521,7 @@ fn place_and_take_v1_fills_a_retail_taker_off_the_clob() {
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
         clob_authority,
-        crank_conditions: None,
+        flow_authority: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -4398,6 +4577,184 @@ fn place_and_take_v1_fills_a_retail_taker_off_the_clob() {
     );
     assert_eq!(maker.perp_positions[0].open_asks, 0, "reservation released");
     assert_eq!(clob_ask_count(&fixture), 0);
+}
+
+/// Maker priority: on a book with a speed bump, only attested flow fills in
+/// its own transaction. An unattested taker rests whole, taker-origin,
+/// through the default window — a maker can always reprice ahead of it. A
+/// shape that demands a synchronous outcome (an IOC, a success condition) is
+/// refused, and a transaction the flow authority co-signs keeps the
+/// synchronous fill.
+#[test]
+fn an_unattested_taker_on_a_bumped_book_rests_instead_of_filling() {
+    use velocity::state::{
+        order_params::{OrderParams, PostOnlyParam},
+        state::HotRole,
+    };
+
+    let mut fixture = setup();
+    let maker_stats = maker_stats_address(&fixture);
+    set_user_stats_account(
+        &mut fixture.svm,
+        maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+    place_clob_ask(&mut fixture, 99 * PRICE, UNIT / 2);
+    set_clob_default_activation_delay(&mut fixture, 5);
+
+    // The flow authority is configured, so attestation is expressible.
+    let flow = Keypair::new();
+    fixture.svm.airdrop(&flow.pubkey(), 1_000_000_000).unwrap();
+    let mut state: State = read_zero_copy(&fixture.svm, &state_pda());
+    state.set_hot_key(HotRole::FlowAuthority, flow.pubkey());
+    set_zero_copy_account(
+        &mut fixture.svm,
+        state_pda(),
+        State::DISCRIMINATOR,
+        &state,
+        State::SIZE,
+    );
+
+    let taker_authority = Keypair::new();
+    fixture
+        .svm
+        .airdrop(&taker_authority.pubkey(), 10_000_000_000)
+        .unwrap();
+    let taker_user = Pubkey::new_unique();
+    let taker_stats = Pubkey::new_unique();
+    let mut taker_state = trading_user(
+        &taker_authority.pubkey(),
+        10_000 * SPOT_BALANCE_PRECISION_U64,
+        None,
+    );
+    taker_state.next_order_id = 1;
+    set_user_account(&mut fixture.svm, taker_user, &taker_state);
+    set_user_stats_account(&mut fixture.svm, taker_stats, &taker_authority.pubkey());
+
+    fixture.svm.warp_to_slot(12);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        12,
+    );
+
+    let (clob_authority, _) = clob_authority_pda();
+    let build = |bit_flags: u8, success_condition: Option<u32>, attest: bool| {
+        let mut accounts = velocity::accounts::PlaceAndTakeV1 {
+            state: state_pda(),
+            user: taker_user,
+            user_stats: taker_stats,
+            authority: taker_authority.pubkey(),
+            quoter: fixture.quoter,
+            clob_market: fixture.clob_market,
+            clob_program: clob_id(),
+            clob_authority,
+            // The attestation transport for swift-built transactions: the
+            // flow authority signs as this named account.
+            flow_authority: attest.then(|| flow.pubkey()),
+        }
+        .to_account_metas(None);
+        accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+        accounts.push(AccountMeta::new(spot_market_pda(0), false));
+        accounts.push(AccountMeta::new(perp_market_pda(0), false));
+        accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
+        accounts.push(AccountMeta::new(maker_stats, false));
+        accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+        accounts.push(AccountMeta::new(fixture.clob_market, false));
+        accounts.push(AccountMeta::new_readonly(clob_authority, false));
+        accounts.push(AccountMeta::new_readonly(clob_id(), false));
+        Instruction {
+            program_id: velocity_id(),
+            accounts,
+            data: velocity::instruction::PlaceAndTakePerpOrderV1 {
+                params: OrderParams {
+                    order_type: OrderType::Limit,
+                    market_type: MarketType::Perp,
+                    direction: PositionDirection::Long,
+                    base_asset_amount: UNIT / 2,
+                    price: 99 * PRICE,
+                    market_index: 0,
+                    post_only: PostOnlyParam::None,
+                    bit_flags,
+                    ..OrderParams::default()
+                },
+                success_condition,
+            }
+            .data(),
+        }
+    };
+
+    // A synchronous shape is refused rather than silently rested.
+    for ix in [build(1, None, false), build(0, Some(2), false)] {
+        let err = send_with_ixs(
+            &mut fixture.svm,
+            &taker_authority,
+            &[compute_unit_limit_ix(400_000), ix],
+            &[],
+        )
+        .unwrap_err();
+        assert!(
+            format!("{:?}", err.err).contains("6403"),
+            "expected UnattestedSynchronousTake, got {:?}",
+            err.err
+        );
+    }
+
+    // Unattested: no fill. The order rests whole as a taker-origin bid and
+    // the maker's ask stands.
+    send_with_ixs(
+        &mut fixture.svm,
+        &taker_authority,
+        &[compute_unit_limit_ix(400_000), build(0, None, false)],
+        &[],
+    )
+    .unwrap();
+    let taker: User = read_zero_copy(&fixture.svm, &taker_user);
+    assert_eq!(
+        taker.perp_positions[0].base_asset_amount, 0,
+        "unattested flow does not fill synchronously"
+    );
+    assert_eq!(
+        taker.perp_positions[0].open_bids,
+        (UNIT / 2) as i64,
+        "the whole order rests"
+    );
+    // The rested bid is invisible to the matchable-set reader here: it is
+    // inside its activation window, and the ask crosses it. It is counted
+    // below, once the ask is consumed and the window has passed.
+    assert_eq!(
+        clob_ask_count(&fixture),
+        1,
+        "the maker's quote was not taken"
+    );
+
+    // Attested: the same take fills synchronously off the book.
+    send_with_ixs(
+        &mut fixture.svm,
+        &taker_authority,
+        &[compute_unit_limit_ix(400_000), build(0, None, true)],
+        &[&flow],
+    )
+    .unwrap();
+    let taker: User = read_zero_copy(&fixture.svm, &taker_user);
+    assert_eq!(
+        taker.perp_positions[0].base_asset_amount,
+        (UNIT / 2) as i64,
+        "attested flow fills off the book"
+    );
+    assert_eq!(clob_ask_count(&fixture), 0);
+
+    // Past its activation slot, with the crossing ask gone, the unattested
+    // order shows as ordinary resting depth: it rested — it never filled.
+    fixture.svm.warp_to_slot(20);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        20,
+    );
+    assert_eq!(clob_bid_count(&fixture), 1, "the unattested order rests");
 }
 
 /// A fill skips a latched maker and lands, instead of reverting on them.
@@ -4459,7 +4816,7 @@ fn a_fill_skips_a_latched_maker_instead_of_reverting() {
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
         clob_authority,
-        crank_conditions: None,
+        flow_authority: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -4576,7 +4933,7 @@ fn a_maker_fills_as_far_as_its_collateral_reaches() {
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
         clob_authority,
-        crank_conditions: None,
+        flow_authority: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -4705,7 +5062,7 @@ fn place_and_take_rests_the_remainder_on_the_clob() {
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
         clob_authority,
-        crank_conditions: None,
+        flow_authority: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -4833,7 +5190,7 @@ fn place_and_take_rests_a_market_order_remainder_on_the_clob() {
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
         clob_authority,
-        crank_conditions: None,
+        flow_authority: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -4944,6 +5301,15 @@ struct MidpointMaker {
 /// a $100 mid, and the approved Custom registry entry whose CPI legs carry
 /// the instance + instructions sysvar (+ the signer slot on execute).
 fn setup_midpoint_maker(fixture: &mut Fixture, deposit: u64, side_size: u64) -> MidpointMaker {
+    setup_midpoint_maker_with_flow(fixture, deposit, side_size, false)
+}
+
+fn setup_midpoint_maker_with_flow(
+    fixture: &mut Fixture,
+    deposit: u64,
+    side_size: u64,
+    require_attested_flow: bool,
+) -> MidpointMaker {
     let authority = Keypair::new();
     let hot = Keypair::new();
     for kp in [&authority, &hot] {
@@ -4986,7 +5352,7 @@ fn setup_midpoint_maker(fixture: &mut Fixture, deposit: u64, side_size: u64) -> 
     data.extend_from_slice(&1u64.to_le_bytes());
     data.extend_from_slice(&1u64.to_le_bytes());
     data.extend_from_slice(&1u64.to_le_bytes());
-    data.push(0);
+    data.push(require_attested_flow as u8);
     let ix = Instruction {
         program_id: midpoint_id(),
         accounts: vec![
@@ -5060,22 +5426,10 @@ fn setup_midpoint_maker(fixture: &mut Fixture, deposit: u64, side_size: u64) -> 
     for (leg, metas) in [
         (
             QuoterCpiLeg::Quote,
-            vec![
-                QuoterAccountMetaArg {
-                    pubkey: instance,
-                    is_writable: true,
-                },
-                QuoterAccountMetaArg {
-                    pubkey: instructions_sysvar(),
-                    is_writable: false,
-                },
-                // The midpoint reads the live flow authority out of
-                // velocity's State rather than trusting a local copy.
-                QuoterAccountMetaArg {
-                    pubkey: state_pda(),
-                    is_writable: false,
-                },
-            ],
+            vec![QuoterAccountMetaArg {
+                pubkey: instance,
+                is_writable: true,
+            }],
         ),
         (
             QuoterCpiLeg::Execute,
@@ -5086,14 +5440,6 @@ fn setup_midpoint_maker(fixture: &mut Fixture, deposit: u64, side_size: u64) -> 
                 },
                 QuoterAccountMetaArg {
                     pubkey: quoter_signer,
-                    is_writable: false,
-                },
-                QuoterAccountMetaArg {
-                    pubkey: instructions_sysvar(),
-                    is_writable: false,
-                },
-                QuoterAccountMetaArg {
-                    pubkey: state_pda(),
                     is_writable: false,
                 },
             ],
@@ -5221,12 +5567,6 @@ fn fill_long_through_midpoint(
         quoter_signer_pda(&maker.entry).0,
         false,
     ));
-    accounts.push(AccountMeta::new_readonly(instructions_sysvar(), false));
-    // Velocity resolves each quoter's CPI metas from this trailing map, and
-    // the midpoint's quote/execute legs name velocity's State (they read the
-    // live flow authority from it); the fill's own named `state` account is
-    // not part of the map, so it has to ride here too.
-    accounts.push(AccountMeta::new_readonly(state_pda(), false));
     accounts.push(AccountMeta::new_readonly(midpoint_id(), false));
 
     let ix = Instruction {
@@ -5413,12 +5753,6 @@ fn router_fill_splits_across_clob_midpoint_and_vamm() {
         quoter_signer_pda(&maker.entry).0,
         false,
     ));
-    accounts.push(AccountMeta::new_readonly(instructions_sysvar(), false));
-    // Velocity resolves each quoter's CPI metas from this trailing map, and
-    // the midpoint's quote/execute legs name velocity's State (they read the
-    // live flow authority from it); the fill's own named `state` account is
-    // not part of the map, so it has to ride here too.
-    accounts.push(AccountMeta::new_readonly(state_pda(), false));
     accounts.push(AccountMeta::new_readonly(midpoint_id(), false));
 
     let ix = Instruction {
@@ -5580,12 +5914,6 @@ fn run_quoter_cross_resolver(
         quoter_signer_pda(&maker.entry).0,
         false,
     ));
-    accounts.push(AccountMeta::new_readonly(instructions_sysvar(), false));
-    // Velocity resolves each quoter's CPI metas from this trailing map, and
-    // the midpoint's quote/execute legs name velocity's State (they read the
-    // live flow authority from it); the fill's own named `state` account is
-    // not part of the map, so it has to ride here too.
-    accounts.push(AccountMeta::new_readonly(state_pda(), false));
     accounts.push(AccountMeta::new_readonly(midpoint_id(), false));
     let ix = Instruction {
         program_id: velocity_id(),
@@ -5625,7 +5953,16 @@ fn generic_quoter_cross_conditions_discover_and_fill_a_midpoint_clob_cross() {
         .unwrap();
 
     // Midpoint asks 2.0 @ 100.1 (mid 100 + 10bps).
-    let maker = setup_midpoint_maker(&mut fixture, 10_000 * SPOT_BALANCE_PRECISION_U64, 2 * UNIT);
+    // A protected instance: the cross crank is an unsigned relay
+    // transaction, and it must still fill through `require_attested_flow` —
+    // the counterparty it consumes rested through placement, and velocity
+    // says so on the wire (`taker_served_window`).
+    let maker = setup_midpoint_maker_with_flow(
+        &mut fixture,
+        10_000 * SPOT_BALANCE_PRECISION_U64,
+        2 * UNIT,
+        true,
+    );
     declare_midpoint_watch(&mut fixture, &maker);
     let cross_conditions = attach_quoter_cross(&mut fixture, &maker);
 
@@ -5654,12 +5991,12 @@ fn generic_quoter_cross_conditions_discover_and_fill_a_midpoint_clob_cross() {
     // once in the relay block's built-in region; every condition points at it
     // indirectly.
     //
-    // The midpoint's quote leg names velocity's State, which it reads the live
-    // flow authority from. The CLOB entry and program are there because the
-    // resolver quotes the book through the registry too, rather than reading
-    // its account.
-    assert_eq!(conditions[QUOTER_CROSS_WATCH].resolvers().count, 12);
-    assert_eq!(acct.relay.resolver_refs().len(), 12);
+    // The midpoint's quote leg is the instance alone — the protected-flow
+    // fact rides the quoter wire, not an account. The CLOB entry and program
+    // are there because the resolver quotes the book through the registry
+    // too, rather than reading its account.
+    assert_eq!(conditions[QUOTER_CROSS_WATCH].resolvers().count, 10);
+    assert_eq!(acct.relay.resolver_refs().len(), 10);
 
     // Nothing crossed yet: the resolver reports no work.
     fixture.svm.warp_to_slot(12);
@@ -5718,6 +6055,35 @@ fn generic_quoter_cross_conditions_discover_and_fill_a_midpoint_clob_cross() {
     let payout = Pubkey::new_unique();
     fixture.svm.airdrop(&payout, 1_000_000_000).unwrap();
     let payout_before = fixture.svm.get_balance(&payout).unwrap();
+
+    // The crossed bid is one slot old. A protected instance refuses flow that
+    // has not measurably rested, so the cross fills nothing yet — a fresh
+    // order cannot rest and crank back-to-back into `require_attested_flow`
+    // liquidity.
+    let keeper = fixture.keeper.insecure_clone();
+    let err = send(
+        &mut fixture.svm,
+        &keeper,
+        staged_executor_ix(&resolved, payout),
+        &[],
+    )
+    .unwrap_err();
+    assert!(
+        format!("{:?}", err.err).contains("6380"),
+        "expected CrossMatchUnprofitable while the flow is fresh, got {:?}",
+        err.err
+    );
+
+    // Two slots rested: the flow has served its window and the cross fills.
+    fixture.svm.warp_to_slot(14);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        14,
+    );
+    let resolved = run_quoter_cross_resolver(&mut fixture, &maker, cross_conditions)
+        .expect("still crossed, still staged");
     run_staged_executor(
         &mut fixture,
         &resolved,
@@ -5792,9 +6158,9 @@ fn sync_trigger_conditions(
 enum TrigResolver {
     /// `resolve_trigger_order` — the plain DLOB flip.
     Flip,
-    /// `resolve_trigger_clob_order` — rest a trigger-limit on the book.
+    /// `resolve_trigger_limit_order_v1` — rest a trigger-limit on the book.
     ClobRest,
-    /// `resolve_trigger_order_v1` — fire a stop-market to the book.
+    /// `resolve_trigger_market_order_v1` — fire a stop-market to the book.
     ClobFill,
 }
 
@@ -5819,8 +6185,8 @@ fn run_trigger_resolver(
         accounts,
         data: match which {
             TrigResolver::Flip => velocity::instruction::ResolveTriggerOrder {}.data(),
-            TrigResolver::ClobRest => velocity::instruction::ResolveTriggerClobOrder {}.data(),
-            TrigResolver::ClobFill => velocity::instruction::ResolveTriggerOrderV1 {}.data(),
+            TrigResolver::ClobRest => velocity::instruction::ResolveTriggerLimitOrderV1 {}.data(),
+            TrigResolver::ClobFill => velocity::instruction::ResolveTriggerMarketOrderV1 {}.data(),
         },
     };
     let keeper = fixture.keeper.insecure_clone();
@@ -5962,7 +6328,7 @@ fn trigger_relay_conditions_fire_an_armed_trigger_unsigned() {
 }
 
 /// A trigger-limit on a market with a vetted CLOB syncs to the
-/// `trigger_clob_order` executor path.
+/// `trigger_limit_order_v1` executor path.
 #[test]
 fn trigger_limit_sync_targets_the_clob_executor() {
     use velocity::state::user_conditions::{UserConditionsV0, TRIGGER_SLOT_BASE, USER_CONDITIONS};
@@ -6007,11 +6373,11 @@ fn trigger_limit_sync_targets_the_clob_executor() {
     let trig = &block[TRIGGER_SLOT_BASE..];
     assert_eq!(value_cross(&trig[0]).4, 1, "Below trigger watches downward");
     // The CLOB path shows up as the resolver the condition names — the
-    // executor it stages (`trigger_clob_order`) is that resolver's answer,
+    // executor it stages (`trigger_limit_order_v1`) is that resolver's answer,
     // asserted where the payload is read.
     assert_eq!(
         trig[0].crank_spec().resolver_disc,
-        velocity::instruction::ResolveTriggerClobOrder::DISCRIMINATOR
+        velocity::instruction::ResolveTriggerLimitOrderV1::DISCRIMINATOR
     );
     assert_eq!(
         acct.trigger_slots[0].quoter.to_bytes(),
@@ -6109,7 +6475,7 @@ fn trigger_market_fires_to_the_book_through_its_resolver() {
     let (_, block) = velocity::relay_spec::read_block(acct.block(), 0).unwrap();
     assert_eq!(
         block[TRIGGER_SLOT_BASE].crank_spec().resolver_disc,
-        velocity::instruction::ResolveTriggerOrderV1::DISCRIMINATOR
+        velocity::instruction::ResolveTriggerMarketOrderV1::DISCRIMINATOR
     );
     assert_eq!(
         acct.trigger_slots[0].quoter.to_bytes(),
@@ -6132,7 +6498,7 @@ fn trigger_market_fires_to_the_book_through_its_resolver() {
     run_staged_executor(
         &mut fixture,
         &resolved,
-        velocity::instruction::TriggerOrderV1::DISCRIMINATOR,
+        velocity::instruction::TriggerMarketOrderV1::DISCRIMINATOR,
         payout,
     );
 
@@ -6265,7 +6631,7 @@ fn merged_sync_keeps_the_stored_map_section_parseable() {
     assert_eq!(map[4].address, fixture.quoter.to_bytes());
 
     // And the proof it parses: the staged executor lands. The stop-market on
-    // a book market fires to the book (`trigger_order_v1`), so the map section
+    // a book market fires to the book (`trigger_market_order_v1`), so the map section
     // has to parse for the fill's `load_maps`, not just a plain flip.
     fixture.svm.warp_to_slot(13);
     set_oracle(
@@ -6281,7 +6647,7 @@ fn merged_sync_keeps_the_stored_map_section_parseable() {
     run_staged_executor(
         &mut fixture,
         &resolved,
-        velocity::instruction::TriggerOrderV1::DISCRIMINATOR,
+        velocity::instruction::TriggerMarketOrderV1::DISCRIMINATOR,
         payout,
     );
     // The fired slot is freed: the trigger fired and the order left the DLOB,
@@ -6987,8 +7353,7 @@ fn place_and_make_v1_rests_a_maker_order_on_the_book() {
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
         clob_authority,
-        crank_conditions: None,
-        instructions_sysvar: None,
+        flow_authority: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -7054,7 +7419,7 @@ fn place_and_make_v1_rests_a_maker_order_on_the_book() {
 /// accounts and the remainder lands on the book, where the activation window
 /// and the cross give it counterparties.
 #[test]
-fn fill_v1_migrates_a_restable_remainder_to_the_book() {
+fn fill_legacy_dlob_order_migrates_a_restable_remainder_to_the_book() {
     use velocity::state::order_params::PostOnlyParam;
 
     let mut fixture = setup();
@@ -7116,7 +7481,7 @@ fn fill_v1_migrates_a_restable_remainder_to_the_book() {
     );
 
     let (clob_authority, _) = clob_authority_pda();
-    let mut accounts = velocity::accounts::FillOrderV1 {
+    let mut accounts = velocity::accounts::FillLegacyDlobOrder {
         state: state_pda(),
         authority: fixture.keeper.pubkey(),
         filler: filler_user,
@@ -7127,7 +7492,6 @@ fn fill_v1_migrates_a_restable_remainder_to_the_book() {
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
         clob_authority,
-        crank_conditions: None,
         instructions_sysvar: Some(instructions_sysvar()),
     }
     .to_account_metas(None);
@@ -7145,7 +7509,7 @@ fn fill_v1_migrates_a_restable_remainder_to_the_book() {
     let ix = Instruction {
         program_id: velocity_id(),
         accounts,
-        data: velocity::instruction::FillPerpOrderV1 {
+        data: velocity::instruction::FillLegacyDlobOrder {
             order_id: Some(1),
             _maker_order_id: None,
             signed_route: vec![],
@@ -7355,7 +7719,6 @@ fn signed_msg_taker_signature_is_verified_in_program() {
             clob_market: fixture.clob_market,
             clob_program: clob_id(),
             clob_authority,
-            crank_conditions: None,
         }
         .to_account_metas(None);
         accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -7367,6 +7730,7 @@ fn signed_msg_taker_signature_is_verified_in_program() {
             data: velocity::instruction::PlaceSignedMsgTakerOrder {
                 signed_msg_order_params_message_bytes: bytes,
                 is_delegate_signer: false,
+                flow_attestation: None,
             }
             .data(),
         }
@@ -7411,6 +7775,200 @@ fn signed_msg_taker_signature_is_verified_in_program() {
             .any(|l| l.contains("SigVerificationFailed")),
         "a tampered signature must be refused by the in-program verifier: {:?}",
         bad.meta.logs
+    );
+}
+
+/// On a bumped book a signed-message fill takes synchronously only with
+/// swift's detached attestation: the flow authority's signature over the
+/// order's own signature plus an expiry, verified in-program. Without it
+/// the order rests whole through the window; expired, it is refused.
+#[test]
+fn a_swift_fill_takes_a_bumped_book_only_with_the_attestation() {
+    use {
+        anchor_lang::AnchorSerialize,
+        velocity::state::{
+            order_params::{OrderParams, PostOnlyParam, SignedMsgOrderParamsMessage},
+            state::HotRole,
+        },
+    };
+
+    let mut fixture = setup();
+    let maker_stats = maker_stats_address(&fixture);
+    set_user_stats_account(
+        &mut fixture.svm,
+        maker_stats,
+        &fixture.clob_maker_authority.pubkey(),
+    );
+    place_clob_ask(&mut fixture, 99 * PRICE, 2 * UNIT);
+    set_clob_default_activation_delay(&mut fixture, 5);
+
+    let flow = Keypair::new();
+    let mut state: State = read_zero_copy(&fixture.svm, &state_pda());
+    state.set_hot_key(HotRole::FlowAuthority, flow.pubkey());
+    set_zero_copy_account(
+        &mut fixture.svm,
+        state_pda(),
+        State::DISCRIMINATOR,
+        &state,
+        State::SIZE,
+    );
+
+    fixture.svm.warp_to_slot(30);
+    set_oracle(
+        &mut fixture.svm,
+        fixture.oracle,
+        (100 * PRICE_PRECISION) as i64,
+        30,
+    );
+
+    let taker = party(&mut fixture.svm, 10_000 * SPOT_BALANCE_PRECISION_U64);
+    let keeper = party(&mut fixture.svm, 0);
+    set_signed_msg_user_orders(&mut fixture.svm, &taker.authority.pubkey(), 8);
+
+    let signed = |uuid: [u8; 8]| {
+        let order = OrderParams {
+            order_type: OrderType::Market,
+            market_type: MarketType::Perp,
+            direction: PositionDirection::Long,
+            base_asset_amount: UNIT,
+            price: 0,
+            market_index: 0,
+            post_only: PostOnlyParam::None,
+            auction_duration: Some(10),
+            auction_start_price: Some((99 * PRICE) as i64),
+            auction_end_price: Some((101 * PRICE) as i64),
+            ..OrderParams::default()
+        };
+        let message = SignedMsgOrderParamsMessage {
+            signed_msg_order_params: order,
+            sub_account_id: 0,
+            slot: 30,
+            uuid,
+            take_profit_order_params: None,
+            stop_loss_order_params: None,
+            max_margin_ratio: None,
+            builder_idx: None,
+            builder_fee_tenth_bps: None,
+            isolated_position_deposit: None,
+            network: None,
+            route: None,
+        };
+        let mut borsh_body = vec![0u8; 8];
+        message.serialize(&mut borsh_body).unwrap();
+        let hex_msg = hex_lower(&borsh_body);
+        let signature = taker.authority.sign_message(hex_msg.as_bytes());
+        let mut envelope = Vec::new();
+        envelope.extend_from_slice(signature.as_ref());
+        envelope.extend_from_slice(&taker.authority.pubkey().to_bytes());
+        envelope.extend_from_slice(&(hex_msg.len() as u16).to_le_bytes());
+        envelope.extend_from_slice(hex_msg.as_bytes());
+        (envelope, <[u8; 64]>::try_from(signature.as_ref()).unwrap())
+    };
+
+    // Swift's detached attestation: domain, the order signature, the expiry.
+    let attest = |order_sig: &[u8; 64], expiry_ts: i64| {
+        let mut message = Vec::new();
+        message.extend_from_slice(velocity::FLOW_ATTESTATION_DOMAIN);
+        message.extend_from_slice(order_sig);
+        message.extend_from_slice(&expiry_ts.to_le_bytes());
+        velocity::FlowAttestationV0 {
+            signature: <[u8; 64]>::try_from(flow.sign_message(&message).as_ref()).unwrap(),
+            expiry_ts,
+        }
+    };
+
+    let place_ix = |bytes: Vec<u8>, attestation: Option<velocity::FlowAttestationV0>| {
+        let (clob_authority, _) = clob_authority_pda();
+        let mut accounts = velocity::accounts::PlaceSignedMsgTakerOrder {
+            state: state_pda(),
+            user: taker.user,
+            user_stats: taker.stats,
+            signed_msg_user_orders: signed_msg_user_orders_pda(&taker.authority.pubkey()),
+            authority: keeper.authority.pubkey(),
+            ix_sysvar: instructions_sysvar(),
+            filler: keeper.user,
+            filler_stats: keeper.stats,
+            quoter: fixture.quoter,
+            clob_market: fixture.clob_market,
+            clob_program: clob_id(),
+            clob_authority,
+        }
+        .to_account_metas(None);
+        accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+        accounts.push(AccountMeta::new(spot_market_pda(0), false));
+        accounts.push(AccountMeta::new(perp_market_pda(0), false));
+        accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
+        accounts.push(AccountMeta::new(maker_stats, false));
+        accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+        accounts.push(AccountMeta::new(fixture.clob_market, false));
+        accounts.push(AccountMeta::new_readonly(clob_authority, false));
+        accounts.push(AccountMeta::new_readonly(clob_id(), false));
+        Instruction {
+            program_id: velocity_id(),
+            accounts,
+            data: velocity::instruction::PlaceSignedMsgTakerOrder {
+                signed_msg_order_params_message_bytes: bytes,
+                is_delegate_signer: false,
+                flow_attestation: attestation,
+            }
+            .data(),
+        }
+    };
+
+    // Unattested: no fill — the whole order rests taker-origin.
+    let (envelope, _) = signed(*b"noattest");
+    send_with_ixs(
+        &mut fixture.svm,
+        &keeper.authority,
+        &[compute_unit_limit_ix(600_000), place_ix(envelope, None)],
+        &[],
+    )
+    .unwrap();
+    let taker_state: User = read_zero_copy(&fixture.svm, &taker.user);
+    assert_eq!(
+        taker_state.perp_positions[0].base_asset_amount, 0,
+        "unattested swift flow does not fill synchronously"
+    );
+    assert_eq!(
+        taker_state.perp_positions[0].open_bids, UNIT as i64,
+        "the whole order rests"
+    );
+
+    // An expired attestation is refused outright, not downgraded. The
+    // expiry is behind any clock, litesvm's near-zero one included.
+    let (envelope, order_sig) = signed(*b"expired1");
+    let err = send_with_ixs(
+        &mut fixture.svm,
+        &keeper.authority,
+        &[
+            compute_unit_limit_ix(600_000),
+            place_ix(envelope, Some(attest(&order_sig, -1))),
+        ],
+        &[],
+    )
+    .unwrap_err();
+    assert!(
+        format!("{:?}", err.err).contains("6286"),
+        "expected SigVerificationFailed for an expired attestation, got {:?}",
+        err.err
+    );
+
+    // A live attestation: the fill takes the book synchronously.
+    let (envelope, order_sig) = signed(*b"attested");
+    send_with_ixs(
+        &mut fixture.svm,
+        &keeper.authority,
+        &[
+            compute_unit_limit_ix(600_000),
+            place_ix(envelope, Some(attest(&order_sig, i64::MAX))),
+        ],
+        &[],
+    )
+    .unwrap();
+    let taker_state: User = read_zero_copy(&fixture.svm, &taker.user);
+    assert_eq!(
+        taker_state.perp_positions[0].base_asset_amount, UNIT as i64,
+        "attested swift flow fills off the book"
     );
 }
 
@@ -7471,7 +8029,7 @@ fn rest_taker_origin_order(
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
         clob_authority,
-        crank_conditions: None,
+        flow_authority: None,
     }
     .to_account_metas(None);
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
@@ -8868,7 +9426,7 @@ fn the_arb_crank_clears_the_front_of_book_before_the_remainders_own_cross() {
 /// difference, rather than the order being a free option for whoever lands
 /// first.
 #[test]
-fn fill_v1_rests_a_market_remainder_at_its_auction_bound() {
+fn fill_legacy_dlob_order_rests_a_market_remainder_at_its_auction_bound() {
     let mut fixture = setup();
 
     let maker_stats = Pubkey::find_program_address(
@@ -8935,7 +9493,7 @@ fn fill_v1_rests_a_market_remainder_at_its_auction_bound() {
     );
 
     let (clob_authority, _) = clob_authority_pda();
-    let mut accounts = velocity::accounts::FillOrderV1 {
+    let mut accounts = velocity::accounts::FillLegacyDlobOrder {
         state: state_pda(),
         authority: fixture.keeper.pubkey(),
         filler: filler_user,
@@ -8946,7 +9504,6 @@ fn fill_v1_rests_a_market_remainder_at_its_auction_bound() {
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
         clob_authority,
-        crank_conditions: None,
         instructions_sysvar: Some(instructions_sysvar()),
     }
     .to_account_metas(None);
@@ -8963,7 +9520,7 @@ fn fill_v1_rests_a_market_remainder_at_its_auction_bound() {
     let ix = Instruction {
         program_id: velocity_id(),
         accounts,
-        data: velocity::instruction::FillPerpOrderV1 {
+        data: velocity::instruction::FillLegacyDlobOrder {
             order_id: Some(1),
             _maker_order_id: None,
             signed_route: vec![],
@@ -9009,12 +9566,12 @@ fn fill_v1_rests_a_market_remainder_at_its_auction_bound() {
 /// A fired DLOB stop-market fills straight to the book and rests only its
 /// remainder, leaving nothing live in `User.orders`.
 ///
-/// `trigger_order_v1` fires the armed trigger, routes the now-live market order
+/// `trigger_market_order_v1` fires the armed trigger, routes the now-live market order
 /// against the book, and migrates the unfilled remainder as a taker-origin
 /// order in one instruction. The v0 path would instead leave a live
 /// `TriggeredAbove` slot for a later fill crank.
 #[test]
-fn trigger_order_v1_fires_a_stop_market_straight_to_the_book() {
+fn trigger_market_order_v1_fires_a_stop_market_straight_to_the_book() {
     use velocity::state::user::OrderTriggerCondition;
 
     let mut fixture = setup();
@@ -9081,7 +9638,7 @@ fn trigger_order_v1_fires_a_stop_market_straight_to_the_book() {
     );
 
     let (clob_authority, _) = clob_authority_pda();
-    let mut accounts = velocity::accounts::TriggerOrderV1 {
+    let mut accounts = velocity::accounts::TriggerMarketOrderV1 {
         state: state_pda(),
         authority: fixture.keeper.pubkey(),
         filler: filler_user,
@@ -9110,7 +9667,7 @@ fn trigger_order_v1_fires_a_stop_market_straight_to_the_book() {
     let ix = Instruction {
         program_id: velocity_id(),
         accounts,
-        data: velocity::instruction::TriggerOrderV1 {
+        data: velocity::instruction::TriggerMarketOrderV1 {
             market_index: 0,
             order_id: 1,
             signed_route: vec![],
@@ -9333,6 +9890,7 @@ fn a_reverting_quoter_leaves_only_its_cpi_frame_in_the_logs() {
         accounts,
         data: velocity::instruction::QuoteRouter {
             args: velocity::instructions::QuoteRouterArgs {
+                taker_served_window: true,
                 market_index: 0,
                 direction: Direction::Long,
                 size: 2 * UNIT,
@@ -9460,6 +10018,7 @@ fn a_quoter_velocity_refuses_is_named_in_the_logs() {
         accounts,
         data: velocity::instruction::QuoteRouter {
             args: velocity::instructions::QuoteRouterArgs {
+                taker_served_window: true,
                 market_index: 0,
                 direction: Direction::Long,
                 size: 2 * UNIT,
@@ -9557,6 +10116,7 @@ fn a_pass_that_clears_include_vamm_returns_only_its_quoters() {
             accounts,
             data: velocity::instruction::QuoteRouter {
                 args: velocity::instructions::QuoteRouterArgs {
+                    taker_served_window: true,
                     market_index: 0,
                     direction: Direction::Long,
                     size: 2 * UNIT,
@@ -9743,6 +10303,7 @@ fn bench_quote_case(
         accounts,
         data: velocity::instruction::QuoteRouter {
             args: velocity::instructions::QuoteRouterArgs {
+                taker_served_window: true,
                 market_index: 0,
                 direction: Direction::Long,
                 size: 1_000 * UNIT,

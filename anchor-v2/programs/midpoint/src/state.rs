@@ -200,8 +200,10 @@ pub struct MidpointQuoterV0 {
     /// Maker kill switch (config path; the registry's `is_active` is the
     /// velocity-side one).
     pub is_paused: u8,
-    /// Quote only flow attested by velocity's current `hot_flow_authority`
-    /// (see `crate::velocity`).
+    /// Quote only protected flow: takers whose flow served a window before
+    /// the call — the swift hold, or the book's activation delay. Velocity
+    /// asserts the fact on the wire (`taker_served_window`), and this
+    /// program trusts its caller for it as it does for `users` and `caps`.
     pub require_attested_flow: u8,
     pub bid_count: u8,
     pub ask_count: u8,

@@ -44,6 +44,9 @@ pub mod state;
 #[cfg(any(test, feature = "fuzz-fixtures"))]
 pub mod test_utils;
 mod validation;
+pub use validation::sig_verification::{
+    verify_flow_attestation, FlowAttestationV0, FLOW_ATTESTATION_DOMAIN,
+};
 pub mod vlp;
 
 // Re-exported so consumers (tests, keepers) parse relay condition blocks and
@@ -343,15 +346,22 @@ pub mod velocity {
     /// message, not a transaction, so the keeper answers for the account list
     /// it chose. It must carry every quoter the message named, and it owes the
     /// taker every maker it had room for.
+    /// `flow_attestation` is swift's detached signature over the order's own
+    /// signature plus an expiry: proof the order served the hold, without
+    /// the flow authority signing this keeper-built transaction. Absent
+    /// reads as unattested — on a book with a speed bump the order rests
+    /// whole instead of filling.
     pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
         ctx: Context<'info, PlaceSignedMsgTakerOrder<'info>>,
         signed_msg_order_params_message_bytes: Vec<u8>,
         is_delegate_signer: bool,
+        flow_attestation: Option<crate::validation::sig_verification::FlowAttestationV0>,
     ) -> Result<()> {
         handle_place_signed_msg_taker_order(
             ctx,
             signed_msg_order_params_message_bytes,
             is_delegate_signer,
+            flow_attestation,
         )
     }
 
@@ -509,8 +519,8 @@ pub mod velocity {
     /// their flow, not the filler. Empty for an order with no signed route.
     /// @deprecated Legacy fill, kept for ABI compatibility. It routes the fill
     /// through the vAMM + DLOB makers but carries no CLOB books, and a restable
-    /// remainder stays on the DLOB. New integrations use `fill_perp_order_v1`,
-    /// which carries the market's CLOB and migrates the remainder to the book.
+    /// remainder stays on the DLOB. `fill_legacy_dlob_order` carries the
+    /// market's CLOB and migrates the remainder to the book.
     pub fn fill_perp_order<'c: 'info, 'info>(
         ctx: Context<'info, FillOrder<'info>>,
         order_id: Option<u32>,
@@ -523,17 +533,19 @@ pub mod velocity {
     /// `fill_perp_order` with the market's CLOB accounts required: a restable
     /// remainder of the filled order migrates to the book instead of resting
     /// in `User.orders`. v0's account list is frozen, so this is a separate
-    /// endpoint. `market_index` is an argument because the crank-conditions
-    /// PDA seed needs it before any account is loaded; it is checked against
-    /// the order's own market.
-    pub fn fill_perp_order_v1<'c: 'info, 'info>(
-        ctx: Context<'info, FillOrderV1<'info>>,
+    /// endpoint. Only the legacy placement and trigger endpoints create live
+    /// orders in `User.orders`, so this endpoint fills legacy orders only.
+    /// It is deleted together with that legacy surface. `market_index` is an
+    /// argument because the crank-conditions PDA seed needs it before any
+    /// account is loaded; it is checked against the order's own market.
+    pub fn fill_legacy_dlob_order<'c: 'info, 'info>(
+        ctx: Context<'info, FillLegacyDlobOrder<'info>>,
         order_id: Option<u32>,
         _maker_order_id: Option<u32>,
         signed_route: Vec<Pubkey>,
         market_index: u16,
     ) -> Result<()> {
-        handle_fill_perp_order_v1(ctx, order_id, signed_route, market_index)
+        handle_fill_legacy_dlob_order(ctx, order_id, signed_route, market_index)
     }
 
     pub fn revert_fill(ctx: Context<RevertFill>) -> Result<()> {
@@ -542,7 +554,7 @@ pub mod velocity {
 
     /// @deprecated Legacy trigger, kept for ABI compatibility. It flips the
     /// fired order live and leaves it on the DLOB for a later fill crank. New
-    /// integrations use `trigger_order_v1`, which fires and fills the order
+    /// integrations use `trigger_market_order_v1`, which fires and fills the order
     /// straight to the book in one instruction.
     pub fn trigger_order<'c: 'info, 'info>(
         ctx: Context<'info, TriggerOrder<'info>>,
@@ -555,13 +567,13 @@ pub mod velocity {
     /// it fills the fired order in the same instruction and rests only the
     /// remainder as a taker-origin order, so nothing lingers live in
     /// `User.orders`.
-    pub fn trigger_order_v1<'c: 'info, 'info>(
-        ctx: Context<'info, TriggerOrderV1<'info>>,
+    pub fn trigger_market_order_v1<'c: 'info, 'info>(
+        ctx: Context<'info, TriggerMarketOrderV1<'info>>,
         market_index: u16,
         order_id: u32,
         signed_route: Vec<Pubkey>,
     ) -> Result<()> {
-        handle_trigger_order_v1(ctx, market_index, order_id, signed_route)
+        handle_trigger_market_order_v1(ctx, market_index, order_id, signed_route)
     }
 
     pub fn force_cancel_orders<'c: 'info, 'info>(
@@ -2485,12 +2497,12 @@ pub mod velocity {
     /// Crank an armed trigger-limit order onto the market's CLOB once its
     /// trigger condition is met (permissionless; keeper earns the flat
     /// reward from the user). Stop-markets go through `trigger_order`.
-    pub fn trigger_clob_order<'c: 'info, 'info>(
-        ctx: Context<'info, TriggerClobOrder<'info>>,
+    pub fn trigger_limit_order_v1<'c: 'info, 'info>(
+        ctx: Context<'info, TriggerLimitOrderV1<'info>>,
         market_index: u16,
         order_id: u32,
     ) -> Result<()> {
-        handle_trigger_clob_order(ctx, market_index, order_id)
+        handle_trigger_limit_order_v1(ctx, market_index, order_id)
     }
 
     /// Fill two crossed resting sources against each other (permissionless;
@@ -2589,16 +2601,18 @@ pub mod velocity {
         handle_resolve_trigger_order(ctx)
     }
 
-    /// Relay resolver for `trigger_clob_order`. Meant to be simulated, not
+    /// Relay resolver for `trigger_limit_order_v1`. Meant to be simulated, not
     /// landed.
-    pub fn resolve_trigger_clob_order(ctx: Context<ResolveTriggerClobOrder>) -> Result<()> {
-        handle_resolve_trigger_clob_order(ctx)
+    pub fn resolve_trigger_limit_order_v1(ctx: Context<ResolveTriggerLimitOrderV1>) -> Result<()> {
+        handle_resolve_trigger_limit_order_v1(ctx)
     }
 
-    /// Relay resolver for `trigger_order_v1`. Meant to be simulated, not
+    /// Relay resolver for `trigger_market_order_v1`. Meant to be simulated, not
     /// landed.
-    pub fn resolve_trigger_order_v1(ctx: Context<ResolveTriggerOrderV1>) -> Result<()> {
-        handle_resolve_trigger_order_v1(ctx)
+    pub fn resolve_trigger_market_order_v1(
+        ctx: Context<ResolveTriggerMarketOrderV1>,
+    ) -> Result<()> {
+        handle_resolve_trigger_market_order_v1(ctx)
     }
 
     /// Rewrite only the liquidation half of a user's condition block.

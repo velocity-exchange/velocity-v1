@@ -1,28 +1,24 @@
 //! `place_and_take_perp_order_v1` — the CLOB-aware taker route.
 //!
-//! Same semantics as `place_and_take_perp_order`, except the market's CLOB
-//! accounts are **required**, and an unfilled restable limit remainder rests
-//! on the book instead of on the DLOB ("if it can rest and be matched, it
+//! The taker's order is ephemeral: built on the stack, margin-checked, filled
+//! through the router across the vAMM, the quoter books, and the passed DLOB
+//! makers, and never written into `User.orders`. The restable remainder rests
+//! on the market's CLOB taker-origin ("if it can rest and be matched, it
 //! lives on the CLOB", applied to the taker flow's leftover).
 //!
 //! Why a new instruction rather than optional accounts on v0: appending
 //! optional accounts to a shipped `#[derive(Accounts)]` changes the account
 //! list every existing client builds, so v0 keeps its exact `master` shape
 //! forever and callers opt into the book by naming this endpoint. The two
-//! share one body ([`crate::instructions::place_and_take_perp_order`]) — the
-//! only difference is whether the CLOB accounts are passed.
-//!
-//! Not yet routed *through* the book: the fill leg here is still the vAMM
-//! plus the DLOB makers the caller passed. Filling a place-and-take across
-//! external quoter books needs the fill entrypoint's quote/execute account
-//! section, which today only `fill_perp_order`'s keeper entrypoint builds.
+//! paths are separate bodies: v0 runs the legacy slot-order fill
+//! ([`crate::instructions::place_and_take_perp_order_legacy`]); this endpoint
+//! runs the ephemeral routed fill
+//! ([`crate::instructions::place_and_take_perp_order_v1`]).
 
 use {
     crate::{
-        instructions::{constraints::*, place_and_take_perp_order, ClobRemainderRoute},
-        signer::CLOB_AUTHORITY_SEED,
+        instructions::{constraints::*, place_and_take_perp_order_v1, ClobRemainderRoute},
         state::{
-            clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             order_params::OrderParams,
             prop_amm::QuoterV0,
             state::State,
@@ -33,7 +29,6 @@ use {
 };
 
 #[derive(Accounts)]
-#[instruction(params: OrderParams)]
 pub struct PlaceAndTakeV1<'info> {
     pub state: AccountLoader<'info, State>,
     #[account(
@@ -62,21 +57,19 @@ pub struct PlaceAndTakeV1<'info> {
     /// is set to. Its own key, distinct from the per-entry signer a
     /// third-party quoter is handed: signer privilege is inherited by a
     /// callee, and this one may place and cancel on any book, for any user.
-    #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
+    #[account(address = crate::signer::CLOB_AUTHORITY)]
     pub clob_authority: UncheckedAccount<'info>,
-    /// Wake-hint host for the rested remainder. Optional like every other
-    /// CLOB placement path: a market whose conditions were never initialized
-    /// must still be tradeable, and a missed hint costs crank latency, not
-    /// liveness (the fallback poll is the floor).
+    /// The flow authority, signing this transaction as a named account —
+    /// swift builds and signs its own user transactions, so presence marks
+    /// the flow attested. Absent reads as unattested, which on a book with
+    /// a speed bump rests the order whole instead of filling. The zero key
+    /// cannot sign, so an unset flow authority admits nobody.
     #[account(
-        mut,
-        seeds = [
-            CLOB_CRANK_CONDITIONS_PDA_SEED,
-            params.market_index.to_le_bytes().as_ref(),
-        ],
-        bump
+        constraint = flow_authority.key()
+            == state.load()?.hot_key(crate::state::state::HotRole::FlowAuthority)
+            @ crate::error::ErrorCode::UnattestedSynchronousTake
     )]
-    pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
+    pub flow_authority: Option<Signer<'info>>,
 }
 
 #[access_control(
@@ -87,20 +80,26 @@ pub fn handle_place_and_take_perp_order_v1<'c: 'info, 'info>(
     params: OrderParams,
     optional_params: Option<u32>, // u32 for backwards compatibility with v0
 ) -> Result<()> {
-    place_and_take_perp_order(
+    let (taker_served_window, synchronous_take) = {
+        let attested = ctx.accounts.flow_authority.is_some();
+        let synchronous =
+            crate::instructions::synchronous_take_allowed(attested, &ctx.accounts.quoter)?;
+        (attested, synchronous)
+    };
+    place_and_take_perp_order_v1(
         &ctx.accounts.state,
         &ctx.accounts.user,
         &ctx.accounts.user_stats,
         ctx.remaining_accounts,
         params,
         optional_params,
-        Some(ClobRemainderRoute {
+        ClobRemainderRoute {
             quoter: &ctx.accounts.quoter,
             clob_market: &ctx.accounts.clob_market,
             clob_program: &ctx.accounts.clob_program,
             clob_authority: &ctx.accounts.clob_authority,
-            clob_authority_nonce: ctx.bumps.clob_authority,
-            crank_conditions: ctx.accounts.crank_conditions.as_ref(),
-        }),
+        },
+        taker_served_window,
+        synchronous_take,
     )
 }

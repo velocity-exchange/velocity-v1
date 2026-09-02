@@ -2008,7 +2008,7 @@ struct ForceMarkets {
     writeable: Vec<MarketId>,
 }
 
-/// The market's CLOB accounts, which select `fill_perp_order_v1`: the filled
+/// The market's CLOB accounts, which select `fill_legacy_dlob_order`: the filled
 /// order's restable remainder migrates to the book rather than resting in
 /// `User.orders`. `market_index` is separate from the fill's own because the
 /// crank-conditions PDA seed needs it before any account is loaded.
@@ -2021,8 +2021,9 @@ pub struct ClobFillAccounts {
     /// The book's `place_authority`, which is its own PDA — not the per-entry
     /// key a third-party quoter is handed. See `velocity::signer`.
     pub clob_authority: Pubkey,
-    /// `None` = the market's crank conditions were never initialized; the
-    /// placement skips the wake hint and the fallback poll covers it.
+    /// Only `force_cancel_clob_orders` reads this — it is the wake-hint host
+    /// for that sweep. The placement and fill builders do not use it.
+    /// `None` = the market's crank conditions were never initialized.
     pub crank_conditions: Option<Pubkey>,
 }
 
@@ -2761,6 +2762,10 @@ impl<'a> TransactionBuilder<'a> {
         signed_order_info: &SignedOrderInfo,
         taker_account: &User,
         clob: ClobFillAccounts,
+        // Swift's detached attestation for this order, from `/attest`. On a
+        // book with a speed bump, `None` rests the whole order instead of
+        // filling synchronously.
+        flow_attestation: Option<program::FlowAttestationV0>,
     ) -> Self {
         let order_params = signed_order_info.order_params();
         assert!(
@@ -2792,7 +2797,6 @@ impl<'a> TransactionBuilder<'a> {
                 clob_market: clob.clob_market,
                 clob_program: clob.clob_program,
                 clob_authority: clob.clob_authority,
-                crank_conditions: clob.crank_conditions,
             },
             [taker_account].into_iter(),
             self.force_markets.readable.iter(),
@@ -2824,6 +2828,7 @@ impl<'a> TransactionBuilder<'a> {
             data: InstructionData::data(&program::instruction::PlaceSignedMsgTakerOrder {
                 signed_msg_order_params_message_bytes: swift_taker_ix_data,
                 is_delegate_signer: signed_order_info.using_delegate_signing(),
+                flow_attestation,
             }),
         };
 
@@ -3501,7 +3506,7 @@ impl<'a> TransactionBuilder<'a> {
         let mut accounts = match &clob {
             Some(clob) => build_accounts(
                 self.program_data,
-                program::accounts::FillOrderV1 {
+                program::accounts::FillLegacyDlobOrder {
                     state: *state_account(),
                     authority: self.authority,
                     user: taker,
@@ -3512,7 +3517,6 @@ impl<'a> TransactionBuilder<'a> {
                     clob_market: clob.clob_market,
                     clob_program: clob.clob_program,
                     clob_authority: clob.clob_authority,
-                    crank_conditions: clob.crank_conditions,
                     // Always named. A fill that leaves a book short of an
                     // owner is refused unless velocity can count the
                     // transaction's accounts, and only this sysvar tells it.
@@ -3582,7 +3586,7 @@ impl<'a> TransactionBuilder<'a> {
             program_id: constants::PROGRAM_ID,
             accounts,
             data: match &clob {
-                Some(clob) => InstructionData::data(&program::instruction::FillPerpOrderV1 {
+                Some(clob) => InstructionData::data(&program::instruction::FillLegacyDlobOrder {
                     order_id: taker_order_id,
                     _maker_order_id: None,
                     signed_route: signed_route.to_vec(),

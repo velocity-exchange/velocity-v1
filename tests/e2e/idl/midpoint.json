@@ -75,19 +75,6 @@
           "relations": [
             "quoter"
           ]
-        },
-        {
-          "name": "instructions_sysvar",
-          "docs": [
-            "CHECK: the instructions sysvar; see `QuoteV0`."
-          ]
-        },
-        {
-          "name": "velocity_state",
-          "docs": [
-            "CHECK: velocity's global `State`, address-locked; see `QuoteV0`."
-          ],
-          "address": "2etx5NvPNxeMZ7EfHE6GjJfW2imRYEUANehNS1WB4CVW"
         }
       ],
       "args": [
@@ -202,24 +189,6 @@
             "mut only for the response tail — the ladder is not touched."
           ],
           "writable": true
-        },
-        {
-          "name": "instructions_sysvar",
-          "docs": [
-            "CHECK: the instructions sysvar; `Instructions::try_from` inside the",
-            "attestation check verifies the address, and it is only read when the",
-            "quoter requires attested flow."
-          ]
-        },
-        {
-          "name": "velocity_state",
-          "docs": [
-            "CHECK: velocity's global `State`, address-locked. Read only for",
-            "`hot_flow_authority` and only when the quoter requires attested flow —",
-            "the current flow key lives there, never on this instance (see",
-            "`crate::velocity`). Registered on the quoter entry's quote leg."
-          ],
-          "address": "2etx5NvPNxeMZ7EfHE6GjJfW2imRYEUANehNS1WB4CVW"
         }
       ],
       "args": [
@@ -636,6 +605,14 @@
                 }
               }
             }
+          },
+          {
+            "name": "taker_served_window",
+            "docs": [
+              "Same contract as [`QuoteArgsV0::taker_served_window`]. The execute",
+              "must carry the value its quote carried."
+            ],
+            "type": "bool"
           }
         ]
       }
@@ -843,8 +820,10 @@
           {
             "name": "require_attested_flow",
             "docs": [
-              "Quote only flow attested by velocity's current `hot_flow_authority`",
-              "(see `crate::velocity`)."
+              "Quote only protected flow: takers whose flow served a window before",
+              "the call — the swift hold, or the book's activation delay. Velocity",
+              "asserts the fact on the wire (`taker_served_window`), and this",
+              "program trusts its caller for it as it does for `users` and `caps`."
             ],
             "type": "u8"
           },
@@ -1021,6 +1000,19 @@
               "levels the caller drops. It never widens what a quoter may fill."
             ],
             "type": "u64"
+          },
+          {
+            "name": "taker_served_window",
+            "docs": [
+              "Whether the taker's flow served a protection window before this call:",
+              "the swift hold (an attested transaction), or the book's activation",
+              "delay (a protocol crank that fills an order which rested through it).",
+              "The caller asserts it, like `users` and `caps` — a quoter already",
+              "authenticates the caller, and the caller is the settlement engine. A",
+              "quoter that only serves protected flow (the midpoint's",
+              "`require_attested_flow`) refuses when this is false."
+            ],
+            "type": "bool"
           }
         ]
       }

@@ -1,22 +1,23 @@
-//! `fill_perp_order_v1` — the CLOB-aware keeper fill.
+//! `fill_legacy_dlob_order` — the keeper fill for live orders in
+//! `User.orders`.
 //!
-//! Same fill as `fill_perp_order`, plus the market's CLOB accounts, and a
+//! Same fill as `fill_perp_order`, plus the market's CLOB accounts: the
+//! router prices the book beside the vAMM and the DLOB makers, and a
 //! restable remainder migrates to the book instead of resting in
 //! `User.orders`.
 //!
-//! This closes the last hole in "if it can rest and be matched, it lives on
-//! the CLOB". A signed-message taker order cannot be IOC — the program
-//! rejects that — so whatever it does not fill rests. `place_and_take_v1` and
-//! `place_and_make_v1` migrate their own remainders because they hold CLOB
-//! accounts; a keeper-driven fill held none, so every partially-filled swift
-//! order stayed on the DLOB. This is the highest-volume case of the
-//! exception, not an edge one.
+//! Only the legacy endpoints still create live orders in `User.orders`:
+//! v0 `place_perp_order` rests and auctions, and stops that v0
+//! `trigger_order` fired. The v1 taker flows fill ephemeral orders and rest
+//! remainders on the book directly, so their orders never need this crank.
+//! Each fill here moves a remainder off the DLOB, so this instruction
+//! drains the legacy book. It is deleted together with the legacy placement
+//! and trigger endpoints.
 //!
 //! Cheap in accounts, which is what makes it viable on the most
 //! account-pressured instruction in the program: a router fill already
 //! carries the CLOB entry, its book, the clob program and the quoter signer,
-//! because the market's canonical CLOB is a mandatory baseline. Only
-//! `crank_conditions` is new, and it is optional here as everywhere else.
+//! because the market's canonical CLOB is a mandatory baseline.
 //!
 //! A market-order remainder migrates too, resting at `auction_end_price` —
 //! the worst fill it already agreed to, and the only price it has. That is
@@ -26,17 +27,15 @@
 //! competes on price instead of on transaction landing. Resting at a slippage
 //! bound without that is a free option written at the taker's worst price.
 //!
-//! Oracle-offset orders still do not migrate — an oracle-floating price has
-//! nothing fixed to rest at. See `docs/taker-remainder-auction.md`.
+//! An `OrderType::Oracle` remainder does not migrate — an oracle-floating
+//! price has nothing fixed to rest at. See `docs/taker-remainder-auction.md`.
 
 use {
     crate::{
         error::ErrorCode,
         instructions::{constraints::*, keeper::FillAccounts, ClobRemainderRoute},
         load,
-        signer::CLOB_AUTHORITY_SEED,
         state::{
-            clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             prop_amm::QuoterV0,
             state::State,
             user::{User, UserStats},
@@ -47,8 +46,7 @@ use {
 };
 
 #[derive(Accounts)]
-#[instruction(order_id: Option<u32>, _maker_order_id: Option<u32>, signed_route: Vec<Pubkey>, market_index: u16)]
-pub struct FillOrderV1<'info> {
+pub struct FillLegacyDlobOrder<'info> {
     pub state: AccountLoader<'info, State>,
     pub authority: Signer<'info>,
     #[account(
@@ -81,20 +79,8 @@ pub struct FillOrderV1<'info> {
     pub clob_program: UncheckedAccount<'info>,
     /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
     /// is, and nothing a third-party quoter is ever handed.
-    #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
+    #[account(address = crate::signer::CLOB_AUTHORITY)]
     pub clob_authority: UncheckedAccount<'info>,
-    /// Wake-hint host for the rested remainder. Optional as on every CLOB
-    /// placement path: a market whose conditions were never initialized must
-    /// still be fillable, and a missed hint costs crank latency, not liveness.
-    #[account(
-        mut,
-        seeds = [
-            CLOB_CRANK_CONDITIONS_PDA_SEED,
-            market_index.to_le_bytes().as_ref(),
-        ],
-        bump
-    )]
-    pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
     /// CHECK: address-locked to the instructions sysvar. Read for two facts a
     /// fill cannot get anywhere else: whether the taker signed this
     /// transaction, and how many accounts the transaction locks.
@@ -108,15 +94,13 @@ pub struct FillOrderV1<'info> {
     pub instructions_sysvar: Option<UncheckedAccount<'info>>,
 }
 
-/// `market_index` is an argument rather than being read off the order because
-/// the `crank_conditions` PDA seed needs it at account-resolution time, before
-/// any account is loaded. It is checked against the order's own market below,
-/// so a mismatch is a malformed transaction rather than a wrong book.
+/// `market_index` is checked against the order's own market below, so a
+/// mismatch is a malformed transaction rather than a wrong book.
 #[access_control(
     fill_not_paused(&ctx.accounts.state)
 )]
-pub fn handle_fill_perp_order_v1<'c: 'info, 'info>(
-    ctx: Context<'info, FillOrderV1<'info>>,
+pub fn handle_fill_legacy_dlob_order<'c: 'info, 'info>(
+    ctx: Context<'info, FillLegacyDlobOrder<'info>>,
     order_id: Option<u32>,
     signed_route: Vec<Pubkey>,
     market_index: u16,
@@ -163,7 +147,13 @@ pub fn handle_fill_perp_order_v1<'c: 'info, 'info>(
     };
 
     let user_key = &ctx.accounts.user.key();
-    crate::instructions::keeper::fill_order_v1_entry(
+    // A keeper fill is never attested flow: the attestation transports are
+    // the flow authority signing a swift-built transaction, or a detached
+    // attestation bound to a signed-message order — a legacy slot order has
+    // neither. On a bumped book the route quotes the book as empty and the
+    // restable remainder migrates into the auction.
+    let taker_served_window = false;
+    crate::instructions::keeper::fill_legacy_dlob_order_entry(
         FillAccounts {
             state: &ctx.accounts.state,
             filler: &ctx.accounts.filler,
@@ -176,13 +166,12 @@ pub fn handle_fill_perp_order_v1<'c: 'info, 'info>(
         market_index,
         signed_route,
         obligation,
+        taker_served_window,
         Some(ClobRemainderRoute {
             quoter: &ctx.accounts.quoter,
             clob_market: &ctx.accounts.clob_market,
             clob_program: &ctx.accounts.clob_program,
             clob_authority: &ctx.accounts.clob_authority,
-            clob_authority_nonce: ctx.bumps.clob_authority,
-            crank_conditions: ctx.accounts.crank_conditions.as_ref(),
         }),
     )
     .inspect_err(|_e| {

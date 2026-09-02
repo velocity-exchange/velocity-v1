@@ -9,7 +9,7 @@
 //! just filled, because the reservoir is by definition low at that moment.
 
 use {
-    super::crank_common::ResolveClobCrank,
+    super::helpers::crank_common::ResolveClobCrank,
     crate::{
         error::ErrorCode,
         instructions::relay_harness::StagedCall,

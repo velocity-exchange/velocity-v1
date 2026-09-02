@@ -40,6 +40,9 @@ pub fn handle_place_order_v0(
     let delay = match args.activation_delay_slots {
         None => market.default_activation_delay_slots,
         Some(d) => {
+            // Only the upper bound is checked here. A delay below the default
+            // is legal from the place authority: velocity gates that on the
+            // flow attestation, and only velocity can place.
             require!(
                 d <= market.max_activation_delay_slots,
                 ClobError::InvalidActivationDelay

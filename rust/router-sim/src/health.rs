@@ -151,6 +151,9 @@ impl<'a> QuoteRequest<'a> {
             exclude,
             only: self.only,
             include_vamm: self.include_vamm,
+            // Health probes and the published books price protected flow:
+            // the full view, as an attested taker or a crank would see it.
+            taker_served_window: true,
         }
     }
 }

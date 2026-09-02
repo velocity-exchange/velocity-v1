@@ -130,13 +130,17 @@ fn validate_limit_order(
         order.reduce_only || order.is_jit_maker(),
     )?;
 
-    if order.price == 0 && !order.has_oracle_price_offset() {
-        msg!("Limit order price == 0");
-        return Err(ErrorCode::InvalidOrderLimitPrice);
+    // A limit order must carry a fixed price. An oracle-floating limit
+    // cannot rest on a CLOB, so it would strand in `User.orders` as the last
+    // live occupant of the legacy DLOB. A maker that wants an oracle-relative
+    // quote uses a PropAMM quoter instead.
+    if order.has_oracle_price_offset() {
+        msg!("Limit order can not have oracle offset");
+        return Err(ErrorCode::InvalidOrderOracleOffset);
     }
 
-    if order.has_oracle_price_offset() && order.price != 0 {
-        msg!("Limit order price must be 0 for taker oracle offset order");
+    if order.price == 0 {
+        msg!("Limit order price == 0");
         return Err(ErrorCode::InvalidOrderLimitPrice);
     }
 
@@ -162,11 +166,9 @@ fn validate_limit_order(
 
 fn validate_limit_order_auction_params(order: &Order) -> VelocityResult {
     if order.has_auction() {
-        if order.has_oracle_price_offset() {
-            validate_oracle_auction_params(order)?;
-        } else {
-            validate_auction_params(order)?;
-        }
+        // A limit order never has an oracle offset, so its auction bounds
+        // are always absolute prices.
+        validate_auction_params(order)?;
     } else {
         validate!(
             order.auction_start_price == 0,

@@ -814,7 +814,7 @@
     {
       "code": 6008,
       "name": "InvalidActivationDelay",
-      "msg": "Activation delay outside [default, max_activation_delay_slots]"
+      "msg": "Activation delay above max_activation_delay_slots"
     },
     {
       "code": 6009,
@@ -1705,6 +1705,14 @@
                 }
               }
             }
+          },
+          {
+            "name": "taker_served_window",
+            "docs": [
+              "Same contract as [`QuoteArgsV0::taker_served_window`]. The execute",
+              "must carry the value its quote carried."
+            ],
+            "type": "bool"
           }
         ]
       }
@@ -2791,6 +2799,19 @@
               "levels the caller drops. It never widens what a quoter may fill."
             ],
             "type": "u64"
+          },
+          {
+            "name": "taker_served_window",
+            "docs": [
+              "Whether the taker's flow served a protection window before this call:",
+              "the swift hold (an attested transaction), or the book's activation",
+              "delay (a protocol crank that fills an order which rested through it).",
+              "The caller asserts it, like `users` and `caps` — a quoter already",
+              "authenticates the caller, and the caller is the settlement engine. A",
+              "quoter that only serves protected flow (the midpoint's",
+              "`require_attested_flow`) refuses when this is false."
+            ],
+            "type": "bool"
           }
         ]
       }

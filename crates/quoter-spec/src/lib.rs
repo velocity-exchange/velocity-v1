@@ -948,6 +948,14 @@ pub struct QuoteArgsV0<'a> {
     /// caller compute; ignoring it wastes the caller's compute and returns
     /// levels the caller drops. It never widens what a quoter may fill.
     pub limit_price: u64,
+    /// Whether the taker's flow served a protection window before this call:
+    /// the swift hold (an attested transaction), or the book's activation
+    /// delay (a protocol crank that fills an order which rested through it).
+    /// The caller asserts it, like `users` and `caps` — a quoter already
+    /// authenticates the caller, and the caller is the settlement engine. A
+    /// quoter that only serves protected flow (the midpoint's
+    /// `require_attested_flow`) refuses when this is false.
+    pub taker_served_window: bool,
 }
 
 /// Arguments to `execute_v0`: commit a fill.
@@ -971,6 +979,9 @@ pub struct ExecuteArgsV0<'a> {
     /// different set of orders than the one it quoted.
     pub reference_price: i64,
     pub taker: Option<UserRefV0>,
+    /// Same contract as [`QuoteArgsV0::taker_served_window`]. The execute
+    /// must carry the value its quote carried.
+    pub taker_served_window: bool,
 }
 
 /// The framing of the request half.

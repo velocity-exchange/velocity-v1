@@ -35,12 +35,8 @@ where
     T: wincode::SchemaWrite<anchor_lang::BorshConfig, Src = T> + ?Sized,
 {
     let mut bytes = Vec::new();
-    anchor_lang::wincode::config::serialize_into(
-        &mut bytes,
-        value,
-        anchor_lang::BORSH_CONFIG,
-    )
-    .unwrap();
+    anchor_lang::wincode::config::serialize_into(&mut bytes, value, anchor_lang::BORSH_CONFIG)
+        .unwrap();
     bytes
 }
 
@@ -544,6 +540,7 @@ fn the_args_round_trip_with_caps_between_the_set_and_the_taker() {
     use crate::instructions::quote_v0::QuoteArgsV0;
     let taker = user(0xC);
     let args = QuoteArgsV0 {
+        taker_served_window: true,
         direction: crate::state::Direction::Long,
         size: 12,
         users: &[],
@@ -594,6 +591,7 @@ fn the_user_set_is_read_in_place_and_costs_only_what_it_carries() {
 
     let users = [user(0xA), user(0xB)];
     let args = QuoteArgsV0 {
+        taker_served_window: true,
         users: &users,
         direction: crate::state::Direction::Long,
         size: 7,
@@ -609,10 +607,10 @@ fn the_user_set_is_read_in_place_and_costs_only_what_it_carries() {
     assert_eq!(bytes[..4], 2u32.to_le_bytes());
     assert_eq!(bytes[4..4 + USER_REF_BYTES], encode(&user(0xA))[..]);
     // The trailing bytes: direction, size, caps, reference price, the absent
-    // taker's option tag, and the price bound.
+    // taker's option tag, the price bound, and the served-window flag.
     assert_eq!(
         bytes.len(),
-        4 + 2 * USER_REF_BYTES + 1 + 8 + USER_CAPS_BYTES + 8 + 1 + 8
+        4 + 2 * USER_REF_BYTES + 1 + 8 + USER_CAPS_BYTES + 8 + 1 + 8 + 1
     );
 
     let decoded: QuoteArgsV0 =

@@ -164,6 +164,72 @@ fn validate_signed_msg_network(
     }
 }
 
+/// A flow attestation: the flow authority's detached signature over one
+/// order's own signature plus an expiry. It marks the order's flow as
+/// having served the swift hold, without the flow authority signing the
+/// transaction. A transaction signer is transaction-global — the fill
+/// transaction is keeper-built, and a co-signature on it needed an
+/// allowlist, a shape proof, and a drain-vector analysis. A detached
+/// signature over one order's signature authorizes exactly one thing.
+/// It also costs no signature fee: it is verified in-program, like the
+/// taker signature it binds to.
+#[derive(
+    anchor_lang::prelude::AnchorSerialize,
+    anchor_lang::prelude::AnchorDeserialize,
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+)]
+pub struct FlowAttestationV0 {
+    pub signature: [u8; 64],
+    /// Unix seconds this attestation is good until. Bounds how long a
+    /// keeper can sit on a released attestation before filling.
+    pub expiry_ts: i64,
+}
+
+/// Domain separator for [`FlowAttestationV0`] messages, so a flow-authority
+/// signature made for this purpose verifies for no other.
+pub const FLOW_ATTESTATION_DOMAIN: &[u8] = b"velocity.flow.attestation.v0";
+
+/// Verify a flow attestation against the current flow authority, the order
+/// signature it must bind to, and the clock. An invalid, expired, or
+/// impossible (no flow authority configured) attestation is an error rather
+/// than an unattested fill: the caller claimed protection it does not have.
+pub fn verify_flow_attestation(
+    attestation: &FlowAttestationV0,
+    flow_authority: &anchor_lang::prelude::Pubkey,
+    order_signature: &[u8; 64],
+    now: i64,
+) -> Result<()> {
+    if *flow_authority == anchor_lang::prelude::Pubkey::default() {
+        msg!("no flow authority is configured; attestation impossible");
+        return Err(ErrorCode::SigVerificationFailed.into());
+    }
+    if now > attestation.expiry_ts {
+        msg!(
+            "flow attestation expired at {}, now {}",
+            attestation.expiry_ts,
+            now
+        );
+        return Err(ErrorCode::SigVerificationFailed.into());
+    }
+    brine_ed25519::verify(
+        &brine_ed25519::Address::new_from_array(flow_authority.to_bytes()),
+        &attestation.signature,
+        &[
+            FLOW_ATTESTATION_DOMAIN,
+            order_signature,
+            &attestation.expiry_ts.to_le_bytes(),
+        ],
+    )
+    .map_err(|_| {
+        msg!("flow attestation signature does not verify");
+        ErrorCode::SigVerificationFailed.into()
+    })
+}
+
 /// Verify a swift order message in-program and decode it.
 ///
 /// `message_bytes` is the `place_signed_msg_taker_order` argument, packed as

@@ -655,19 +655,3 @@ pub fn tx_writable_lock_count(instructions_sysvar: &AccountInfo) -> VelocityResu
     }
     Ok(count)
 }
-
-pub fn tx_co_signed_by(instructions_sysvar: &AccountInfo, signer: &Pubkey) -> VelocityResult<bool> {
-    use solana_program::sysvar::instructions::load_instruction_at_checked;
-    let mut index = 0usize;
-    while let Ok(instruction) = load_instruction_at_checked(index, instructions_sysvar) {
-        if instruction
-            .accounts
-            .iter()
-            .any(|meta| meta.is_signer && meta.pubkey == *signer)
-        {
-            return Ok(true);
-        }
-        index += 1;
-    }
-    Ok(false)
-}

@@ -121,7 +121,9 @@ test_files=(
   ordersWithSpread.ts
   pauseExchange.ts
   pauseDepositWithdraw.ts
-  placeAndMakePerp.ts
+  # placeAndMakePerp.ts # tests the deleted taker-matching place_and_make (v0); the v1
+  # endpoint rests on the market's CLOB, which this harness does not stand up —
+  # covered by integration-tests/tests/router_fill.rs against the real .so
   placeAndMakeSignedMsgBankrun.ts
   postOnly.ts
   prelisting.ts

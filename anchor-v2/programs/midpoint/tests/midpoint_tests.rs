@@ -21,7 +21,6 @@ use {
             CancelSidesV0, Direction, MidpointQuoterV0, QuoterConfigV0, SplineLevelInputV0,
             UserCapsV0, UserRefV0, RESPONSE_OFFSET,
         },
-        velocity::STATE_HOT_FLOW_AUTHORITY_OFFSET,
         CancelAllArgsV0, ExecuteArgsV0, QuoteArgsV0, SetLevelsArgsV0, SetMidArgsV0,
         UpdateQuoterArgsV0,
     },
@@ -55,22 +54,12 @@ fn velocity_program_id() -> Pubkey {
         .unwrap()
 }
 
-fn velocity_state() -> Pubkey {
-    Pubkey::find_program_address(&[b"velocity_state"], &velocity_program_id()).0
-}
-
 fn addr(pk: Pubkey) -> Address {
     Address::new_from_array(pk.to_bytes())
 }
 
 fn system_program() -> Pubkey {
     "11111111111111111111111111111111".parse().unwrap()
-}
-
-fn instructions_sysvar() -> Pubkey {
-    "Sysvar1nstructions1111111111111111111111111"
-        .parse()
-        .unwrap()
 }
 
 struct Ctx {
@@ -82,7 +71,6 @@ struct Ctx {
     user_authority: Keypair,
     hot: Keypair,
     execute_auth: Keypair,
-    flow: Keypair,
     quoter: Pubkey,
 }
 
@@ -112,32 +100,6 @@ fn config() -> QuoterConfigV0 {
     }
 }
 
-/// Stand in for velocity's `State`: the only bytes the midpoint reads are
-/// `hot_flow_authority` at its fixed offset, and the only identity checks are
-/// the account's address and owner (a discriminator check would be redundant —
-/// nothing but `State` can live at that PDA).
-fn write_velocity_state(svm: &mut LiteSVM, owner: Pubkey, flow_authority: Option<Pubkey>) {
-    let mut data = vec![0u8; VELOCITY_STATE_SIZE];
-    // Velocity's own discriminator, unread here; nonzero so the fixture never
-    // looks like a fresh allocation.
-    data[..8].copy_from_slice(&[0xAA; 8]);
-    if let Some(key) = flow_authority {
-        data[STATE_HOT_FLOW_AUTHORITY_OFFSET..STATE_HOT_FLOW_AUTHORITY_OFFSET + 32]
-            .copy_from_slice(&key.to_bytes());
-    }
-    svm.set_account(
-        velocity_state(),
-        Account {
-            lamports: 1_000_000_000,
-            data,
-            owner,
-            executable: false,
-            rent_epoch: 0,
-        },
-    )
-    .unwrap();
-}
-
 fn setup() -> Ctx {
     setup_with_config(config())
 }
@@ -151,10 +113,7 @@ fn setup_with_config(config: QuoterConfigV0) -> Ctx {
     let user_authority = Keypair::new();
     let hot = Keypair::new();
     let execute_auth = Keypair::new();
-    let flow = Keypair::new();
     svm.airdrop(&payer.pubkey(), 100_000_000_000).unwrap();
-    // The flow authority velocity currently publishes.
-    write_velocity_state(&mut svm, velocity_program_id(), Some(flow.pubkey()));
 
     let quoter = quoter_pda(
         config.market_index,
@@ -178,7 +137,6 @@ fn setup_with_config(config: QuoterConfigV0) -> Ctx {
         user_authority,
         hot,
         execute_auth,
-        flow,
         quoter,
     };
     send(&mut ctx, ix).unwrap();
@@ -188,17 +146,6 @@ fn setup_with_config(config: QuoterConfigV0) -> Ctx {
 /// Sign with payer plus whichever of the known keys the metas mark as signer.
 fn send(ctx: &mut Ctx, ix: Instruction) -> Result<TransactionMetadata, FailedTransactionMetadata> {
     send_signed_by(ctx, ix, None)
-}
-
-/// Like [`send`], but with an extra co-signer appended to the instruction —
-/// how a flow authority attests a transaction (velocity never forwards signer
-/// bits to a quoter, so the quoter introspects the sysvar instead).
-fn send_co_signed(
-    ctx: &mut Ctx,
-    ix: Instruction,
-    co_signer: &Keypair,
-) -> Result<TransactionMetadata, FailedTransactionMetadata> {
-    send_signed_by(ctx, ix, Some(co_signer))
 }
 
 fn send_signed_by(
@@ -219,7 +166,6 @@ fn send_signed_by(
         &ctx.user_authority,
         &ctx.hot,
         &ctx.execute_auth,
-        &ctx.flow,
     ]
     .into_iter()
     .chain(co_signer)
@@ -348,6 +294,7 @@ fn arm(ctx: &mut Ctx) {
 
 fn quote_args<'a>(direction: Direction, size: u64) -> QuoteArgsV0<'a> {
     QuoteArgsV0 {
+        taker_served_window: true,
         direction,
         size,
         users: &[],
@@ -361,8 +308,6 @@ fn quote_args<'a>(direction: Direction, size: u64) -> QuoteArgsV0<'a> {
 fn quote_ix_with(ctx: &Ctx, args: QuoteArgsV0<'_>) -> Instruction {
     instruction::QuoteV0 { args }.to_instruction(accounts::QuoteV0 {
         quoter: addr(ctx.quoter),
-        instructions_sysvar: addr(instructions_sysvar()),
-        velocity_state: addr(velocity_state()),
     })
 }
 
@@ -371,8 +316,18 @@ fn quote_ix(ctx: &Ctx, direction: Direction, size: u64) -> Instruction {
 }
 
 fn execute_ix(ctx: &Ctx, direction: Direction, size: u64) -> Instruction {
+    execute_ix_served(ctx, direction, size, true)
+}
+
+fn execute_ix_served(
+    ctx: &Ctx,
+    direction: Direction,
+    size: u64,
+    taker_served_window: bool,
+) -> Instruction {
     instruction::ExecuteV0 {
         args: ExecuteArgsV0 {
+            taker_served_window,
             direction,
             size,
             users: &[],
@@ -384,8 +339,6 @@ fn execute_ix(ctx: &Ctx, direction: Direction, size: u64) -> Instruction {
     .to_instruction(accounts::ExecuteV0 {
         quoter: addr(ctx.quoter),
         execute_authority: addr(ctx.execute_auth.pubkey()),
-        instructions_sysvar: addr(instructions_sysvar()),
-        velocity_state: addr(velocity_state()),
     })
 }
 
@@ -714,6 +667,7 @@ fn quoted_user_gates_apply() {
     let ix = quote_ix_with(
         &ctx,
         QuoteArgsV0 {
+            taker_served_window: true,
             users: &[stranger],
             ..quote_args(Direction::Long, UNIT)
         },
@@ -725,6 +679,7 @@ fn quoted_user_gates_apply() {
     let ix = quote_ix_with(
         &ctx,
         QuoteArgsV0 {
+            taker_served_window: true,
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
             taker: Some(quoted),
@@ -738,6 +693,7 @@ fn quoted_user_gates_apply() {
     let ix = quote_ix_with(
         &ctx,
         QuoteArgsV0 {
+            taker_served_window: true,
             users: &[stranger, quoted],
             caps: UserCapsV0::EMPTY,
             reference_price: 0,
@@ -749,99 +705,57 @@ fn quoted_user_gates_apply() {
     assert_eq!(parse_levels(&read_response(&ctx, &meta)).len(), 1);
 }
 
-/// THE reason the flow authority is not a local field: the gate follows
-/// velocity's live `State.hot_flow_authority`, so one rotation there retires a
-/// compromised key for every instance at once — no per-maker migration.
+/// A protected-flow instance serves only takers velocity marks as having
+/// served a window. The claim rides the wire (`taker_served_window`): this
+/// program trusts its caller for it, as it does for `users` and `caps`.
 #[test]
-fn attested_flow_follows_velocitys_current_flow_authority() {
+fn a_protected_flow_instance_refuses_an_unprotected_taker() {
     let mut ctx = setup_with_config(QuoterConfigV0 {
         require_attested_flow: true,
         ..config()
     });
     arm(&mut ctx);
 
-    // Unattested: empty book.
-    assert!(quote_levels(&mut ctx, Direction::Long, UNIT).is_empty());
+    // Unprotected flow sees an empty book.
+    let ix = quote_ix_with(
+        &ctx,
+        QuoteArgsV0 {
+            taker_served_window: false,
+            ..quote_args(Direction::Long, UNIT)
+        },
+    );
+    let meta = send(&mut ctx, ix).unwrap();
+    assert!(parse_levels(&read_response(&ctx, &meta)).is_empty());
 
-    // The published flow authority co-signing opens the book — introspection
-    // sees the signer bit (a quoter CPI never receives real signer bits).
+    // Protected flow quotes.
     let ix = quote_ix(&ctx, Direction::Long, UNIT);
-    let flow = ctx.flow.insecure_clone();
-    let meta = send_co_signed(&mut ctx, ix, &flow).unwrap();
+    let meta = send(&mut ctx, ix).unwrap();
     assert_eq!(parse_levels(&read_response(&ctx, &meta)).len(), 1);
 
     // Execute is gated the same way.
-    let ix = execute_ix(&ctx, Direction::Long, UNIT);
+    let ix = execute_ix_served(&ctx, Direction::Long, UNIT, false);
     let meta = send(&mut ctx, ix).unwrap();
     assert!(parse_execute(&read_response(&ctx, &meta)).is_empty());
     let ix = execute_ix(&ctx, Direction::Long, UNIT);
-    let meta = send_co_signed(&mut ctx, ix, &flow).unwrap();
+    let meta = send(&mut ctx, ix).unwrap();
     assert_eq!(parse_execute(&read_response(&ctx, &meta)).len(), 1);
+}
 
-    // Velocity rotates the role. The retired key stops opening the book
-    // instantly, with no instruction sent to this instance...
-    let rotated = Keypair::new();
-    write_velocity_state(&mut ctx.svm, velocity_program_id(), Some(rotated.pubkey()));
-    let ix = quote_ix(&ctx, Direction::Long, UNIT);
-    let meta = send_co_signed(&mut ctx, ix, &flow).unwrap();
-    assert!(parse_levels(&read_response(&ctx, &meta)).is_empty());
-    // ...and the new one opens it.
-    let ix = quote_ix(&ctx, Direction::Long, UNIT);
-    let meta = send_co_signed(&mut ctx, ix, &rotated).unwrap();
+/// An instance that does not require protected flow ignores the flag: the
+/// wire field constrains nothing unless the maker opted in.
+#[test]
+fn an_unprotected_instance_ignores_the_flag() {
+    let mut ctx = setup();
+    arm(&mut ctx);
+    let ix = quote_ix_with(
+        &ctx,
+        QuoteArgsV0 {
+            taker_served_window: false,
+            ..quote_args(Direction::Long, UNIT)
+        },
+    );
+    let meta = send(&mut ctx, ix).unwrap();
     assert_eq!(parse_levels(&read_response(&ctx, &meta)).len(), 1);
-}
-
-/// An unassigned role (`Pubkey::default()`) closes the gate rather than
-/// leaving it open — the same fail-closed rule velocity applies to fast CLOB
-/// activation.
-#[test]
-fn an_unassigned_flow_authority_silences_an_attested_quoter() {
-    let mut ctx = setup_with_config(QuoterConfigV0 {
-        require_attested_flow: true,
-        ..config()
-    });
-    arm(&mut ctx);
-    write_velocity_state(&mut ctx.svm, velocity_program_id(), None);
-    let ix = quote_ix(&ctx, Direction::Long, UNIT);
-    let flow = ctx.flow.insecure_clone();
-    let meta = send_co_signed(&mut ctx, ix, &flow).unwrap();
-    assert!(parse_levels(&read_response(&ctx, &meta)).is_empty());
-    // A zeroed authority never matches a signer either way.
-    assert!(quote_levels(&mut ctx, Direction::Long, UNIT).is_empty());
-}
-
-/// The state account is identified by address *and* owner: an impostor sitting
-/// at the right address under the wrong program is rejected, not read.
-#[test]
-fn a_state_account_not_owned_by_velocity_is_rejected() {
-    let mut ctx = setup_with_config(QuoterConfigV0 {
-        require_attested_flow: true,
-        ..config()
-    });
-    arm(&mut ctx);
-    write_velocity_state(&mut ctx.svm, system_program(), Some(ctx.flow.pubkey()));
-    let ix = quote_ix(&ctx, Direction::Long, UNIT);
-    let flow = ctx.flow.insecure_clone();
-    assert!(send_co_signed(&mut ctx, ix, &flow).is_err());
-}
-
-/// Any other account in that slot fails the address lock.
-#[test]
-fn a_substituted_state_account_is_rejected() {
-    let mut ctx = setup_with_config(QuoterConfigV0 {
-        require_attested_flow: true,
-        ..config()
-    });
-    arm(&mut ctx);
-    let mut ix = quote_ix(&ctx, Direction::Long, UNIT);
-    let impostor = Pubkey::new_unique();
-    write_velocity_state(&mut ctx.svm, velocity_program_id(), Some(ctx.flow.pubkey()));
-    for meta in ix.accounts.iter_mut() {
-        if meta.pubkey.to_bytes() == velocity_state().to_bytes() {
-            meta.pubkey = impostor;
-        }
-    }
-    assert!(send(&mut ctx, ix).is_err());
 }
 
 #[test]

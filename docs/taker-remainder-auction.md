@@ -1,7 +1,7 @@
 # Taker remainders on the CLOB, and the activation-slot auction
 
 Status: **built.** R1–R8 are live: the CLOB carries the marker, reports it on the removal wire and
-protects a crossed remainder; velocity migrates restable remainders (`fill_perp_order_v1`,
+protects a crossed remainder; velocity migrates restable remainders (`fill_legacy_dlob_order`,
 `place_and_take_v1`, `place_and_make_v1`) and resolves the cross with `crank_taker_origin_cross` —
 against an ordinary maker, and between two remainders (R3's price-time rule) — and relay turners
 discover the crank through the market's existing cross conditions (R8). Signed-message orders and
@@ -257,6 +257,53 @@ second one hop earlier — it fires at that `max_ts`, and removing the expired o
 head — and the every-slots cross fallback is the floor under both, so a missed hint costs latency
 rather than liveness.
 
+## Maker priority: the take-side gate
+
+The rules above protect the *taker's* remainder. The same activation delay also protects makers,
+through a gate on the other side of the trade: on a book with a nonzero
+`default_activation_delay_slots`, only attested flow may fill against the book in the same
+transaction. Attestation has two transports, both from `State.hot_flow_authority`: the key signs
+a swift-built transaction as a named `flow_authority` account, or it signs a detached
+`FlowAttestationV0` over a signed-message order's own signature — verified in-program, so a
+keeper-built fill carries proof without the key ever signing a transaction it did not build,
+and without a second signature fee. An unattested
+marketable order does not take; it rests whole, taker-origin, through the default window, and the
+cross cranks fill it — a maker crosses it at the maker's own price, or it activates and becomes
+ordinary depth.
+
+Cancels are never delayed. That asymmetry is the property: a maker can always reprice ahead of
+aggression it never agreed to fill instantly, so informed flow cannot pick off a stale quote in a
+landing race. Attested retail flow — the flow makers want — keeps its synchronous fill.
+
+Enforced velocity-side, in layers. The taker routes (`place_signed_msg_taker_order`,
+`place_and_take_perp_order_v1`, `trigger_market_order_v1`'s staged tail) skip their fill leg
+entirely for an unattested transaction and rest the whole order. The keeper fills
+(`fill_perp_order`, `fill_legacy_dlob_order`) still run — they are how legacy DLOB orders progress
+— but the route quotes the book as empty for an unattested transaction, so the fill reaches the
+vAMM and the DLOB makers only and the restable remainder migrates into the auction. A
+`place_and_take` shape that demands a synchronous outcome an unattested transaction cannot have —
+an IOC, or a success condition — is refused with `UnattestedSynchronousTake` rather than silently
+rested. The protocol cranks (`crank_cross_match`, `crank_taker_origin_cross`) are exempt: a
+crank's counterparties all rested through placement, so there is no quote to snipe. Liquidation
+fills need no exemption — they route the vAMM and the passed DLOB makers only and never execute
+the book.
+
+Velocity verifies the attestation once, at its own boundary, and forwards the verdict to every
+quoter on the wire: `QuoteArgsV0.taker_served_window` says the taker's flow served a protection
+window — the swift hold, or measured rest on the book. The cranks do not vouch by construction:
+on a zero-delay book, "rested through placement" is a zero-length window, and place-then-crank is
+two back-to-back transactions. A crank marks the flow protected only when the orders it settles
+rested at least `SERVED_WINDOW_MIN_SLOTS` (two slots, above the swift hold), so a zero-delay book
+cannot launder fresh flow into the flag. A quoter that only serves protected flow (the midpoint's
+`require_attested_flow`) checks that flag and nothing else; it trusts velocity for it the way it
+trusts `users` and `caps`, because velocity signs the CPI and settles the fills. This is also what
+lets a rested unattested order reach protected liquidity: the crank that fills it carries the
+proof the taker earned by waiting. The off-chain router view (`quote_router`) takes the same
+fact as an argument, so a client prices exactly the books its flow will reach.
+
+A book with a zero default delay opts out of all of it: every taker is synchronous there, as
+before.
+
 ## What this replaces
 
 `cross_match`'s protocol-as-middleman only makes sense for two *maker* orders crossing, where
@@ -314,10 +361,9 @@ deadlock the book, because the arb cross in front of a remainder is what clears 
 - No cross matching and no pricing: R3 lives in velocity.
 
 **velocity (`programs/velocity`)** — built.
-- `fill_perp_order_v1`: the CLOB accounts plus the migration step. Nearly free in accounts — a
+- `fill_legacy_dlob_order`: the CLOB accounts plus the migration step. Free in accounts — a
   router fill already carries the CLOB entry, its book, the clob program and the quoter signer,
-  because the CLOB baseline is mandatory; only `crank_conditions` is new, and it is optional
-  everywhere else already.
+  because the CLOB baseline is mandatory, so the route adds nothing new.
 - The migration itself reuses `try_place_remainder_on_clob`, with the taker-origin flag set.
 - `crank_taker_origin_cross` resolves one cross, and it resolves it as an ordinary fill. The
   remainder is the taker of a router pass: the market's baseline book and the routed quoters
@@ -412,7 +458,7 @@ immediacy sets zero. Both are supported and both are tested.
 
 All four steps are done.
 
-1. ~~`fill_perp_order_v1` migrating **limit** remainders only.~~ Done.
+1. ~~`fill_legacy_dlob_order` migrating **limit** remainders only.~~ Done.
 2. ~~R2–R5 in the CLOB and velocity: the taker-origin cross.~~ Done.
 3. ~~Market remainders migrate once (2) is live.~~ Done.
 4. ~~keep-rs drops the signed-route plumbing item.~~ Done — signed-message orders route and rest

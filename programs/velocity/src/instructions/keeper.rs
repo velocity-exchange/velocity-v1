@@ -51,11 +51,9 @@ use {
         math_error,
         optional_accounts::{get_token_mint, update_prelaunch_oracle},
         print_error, safe_decrement,
-        signer::CLOB_AUTHORITY_SEED,
         state::{
             clob_crank::{
-                ClobCrankConditionsV0, CrankPaymentsV0, CLOB_CRANK_CONDITIONS_PDA_SEED,
-                LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE,
+                ClobCrankConditionsV0, CrankPaymentsV0, LIQUIDATION_FLAT_PAYMENT_MIN_FILLED_QUOTE,
             },
             events::{DeleteUserRecord, OrderActionExplanation, SignedMsgOrderRecord},
             fill_mode::FillMode,
@@ -161,6 +159,12 @@ pub fn handle_legacy_fill_perp_order<'c: 'info, 'info>(
         }
     };
     let user_key = &ctx.accounts.user.key();
+    // A keeper fill is never attested flow: the attestation transports are
+    // the flow authority signing a swift-built transaction, or a detached
+    // attestation bound to a signed-message order — a legacy slot order has
+    // neither. On a bumped book the route quotes the book as empty and the
+    // restable remainder migrates into the auction.
+    let taker_served_window = false;
     fill_order(
         FillAccounts {
             state: &ctx.accounts.state,
@@ -174,6 +178,7 @@ pub fn handle_legacy_fill_perp_order<'c: 'info, 'info>(
         market_index,
         signed_route,
         obligation,
+        taker_served_window,
         None,
     )
     .inspect_err(|_e| {
@@ -188,8 +193,9 @@ pub fn handle_legacy_fill_perp_order<'c: 'info, 'info>(
     Ok(())
 }
 
-/// The accounts a fill needs, borrowed so the v0 and v1 entrypoints — which
-/// have different `#[derive(Accounts)]` shapes — share one body.
+/// The accounts a fill needs, borrowed so `fill_perp_order` and
+/// `fill_legacy_dlob_order` — which have different `#[derive(Accounts)]`
+/// shapes — share one body.
 pub struct FillAccounts<'a, 'info> {
     pub state: &'a AccountLoader<'info, State>,
     pub filler: &'a AccountLoader<'info, User>,
@@ -198,15 +204,18 @@ pub struct FillAccounts<'a, 'info> {
     pub user_stats: &'a AccountLoader<'info, UserStats>,
 }
 
-/// The v1 entrypoint's way in: `fill_order` is private, and this names why it
-/// is being called with a CLOB route rather than exposing the whole body.
-pub fn fill_order_v1_entry<'c: 'info, 'info>(
+/// `fill_legacy_dlob_order`'s way in: `fill_order` is private, and this names
+/// why it is being called with a CLOB route rather than exposing the whole
+/// body.
+#[allow(clippy::too_many_arguments)]
+pub fn fill_legacy_dlob_order_entry<'c: 'info, 'info>(
     accounts: FillAccounts<'_, 'info>,
     remaining_accounts: &'c [AccountInfo<'info>],
     order_id: u32,
     market_index: u16,
     signed_route: Vec<Pubkey>,
     obligation: crate::math::router::FillerObligation,
+    taker_served_window: bool,
     clob: Option<crate::instructions::ClobRemainderRoute<'_, 'info>>,
 ) -> Result<()> {
     fill_order(
@@ -216,6 +225,7 @@ pub fn fill_order_v1_entry<'c: 'info, 'info>(
         market_index,
         signed_route,
         obligation,
+        taker_served_window,
         clob,
     )
 }
@@ -228,6 +238,11 @@ fn fill_order<'c: 'info, 'info>(
     market_index: u16,
     signed_route: Vec<Pubkey>,
     mut obligation: crate::math::router::FillerObligation,
+    // Whether the transaction is attested taker flow. A book with a speed
+    // bump quotes no depth to an unattested taker, so an unattested keeper
+    // fill reaches the vAMM and the DLOB makers only, and the remainder
+    // migrates to the book to wait its window.
+    taker_served_window: bool,
     clob: Option<crate::instructions::ClobRemainderRoute<'_, 'info>>,
 ) -> Result<()> {
     let clock = &Clock::get()?;
@@ -305,7 +320,6 @@ fn fill_order<'c: 'info, 'info>(
             ),
         )
     };
-    let (clob_authority, clob_authority_nonce) = crate::signer::find_clob_authority();
     let route_reference_price = {
         let oracle_id = perp_market_map.get_ref(&market_index)?.oracle_id();
         oracle_map.get_price_data(&oracle_id)?.price
@@ -329,8 +343,7 @@ fn fill_order<'c: 'info, 'info>(
             reference_price: route_reference_price,
             taker: taker_ref,
             limit_price: quote_limit_price,
-            clob_authority,
-            clob_authority_nonce,
+            taker_served_window,
         };
     // Before the quote, so a book never publishes depth standing on a maker
     // this fill would refuse to settle against.
@@ -459,7 +472,6 @@ fn fill_order<'c: 'info, 'info>(
                     clob.clob_market,
                     clob.clob_program,
                     clob.clob_authority,
-                    clob.clob_authority_nonce,
                     &perp_market_map,
                     &spot_market_map,
                     &mut oracle_map,
@@ -553,7 +565,7 @@ pub fn handle_legacy_trigger_order<'c: 'info, 'info>(
     // failing account whose trigger condition is already met), an
     // already-triggered order, or a no-op must not draw the reservoir — the
     // cancel branch pays the user no flat reward, so paying the caller from
-    // the reservoir for it would be free lamports. Mirrors trigger_clob_order,
+    // the reservoir for it would be free lamports. Mirrors trigger_limit_order_v1,
     // whose cancel branch returns before this call.
     if triggered {
         crate::instructions::finish_trigger_crank(
@@ -859,9 +871,16 @@ pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
     ctx: Context<'info, PlaceSignedMsgTakerOrder<'info>>,
     signed_msg_order_params_message_bytes: Vec<u8>,
     is_delegate_signer: bool,
+    flow_attestation: Option<crate::validation::sig_verification::FlowAttestationV0>,
 ) -> Result<()> {
     let clock = Clock::get()?;
     let state = ctx.accounts.state.load()?;
+    // The taker's own signature: the first 64 bytes of the envelope, and
+    // what a flow attestation binds to. Captured before the placement
+    // consumes the bytes.
+    let taker_order_signature: Option<[u8; 64]> = signed_msg_order_params_message_bytes
+        .get(..64)
+        .and_then(|sig| <[u8; 64]>::try_from(sig).ok());
     // The market comes off the CLOB registry entry rather than an argument,
     // because the entry is what the crank-conditions seed already derives from
     // and the two must name the same market. The message is checked against it
@@ -937,22 +956,51 @@ pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
         market_index
     )?;
 
+    // Maker priority: on a book with a speed bump, only attested flow fills
+    // synchronously. An unattested submission of a signed message rests the
+    // whole order taker-origin through the activation window instead, and
+    // the cross cranks fill it. The attestation is detached: swift signs
+    // over the taker's own order signature after the hold, so the flow
+    // authority never signs a keeper-built transaction and the fill pays no
+    // second signature fee. The placement above already validated the
+    // envelope, so the signature prefix is present.
+    let taker_served_window = match flow_attestation {
+        Some(ref attestation) => {
+            crate::validation::sig_verification::verify_flow_attestation(
+                attestation,
+                &state.hot_key(crate::state::state::HotRole::FlowAuthority),
+                &taker_order_signature.ok_or(ErrorCode::SigVerificationFailed)?,
+                clock.unix_timestamp,
+            )?;
+            true
+        }
+        None => false,
+    };
+    let synchronous_take =
+        crate::instructions::synchronous_take_allowed(taker_served_window, &ctx.accounts.quoter)?;
+
     // The fill mutates the ephemeral order's filled amounts in place; the rest
     // leg reads its remainder from there.
-    let filled = fill_signed_msg_taker_order(
-        &ctx,
-        tail,
-        &mut placed,
-        &state,
-        &perp_market_map,
-        &spot_market_map,
-        &mut oracle_map,
-        &makers_and_referrer,
-        &makers_and_referrer_stats,
-        &mut escrow,
-        referrer_is_accelerated,
-        &clock,
-    )?;
+    let filled = if synchronous_take {
+        fill_signed_msg_taker_order(
+            &ctx,
+            tail,
+            &mut placed,
+            &state,
+            &perp_market_map,
+            &spot_market_map,
+            &mut oracle_map,
+            &makers_and_referrer,
+            &makers_and_referrer_stats,
+            &mut escrow,
+            referrer_is_accelerated,
+            taker_served_window,
+            &clock,
+        )?
+    } else {
+        msg!("unattested taker on a bumped book; the order rests whole");
+        0
+    };
 
     rest_signed_msg_remainder(
         &ctx,
@@ -993,6 +1041,7 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
     makers_and_referrer_stats: &UserStatsMap<'info>,
     escrow: &mut Option<RevenueShareEscrowZeroCopyMut<'info>>,
     referrer_is_accelerated: bool,
+    taker_served_window: bool,
     clock: &Clock,
 ) -> Result<u64> {
     let market_index = placed.market_index;
@@ -1030,7 +1079,6 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
         return Ok(0);
     }
 
-    let (clob_authority, clob_authority_nonce) = crate::signer::find_clob_authority();
     let route_reference_price = {
         let oracle_id = perp_market_map.get_ref(&market_index)?.oracle_id();
         oracle_map.get_price_data(&oracle_id)?.price
@@ -1052,8 +1100,7 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
             reference_price: route_reference_price,
             taker: taker_ref,
             limit_price: quote_limit_price,
-            clob_authority,
-            clob_authority_nonce,
+            taker_served_window,
         };
     // Before the quote, so a book never publishes depth standing on a maker
     // this fill would refuse to settle against.
@@ -1189,14 +1236,12 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
 
     // No slot to cancel: the order never entered `user.orders`. Its remainder
     // migrates straight onto the CLOB.
-    let (_, clob_authority_nonce) = crate::signer::find_clob_authority();
     let rested = crate::instructions::try_place_remainder_on_clob(
         &ctx.accounts.user,
         &ctx.accounts.quoter,
         &ctx.accounts.clob_market.to_account_info(),
         &ctx.accounts.clob_program.to_account_info(),
         &ctx.accounts.clob_authority.to_account_info(),
-        clob_authority_nonce,
         perp_market_map,
         spot_market_map,
         oracle_map,
@@ -1532,9 +1577,22 @@ pub fn place_signed_msg_taker_order<'c: 'info, 'info>(
         market_index,
     )?;
 
+    // Sweep expired slot orders first: their reservations release, which
+    // can be what lets the new order pass the margin gate. The create never
+    // touches `user.orders`, so the sweep is the caller's.
+    controller::orders::expire_orders(
+        taker,
+        &taker_key,
+        perp_market_map,
+        spot_market_map,
+        oracle_map,
+        clock.unix_timestamp,
+        clock.slot,
+    )?;
+
     // The taker order never enters `user.orders`. It is built, margin-checked,
     // routed straight to the book, and only its remainder rests on the CLOB.
-    let Some(ephemeral_order) = controller::orders::place_ephemeral_perp_order(
+    let Some(ephemeral_order) = controller::orders::create_ephemeral_perp_order(
         state,
         taker,
         taker_key,
@@ -4759,7 +4817,7 @@ pub struct FillOrder<'info> {
         constraint = is_stats_for_user(&user, &user_stats)?
     )]
     pub user_stats: AccountLoader<'info, UserStats>,
-    /// CHECK: address-locked to the instructions sysvar. See `FillOrderV1` for
+    /// CHECK: address-locked to the instructions sysvar. See `FillLegacyDlobOrder` for
     /// what it is read for and why it is optional.
     #[account(address = solana_program::sysvar::instructions::ID)]
     pub instructions_sysvar: Option<UncheckedAccount<'info>>,
@@ -4937,21 +4995,8 @@ pub struct PlaceSignedMsgTakerOrder<'info> {
     /// is set to. Its own key, distinct from the per-entry signer a
     /// third-party quoter is handed: signer privilege is inherited by a
     /// callee, and this one may place and cancel on any book, for any user.
-    #[account(seeds = [CLOB_AUTHORITY_SEED], bump)]
+    #[account(address = crate::signer::CLOB_AUTHORITY)]
     pub clob_authority: UncheckedAccount<'info>,
-    /// Wake-hint host for the rested remainder. Optional like every other CLOB
-    /// placement path: a market whose conditions were never initialized must
-    /// still be tradeable, and a missed hint costs crank latency rather than
-    /// liveness, because the fallback poll is the floor.
-    #[account(
-        mut,
-        seeds = [
-            CLOB_CRANK_CONDITIONS_PDA_SEED,
-            quoter.load()?.market.to_le_bytes().as_ref(),
-        ],
-        bump
-    )]
-    pub crank_conditions: Option<AccountLoader<'info, ClobCrankConditionsV0>>,
 }
 
 #[derive(Accounts)]

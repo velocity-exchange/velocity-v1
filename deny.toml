@@ -61,6 +61,11 @@ allow-git = [
 # an ignore here, add it there too (and vice versa), with the same rationale.
 # ---------------------------------------------------------------------------
 [advisories]
+# CI and ci-local point this at a scratch directory holding a symlink to
+# cargo-audit's clone, because cargo-deny's own fetch shells out to the git
+# CLI, which the CI runner cannot use unauthenticated. Unset (the local dev
+# default), this is the tool's own default path.
+db-path = "${CARGO_DENY_DB_PATH:-$CARGO_HOME/advisory-dbs}"
 ignore = [
 	"RUSTSEC-2022-0093", # Double Public Key Signing Function Oracle Attack on `ed25519-dalek`.
 	# Matches only the rust/ workspace: the root lockfile has no ed25519-dalek at all.

@@ -38,7 +38,9 @@ jobs:
           claude-api-key: ${{ secrets.CLAUDE_SECURITY_API_KEY }}
           claude-model: claude-fable-5
           comment-pr: 'true'
-          false-positive-filtering-instructions: .github/claude-security-guidance.md
+          # The composite action changes cwd to its own action directory before
+          # reading this input, so a workspace-relative path is not found.
+          false-positive-filtering-instructions: ${{ github.workspace }}/.github/claude-security-guidance.md
           # Action only supports directory exclusions (not file globs). File-level
           # exclusions (e.g. sdk/src/idl/velocity.json, **/*.md) are handled in the
           # guidance file above.

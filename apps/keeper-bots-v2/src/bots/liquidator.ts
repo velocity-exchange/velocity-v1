@@ -69,10 +69,98 @@ import { LiquidatorDerisk } from './liquidatorDerisk';
 const errorCodesToSuppress = [
 	6004, // Error Number: 6004. Error Message: Sufficient collateral.
 	6010, // Error Number: 6010. Error Message: User Has No Position In Market.
+	6114, // Error Number: 6114. Error Message: Position Doesnt Have Open Position Or Orders.
 	6122, // Error Number: 6122. Error Message: Invalid Base Asset Amount For Liquidate Perp.
 ];
 
 const LIQUIDATE_THROTTLE_BACKOFF = 5000; // the time to wait before trying to liquidate a throttled user again
+
+// Markets whose positions are wound down out of band; never send a liquidation. Once markets are settled properly, this can be removed.
+const PERP_MARKETS_NEVER_LIQUIDATED: number[] = [];
+
+/** A perp position, reduced to what liquidation-exit market selection depends on. */
+export type LiquidationExitPosition = {
+	marketIndex: number;
+	hasBase: boolean;
+	hasOpenOrder: boolean;
+	hasPnl: boolean;
+	isolated: boolean;
+	/** The position's own `BeingLiquidated`/`Bankruptcy` flag (isolated only). */
+	flagged: boolean;
+};
+
+export type LiquidationExitCandidate = {
+	/**
+	 * `crank`  - zero-base liquidate_perp; clears the flag via the early exit.
+	 * `base`   - real, step-sized liquidate_perp.
+	 * `pnl`    - liquidate_perp_pnl_for_deposit / settle_pnl.
+	 */
+	kind: 'crank' | 'base' | 'pnl';
+	marketIndex: number;
+};
+
+/**
+ * Orders the calls that could clear a stuck `beingLiquidated` flag, best first.
+ *
+ * Scoping matters because the program picks its liquidation mode from the
+ * position in the target market: an isolated position's own flag is only
+ * cleared by targeting that market, and the account-level flag only by
+ * targeting a cross position or a market holding no position at all. Within a
+ * scope the order is cheapest-first - cancelling orders can free enough margin
+ * on its own, a sized liquidation is the fallback, and a pnl-only slot needs a
+ * different instruction entirely.
+ */
+export function selectLiquidationExitCandidates(
+	positions: LiquidationExitPosition[],
+	isCrossFlagged: boolean,
+	actionableMarkets: number[]
+): LiquidationExitCandidate[] {
+	const candidates: LiquidationExitCandidate[] = [];
+
+	const rank = (
+		position: LiquidationExitPosition
+	): LiquidationExitCandidate['kind'] | undefined => {
+		if (position.hasOpenOrder && !position.hasBase) {
+			return 'crank';
+		}
+		if (position.hasBase) {
+			return 'base';
+		}
+		return position.hasPnl ? 'pnl' : undefined;
+	};
+	const order: LiquidationExitCandidate['kind'][] = ['crank', 'base', 'pnl'];
+	const push = (from: LiquidationExitPosition[]) => {
+		for (const kind of order) {
+			for (const position of from) {
+				if (
+					actionableMarkets.includes(position.marketIndex) &&
+					rank(position) === kind
+				) {
+					candidates.push({ kind, marketIndex: position.marketIndex });
+				}
+			}
+		}
+	};
+
+	push(positions.filter((p) => p.isolated && p.flagged));
+
+	if (isCrossFlagged) {
+		push(positions.filter((p) => !p.isolated));
+
+		// Last resort for the account-level flag: a market the user holds nothing
+		// in takes cross mode on chain, so the early exit still fires. This is the
+		// only call that clears an account whose positions are all gone - the
+		// common shape once the last one has been settled away.
+		const emptyMarket = actionableMarkets.find(
+			(marketIndex) => !positions.some((p) => p.marketIndex === marketIndex)
+		);
+		if (emptyMarket !== undefined) {
+			candidates.push({ kind: 'crank', marketIndex: emptyMarket });
+		}
+	}
+
+	return candidates;
+}
 
 function calculateSpotTokenAmountToLiquidate(
 	velocityClient: VelocityClient,
@@ -1315,6 +1403,7 @@ export class LiquidatorBot implements Bot {
 							undefined,
 							this.velocityClient.opts
 						);
+					sentTx = true;
 					logger.info(
 						`Sent settlePnl tx for ${user.userAccountPublicKey.toBase58()} in perp market ${
 							liquidateePosition.marketIndex
@@ -1383,6 +1472,7 @@ export class LiquidatorBot implements Bot {
 							undefined,
 							this.velocityClient.opts
 						);
+					sentTx = true;
 					logger.info(
 						`Sent liquidateBorrowForPerpPnl tx for ${user.userAccountPublicKey.toBase58()} in spot market ${borrowMarketIndextoLiq} tx: ${
 							resp.txSig
@@ -1511,14 +1601,251 @@ export class LiquidatorBot implements Bot {
 		return sentTx;
 	}
 
+	private isThrottled(userKey: string, auth: string): boolean {
+		const lastAttempt = this.throttledUsers.get(userKey);
+		if (!lastAttempt) {
+			return false;
+		}
+		const now = Date.now();
+		if (lastAttempt + LIQUIDATE_THROTTLE_BACKOFF > now) {
+			logger.warn(
+				`skipping user(throttled, retry in ${
+					lastAttempt + LIQUIDATE_THROTTLE_BACKOFF - now
+				}ms) ${auth}: ${userKey} `
+			);
+			return true;
+		}
+		this.throttledUsers.delete(userKey);
+		return false;
+	}
+
+	/**
+	 * Clears the `beingLiquidated` flag on a user who is no longer liquidatable.
+	 *
+	 * `liquidate_perp` with a zero base amount is a crank rather than a real
+	 * liquidation: when the account already clears the maintenance-plus-buffer
+	 * band it exits liquidation outright, before it ever looks at the position.
+	 * That early exit is why a market the user holds nothing in still works, and
+	 * it is the only thing that clears an account whose positions are all gone.
+	 *
+	 * Past the early exit the market matters:
+	 *
+	 * - The program derives its liquidation mode from the position in the target
+	 *   market, so an isolated position's own flag is only cleared by targeting
+	 *   that market, and the account-level flag only by targeting a cross
+	 *   position (or a market with no position, which falls back to cross mode).
+	 * - It then requires a base position or an open order
+	 *   (`PositionDoesntHaveOpenPositionOrOrders`), and rejects a zero base
+	 *   amount once it reaches the transfer with a base position still open
+	 *   (`InvalidBaseAssetAmountForLiquidatePerp`).
+	 * - A slot holding only unsettled pnl satisfies neither, and has to go
+	 *   through `liquidate_perp_pnl_for_deposit` / `settle_pnl` instead.
+	 */
+	private async clearBeingLiquidatedStatus(user: User): Promise<{
+		liquidatePerp: number;
+		liquidatePerpPnlForDeposit: number;
+	}> {
+		const sent = { liquidatePerp: 0, liquidatePerpPnlForDeposit: 0 };
+		const userKey = user.userAccountPublicKey.toBase58();
+
+		if (this.dryRun) {
+			logger.warn(
+				`[${this.name}]: --dry run flag enabled - not clearing beingLiquidated status for ${userKey}`
+			);
+			return sent;
+		}
+
+		const positions = user.getActivePerpPositions();
+		const candidates = selectLiquidationExitCandidates(
+			positions.map((position) => ({
+				marketIndex: position.marketIndex,
+				hasBase: !position.baseAssetAmount.isZero(),
+				// Mirrors the program's has_open_order(), which also counts the
+				// bid/ask exposure an order leaves behind.
+				hasOpenOrder:
+					position.openOrders > 0 ||
+					!position.openBids.isZero() ||
+					!position.openAsks.isZero(),
+				hasPnl: !position.quoteAssetAmount.isZero(),
+				isolated: user.isPerpPositionIsolated(position),
+				flagged: user.isIsolatedPositionBeingLiquidated(position.marketIndex),
+			})),
+			user.isCrossMarginBeingLiquidated(),
+			this.perpMarketIndicies.filter((marketIndex) =>
+				this.canLiquidatePerpMarket(marketIndex)
+			)
+		);
+
+		if (candidates.length === 0) {
+			logger.warn(
+				`[${this.name}]: no actionable perp market to clear beingLiquidated status for ${userKey}`
+			);
+			return sent;
+		}
+
+		// Walk the candidates rather than committing to the first one: it may sit
+		// in a market with no configured subaccount, or be too small to size, and
+		// stopping there would stall on the same slot every tick.
+		for (const candidate of candidates) {
+			const issued = await this.issueLiquidationExitCandidate(
+				user,
+				positions,
+				candidate
+			);
+			if (issued === 'liquidatePerp') {
+				sent.liquidatePerp++;
+				return sent;
+			}
+			if (issued === 'liquidatePerpPnlForDeposit') {
+				sent.liquidatePerpPnlForDeposit++;
+				return sent;
+			}
+		}
+
+		logger.warn(
+			`[${
+				this.name
+			}]: could not clear beingLiquidated status for ${userKey}, tried ${candidates
+				.map((c) => `${c.kind}:${c.marketIndex}`)
+				.join(', ')}`
+		);
+		return sent;
+	}
+
+	/** A perp market this bot may send a liquidation against right now. */
+	private canLiquidatePerpMarket(marketIndex: number): boolean {
+		if (PERP_MARKETS_NEVER_LIQUIDATED.includes(marketIndex)) {
+			return false;
+		}
+		const perpMarket = this.velocityClient.getPerpMarketAccount(marketIndex);
+		if (!perpMarket) {
+			return false;
+		}
+		// TODO: use enum on new sdk release
+		return !isOperationPaused(perpMarket.pausedOperations, 32 as PerpOperation);
+	}
+
+	/**
+	 * Sends the instruction a candidate calls for. Returns which counter to bump,
+	 * or undefined when nothing could be sent so the caller tries the next one.
+	 */
+	private async issueLiquidationExitCandidate(
+		user: User,
+		positions: PerpPosition[],
+		candidate: LiquidationExitCandidate
+	): Promise<'liquidatePerp' | 'liquidatePerpPnlForDeposit' | undefined> {
+		const userKey = user.userAccountPublicKey.toBase58();
+
+		if (candidate.kind === 'crank') {
+			// A zero base amount transfers no liability, so this deliberately does
+			// not go through getSubAccountIdToLiquidatePerp: gating the crank on a
+			// subaccount holding collateral would block the one call that clears a
+			// recovered account for free.
+			return (await this.liqPerp(
+				user,
+				candidate.marketIndex,
+				this.defaultSubaccountId,
+				ZERO
+			))
+				? 'liquidatePerp'
+				: undefined;
+		}
+
+		const position = positions.find(
+			(p) => p.marketIndex === candidate.marketIndex
+		);
+		if (!position) {
+			return undefined;
+		}
+
+		if (candidate.kind === 'base') {
+			const subAccountToLiqPerp = this.getSubAccountIdToLiquidatePerp(
+				candidate.marketIndex
+			);
+			if (subAccountToLiqPerp === undefined) {
+				return undefined;
+			}
+			const baseAmountToLiquidate =
+				this.calculateBaseAmountToLiquidate(position);
+			if (baseAmountToLiquidate.lte(ZERO)) {
+				logger.warn(
+					`[${this.name}]: cannot size a liquidation of stuck user ${userKey} on perp market ${candidate.marketIndex} above the step size`
+				);
+				return undefined;
+			}
+			return (await this.liqPerp(
+				user,
+				candidate.marketIndex,
+				subAccountToLiqPerp,
+				baseAmountToLiquidate
+			))
+				? 'liquidatePerp'
+				: undefined;
+		}
+
+		const perpMarket = this.velocityClient.getPerpMarketAccount(
+			candidate.marketIndex
+		);
+		const usdcMarket = this.velocityClient.getSpotMarketAccount(
+			QUOTE_SPOT_MARKET_INDEX
+		);
+		if (!perpMarket || !usdcMarket) {
+			logger.error(
+				`[${this.name}]: perp market ${candidate.marketIndex} or quote spot market not loaded, cannot settle pnl for stuck user ${userKey}`
+			);
+			return undefined;
+		}
+
+		const spotPositions = user.getUserAccountOrThrow().spotPositions;
+		const {
+			bestIndex: depositMarketIndextoLiq,
+			bestAmount: depositAmountToLiq,
+		} = this.findBestSpotPosition(
+			user,
+			spotPositions,
+			false,
+			this.maxPositionTakeoverPctOfCollateralNum,
+			this.maxPositionTakeoverPctOfCollateralDenom
+		);
+		const { bestIndex: borrowMarketIndextoLiq, bestAmount: borrowAmountToLiq } =
+			this.findBestSpotPosition(
+				user,
+				spotPositions,
+				true,
+				this.maxPositionTakeoverPctOfCollateralNum,
+				this.maxPositionTakeoverPctOfCollateralDenom
+			);
+
+		// liquidate_perp_pnl_for_deposit needs a deposit to seize; without one the
+		// call has nothing to work with and liqPerpPnl would log a spot market -1.
+		if (position.quoteAssetAmount.lt(ZERO) && depositMarketIndextoLiq === -1) {
+			return undefined;
+		}
+
+		return (await this.liqPerpPnl(
+			user,
+			perpMarket,
+			usdcMarket,
+			position,
+			depositMarketIndextoLiq,
+			depositAmountToLiq,
+			borrowMarketIndextoLiq,
+			borrowAmountToLiq
+		))
+			? 'liquidatePerpPnlForDeposit'
+			: undefined;
+	}
+
 	private async liqPerp(
 		user: User,
 		perpMarketIndex: number,
 		subAccountToLiqPerp: number,
 		baseAmountToLiquidate: BN
 	): Promise<boolean> {
-		// TODO: remove this once the markets are settled properly
-		if ([37, 49].includes(perpMarketIndex)) {
+		if (PERP_MARKETS_NEVER_LIQUIDATED.includes(perpMarketIndex)) {
+			logger.warn(
+				`[${this.name}]: perp market ${perpMarketIndex} is never liquidated, skipping`
+			);
 			return false;
 		}
 
@@ -1694,20 +2021,9 @@ export class LiquidatorBot implements Bot {
 			if (bankrupt) {
 				await this.tryResolveBankruptUser(user);
 			} else if (canBeLiquidated) {
-				const lastAttempt = this.throttledUsers.get(userKey);
-				if (lastAttempt) {
-					const now = Date.now();
-					if (lastAttempt + LIQUIDATE_THROTTLE_BACKOFF > now) {
-						logger.warn(
-							`skipping user(throttled, retry in ${
-								lastAttempt + LIQUIDATE_THROTTLE_BACKOFF - now
-							}ms) ${auth}: ${userKey} `
-						);
-						throttledUser++;
-						continue;
-					} else {
-						this.throttledUsers.delete(userKey);
-					}
+				if (this.isThrottled(userKey, auth)) {
+					throttledUser++;
+					continue;
 				}
 
 				const liquidateeUserAccount = user.getUserAccountOrThrow();
@@ -1920,24 +2236,21 @@ export class LiquidatorBot implements Bot {
 					}
 				}
 			} else if (user.isBeingLiquidated()) {
-				// liquidate the user to bring them out of liquidation status, can liquidate any market even
-				// if the user doesn't have a position in it
+				if (this.isThrottled(userKey, auth)) {
+					throttledUser++;
+					continue;
+				}
+
 				logger.info(
 					`[${
 						this.name
 					}]: user stuck in beingLiquidated status, need to clear it for ${user.userAccountPublicKey.toBase58()}`
 				);
 
-				// can liquidate with any subaccount, no liability transfer
-				const sent = await this.liqPerp(
-					user,
-					0,
-					this.defaultSubaccountId,
-					ZERO
-				);
-				if (sent) {
-					liquidatePerpSent++;
-				}
+				const sent = await this.clearBeingLiquidatedStatus(user);
+				liquidatePerpSent += sent.liquidatePerp;
+				liquidatePerpPnlForDepositSent += sent.liquidatePerpPnlForDeposit;
+				this.throttledUsers.set(userKey, Date.now());
 			}
 		}
 		return {

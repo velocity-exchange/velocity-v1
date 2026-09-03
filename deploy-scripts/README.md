@@ -110,7 +110,11 @@ actually what the source compiles to — don't trust the hash CI printed. The CI
 `verify-buffer.sh` reproduces the hash from source and compares:
 
 ```bash
-# Build velocity (devnet flavor) and check it against the buffer the run logged:
+# Usual case: find the newest deploy run for this program yourself, build the
+# devnet flavor, and compare against the buffer that run staged:
+deploy-scripts/verify-buffer.sh velocity --devnet --rpc "$SOLANA_RPC"
+
+# Or point it at a specific run:
 deploy-scripts/verify-buffer.sh velocity \
   https://github.com/velocity-exchange/velocity-v1/actions/runs/<id>/job/<id> \
   --devnet --rpc "$SOLANA_RPC"
@@ -119,8 +123,19 @@ deploy-scripts/verify-buffer.sh velocity \
 deploy-scripts/verify-buffer.sh velocity --buffer <bufferPubkey> --rpc "$SOLANA_RPC" --skip-build
 ```
 
+With neither a run URL nor `--buffer` it scans the newest successful runs of
+`release-program.yaml` (or `manual-devnet-deploy.yaml` with `--devnet`) and
+takes the first one whose deploy summary staged `<program>`, so there is no
+buffer address to copy by hand. The run it picked is printed in the result
+block.
+
 It exits non-zero on a mismatch. Needs `solana-verify`, `gh` (authenticated),
 and the solana CLI on `PATH`. Drop `--devnet` for a mainnet build.
+
+The docker build output is kept out of the terminal: each step prints one
+progress line, and a failing step prints the last 30 lines of what it
+produced. Add `--verbose` to stream the build inline, `--no-color` (or
+`NO_COLOR=1`) for plain output, and `-h` for the full flag list.
 
 ---
 

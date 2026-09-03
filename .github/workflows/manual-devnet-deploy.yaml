@@ -71,7 +71,7 @@ jobs:
           program-id: ${{ steps.pid.outputs.program-id }}
           rpc-url: ${{ secrets.DEVNET_RPC_ENDPOINT }}
           keypair: ${{ secrets.DEVNET_DEPLOYER_KEYPAIR }}
-          buffer-authority: ${{ secrets.DEVNET_MULTISIG_VAULT }}
+          buffer-authority: ${{ vars.DEVNET_MULTISIG_VAULT }}
 
       # The canonical IDL metadata account is created once at initial deploy (see
       # deploy-scripts/README.md), so every release is a single-tx SetData +
@@ -81,7 +81,7 @@ jobs:
         with:
           rpc: ${{ secrets.DEVNET_RPC_ENDPOINT }}
           program: ${{ steps.pid.outputs.program-id }}
-          multisig: ${{ secrets.DEVNET_MULTISIG }}
+          multisig: ${{ vars.DEVNET_MULTISIG }}
           vault-index: "0"
           buffer: ${{ steps.buffer-deploy.outputs.buffer }}
           metadata-buffer: ${{ steps.buffer-deploy.outputs.metadata-buffer }}

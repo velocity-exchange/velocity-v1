@@ -3224,13 +3224,7 @@ export class QuoterType {
 	static readonly CUSTOM = { custom: {} };
 }
 
-/** Which CPI leg (`quoteV0` / `executeV0`) an `updateQuoterAccounts` slice targets. */
-export class QuoterCpiLeg {
-	static readonly QUOTE = { quote: {} };
-	static readonly EXECUTE = { execute: {} };
-}
-
-/** One registered account forwarded to a quoter program's CPI leg. `isSigner` is intentionally not stored — quoter CPIs never receive signer privilege. */
+/** One registered account forwarded on a quoter program's CPI legs. `isSigner` is intentionally not stored — quoter CPIs never receive signer privilege. */
 export type AmmAccountMeta = {
 	pubkey: PublicKey;
 	/** whether the account is passed writable to the quoter program */
@@ -3238,45 +3232,17 @@ export type AmmAccountMeta = {
 	padding: number[];
 };
 
-/** Decoded mirror of the on-chain `QuoterV0` account: one quoter-registry entry per (perp market, quoter program, quoted user), naming the external quoter program plus the CPI surface velocity needs to call it (discriminators, account lists, response account). Entries are born active but unapproved: `isActive` is the maker's own kill switch, `isApproved` is the admin's vetting of the CPI surface (cleared by any config or account-list change). */
-export type QuoterV0Account = {
-	/** for Custom quoters, the user this quoter is allowed to quote for (that user's authority creates the entry — creation is consent); for vAMM, the vAMM user; for CLOB, ignored */
-	user: PublicKey;
-	/** the external program invoked for `quoteV0` / `executeV0` */
-	programId: PublicKey;
-	/** account owned by `programId` that quote/execute responses are written into; must be registered in both account lists */
-	responseAccount: PublicKey;
-	/** manages this registry entry; for Custom quoters the quoted user's authority (enforced at creation, no handoff), so the maker can always kill their own quoter */
-	authority: PublicKey;
-	/** raw 8-byte instruction discriminator of `quoteV0` on `programId` */
-	quoteV0Discriminator: number[];
-	/** raw 8-byte instruction discriminator of the optional `quoteL3V0` leg, which reports the resting orders behind a ladder and who each belongs to; all-zero = the quoter does not implement it, and a reader attributes the whole ladder to `user` */
-	quoteL3V0Discriminator: number[];
-	/** raw 8-byte instruction discriminator of `executeV0` on `programId` */
-	executeV0Discriminator: number[];
-	/** accounts forwarded to `quoteV0`, in order; only the first `quoteAccountsCount` entries are live */
-	quoteAccounts: AmmAccountMeta[];
-	/** accounts forwarded to `executeV0`, in order; only the first `executeAccountsCount` entries are live */
-	executeAccounts: AmmAccountMeta[];
-	/** perp market index this quoter serves */
-	market: number;
-	quoterType: QuoterType;
-	/** the maker's own on/off switch — always settable by the entry authority */
-	isActive: boolean;
-	/** admin vetting of the CPI surface; reset by any config or account-list change */
-	isApproved: boolean;
-	/** routing priority: at a price, lower-priority tiers fill first, pro rata within a tier; defaults by type (vAMM 0, CLOB 10, Custom 20), admin-set thereafter — never by the maker */
-	priority: number;
-	quoteAccountsCount: number;
-	executeAccountsCount: number;
-	/** maker-declared reprice region: relay cross-discovery conditions wake when `watchAccount.data[watchOffset..watchOffset+watchLen]` changes; `watchLen == 0` = no declaration (poll-only discovery). A config change like any other — resets `isApproved` */
-	watchOffset: number;
-	watchLen: number;
-	watchAccount: PublicKey;
+/**
+ * One quoter's whole configuration: the CPI surface velocity calls it on and the declarations that
+ * bound how it fills. Held in two places with two meanings: on the `QuoterV0` staging entry it is
+ * the maker's proposal, and in a `QuoterSlabV0` slot it is the copy the admin approved — the only
+ * copy a fill reads.
+ */
+export type QuoterConfigV0 = {
 	/**
 	 * Slot the approved program was last deployed at, read from its program-data account when the
-	 * admin approved this entry. `0` when the program's loader cannot redeploy it, and `0` while the
-	 * entry is unapproved.
+	 * admin copied this config into the slab. `0` when the program's loader cannot redeploy it.
+	 * Meaningful only in a slab slot; the staging copy holds the last approval's figure.
 	 *
 	 * Approval does not freeze the program: a maker may upgrade it, and a `Custom` entry can move only
 	 * its own registered user, at a price held to its own quote and the taker's limit. Compare this to
@@ -3284,21 +3250,80 @@ export type QuoterV0Account = {
 	 * to look at, and one a router may choose to stop carrying.
 	 */
 	approvedProgramSlot: BN;
+	/** the book's tick size, mirrored from `order_rules_v0` by the attach; zero for non-CLOB entries and unattached books */
+	bookTickSize: BN;
+	/** the book's minimum order size, mirrored by the attach */
+	bookMinOrderSize: BN;
+	/** for Custom quoters, the user this quoter is allowed to quote for (that user's authority creates the entry — creation is consent); for vAMM, the vAMM user; for CLOB, ignored */
+	user: PublicKey;
+	/** the external program invoked for `quoteV0` / `executeV0` */
+	programId: PublicKey;
+	/** account owned by `programId` that quote/execute responses are written into; must be named by both legs' index lists. For a CLOB entry this is the book itself. Unique across one slab's occupied slots — a route names the quoters it consults by carrying their response accounts */
+	responseAccount: PublicKey;
+	/** manages the staging entry; for Custom quoters the quoted user's authority (enforced at creation, no handoff), so the maker can always kill their own quoter */
+	authority: PublicKey;
+	/** maker-declared reprice region: relay cross-discovery conditions wake when `watchAccount.data[watchOffset..watchOffset+watchLen]` changes; `watchLen == 0` = no declaration (poll-only discovery) */
+	watchAccount: PublicKey;
+	/** raw 8-byte instruction discriminator of `quoteV0` on `programId` */
+	quoteV0Discriminator: number[];
+	/** raw 8-byte instruction discriminator of `executeV0` on `programId` */
+	executeV0Discriminator: number[];
+	/** raw 8-byte instruction discriminator of the optional `quoteL3V0` leg, which reports the resting orders behind a ladder and who each belongs to; all-zero = the quoter does not implement it, and a reader attributes the whole ladder to `user` */
+	quoteL3V0Discriminator: number[];
+	/** the one registered CPI account list; only the first `accountsCount` entries are live. Each leg forwards a subset named by the index lists below */
+	accounts: AmmAccountMeta[];
+	/** indexes into `accounts` forwarded to `quoteV0` (and `quoteL3V0`), in CPI order; only the first `quoteAccountsCount` are live */
+	quoteAccountIndexes: number[];
+	/** indexes into `accounts` forwarded to `executeV0`, in CPI order; only the first `executeAccountsCount` are live */
+	executeAccountIndexes: number[];
+	watchOffset: number;
+	watchLen: number;
 	/**
 	 * The furthest from oracle a fill on this entry may price, in MARGIN_PRECISION units, so one unit
 	 * is one basis point. `0` = no declaration, and the market's own band stands.
 	 *
 	 * A maker sets this to cap what its own program can lose if that program is compromised. It
 	 * applies as the smaller of this and the market's `marginRatioInitial`, so it can only tighten a
-	 * bound the admin already vetted — which is why, unlike the rest of the config, setting it does
-	 * not reset `isApproved`. Custom entries only.
+	 * bound the admin already vetted — which is why, unlike the rest of the config, it writes through
+	 * to the approved copy without re-vetting. Custom entries only.
 	 */
 	maxOracleDeviationBps: number;
-	/** the book's tick size, mirrored from `order_rules_v0` by the attach; zero for non-CLOB entries and unattached books */
-	bookTickSize: BN;
-	/** the book's minimum order size, mirrored by the attach */
-	bookMinOrderSize: BN;
 	/** the book's default activation delay in slots, mirrored by the attach; nonzero marks the book speed-bumped for unattested flow */
 	bookDefaultActivationDelaySlots: number;
+	/** perp market index this quoter serves */
+	market: number;
+	quoterType: QuoterType;
+	/** the maker's own on/off switch — always settable by the entry authority, written through to the approved copy so a kill takes effect at once */
+	isActive: boolean;
+	/** routing priority: at a price, lower-priority tiers fill first, pro rata within a tier; defaults by type (vAMM 0, CLOB 10, Custom 20), admin-set thereafter — never by the maker */
+	priority: number;
+	accountsCount: number;
+	quoteAccountsCount: number;
+	executeAccountsCount: number;
+};
+
+/** Decoded mirror of the on-chain `QuoterV0` account: the *staging* half of the registry — one entry per (perp market, quoter program, quoted user), holding the config its authority proposes. Nothing fills from it: the admin copies it into the market's `QuoterSlabV0` (`updateQuoterApproved`), and fills read only that copy. The entry's address is the quoter's identity: signed routes name it, `PerpMarket.clobQuoter` names it, and its slab slot records it. */
+export type QuoterV0Account = {
+	config: QuoterConfigV0;
+	padding: number[];
+};
+
+/** One approved quoter in a market's slab. Slot 0 is reserved for the market's book (`QuoterType.CLOB`); `Custom` quoters occupy slots 1+. A vacant slot is all zeroes (`entry` = default pubkey). */
+export type QuoterSlotV0 = {
+	/** the staging `QuoterV0` this approved copy came from — the quoter's identity everywhere one is named; default pubkey marks a vacant slot */
+	entry: PublicKey;
+	/** set when the admin pulls approval from a `Clob` slot: the config stays so removal paths keep working on the dead book, but the slot quotes nothing. A revoked `Custom` slot is cleared instead */
+	suspended: boolean;
+	padding: number[];
+	/** the admin-approved copy of the entry's config */
+	config: QuoterConfigV0;
+};
+
+/** Decoded mirror of the on-chain `QuoterSlabV0` account header: one slab per perp market, holding every approved quoter config in back-to-back `QuoterSlotV0`s after this fixed header. Capacity is the account's size (recorded here), not a layout constant. Use `decodeQuoterSlabSlots` to read the slot region. */
+export type QuoterSlabV0Account = {
+	/** perp market this slab serves; also in the PDA seeds */
+	market: number;
+	/** slots the tail region holds; written at creation and when the account grows */
+	capacity: number;
 	padding: number[];
 };

@@ -10,9 +10,10 @@ use {
         error::{ErrorCode, VelocityResult},
         msg,
         state::prop_amm::{
-            find_account, ClobCancelAllArgsV0, ClobCancelAllOutcomeV0, ClobCancelSides, ClobMarket,
-            ClobUserRefV0, Direction, ExecuteArgsV0, ExternalQuoterExecutor, PriceLevel,
-            QuoteArgsV0, QuoterSubjects, QuoterType, ResponseLocationV0,
+            find_account, quoter_slab_slots, ClobCancelAllArgsV0, ClobCancelAllOutcomeV0,
+            ClobCancelSides, ClobMarket, ClobUserRefV0, Direction, ExecuteArgsV0,
+            ExternalQuoterExecutor, PriceLevel, QuoteArgsV0, QuoterSubjects, QuoterType,
+            ResponseLocationV0,
         },
     },
     anchor_lang::prelude::*,
@@ -34,7 +35,7 @@ pub struct CpiQuoterExecutor<'a, 'info> {
     pub scratch: &'a mut crate::state::prop_amm::QuoterCpiScratch<'info>,
     /// The CLOB place authority and its bump — what a `Clob` entry's CPI legs
     /// are signed as. Every other entry signs as a key derived from its own
-    /// registry entry (`QuoterV0::cpi_signer`).
+    /// registry entry (`QuoterConfigV0::cpi_signer`).
     /// Forwarded on every quote and execute leg — see
     /// [`crate::instructions::QuoteInputs::taker_served_window`].
     pub taker_served_window: bool,
@@ -72,7 +73,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
     fn quoter_key(&self, index: usize) -> Pubkey {
         self.quoted
             .get(index)
-            .map(|quoted| quoted.entry.key())
+            .map(|quoted| quoted.entry_key)
             .unwrap_or_default()
     }
 
@@ -100,18 +101,15 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
         if self.quoter_type(index) != QuoterType::Clob {
             return Ok(None);
         }
-        let loader = self
-            .quoted
-            .get(index)
-            .map(|quoted| &quoted.entry)
-            .ok_or_else(|| {
-                msg!("router executor index {} out of range", index);
-                ErrorCode::DefaultError
-            })?;
-        let quoter = loader.load().map_err(|_| {
-            msg!("router executor failed to load quoter {}", index);
+        let quoted = self.quoted.get(index).ok_or_else(|| {
+            msg!("router executor index {} out of range", index);
             ErrorCode::DefaultError
         })?;
+        let slots = quoter_slab_slots(&quoted.slab).map_err(|_| {
+            msg!("router executor failed to load the quoter slab");
+            ErrorCode::DefaultError
+        })?;
+        let config = &slots[quoted.slot].config;
         // The book's own `quote_v0`, with the identities and budgets the
         // execute below carries. Quote and execute are held to spending the
         // same set the same way, so a ladder taken here is the one that
@@ -120,7 +118,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
         // Quoted once here, so the pool is the list this returns.
         let mut levels = Vec::new();
         Ok(Some(
-            quoter
+            config
                 .quote(
                     self.market_index,
                     QuoteArgsV0 {
@@ -135,7 +133,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                         limit_price: 0,
                         taker_served_window: self.taker_served_window,
                     },
-                    &loader.key(),
+                    &quoted.entry_key,
                     &crate::signer::CLOB_AUTHORITY,
                     crate::signer::CLOB_AUTHORITY_NONCE,
                     self.accounts,
@@ -143,7 +141,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                     &mut levels,
                 )
                 .map_err(|_| {
-                    msg!("clob quote for entry {} failed", loader.key());
+                    msg!("clob quote for entry {} failed", quoted.entry_key);
                     ErrorCode::DefaultError
                 })
                 .map(|_| levels)?,
@@ -172,29 +170,26 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
         if self.quoter_type(index) != QuoterType::Clob {
             return Ok(None);
         }
-        let loader = self
-            .quoted
-            .get(index)
-            .map(|quoted| &quoted.entry)
-            .ok_or_else(|| {
-                msg!("router executor index {} out of range", index);
-                ErrorCode::DefaultError
-            })?;
-        let quoter = loader.load().map_err(|_| {
-            msg!("router executor failed to load quoter {}", index);
+        let quoted = self.quoted.get(index).ok_or_else(|| {
+            msg!("router executor index {} out of range", index);
             ErrorCode::DefaultError
         })?;
-        let book = find_account(self.accounts, &quoter.response_account).ok_or_else(|| {
+        let slots = quoter_slab_slots(&quoted.slab).map_err(|_| {
+            msg!("router executor failed to load the quoter slab");
+            ErrorCode::DefaultError
+        })?;
+        let config = &slots[quoted.slot].config;
+        let book = find_account(self.accounts, &config.response_account).ok_or_else(|| {
             msg!(
                 "clob book {} missing from the account map",
-                quoter.response_account
+                config.response_account
             );
             ErrorCode::DefaultError
         })?;
-        let program = find_account(self.accounts, &quoter.program_id).ok_or_else(|| {
+        let program = find_account(self.accounts, &config.program_id).ok_or_else(|| {
             msg!(
                 "clob program {} missing from the account map",
-                quoter.program_id
+                config.program_id
             );
             ErrorCode::DefaultError
         })?;
@@ -203,7 +198,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                 msg!("clob place authority missing from the account map");
                 ErrorCode::DefaultError
             })?;
-        let clob = ClobMarket::from_quoter(&quoter, self.market_index, book, program, signer)
+        let clob = ClobMarket::from_quoter(config, self.market_index, book, program, signer)
             .map_err(|_| ErrorCode::DefaultError)?;
         clob.cancel_all(ClobCancelAllArgsV0 {
             user,
@@ -223,21 +218,18 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
         direction: Direction,
         size: u64,
     ) -> VelocityResult<ResponseLocationV0<'info>> {
-        let loader = self
-            .quoted
-            .get(index)
-            .map(|quoted| &quoted.entry)
-            .ok_or_else(|| {
-                msg!("router executor index {} out of range", index);
-                ErrorCode::DefaultError
-            })?;
-        let quoter = loader.load().map_err(|_| {
-            msg!("router executor failed to load quoter {}", index);
+        let quoted = self.quoted.get(index).ok_or_else(|| {
+            msg!("router executor index {} out of range", index);
             ErrorCode::DefaultError
         })?;
-        let entry_key = loader.key();
-        let (cpi_signer, cpi_signer_nonce) = quoter.cpi_signer(&entry_key);
-        quoter
+        let slots = quoter_slab_slots(&quoted.slab).map_err(|_| {
+            msg!("router executor failed to load the quoter slab");
+            ErrorCode::DefaultError
+        })?;
+        let config = &slots[quoted.slot].config;
+        let entry_key = quoted.entry_key;
+        let (cpi_signer, cpi_signer_nonce) = config.cpi_signer(&entry_key);
+        config
             .execute(
                 self.market_index,
                 ExecuteArgsV0 {
@@ -260,7 +252,7 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                 // serves many registry entries, so the program id an
                 // off-chain router reads out of the runtime's CPI brackets
                 // does not identify which entry failed. The key does.
-                msg!("quoter {} execute failed: {}", loader.key(), e);
+                msg!("quoter {} execute failed: {}", entry_key, e);
                 ErrorCode::DefaultError
             })
     }

@@ -14,7 +14,7 @@ import {
 	getClobCrankConditionsPublicKey,
 	getPerpMarketPublicKeySync,
 	getClobAuthorityPublicKey,
-	QuoterCpiLeg,
+	getQuoterSlabPublicKey,
 	QuoterType,
 } from '@velocity-exchange/sdk';
 import {
@@ -221,8 +221,9 @@ async function marketWatchIxs(
 
 /**
  * CLOB market bring-up. One command stands a market's whole CLOB up: the
- * book account on the CLOB program, its velocity quoter-registry entry
- * (registered CPI surface + admin approval), the canonical-CLOB attach
+ * book account on the CLOB program, the market's quoter slab when it does
+ * not exist yet, the book's velocity quoter-registry entry (registered CPI
+ * surface + admin approval into the slab), the canonical-CLOB attach
  * (which also creates the relay crank conditions + reservoir), and
  * optionally the relay watch + reservoir funding.
  *
@@ -243,11 +244,16 @@ export function registerClobMarket(parent: Command): void {
 			clobMarket
 				.command('init <market>')
 				.description(
-					"Stand up a perp market's CLOB in one command: create the book account, initialize it on the CLOB program (place_authority = the quoter CPI signer), register + approve its quoter entry, attach it as the market's canonical CLOB (creating the crank conditions + reservoir), and optionally register the relay watch and fund the reservoir. Signer must hold warm/cold admin (approval + attach). Direct-send only — fresh account keypairs must co-sign, so --multisig is rejected."
+					"Stand up a perp market's CLOB in one command: create the book account, initialize it on the CLOB program (place_authority = the quoter CPI signer), create the market's quoter slab when missing, register its quoter entry and approve it into the slab, attach it as the market's canonical CLOB (creating the crank conditions + reservoir), and optionally register the relay watch and fund the reservoir. Signer must hold warm/cold admin (approval + attach). Direct-send only — fresh account keypairs must co-sign, so --multisig is rejected."
 				)
 		)
 			.requiredOption('--clob-program <pubkey>', 'deployed CLOB program id')
 			.option('--capacity <n>', 'order-node arena capacity', '4096')
+			.option(
+				'--slab-capacity <n>',
+				"quoter slab slots when the market's slab does not exist yet (slot 0 is the book; 1-64)",
+				'8'
+			)
 			.option(
 				'--quoter-user <pubkey>',
 				'quoter PDA user seed (unused for CLOB-type entries)',
@@ -302,6 +308,7 @@ export function registerClobMarket(parent: Command): void {
 			flags: ClobConfigFlags & {
 				clobProgram: string;
 				capacity: string;
+				slabCapacity: string;
 				quoterUser: string;
 				expireFallbackSlots: string;
 				minCrossSurplus: string;
@@ -410,14 +417,45 @@ export function registerClobMarket(parent: Command): void {
 						},
 					}
 				);
-				const legAccounts = (
-					leg: QuoterCpiLeg,
-					metas: { pubkey: PublicKey; isWritable: boolean }[]
-				) =>
+				// One unified account list; each leg names its slice by index.
+				// The quote leg reads the book; the execute leg also carries the
+				// place authority the book checks velocity's CPI signature against.
+				const registerAccounts =
 					client.program.instruction.updateQuoterAccounts(
-						{ leg, index: 0, metas },
+						{
+							metas: [
+								{ pubkey: book.publicKey, isWritable: true },
+								{ pubkey: clobAuthority, isWritable: false },
+							],
+							quoteIndexes: Buffer.from([0]),
+							executeIndexes: Buffer.from([0, 1]),
+						},
 						{ accounts: { authority: wallet, quoter: quoterPda } }
 					);
+				// Approval copies the staging config into the market's slab, so
+				// the slab has to exist first. It is permissionless and shared by
+				// every quoter on the market, so create it only when missing.
+				const quoterSlab = getQuoterSlabPublicKey(
+					client.program.programId,
+					marketIndex
+				);
+				const slabIxs = (await provider.connection.getAccountInfo(quoterSlab))
+					? []
+					: [
+							client.program.instruction.initializeQuoterSlab(
+								marketIndex,
+								Number.parseInt(flags.slabCapacity, 10),
+								{
+									accounts: {
+										payer: wallet,
+										perpMarket,
+										quoterSlab,
+										rent: SYSVAR_RENT_PUBKEY,
+										systemProgram: SystemProgram.programId,
+									},
+								}
+							),
+					  ];
 				// Approving an entry approves the binary behind it, so the CLOB
 				// program has to be frozen and its program-data account is the
 				// proof. A program on a loader that cannot upgrade in place has
@@ -431,24 +469,22 @@ export function registerClobMarket(parent: Command): void {
 						admin: wallet,
 						state: await client.getStatePublicKey(),
 						quoter: quoterPda,
+						quoterSlab,
 						quoterProgram: clobProgram,
 						quoterProgramData: clobProgramData,
 					},
 				});
 				await provider.sendAndConfirm(
 					new Transaction().add(
+						...slabIxs,
 						initQuoter,
-						legAccounts(QuoterCpiLeg.QUOTE, [
-							{ pubkey: book.publicKey, isWritable: true },
-						]),
-						legAccounts(QuoterCpiLeg.EXECUTE, [
-							{ pubkey: book.publicKey, isWritable: true },
-							{ pubkey: clobAuthority, isWritable: false },
-						]),
+						registerAccounts,
 						approve
 					)
 				);
-				console.log(`quoter ${quoterPda.toBase58()} registered + approved`);
+				console.log(
+					`quoter ${quoterPda.toBase58()} registered + approved into slab ${quoterSlab.toBase58()}`
+				);
 
 				// 3. Attach: names the canonical CLOB and stands up the crank
 				// conditions + reservoir; optionally fund the reservoir.
@@ -462,6 +498,7 @@ export function registerClobMarket(parent: Command): void {
 							state: await client.getStatePublicKey(),
 							perpMarket,
 							quoter: quoterPda,
+							quoterSlab,
 							clobMarket: book.publicKey,
 							clobProgram,
 							clobAuthority: client.getClobAuthorityPublicKey(),
@@ -566,8 +603,8 @@ export function registerClobMarket(parent: Command): void {
 						client.program.coder.accounts.decode(
 							'quoterV0',
 							entryInfo.data
-						) as { responseAccount: PublicKey }
-					).responseAccount
+						) as { config: { responseAccount: PublicKey } }
+					).config.responseAccount
 				);
 				const watches: [Keypair, Keypair] = [
 					Keypair.generate(),

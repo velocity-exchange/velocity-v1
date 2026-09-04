@@ -28,7 +28,7 @@ use {
     },
     tokio::sync::mpsc::error::TryRecvError,
     velocity_rs::{
-        constants::{derive_clob_authority, derive_clob_crank_conditions},
+        constants::{derive_clob_authority, derive_clob_crank_conditions, derive_quoter_slab},
         dlob::{DLOBNotifier, L3Order, DLOB},
         grpc::{
             grpc_subscriber::{AccountFilter, GrpcConnectionOpts},
@@ -54,7 +54,7 @@ use {
                 },
                 time::{Millis, SlotDuration},
             },
-            state::prop_amm::{ClobOrderRefV0, ClobSide, QuoterV0},
+            state::prop_amm::{ClobOrderRefV0, ClobSide},
         },
         titan::{self, TitanSwapApi},
         types::{
@@ -4596,24 +4596,24 @@ async fn resolve_clob_force_cancel(
         return Ok(None);
     }
 
-    // Book accounts for the force-cancel, read from the market's CLOB entry.
-    let clob_quoter = velocity
-        .try_get_perp_market_account(market_index)
-        .map_err(|error| {
-            log::warn!(target: TARGET, "perp market {market_index} unavailable for force-cancel: {error}");
-        })?
-        .clob_quoter;
-    let entry = velocity
-        .get_account_value::<QuoterV0>(&clob_quoter)
+    // Book accounts for the force-cancel, read from the market's quoter
+    // slab. The book slot keeps its config while suspended, so a
+    // force-cancel still works on a killed book.
+    let slots = velocity
+        .get_quoter_slab_slots(market_index)
         .await
         .map_err(|error| {
-            log::warn!(target: TARGET, "quoter {clob_quoter} unavailable for force-cancel: {error}");
+            log::warn!(target: TARGET, "quoter slab for market {market_index} unavailable for force-cancel: {error}");
         })?;
+    let Some(book) = velocity_rs::utils::clob_slot_config(&slots) else {
+        log::warn!(target: TARGET, "quoter slab for market {market_index} holds no book; cannot force-cancel");
+        return Err(());
+    };
     let clob_fill = ClobFillAccounts {
         market_index,
-        quoter: clob_quoter,
-        clob_market: entry.response_account,
-        clob_program: entry.program_id,
+        quoter_slab: derive_quoter_slab(market_index),
+        clob_market: book.response_account,
+        clob_program: book.program_id,
         clob_authority: derive_clob_authority(),
         crank_conditions: Some(derive_clob_crank_conditions(market_index)),
     };

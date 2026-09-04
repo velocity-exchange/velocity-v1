@@ -68,7 +68,7 @@ use {
                 get_market_set_from_list, get_writable_perp_market_set,
                 get_writable_perp_market_set_from_vec, MarketSet, PerpMarketMap,
             },
-            prop_amm::{Direction, QuoterV0},
+            prop_amm::{Direction, QuoterSlabV0},
             revenue_share::{RevenueShareEscrowZeroCopyMut, REVENUE_SHARE_ESCROW_PDA_SEED},
             revenue_share_map::load_revenue_share_map,
             settle_pnl_mode::SettlePnlMode,
@@ -111,11 +111,12 @@ use {
 /// external quoters.
 ///
 /// `remaining_accounts`, beyond the usual market/oracle/user-map section:
-/// the external quoters' `QuoterV0` registry entries plus the union of their
+/// the market's `QuoterSlabV0` plus the union of the consulted quoters'
 /// registered CPI accounts (including the quoter programs and the velocity
-/// signer PDA). Each active + approved entry for this market is quoted via
-/// CPI into a book; allocations that land on a book execute through the same
-/// entry's `execute_v0`. No quoter entries = vAMM + DLOB routing only —
+/// signer PDA). A slab slot is consulted when its response account rides the
+/// call; each live consulted slot is quoted via CPI into a book, and
+/// allocations that land on a book execute through the same slot's
+/// `execute_v0`. No slab = vAMM + DLOB routing only —
 /// allowed only while the market names no canonical CLOB (`clob_quoter`).
 #[access_control(
     fill_not_paused(&ctx.accounts.state)
@@ -279,8 +280,8 @@ fn fill_order<'c: 'info, 'info>(
 
     // ---- Quote external quoters from the leftover accounts. ----
     // Everything past the map/user/escrow sections is the quoter section:
-    // `QuoterV0` registry entries plus the union of their registered CPI
-    // accounts (quoter programs, response accounts, the quoter CPI signer).
+    // the market's `QuoterSlabV0` plus the union of the consulted quoters'
+    // registered CPI accounts (programs, response accounts, the CPI signer).
     // The tail as a subslice rather than a collected list: what the sections
     // above consumed is the difference in the iterator's remaining length, and
     // borrowing from there costs nothing where cloning every account did.
@@ -468,7 +469,7 @@ fn fill_order<'c: 'info, 'info>(
                 )?;
                 crate::instructions::try_place_remainder_on_clob(
                     accounts.user,
-                    clob.quoter,
+                    clob.quoter_slab,
                     clob.clob_market,
                     clob.clob_program,
                     clob.clob_authority,
@@ -881,11 +882,11 @@ pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
     let taker_order_signature: Option<[u8; 64]> = signed_msg_order_params_message_bytes
         .get(..64)
         .and_then(|sig| <[u8; 64]>::try_from(sig).ok());
-    // The market comes off the CLOB registry entry rather than an argument,
-    // because the entry is what the crank-conditions seed already derives from
-    // and the two must name the same market. The message is checked against it
-    // once decoded.
-    let market_index = ctx.accounts.quoter.load()?.market;
+    // The market comes off the quoter slab rather than an argument, because
+    // the slab is what the crank-conditions seed already derives from and the
+    // two must name the same market. The message is checked against it once
+    // decoded.
+    let market_index = ctx.accounts.quoter_slab.load()?.market;
 
     let mut remaining_accounts = ctx.remaining_accounts.iter().peekable();
     // TODO: generalize to support multiple market types
@@ -976,8 +977,11 @@ pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
         }
         None => false,
     };
-    let synchronous_take =
-        crate::instructions::synchronous_take_allowed(taker_served_window, &ctx.accounts.quoter)?;
+    let synchronous_take = crate::instructions::synchronous_take_allowed(
+        taker_served_window,
+        &ctx.accounts.quoter_slab,
+        market_index,
+    )?;
 
     // The fill mutates the ephemeral order's filled amounts in place; the rest
     // leg reads its remainder from there.
@@ -1238,7 +1242,7 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
     // migrates straight onto the CLOB.
     let rested = crate::instructions::try_place_remainder_on_clob(
         &ctx.accounts.user,
-        &ctx.accounts.quoter,
+        &ctx.accounts.quoter_slab,
         &ctx.accounts.clob_market.to_account_info(),
         &ctx.accounts.clob_program.to_account_info(),
         &ctx.accounts.clob_authority.to_account_info(),
@@ -4980,16 +4984,18 @@ pub struct PlaceSignedMsgTakerOrder<'info> {
         constraint = is_stats_for_user(&filler, &filler_stats)?
     )]
     pub filler_stats: AccountLoader<'info, UserStats>,
-    /// The market's CLOB registry entry. The remainder only ever rests on a
-    /// vetted book, and the entry is the mandatory baseline of a router fill.
-    pub quoter: AccountLoader<'info, QuoterV0>,
-    /// CHECK: validated against the quoter entry's registered execute
-    /// accounts (`ClobMarket::from_quoter`), so a valid entry cannot be
-    /// pointed at an arbitrary account.
+    /// The market's quoter slab. The remainder only ever rests on the vetted
+    /// book its `Clob` slot names, and that book is the mandatory baseline of
+    /// a router fill.
+    pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
+    /// CHECK: validated against the book slot's registered response account
+    /// (`ClobMarket::from_quoter`), so a valid slot cannot be pointed at an
+    /// arbitrary account.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
-    /// CHECK: locked to the registered quoter program.
-    #[account(address = quoter.load()?.program_id)]
+    /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
+    /// registration; the handler re-checks through the slot.
+    #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
     /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
     /// is set to. Its own key, distinct from the per-entry signer a

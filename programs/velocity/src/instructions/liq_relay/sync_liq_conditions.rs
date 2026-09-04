@@ -49,7 +49,7 @@ use {
             oracle_watch::{oracle_watch, OracleWatchV0},
             pdas,
             perp_market::PerpMarket,
-            prop_amm::QuoterV0,
+            prop_amm::QuoterSlabV0,
             spot_market::SpotMarket,
             state::State,
             user::User,
@@ -231,15 +231,15 @@ pub fn rewrite_liq_conditions<'info>(
                 tail_refs.push(AccountRefV0::readonly(info.key.to_bytes()));
                 continue;
             }
-            // Quoter entries are the trigger pass's input, not this one's —
+            // Quoter slabs are the trigger pass's input, not this one's —
             // but this pass writes the shared account list both passes'
             // staged executors reuse, so they must be kept out of the map
             // section: `load_maps` stops at the first non-map account, and
-            // a quoter filed among the oracles cuts the markets off from
+            // a slab filed among the oracles cuts the markets off from
             // every staged executor (the localnet harness hit exactly that
             // as `PerpMarketNotFound`). Stored after the markets, where the
             // parser never reaches, so a staged resync still carries them.
-            if let Ok(loader) = AccountLoader::<QuoterV0>::try_from(info) {
+            if let Ok(loader) = AccountLoader::<QuoterSlabV0>::try_from(info) {
                 let _ = loader.load()?;
                 tail_refs.push(AccountRefV0::readonly(info.key.to_bytes()));
                 continue;

@@ -325,7 +325,7 @@ export class VelocityCore {
 		user: PublicKey;
 		userStats: PublicKey;
 		authority: PublicKey;
-		quoter: PublicKey;
+		quoterSlab: PublicKey;
 		clobMarket: PublicKey;
 		clobProgram: PublicKey;
 		clobAuthority: PublicKey;
@@ -434,7 +434,7 @@ export class VelocityCore {
 	 * @param args.userStats - the taker's `UserStats` PDA.
 	 * @param args.authority - signer that must own or be a registered delegate of `user`.
 	 * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for `orderParams.marketIndex`, followed by maker/referrer `(User, UserStats)` pairs, followed by the taker's `RevenueShareEscrow` account if builder codes are enabled, and, when that taker is referred, the referrer's readonly `UserStats` after the escrow.
-	 * @param args.clobAccounts - the market's CLOB accounts (`quoter` registry entry, writable `clobMarket`, `clobProgram`, `clobAuthority`); when passed, an unfilled limit remainder rests on the CLOB instead of being cancelled.
+	 * @param args.clobAccounts - the market's CLOB accounts (`quoterSlab`, writable `clobMarket`, `clobProgram`, `clobAuthority`); when passed, an unfilled limit remainder rests on the CLOB instead of being cancelled.
 	 * @returns the unsigned `placeAndTakePerpOrder` `TransactionInstruction`.
 	 */
 	static async buildPlaceAndTakePerpOrderInstruction(args: {
@@ -447,7 +447,7 @@ export class VelocityCore {
 		authority: PublicKey;
 		remainingAccounts: AccountMeta[];
 		clobAccounts?: {
-			quoter: PublicKey;
+			quoterSlab: PublicKey;
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 			clobAuthority: PublicKey;
@@ -481,7 +481,7 @@ export class VelocityCore {
 		authority: PublicKey;
 		remainingAccounts: AccountMeta[];
 		clobAccounts: {
-			quoter: PublicKey;
+			quoterSlab: PublicKey;
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 			clobAuthority: PublicKey;

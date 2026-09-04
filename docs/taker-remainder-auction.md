@@ -362,7 +362,7 @@ deadlock the book, because the arb cross in front of a remainder is what clears 
 
 **velocity (`programs/velocity`)** — built.
 - `fill_legacy_dlob_order`: the CLOB accounts plus the migration step. Free in accounts — a
-  router fill already carries the CLOB entry, its book, the clob program and the quoter signer,
+  router fill already carries the quoter slab, the book, the clob program and the quoter signer,
   because the CLOB baseline is mandatory, so the route adds nothing new.
 - The migration itself reuses `try_place_remainder_on_clob`, with the taker-origin flag set.
 - `crank_taker_origin_cross` resolves one cross, and it resolves it as an ordinary fill. The

@@ -5,7 +5,8 @@ import {
 	getCrankTreasuryPublicKey,
 	getClobCrankConditionsPublicKey,
 	getPerpMarketPublicKeySync,
-	QuoterCpiLeg,
+	getQuoterPublicKey,
+	getQuoterSlabPublicKey,
 	QuoterType,
 } from '@velocity-exchange/sdk';
 import {
@@ -47,15 +48,16 @@ function parseQuoterType(value: string): QuoterType {
 	}
 }
 
-function parseLeg(value: string): QuoterCpiLeg {
-	switch (value.toLowerCase()) {
-		case 'quote':
-			return QuoterCpiLeg.QUOTE;
-		case 'execute':
-			return QuoterCpiLeg.EXECUTE;
-		default:
-			throw new Error(`leg must be "quote" or "execute", got "${value}"`);
-	}
+/** Parse a comma-separated list of indexes into the unified account list. */
+function parseIndexList(value: string): number[] {
+	if (value.trim() === '') return [];
+	return value.split(',').map((part) => {
+		const index = Number.parseInt(part.trim(), 10);
+		if (!Number.isInteger(index) || index < 0 || index > 255) {
+			throw new Error(`account index must be 0-255, got "${part}"`);
+		}
+		return index;
+	});
 }
 
 /** Parse an 8-byte instruction discriminator given as 16 hex chars (optional 0x prefix). */
@@ -83,31 +85,40 @@ function parseAccountMeta(value: string): {
 	return { pubkey: new PublicKey(pubkey), isWritable: suffix === 'w' };
 }
 
-/** Derive the `QuoterV0` PDA from seeds `["quoter", marketIndex as u16 LE, quoterProgram, user]`. */
-function getQuoterPublicKey(
-	programId: PublicKey,
-	marketIndex: number,
-	quoterProgram: PublicKey,
-	user: PublicKey
-): PublicKey {
-	return PublicKey.findProgramAddressSync(
-		[
-			Buffer.from('quoter'),
-			new BN(marketIndex).toArrayLike(Buffer, 'le', 2),
-			quoterProgram.toBuffer(),
-			user.toBuffer(),
-		],
-		programId
-	)[0];
+/**
+ * The market's quoter slab, when it exists on chain. The write-through
+ * instructions (`set-active`, `set-priority`, `set-oracle-band`) take it as
+ * an optional account: passed, the value also lands in the entry's live slot.
+ * The entry names its market, so the slab is derived rather than asked for.
+ */
+async function liveSlabFor(
+	client: {
+		program: {
+			programId: PublicKey;
+			account: any;
+		};
+	},
+	connection: { getAccountInfo(key: PublicKey): Promise<unknown | null> },
+	quoterKey: PublicKey
+): Promise<PublicKey | null> {
+	const entry = await client.program.account.quoterV0.fetch(quoterKey);
+	const quoterSlab = getQuoterSlabPublicKey(
+		client.program.programId,
+		entry.config.market
+	);
+	return (await connection.getAccountInfo(quoterSlab)) ? quoterSlab : null;
 }
 
 /**
  * Quoter registry operations (PropAMM order flow, see `state::prop_amm`).
  *
- * For Custom quoters the quoted user's authority creates the entry — creation
- * is consent — and keeps a permanent kill switch (`set-active`). Nothing
- * fills until the admin vets the CPI surface (`set-approved`), and any config
- * or account-list change clears that approval for re-vetting.
+ * The `QuoterV0` entry is the staging half: its authority proposes config
+ * there, and nothing fills from it. The admin copies the staging config into
+ * the market's `QuoterSlabV0` slot (`set-approved`), and fills read only that
+ * copy. A staging edit does not touch the slab — the approved copy keeps
+ * serving until the admin re-approves. For Custom quoters the quoted user's
+ * authority creates the entry — creation is consent — and keeps a permanent
+ * kill switch (`set-active`, written through to the live slot).
  */
 export function registerQuoter(parent: Command): void {
 	const quoter = parent
@@ -212,9 +223,110 @@ export function registerQuoter(parent: Command): void {
 
 	withGlobalOptions(
 		quoter
-			.command('update-accounts <quoter> <leg> <index> <metas...>')
+			.command('init-slab <market> [capacity]')
 			.description(
-				'Write a slice of a quoter\'s registered CPI account list, starting at <index>. <leg> is "quote" or "execute"; each meta is "<pubkey>" (readonly) or "<pubkey>:w" (writable). Truncates the list to the end of the slice and clears admin approval (admin re-vets). Signer must be the entry authority.'
+				"Initialize a perp market's QuoterSlabV0 — the per-market account that holds every approved quoter config. One per market; approval (set-approved) copies a staging entry into a slot, and fills read only the slab. Slot 0 is reserved for the market's book, so [capacity] is 1 + the number of Custom quoters the market can hold (1-13 at creation — the runtime caps one allocation at 10,240 bytes — default 8; grow later with extend-slab). Permissionless; the signer pays the rent."
+			)
+	).action(
+		async (market: string, capacity: string | undefined, cmd: Command) => {
+			const marketIndex = Number.parseInt(market, 10);
+			const slots = Number.parseInt(capacity ?? '8', 10);
+			const opts = readGlobalOpts(cmd);
+			if (opts.multisig) {
+				throw new Error('init-slab is permissionless — direct-send only');
+			}
+			const provider = buildProvider(opts);
+			const client = await buildAdminClient(opts, false);
+			try {
+				const quoterSlab = getQuoterSlabPublicKey(
+					client.program.programId,
+					marketIndex
+				);
+				const ix = client.program.instruction.initializeQuoterSlab(
+					marketIndex,
+					slots,
+					{
+						accounts: {
+							payer: provider.wallet.publicKey,
+							perpMarket: getPerpMarketPublicKeySync(
+								client.program.programId,
+								marketIndex
+							),
+							quoterSlab,
+							rent: SYSVAR_RENT_PUBKEY,
+							systemProgram: SystemProgram.programId,
+						},
+					}
+				);
+				const result = await sendOrPropose(provider, [ix], undefined, '');
+				reportDispatch(
+					`quoter slab ${quoterSlab.toBase58()} initialized (market ${marketIndex}, capacity ${slots})`,
+					result
+				);
+			} finally {
+				if ((client as any).isSubscribed) {
+					await client.unsubscribe();
+				}
+			}
+		}
+	);
+
+	withGlobalOptions(
+		quoter
+			.command('extend-slab <market> <capacity>')
+			.description(
+				"Grow a perp market's QuoterSlabV0 to <capacity> total slots. The new tail bytes are vacant slots; occupied slots never move. One call can add at most 13 slots (the runtime's 10,240-byte growth ceiling) — repeat for more. Permissionless; the signer pays the added rent."
+			)
+	).action(async (market: string, capacity: string, cmd: Command) => {
+		const marketIndex = Number.parseInt(market, 10);
+		const slots = Number.parseInt(capacity, 10);
+		const opts = readGlobalOpts(cmd);
+		if (opts.multisig) {
+			throw new Error('extend-slab is permissionless — direct-send only');
+		}
+		const provider = buildProvider(opts);
+		const client = await buildAdminClient(opts, false);
+		try {
+			const quoterSlab = getQuoterSlabPublicKey(
+				client.program.programId,
+				marketIndex
+			);
+			const ix = client.program.instruction.extendQuoterSlab(
+				marketIndex,
+				slots,
+				{
+					accounts: {
+						payer: provider.wallet.publicKey,
+						quoterSlab,
+						systemProgram: SystemProgram.programId,
+					},
+				}
+			);
+			const result = await sendOrPropose(provider, [ix], undefined, '');
+			reportDispatch(
+				`quoter slab ${quoterSlab.toBase58()} extended to ${slots} slots`,
+				result
+			);
+		} finally {
+			if ((client as any).isSubscribed) {
+				await client.unsubscribe();
+			}
+		}
+	});
+
+	withGlobalOptions(
+		quoter
+			.command('update-accounts <quoter> <metas...>')
+			.description(
+				'Replace a quoter\'s registered CPI account list whole. Each meta is "<pubkey>" (readonly) or "<pubkey>:w" (writable); --quote-indexes and --execute-indexes pick which metas each leg forwards, in CPI order. The approved slab copy keeps serving until the admin re-approves (set-approved). Signer must be the entry authority.'
+			)
+			.requiredOption(
+				'--quote-indexes <list>',
+				'comma-separated indexes into <metas...> forwarded to quote_v0 / quote_l3_v0'
+			)
+			.requiredOption(
+				'--execute-indexes <list>',
+				'comma-separated indexes into <metas...> forwarded to execute_v0'
 			)
 			.option(
 				'-a, --authority <pubkey>',
@@ -223,10 +335,12 @@ export function registerQuoter(parent: Command): void {
 	).action(
 		async (
 			quoterArg: string,
-			leg: string,
-			index: string,
 			metas: string[],
-			flags: { authority?: string },
+			flags: {
+				quoteIndexes: string;
+				executeIndexes: string;
+				authority?: string;
+			},
 			cmd: Command
 		) => {
 			const opts = readGlobalOpts(cmd);
@@ -235,9 +349,9 @@ export function registerQuoter(parent: Command): void {
 			try {
 				const ix = client.program.instruction.updateQuoterAccounts(
 					{
-						leg: parseLeg(leg),
-						index: Number.parseInt(index, 10),
 						metas: metas.map(parseAccountMeta),
+						quoteIndexes: Buffer.from(parseIndexList(flags.quoteIndexes)),
+						executeIndexes: Buffer.from(parseIndexList(flags.executeIndexes)),
 					},
 					{
 						accounts: {
@@ -255,9 +369,7 @@ export function registerQuoter(parent: Command): void {
 					'velocity-admin quoter update-accounts'
 				);
 				reportDispatch(
-					`quoter ${quoterArg} ${leg.toLowerCase()} accounts [${index}, ${
-						Number.parseInt(index, 10) + metas.length
-					}) updated (approval cleared)`,
+					`quoter ${quoterArg} staged ${metas.length} accounts (quote [${flags.quoteIndexes}], execute [${flags.executeIndexes}]); re-approve to publish`,
 					result
 				);
 			} finally {
@@ -272,7 +384,7 @@ export function registerQuoter(parent: Command): void {
 		quoter
 			.command('update-config <quoter>')
 			.description(
-				"Update a quoter's scalar CPI config; only the passed options change. Clears admin approval (admin re-vets). Signer must be the entry authority."
+				"Update a quoter's scalar CPI config on the staging entry; only the passed options change. The approved slab copy keeps serving until the admin re-approves (set-approved). Signer must be the entry authority."
 			)
 			.option('--response-account <pubkey>', 'new response account')
 			.option('--quote-disc <hex>', 'new quote_v0 discriminator (16 hex chars)')
@@ -345,7 +457,7 @@ export function registerQuoter(parent: Command): void {
 					'velocity-admin quoter update-config'
 				);
 				reportDispatch(
-					`quoter ${quoterArg} config updated (approval cleared)`,
+					`quoter ${quoterArg} config staged; re-approve to publish`,
 					result
 				);
 			} finally {
@@ -360,7 +472,7 @@ export function registerQuoter(parent: Command): void {
 		quoter
 			.command('set-active <quoter> <active>')
 			.description(
-				"The maker's own kill switch: enable or disable the entry. Always available to the entry authority — for Custom quoters the quoted user's authority. <active> = true|false."
+				"The maker's own kill switch: enable or disable the entry. Written through to the market's slab slot when one exists, so the change takes effect without a re-approval. Always available to the entry authority — for Custom quoters the quoted user's authority. <active> = true|false."
 			)
 			.option(
 				'-a, --authority <pubkey>',
@@ -378,12 +490,18 @@ export function registerQuoter(parent: Command): void {
 			const provider = buildProvider(opts);
 			const client = await buildAdminClient(opts, false);
 			try {
+				const quoterKey = new PublicKey(quoterArg);
 				const ix = client.program.instruction.updateQuoterActive(on, {
 					accounts: {
 						authority: flags.authority
 							? new PublicKey(flags.authority)
 							: provider.wallet.publicKey,
-						quoter: new PublicKey(quoterArg),
+						quoter: quoterKey,
+						quoterSlab: await liveSlabFor(
+							client,
+							provider.connection,
+							quoterKey
+						),
 					},
 				});
 				const result = await sendOrPropose(
@@ -408,7 +526,7 @@ export function registerQuoter(parent: Command): void {
 		quoter
 			.command('set-approved <quoter> <approved>')
 			.description(
-				'Admin vetting gate (warm/cold admin): approve or unapprove a quoter registry entry. Approving validates non-empty account lists on both legs, each containing the response account. Any config or account-list change clears approval. <approved> = true|false.'
+				"Admin vetting gate (warm/cold admin): copy the staging config into the market's slab slot, or revoke that slot. Approving validates non-empty account lists on both legs, each containing the response account. Fills read only the slab copy, so a staged edit serves nothing until re-approved here. <approved> = true|false."
 			)
 			.option(
 				'--admin <pubkey>',
@@ -434,7 +552,7 @@ export function registerQuoter(parent: Command): void {
 				const entry = await (client.program.account as any).quoterV0.fetch(
 					quoterKey
 				);
-				const quoterProgram = new PublicKey(entry.programId);
+				const quoterProgram = new PublicKey(entry.config.programId);
 				const [programData] = PublicKey.findProgramAddressSync(
 					[quoterProgram.toBuffer()],
 					BPF_LOADER_UPGRADEABLE_ID
@@ -446,6 +564,10 @@ export function registerQuoter(parent: Command): void {
 							: provider.wallet.publicKey,
 						state: await client.getStatePublicKey(),
 						quoter: quoterKey,
+						quoterSlab: getQuoterSlabPublicKey(
+							client.program.programId,
+							entry.config.market
+						),
 						quoterProgram,
 						quoterProgramData: on ? programData : null,
 					},
@@ -472,7 +594,7 @@ export function registerQuoter(parent: Command): void {
 		quoter
 			.command('set-priority <quoter> <priority>')
 			.description(
-				"Set a quoter registry entry's routing priority (warm/cold admin): at a price, lower-priority tiers fill first, pro rata within a tier. Registration defaults by type (vamm 0, clob 10, custom 20). Admin-only — a maker choosing their own priority could jump the vAMM/CLOB. <priority> = 0-255."
+				"Set a quoter registry entry's routing priority (warm/cold admin): at a price, lower-priority tiers fill first, pro rata within a tier. Registration defaults by type (vamm 0, clob 10, custom 20). Written through to the market's slab slot when one exists. Admin-only — a maker choosing their own priority could jump the vAMM/CLOB. <priority> = 0-255."
 			)
 			.option(
 				'--admin <pubkey>',
@@ -493,13 +615,19 @@ export function registerQuoter(parent: Command): void {
 			const provider = buildProvider(opts);
 			const client = await buildAdminClient(opts, false);
 			try {
+				const quoterKey = new PublicKey(quoterArg);
 				const ix = client.program.instruction.updateQuoterPriority(priority, {
 					accounts: {
 						admin: flags.admin
 							? new PublicKey(flags.admin)
 							: provider.wallet.publicKey,
 						state: await client.getStatePublicKey(),
-						quoter: new PublicKey(quoterArg),
+						quoter: quoterKey,
+						quoterSlab: await liveSlabFor(
+							client,
+							provider.connection,
+							quoterKey
+						),
 					},
 				});
 				const result = await sendOrPropose(
@@ -568,8 +696,8 @@ export function registerQuoter(parent: Command): void {
 						client.program.coder.accounts.decode(
 							'quoterV0',
 							entryInfo.data
-						) as { programId: PublicKey }
-					).programId
+						) as { config: { programId: PublicKey } }
+					).config.programId
 				);
 				const ix = client.program.instruction.updatePerpMarketClobQuoter(
 					crankCostUnits,
@@ -586,6 +714,10 @@ export function registerQuoter(parent: Command): void {
 								marketIndex
 							),
 							quoter: new PublicKey(quoterArg),
+							quoterSlab: getQuoterSlabPublicKey(
+								client.program.programId,
+								marketIndex
+							),
 							clobMarket: new PublicKey(clobMarket),
 							clobProgram: clobProgramId,
 							clobAuthority: client.getClobAuthorityPublicKey(),
@@ -622,7 +754,7 @@ export function registerQuoter(parent: Command): void {
 		quoter
 			.command('set-watch <quoter>')
 			.description(
-				"Declare (or clear) a Custom quoter's reprice-watch region — the account bytes whose change means the quoter may quote differently (a midpoint's mid region). Relay cross-discovery conditions wake on it. Clears admin approval (admin re-vets). Signer must be the entry authority."
+				"Declare (or clear) a Custom quoter's reprice-watch region — the account bytes whose change means the quoter may quote differently (a midpoint's mid region). Relay cross-discovery conditions wake on it. Staged on the entry; the admin re-approves (set-approved) to publish it to the slab. Signer must be the entry authority."
 			)
 			.option(
 				'--watch-account <pubkey>',
@@ -682,7 +814,7 @@ export function registerQuoter(parent: Command): void {
 				reportDispatch(
 					`quoter ${quoterArg} watch ${
 						watchLen > 0 ? 'declared' : 'cleared'
-					} (approval cleared)`,
+					}; re-approve to publish`,
 					result
 				);
 			} finally {
@@ -697,7 +829,7 @@ export function registerQuoter(parent: Command): void {
 		quoter
 			.command('set-oracle-band <quoter> <bps>')
 			.description(
-				"Declare (or clear) how far from oracle a Custom quoter's fills may price, in basis points. Velocity already bounds every external leg by the market's own band; this asks for a tighter one, so a maker caps what its own program can lose if that program is compromised. Applied as the smaller of this and the market's margin ratio, so it can only tighten a bound the admin already vetted — which is why it does NOT clear admin approval. <bps> = 0 clears the declaration. Signer must be the entry authority."
+				"Declare (or clear) how far from oracle a Custom quoter's fills may price, in basis points. Velocity already bounds every external leg by the market's own band; this asks for a tighter one, so a maker caps what its own program can lose if that program is compromised. Applied as the smaller of this and the market's margin ratio, so it can only tighten a bound the admin already vetted — which is why it is written through to the market's slab slot without a re-approval. <bps> = 0 clears the declaration. Signer must be the entry authority."
 			)
 			.option(
 				'-a, --authority <pubkey>',
@@ -718,6 +850,7 @@ export function registerQuoter(parent: Command): void {
 			const provider = buildProvider(opts);
 			const client = await buildAdminClient(opts, false);
 			try {
+				const quoterKey = new PublicKey(quoterArg);
 				const ix = client.program.instruction.updateQuoterMaxOracleDeviation(
 					bps,
 					{
@@ -725,7 +858,12 @@ export function registerQuoter(parent: Command): void {
 							authority: flags.authority
 								? new PublicKey(flags.authority)
 								: provider.wallet.publicKey,
-							quoter: new PublicKey(quoterArg),
+							quoter: quoterKey,
+							quoterSlab: await liveSlabFor(
+								client,
+								provider.connection,
+								quoterKey
+							),
 						},
 					}
 				);
@@ -775,19 +913,16 @@ export function registerQuoter(parent: Command): void {
 				);
 				const perpMarket = getPerpMarketPublicKeySync(
 					client.program.programId,
-					entry.market
+					entry.config.market
 				);
 				const marketConditions = getClobCrankConditionsPublicKey(
 					client.program.programId,
-					entry.market
+					entry.config.market
 				);
 				const crossConditions = PublicKey.findProgramAddressSync(
 					[Buffer.from('quoter_cross_conditions'), quoterKey.toBuffer()],
 					client.program.programId
 				)[0];
-				const market = await (client.program.account as any).perpMarket.fetch(
-					perpMarket
-				);
 				const ix = client.program.instruction.initializeQuoterCrossConditions(
 					new BN(flags.fallbackSlots),
 					{
@@ -796,7 +931,10 @@ export function registerQuoter(parent: Command): void {
 							state: await client.getStatePublicKey(),
 							quoter: quoterKey,
 							perpMarket,
-							clobQuoter: market.clobQuoter,
+							quoterSlab: getQuoterSlabPublicKey(
+								client.program.programId,
+								entry.config.market
+							),
 							marketConditions,
 							crossConditions,
 							rent: SYSVAR_RENT_PUBKEY,

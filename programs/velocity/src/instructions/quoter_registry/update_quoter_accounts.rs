@@ -1,11 +1,13 @@
-//! Write a slice of a quoter's registered CPI account list. Chunked by
-//! `index` so a full 32-entry list never has to fit in one transaction.
-//! Clears `is_approved` — the CPI surface changed, the admin re-vets.
+//! Write a quoter's registered CPI account list: one unified list, plus the
+//! index lists that say which of its accounts each leg forwards, in CPI
+//! order. One call replaces all three, so a leg can never point past the
+//! list it was written with. Staging only: the approved copy in the market's
+//! slab keeps serving its vetted config until the admin copies again.
 
 use {
     crate::{
         error::ErrorCode,
-        state::prop_amm::{validate_quoter_accounts, QuoterCpiLeg, QuoterV0, MAX_QUOTER_ACCOUNTS},
+        state::prop_amm::{validate_quoter_accounts, QuoterV0, MAX_QUOTER_ACCOUNTS},
         validate,
     },
     anchor_lang::prelude::*,
@@ -16,7 +18,7 @@ pub struct UpdateQuoterAccounts<'info> {
     pub authority: Signer<'info>,
     #[account(
         mut,
-        constraint = quoter.load()?.authority == authority.key() @ ErrorCode::InvalidQuoterAuthority
+        constraint = quoter.load()?.config.authority == authority.key() @ ErrorCode::InvalidQuoterAuthority
     )]
     pub quoter: AccountLoader<'info, QuoterV0>,
 }
@@ -29,10 +31,13 @@ pub struct QuoterAccountMetaArg {
 
 #[derive(Clone, AnchorSerialize, AnchorDeserialize)]
 pub struct UpdateQuoterAccountsArgs {
-    pub leg: QuoterCpiLeg,
-    /// Slot in the registered list this slice starts at.
-    pub index: u8,
+    /// The unified registered list, replacing the stored one whole.
     pub metas: Vec<QuoterAccountMetaArg>,
+    /// Indexes into `metas` forwarded to `quote_v0` / `quote_l3_v0`, in CPI
+    /// order.
+    pub quote_indexes: Vec<u8>,
+    /// Indexes into `metas` forwarded to `execute_v0`, in CPI order.
+    pub execute_indexes: Vec<u8>,
 }
 
 pub fn handle_update_quoter_accounts(
@@ -40,36 +45,51 @@ pub fn handle_update_quoter_accounts(
     args: UpdateQuoterAccountsArgs,
 ) -> Result<()> {
     let mut quoter = ctx.accounts.quoter.load_mut()?;
-    let quoter = &mut *quoter;
+    let config = &mut quoter.config;
 
-    let end = (args.index as usize)
-        .checked_add(args.metas.len())
-        .ok_or(ErrorCode::InvalidQuoterConfig)?;
     validate!(
-        end <= MAX_QUOTER_ACCOUNTS,
+        args.metas.len() <= MAX_QUOTER_ACCOUNTS,
         ErrorCode::InvalidQuoterConfig,
-        "quoter account list slice [{}, {}) exceeds capacity {}",
-        args.index,
-        end,
+        "{} quoter accounts exceeds the capacity of {}",
+        args.metas.len(),
         MAX_QUOTER_ACCOUNTS
     )?;
     validate_quoter_accounts(args.metas.iter().map(|meta| &meta.pubkey))?;
+    for (name, indexes) in [
+        ("quote", &args.quote_indexes),
+        ("execute", &args.execute_indexes),
+    ] {
+        validate!(
+            indexes.len() <= MAX_QUOTER_ACCOUNTS,
+            ErrorCode::InvalidQuoterConfig,
+            "{} {} leg indexes exceeds the capacity of {}",
+            indexes.len(),
+            name,
+            MAX_QUOTER_ACCOUNTS
+        )?;
+        validate!(
+            indexes.iter().all(|&i| (i as usize) < args.metas.len()),
+            ErrorCode::InvalidQuoterConfig,
+            "a {} leg index points past the registered list",
+            name
+        )?;
+    }
 
-    let (list, count) = match args.leg {
-        QuoterCpiLeg::Quote => (&mut quoter.quote_accounts, &mut quoter.quote_accounts_count),
-        QuoterCpiLeg::Execute => (
-            &mut quoter.execute_accounts,
-            &mut quoter.execute_accounts_count,
-        ),
-    };
-    for (slot, meta) in list[args.index as usize..end].iter_mut().zip(&args.metas) {
+    config.accounts = Default::default();
+    for (slot, meta) in config.accounts.iter_mut().zip(&args.metas) {
         slot.pubkey = meta.pubkey;
         slot.is_writable = meta.is_writable;
     }
-    // The list is exactly [0, end): a slice write is also a truncation, so a
-    // shrinking update can't leave stale live entries past its end.
-    *count = end as u8;
+    config.accounts_count = args.metas.len() as u8;
 
-    quoter.is_approved = false;
+    config.quote_account_indexes = Default::default();
+    config.quote_account_indexes[..args.quote_indexes.len()].copy_from_slice(&args.quote_indexes);
+    config.quote_accounts_count = args.quote_indexes.len() as u8;
+
+    config.execute_account_indexes = Default::default();
+    config.execute_account_indexes[..args.execute_indexes.len()]
+        .copy_from_slice(&args.execute_indexes);
+    config.execute_accounts_count = args.execute_indexes.len() as u8;
+
     Ok(())
 }

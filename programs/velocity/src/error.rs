@@ -867,6 +867,10 @@ pub enum ErrorCode {
         "The book runs an activation speed bump; an unattested taker rests on the book instead of filling synchronously"
     )]
     UnattestedSynchronousTake,
+    #[msg("The market's quoter slab has no vacant slot")]
+    QuoterSlabFull,
+    #[msg("The market's quoter slab holds no approved copy of this entry")]
+    QuoterNotOnSlab,
 }
 
 #[macro_export]

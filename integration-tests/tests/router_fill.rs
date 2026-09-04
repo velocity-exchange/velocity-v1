@@ -1,5 +1,6 @@
 //! End-to-end router fill: a taker's market order routed across a real CLOB
-//! book (quote + execute CPIs through its `QuoterV0` entry), a DLOB maker,
+//! book (quote + execute CPIs through its slot in the market's
+//! `QuoterSlabV0`), a DLOB maker,
 //! and the vAMM — through the real `fill_perp_order_router` instruction.
 //! CLOB placement runs through the velocity `place_clob_order` adapter, so
 //! the maker's open-order aggregates are reserved by the margin gate and
@@ -34,7 +35,7 @@ use {
             perp_market::PerpMarket,
             prop_amm::{
                 ClobCancelSides, ClobOrderRefV0, Direction, L3ArgsV0, L3ResponseV0, L3RowV0,
-                QuoterCpiLeg, QuoterType, ResponsePointerV0,
+                QuoterType, ResponsePointerV0,
             },
             pyth_lazer_oracle::PythLazerOracle,
             spot_market::{SpotBalanceType, SpotMarket},
@@ -119,7 +120,8 @@ fn set_oracle(svm: &mut litesvm::LiteSVM, address: Pubkey, price_precision_price
 
 /// The controller unit fixture's $100 market: 100-unit reserves at peg 100,
 /// 2% base spread, 10%/5% margin ratios. `clob_quoter` names the canonical
-/// CLOB entry every router fill must carry (the mandatory baseline).
+/// CLOB entry whose slab slot every router fill must consult (the mandatory
+/// baseline).
 fn set_trading_perp_market(svm: &mut litesvm::LiteSVM, oracle: Pubkey, clob_quoter: Pubkey) {
     let mut market: PerpMarket = Zeroable::zeroed();
     market.market_index = 0;
@@ -420,52 +422,46 @@ fn register_clob_quoter(
         .data(),
     };
     send(svm, admin, ix, &[]).unwrap();
-    for (leg, metas) in [
-        (
-            QuoterCpiLeg::Quote,
-            vec![QuoterAccountMetaArg {
-                pubkey: market,
-                is_writable: true,
-            }],
-        ),
-        (
-            QuoterCpiLeg::Execute,
-            vec![
-                QuoterAccountMetaArg {
-                    pubkey: market,
-                    is_writable: true,
-                },
-                QuoterAccountMetaArg {
-                    pubkey: clob_authority,
-                    is_writable: false,
-                },
-            ],
-        ),
-    ] {
-        let ix = Instruction {
-            program_id: velocity_id(),
-            accounts: velocity::accounts::UpdateQuoterAccounts {
-                authority: admin.pubkey(),
-                quoter,
-            }
-            .to_account_metas(None),
-            data: velocity::instruction::UpdateQuoterAccounts {
-                args: UpdateQuoterAccountsArgs {
-                    leg,
-                    index: 0,
-                    metas,
-                },
-            }
-            .data(),
-        };
-        send(svm, admin, ix, &[]).unwrap();
-    }
+    // One unified account list; each leg forwards a subset by index. The
+    // quote leg is the book alone; execute adds the clob authority.
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::UpdateQuoterAccounts {
+            authority: admin.pubkey(),
+            quoter,
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::UpdateQuoterAccounts {
+            args: UpdateQuoterAccountsArgs {
+                metas: vec![
+                    QuoterAccountMetaArg {
+                        pubkey: market,
+                        is_writable: true,
+                    },
+                    QuoterAccountMetaArg {
+                        pubkey: clob_authority,
+                        is_writable: false,
+                    },
+                ],
+                quote_indexes: vec![0],
+                execute_indexes: vec![0, 1],
+            },
+        }
+        .data(),
+    };
+    send(svm, admin, ix, &[]).unwrap();
+    // Approval copies the staged config into the market's slab, which fills
+    // read; the slab must exist first. Sized for the book plus every custom
+    // quoter the widest fixture registers, under the 10,240-byte ceiling a
+    // CPI-created account has.
+    create_quoter_slab(svm, admin, 0, 12);
     let ix = Instruction {
         program_id: velocity_id(),
         accounts: velocity::accounts::UpdateQuoterApproved {
             admin: admin.pubkey(),
             state: state_pda(),
             quoter,
+            quoter_slab: quoter_slab_pda(0),
             quoter_program: clob_id(),
             quoter_program_data: Some(program_data_pda(&clob_id())),
         }
@@ -495,7 +491,7 @@ struct PlaceClobOrderParams {
 fn place_clob_order_ix(
     user: Pubkey,
     authority: &Keypair,
-    quoter: Pubkey,
+    quoter_slab: Pubkey,
     clob_market: Pubkey,
     oracle: Pubkey,
     params: PlaceClobOrderParams,
@@ -529,7 +525,7 @@ fn place_clob_order_ix(
         user,
         user_stats,
         authority: authority.pubkey(),
-        quoter,
+        quoter_slab,
         clob_market,
         clob_program: clob_id(),
         clob_authority,
@@ -557,7 +553,10 @@ struct Fixture {
     keeper: Keypair,
     oracle: Pubkey,
     clob_market: Pubkey,
+    /// The staging entry: the quoter's identity in signed routes and events.
     quoter: Pubkey,
+    /// The market's slab: what fills and CLOB order-flow ixs carry.
+    quoter_slab: Pubkey,
     clob_maker_user: Pubkey,
     clob_maker_authority: Keypair,
     /// The book's own admin, for the cases that reconfigure it.
@@ -628,6 +627,7 @@ fn setup() -> Fixture {
         oracle,
         clob_market,
         quoter,
+        quoter_slab: quoter_slab_pda(0),
         clob_maker_user,
         clob_maker_authority,
         clob_admin,
@@ -690,7 +690,7 @@ fn force_cancel_clob_ix(
         filler_stats,
         user,
         user_stats,
-        quoter: fixture.quoter,
+        quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
         clob_authority,
@@ -715,7 +715,7 @@ fn place_clob_ask(fixture: &mut Fixture, price: u64, size: u64) -> ClobOrderRefV
     let ix = place_clob_order_ix(
         fixture.clob_maker_user,
         &fixture.clob_maker_authority,
-        fixture.quoter,
+        fixture.quoter_slab,
         fixture.clob_market,
         fixture.oracle,
         PlaceClobOrderParams {
@@ -766,12 +766,13 @@ fn set_clob_default_activation_delay(fixture: &mut Fixture, slots: u32) {
     );
     send(&mut fixture.svm, &admin, ix, &[]).unwrap();
 
-    // Velocity's gates read the entry's attach-written mirror, not the book.
-    // Production re-runs `update_perp_market_clob_quoter` after a rules
-    // change; the fixture writes the mirror directly.
+    // Velocity's gates read the attach-written mirror in the slab's book
+    // slot, not the book. Production re-runs `update_perp_market_clob_quoter`
+    // after a rules change; the fixture writes the mirror directly, on the
+    // staging entry and on the live copy.
     let mut quoter: velocity::state::prop_amm::QuoterV0 =
         read_zero_copy(&fixture.svm, &fixture.quoter);
-    quoter.book_default_activation_delay_slots = slots;
+    quoter.config.book_default_activation_delay_slots = slots;
     set_zero_copy_account(
         &mut fixture.svm,
         fixture.quoter,
@@ -779,6 +780,9 @@ fn set_clob_default_activation_delay(fixture: &mut Fixture, slots: u32) {
         &quoter,
         velocity::state::prop_amm::QuoterV0::SIZE,
     );
+    let mut slot = read_slab_slot(&fixture.svm, 0, 0);
+    slot.config.book_default_activation_delay_slots = slots;
+    write_slab_slot(&mut fixture.svm, 0, 0, &slot);
 }
 
 #[test]
@@ -795,7 +799,7 @@ fn fast_activation_requires_the_flow_authority_attestation() {
         let mut ix = place_clob_order_ix(
             fixture.clob_maker_user,
             &fixture.clob_maker_authority,
-            fixture.quoter,
+            fixture.quoter_slab,
             fixture.clob_market,
             fixture.oracle,
             PlaceClobOrderParams {
@@ -976,7 +980,7 @@ fn a_fill_that_leaves_out_a_reachable_book_maker_is_refused() {
     accounts.push(AccountMeta::new(dlob_maker_user, false));
     accounts.push(AccountMeta::new(dlob_maker_stats, false));
     // Carried, exactly as `require_baseline` and a signed route demand.
-    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_authority, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -1110,7 +1114,7 @@ fn a_taker_that_signs_fills_in_full_at_the_price_present() {
     accounts.push(AccountMeta::new(perp_market_pda(0), false));
     accounts.push(AccountMeta::new(dlob_maker_user, false));
     accounts.push(AccountMeta::new(dlob_maker_stats, false));
-    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_authority, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -1236,7 +1240,7 @@ fn an_unattested_keeper_fill_gets_no_book_depth_on_a_bumped_book() {
     accounts.push(AccountMeta::new(perp_market_pda(0), false));
     accounts.push(AccountMeta::new(dlob_maker_user, false));
     accounts.push(AccountMeta::new(dlob_maker_stats, false));
-    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_authority, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -1383,7 +1387,7 @@ fn a_padded_account_list_does_not_excuse_the_missing_maker() {
     accounts.push(AccountMeta::new(dlob_maker_stats, false));
     accounts.push(AccountMeta::new(idle_user, false));
     accounts.push(AccountMeta::new(idle_stats, false));
-    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_authority, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -1526,8 +1530,8 @@ fn router_fill_splits_across_clob_dlob_and_vamm_sources() {
     accounts.push(AccountMeta::new(dlob_maker_stats, false));
     accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
     accounts.push(AccountMeta::new(clob_maker_stats, false));
-    // Quoter section: registry entry + its CPI accounts + program.
-    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    // Quoter section: the market's slab + the book's CPI accounts + program.
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_authority, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -1582,7 +1586,7 @@ fn place_clob_bid(fixture: &mut Fixture, price: u64, size: u64) -> ClobOrderRefV
     let ix = place_clob_order_ix(
         fixture.clob_maker_user,
         &fixture.clob_maker_authority,
-        fixture.quoter,
+        fixture.quoter_slab,
         fixture.clob_market,
         fixture.oracle,
         PlaceClobOrderParams {
@@ -1611,7 +1615,7 @@ fn cancel_all_clob_ix(fixture: &Fixture, sides: ClobCancelSides) -> Instruction 
             state: state_pda(),
             user: fixture.clob_maker_user,
             authority: fixture.clob_maker_authority.pubkey(),
-            quoter: fixture.quoter,
+            quoter_slab: fixture.quoter_slab,
             clob_market: fixture.clob_market,
             clob_program: clob_id(),
             clob_authority,
@@ -1727,7 +1731,7 @@ fn cancel_all_clob_orders_only_takes_the_signing_users_orders() {
         let ix = place_clob_order_ix(
             other_user,
             &other_authority,
-            fixture.quoter,
+            fixture.quoter_slab,
             fixture.clob_market,
             fixture.oracle,
             PlaceClobOrderParams {
@@ -1783,7 +1787,7 @@ fn cu_bench_cancel_all_beats_cancelling_order_by_order() {
                     perp_market: perp_market_pda(0),
                     user: fixture.clob_maker_user,
                     authority: fixture.clob_maker_authority.pubkey(),
-                    quoter: fixture.quoter,
+                    quoter_slab: fixture.quoter_slab,
                     clob_market: fixture.clob_market,
                     clob_program: clob_id(),
                     clob_authority,
@@ -1851,7 +1855,7 @@ fn cancel_clob_order_unwinds_the_reserved_aggregates() {
             perp_market: perp_market_pda(0),
             user: fixture.clob_maker_user,
             authority: fixture.clob_maker_authority.pubkey(),
-            quoter: fixture.quoter,
+            quoter_slab: fixture.quoter_slab,
             clob_market: fixture.clob_market,
             clob_program: clob_id(),
             clob_authority,
@@ -1881,7 +1885,7 @@ fn cancel_clob_order_unwinds_the_reserved_aggregates() {
             perp_market: perp_market_pda(0),
             user: fixture.clob_maker_user,
             authority: fixture.clob_maker_authority.pubkey(),
-            quoter: fixture.quoter,
+            quoter_slab: fixture.quoter_slab,
             clob_market: fixture.clob_market,
             clob_program: clob_id(),
             clob_authority,
@@ -1896,6 +1900,69 @@ fn cancel_clob_order_unwinds_the_reserved_aggregates() {
         .data(),
     };
     assert!(send(&mut fixture.svm, &fixture.clob_maker_authority, ix2, &[]).is_err());
+}
+
+/// Pulling the book's approval suspends its slot: the config stays, nothing
+/// quotes, and a maker can still pull orders off the killed book.
+#[test]
+fn a_maker_cancels_off_a_suspended_book() {
+    let mut fixture = setup();
+    let order_ref = place_clob_ask(&mut fixture, 99 * PRICE, UNIT);
+    assert_eq!(clob_ask_count(&fixture), 1);
+
+    // The admin pulls the book's approval.
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::UpdateQuoterApproved {
+            admin: fixture.admin.pubkey(),
+            state: state_pda(),
+            quoter: fixture.quoter,
+            quoter_slab: fixture.quoter_slab,
+            quoter_program: clob_id(),
+            quoter_program_data: Some(program_data_pda(&clob_id())),
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::UpdateQuoterApproved { approved: false }.data(),
+    };
+    let admin = fixture.admin.insecure_clone();
+    send(&mut fixture.svm, &admin, ix, &[]).unwrap();
+
+    // The slot suspends in place rather than clearing: the removal paths
+    // need the book binding.
+    let slot = read_slab_slot(&fixture.svm, 0, 0);
+    assert!(!slot.is_vacant());
+    assert!(slot.suspended);
+    assert!(!slot.quotes());
+
+    // The cancel path is deliberately not gated on the slot's flags.
+    let (clob_authority, _) = clob_authority_pda();
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::CancelOrderV1 {
+            state: state_pda(),
+            perp_market: perp_market_pda(0),
+            user: fixture.clob_maker_user,
+            authority: fixture.clob_maker_authority.pubkey(),
+            quoter_slab: fixture.quoter_slab,
+            clob_market: fixture.clob_market,
+            clob_program: clob_id(),
+            clob_authority,
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::CancelOrderV1 {
+            params: CancelOrderV1Params {
+                market_index: 0,
+                order_ref,
+            },
+        }
+        .data(),
+    };
+    send(&mut fixture.svm, &fixture.clob_maker_authority, ix, &[]).unwrap();
+    assert_eq!(clob_ask_count(&fixture), 0);
+    let clob_maker: User = read_zero_copy(&fixture.svm, &fixture.clob_maker_user);
+    assert_eq!(clob_maker.perp_positions[0].open_asks, 0);
+    assert_eq!(clob_maker.perp_positions[0].open_orders, 0);
+    assert_eq!(clob_maker.open_orders, 0);
 }
 
 /// A book order has no `User.orders` slot, so these records are the only
@@ -1916,7 +1983,7 @@ fn a_clob_orders_records_name_it_by_the_users_own_order_id() {
     let ix = place_clob_order_ix(
         fixture.clob_maker_user,
         &fixture.clob_maker_authority,
-        fixture.quoter,
+        fixture.quoter_slab,
         fixture.clob_market,
         fixture.oracle,
         PlaceClobOrderParams {
@@ -1959,7 +2026,7 @@ fn a_clob_orders_records_name_it_by_the_users_own_order_id() {
             perp_market: perp_market_pda(0),
             user: fixture.clob_maker_user,
             authority: fixture.clob_maker_authority.pubkey(),
-            quoter: fixture.quoter,
+            quoter_slab: fixture.quoter_slab,
             clob_market: fixture.clob_market,
             clob_program: clob_id(),
             clob_authority,
@@ -2033,22 +2100,25 @@ fn router_fill_without_the_markets_clob_quoter_fails() {
         12,
     );
 
-    // No quoter section at all: the fill must fail the baseline check.
-    let mut accounts = velocity::accounts::FillOrder {
-        state: state_pda(),
-        authority: fixture.keeper.pubkey(),
-        filler: filler_user,
-        filler_stats,
-        user: taker_user,
-        user_stats: taker_stats,
-        instructions_sysvar: Some(instructions_sysvar()),
-    }
-    .to_account_metas(None);
-    accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
-    accounts.push(AccountMeta::new(spot_market_pda(0), false));
-    accounts.push(AccountMeta::new(perp_market_pda(0), false));
-
-    let ix = Instruction {
+    // No quoter section at all: without the slab the baseline cannot even be
+    // answered, so the fill must fail.
+    let base_accounts = |fixture: &Fixture| {
+        let mut accounts = velocity::accounts::FillOrder {
+            state: state_pda(),
+            authority: fixture.keeper.pubkey(),
+            filler: filler_user,
+            filler_stats,
+            user: taker_user,
+            user_stats: taker_stats,
+            instructions_sysvar: Some(instructions_sysvar()),
+        }
+        .to_account_metas(None);
+        accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
+        accounts.push(AccountMeta::new(spot_market_pda(0), false));
+        accounts.push(AccountMeta::new(perp_market_pda(0), false));
+        accounts
+    };
+    let fill_ix = |accounts: Vec<AccountMeta>| Instruction {
         program_id: velocity_id(),
         accounts,
         data: velocity::instruction::FillPerpOrder {
@@ -2058,7 +2128,20 @@ fn router_fill_without_the_markets_clob_quoter_fails() {
         }
         .data(),
     };
+    let ix = fill_ix(base_accounts(&fixture));
     let err = send(&mut fixture.svm, &fixture.keeper, ix, &[]).expect_err("baseline must fail");
+    let logs = format!("{:?}", err.meta.logs);
+    assert!(
+        logs.contains("the fill must carry the quoter slab"),
+        "unexpected failure: {logs}"
+    );
+
+    // The slab alone is not enough either: the book's slot can quote, so the
+    // fill must also carry its response account to consult it.
+    let mut accounts = base_accounts(&fixture);
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
+    let err = send(&mut fixture.svm, &fixture.keeper, fill_ix(accounts), &[])
+        .expect_err("baseline must fail");
     let logs = format!("{:?}", err.meta.logs);
     assert!(
         logs.contains("must include the market's CLOB quoter"),
@@ -2077,7 +2160,7 @@ fn crank_remove_expired_unwinds_aggregates_and_pays_the_keeper() {
     let ix = place_clob_order_ix(
         fixture.clob_maker_user,
         &fixture.clob_maker_authority,
-        fixture.quoter,
+        fixture.quoter_slab,
         fixture.clob_market,
         fixture.oracle,
         PlaceClobOrderParams {
@@ -2120,7 +2203,7 @@ fn crank_remove_expired_unwinds_aggregates_and_pays_the_keeper() {
             filler_stats,
             user: fixture.clob_maker_user,
             perp_market: perp_market_pda(0),
-            quoter: fixture.quoter,
+            quoter_slab: fixture.quoter_slab,
             clob_market: fixture.clob_market,
             clob_program: clob_id(),
             clob_authority,
@@ -2172,7 +2255,7 @@ fn crank_evict_unwinds_the_tails_aggregates() {
             filler_stats,
             user: fixture.clob_maker_user,
             perp_market: perp_market_pda(0),
-            quoter: fixture.quoter,
+            quoter_slab: fixture.quoter_slab,
             clob_market: fixture.clob_market,
             clob_program: clob_id(),
             clob_authority,
@@ -2287,8 +2370,8 @@ fn quote_router_returns_verified_books_for_every_source() {
     // Maker section: the DLOB maker (read-only is fine for a quote).
     accounts.push(AccountMeta::new_readonly(dlob_maker_user, false));
     accounts.push(AccountMeta::new_readonly(dlob_maker_stats, false));
-    // Quoter section: the CLOB entry + its CPI accounts.
-    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    // Quoter section: the market's slab + the book's CPI accounts.
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_authority, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -2302,7 +2385,6 @@ fn quote_router_returns_verified_books_for_every_source() {
                 market_index: 0,
                 direction: Direction::Long,
                 size: 2 * UNIT,
-                quoter_count: 1,
                 include_vamm: true,
             },
         }
@@ -2479,6 +2561,7 @@ fn attach_clob(
             state: state_pda(),
             perp_market: perp_market_pda(0),
             quoter: fixture.quoter,
+            quoter_slab: fixture.quoter_slab,
             clob_market: fixture.clob_market,
             clob_program: clob_id(),
             clob_authority: clob_authority_pda().0,
@@ -2501,11 +2584,21 @@ fn attach_clob(
     let meta = send(&mut fixture.svm, &admin, ix, &[]).unwrap();
     // The book reports where its block sits; the registrant does not derive it.
     fixture.crank_block_offset = u32::from_le_bytes(meta.return_data.data[..4].try_into().unwrap());
-    // The attach mirrors the book's placement rules onto the entry — the
-    // values `clob_market_config` configured.
+    // The attach mirrors the book's placement rules onto the staging entry
+    // and the live copy in the slab — the values `clob_market_config`
+    // configured.
     let quoter: velocity::state::prop_amm::QuoterV0 = read_zero_copy(&fixture.svm, &fixture.quoter);
-    assert_eq!(quoter.book_tick_size, 1, "attach mirrors the tick");
-    assert_eq!(quoter.book_min_order_size, 1, "attach mirrors the minimum");
+    assert_eq!(quoter.config.book_tick_size, 1, "attach mirrors the tick");
+    assert_eq!(
+        quoter.config.book_min_order_size, 1,
+        "attach mirrors the minimum"
+    );
+    let live = read_slab_slot(&fixture.svm, 0, 0);
+    assert_eq!(live.config.book_tick_size, 1, "the live copy gets the tick");
+    assert_eq!(
+        live.config.book_min_order_size, 1,
+        "the live copy gets the minimum"
+    );
 
     conditions
 }
@@ -2578,7 +2671,7 @@ fn run_resolver(
             scratch: relay_scratch_pda(),
             crank_conditions: conditions,
             clob_market: fixture.clob_market,
-            quoter: fixture.quoter,
+            quoter_slab: fixture.quoter_slab,
             state: state_pda(),
             clob_program: clob_id(),
             treasury: crank_treasury_pda(),
@@ -2625,7 +2718,7 @@ fn run_cross_resolver(
             scratch: relay_scratch_pda(),
             crank_conditions: conditions,
             clob_market: fixture.clob_market,
-            quoter: fixture.quoter,
+            quoter_slab: fixture.quoter_slab,
             state: state_pda(),
             clob_program: clob_id(),
             treasury: crank_treasury_pda(),
@@ -2834,7 +2927,7 @@ fn the_fired_condition_picks_which_crank_the_resolver_stages() {
     let ix = place_clob_order_ix(
         fixture.clob_maker_user,
         &fixture.clob_maker_authority,
-        fixture.quoter,
+        fixture.quoter_slab,
         fixture.clob_market,
         fixture.oracle,
         PlaceClobOrderParams {
@@ -2862,7 +2955,7 @@ fn the_fired_condition_picks_which_crank_the_resolver_stages() {
                 scratch: relay_scratch_pda(),
                 crank_conditions: conditions,
                 clob_market: fixture.clob_market,
-                quoter: fixture.quoter,
+                quoter_slab: fixture.quoter_slab,
                 state: state_pda(),
                 clob_program: clob_id(),
                 treasury: crank_treasury_pda(),
@@ -2930,7 +3023,7 @@ fn a_placement_through_velocity_arms_the_books_expiry_wake() {
     let ix = place_clob_order_ix(
         fixture.clob_maker_user,
         &fixture.clob_maker_authority,
-        fixture.quoter,
+        fixture.quoter_slab,
         fixture.clob_market,
         fixture.oracle,
         PlaceClobOrderParams {
@@ -2975,7 +3068,7 @@ fn the_books_expiry_wake_re_arms_after_a_reclaim() {
         let ix = place_clob_order_ix(
             fixture.clob_maker_user,
             &fixture.clob_maker_authority,
-            fixture.quoter,
+            fixture.quoter_slab,
             fixture.clob_market,
             fixture.oracle,
             PlaceClobOrderParams {
@@ -3135,7 +3228,7 @@ fn program_keeper_expire_crank_pays_reservoir_lamports_to_an_unsigned_keeper() {
     let ix = place_clob_order_ix(
         fixture.clob_maker_user,
         &fixture.clob_maker_authority,
-        fixture.quoter,
+        fixture.quoter_slab,
         fixture.clob_market,
         fixture.oracle,
         PlaceClobOrderParams {
@@ -3237,7 +3330,7 @@ fn program_keeper_evict_crank_resolves_both_sides() {
         let ix = place_clob_order_ix(
             fixture.clob_maker_user,
             &fixture.clob_maker_authority,
-            fixture.quoter,
+            fixture.quoter_slab,
             fixture.clob_market,
             fixture.oracle,
             PlaceClobOrderParams {
@@ -3327,7 +3420,7 @@ fn trigger_limit_order_v1_ix(
         filler_stats,
         user: fixture.clob_maker_user,
         user_stats: maker_stats,
-        quoter: fixture.quoter,
+        quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
         clob_authority,
@@ -3462,7 +3555,7 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
             filler_stats,
             user: fixture.clob_maker_user,
             perp_market: perp_market_pda(0),
-            quoter: fixture.quoter,
+            quoter_slab: fixture.quoter_slab,
             clob_market: fixture.clob_market,
             clob_program: clob_id(),
             clob_authority,
@@ -3537,7 +3630,7 @@ fn trigger_limit_lifecycle_places_re_arms_on_evict_and_frees_on_expiry() {
             filler_stats,
             user: fixture.clob_maker_user,
             perp_market: perp_market_pda(0),
-            quoter: fixture.quoter,
+            quoter_slab: fixture.quoter_slab,
             clob_market: fixture.clob_market,
             clob_program: clob_id(),
             clob_authority,
@@ -3721,7 +3814,7 @@ fn placed_trigger_cancels_through_the_clob_only() {
             perp_market: perp_market_pda(0),
             user: fixture.clob_maker_user,
             authority: maker_authority.pubkey(),
-            quoter: fixture.quoter,
+            quoter_slab: fixture.quoter_slab,
             clob_market: fixture.clob_market,
             clob_program: clob_id(),
             clob_authority,
@@ -3783,7 +3876,7 @@ fn a_cross_below_the_markets_surplus_floor_is_declined() {
     let ix = place_clob_order_ix(
         fixture.clob_maker_user,
         &fixture.clob_maker_authority,
-        fixture.quoter,
+        fixture.quoter_slab,
         fixture.clob_market,
         fixture.oracle,
         PlaceClobOrderParams {
@@ -3822,7 +3915,7 @@ fn a_cross_below_the_markets_surplus_floor_is_declined() {
         accounts.push(AccountMeta::new(perp_market_pda(0), false));
         accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
         accounts.push(AccountMeta::new(maker_stats, false));
-        accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+        accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
         accounts.push(AccountMeta::new(fixture.clob_market, false));
         accounts.push(AccountMeta::new_readonly(clob_authority_pda().0, false));
         accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -3896,7 +3989,7 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
     let ix = place_clob_order_ix(
         fixture.clob_maker_user,
         &fixture.clob_maker_authority,
-        fixture.quoter,
+        fixture.quoter_slab,
         fixture.clob_market,
         fixture.oracle,
         PlaceClobOrderParams {
@@ -3936,7 +4029,7 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
         accounts.push(AccountMeta::new(perp_market_pda(0), false));
         accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
         accounts.push(AccountMeta::new(maker_stats, false));
-        accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+        accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
         accounts.push(AccountMeta::new(fixture.clob_market, false));
         accounts.push(AccountMeta::new_readonly(clob_authority_pda().0, false));
         accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -4023,7 +4116,7 @@ fn cross_match_crank_fills_a_crossed_clob_and_keeps_the_spread() {
     let ix = place_clob_order_ix(
         fixture.clob_maker_user,
         &fixture.clob_maker_authority,
-        fixture.quoter,
+        fixture.quoter_slab,
         fixture.clob_market,
         fixture.oracle,
         PlaceClobOrderParams {
@@ -4517,7 +4610,7 @@ fn place_and_take_v1_fills_a_retail_taker_off_the_clob() {
         user: taker_user,
         user_stats: taker_stats,
         authority: taker_authority.pubkey(),
-        quoter: fixture.quoter,
+        quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
         clob_authority,
@@ -4531,7 +4624,7 @@ fn place_and_take_v1_fills_a_retail_taker_off_the_clob() {
     accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
     accounts.push(AccountMeta::new(maker_stats, false));
     // The route: the market's CLOB and the accounts its CPI resolves against.
-    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_authority, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -4646,7 +4739,7 @@ fn an_unattested_taker_on_a_bumped_book_rests_instead_of_filling() {
             user: taker_user,
             user_stats: taker_stats,
             authority: taker_authority.pubkey(),
-            quoter: fixture.quoter,
+            quoter_slab: fixture.quoter_slab,
             clob_market: fixture.clob_market,
             clob_program: clob_id(),
             clob_authority,
@@ -4660,7 +4753,7 @@ fn an_unattested_taker_on_a_bumped_book_rests_instead_of_filling() {
         accounts.push(AccountMeta::new(perp_market_pda(0), false));
         accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
         accounts.push(AccountMeta::new(maker_stats, false));
-        accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+        accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
         accounts.push(AccountMeta::new(fixture.clob_market, false));
         accounts.push(AccountMeta::new_readonly(clob_authority, false));
         accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -4812,7 +4905,7 @@ fn a_fill_skips_a_latched_maker_instead_of_reverting() {
         user: taker_user,
         user_stats: taker_stats,
         authority: taker_authority.pubkey(),
-        quoter: fixture.quoter,
+        quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
         clob_authority,
@@ -4825,7 +4918,7 @@ fn a_fill_skips_a_latched_maker_instead_of_reverting() {
     // The latched maker's pair: the clamp reads it, and the clear writes it.
     accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
     accounts.push(AccountMeta::new(maker_stats, false));
-    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_authority, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -4929,7 +5022,7 @@ fn a_maker_fills_as_far_as_its_collateral_reaches() {
         user: taker_user,
         user_stats: taker_stats,
         authority: taker_authority.pubkey(),
-        quoter: fixture.quoter,
+        quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
         clob_authority,
@@ -4941,7 +5034,7 @@ fn a_maker_fills_as_far_as_its_collateral_reaches() {
     accounts.push(AccountMeta::new(perp_market_pda(0), false));
     accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
     accounts.push(AccountMeta::new(maker_stats, false));
-    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_authority, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -5058,7 +5151,7 @@ fn place_and_take_rests_the_remainder_on_the_clob() {
         user: taker_user,
         user_stats: taker_stats,
         authority: taker_authority.pubkey(),
-        quoter: fixture.quoter,
+        quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
         clob_authority,
@@ -5074,7 +5167,7 @@ fn place_and_take_rests_the_remainder_on_the_clob() {
     // consulted. The market's canonical CLOB is mandatory, and its registered
     // CPI accounts have to be resolvable from this list even though the
     // remainder-placement leg names them too — same locks, one index byte.
-    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_authority, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -5186,7 +5279,7 @@ fn place_and_take_rests_a_market_order_remainder_on_the_clob() {
         user: taker_user,
         user_stats: taker_stats,
         authority: taker_authority.pubkey(),
-        quoter: fixture.quoter,
+        quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
         clob_authority,
@@ -5198,7 +5291,7 @@ fn place_and_take_rests_a_market_order_remainder_on_the_clob() {
     accounts.push(AccountMeta::new(perp_market_pda(0), false));
     accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
     accounts.push(AccountMeta::new(maker_stats, false));
-    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_authority, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -5423,52 +5516,41 @@ fn setup_midpoint_maker_with_flow(
     };
     send(&mut fixture.svm, &fixture.keeper, ix, &[&authority]).unwrap();
 
-    for (leg, metas) in [
-        (
-            QuoterCpiLeg::Quote,
-            vec![QuoterAccountMetaArg {
-                pubkey: instance,
-                is_writable: true,
-            }],
-        ),
-        (
-            QuoterCpiLeg::Execute,
-            vec![
-                QuoterAccountMetaArg {
-                    pubkey: instance,
-                    is_writable: true,
-                },
-                QuoterAccountMetaArg {
-                    pubkey: quoter_signer,
-                    is_writable: false,
-                },
-            ],
-        ),
-    ] {
-        let ix = Instruction {
-            program_id: velocity_id(),
-            accounts: velocity::accounts::UpdateQuoterAccounts {
-                authority: authority.pubkey(),
-                quoter: entry,
-            }
-            .to_account_metas(None),
-            data: velocity::instruction::UpdateQuoterAccounts {
-                args: UpdateQuoterAccountsArgs {
-                    leg,
-                    index: 0,
-                    metas,
-                },
-            }
-            .data(),
-        };
-        send(&mut fixture.svm, &fixture.keeper, ix, &[&authority]).unwrap();
-    }
+    // One unified account list: the quote leg forwards the instance, the
+    // execute leg adds the per-entry signer slot.
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::UpdateQuoterAccounts {
+            authority: authority.pubkey(),
+            quoter: entry,
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::UpdateQuoterAccounts {
+            args: UpdateQuoterAccountsArgs {
+                metas: vec![
+                    QuoterAccountMetaArg {
+                        pubkey: instance,
+                        is_writable: true,
+                    },
+                    QuoterAccountMetaArg {
+                        pubkey: quoter_signer,
+                        is_writable: false,
+                    },
+                ],
+                quote_indexes: vec![0],
+                execute_indexes: vec![0, 1],
+            },
+        }
+        .data(),
+    };
+    send(&mut fixture.svm, &fixture.keeper, ix, &[&authority]).unwrap();
     let ix = Instruction {
         program_id: velocity_id(),
         accounts: velocity::accounts::UpdateQuoterApproved {
             admin: fixture.admin.pubkey(),
             state: state_pda(),
             quoter: entry,
+            quoter_slab: fixture.quoter_slab,
             quoter_program: midpoint_id(),
             quoter_program_data: Some(program_data_pda(&midpoint_id())),
         }
@@ -5552,10 +5634,10 @@ fn fill_long_through_midpoint(
     // Maker section: the midpoint's quoted user.
     accounts.push(AccountMeta::new(maker.user, false));
     accounts.push(AccountMeta::new(maker.stats, false));
-    // Quoter section: baseline CLOB entry + midpoint entry, then the union
-    // of their CPI accounts and programs.
-    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
-    accounts.push(AccountMeta::new_readonly(maker.entry, false));
+    // Quoter section: the market's slab, then the union of the book's and
+    // the midpoint's CPI accounts and programs. Carrying a slot's response
+    // account is what consults it.
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_authority, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -5739,9 +5821,9 @@ fn router_fill_splits_across_clob_midpoint_and_vamm() {
     accounts.push(AccountMeta::new(clob_maker_stats, false));
     accounts.push(AccountMeta::new(maker.user, false));
     accounts.push(AccountMeta::new(maker.stats, false));
-    // Quoter section: both entries + the union of their CPI accounts.
-    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
-    accounts.push(AccountMeta::new_readonly(maker.entry, false));
+    // Quoter section: the market's slab + the union of both slots' CPI
+    // accounts. Carrying a slot's response account is what consults it.
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_authority, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -5826,18 +5908,27 @@ fn declare_midpoint_watch(fixture: &mut Fixture, maker: &MidpointMaker) {
     };
     let authority = maker.authority.insecure_clone();
     send(&mut fixture.svm, &authority, ix, &[]).unwrap();
-    // The declaration is a config change: approval resets, admin re-vets.
+    // The declaration lands on the staging entry only; the approved copy in
+    // the slab keeps serving until the admin copies it in again.
     let entry: velocity::state::prop_amm::QuoterV0 = read_zero_copy(&fixture.svm, &maker.entry);
-    assert!(!entry.is_approved);
-    assert_eq!(entry.watch_account.to_bytes(), maker.instance.to_bytes());
-    assert_eq!(entry.watch_offset, 136);
-    assert_eq!(entry.watch_len, 16);
+    assert_eq!(
+        entry.config.watch_account.to_bytes(),
+        maker.instance.to_bytes()
+    );
+    assert_eq!(entry.config.watch_offset, 136);
+    assert_eq!(entry.config.watch_len, 16);
+    let (_, live) = find_slab_slot(&fixture.svm, 0, &maker.entry).unwrap();
+    assert_eq!(
+        live.config.watch_len, 0,
+        "a staging edit does not reach the live copy until re-approval"
+    );
     let ix = Instruction {
         program_id: velocity_id(),
         accounts: velocity::accounts::UpdateQuoterApproved {
             admin: fixture.admin.pubkey(),
             state: state_pda(),
             quoter: maker.entry,
+            quoter_slab: fixture.quoter_slab,
             quoter_program: midpoint_id(),
             quoter_program_data: Some(program_data_pda(&midpoint_id())),
         }
@@ -5846,6 +5937,8 @@ fn declare_midpoint_watch(fixture: &mut Fixture, maker: &MidpointMaker) {
     };
     let admin = fixture.admin.insecure_clone();
     send(&mut fixture.svm, &admin, ix, &[]).unwrap();
+    let (_, live) = find_slab_slot(&fixture.svm, 0, &maker.entry).unwrap();
+    assert_eq!(live.config.watch_len, 16, "re-approval copies the watch in");
 }
 
 /// Attach the per-entry cross conditions (permissionless; rent on the
@@ -5863,7 +5956,7 @@ fn attach_quoter_cross(fixture: &mut Fixture, maker: &MidpointMaker) -> Pubkey {
             state: state_pda(),
             quoter: maker.entry,
             perp_market: perp_market_pda(0),
-            clob_quoter: fixture.quoter,
+            quoter_slab: fixture.quoter_slab,
             market_conditions: Pubkey::find_program_address(
                 &[b"clob_crank_conditions", 0u16.to_le_bytes().as_ref()],
                 &velocity_id(),
@@ -5887,9 +5980,9 @@ fn attach_quoter_cross(fixture: &mut Fixture, maker: &MidpointMaker) -> Pubkey {
 }
 
 /// Run the generic resolver the way a turner does. Its account list is
-/// exactly what the attach registered: conditions, book, state, entry, user,
-/// the CLOB's own entry and program, then the entry's registered quote
-/// surface + program.
+/// exactly what the attach registered: scratch, conditions, book, state, the
+/// market's slab, the quoted user and the CLOB program, then the entry's
+/// registered quote surface + program.
 fn run_quoter_cross_resolver(
     fixture: &mut Fixture,
     maker: &MidpointMaker,
@@ -5900,20 +5993,15 @@ fn run_quoter_cross_resolver(
         cross_conditions,
         clob_market: fixture.clob_market,
         state: state_pda(),
-        quoter: maker.entry,
+        quoter_slab: fixture.quoter_slab,
         user: maker.user,
-        clob_quoter: fixture.quoter,
         clob_program: clob_id(),
     }
     .to_account_metas(None);
+    // The entry's registered quote surface, exactly as the attach stored it:
+    // the instance, then the quoter program. The resolver only quotes, so the
+    // execute leg's signer slot is not part of the list.
     accounts.push(AccountMeta::new(maker.instance, false));
-    // The midpoint entry's own CPI signer, which its execute leg registered and
-    // its `execute_authority` is set to. Each entry has its own, so the fill has
-    // to carry the one belonging to the entry it routes through.
-    accounts.push(AccountMeta::new_readonly(
-        quoter_signer_pda(&maker.entry).0,
-        false,
-    ));
     accounts.push(AccountMeta::new_readonly(midpoint_id(), false));
     let ix = Instruction {
         program_id: velocity_id(),
@@ -5986,17 +6074,17 @@ fn generic_quoter_cross_conditions_discover_and_fill_a_midpoint_clob_cross() {
         conditions[QUOTER_CROSS_FALLBACK].wake(),
         Ok(velocity::relay_spec::WakeView::EverySlots { slots: 100 })
     );
-    // The resolver list (shared scratch, the named accounts, the CLOB's own
-    // entry and program, then the entry's registered quote surface) is stored
-    // once in the relay block's built-in region; every condition points at it
-    // indirectly.
+    // The resolver list (shared scratch, the named accounts, the market's
+    // slab and the CLOB program, then the entry's registered quote surface)
+    // is stored once in the relay block's built-in region; every condition
+    // points at it indirectly.
     //
     // The midpoint's quote leg is the instance alone — the protected-flow
-    // fact rides the quoter wire, not an account. The CLOB entry and program
-    // are there because the resolver quotes the book through the registry
-    // too, rather than reading its account.
-    assert_eq!(conditions[QUOTER_CROSS_WATCH].resolvers().count, 10);
-    assert_eq!(acct.relay.resolver_refs().len(), 10);
+    // fact rides the quoter wire, not an account. The slab and the CLOB
+    // program are there because the resolver quotes the book through its
+    // approved slot too, rather than reading its account.
+    assert_eq!(conditions[QUOTER_CROSS_WATCH].resolvers().count, 9);
+    assert_eq!(acct.relay.resolver_refs().len(), 9);
 
     // Nothing crossed yet: the resolver reports no work.
     fixture.svm.warp_to_slot(12);
@@ -6013,7 +6101,7 @@ fn generic_quoter_cross_conditions_discover_and_fill_a_midpoint_clob_cross() {
     let ix = place_clob_order_ix(
         fixture.clob_maker_user,
         &fixture.clob_maker_authority,
-        fixture.quoter,
+        fixture.quoter_slab,
         fixture.clob_market,
         fixture.oracle,
         PlaceClobOrderParams {
@@ -6137,11 +6225,11 @@ fn sync_trigger_conditions(
     accounts.push(AccountMeta::new(spot_market_pda(0), false));
     accounts.push(AccountMeta::new(perp_market_pda(0), false));
     accounts.push(AccountMeta::new_readonly(market_conditions, false));
-    // The market's CLOB entry routes a fired stop-market to the fire-to-book
+    // The market's slab routes a fired stop-market to the fire-to-book
     // resolver. Left out, the market reads as book-less and the trigger stays
     // on the plain flip crank.
     if with_clob {
-        accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+        accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     }
     let ix = Instruction {
         program_id: velocity_id(),
@@ -6380,8 +6468,8 @@ fn trigger_limit_sync_targets_the_clob_executor() {
         velocity::instruction::ResolveTriggerLimitOrderV1::DISCRIMINATOR
     );
     assert_eq!(
-        acct.trigger_slots[0].quoter.to_bytes(),
-        fixture.quoter.to_bytes()
+        acct.trigger_slots[0].quoter_slab.to_bytes(),
+        fixture.quoter_slab.to_bytes()
     );
     assert_eq!(
         acct.trigger_slots[0].clob_market.to_bytes(),
@@ -6478,8 +6566,8 @@ fn trigger_market_fires_to_the_book_through_its_resolver() {
         velocity::instruction::ResolveTriggerMarketOrderV1::DISCRIMINATOR
     );
     assert_eq!(
-        acct.trigger_slots[0].quoter.to_bytes(),
-        fixture.quoter.to_bytes()
+        acct.trigger_slots[0].quoter_slab.to_bytes(),
+        fixture.quoter_slab.to_bytes()
     );
 
     // Crossed: the resolver stages the fire-to-book executor, and it lands
@@ -6604,7 +6692,7 @@ fn merged_sync_keeps_the_stored_map_section_parseable() {
     accounts.push(AccountMeta::new(spot_market_pda(0), false));
     accounts.push(AccountMeta::new(perp_market_pda(0), false));
     accounts.push(AccountMeta::new_readonly(market_conditions, false));
-    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     let ix = Instruction {
         program_id: velocity_id(),
         accounts,
@@ -6623,12 +6711,12 @@ fn merged_sync_keeps_the_stored_map_section_parseable() {
     // reaches — the quoter must not sit inside the map section.
     let acct: UserConditionsV0 = read_zero_copy(&fixture.svm, &conditions);
     let map = acct.read_sync_accounts();
-    assert_eq!(map.len(), 5, "oracle, spot, perp, conditions, quoter");
+    assert_eq!(map.len(), 5, "oracle, spot, perp, conditions, quoter slab");
     assert_eq!(map[0].address, fixture.oracle.to_bytes());
     assert_eq!(map[1].address, spot_market_pda(0).to_bytes());
     assert_eq!(map[2].address, perp_market_pda(0).to_bytes());
     assert_eq!(map[3].address, market_conditions.to_bytes());
-    assert_eq!(map[4].address, fixture.quoter.to_bytes());
+    assert_eq!(map[4].address, fixture.quoter_slab.to_bytes());
 
     // And the proof it parses: the staged executor lands. The stop-market on
     // a book market fires to the book (`trigger_market_order_v1`), so the map section
@@ -6690,7 +6778,7 @@ fn sync_liq_conditions(
     accounts.push(AccountMeta::new_readonly(market_conditions, false));
     // Stored in the inert tail, where `load_maps` never reaches: the cancel
     // stage of the ladder needs the entry to name the book and its program.
-    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     let ix = Instruction {
         program_id: velocity_id(),
         accounts,
@@ -6722,7 +6810,7 @@ fn run_liq_resolver(
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
     accounts.push(AccountMeta::new(spot_market_pda(0), false));
     accounts.push(AccountMeta::new(perp_market_pda(0), false));
-    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     let ix = Instruction {
         program_id: velocity_id(),
         accounts,
@@ -7259,7 +7347,7 @@ fn a_dlob_fill_may_not_claim_a_route() {
         accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
         accounts.push(AccountMeta::new(spot_market_pda(0), false));
         accounts.push(AccountMeta::new(perp_market_pda(0), false));
-        accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+        accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
         accounts.push(AccountMeta::new(fixture.clob_market, false));
         accounts.push(AccountMeta::new_readonly(clob_authority, false));
         accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -7349,7 +7437,7 @@ fn place_and_make_v1_rests_a_maker_order_on_the_book() {
         user: maker_user,
         user_stats: maker_stats,
         authority: maker_authority.pubkey(),
-        quoter: fixture.quoter,
+        quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
         clob_authority,
@@ -7488,7 +7576,7 @@ fn fill_legacy_dlob_order_migrates_a_restable_remainder_to_the_book() {
         filler_stats,
         user: taker_user,
         user_stats: taker_stats,
-        quoter: fixture.quoter,
+        quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
         clob_authority,
@@ -7501,7 +7589,7 @@ fn fill_legacy_dlob_order_migrates_a_restable_remainder_to_the_book() {
     accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
     accounts.push(AccountMeta::new(maker_stats, false));
     // The quoter section: the mandatory CLOB baseline and its CPI accounts.
-    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_authority, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -7715,7 +7803,7 @@ fn signed_msg_taker_signature_is_verified_in_program() {
             ix_sysvar: instructions_sysvar(),
             filler: keeper.user,
             filler_stats: keeper.stats,
-            quoter: fixture.quoter,
+            quoter_slab: fixture.quoter_slab,
             clob_market: fixture.clob_market,
             clob_program: clob_id(),
             clob_authority,
@@ -7888,7 +7976,7 @@ fn a_swift_fill_takes_a_bumped_book_only_with_the_attestation() {
             ix_sysvar: instructions_sysvar(),
             filler: keeper.user,
             filler_stats: keeper.stats,
-            quoter: fixture.quoter,
+            quoter_slab: fixture.quoter_slab,
             clob_market: fixture.clob_market,
             clob_program: clob_id(),
             clob_authority,
@@ -7899,7 +7987,7 @@ fn a_swift_fill_takes_a_bumped_book_only_with_the_attestation() {
         accounts.push(AccountMeta::new(perp_market_pda(0), false));
         accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
         accounts.push(AccountMeta::new(maker_stats, false));
-        accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+        accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
         accounts.push(AccountMeta::new(fixture.clob_market, false));
         accounts.push(AccountMeta::new_readonly(clob_authority, false));
         accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -7984,7 +8072,7 @@ fn place_clob_order_for(
     let ix = place_clob_order_ix(
         party.user,
         &party.authority,
-        fixture.quoter,
+        fixture.quoter_slab,
         fixture.clob_market,
         fixture.oracle,
         PlaceClobOrderParams {
@@ -8025,7 +8113,7 @@ fn rest_taker_origin_order(
         user: party.user,
         user_stats: party.stats,
         authority: party.authority.pubkey(),
-        quoter: fixture.quoter,
+        quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
         clob_authority,
@@ -8036,7 +8124,7 @@ fn rest_taker_origin_order(
     accounts.push(AccountMeta::new(spot_market_pda(0), false));
     accounts.push(AccountMeta::new(perp_market_pda(0), false));
     // No makers: the remainder is the whole order.
-    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_authority, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -8091,7 +8179,7 @@ fn crank_taker_origin_cross_ix(
         filler_stats: keeper.stats,
         taker: taker.user,
         taker_stats: taker.stats,
-        quoter: fixture.quoter,
+        quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
         clob_authority,
@@ -8113,8 +8201,9 @@ fn crank_taker_origin_cross_ix(
         accounts.push(AccountMeta::new(counterparty.stats, false));
     }
     // The quoter tail: the crank routes the remainder, and every router fill
-    // carries the market's CLOB entry as its mandatory baseline.
-    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    // carries the market's slab and consults its book slot as the mandatory
+    // baseline.
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_authority, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -8425,7 +8514,7 @@ fn a_remainder_cannot_be_pulled_inside_its_window_but_force_cancel_reaches_it() 
             perp_market: perp_market_pda(0),
             user: taker.user,
             authority: taker.authority.pubkey(),
-            quoter: fixture.quoter,
+            quoter_slab: fixture.quoter_slab,
             clob_market: fixture.clob_market,
             clob_program: clob_id(),
             clob_authority,
@@ -8572,7 +8661,7 @@ fn a_maker_that_arrives_during_the_window_wins_on_price_at_activation() {
     let maker_ix = place_clob_order_ix(
         maker.user,
         &maker.authority,
-        fixture.quoter,
+        fixture.quoter_slab,
         fixture.clob_market,
         fixture.oracle,
         PlaceClobOrderParams {
@@ -8788,7 +8877,7 @@ fn cancel_clob_order_for(fixture: &mut Fixture, party: &Party, order_ref: ClobOr
             perp_market: perp_market_pda(0),
             user: party.user,
             authority: party.authority.pubkey(),
-            quoter: fixture.quoter,
+            quoter_slab: fixture.quoter_slab,
             clob_market: fixture.clob_market,
             clob_program: clob_id(),
             clob_authority,
@@ -9132,7 +9221,7 @@ fn cross_conditions_stage_the_taker_origin_crank_for_a_crossed_remainder() {
         (protocol_stats, true),
         (taker.user, true),
         (taker.stats, true),
-        (fixture.quoter, false),
+        (fixture.quoter_slab, false),
         (fixture.clob_market, true),
         (clob_id(), false),
         (clob_authority, false),
@@ -9145,8 +9234,9 @@ fn cross_conditions_stage_the_taker_origin_crank_for_a_crossed_remainder() {
         (maker.user, true),
         (maker.stats, true),
         // The quoter tail: the crank routes the remainder, so it carries the
-        // market's CLOB entry as the baseline every router fill must include.
-        (fixture.quoter, false),
+        // market's slab and the book's accounts as the baseline every router
+        // fill must include.
+        (fixture.quoter_slab, false),
         (fixture.clob_market, true),
         (clob_authority, false),
         (clob_id(), false),
@@ -9500,7 +9590,7 @@ fn fill_legacy_dlob_order_rests_a_market_remainder_at_its_auction_bound() {
         filler_stats,
         user: taker_user,
         user_stats: taker_stats,
-        quoter: fixture.quoter,
+        quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
         clob_authority,
@@ -9512,7 +9602,7 @@ fn fill_legacy_dlob_order_rests_a_market_remainder_at_its_auction_bound() {
     accounts.push(AccountMeta::new(perp_market_pda(0), false));
     accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
     accounts.push(AccountMeta::new(maker_stats, false));
-    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_authority, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -9645,7 +9735,7 @@ fn trigger_market_order_v1_fires_a_stop_market_straight_to_the_book() {
         filler_stats,
         user: taker_user,
         user_stats: taker_stats,
-        quoter: fixture.quoter,
+        quoter_slab: fixture.quoter_slab,
         clob_market: fixture.clob_market,
         clob_program: clob_id(),
         clob_authority,
@@ -9659,7 +9749,7 @@ fn trigger_market_order_v1_fires_a_stop_market_straight_to_the_book() {
     accounts.push(AccountMeta::new(perp_market_pda(0), false));
     accounts.push(AccountMeta::new(fixture.clob_maker_user, false));
     accounts.push(AccountMeta::new(maker_stats, false));
-    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_authority, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -9772,7 +9862,7 @@ fn the_arb_crank_refuses_a_book_holding_a_crossed_taker_remainder() {
     accounts.push(AccountMeta::new(taker.stats, false));
     accounts.push(AccountMeta::new(maker.user, false));
     accounts.push(AccountMeta::new(maker.stats, false));
-    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_authority_pda().0, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -9861,14 +9951,12 @@ fn a_reverting_quoter_leaves_only_its_cpi_frame_in_the_logs() {
     };
     send(&mut fixture.svm, &router, ix, &[]).unwrap();
 
-    // Break the entry's quote-leg discriminator. The CPI now names an
-    // instruction the CLOB does not have, so the callee errors and velocity
-    // reports the entry it could not use.
-    let mut entry = fixture.svm.get_account(&fixture.quoter).unwrap();
-    let offset =
-        8 + core::mem::offset_of!(velocity::state::prop_amm::QuoterV0, quote_v0_discriminator);
-    entry.data[offset..offset + 8].copy_from_slice(&[0xAA; 8]);
-    fixture.svm.set_account(fixture.quoter, entry).unwrap();
+    // Break the quote-leg discriminator on the approved copy — the one a
+    // fill reads. The CPI now names an instruction the CLOB does not have,
+    // so the callee errors and velocity reports the entry it could not use.
+    let mut slot = read_slab_slot(&fixture.svm, 0, 0);
+    slot.config.quote_v0_discriminator = [0xAA; 8];
+    write_slab_slot(&mut fixture.svm, 0, 0, &slot);
 
     let (clob_authority, _) = clob_authority_pda();
     let mut accounts = velocity::accounts::QuoteRouter {
@@ -9880,7 +9968,7 @@ fn a_reverting_quoter_leaves_only_its_cpi_frame_in_the_logs() {
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
     accounts.push(AccountMeta::new(spot_market_pda(0), false));
     accounts.push(AccountMeta::new(perp_market_pda(0), false));
-    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_authority, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -9894,7 +9982,6 @@ fn a_reverting_quoter_leaves_only_its_cpi_frame_in_the_logs() {
                 market_index: 0,
                 direction: Direction::Long,
                 size: 2 * UNIT,
-                quoter_count: 1,
                 include_vamm: true,
             },
         }
@@ -9990,13 +10077,15 @@ fn a_quoter_velocity_refuses_is_named_in_the_logs() {
     };
     send(&mut fixture.svm, &router, ix, &[]).unwrap();
 
-    // Claim one more registered account than the entry holds. The extra slot
-    // is zeroed, so velocity cannot resolve it and refuses before any CPI.
-    let mut entry = fixture.svm.get_account(&fixture.quoter).unwrap();
-    let offset =
-        8 + core::mem::offset_of!(velocity::state::prop_amm::QuoterV0, quote_accounts_count);
-    entry.data[offset] += 1;
-    fixture.svm.set_account(fixture.quoter, entry).unwrap();
+    // Make the approved copy claim one more registered account than it
+    // holds, and point the quote leg at it. The extra slot is zeroed, so
+    // velocity cannot resolve it and refuses before any CPI.
+    let mut slot = read_slab_slot(&fixture.svm, 0, 0);
+    let extra = slot.config.accounts_count;
+    slot.config.accounts_count += 1;
+    slot.config.quote_account_indexes[slot.config.quote_accounts_count as usize] = extra;
+    slot.config.quote_accounts_count += 1;
+    write_slab_slot(&mut fixture.svm, 0, 0, &slot);
 
     let (clob_authority, _) = clob_authority_pda();
     let mut accounts = velocity::accounts::QuoteRouter {
@@ -10008,7 +10097,7 @@ fn a_quoter_velocity_refuses_is_named_in_the_logs() {
     accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
     accounts.push(AccountMeta::new(spot_market_pda(0), false));
     accounts.push(AccountMeta::new(perp_market_pda(0), false));
-    accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     accounts.push(AccountMeta::new(fixture.clob_market, false));
     accounts.push(AccountMeta::new_readonly(clob_authority, false));
     accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -10022,7 +10111,6 @@ fn a_quoter_velocity_refuses_is_named_in_the_logs() {
                 market_index: 0,
                 direction: Direction::Long,
                 size: 2 * UNIT,
-                quoter_count: 1,
                 include_vamm: true,
             },
         }
@@ -10107,7 +10195,7 @@ fn a_pass_that_clears_include_vamm_returns_only_its_quoters() {
         accounts.push(AccountMeta::new_readonly(fixture.oracle, false));
         accounts.push(AccountMeta::new(spot_market_pda(0), false));
         accounts.push(AccountMeta::new(perp_market_pda(0), false));
-        accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
+        accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
         accounts.push(AccountMeta::new(fixture.clob_market, false));
         accounts.push(AccountMeta::new_readonly(clob_authority, false));
         accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -10120,7 +10208,6 @@ fn a_pass_that_clears_include_vamm_returns_only_its_quoters() {
                     market_index: 0,
                     direction: Direction::Long,
                     size: 2 * UNIT,
-                    quoter_count: 1,
                     include_vamm,
                 },
             }
@@ -10273,15 +10360,11 @@ fn bench_quote_case(
         accounts.push(AccountMeta::new(maker.user, false));
         accounts.push(AccountMeta::new(maker.stats, false));
     }
-    // Quoter section: the CLOB entry, then each midpoint entry. A later pass
-    // of the publisher's plan carries neither the CLOB nor the vAMM.
-    if !quoters_only {
-        accounts.push(AccountMeta::new_readonly(fixture.quoter, false));
-    }
-    for maker in &makers {
-        accounts.push(AccountMeta::new_readonly(maker.entry, false));
-    }
-    // CPI union.
+    // Quoter section: the slab always rides — consulting any external quoter
+    // starts from it — and a slot is consulted when its response account is
+    // present. A later pass of the publisher's plan leaves the book's
+    // accounts at home and carries no vAMM.
+    accounts.push(AccountMeta::new_readonly(fixture.quoter_slab, false));
     if !quoters_only {
         accounts.push(AccountMeta::new(fixture.clob_market, false));
         accounts.push(AccountMeta::new_readonly(clob_id(), false));
@@ -10307,7 +10390,6 @@ fn bench_quote_case(
                 market_index: 0,
                 direction: Direction::Long,
                 size: 1_000 * UNIT,
-                quoter_count: makers.len() as u8 + u8::from(!quoters_only),
                 include_vamm: !quoters_only,
             },
         }

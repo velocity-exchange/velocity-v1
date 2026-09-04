@@ -48,7 +48,8 @@ await velocityClient.placeClobOrder({
 });
 ```
 
-Every account is resolved from `PerpMarket.clobQuoter`, so a client passes a market and nothing
+Every account is resolved from the market's quoter slab (a PDA; its slot 0 is the book's
+config), so a client passes a market and nothing
 else. `getPlaceClobOrderIx` gives the instruction if it is being bundled.
 
 **The speed bump.** A new order is not matchable until its activation slot — by default one slot
@@ -81,7 +82,7 @@ await velocityClient.modifyClobOrder({
 });
 ```
 
-**Cancel always works.** It is deliberately ungated on the quoter entry's active/approved flags: a
+**Cancel always works.** It is deliberately ungated on the book slot's active/suspended flags: a
 maker must be able to pull orders off a killed or delisted book.
 
 **A modify keeps the order's id** and loses its queue position — the book has no in-place mutation,

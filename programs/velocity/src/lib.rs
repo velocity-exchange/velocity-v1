@@ -2394,6 +2394,22 @@ pub mod velocity {
         handle_initialize_quoter(ctx, args)
     }
 
+    pub fn initialize_quoter_slab(
+        ctx: Context<InitializeQuoterSlab>,
+        market_index: u16,
+        capacity: u16,
+    ) -> Result<()> {
+        handle_initialize_quoter_slab(ctx, market_index, capacity)
+    }
+
+    pub fn extend_quoter_slab(
+        ctx: Context<ExtendQuoterSlab>,
+        market_index: u16,
+        capacity: u16,
+    ) -> Result<()> {
+        handle_extend_quoter_slab(ctx, market_index, capacity)
+    }
+
     pub fn update_quoter_accounts(
         ctx: Context<UpdateQuoterAccounts>,
         args: UpdateQuoterAccountsArgs,

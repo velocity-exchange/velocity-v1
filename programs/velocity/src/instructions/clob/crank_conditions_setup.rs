@@ -60,7 +60,8 @@ pub struct ClobCrankConditionKeys {
     /// The book's own program. A resolver asks the book what work it has
     /// rather than reading its arena, so it needs the program to call.
     pub clob_program: Pubkey,
-    pub quoter: Pubkey,
+    /// The market's quoter slab, which holds the book's approved config.
+    pub quoter_slab: Pubkey,
     pub state: Pubkey,
     /// The perp market's oracle, stored on the conditions account so the
     /// cross resolver can stage the executor's map section without holding
@@ -80,7 +81,7 @@ impl ClobCrankConditionKeys {
             AccountRefV0::writable(crate::state::pdas::relay_scratch().to_bytes()),
             AccountRefV0::readonly(self.crank_conditions.to_bytes()),
             AccountRefV0::writable(self.clob_market.to_bytes()),
-            AccountRefV0::readonly(self.quoter.to_bytes()),
+            AccountRefV0::readonly(self.quoter_slab.to_bytes()),
             AccountRefV0::readonly(self.state.to_bytes()),
             AccountRefV0::readonly(self.clob_program.to_bytes()),
             AccountRefV0::readonly(crate::state::pdas::crank_treasury().to_bytes()),

@@ -29,6 +29,7 @@ import {
 	UserClobOrdersClient,
 	ForceCancelClobRefV0,
 	ClobSide,
+	getQuoterSlabPublicKey,
 } from '@velocity-exchange/sdk';
 
 import { PrometheusExporter } from '@opentelemetry/exporter-prometheus';
@@ -1528,12 +1529,12 @@ export class LiquidatorBot implements Bot {
 	}
 
 	/// The CLOB accounts a `forceCancelClobOrders` needs, resolved from the
-	/// market: `PerpMarket.clobQuoter` names the registry entry, whose data
-	/// names the book account and its program. Returns undefined when the market
-	/// has no CLOB attached.
+	/// market: the quoter slab's slot 0 holds the book's approved config,
+	/// which names the book account and its program. Returns undefined when
+	/// the market has no CLOB attached.
 	private async resolveClobAccounts(marketIndex: number): Promise<
 		| {
-				quoter: PublicKey;
+				quoterSlab: PublicKey;
 				clobMarket: PublicKey;
 				clobProgram: PublicKey;
 		  }
@@ -1543,17 +1544,21 @@ export class LiquidatorBot implements Bot {
 		if (!perpMarket || perpMarket.clobQuoter.equals(PublicKey.default)) {
 			return undefined;
 		}
-		const entry = (await (
-			this.velocityClient.program.account as any
-		).quoterV0.fetch(perpMarket.clobQuoter)) as {
-			responseAccount: PublicKey;
-			programId: PublicKey;
-		};
+		const { slots } = await this.velocityClient.getQuoterSlabAccount(
+			marketIndex
+		);
+		const book = slots[0];
+		if (!book || book.entry.equals(PublicKey.default)) {
+			return undefined;
+		}
 		return {
-			quoter: perpMarket.clobQuoter,
-			// The book is the account the entry's responses are written into.
-			clobMarket: entry.responseAccount,
-			clobProgram: entry.programId,
+			quoterSlab: getQuoterSlabPublicKey(
+				this.velocityClient.program.programId,
+				marketIndex
+			),
+			// The book is the account the slot's responses are written into.
+			clobMarket: book.config.responseAccount,
+			clobProgram: book.config.programId,
 		};
 	}
 

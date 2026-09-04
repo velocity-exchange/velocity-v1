@@ -17,7 +17,7 @@
 //! is built by `vlp::amm::router_adapter::vamm_quote_levels` — so the
 //! continuous curve is reduced to levels before the router sees it. External
 //! quoters are not `RouterQuoter` impls at all; they are quoted and executed
-//! over CPI via [`crate::state::prop_amm::QuoterV0`].
+//! over CPI via [`crate::state::prop_amm::QuoterConfigV0`].
 //!
 //! [`QuoteContext`] is the snapshot every source quotes against: quote methods
 //! read from it, and `execute` reads it again so a source reaches the same
@@ -245,14 +245,14 @@ pub enum MarketEvent<'a> {
 // Callers import it from there directly.
 
 /// A liquidity source the router fill reads and executes — the in-program
-/// mirror of the registry's external `QuoterV0` CPI legs, deliberately the
+/// mirror of the registry's external `QuoterConfigV0` CPI legs, deliberately the
 /// same shape: `quote` returns discrete best-first levels, `execute` commits
 /// a fill of the routed allocation and reports it. Implementors that need a
 /// per-fill refresh (the AMM's projection/curve update) do it in their own
 /// setup step before the router quotes them — setup is not part of this
 /// contract, mirroring how external quoters refresh their own state.
 pub trait RouterQuoter {
-    /// Routing tier, same semantics as the registry's `QuoterV0::priority`:
+    /// Routing tier, same semantics as the registry's `QuoterConfigV0::priority`:
     /// lower fills first at a shared price, pro rata within a tier.
     fn priority(&self) -> u8;
 

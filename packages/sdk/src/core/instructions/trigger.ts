@@ -73,11 +73,11 @@ export async function buildTriggerOrderInstruction(args: {
  * @param args.user - the order owner's `User` account.
  * @param args.userStats - the order owner's `UserStats` account, writable (checked for the authority-wide equity breaker, as in `triggerOrder`).
  * @param args.authority - signer that must own or be a registered delegate of `filler`.
- * @param args.quoter - the market's CLOB registry entry (`QuoterV0`).
+ * @param args.quoterSlab - the market's quoter slab (`QuoterSlabV0`).
  * @param args.clobMarket - the CLOB market account.
  * @param args.clobProgram - the CLOB program id.
  * @param args.clobAuthority - the CLOB place-authority PDA.
- * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for the order's market, followed by maker/referrer `(User, UserStats)` pairs, the taker's `RevenueShareEscrow` if builder codes are enabled, the referrer's readonly `UserStats` when referred, then the quoter section (each `QuoterV0` entry plus its CPI accounts).
+ * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for the order's market, followed by maker/referrer `(User, UserStats)` pairs, the taker's `RevenueShareEscrow` if builder codes are enabled, the referrer's readonly `UserStats` when referred, then the quoter section (the market's `QuoterSlabV0` plus the consulted quoters' CPI accounts).
  * @param args.signedRoute - must be empty. A DLOB trigger carries no signed route; the keeper answers for its account list through the filler obligation.
  * @param args.crankConditions - the market's crank-conditions PDA (wake hint); omitted = program-id placeholder.
  * @param args.triggerConditions - the user's relay trigger conditions PDA; omitted = placeholder.
@@ -93,7 +93,7 @@ export async function buildTriggerMarketOrderV1Instruction(args: {
 	user: PublicKey;
 	userStats: PublicKey;
 	authority: PublicKey;
-	quoter: PublicKey;
+	quoterSlab: PublicKey;
 	clobMarket: PublicKey;
 	clobProgram: PublicKey;
 	clobAuthority: PublicKey;
@@ -116,7 +116,7 @@ export async function buildTriggerMarketOrderV1Instruction(args: {
 				fillerStats: args.fillerStats,
 				user: args.user,
 				userStats: args.userStats,
-				quoter: args.quoter,
+				quoterSlab: args.quoterSlab,
 				clobMarket: args.clobMarket,
 				clobProgram: args.clobProgram,
 				clobAuthority: args.clobAuthority,

@@ -28,8 +28,8 @@ use {
         load_mut, msg,
         state::{
             prop_amm::{
-                ClobCancelAllArgsV0, ClobCancelAllOutcomeExt, ClobCancelSides, ClobCancelSidesExt,
-                ClobMarket, ClobUserRefV0, QuoterV0,
+                quoter_slab_clob, ClobCancelAllArgsV0, ClobCancelAllOutcomeExt, ClobCancelSides,
+                ClobCancelSidesExt, ClobMarket, ClobUserRefV0, QuoterSlabV0,
             },
             state::State,
             user::User,
@@ -41,20 +41,22 @@ use {
 
 #[derive(Accounts)]
 pub struct CancelOrdersV1<'info> {
-    pub state: AccountLoader<'info, State>,
     #[account(
         mut,
         constraint = can_sign_for_user(&user, &authority)?
     )]
     pub user: AccountLoader<'info, User>,
     pub authority: Signer<'info>,
-    pub quoter: AccountLoader<'info, QuoterV0>,
-    /// CHECK: validated against the quoter entry's registered execute
-    /// accounts in the handler.
+    /// The market's quoter slab; the book's config is its `Clob` slot, bound
+    /// to this market and this book in the handler.
+    pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
+    /// CHECK: validated against the book slot's registered response account
+    /// in the handler.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
-    /// CHECK: locked to the registered quoter program.
-    #[account(address = quoter.load()?.program_id)]
+    /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
+    /// registration; the handler re-checks through the slot.
+    #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
     /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
     /// is set to. Its own key, distinct from the per-entry signer a
@@ -77,7 +79,7 @@ pub fn handle_cancel_orders_v1(
     let clock = Clock::get()?;
 
     let clob = ClobMarket::from_quoter(
-        &*ctx.accounts.quoter.load()?,
+        &quoter_slab_clob(&ctx.accounts.quoter_slab, params.market_index)?.config,
         params.market_index,
         &ctx.accounts.clob_market,
         &ctx.accounts.clob_program,

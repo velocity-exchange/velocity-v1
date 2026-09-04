@@ -42,6 +42,7 @@ export * from './accounts/oneShotUserAccountSubscriber';
 export * from './accounts/oneShotUserStatsAccountSubscriber';
 export * from './accounts/types';
 export * from './addresses/pda';
+export * from './quoterSlab';
 export * from './adminClient';
 export * from './assert/assert';
 export {

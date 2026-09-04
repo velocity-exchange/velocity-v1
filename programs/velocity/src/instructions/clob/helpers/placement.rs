@@ -14,7 +14,9 @@ use {
         math::orders::is_order_position_reducing,
         msg,
         state::{
-            prop_amm::{ClobMarket, ClobPlaceOrderArgsV0, ClobSide, QuoterV0},
+            prop_amm::{
+                quoter_slab_clob, ClobMarket, ClobPlaceOrderArgsV0, ClobSide, QuoterSlabV0,
+            },
             user::User,
         },
         validate,
@@ -120,7 +122,8 @@ pub fn align_rest_price_to_tick(price: u64, tick_size: u64, direction: PositionD
 /// delay at or above the book's default needs no attestation, and `None`
 /// takes the default.
 pub fn attest_activation_delay(
-    quoter_loader: &AccountLoader<QuoterV0>,
+    quoter_slab: &AccountLoader<QuoterSlabV0>,
+    market_index: u16,
     requested: Option<u32>,
     // Whether the transaction is attested flow: the flow authority signs
     // swift-built transactions as a named account, so the caller reads the
@@ -130,8 +133,11 @@ pub fn attest_activation_delay(
     let Some(requested) = requested else {
         return Ok(());
     };
-    // The attach-written mirror, not a CPI (see `QuoterV0::book_tick_size`).
-    let default_delay = quoter_loader.load()?.book_default_activation_delay_slots;
+    // The attach-written mirror, not a CPI (see
+    // `QuoterConfigV0::book_tick_size`).
+    let default_delay = quoter_slab_clob(quoter_slab, market_index)?
+        .config
+        .book_default_activation_delay_slots;
     if requested >= default_delay {
         return Ok(());
     }
@@ -157,14 +163,18 @@ pub fn attest_activation_delay(
 #[allow(clippy::too_many_arguments)]
 pub fn synchronous_take_allowed(
     taker_served_window: bool,
-    quoter_loader: &AccountLoader<QuoterV0>,
+    quoter_slab: &AccountLoader<QuoterSlabV0>,
+    market_index: u16,
 ) -> Result<bool> {
     if taker_served_window {
         return Ok(true);
     }
-    // The attach-written mirror, not a CPI: the entry is already loaded on
+    // The attach-written mirror, not a CPI: the slab is already loaded on
     // every path that asks.
-    Ok(quoter_loader.load()?.book_default_activation_delay_slots == 0)
+    Ok(quoter_slab_clob(quoter_slab, market_index)?
+        .config
+        .book_default_activation_delay_slots
+        == 0)
 }
 
 /// Rest an unfilled taker remainder on the CLOB: if it can rest and be
@@ -175,7 +185,7 @@ pub fn synchronous_take_allowed(
 /// own message entry, which is how the fill at the activation slot knows which
 /// route the taker chose.
 ///
-/// Degrades gracefully — a dead quoter entry or a failed margin re-reserve
+/// Degrades gracefully — a dead book slot or a failed margin re-reserve
 /// returns `Ok(None)` (the remainder stays cancelled, the fill stands) instead
 /// of reverting the whole call. A book that cannot hold the remainder — a full
 /// side, or a maker remainder that would rest crossed — degrades the same way.
@@ -188,7 +198,7 @@ pub fn synchronous_take_allowed(
 #[allow(clippy::too_many_arguments)]
 pub fn try_place_remainder_on_clob<'info>(
     user_loader: &AccountLoader<'info, User>,
-    quoter_loader: &AccountLoader<'info, QuoterV0>,
+    quoter_slab: &AccountLoader<'info, QuoterSlabV0>,
     clob_market: &AccountInfo<'info>,
     clob_program: &AccountInfo<'info>,
     clob_authority: &AccountInfo<'info>,
@@ -229,15 +239,15 @@ pub fn try_place_remainder_on_clob<'info>(
     clock: &Clock,
 ) -> Result<Option<u64>> {
     let clob = {
-        let quoter = quoter_loader.load()?;
+        let slot = quoter_slab_clob(quoter_slab, market_index)?;
         let clob = ClobMarket::from_quoter(
-            &quoter,
+            &slot.config,
             market_index,
             clob_market,
             clob_program,
             clob_authority,
         )?;
-        if !(quoter.is_active && quoter.is_approved) {
+        if !slot.quotes() {
             msg!("clob quoter inactive; remainder stays cancelled");
             return Ok(None);
         }
@@ -251,8 +261,8 @@ pub fn try_place_remainder_on_clob<'info>(
     // remainders cannot arise: the attach pins the book's tick and step to the
     // market's, so a remainder aligned to the market is aligned to the book.
     let (min_order_size, order_tick_size) = {
-        let quoter = quoter_loader.load()?;
-        (quoter.book_min_order_size, quoter.book_tick_size)
+        let slot = quoter_slab_clob(quoter_slab, market_index)?;
+        (slot.config.book_min_order_size, slot.config.book_tick_size)
     };
     if min_order_size != 0 && base_asset_amount < min_order_size {
         msg!(

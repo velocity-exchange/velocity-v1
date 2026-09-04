@@ -2480,27 +2480,20 @@ pub fn handle_update_perp_market_clob_quoter(
     msg!("perp market {}", perp_market.market_index);
 
     let clob_program = {
-        let quoter = ctx.accounts.quoter.load()?;
-        validate!(
-            quoter.quoter_type == crate::state::prop_amm::QuoterType::Clob,
-            ErrorCode::DefaultError,
-            "quoter entry is not a CLOB"
+        let book_slot = crate::state::prop_amm::quoter_slab_clob(
+            &ctx.accounts.quoter_slab,
+            perp_market.market_index,
         )?;
         validate!(
-            quoter.market == perp_market.market_index,
+            book_slot.entry == ctx.accounts.quoter.key(),
             ErrorCode::DefaultError,
-            "quoter entry is for market {}",
-            quoter.market
+            "the slab's book slot holds entry {}, not the passed one",
+            book_slot.entry
         )?;
-        let registered = &quoter.execute_accounts[..quoter.execute_accounts_count as usize];
-        validate!(
-            registered
-                .iter()
-                .any(|meta| meta.pubkey == ctx.accounts.clob_market.key()),
-            ErrorCode::DefaultError,
-            "clob market is not registered on the quoter entry"
-        )?;
-        quoter.program_id
+        book_slot
+            .config
+            .validate_clob_book(perp_market.market_index, &ctx.accounts.clob_market.key())?;
+        book_slot.config.program_id
     };
 
     validate!(
@@ -2512,7 +2505,7 @@ pub fn handle_update_perp_market_clob_quoter(
         crank_conditions: ctx.accounts.crank_conditions.key(),
         clob_market: ctx.accounts.clob_market.key(),
         clob_program,
-        quoter: ctx.accounts.quoter.key(),
+        quoter_slab: ctx.accounts.quoter_slab.key(),
         state: ctx.accounts.state.key(),
         oracle: perp_market.oracle,
         quote_spot_market_index: perp_market.quote_spot_market_index,
@@ -2540,9 +2533,12 @@ pub fn handle_update_perp_market_clob_quoter(
     // book's word — bounded on the fill path by the market's minimum, which is
     // only a bound at all while the book cannot cull something larger.
     {
-        let quoter = ctx.accounts.quoter.load()?;
         let rules = crate::state::prop_amm::ClobMarket::from_quoter(
-            &quoter,
+            &crate::state::prop_amm::quoter_slab_clob(
+                &ctx.accounts.quoter_slab,
+                perp_market.market_index,
+            )?
+            .config,
             perp_market.market_index,
             &ctx.accounts.clob_market,
             &ctx.accounts.clob_program,
@@ -2590,16 +2586,26 @@ pub fn handle_update_perp_market_clob_quoter(
             rules.step_size,
             perp_market.order_step_size
         )?;
-        // Mirror the placement rules onto the entry: the take gate, the
-        // route's maker-priority skip, and the remainder rest read these
-        // fields instead of CPI'ing `order_rules_v0` per fill. The attach is
-        // the supported way to change an attached book's rules, so this
-        // write is where the mirror stays current.
-        drop(quoter);
+        // Mirror the placement rules onto the book's slot (the copy the
+        // take gate, the route's maker-priority skip and the remainder rest
+        // read instead of CPI'ing `order_rules_v0` per fill) and onto the
+        // staging entry, so a later re-approval copies them forward. The
+        // attach is the supported way to change an attached book's rules, so
+        // this write is where the mirror stays current.
+        {
+            let mut slots =
+                crate::state::prop_amm::quoter_slab_slots_mut(&ctx.accounts.quoter_slab)?;
+            let index = crate::state::prop_amm::clob_slot_index(&slots)
+                .ok_or_else(|| error!(ErrorCode::QuoterNotOnSlab))?;
+            slots[index].config.book_tick_size = rules.tick_size;
+            slots[index].config.book_min_order_size = rules.min_order_size;
+            slots[index].config.book_default_activation_delay_slots =
+                rules.default_activation_delay_slots;
+        }
         let mut quoter = ctx.accounts.quoter.load_mut()?;
-        quoter.book_tick_size = rules.tick_size;
-        quoter.book_min_order_size = rules.min_order_size;
-        quoter.book_default_activation_delay_slots = rules.default_activation_delay_slots;
+        quoter.config.book_tick_size = rules.tick_size;
+        quoter.config.book_min_order_size = rules.min_order_size;
+        quoter.config.book_default_activation_delay_slots = rules.default_activation_delay_slots;
     }
 
     // The book's own conditions first: velocity registers which resolver
@@ -2608,9 +2614,12 @@ pub fn handle_update_perp_market_clob_quoter(
     // its bytes change when its top of book moves — is reported rather than
     // derived, so nothing here knows the market account's layout.
     let block = {
-        let quoter = ctx.accounts.quoter.load()?;
         crate::state::prop_amm::ClobMarket::from_quoter(
-            &quoter,
+            &crate::state::prop_amm::quoter_slab_clob(
+                &ctx.accounts.quoter_slab,
+                perp_market.market_index,
+            )?
+            .config,
             perp_market.market_index,
             &ctx.accounts.clob_market,
             &ctx.accounts.clob_program,
@@ -5342,18 +5351,29 @@ pub struct AdminUpdatePerpMarketClobQuoter<'info> {
     #[account(mut)]
     pub perp_market: AccountLoader<'info, PerpMarket>,
     /// Writable: the attach mirrors the book's placement rules onto the
-    /// entry, so the hot paths read a loaded field instead of CPI'ing
-    /// `order_rules_v0`.
+    /// staging entry, so a later re-approval copies them forward.
     #[account(mut)]
     pub quoter: AccountLoader<'info, crate::state::prop_amm::QuoterV0>,
-    /// CHECK: validated against the quoter entry's registered execute
-    /// accounts in the handler. Writable because the attach registers
-    /// velocity's resolvers on the book itself: the wakes for an expiry, an
-    /// activation, a side at its cap and a crossed book are facts about this
-    /// account, so the conditions that watch for them live on it.
+    /// Writable: the attach mirrors the book's placement rules onto the
+    /// approved copy in the book's slot, so the hot paths read a loaded
+    /// field instead of CPI'ing `order_rules_v0`.
+    #[account(
+        mut,
+        seeds = [
+            crate::state::prop_amm::QUOTER_SLAB_PDA_SEED,
+            perp_market.load()?.market_index.to_le_bytes().as_ref(),
+        ],
+        bump
+    )]
+    pub quoter_slab: AccountLoader<'info, crate::state::prop_amm::QuoterSlabV0>,
+    /// CHECK: validated against the book slot's registered response account
+    /// in the handler. Writable because the attach registers velocity's
+    /// resolvers on the book itself: the wakes for an expiry, an activation,
+    /// a side at its cap and a crossed book are facts about this account, so
+    /// the conditions that watch for them live on it.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
-    /// CHECK: locked to the quoter entry's registered program in the handler.
+    /// CHECK: locked to the book slot's registered program in the handler.
     pub clob_program: UncheckedAccount<'info>,
     /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
     /// is set to, and therefore the only key that may register its cranks.

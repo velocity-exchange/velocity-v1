@@ -80,7 +80,7 @@ import {
 	PostOnlyParams,
 	parseLogs,
 	PRICE_PRECISION,
-	QuoterCpiLeg,
+	getQuoterSlabPublicKey,
 	QuoterType,
 	RetryTxSender,
 	TestClient,
@@ -141,17 +141,12 @@ function u32(v: number): Buffer {
 	b.writeUInt32LE(v);
 	return b;
 }
-function u64(v: BN | number): Buffer {
-	return new BN(v).toArrayLike(Buffer, 'le', 8);
-}
-
 // Account metas: read-only, writable, and their signing counterparts.
 const meta = (pubkey: PublicKey, isWritable: boolean, isSigner: boolean) =>
 	({ pubkey, isSigner, isWritable }) as AccountMeta;
 const ro = (pubkey: PublicKey) => meta(pubkey, false, false);
 const rw = (pubkey: PublicKey) => meta(pubkey, true, false);
 const signerRo = (pubkey: PublicKey) => meta(pubkey, false, true);
-const signerRw = (pubkey: PublicKey) => meta(pubkey, true, true);
 
 async function sleep(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
@@ -327,12 +322,17 @@ describe('e2e localnet: programs + publisher + redis', function () {
 	let oracleTargetPrice = 100;
 
 	const perpMarket = getPerpMarketPublicKeySync(VELOCITY_ID, 0);
+	/** The market's quoter slab: the one account fills read approved quoter
+	 * configs from. The book's config lives at its slot 0. */
+	const quoterSlab = getQuoterSlabPublicKey(VELOCITY_ID, 0);
 	const userOf = (authority: PublicKey) =>
 		getUserAccountPublicKeySync(VELOCITY_ID, authority, 0);
 	const statsOf = (authority: PublicKey) =>
 		getUserStatsAccountPublicKey(VELOCITY_ID, authority);
-	/** A market's quoter-registry entry: `["quoter", market, program, user]`
-	 * (`PublicKey.default` as the user for a CLOB, whose entry is shared). */
+	/** A market's quoter staging entry: `["quoter", market, program, user]`
+	 * (`PublicKey.default` as the user for a CLOB, whose entry is shared).
+	 * Fills read the slab copy; the entry stays the quoter's identity, so
+	 * signed routes and the canonical-CLOB attach still name it. */
 	const quoterKey = (quoterProgram: PublicKey, user: PublicKey) =>
 		PublicKey.findProgramAddressSync(
 			[
@@ -465,7 +465,9 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		takerUser: PublicKey
 	): Promise<BN> =>
 		(await fillsBy(signature))
-			.filter((r) => r.maker != null && r.taker != null && r.taker.equals(takerUser))
+			.filter(
+				(r) => r.maker != null && r.taker != null && r.taker.equals(takerUser)
+			)
 			.reduce((sum, r) => sum.add(r.baseAssetAmountFilled!), new BN(0));
 
 	/** Fills route through every quoter, well past the default CU budget. */
@@ -609,8 +611,8 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		});
 
 	/** Register + approve a quoter, the sequence `admin-cli quoter` runs:
-	 * create the registry entry, publish its two CPI account lists, then have
-	 * the admin approve the surface. */
+	 * create the registry entry, publish its unified CPI account list, then
+	 * have the admin approve the surface into the market's slab. */
 	const registerQuoterIxs = async (args: {
 		authority: PublicKey;
 		quoterType: QuoterType;
@@ -620,15 +622,14 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		/** The optional leg that reports who a ladder stands on. A book has
 		 * one; a quoter that fills from its own account does not. */
 		quoteL3Discriminator?: number[];
-		quoteLeg: { pubkey: PublicKey; isWritable: boolean }[];
-		executeLeg: { pubkey: PublicKey; isWritable: boolean }[];
+		/** The unified registered account list; each leg names its slice by
+		 * index into it. */
+		metas: { pubkey: PublicKey; isWritable: boolean }[];
+		quoteIndexes: number[];
+		executeIndexes: number[];
 	}): Promise<{ quoter: PublicKey; ixs: TransactionInstruction[] }> => {
 		const program = admin.program;
 		const quoter = quoterKey(args.quoterProgram, args.user);
-		const legs: [QuoterCpiLeg, typeof args.quoteLeg][] = [
-			[QuoterCpiLeg.QUOTE, args.quoteLeg],
-			[QuoterCpiLeg.EXECUTE, args.executeLeg],
-		];
 		return {
 			quoter,
 			ixs: [
@@ -656,17 +657,22 @@ describe('e2e localnet: programs + publisher + redis', function () {
 						},
 					}
 				),
-				...legs.map(([leg, metas]) =>
-					program.instruction.updateQuoterAccounts(
-						{ leg, index: 0, metas },
-						{ accounts: { authority: args.authority, quoter } }
-					)
+				program.instruction.updateQuoterAccounts(
+					{
+						metas: args.metas,
+						quoteIndexes: Buffer.from(args.quoteIndexes),
+						executeIndexes: Buffer.from(args.executeIndexes),
+					},
+					{ accounts: { authority: args.authority, quoter } }
 				),
 				program.instruction.updateQuoterApproved(true, {
 					accounts: {
 						admin: payer.publicKey,
 						state: await admin.getStatePublicKey(),
 						quoter,
+						// Approval copies the staging config into the slab slot
+						// fills read; the slab has to exist first.
+						quoterSlab,
 						// Approval is approval of a binary, so the program has to
 						// be frozen and its program-data account says whether it
 						// is. These are deployed non-upgradeable in the harness.
@@ -725,14 +731,31 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			user: PublicKey.default,
 			// The book answers who rests on it, so no reader decodes it.
 			quoteL3Discriminator: Array.from(ixDiscriminator('quote_l3_v0')),
-			quoteLeg: [{ pubkey: clobBook.publicKey, isWritable: true }],
-			executeLeg: [
+			// The quote leg reads the book; the execute leg also carries the
+			// place authority the book checks velocity's CPI signature against.
+			metas: [
 				{ pubkey: clobBook.publicKey, isWritable: true },
 				{ pubkey: clobAuthority, isWritable: false },
 			],
+			quoteIndexes: [0],
+			executeIndexes: [0, 1],
 		});
 		clobEntry = registration.quoter;
-		await send(registration.ixs);
+		await send([
+			// Approval needs the market's slab, and this is the market's first
+			// registration, so create it here. Slot 0 is the book's; the Custom
+			// quoters land on slots 1+.
+			admin.program.instruction.initializeQuoterSlab(0, 8, {
+				accounts: {
+					payer: payer.publicKey,
+					perpMarket,
+					quoterSlab,
+					rent: SYSVAR_RENT_PUBKEY,
+					systemProgram: SystemProgram.programId,
+				},
+			}),
+			...registration.ixs,
+		]);
 
 		// Attach as the market's canonical CLOB. The conditions account is
 		// created holding only its rent, exactly as a market is attached in
@@ -765,6 +788,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 						state: await admin.getStatePublicKey(),
 						perpMarket,
 						quoter: clobEntry,
+						quoterSlab,
 						clobMarket: clobBook.publicKey,
 						clobProgram: CLOB_ID,
 						clobAuthority,
@@ -780,7 +804,6 @@ describe('e2e localnet: programs + publisher + redis', function () {
 
 	/** Midpoint instance + spline, then its Custom registry entry. */
 	const midpointBringUp = async () => {
-		const statePda = await admin.getStatePublicKey();
 		midInstance = midpointIx.instance(midMakerKp.publicKey);
 		// The instance's execute authority is the signer velocity CPIs *this
 		// entry* as, so the entry has to be derived before the instance is
@@ -828,11 +851,12 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			// The protected-flow fact rides the quoter wire
 			// (`taker_served_window`), so the legs carry no sysvar and no
 			// velocity State.
-			quoteLeg: [{ pubkey: midInstance, isWritable: true }],
-			executeLeg: [
+			metas: [
 				{ pubkey: midInstance, isWritable: true },
 				{ pubkey: midQuoterSigner, isWritable: false },
 			],
+			quoteIndexes: [0],
+			executeIndexes: [0, 1],
 		});
 		await send(registration.ixs, [midMakerKp]);
 	};
@@ -842,7 +866,10 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			[
 				await midpointProgram.methods
 					.setMidV0({ mid, sequence: new BN(0) })
-					.accountsStrict({ quoter: midInstance, hotAuthority: midHotKp.publicKey })
+					.accountsStrict({
+						quoter: midInstance,
+						hotAuthority: midHotKp.publicKey,
+					})
 					.instruction(),
 			],
 			[midHotKp]
@@ -857,7 +884,10 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			[
 				await midpointProgram.methods
 					.setLevelsV0({ mid, sequence: null, bids: rungs, asks: rungs })
-					.accountsStrict({ quoter: midInstance, hotAuthority: midHotKp.publicKey })
+					.accountsStrict({
+						quoter: midInstance,
+						hotAuthority: midHotKp.publicKey,
+					})
 					.instruction(),
 			],
 			[midHotKp]
@@ -921,7 +951,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				...(maxTs.isZero() ? {} : { maxTs }),
 			}),
 			{
-				quoter: clobEntry,
+				quoterSlab,
 				clobMarket: clobBook.publicKey,
 				clobProgram: CLOB_ID,
 				clobAuthority,
@@ -1141,15 +1171,16 @@ describe('e2e localnet: programs + publisher + redis', function () {
 
 	/** The account tail every router-touching ix wants: margin maps, the
 	 * `(User, UserStats)` pairs of the makers that may fill, then the
-	 * quoter section (entries followed by their registered CPI accounts). */
+	 * quoter section (the market's slab followed by the consulted quoters'
+	 * CPI accounts — a slot is consulted when its response account is in
+	 * the tail). */
 	const routerTail = (makerKps: Keypair[]): AccountMeta[] => [
 		...marginMap(),
 		...makerKps.flatMap((kp) => [
 			rw(userOf(kp.publicKey)),
 			rw(statsOf(kp.publicKey)),
 		]),
-		ro(clobEntry),
-		ro(midEntry),
+		ro(quoterSlab),
 		rw(clobBook.publicKey),
 		ro(clobAuthority),
 		ro(CLOB_ID),
@@ -1201,7 +1232,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 					fillerStats: statsOf(fillerAuthority),
 					user: userOf(takerAuthority),
 					userStats: statsOf(takerAuthority),
-					quoter: clobEntry,
+					quoterSlab,
 					clobMarket: clobBook.publicKey,
 					clobProgram: CLOB_ID,
 					clobAuthority,
@@ -1231,8 +1262,12 @@ describe('e2e localnet: programs + publisher + redis', function () {
 
 	/** Opt a user into relay coverage: liquidation thresholds and triggers,
 	 * one instruction over one account. `extra` appends to the condition
-	 * pass's own accounts (e.g. a quoter entry for trigger routing). */
-	const syncUserConditions = async (user: PublicKey, extra: AccountMeta[] = []) => {
+	 * pass's own accounts (e.g. the market's quoter slab for trigger
+	 * routing). */
+	const syncUserConditions = async (
+		user: PublicKey,
+		extra: AccountMeta[] = []
+	) => {
 		const ix = admin.program.instruction.syncUserConditions(
 			{
 				// Cost units the staged self-sync requests; the lamport fee is
@@ -1739,7 +1774,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			undefined,
 			undefined,
 			{
-				quoter: clobEntry,
+				quoterSlab,
 				clobMarket: clobBook.publicKey,
 				clobProgram: CLOB_ID,
 				clobAuthority,
@@ -1873,7 +1908,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				undefined,
 				undefined,
 				{
-					quoter: clobEntry,
+					quoterSlab,
 					clobMarket: clobBook.publicKey,
 					clobProgram: CLOB_ID,
 					clobAuthority,
@@ -2105,7 +2140,10 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		await airdrop(stopperKp.publicKey, 10);
 		const stopper = newClient(stopperKp);
 		await stopper.subscribe();
-		const stopperUsdc = await fundUsdc(stopperKp.publicKey, new BN(1_000).mul(USDC));
+		const stopperUsdc = await fundUsdc(
+			stopperKp.publicKey,
+			new BN(1_000).mul(USDC)
+		);
 		await stopper.initializeUserAccountAndDepositCollateral(
 			new BN(1_000).mul(USDC),
 			stopperUsdc
@@ -2146,7 +2184,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 
 			// One conditions account per user — the same one the liquidation
 			// thresholds live on — so one sync covers both halves.
-			await syncUserConditions(stopperUser, [ro(clobEntry)]);
+			await syncUserConditions(stopperUser, [ro(quoterSlab)]);
 			await registerWatch(getUserConditionsPublicKey(VELOCITY_ID, stopperUser));
 
 			const asksBefore = (await readClob()).askCount;
@@ -2156,16 +2194,20 @@ describe('e2e localnet: programs + publisher + redis', function () {
 			// the turner fires `resolve_trigger_market_order_v1`, which rests the whole
 			// fired order taker-origin on the book rather than filling it.
 			await setOraclePrice(106);
-			await pollUntil('the fired stop to rest on the book', 200_000, async () => {
-				await stopper.fetchAccounts();
-				const stillArmed = stopper
-					.getUserAccount()!
-					.orders.find(
-						(o) => o.orderId === armed.orderId && isVariant(o.status, 'open')
-					);
-				const rested = (await readClob()).askCount > asksBefore;
-				return !stillArmed && rested ? true : undefined;
-			});
+			await pollUntil(
+				'the fired stop to rest on the book',
+				200_000,
+				async () => {
+					await stopper.fetchAccounts();
+					const stillArmed = stopper
+						.getUserAccount()!
+						.orders.find(
+							(o) => o.orderId === armed.orderId && isVariant(o.status, 'open')
+						);
+					const rested = (await readClob()).askCount > asksBefore;
+					return !stillArmed && rested ? true : undefined;
+				}
+			);
 			// The DLOB slot is freed and the order rests on the book, unfilled:
 			// a fire-to-book stops here, where the v0 flip would leave it live.
 			await stopper.fetchAccounts();
@@ -2185,12 +2227,16 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				usd(106),
 				UNIT
 			);
-			await pollUntil('the cross crank to fill the fired stop', 60_000, async () => {
-				await stopper.fetchAccounts();
-				const pos =
-					stopper.getUser().getPerpPosition(0)?.baseAssetAmount ?? new BN(0);
-				return pos.ltn(0) ? true : undefined;
-			});
+			await pollUntil(
+				'the cross crank to fill the fired stop',
+				60_000,
+				async () => {
+					await stopper.fetchAccounts();
+					const pos =
+						stopper.getUser().getPerpPosition(0)?.baseAssetAmount ?? new BN(0);
+					return pos.ltn(0) ? true : undefined;
+				}
+			);
 			await stopper.fetchAccounts();
 			assert.isTrue(
 				stopper.getUser().getPerpPosition(0)!.baseAssetAmount.ltn(0),
@@ -2238,7 +2284,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		assert.isOk(armed, 'trigger-limit is armed');
 
 		const takerUser = userOf(takerKp.publicKey);
-		await syncUserConditions(takerUser, [ro(clobEntry)]);
+		await syncUserConditions(takerUser, [ro(quoterSlab)]);
 		await registerWatch(getUserConditionsPublicKey(VELOCITY_ID, takerUser));
 
 		const bidsBefore = (await readClob()).bidCount;
@@ -2253,10 +2299,14 @@ describe('e2e localnet: programs + publisher + redis', function () {
 		// the book gaining the order is the signal, not the slot emptying.
 		// Leftover bids from earlier specs share this book, so the fired order
 		// is not necessarily the best bid; the book gaining a bid is the signal.
-		await pollUntil('the trigger-limit to rest on the book', 120_000, async () => {
-			const rested = (await readClob()).bidCount > bidsBefore;
-			return rested ? true : undefined;
-		});
+		await pollUntil(
+			'the trigger-limit to rest on the book',
+			120_000,
+			async () => {
+				const rested = (await readClob()).bidCount > bidsBefore;
+				return rested ? true : undefined;
+			}
+		);
 		assert.isAbove(
 			await relayPayoutBalance(),
 			relayPaid0,
@@ -2510,8 +2560,7 @@ describe('e2e localnet: programs + publisher + redis', function () {
 				rw(userOf(kp.publicKey)),
 				rw(statsOf(kp.publicKey)),
 			]),
-			ro(clobEntry),
-			ro(midEntry),
+			ro(quoterSlab),
 			rw(clobBook.publicKey),
 			ro(clobAuthority),
 			ro(CLOB_ID),

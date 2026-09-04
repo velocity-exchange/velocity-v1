@@ -151,6 +151,17 @@ pub fn derive_quoter_signer(entry: &Pubkey) -> Pubkey {
     account
 }
 
+/// The market's quoter slab: one account that holds every approved quoter
+/// config. Router fills and every CLOB order-flow instruction name it in
+/// place of per-quoter registry entries.
+pub fn derive_quoter_slab(market_index: u16) -> Pubkey {
+    let (account, _seed) = Pubkey::find_program_address(
+        &[&b"quoter_slab"[..], &market_index.to_le_bytes()],
+        &PROGRAM_ID,
+    );
+    account
+}
+
 /// The per-market relay crank conditions account, which also holds the
 /// reservoir that pays crank keepers.
 pub fn derive_clob_crank_conditions(market_index: u16) -> Pubkey {

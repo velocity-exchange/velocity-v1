@@ -226,15 +226,13 @@ async fn main() -> Result<()> {
     let payer = load_keypair(&config.keypair_path)?;
 
     // Discover quoter programs up front so the feed subscribes to them; the
-    // registry subscription itself keeps the entry set fresh afterwards.
+    // slab subscription itself keeps the approved set fresh afterwards.
     let rpc = RpcSource::new(config.rpc_url.clone());
     let mut quoter_programs: Vec<Pubkey> = Vec::new();
     for market in &markets {
-        for (_, account) in velocity_router_sim::quoter_entries(&rpc, &velocity, *market).await? {
-            let entry: program::state::prop_amm::QuoterV0 = read_zero_copy(&account.data)?;
-            if entry.is_active && entry.is_approved && !quoter_programs.contains(&entry.program_id)
-            {
-                quoter_programs.push(entry.program_id);
+        for slot in velocity_router_sim::quoter_slab_slots(&rpc, &velocity, *market).await? {
+            if slot.quotes() && !quoter_programs.contains(&slot.config.program_id) {
+                quoter_programs.push(slot.config.program_id);
             }
         }
     }
@@ -389,17 +387,10 @@ async fn publish_market(
         .ok_or_else(|| anyhow!("perp market {market_index} not found"))?;
     let perp_market: PerpMarket = read_zero_copy(&perp_market_account.data)?;
 
-    // State (mm-oracle guard rails), the oracle itself, and the canonical
-    // CLOB entry (whose registered market account is the L3/best-makers
-    // source) — one batch; the entry is absent until a book is attached.
+    // State (mm-oracle guard rails) and the oracle itself, one batch.
     let mut side_accounts = source
-        .get_multiple_accounts(&[
-            state_pda(velocity),
-            perp_market.oracle,
-            perp_market.clob_quoter,
-        ])
+        .get_multiple_accounts(&[state_pda(velocity), perp_market.oracle])
         .await?;
-    let clob_entry_account = side_accounts.pop().flatten();
     let mut oracle_account = side_accounts
         .pop()
         .flatten()
@@ -411,11 +402,13 @@ async fn publish_market(
             .ok_or_else(|| anyhow!("state account missing"))?
             .data,
     )?;
-    let clob_book_key = clob_entry_account
-        .as_ref()
-        .map(|account| read_zero_copy::<program::state::prop_amm::QuoterV0>(&account.data))
-        .transpose()?
-        .map(|entry| entry.response_account);
+
+    // The market's approved quoters, off its slab. The book slot's registered
+    // market account is the L3/best-makers source; the slot is vacant until a
+    // book is approved.
+    let slab_slots = velocity_router_sim::quoter_slab_slots(source, velocity, market_index).await?;
+    let clob_book_key = program::state::prop_amm::clob_slot_index(&slab_slots)
+        .map(|index| slab_slots[index].config.response_account);
 
     // A long taker consumes asks; a short taker consumes bids. Both go
     // through the health layer, so a quoter that breaks the simulation costs
@@ -437,13 +430,9 @@ async fn publish_market(
     // fixed number of sources, and the buffer refuses a push past it rather
     // than truncating, so a market that outgrew a single pass would publish
     // nothing at all.
-    let live: Vec<Pubkey> = velocity_router_sim::quoter_entries(source, velocity, market_index)
-        .await?
-        .into_iter()
-        .filter_map(|(key, account)| {
-            let entry = read_zero_copy::<program::state::prop_amm::QuoterV0>(&account.data).ok()?;
-            (entry.is_active && entry.is_approved).then_some(key)
-        })
+    let live: Vec<Pubkey> = slab_slots
+        .iter()
+        .filter_map(|slot| slot.quotes().then_some(slot.entry))
         .collect();
     let asks_quote = quote_market(source, health, &request(Direction::Long), &live).await?;
     let bids_quote = quote_market(source, health, &request(Direction::Short), &live).await?;

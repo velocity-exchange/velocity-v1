@@ -117,23 +117,31 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
                 let user_stats =
                     crate::state::pdas::user_stats(&crate::load!(ctx.accounts.user)?.authority);
                 let (protocol_user, protocol_user_stats) = crate::state::pdas::protocol_user_pair();
-                // The book and its program come off the registry entry, which
+                // The book and its program come off the market's slab, which
                 // the sync stored in the list's inert tail alongside the
                 // margin map.
-                let Some(entry_info) =
-                    crate::state::prop_amm::find_account(ctx.remaining_accounts, &quoter)
+                let quoter_slab = crate::state::pdas::quoter_slab(market_index);
+                let Some(slab_info) =
+                    crate::state::prop_amm::find_account(ctx.remaining_accounts, &quoter_slab)
                 else {
                     msg!(
-                        "quoter {} absent from the stored list; cannot stage a cancel",
-                        quoter
+                        "quoter slab {} absent from the stored list; cannot stage a cancel",
+                        quoter_slab
                     );
                     return Ok(None);
                 };
-                let entry =
-                    AccountLoader::<crate::state::prop_amm::QuoterV0>::try_from(entry_info)?;
+                let slab =
+                    AccountLoader::<crate::state::prop_amm::QuoterSlabV0>::try_from(slab_info)?;
                 let (clob_market, clob_program) = {
-                    let entry = entry.load()?;
-                    (entry.response_account, entry.program_id)
+                    let slots = crate::state::prop_amm::quoter_slab_slots(&slab)?;
+                    let Some(index) = crate::state::prop_amm::clob_slot_index(&slots) else {
+                        msg!("quoter slab holds no book slot; cannot stage a cancel");
+                        return Ok(None);
+                    };
+                    (
+                        slots[index].config.response_account,
+                        slots[index].config.program_id,
+                    )
                 };
                 return Ok(
                     Some(
@@ -146,7 +154,7 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
                             filler_stats: protocol_user_stats,
                             user: ctx.accounts.user.key(),
                             user_stats,
-                            quoter,
+                            quoter_slab,
                             clob_market,
                             clob_program,
                             clob_authority: crate::signer::find_clob_authority().0,

@@ -6,7 +6,7 @@
 //! prices the quoter *generically*, by CPI-ing its registered `quote_v0`
 //! surface under simulation — the same interface every fill uses — and the
 //! wake comes from the entry's maker-declared reprice region
-//! (`QuoterV0::watch_*`). Three conditions:
+//! (`QuoterConfigV0::watch_*`). Three conditions:
 //!
 //! - [`QUOTER_CROSS_WATCH`] — `OnAccountChange` over the declared watch
 //!   region (inactive when the maker declared none).

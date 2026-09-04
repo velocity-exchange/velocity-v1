@@ -36,7 +36,7 @@ use {
         RouteContext,
     },
     velocity_rs::{
-        constants::{derive_clob_authority, derive_quoter_signer, PROGRAM_ID},
+        constants::{derive_clob_authority, derive_quoter_slab, PROGRAM_ID},
         dlob::{
             CrossesAndTopMakers, CrossingRegion, DLOBNotifier, L3Order, MakerCrosses, OrderKind,
             TakerOrder, DLOB,
@@ -53,7 +53,7 @@ use {
                 constants::MM_ORACLE_MIN_WRITE_GAP,
                 time::{Millis, SlotClock},
             },
-            state::prop_amm::{ClobUserRefV0, QuoterV0},
+            state::prop_amm::{ClobUserRefV0, QuoterConfigV0, QuoterSlotV0},
         },
         swift_order_subscriber::{SignedOrderInfo, SwiftOrderStream},
         types::{
@@ -63,6 +63,7 @@ use {
             RpcSendTransactionConfig, SdkResult, StateExt, VersionedMessage, VersionedTransaction,
             AMM,
         },
+        utils::clob_slot_config,
         ClobFillAccounts, GrpcSubscribeOpts, Pubkey, TransactionBuilder, VelocityClient, Wallet,
     },
 };
@@ -379,7 +380,6 @@ impl FillerBot {
                                             filler_subaccount,
                                             signed_order,
                                             slot,
-                                            perp_market.clob_quoter,
                                             tx_worker_ref.clone(),
                                         ).await;
                                         metrics.swift_placed.inc();
@@ -1094,7 +1094,7 @@ const CLOB_MAKERS_PER_FILL: usize = 6;
 /// the book may change its data structures without breaking it.
 async fn clob_makers(
     velocity: &'static VelocityClient,
-    entry: &QuoterV0,
+    config: &QuoterConfigV0,
     direction: PositionDirection,
     size: u64,
     taker: ClobUserRefV0,
@@ -1107,7 +1107,7 @@ async fn clob_makers(
     // whether that is worth designing around turns on how often it happens.
     let reachable = match velocity_router_sim::l3::resting_makers(
         &source,
-        entry,
+        config,
         match direction {
             PositionDirection::Long => velocity_router_sim::Direction::Long,
             PositionDirection::Short => velocity_router_sim::Direction::Short,
@@ -1208,8 +1208,14 @@ async fn try_swift_fill(
     // The fill's quoter section, appended to the fill instruction's remaining
     // accounts below. One network round trip per entry, done before assembly
     // so both assembly passes produce the same account list.
-    let Some(quoter_metas) =
-        route_quoter_metas(velocity, clob_quoter, swift_order.route(), &swift_order).await
+    let Some(quoter_metas) = route_quoter_metas(
+        velocity,
+        taker_order.market_index,
+        clob_quoter,
+        swift_order.route(),
+        &swift_order,
+    )
+    .await
     else {
         return;
     };
@@ -1217,24 +1223,26 @@ async fn try_swift_fill(
     // The v1 fill route, so a restable remainder of this order rests on the
     // market's CLOB rather than in `User.orders`. A signed-message order
     // cannot be IOC, so without this its leftover stays on the DLOB, where
-    // nothing but another keeper's fill can reach it.
-    let clob_entry = velocity
-        .get_account_value::<QuoterV0>(&clob_quoter)
+    // nothing but another keeper's fill can reach it. The book's accounts
+    // come from its approved slab slot — slot 0 by convention.
+    let book_config = velocity
+        .get_quoter_slab_slots(taker_order.market_index)
         .await
-        .ok();
-    let clob_fill = clob_entry.as_ref().map(|entry| ClobFillAccounts {
+        .ok()
+        .and_then(|slots| clob_slot_config(&slots));
+    let clob_fill = book_config.as_ref().map(|config| ClobFillAccounts {
         market_index: taker_order.market_index,
-        quoter: clob_quoter,
-        clob_market: entry.response_account,
-        clob_program: entry.program_id,
+        quoter_slab: derive_quoter_slab(taker_order.market_index),
+        clob_market: config.response_account,
+        clob_program: config.program_id,
         clob_authority: derive_clob_authority(),
         crank_conditions: None,
     });
     // The placement routes and rests on the book, so it cannot be built at all
-    // without the book's accounts. A market whose registry entry is missing has
-    // no venue for this order.
+    // without the book's accounts. A market whose slab holds no book has no
+    // venue for this order.
     let Some(clob_place) = clob_fill else {
-        log::warn!(target: TARGET, "no clob registry entry for market {}; cannot place signed-message order", taker_order.market_index);
+        log::warn!(target: TARGET, "no approved clob on the quoter slab for market {}; cannot place signed-message order", taker_order.market_index);
         return;
     };
 
@@ -1245,11 +1253,11 @@ async fn try_swift_fill(
     // first one missing, so leaving out the best maker forfeits the rest of
     // it too.
     let mut maker_accounts = maker_accounts;
-    if let Some(clob_entry) = clob_entry.as_ref() {
+    if let Some(book_config) = book_config.as_ref() {
         maker_accounts.extend(
             clob_makers(
                 velocity,
-                &clob_entry,
+                book_config,
                 taker_order.direction,
                 taker_order.base_asset_amount,
                 ClobUserRefV0 {
@@ -1362,30 +1370,26 @@ async fn try_swift_fill(
         .await;
 }
 
-/// The quoter section a router fill carries: the registry entries the fill
-/// routes across, then the union of their `execute_v0` CPI accounts (each
-/// entry's registered accounts, its response account, its program) plus the
-/// velocity signer PDA.
+/// The quoter section a router fill carries: the market's quoter slab, then
+/// the union of the consulted slots' CPI accounts (each slot's registered
+/// accounts, its response account, its program). A slab slot is consulted by
+/// carrying its response account, so this list is also the selection.
 ///
-/// Two things go in, for two different reasons:
+/// Two quoters go in, for two different reasons:
 ///
-/// - The market's canonical CLOB entry is **mandatory**. `fill_perp_order`
-///   rejects any fill on a market with a book attached that doesn't carry its
-///   entry ("router fill must include the market's CLOB quoter") — the public
-///   book is a baseline a route can't exclude. A killed entry satisfies the
-///   check because the program skips it at quote time, so passing it is
-///   always safe.
-/// - The custom quoter entries the taker's signed route names
-///   ([`SignedOrderInfo::route`]) are **advisory**: the program enforces
-///   nothing about the route, and deliberately so — it can't know which
-///   quoters were live when the taker signed. But a keeper that drops them
-///   silently denies the taker liquidity they explicitly asked for, so honour
-///   the route rather than treating it as a hint.
+/// - The market's canonical CLOB is **mandatory**. `fill_perp_order` rejects
+///   any fill on a market with a book attached that does not consult its
+///   slab slot ("router fill must include the market's CLOB quoter") — the
+///   public book is a baseline a route can't exclude. A suspended or killed
+///   slot satisfies the check without being consulted.
+/// - The quoters the taker's signed route names
+///   ([`SignedOrderInfo::route`]) are **enforced**: the program refuses a
+///   fill that omits a named quoter whose slot can still quote, so each one
+///   must be consulted.
 ///
-/// Entries that can't be read are skipped rather than failing the fill: the
-/// program itself skips inactive/unapproved entries, and losing a custom entry
-/// only costs the taker that one source. A missing *CLOB* entry is logged
-/// loudly, because the fill that follows will be rejected.
+/// A named quoter whose slot is gone or cannot quote is dropped rather than
+/// failing the fill, exactly as the program drops it: a route signed before
+/// an admin pulled a quoter must not brick the fill.
 /// Charge a failed simulation to the quoters the program named in its logs.
 ///
 /// Only named failures are charged. A simulation carrying several quoters
@@ -1426,6 +1430,7 @@ fn charge_quoter_failures(
 
 async fn route_quoter_metas(
     velocity: &VelocityClient,
+    market_index: u16,
     clob_quoter: Pubkey,
     route: Option<&[Pubkey]>,
     swift_order: &SignedOrderInfo,
@@ -1443,65 +1448,60 @@ async fn route_quoter_metas(
         return Some(Vec::new());
     }
 
-    let mut entries: Vec<QuoterV0> = Vec::with_capacity(keys.len());
-    let mut kept: Vec<Pubkey> = Vec::with_capacity(keys.len());
-    for key in keys {
-        match velocity.get_account_value::<QuoterV0>(&key).await {
-            Ok(entry) => {
-                entries.push(entry);
-                kept.push(key);
-            }
-            Err(err) => {
-                // Both cases now abandon the attempt. The signed route is
-                // enforced on chain: every entry the taker named must be
-                // carried by the fill, and the market's canonical CLOB is a
-                // mandatory baseline — so a fill missing either is rejected,
-                // and building it only spends a transaction to discover that.
-                log::error!(
-                    target: TARGET,
-                    "quoter entry {key} unreadable ({err:?}); abandoning the fill. uuid={}",
-                    swift_order.order_uuid_str()
-                );
-                return None;
-            }
+    // An unreadable slab abandons the attempt. The signed route is enforced
+    // on chain — every live entry the taker named must be consulted, and the
+    // market's canonical CLOB is a mandatory baseline — so a fill missing the
+    // slab is rejected, and building it only spends a transaction to discover
+    // that.
+    let slots = match velocity.get_quoter_slab_slots(market_index).await {
+        Ok(slots) => slots,
+        Err(err) => {
+            log::error!(
+                target: TARGET,
+                "quoter slab for market {market_index} unreadable ({err:?}); abandoning the fill. uuid={}",
+                swift_order.order_uuid_str()
+            );
+            return None;
         }
-    }
+    };
 
-    // Writability ORs across entries. The union is a BTreeMap so two keepers
+    // A slot is consulted by carrying its response account. A named entry
+    // with no live slot is dropped, exactly as the program drops it.
+    let consulted: Vec<&QuoterSlotV0> = keys
+        .iter()
+        .filter_map(|key| slots.iter().find(|slot| slot.entry == *key))
+        .filter(|slot| slot.quotes())
+        .collect();
+
+    // Writability ORs across slots. The union is a BTreeMap so two keepers
     // building the same fill emit byte-identical account lists — the
     // attestation signs one fixed message, so a nondeterministic order would
-    // make co-signatures unreproducible.
+    // make co-signatures unreproducible. The whole registered list rides
+    // rather than one leg's subset: each leg resolves its accounts by index
+    // into the one list, so carrying the list is what guarantees the resolve
+    // — a signer a quoter registered is in it by construction.
     let mut cpi_union: BTreeMap<Pubkey, bool> = BTreeMap::new();
-    for entry in &entries {
-        for meta in &entry.execute_accounts[..entry.execute_accounts_count as usize] {
+    for slot in &consulted {
+        for meta in slot.config.registered_accounts() {
             *cpi_union.entry(meta.pubkey).or_default() |= meta.is_writable;
         }
-        *cpi_union.entry(entry.response_account).or_default() |= true;
-        cpi_union.entry(entry.program_id).or_default();
-    }
-    // The signing identities the legs authenticate as, neither of them the vault
-    // authority. A book's execute wants the place authority; every other entry
-    // wants the key derived from its own registry entry. An entry's registered
-    // list usually names its own already; this makes the fill work for one that
-    // does not.
-    cpi_union.entry(derive_clob_authority()).or_default();
-    for entry_key in &kept {
-        cpi_union
-            .entry(derive_quoter_signer(entry_key))
-            .or_default();
+        *cpi_union.entry(slot.config.response_account).or_default() |= true;
+        cpi_union.entry(slot.config.program_id).or_default();
     }
 
     Some(
-        kept.iter()
-            .map(|key| AccountMeta::new_readonly(*key, false))
-            .chain(cpi_union.iter().map(|(key, writable)| {
-                if *writable {
-                    AccountMeta::new(*key, false)
-                } else {
-                    AccountMeta::new_readonly(*key, false)
-                }
-            }))
-            .collect(),
+        std::iter::once(AccountMeta::new_readonly(
+            derive_quoter_slab(market_index),
+            false,
+        ))
+        .chain(cpi_union.iter().map(|(key, writable)| {
+            if *writable {
+                AccountMeta::new(*key, false)
+            } else {
+                AccountMeta::new_readonly(*key, false)
+            }
+        }))
+        .collect(),
     )
 }
 
@@ -1584,9 +1584,6 @@ async fn try_swift_place(
     filler_subaccount: Pubkey,
     swift_order: SignedOrderInfo,
     slot: u64,
-    // The market's canonical CLOB registry entry (`PerpMarket.clob_quoter`).
-    // The placement routes through it and rests the remainder on its book.
-    clob_quoter: Pubkey,
     tx_worker_ref: TxSender,
 ) {
     let market_index = swift_order.order_params().market_index;
@@ -1605,15 +1602,20 @@ async fn try_swift_place(
         }
     };
 
-    let Ok(clob_entry) = velocity.get_account_value::<QuoterV0>(&clob_quoter).await else {
-        log::warn!(target: TARGET, "no clob registry entry for market {market_index}; cannot place signed-message order");
+    let book_config = velocity
+        .get_quoter_slab_slots(market_index)
+        .await
+        .ok()
+        .and_then(|slots| clob_slot_config(&slots));
+    let Some(book_config) = book_config else {
+        log::warn!(target: TARGET, "no approved clob on the quoter slab for market {market_index}; cannot place signed-message order");
         return;
     };
     let clob_place = ClobFillAccounts {
         market_index,
-        quoter: clob_quoter,
-        clob_market: clob_entry.response_account,
-        clob_program: clob_entry.program_id,
+        quoter_slab: derive_quoter_slab(market_index),
+        clob_market: book_config.response_account,
+        clob_program: book_config.program_id,
         clob_authority: derive_clob_authority(),
         crank_conditions: None,
     };

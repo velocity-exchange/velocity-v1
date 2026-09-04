@@ -458,7 +458,7 @@ mod regr_271_pause {
         pub signed_msg_pda: Pubkey,
         pub user_pda: Pubkey,
         pub user_stats_pda: Pubkey,
-        pub quoter_pda: Pubkey,
+        pub quoter_slab_pda: Pubkey,
         pub clob_market_pda: Pubkey,
         pub clob_program_id: Pubkey,
         pub clob_authority_pda: Pubkey,
@@ -561,20 +561,35 @@ mod regr_271_pause {
             );
             create_signed_msg_account(&mut ctx, signed_msg_pda, authority.pubkey(), 8);
 
-            // A router fill's CLOB baseline. Only its identity is validated
-            // before the paused-exchange guard fires, so the entry names a stub
-            // program and the book account is empty. `program_id` must equal the
-            // `clob_program` account the placement carries.
-            let clob_program_id = Pubkey::new_from_array([9u8; 32]);
-            let quoter_pda = Pubkey::find_program_address(
-                &[b"quoter", &mi0, clob_program_id.as_ref(), user_pda.as_ref()],
-                &program_id,
-            )
-            .0;
-            let mut quoter: velocity::state::prop_amm::QuoterV0 = bytemuck::Zeroable::zeroed();
-            quoter.program_id = anchor_pk(clob_program_id);
-            quoter.market = 0;
-            inject(&mut ctx, quoter_pda, &mut quoter);
+            // A router fill's CLOB baseline. The paused-exchange guard fires
+            // before any slab read, so an all-vacant slab and an empty book
+            // account are enough. The `clob_program` account is address-pinned
+            // in the accounts struct, so it must be the compiled-in CLOB id.
+            let clob_program_id =
+                Pubkey::new_from_array(velocity::ids::clob_program::ID.to_bytes());
+
+            // Quoter slab PDA = ["quoter_slab", market_le_u16]. The account is
+            // the zero-copy header plus a slot region of `capacity` vacant
+            // (all-zero) slots.
+            let (quoter_slab_pda, _) =
+                Pubkey::find_program_address(&[b"quoter_slab", &mi0], &program_id);
+            let mut slab = velocity::state::prop_amm::QuoterSlabV0 {
+                market: 0,
+                capacity: 1,
+                ..Default::default()
+            };
+            let mut slab_data = velocity::test_utils::get_anchor_account_bytes(&mut slab).to_vec();
+            slab_data.resize(
+                velocity::state::prop_amm::QuoterSlabV0::space(slab.capacity as usize),
+                0,
+            );
+            ctx.create_account()
+                .pubkey(quoter_slab_pda)
+                .owner(program_id)
+                .lamports(1_000_000_000)
+                .data(&slab_data)
+                .create()
+                .unwrap();
 
             let clob_market_pda = Pubkey::new_from_array([8u8; 32]);
             ctx.create_account()
@@ -584,6 +599,8 @@ mod regr_271_pause {
                 .create()
                 .unwrap();
 
+            // The accounts struct pins this address to the CLOB place-authority
+            // PDA, which is ["clob_authority"] under the velocity program.
             let clob_authority_pda =
                 Pubkey::find_program_address(&[b"clob_authority"], &program_id).0;
 
@@ -596,7 +613,7 @@ mod regr_271_pause {
                 signed_msg_pda,
                 user_pda,
                 user_stats_pda,
-                quoter_pda,
+                quoter_slab_pda,
                 clob_market_pda,
                 clob_program_id,
                 clob_authority_pda,
@@ -610,12 +627,14 @@ mod regr_271_pause {
             let slot = self.ctx.slot();
             let (envelope, message_size) = build_envelope(&self.authority, 0, slot);
 
-            // velocity ix data: disc[8] | borsh-vec len u32 | envelope | bool.
+            // velocity ix data:
+            //   disc[8] | borsh-vec len u32 | envelope | bool | option-tag u8.
             let mut data = Vec::new();
             data.extend_from_slice(&D_PLACE_SIGNED_MSG_TAKER);
             data.extend_from_slice(&(envelope.len() as u32).to_le_bytes());
             data.extend_from_slice(&envelope);
             data.push(0u8); // is_delegate_signer = false
+            data.push(0u8); // flow_attestation = None
 
             let velocity_ix = Instruction {
                 program_id: self.program_id,
@@ -630,7 +649,7 @@ mod regr_271_pause {
                     // guard fires before the fill, so it only needs to validate.
                     AccountMeta::new(self.user_pda, false),
                     AccountMeta::new(self.user_stats_pda, false),
-                    AccountMeta::new_readonly(self.quoter_pda, false),
+                    AccountMeta::new_readonly(self.quoter_slab_pda, false),
                     AccountMeta::new(self.clob_market_pda, false),
                     AccountMeta::new_readonly(self.clob_program_id, false),
                     AccountMeta::new_readonly(self.clob_authority_pda, false),

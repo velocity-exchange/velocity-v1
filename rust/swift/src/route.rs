@@ -20,7 +20,7 @@ use {
         Json,
     },
     prometheus::Registry,
-    relay_chain_source::{ChainSource, RpcSource},
+    relay_chain_source::RpcSource,
     serde::{Deserialize, Serialize},
     solana_pubkey::Pubkey,
     std::{collections::HashMap, sync::Arc},
@@ -32,7 +32,7 @@ use {
         quote_view::{perp_market_pda, read_zero_copy, QuoteView},
         split_across_quoters, Direction, PriceLevel, QuoterBook,
     },
-    velocity_rs::program::state::{prop_amm::ClobUserRefV0, router_quote::QuotedSourceKind},
+    velocity_rs::program::state::prop_amm::ClobUserRefV0,
 };
 
 /// Everything `/route` needs, independent of the rest of the server: its
@@ -55,9 +55,10 @@ struct MarketRoute {
     buffer: Pubkey,
     authority: Pubkey,
     step_size: u64,
-    /// Live registry entries, so planning the view's passes costs no extra
-    /// read. Refreshed with the rest of the route when a buffer stops
-    /// simulating, which is also when an entry set is most likely stale.
+    /// The market's live quoters, by staging-entry address, so planning the
+    /// view's passes costs no extra read. Refreshed with the rest of the
+    /// route when a buffer stops simulating, which is also when the set is
+    /// most likely stale.
     quoters: Vec<Pubkey>,
 }
 
@@ -82,22 +83,16 @@ impl RouteContext {
         }
     }
 
-    /// Live registry entries for a market, so the view can be read in as
-    /// many passes as they need.
+    /// The market's live quoters — slab slots that may take flow — so the
+    /// view can be read in as many passes as they need.
     async fn market_quoters(&self, market_index: u16) -> Result<Vec<Pubkey>, RouteError> {
-        let entries =
-            velocity_router_sim::quoter_entries(&self.source, &self.velocity, market_index)
+        let slots =
+            velocity_router_sim::quoter_slab_slots(&self.source, &self.velocity, market_index)
                 .await
                 .map_err(RouteError::internal)?;
-        Ok(entries
+        Ok(slots
             .into_iter()
-            .filter_map(|(key, account)| {
-                let entry = read_zero_copy::<velocity_rs::program::state::prop_amm::QuoterV0>(
-                    &account.data,
-                )
-                .ok()?;
-                (entry.is_active && entry.is_approved).then_some(key)
-            })
+            .filter_map(|slot| slot.quotes().then_some(slot.entry))
             .collect())
     }
 
@@ -125,24 +120,12 @@ impl RouteContext {
                 .ok_or(RouteError::NoMarket(market_index))?;
         let market: velocity_rs::program::state::perp_market::PerpMarket =
             read_zero_copy(&account.data).map_err(RouteError::internal)?;
-        let entries =
-            velocity_router_sim::quoter_entries(&self.source, &self.velocity, market_index)
-                .await
-                .map_err(RouteError::internal)?
-                .into_iter()
-                .filter_map(|(key, account)| {
-                    let entry = read_zero_copy::<velocity_rs::program::state::prop_amm::QuoterV0>(
-                        &account.data,
-                    )
-                    .ok()?;
-                    (entry.is_active && entry.is_approved).then_some((key, entry))
-                })
-                .collect::<Vec<_>>();
+        let quoters = self.market_quoters(market_index).await?;
         let route = MarketRoute {
             buffer,
             authority,
             step_size: market.order_step_size,
-            quoters: entries.into_iter().map(|(key, _)| key).collect(),
+            quoters,
         };
         self.markets
             .write()

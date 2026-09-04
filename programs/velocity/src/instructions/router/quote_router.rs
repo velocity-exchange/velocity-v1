@@ -27,9 +27,11 @@
 //!
 //! `remaining_accounts`, in order: the oracle/spot/perp map section, then
 //! `(User, UserStats)` pairs for DLOB makers *and* for any quoted Custom
-//! quoter's user (the clamp needs its account), then `QuoterV0` entries, then
-//! the union of their registered CPI accounts (response accounts, quoter
-//! programs, the velocity signer).
+//! quoter's user (the clamp needs its account), then the market's
+//! `QuoterSlabV0` and the union of the consulted quoters' registered CPI
+//! accounts (response accounts, quoter programs, the velocity signer). As in
+//! a fill, a slab slot is consulted when its response account rides the
+//! call.
 
 use {
     crate::{
@@ -41,8 +43,8 @@ use {
         state::{
             perp_market_map::{get_writable_perp_market_set, MarketSet},
             prop_amm::{
-                ClobUserRefV0, Direction, L3ArgsV0, PriceLevel, QuoteArgsV0, QuoterType, QuoterV0,
-                WireDirectionExt,
+                find_account, occupied_slots, quoter_slab_slots, ClobUserRefV0, Direction,
+                L3ArgsV0, PriceLevel, QuoteArgsV0, QuoterSlabV0, QuoterType, WireDirectionExt,
             },
             quoter::MarketQuoteInputs,
             router_quote::{QuotedRowV0, QuotedSourceKind, RouterQuoteBufferV0},
@@ -52,7 +54,7 @@ use {
         validate,
         vlp::amm::{quoter::AmmQuoter, router_adapter::vamm_quote_levels, AMM},
     },
-    anchor_lang::prelude::*,
+    anchor_lang::{prelude::*, Discriminator},
 };
 
 #[derive(Accounts)]
@@ -73,9 +75,6 @@ pub struct QuoteRouterArgs {
     /// taker of this size — resting sources are merely truncated by it, the
     /// vAMM and PropAMMs genuinely price against it.
     pub size: u64,
-    /// `QuoterV0` entries at the head of the quoter section of
-    /// `remaining_accounts`; the rest of that section is their CPI accounts.
-    pub quoter_count: u8,
     /// Whether the flow this view prices for served a protection window —
     /// the swift hold, or the book's activation delay. What the real route
     /// asks: a bumped book quotes no depth to unprotected flow, and a
@@ -118,23 +117,31 @@ pub fn handle_quote_router<'c: 'info, 'info>(
     )?;
     let (makers, _maker_stats) = load_user_maps(remaining_accounts_iter, false)?;
 
-    // Quoter section: entries first, then the union of their CPI accounts.
+    // Quoter section: the market's slab plus the union of the consulted
+    // quoters' CPI accounts.
     let leftover: Vec<&AccountInfo<'info>> = remaining_accounts_iter.collect();
-    let quoter_count = args.quoter_count as usize;
-    validate!(
-        quoter_count <= leftover.len(),
-        ErrorCode::DefaultError,
-        "quoter_count {} exceeds the quoter section",
-        quoter_count
-    )?;
-    let accounts: Vec<AccountInfo<'info>> = leftover[quoter_count..]
-        .iter()
-        .map(|info| (*info).clone())
-        .collect();
-    let quoters: Vec<AccountLoader<QuoterV0>> = leftover[..quoter_count]
-        .iter()
-        .map(|info| AccountLoader::try_from(info))
-        .collect::<Result<_>>()?;
+    let accounts: Vec<AccountInfo<'info>> = leftover.iter().map(|info| (*info).clone()).collect();
+    let mut slab_loader: Option<AccountLoader<QuoterSlabV0>> = None;
+    for info in leftover {
+        let is_slab = info.owner == &crate::ID
+            && info
+                .try_borrow_data()
+                .is_ok_and(|data| data.get(..8) == Some(QuoterSlabV0::DISCRIMINATOR));
+        if !is_slab {
+            continue;
+        }
+        let loader = AccountLoader::<QuoterSlabV0>::try_from(info)?;
+        validate!(
+            loader.load()?.market == market_index,
+            ErrorCode::DefaultError,
+            "quoter slab {} is for market {}, quote is for market {}",
+            loader.key(),
+            loader.load()?.market,
+            market_index
+        )?;
+        slab_loader = Some(loader);
+        break;
+    }
 
     let taker_direction = args.direction.to_position_direction();
     let mut buffer = ctx.accounts.quote_buffer.load_mut()?;
@@ -153,7 +160,20 @@ pub fn handle_quote_router<'c: 'info, 'info>(
     // 32 KB and never reclaims, and this runs once per quoter.
     // One set of CPI buffers for every entry this view quotes.
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
-    for loader in &quoters {
+    let consulted: Vec<usize> = match &slab_loader {
+        Some(loader) => {
+            let slots = quoter_slab_slots(loader)?;
+            occupied_slots(&slots)
+                .filter(|(_, slot)| {
+                    find_account(&accounts, &slot.config.response_account).is_some()
+                })
+                .map(|(index, _)| index)
+                .collect()
+        }
+        None => Vec::new(),
+    };
+    for slot_index in consulted {
+        let slab_loader = slab_loader.as_ref().unwrap();
         let (
             priority,
             quoter_type,
@@ -163,29 +183,24 @@ pub fn handle_quote_router<'c: 'info, 'info>(
             quoter_signer_nonce,
             located,
         ) = {
-            let quoter = loader.load()?;
-            validate!(
-                quoter.market == market_index,
-                ErrorCode::DefaultError,
-                "quoter entry {} is for market {}",
-                loader.key(),
-                quoter.market
-            )?;
-            if !(quoter.is_active && quoter.is_approved) {
+            let slots = quoter_slab_slots(slab_loader)?;
+            let slot = &slots[slot_index];
+            if !slot.quotes() {
                 continue;
             }
-            let entry_key = loader.key();
+            let entry_key = slot.entry;
             // Maker priority, as the fill's route applies it: a book with a
             // speed bump quotes no depth to unprotected flow, so this view
             // must not show it any.
-            if quoter.quoter_type == QuoterType::Clob
+            if slot.config.quoter_type == QuoterType::Clob
                 && !args.taker_served_window
-                && quoter.book_default_activation_delay_slots > 0
+                && slot.config.book_default_activation_delay_slots > 0
             {
                 continue;
             }
-            let (quoter_signer, quoter_signer_nonce) = quoter.cpi_signer(&entry_key);
-            let located = quoter
+            let (quoter_signer, quoter_signer_nonce) = slot.config.cpi_signer(&entry_key);
+            let located = slot
+                .config
                 .quote_in_place(
                     market_index,
                     QuoteArgsV0 {
@@ -213,13 +228,13 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                     &mut cpi_scratch,
                 )
                 .map_err(|e| {
-                    msg!("quoter {} quote failed: {}", loader.key(), e);
+                    msg!("quoter {} quote failed: {}", entry_key, e);
                     ErrorCode::DefaultError
                 })?;
             (
-                quoter.priority,
-                quoter.quoter_type,
-                quoter.user,
+                slot.config.priority,
+                slot.config.quoter_type,
+                slot.config.user,
                 entry_key,
                 quoter_signer,
                 quoter_signer_nonce,
@@ -263,7 +278,7 @@ pub fn handle_quote_router<'c: 'info, 'info>(
             let response = located.checked_quote_response(&data, args.direction)?;
             buffer.push_capped(
                 QuotedSourceKind::Quoter,
-                loader.key(),
+                entry_key,
                 priority,
                 response.levels,
                 cap,
@@ -289,7 +304,8 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                 .then(|| user_ref(&makers, &quoter_user))
                 .flatten();
             let described = quoter_rows(
-                loader,
+                slab_loader,
+                slot_index,
                 market_index,
                 args.direction,
                 admitted,
@@ -427,7 +443,8 @@ pub fn handle_quote_router<'c: 'info, 'info>(
 /// quoter that fills from one account.
 #[allow(clippy::too_many_arguments)]
 fn quoter_rows<'info>(
-    loader: &AccountLoader<'info, QuoterV0>,
+    slab_loader: &AccountLoader<'info, QuoterSlabV0>,
+    slot_index: usize,
     market_index: u16,
     direction: Direction,
     admitted: u64,
@@ -443,8 +460,8 @@ fn quoter_rows<'info>(
     buffer: &mut RouterQuoteBufferV0,
 ) -> Result<bool> {
     let located = {
-        let quoter = loader.load()?;
-        quoter.quote_l3(
+        let slots = quoter_slab_slots(slab_loader)?;
+        slots[slot_index].config.quote_l3(
             market_index,
             L3ArgsV0 {
                 direction,
@@ -479,7 +496,7 @@ fn quoter_rows<'info>(
                 row.user == bound_to,
                 ErrorCode::QuoterSubjectNotPermitted,
                 "quoter {} described a row for user {}/{}, which it cannot settle",
-                loader.key(),
+                entry,
                 row.user.authority,
                 row.user.sub_account_id
             )?;

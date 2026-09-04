@@ -254,9 +254,7 @@ describe('amm spread: market order', () => {
 		const orderRecord = eventSubscriber.getEventsArray('OrderActionRecord')[0];
 
 		assert.ok(orderRecord.baseAssetAmountFilled.eq(baseAssetAmount));
-		assert.ok(
-			orderRecord.quoteAssetAmountFilled.eq(new BN(1000256))
-		);
+		assert.ok(orderRecord.quoteAssetAmountFilled.eq(new BN(1000256)));
 		assert.ok(
 			orderRecord.quoteAssetAmountSurplus.eq(expectedQuoteAssetSurplus)
 		);
@@ -304,11 +302,6 @@ describe('amm spread: market order', () => {
 			'base',
 			undefined,
 			true
-		);
-		const expectedQuoteAssetAmount = calculateQuoteAssetAmountSwapped(
-			tradeAcquiredAmountsWithSpread[1].abs(),
-			velocityClient.getPerpMarketAccount(marketIndex).amm.pegMultiplier,
-			getSwapDirection('base', direction)
 		);
 		console.log(
 			'expected quote with out spread',
@@ -514,21 +507,6 @@ describe('amm spread: market order', () => {
 		);
 		assert(expectedBaseAssetAmount.eq(AMM_RESERVE_PRECISION));
 
-		const tradeAcquiredAmountsWithSpread = calculateTradeAcquiredAmounts(
-			direction,
-			baseAssetAmount,
-			velocityClient.getPerpMarketAccount(0),
-			'base',
-			undefined,
-			true
-		);
-
-		const expectedQuoteAssetAmount = calculateQuoteAssetAmountSwapped(
-			tradeAcquiredAmountsWithSpread[1].abs(),
-			velocityClient.getPerpMarketAccount(marketIndex).amm.pegMultiplier,
-			getSwapDirection('base', direction)
-		).neg();
-
 		const txSig = await velocityClient.fillPerpOrder(
 			await velocityClientUser.getUserAccountPublicKey(),
 			velocityClientUser.getUserAccount(),
@@ -601,21 +579,6 @@ describe('amm spread: market order', () => {
 			0
 		);
 		assert(expectedBaseAssetAmount.eq(AMM_RESERVE_PRECISION));
-
-		const tradeAcquiredAmountsWithSpread = calculateTradeAcquiredAmounts(
-			direction,
-			baseAssetAmount,
-			velocityClient.getPerpMarketAccount(0),
-			'base',
-			undefined,
-			true
-		);
-
-		const expectedQuoteAssetAmount = calculateQuoteAssetAmountSwapped(
-			tradeAcquiredAmountsWithSpread[1].abs(),
-			velocityClient.getPerpMarketAccount(marketIndex).amm.pegMultiplier,
-			getSwapDirection('base', direction)
-		);
 
 		const txSig = await velocityClient.fillPerpOrder(
 			await velocityClientUser.getUserAccountPublicKey(),

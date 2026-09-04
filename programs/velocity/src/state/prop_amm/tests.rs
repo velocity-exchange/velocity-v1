@@ -1,9 +1,11 @@
 use {
-    super::*,
+    super::{wire::write_quoter_account_metas, *},
     crate::{
+        error::ErrorCode,
         signer::{find_clob_authority, find_quoter_signer},
         state::pdas,
     },
+    anchor_lang::prelude::*,
 };
 
 fn meta(pubkey: Pubkey, is_writable: bool) -> AmmAccountMeta {
@@ -65,7 +67,7 @@ fn only_the_quoter_signer_slot_is_a_signer() {
         meta(taker_wallet, false),
     ];
     let mut metas = Vec::new();
-    write_quoter_account_metas(&mut metas, &registered, &quoter_signer);
+    write_quoter_account_metas(&mut metas, registered.iter(), &quoter_signer);
 
     assert_eq!(
         metas
@@ -588,4 +590,103 @@ fn only_clob_tracks_maker_aggregates() {
     assert!(QuoterType::Clob.tracks_maker_aggregates());
     assert!(!QuoterType::Custom.tracks_maker_aggregates());
     assert!(!QuoterType::Vamm.tracks_maker_aggregates());
+}
+
+/// A leg forwards exactly the accounts its index list names, in list order,
+/// and an index past the registered list is refused rather than clamped — a
+/// CPI whose account list is silently shorter than registered answers about
+/// the wrong thing.
+#[test]
+fn a_leg_resolves_through_the_unified_list() {
+    let (a, b, c) = (
+        Pubkey::new_unique(),
+        Pubkey::new_unique(),
+        Pubkey::new_unique(),
+    );
+    let mut config = QuoterConfigV0::default();
+    config.accounts[0] = meta(a, true);
+    config.accounts[1] = meta(b, false);
+    config.accounts[2] = meta(c, false);
+    config.accounts_count = 3;
+
+    let resolved: Vec<Pubkey> = config
+        .leg_metas(&[2, 0])
+        .unwrap()
+        .map(|meta| meta.pubkey)
+        .collect();
+    assert_eq!(resolved, vec![c, a]);
+
+    assert!(config.leg_metas(&[3]).is_err());
+}
+
+/// Slot 0 is the book's, by convention: the O(1) lookup reads only slot 0,
+/// and the vacant-slot search for `Custom` approvals never hands slot 0 out.
+#[test]
+fn slot_zero_is_the_books() {
+    let mut slots = vec![QuoterSlotV0::default(); 4];
+    assert_eq!(clob_slot_index(&slots), None);
+    assert_eq!(vacant_slot_index(&slots), Some(1));
+
+    slots[2].entry = Pubkey::new_unique();
+    slots[2].config.quoter_type = QuoterType::Custom;
+    assert_eq!(vacant_slot_index(&slots), Some(1));
+    assert_eq!(slot_for_entry(&slots, &slots[2].entry), Some(2));
+
+    // A Clob slot anywhere but slot 0 is not the book; approval enforces the
+    // convention and the reader holds it to that.
+    slots[3].entry = Pubkey::new_unique();
+    slots[3].config.quoter_type = QuoterType::Clob;
+    assert_eq!(clob_slot_index(&slots), None);
+
+    slots[0].entry = Pubkey::new_unique();
+    slots[0].config.quoter_type = QuoterType::Clob;
+    assert_eq!(clob_slot_index(&slots), Some(0));
+    assert_eq!(vacant_slot_index(&slots), Some(1));
+}
+
+/// A slot takes new flow only when it is occupied, not suspended by the
+/// admin, and not deactivated by its maker.
+#[test]
+fn a_slot_quotes_only_when_live() {
+    let mut slot = QuoterSlotV0::default();
+    slot.config.is_active = true;
+    // Vacant: never quotes, whatever the config says.
+    assert!(!slot.quotes());
+
+    slot.entry = Pubkey::new_unique();
+    assert!(slot.quotes());
+
+    slot.suspended = true;
+    assert!(!slot.quotes());
+
+    slot.suspended = false;
+    slot.config.is_active = false;
+    assert!(!slot.quotes());
+
+    slot.clear();
+    assert!(slot.is_vacant());
+}
+
+/// The account math behind the slab's tail region: space is the header plus
+/// whole slots, and a Clob entry binds to its book through the response
+/// account.
+#[test]
+fn slab_space_counts_whole_slots() {
+    assert_eq!(
+        QuoterSlabV0::space(3),
+        QuoterSlabV0::SLOT_REGION_OFFSET + 3 * std::mem::size_of::<QuoterSlotV0>()
+    );
+    let book = Pubkey::new_unique();
+    let mut config = QuoterConfigV0 {
+        quoter_type: QuoterType::Clob,
+        program_id: crate::ids::clob_program::id(),
+        response_account: book,
+        market: 7,
+        ..Default::default()
+    };
+    assert!(config.validate_clob_book(7, &book).is_ok());
+    assert!(config.validate_clob_book(8, &book).is_err());
+    assert!(config.validate_clob_book(7, &Pubkey::new_unique()).is_err());
+    config.program_id = Pubkey::new_unique();
+    assert!(config.validate_clob_book(7, &book).is_err());
 }

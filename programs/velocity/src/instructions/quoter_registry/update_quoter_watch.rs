@@ -4,7 +4,7 @@
 //! cross-discovery conditions wake on it. Maker-declared because only the
 //! maker knows their program's layout; generic because it is registry
 //! metadata, not per-program velocity code. A config change like any other:
-//! resets `is_approved`, so the admin re-vets before the entry quotes again.
+//! staging only, live once the admin copies it into the market's slab.
 
 use {
     crate::{
@@ -20,7 +20,10 @@ pub struct UpdateQuoterWatch<'info> {
     /// The entry's own authority — the quoted user's wallet for Custom
     /// entries.
     pub authority: Signer<'info>,
-    #[account(mut, has_one = authority)]
+    #[account(
+        mut,
+        constraint = quoter.load()?.config.authority == authority.key() @ ErrorCode::InvalidQuoterAuthority
+    )]
     pub quoter: AccountLoader<'info, QuoterV0>,
     /// CHECK: the account whose bytes the watch covers — typically the
     /// quoter's own state account; not otherwise constrained (the admin
@@ -40,19 +43,18 @@ pub fn handle_update_quoter_watch(
     args: UpdateQuoterWatchArgs,
 ) -> Result<()> {
     let mut quoter = ctx.accounts.quoter.load_mut()?;
+    let config = &mut quoter.config;
     validate!(
-        quoter.quoter_type == QuoterType::Custom,
+        config.quoter_type == QuoterType::Custom,
         ErrorCode::InvalidQuoterConfig,
         "watch declarations are for Custom quoters (the CLOB's cross watch is built in)"
     )?;
-    quoter.watch_account = if args.watch_len == 0 {
+    config.watch_account = if args.watch_len == 0 {
         Pubkey::default()
     } else {
         ctx.accounts.watch_account.key()
     };
-    quoter.watch_offset = args.watch_offset;
-    quoter.watch_len = args.watch_len;
-    // Any config change resets vetting.
-    quoter.is_approved = false;
+    config.watch_offset = args.watch_offset;
+    config.watch_len = args.watch_len;
     Ok(())
 }

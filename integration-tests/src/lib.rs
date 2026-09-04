@@ -157,6 +157,93 @@ pub fn quoter_pda(market_index: u16, quoter_program: &Pubkey, user: &Pubkey) -> 
     .0
 }
 
+/// The market's quoter slab: one account per market, holding every approved
+/// quoter config. Fills read only this account, never the staging entries.
+pub fn quoter_slab_pda(market_index: u16) -> Pubkey {
+    Pubkey::find_program_address(
+        &[b"quoter_slab", market_index.to_le_bytes().as_ref()],
+        &velocity_id(),
+    )
+    .0
+}
+
+/// Create the market's quoter slab through the real (permissionless)
+/// instruction. Returns the slab address.
+pub fn create_quoter_slab(
+    svm: &mut LiteSVM,
+    payer: &Keypair,
+    market_index: u16,
+    capacity: u16,
+) -> Pubkey {
+    use anchor_lang::{InstructionData, ToAccountMetas};
+    let slab = quoter_slab_pda(market_index);
+    let ix = Instruction {
+        program_id: velocity_id(),
+        accounts: velocity::accounts::InitializeQuoterSlab {
+            payer: payer.pubkey(),
+            perp_market: perp_market_pda(market_index),
+            quoter_slab: slab,
+            rent: "SysvarRent111111111111111111111111111111111"
+                .parse()
+                .unwrap(),
+            system_program: "11111111111111111111111111111111".parse().unwrap(),
+        }
+        .to_account_metas(None),
+        data: velocity::instruction::InitializeQuoterSlab {
+            market_index,
+            capacity,
+        }
+        .data(),
+    };
+    send(svm, payer, ix, &[]).unwrap();
+    slab
+}
+
+/// One slot of a market's slab, read out of the account bytes the way the
+/// program reads them.
+pub fn read_slab_slot(
+    svm: &LiteSVM,
+    market_index: u16,
+    index: usize,
+) -> velocity::state::prop_amm::QuoterSlotV0 {
+    use velocity::state::prop_amm::{QuoterSlabV0, QuoterSlotV0};
+    let account = svm
+        .get_account(&quoter_slab_pda(market_index))
+        .expect("quoter slab missing");
+    let at = QuoterSlabV0::SLOT_REGION_OFFSET + index * core::mem::size_of::<QuoterSlotV0>();
+    bytemuck::pod_read_unaligned(&account.data[at..at + core::mem::size_of::<QuoterSlotV0>()])
+}
+
+/// The slot holding `entry`'s approved copy, with its index.
+pub fn find_slab_slot(
+    svm: &LiteSVM,
+    market_index: u16,
+    entry: &Pubkey,
+) -> Option<(usize, velocity::state::prop_amm::QuoterSlotV0)> {
+    use velocity::state::prop_amm::QuoterSlabV0;
+    let slab: QuoterSlabV0 = read_zero_copy(svm, &quoter_slab_pda(market_index));
+    (0..slab.capacity as usize)
+        .map(|index| (index, read_slab_slot(svm, market_index, index)))
+        .find(|(_, slot)| slot.entry.to_bytes() == entry.to_bytes())
+}
+
+/// Overwrite one slot of a market's slab in place. Fixture-only: production
+/// writes slots through the approval flow.
+pub fn write_slab_slot(
+    svm: &mut LiteSVM,
+    market_index: u16,
+    index: usize,
+    slot: &velocity::state::prop_amm::QuoterSlotV0,
+) {
+    use velocity::state::prop_amm::{QuoterSlabV0, QuoterSlotV0};
+    let address = quoter_slab_pda(market_index);
+    let mut account = svm.get_account(&address).expect("quoter slab missing");
+    let at = QuoterSlabV0::SLOT_REGION_OFFSET + index * core::mem::size_of::<QuoterSlotV0>();
+    account.data[at..at + core::mem::size_of::<QuoterSlotV0>()]
+        .copy_from_slice(bytemuck::bytes_of(slot));
+    svm.set_account(address, account).unwrap();
+}
+
 /// Write a velocity-owned zero-copy account: discriminator + Pod bytes.
 pub fn set_zero_copy_account<T: bytemuck::Pod>(
     svm: &mut LiteSVM,

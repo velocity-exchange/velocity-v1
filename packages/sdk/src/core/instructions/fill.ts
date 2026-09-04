@@ -20,7 +20,7 @@ import type { VelocityProgram } from '../../config';
  * @param args.user - the order owner's `User` account (the taker being filled).
  * @param args.userStats - the taker's `UserStats` PDA.
  * @param args.authority - signer that must own or be a registered delegate of `filler`.
- * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for the order's market, followed by any maker/referrer `(User, UserStats)` account pairs, followed by the taker's `RevenueShareEscrow` account if builder codes are enabled protocol-wide, and, when that taker is referred, the referrer's readonly `UserStats` after the escrow, followed by the quoter section (each `QuoterV0` entry plus the accounts its CPI resolves against).
+ * @param args.remainingAccounts - writable perp market + oracle `AccountMeta[]` for the order's market, followed by any maker/referrer `(User, UserStats)` account pairs, followed by the taker's `RevenueShareEscrow` account if builder codes are enabled protocol-wide, and, when that taker is referred, the referrer's readonly `UserStats` after the escrow, followed by the quoter section (the market's `QuoterSlabV0` plus the consulted quoters' CPI accounts).
  * @param args.clobAccounts - pass the market's CLOB accounts to use `fillLegacyDlobOrder`, whose restable remainder of the filled order migrates to the book instead of resting in `User.orders`. `marketIndex` is checked against the order's own market on-chain.
  * @param args.signedRoute - must be empty. A DLOB order carries no route: only a signed message names one, and such an order routes at placement and rests any remainder on the market's CLOB, so what a route binds is the fill of that remainder rather than this call. A non-empty claim is rejected on-chain.
  * @returns the unsigned `fillPerpOrder` `TransactionInstruction`.
@@ -38,7 +38,7 @@ export async function buildFillPerpOrderInstruction(args: {
 	signedRoute?: PublicKey[];
 	clobAccounts?: {
 		marketIndex: number;
-		quoter: PublicKey;
+		quoterSlab: PublicKey;
 		clobMarket: PublicKey;
 		clobProgram: PublicKey;
 		clobAuthority: PublicKey;
@@ -58,7 +58,7 @@ export async function buildFillPerpOrderInstruction(args: {
 					fillerStats: args.fillerStats,
 					user: args.user,
 					userStats: args.userStats,
-					quoter: args.clobAccounts.quoter,
+					quoterSlab: args.clobAccounts.quoterSlab,
 					clobMarket: args.clobAccounts.clobMarket,
 					clobProgram: args.clobAccounts.clobProgram,
 					clobAuthority: args.clobAccounts.clobAuthority,

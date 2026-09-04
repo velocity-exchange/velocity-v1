@@ -690,6 +690,20 @@ impl VelocityClient {
         self.backend.try_get_account(account)
     }
 
+    /// Fetch the market's `QuoterSlabV0` and decode its slot region.
+    ///
+    /// The slab holds every approved quoter config for the market: the book
+    /// at slot 0, Custom quoters at slots 1 and up. Vacant slots are
+    /// included, so an index into the result is the on-chain slot index.
+    pub async fn get_quoter_slab_slots(
+        &self,
+        market_index: u16,
+    ) -> SdkResult<Vec<program::state::prop_amm::QuoterSlotV0>> {
+        let slab = constants::derive_quoter_slab(market_index);
+        let data = self.rpc().get_account_data(&slab).await?;
+        crate::utils::decode_quoter_slab_slots(&data)
+    }
+
     /// Try get the Velocity `State` config account
     /// It contains various exchange level config parameters
     ///
@@ -2015,7 +2029,10 @@ struct ForceMarkets {
 #[derive(Clone, Copy, Debug)]
 pub struct ClobFillAccounts {
     pub market_index: u16,
-    pub quoter: Pubkey,
+    /// The market's `QuoterSlabV0` PDA (`["quoter_slab", market_index_le]`,
+    /// [`constants::derive_quoter_slab`]). The slab holds every approved
+    /// quoter config, the book at slot 0.
+    pub quoter_slab: Pubkey,
     pub clob_market: Pubkey,
     pub clob_program: Pubkey,
     /// The book's `place_authority`, which is its own PDA — not the per-entry
@@ -2473,7 +2490,7 @@ impl<'a> TransactionBuilder<'a> {
     ///
     /// * `user_account` - the deteriorated account whose orders are cancelled
     /// * `order_refs` - the account's resting CLOB orders, read off the book feed
-    /// * `clob` - the market's book, its registry entry and the CLOB program
+    /// * `clob` - the market's book, its quoter slab and the CLOB program
     pub fn force_cancel_clob_orders(
         mut self,
         user_account: &User,
@@ -2492,7 +2509,7 @@ impl<'a> TransactionBuilder<'a> {
                     user_account.sub_account_id,
                 ),
                 user_stats: Wallet::derive_stats_account(&user_account.authority),
-                quoter: clob.quoter,
+                quoter_slab: clob.quoter_slab,
                 clob_market: clob.clob_market,
                 clob_program: clob.clob_program,
                 clob_authority: clob.clob_authority,
@@ -2755,7 +2772,7 @@ impl<'a> TransactionBuilder<'a> {
     ///
     /// * `signed_order_info` - the signed swift order info
     /// * `taker_account` - taker subaccount data
-    /// * `clob` - the market's book, its registry entry and the CLOB program
+    /// * `clob` - the market's book, its quoter slab and the CLOB program
     ///
     pub fn place_swift_order(
         mut self,
@@ -2793,7 +2810,7 @@ impl<'a> TransactionBuilder<'a> {
                 ix_sysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
                 filler: self.sub_account,
                 filler_stats: Wallet::derive_stats_account(&self.owner()),
-                quoter: clob.quoter,
+                quoter_slab: clob.quoter_slab,
                 clob_market: clob.clob_market,
                 clob_program: clob.clob_program,
                 clob_authority: clob.clob_authority,
@@ -3492,10 +3509,11 @@ impl<'a> TransactionBuilder<'a> {
         taker_order_id: Option<u32>,
         makers: &[User],
         has_builder: Option<bool>,
-        // The `QuoterV0` entries the taker's signed message named. Checked
-        // on-chain against the order's digest, and each must be among the
-        // quoter accounts this transaction carries. Empty for an order placed
-        // without a signed route.
+        // The staging `QuoterV0` entries the taker's signed message named.
+        // Checked on-chain against the order's digest. Each named entry's
+        // slab slot must be consulted: its response account and registered
+        // CPI accounts must ride this transaction's quoter tail. Empty for
+        // an order placed without a signed route.
         signed_route: &[Pubkey],
         // Present = the v1 route: a restable remainder of the filled order
         // migrates to the market's CLOB instead of resting in `User.orders`.
@@ -3513,7 +3531,7 @@ impl<'a> TransactionBuilder<'a> {
                     user_stats,
                     filler: self.sub_account,
                     filler_stats,
-                    quoter: clob.quoter,
+                    quoter_slab: clob.quoter_slab,
                     clob_market: clob.clob_market,
                     clob_program: clob.clob_program,
                     clob_authority: clob.clob_authority,

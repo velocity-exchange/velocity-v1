@@ -1962,20 +1962,20 @@ pub mod hostile_book_reports {
     /// A maker's declared band only ever tightens the market's.
     #[test]
     fn a_declared_band_cannot_widen_the_markets() {
-        let mut entry = QuoterV0 {
+        let mut config = crate::state::prop_amm::QuoterConfigV0 {
             quoter_type: QuoterType::Custom,
-            ..QuoterV0::default()
+            ..Default::default()
         };
 
         // Undeclared: the market's band stands.
-        assert_eq!(entry.oracle_band(1000), 1000);
+        assert_eq!(config.oracle_band(1000), 1000);
 
         // Tighter: the declaration stands.
-        entry.max_oracle_deviation_bps = 250;
-        assert_eq!(entry.oracle_band(1000), 250);
+        config.max_oracle_deviation_bps = 250;
+        assert_eq!(config.oracle_band(1000), 250);
 
         // Wider than the market's: the market's still stands.
-        entry.max_oracle_deviation_bps = 5000;
-        assert_eq!(entry.oracle_band(1000), 1000);
+        config.max_oracle_deviation_bps = 5000;
+        assert_eq!(config.oracle_band(1000), 1000);
     }
 }

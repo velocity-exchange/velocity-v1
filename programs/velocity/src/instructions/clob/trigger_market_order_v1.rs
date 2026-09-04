@@ -29,7 +29,7 @@ use {
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             fill_mode::FillMode,
             perp_market_map::{get_writable_perp_market_set, MarketSet},
-            prop_amm::{ClobUserRefV0, Direction, QuoterV0},
+            prop_amm::{ClobUserRefV0, Direction, QuoterSlabV0},
             state::State,
             user::{User, UserStats},
         },
@@ -64,14 +64,15 @@ pub struct TriggerMarketOrderV1<'info> {
         constraint = is_stats_for_user(&user, &user_stats)?
     )]
     pub user_stats: AccountLoader<'info, UserStats>,
-    /// The market's CLOB registry entry — the remainder only ever rests on a
-    /// vetted book.
-    pub quoter: AccountLoader<'info, QuoterV0>,
-    /// CHECK: validated against the quoter entry's registered accounts.
+    /// The market's quoter slab — the remainder only ever rests on the
+    /// vetted book its `Clob` slot names.
+    pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
+    /// CHECK: validated against the book slot's registered response account.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
-    /// CHECK: locked to the registered quoter program.
-    #[account(address = quoter.load()?.program_id)]
+    /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
+    /// registration; the handler re-checks through the slot.
+    #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
     /// CHECK: the CLOB place authority PDA — a book's `place_authority`, which
     /// may place and cancel on any book for any user. Distinct from the
@@ -218,8 +219,11 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
     // A trigger crank is keeper-built and carries no attestation transport,
     // so its flow never counts as protected.
     let taker_served_window = false;
-    let synchronous_take =
-        crate::instructions::synchronous_take_allowed(taker_served_window, &ctx.accounts.quoter)?;
+    let synchronous_take = crate::instructions::synchronous_take_allowed(
+        taker_served_window,
+        &ctx.accounts.quoter_slab,
+        market_index,
+    )?;
     if unfilled > 0 && !tail.is_empty() && synchronous_take {
         let route_reference_price = {
             let oracle_id = perp_market_map.get_ref(&market_index)?.oracle_id();
@@ -349,7 +353,7 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
         if unfilled > 0 {
             crate::instructions::try_place_remainder_on_clob(
                 &ctx.accounts.user,
-                &ctx.accounts.quoter,
+                &ctx.accounts.quoter_slab,
                 &ctx.accounts.clob_market.to_account_info(),
                 &ctx.accounts.clob_program.to_account_info(),
                 &ctx.accounts.clob_authority.to_account_info(),
@@ -450,7 +454,7 @@ pub fn handle_resolve_trigger_market_order_v1(
                 filler_stats: protocol_user_stats,
                 user: ctx.accounts.user.key(),
                 user_stats,
-                quoter: meta.quoter,
+                quoter_slab: meta.quoter_slab,
                 clob_market: meta.clob_market,
                 clob_program: meta.clob_program,
                 clob_authority: crate::state::pdas::clob_authority(),

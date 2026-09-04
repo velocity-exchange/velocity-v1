@@ -4,8 +4,7 @@ use base64::Engine;
 use nanoid::nanoid;
 use reqwest::header;
 use velocity_rs::{
-    constants::derive_clob_authority,
-    program::state::prop_amm::QuoterV0,
+    constants::{derive_clob_authority, derive_quoter_slab},
     swift_order_subscriber::{SignedOrderInfo, SignedOrderType},
     types::{MarketType, OrderParams, OrderType, PositionDirection, SignedMsgOrderParamsMessage},
     ClobFillAccounts, Context, RpcClient, TransactionBuilder, VelocityClient, Wallet,
@@ -149,21 +148,20 @@ async fn swift_deposit_trade(
         );
 
     // The placement routes the order and rests what it cannot fill on the
-    // market's book, so it carries the book's accounts.
+    // market's book, so it carries the book's accounts — read from the
+    // market's quoter slab, the book at slot 0.
     let perp_market_index = signed_order_info.order_params().market_index;
-    let clob_quoter = velocity
-        .try_get_perp_market_account(perp_market_index)
-        .expect("perp market")
-        .clob_quoter;
-    let clob_entry = velocity
-        .get_account_value::<QuoterV0>(&clob_quoter)
+    let slab_slots = velocity
+        .get_quoter_slab_slots(perp_market_index)
         .await
-        .expect("clob registry entry for the market");
+        .expect("quoter slab for the market");
+    let book = velocity_rs::utils::clob_slot_config(&slab_slots)
+        .expect("approved clob on the quoter slab");
     let clob = ClobFillAccounts {
         market_index: perp_market_index,
-        quoter: clob_quoter,
-        clob_market: clob_entry.response_account,
-        clob_program: clob_entry.program_id,
+        quoter_slab: derive_quoter_slab(perp_market_index),
+        clob_market: book.response_account,
+        clob_program: book.program_id,
         clob_authority: derive_clob_authority(),
         crank_conditions: None,
     };

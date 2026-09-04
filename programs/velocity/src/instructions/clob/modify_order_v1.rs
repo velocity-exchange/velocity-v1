@@ -46,8 +46,8 @@ use {
             market_status::MarketStatus,
             perp_market_map::MarketSet,
             prop_amm::{
-                ClobCancelOrderArgsV0, ClobMarket, ClobOrderRefV0, ClobPlaceOrderArgsV0,
-                ClobUserRefV0, QuoterV0, WireDirectionExt,
+                quoter_slab_clob, ClobCancelOrderArgsV0, ClobMarket, ClobOrderRefV0,
+                ClobPlaceOrderArgsV0, ClobUserRefV0, QuoterSlabV0, WireDirectionExt,
             },
             state::State,
             user::User,
@@ -69,13 +69,16 @@ pub struct ModifyOrderV1<'info> {
     pub authority: Signer<'info>,
     /// The book's registry entry. The replacement leg additionally requires it
     /// to be active and approved.
-    pub quoter: AccountLoader<'info, QuoterV0>,
-    /// CHECK: validated against the quoter entry's registered execute
-    /// accounts in the handler.
+    /// The market's quoter slab; the book's config is its `Clob` slot, bound
+    /// to this market and this book in the handler.
+    pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
+    /// CHECK: validated against the book slot's registered response account
+    /// in the handler.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
-    /// CHECK: locked to the registered quoter program.
-    #[account(address = quoter.load()?.program_id)]
+    /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
+    /// registration; the handler re-checks through the slot.
+    #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
     /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
     /// is set to. Its own key, distinct from the per-entry signer a
@@ -145,16 +148,16 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
     )?;
 
     let clob = {
-        let quoter = ctx.accounts.quoter.load()?;
+        let slot = quoter_slab_clob(&ctx.accounts.quoter_slab, params.market_index)?;
         // The replacement adds flow to the book, so it answers to the same
         // gate a fresh placement does.
         validate!(
-            quoter.is_active && quoter.is_approved,
+            slot.quotes(),
             ErrorCode::DefaultError,
             "CLOB quoter is not active and approved; cancel the order instead"
         )?;
         ClobMarket::from_quoter(
-            &quoter,
+            &slot.config,
             params.market_index,
             &ctx.accounts.clob_market,
             &ctx.accounts.clob_program,
@@ -173,11 +176,10 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
     // The attestation rule is the replacement's, not the original's: a modify
     // that asks for a faster-than-default bump is a new fast placement.
     if let Some(requested) = params.activation_delay_slots {
-        // The attach-written mirror, not a CPI (see `QuoterV0::book_tick_size`).
-        let default_delay = ctx
-            .accounts
-            .quoter
-            .load()?
+        // The attach-written mirror, not a CPI (see
+        // `QuoterConfigV0::book_tick_size`).
+        let default_delay = quoter_slab_clob(&ctx.accounts.quoter_slab, params.market_index)?
+            .config
             .book_default_activation_delay_slots;
         if requested < default_delay {
             validate!(

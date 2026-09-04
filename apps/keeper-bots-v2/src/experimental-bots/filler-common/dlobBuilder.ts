@@ -18,7 +18,6 @@ import {
 	SignedMsgOrderNode,
 	Order,
 	ZERO,
-	getRouteDigest,
 	OrderTriggerCondition,
 	PositionDirection,
 	OraclePriceData,
@@ -286,9 +285,7 @@ class DLOBBuilder {
 			quoteAssetAmountFilled: ZERO,
 			bitFlags: 0,
 			postedSlotTail: 0,
-			// The route the taker signed, digested the way the program does:
-			// a fill has to claim a route matching this one.
-			routeDigest: getRouteDigest(signedMessage.route),
+			padding: [],
 		};
 
 		const signedMsgOrderNode = new SignedMsgOrderNode(

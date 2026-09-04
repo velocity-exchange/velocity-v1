@@ -114,7 +114,8 @@ use {
             oracle_map::OracleMap,
             perp_market_map::PerpMarketMap,
             prop_amm::{
-                ClobSide, QuoterType, QuoterUserCapV0, QuoterUserCapsV0, QuoterV0,
+                clob_slot_index, find_account, quoter_slab_slots, ClobSide, QuoterSlabV0,
+                QuoterUserCapV0, QuoterUserCapsV0,
                 MAX_CONSTRAINED_WIRE_USERS as USER_CAPS_CAPACITY,
             },
             spot_market_map::SpotMarketMap,
@@ -214,27 +215,31 @@ pub fn build_user_caps<'info>(
     Ok(QuoterUserCapsV0::from_caps(caps))
 }
 
-/// How many of the route's entries are CLOB books on this market.
+/// How many of the route's consulted quoters are CLOB books on this market.
 ///
-/// Reads the route's own entries, which velocity owns, and never the book
-/// arenas they point at.
+/// Reads the market's slab, which velocity owns, and never the book arenas
+/// its slots point at. A slot is consulted when its response account rides
+/// the tail — the same rule the route uses.
 fn clob_books_in_route<'info>(tail: &'info [AccountInfo<'info>], market_index: u16) -> Result<u32> {
-    let mut books = 0;
     for info in tail {
-        let is_entry = info.owner == &crate::ID
+        let is_slab = info.owner == &crate::ID
             && info
                 .try_borrow_data()
-                .is_ok_and(|data| data.get(..8) == Some(QuoterV0::DISCRIMINATOR));
-        if !is_entry {
+                .is_ok_and(|data| data.get(..8) == Some(QuoterSlabV0::DISCRIMINATOR));
+        if !is_slab {
             continue;
         }
-        let loader = AccountLoader::<QuoterV0>::try_from(info)?;
-        let quoter = loader.load()?;
-        if quoter.quoter_type == QuoterType::Clob && quoter.market == market_index {
-            books += 1;
+        let loader = AccountLoader::<QuoterSlabV0>::try_from(info)?;
+        if loader.load()?.market != market_index {
+            continue;
         }
+        let slots = quoter_slab_slots(&loader)?;
+        let consulted_book = clob_slot_index(&slots).is_some_and(|index| {
+            find_account(tail, &slots[index].config.response_account).is_some()
+        });
+        return Ok(consulted_book as u32);
     }
-    Ok(books)
+    Ok(0)
 }
 
 /// Quote this maker may lose filling on `resting_side`: `0` when the fill

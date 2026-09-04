@@ -403,6 +403,17 @@ pub mod instructions {
     #[automatically_derived]
     impl anchor_lang::InstructionData for ExtendAccountDevnet {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct ExtendQuoterSlab {
+        pub market_index: u16,
+        pub capacity: u16,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ExtendQuoterSlab {
+        const DISCRIMINATOR: &[u8] = &[73, 4, 123, 36, 156, 210, 246, 243];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for ExtendQuoterSlab {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct FillLegacyDlobOrder {
         pub order_id: Option<u32>,
         pub _maker_order_id: Option<u32>,
@@ -625,6 +636,17 @@ pub mod instructions {
     }
     #[automatically_derived]
     impl anchor_lang::InstructionData for InitializeQuoterCrossConditions {}
+    #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
+    pub struct InitializeQuoterSlab {
+        pub market_index: u16,
+        pub capacity: u16,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for InitializeQuoterSlab {
+        const DISCRIMINATOR: &[u8] = &[12, 251, 171, 79, 180, 169, 121, 240];
+    }
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for InitializeQuoterSlab {}
     #[derive(AnchorSerialize, AnchorDeserialize, Clone, Default)]
     pub struct InitializeReferrerName {
         pub name: [u8; 32],
@@ -5520,7 +5542,6 @@ pub mod types {
         pub market_index: u16,
         pub direction: DirectionV0,
         pub size: u64,
-        pub quoter_count: u8,
         pub taker_served_window: bool,
         pub include_vamm: bool,
     }
@@ -5625,6 +5646,7 @@ pub mod types {
         pub pubkey: Pubkey,
         pub is_writable: bool,
     }
+    #[repr(C)]
     #[derive(
         AnchorSerialize,
         AnchorDeserialize,
@@ -5637,10 +5659,32 @@ pub mod types {
         Debug,
         PartialEq,
     )]
-    pub enum QuoterCpiLeg {
-        #[default]
-        Quote,
-        Execute,
+    pub struct QuoterConfigV0 {
+        pub approved_program_slot: u64,
+        pub book_tick_size: u64,
+        pub book_min_order_size: u64,
+        pub user: Pubkey,
+        pub program_id: Pubkey,
+        pub response_account: Pubkey,
+        pub authority: Pubkey,
+        pub watch_account: Pubkey,
+        pub quote_v0_discriminator: [u8; 8],
+        pub execute_v0_discriminator: [u8; 8],
+        pub quote_l3_v0_discriminator: [u8; 8],
+        pub accounts: [AmmAccountMeta; 12],
+        pub quote_account_indexes: [u8; 12],
+        pub execute_account_indexes: [u8; 12],
+        pub watch_offset: u32,
+        pub watch_len: u32,
+        pub max_oracle_deviation_bps: u32,
+        pub book_default_activation_delay_slots: u32,
+        pub market: u16,
+        pub quoter_type: QuoterType,
+        pub is_active: bool,
+        pub priority: u8,
+        pub accounts_count: u8,
+        pub quote_accounts_count: u8,
+        pub execute_accounts_count: u8,
     }
     #[repr(C)]
     #[derive(
@@ -5666,6 +5710,25 @@ pub mod types {
         pub quote_spot_market_index: u16,
         #[serde(skip)]
         pub padding: Padding<60>,
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct QuoterSlabV0 {
+        pub market: u16,
+        pub capacity: u16,
+        #[serde(skip)]
+        pub padding: Padding<124>,
     }
     #[derive(
         AnchorSerialize,
@@ -5699,32 +5762,9 @@ pub mod types {
         PartialEq,
     )]
     pub struct QuoterV0 {
-        pub user: Pubkey,
-        pub program_id: Pubkey,
-        pub response_account: Pubkey,
-        pub authority: Pubkey,
-        pub quote_v0_discriminator: [u8; 8],
-        pub execute_v0_discriminator: [u8; 8],
-        pub quote_l3_v0_discriminator: [u8; 8],
-        pub quote_accounts: [AmmAccountMeta; 32],
-        pub execute_accounts: [AmmAccountMeta; 32],
-        pub market: u16,
-        pub quoter_type: QuoterType,
-        pub is_active: bool,
-        pub is_approved: bool,
-        pub priority: u8,
-        pub quote_accounts_count: u8,
-        pub execute_accounts_count: u8,
-        pub watch_offset: u32,
-        pub watch_len: u32,
-        pub watch_account: Pubkey,
-        pub approved_program_slot: u64,
-        pub book_tick_size: u64,
-        pub book_min_order_size: u64,
-        pub max_oracle_deviation_bps: u32,
-        pub book_default_activation_delay_slots: u32,
+        pub config: QuoterConfigV0,
         #[serde(skip)]
-        pub padding: Padding<8>,
+        pub padding: Padding<48>,
     }
     #[repr(C)]
     #[derive(
@@ -6636,7 +6676,7 @@ pub mod types {
         PartialEq,
     )]
     pub struct TriggerSlotMetaV0 {
-        pub quoter: Pubkey,
+        pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
         pub order_id: u32,
@@ -6666,9 +6706,9 @@ pub mod types {
         AnchorSerialize, AnchorDeserialize, Serialize, Deserialize, Clone, Default, Debug, PartialEq,
     )]
     pub struct UpdateQuoterAccountsArgs {
-        pub leg: QuoterCpiLeg,
-        pub index: u8,
         pub metas: Vec<QuoterAccountMetaArg>,
+        pub quote_indexes: Vec<u8>,
+        pub execute_indexes: Vec<u8>,
     }
     #[repr(C)]
     #[derive(
@@ -7731,33 +7771,68 @@ pub mod accounts {
         Debug,
         PartialEq,
     )]
-    pub struct QuoterV0 {
-        pub user: Pubkey,
-        pub program_id: Pubkey,
-        pub response_account: Pubkey,
-        pub authority: Pubkey,
-        pub quote_v0_discriminator: [u8; 8],
-        pub execute_v0_discriminator: [u8; 8],
-        pub quote_l3_v0_discriminator: [u8; 8],
-        pub quote_accounts: [AmmAccountMeta; 32],
-        pub execute_accounts: [AmmAccountMeta; 32],
+    pub struct QuoterSlabV0 {
         pub market: u16,
-        pub quoter_type: QuoterType,
-        pub is_active: bool,
-        pub is_approved: bool,
-        pub priority: u8,
-        pub quote_accounts_count: u8,
-        pub execute_accounts_count: u8,
-        pub watch_offset: u32,
-        pub watch_len: u32,
-        pub watch_account: Pubkey,
-        pub approved_program_slot: u64,
-        pub book_tick_size: u64,
-        pub book_min_order_size: u64,
-        pub max_oracle_deviation_bps: u32,
-        pub book_default_activation_delay_slots: u32,
+        pub capacity: u16,
         #[serde(skip)]
-        pub padding: Padding<8>,
+        pub padding: Padding<124>,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for QuoterSlabV0 {
+        const DISCRIMINATOR: &[u8] = &[67, 176, 136, 206, 194, 105, 138, 84];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for QuoterSlabV0 {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for QuoterSlabV0 {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for QuoterSlabV0 {}
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for QuoterSlabV0 {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for QuoterSlabV0 {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(
+        AnchorSerialize,
+        AnchorDeserialize,
+        InitSpace,
+        Serialize,
+        Deserialize,
+        Copy,
+        Clone,
+        Default,
+        Debug,
+        PartialEq,
+    )]
+    pub struct QuoterV0 {
+        pub config: QuoterConfigV0,
+        #[serde(skip)]
+        pub padding: Padding<48>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for QuoterV0 {
@@ -9452,7 +9527,7 @@ pub mod accounts {
         pub user: Pubkey,
         pub authority: Pubkey,
         pub perp_market: Pubkey,
-        pub quoter: Pubkey,
+        pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
         pub clob_authority: Pubkey,
@@ -9494,7 +9569,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.quoter,
+                    pubkey: self.quoter_slab,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -9691,7 +9766,7 @@ pub mod accounts {
         pub state: Pubkey,
         pub user: Pubkey,
         pub authority: Pubkey,
-        pub quoter: Pubkey,
+        pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
         pub clob_authority: Pubkey,
@@ -9728,7 +9803,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.quoter,
+                    pubkey: self.quoter_slab,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -10040,7 +10115,7 @@ pub mod accounts {
         pub filler_stats: Pubkey,
         pub user: Pubkey,
         pub perp_market: Pubkey,
-        pub quoter: Pubkey,
+        pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
         pub clob_authority: Pubkey,
@@ -10093,7 +10168,7 @@ pub mod accounts {
                     is_writable: true,
                 },
                 AccountMeta {
-                    pubkey: self.quoter,
+                    pubkey: self.quoter_slab,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -10158,7 +10233,7 @@ pub mod accounts {
         pub filler_stats: Pubkey,
         pub user: Pubkey,
         pub perp_market: Pubkey,
-        pub quoter: Pubkey,
+        pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
         pub clob_authority: Pubkey,
@@ -10211,7 +10286,7 @@ pub mod accounts {
                     is_writable: true,
                 },
                 AccountMeta {
-                    pubkey: self.quoter,
+                    pubkey: self.quoter_slab,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -10358,7 +10433,7 @@ pub mod accounts {
         pub filler_stats: Pubkey,
         pub taker: Pubkey,
         pub taker_stats: Pubkey,
-        pub quoter: Pubkey,
+        pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
         pub clob_authority: Pubkey,
@@ -10413,7 +10488,7 @@ pub mod accounts {
                     is_writable: true,
                 },
                 AccountMeta {
-                    pubkey: self.quoter,
+                    pubkey: self.quoter_slab,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -11913,6 +11988,76 @@ pub mod accounts {
     }
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct ExtendQuoterSlab {
+        pub payer: Pubkey,
+        pub quoter_slab: Pubkey,
+        pub system_program: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for ExtendQuoterSlab {
+        const DISCRIMINATOR: &[u8] = &[230, 111, 120, 227, 5, 32, 104, 141];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for ExtendQuoterSlab {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for ExtendQuoterSlab {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for ExtendQuoterSlab {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for ExtendQuoterSlab {}
+    #[automatically_derived]
+    impl ToAccountMetas for ExtendQuoterSlab {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.payer,
+                    is_signer: true,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.quoter_slab,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.system_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for ExtendQuoterSlab {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for ExtendQuoterSlab {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct FillLegacyDlobOrder {
         pub state: Pubkey,
         pub authority: Pubkey,
@@ -11920,7 +12065,7 @@ pub mod accounts {
         pub filler_stats: Pubkey,
         pub user: Pubkey,
         pub user_stats: Pubkey,
-        pub quoter: Pubkey,
+        pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
         pub clob_authority: Pubkey,
@@ -11973,7 +12118,7 @@ pub mod accounts {
                     is_writable: true,
                 },
                 AccountMeta {
-                    pubkey: self.quoter,
+                    pubkey: self.quoter_slab,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -12132,7 +12277,7 @@ pub mod accounts {
         pub filler_stats: Pubkey,
         pub user: Pubkey,
         pub user_stats: Pubkey,
-        pub quoter: Pubkey,
+        pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
         pub clob_authority: Pubkey,
@@ -12185,7 +12330,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.quoter,
+                    pubkey: self.quoter_slab,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -13540,7 +13685,7 @@ pub mod accounts {
         pub state: Pubkey,
         pub quoter: Pubkey,
         pub perp_market: Pubkey,
-        pub clob_quoter: Pubkey,
+        pub quoter_slab: Pubkey,
         pub market_conditions: Pubkey,
         pub cross_conditions: Pubkey,
         pub rent: Pubkey,
@@ -13583,7 +13728,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.clob_quoter,
+                    pubkey: self.quoter_slab,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -13624,6 +13769,88 @@ pub mod accounts {
     }
     #[automatically_derived]
     impl anchor_lang::AccountDeserialize for InitializeQuoterCrossConditions {
+        fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let given_disc = &buf[..8];
+            if Self::DISCRIMINATOR != given_disc {
+                return Err(anchor_lang::error!(
+                    anchor_lang::error::ErrorCode::AccountDiscriminatorMismatch
+                ));
+            }
+            Self::try_deserialize_unchecked(buf)
+        }
+        fn try_deserialize_unchecked(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
+            let mut data: &[u8] = &buf[8..];
+            AnchorDeserialize::deserialize(&mut data)
+                .map_err(|_| anchor_lang::error::ErrorCode::AccountDidNotDeserialize.into())
+        }
+    }
+    #[repr(C)]
+    #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
+    pub struct InitializeQuoterSlab {
+        pub payer: Pubkey,
+        pub perp_market: Pubkey,
+        pub quoter_slab: Pubkey,
+        pub rent: Pubkey,
+        pub system_program: Pubkey,
+    }
+    #[automatically_derived]
+    impl anchor_lang::Discriminator for InitializeQuoterSlab {
+        const DISCRIMINATOR: &[u8] = &[248, 10, 141, 184, 66, 133, 227, 49];
+    }
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Pod for InitializeQuoterSlab {}
+    #[automatically_derived]
+    unsafe impl anchor_lang::__private::bytemuck::Zeroable for InitializeQuoterSlab {}
+    #[automatically_derived]
+    impl anchor_lang::ZeroCopy for InitializeQuoterSlab {}
+    #[automatically_derived]
+    impl anchor_lang::InstructionData for InitializeQuoterSlab {}
+    #[automatically_derived]
+    impl ToAccountMetas for InitializeQuoterSlab {
+        fn to_account_metas(&self) -> Vec<AccountMeta> {
+            vec![
+                AccountMeta {
+                    pubkey: self.payer,
+                    is_signer: true,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.perp_market,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quoter_slab,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.rent,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.system_program,
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountSerialize for InitializeQuoterSlab {
+        fn try_serialize<W: std::io::Write>(&self, writer: &mut W) -> anchor_lang::Result<()> {
+            if writer.write_all(Self::DISCRIMINATOR).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            if AnchorSerialize::serialize(self, writer).is_err() {
+                return Err(anchor_lang::error::ErrorCode::AccountDidNotSerialize.into());
+            }
+            Ok(())
+        }
+    }
+    #[automatically_derived]
+    impl anchor_lang::AccountDeserialize for InitializeQuoterSlab {
         fn try_deserialize(buf: &mut &[u8]) -> anchor_lang::Result<Self> {
             let given_disc = &buf[..8];
             if Self::DISCRIMINATOR != given_disc {
@@ -15837,7 +16064,7 @@ pub mod accounts {
         pub state: Pubkey,
         pub user: Pubkey,
         pub authority: Pubkey,
-        pub quoter: Pubkey,
+        pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
         pub clob_authority: Pubkey,
@@ -15875,7 +16102,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.quoter,
+                    pubkey: self.quoter_slab,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -16154,7 +16381,7 @@ pub mod accounts {
         pub user: Pubkey,
         pub user_stats: Pubkey,
         pub authority: Pubkey,
-        pub quoter: Pubkey,
+        pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
         pub clob_authority: Pubkey,
@@ -16197,7 +16424,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.quoter,
+                    pubkey: self.quoter_slab,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -16336,7 +16563,7 @@ pub mod accounts {
         pub user: Pubkey,
         pub user_stats: Pubkey,
         pub authority: Pubkey,
-        pub quoter: Pubkey,
+        pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
         pub clob_authority: Pubkey,
@@ -16379,7 +16606,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.quoter,
+                    pubkey: self.quoter_slab,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -16656,7 +16883,7 @@ pub mod accounts {
         pub ix_sysvar: Pubkey,
         pub filler: Pubkey,
         pub filler_stats: Pubkey,
-        pub quoter: Pubkey,
+        pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
         pub clob_authority: Pubkey,
@@ -16718,7 +16945,7 @@ pub mod accounts {
                     is_writable: true,
                 },
                 AccountMeta {
-                    pubkey: self.quoter,
+                    pubkey: self.quoter_slab,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -17943,7 +18170,7 @@ pub mod accounts {
         pub scratch: Pubkey,
         pub crank_conditions: Pubkey,
         pub clob_market: Pubkey,
-        pub quoter: Pubkey,
+        pub quoter_slab: Pubkey,
         pub state: Pubkey,
         pub clob_program: Pubkey,
         pub treasury: Pubkey,
@@ -17980,7 +18207,7 @@ pub mod accounts {
                     is_writable: true,
                 },
                 AccountMeta {
-                    pubkey: self.quoter,
+                    pubkey: self.quoter_slab,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -18038,9 +18265,8 @@ pub mod accounts {
         pub cross_conditions: Pubkey,
         pub clob_market: Pubkey,
         pub state: Pubkey,
-        pub quoter: Pubkey,
+        pub quoter_slab: Pubkey,
         pub user: Pubkey,
-        pub clob_quoter: Pubkey,
         pub clob_program: Pubkey,
     }
     #[automatically_derived]
@@ -18080,17 +18306,12 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.quoter,
+                    pubkey: self.quoter_slab,
                     is_signer: false,
                     is_writable: false,
                 },
                 AccountMeta {
                     pubkey: self.user,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.clob_quoter,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -20788,7 +21009,7 @@ pub mod accounts {
         pub filler_stats: Pubkey,
         pub user: Pubkey,
         pub user_stats: Pubkey,
-        pub quoter: Pubkey,
+        pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
         pub clob_authority: Pubkey,
@@ -20842,7 +21063,7 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.quoter,
+                    pubkey: self.quoter_slab,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -20912,7 +21133,7 @@ pub mod accounts {
         pub filler_stats: Pubkey,
         pub user: Pubkey,
         pub user_stats: Pubkey,
-        pub quoter: Pubkey,
+        pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
         pub clob_authority: Pubkey,
@@ -20967,7 +21188,7 @@ pub mod accounts {
                     is_writable: true,
                 },
                 AccountMeta {
-                    pubkey: self.quoter,
+                    pubkey: self.quoter_slab,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -24144,6 +24365,7 @@ pub mod accounts {
         pub state: Pubkey,
         pub perp_market: Pubkey,
         pub quoter: Pubkey,
+        pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
         pub clob_authority: Pubkey,
@@ -24185,6 +24407,11 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.quoter,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.quoter_slab,
                     is_signer: false,
                     is_writable: true,
                 },
@@ -27096,6 +27323,7 @@ pub mod accounts {
     pub struct UpdateQuoterActive {
         pub authority: Pubkey,
         pub quoter: Pubkey,
+        pub quoter_slab: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdateQuoterActive {
@@ -27120,6 +27348,11 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.quoter,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.quoter_slab,
                     is_signer: false,
                     is_writable: true,
                 },
@@ -27161,6 +27394,7 @@ pub mod accounts {
         pub admin: Pubkey,
         pub state: Pubkey,
         pub quoter: Pubkey,
+        pub quoter_slab: Pubkey,
         pub quoter_program: Pubkey,
         pub quoter_program_data: Pubkey,
     }
@@ -27192,6 +27426,11 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.quoter,
+                    is_signer: false,
+                    is_writable: false,
+                },
+                AccountMeta {
+                    pubkey: self.quoter_slab,
                     is_signer: false,
                     is_writable: true,
                 },
@@ -27306,6 +27545,7 @@ pub mod accounts {
     pub struct UpdateQuoterMaxOracleDeviation {
         pub authority: Pubkey,
         pub quoter: Pubkey,
+        pub quoter_slab: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdateQuoterMaxOracleDeviation {
@@ -27330,6 +27570,11 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.quoter,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.quoter_slab,
                     is_signer: false,
                     is_writable: true,
                 },
@@ -27371,6 +27616,7 @@ pub mod accounts {
         pub admin: Pubkey,
         pub state: Pubkey,
         pub quoter: Pubkey,
+        pub quoter_slab: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for UpdateQuoterPriority {
@@ -27400,6 +27646,11 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.quoter,
+                    is_signer: false,
+                    is_writable: true,
+                },
+                AccountMeta {
+                    pubkey: self.quoter_slab,
                     is_signer: false,
                     is_writable: true,
                 },
@@ -32717,6 +32968,10 @@ pub mod errors {
         QuoterReportExceedsReservation,
         # [msg ("The book runs an activation speed bump; an unattested taker rests on the book instead of filling synchronously")]
         UnattestedSynchronousTake,
+        #[msg("The market's quoter slab has no vacant slot")]
+        QuoterSlabFull,
+        #[msg("The market's quoter slab holds no approved copy of this entry")]
+        QuoterNotOnSlab,
     }
 }
 pub mod events {

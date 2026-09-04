@@ -820,17 +820,25 @@ export type Velocity = {
           ]
         },
         {
-          "name": "quoter"
+          "name": "quoterSlab",
+          "docs": [
+            "The market's quoter slab; the book's config is its `Clob` slot, bound",
+            "to this market and this book in the handler."
+          ]
         },
         {
           "name": "clobMarket",
           "docs": [
-            "accounts in the handler."
+            "in the handler."
           ],
           "writable": true
         },
         {
-          "name": "clobProgram"
+          "name": "clobProgram",
+          "docs": [
+            "registration; the handler re-checks through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
         {
           "name": "clobAuthority",
@@ -972,17 +980,25 @@ export type Velocity = {
           "signer": true
         },
         {
-          "name": "quoter"
+          "name": "quoterSlab",
+          "docs": [
+            "The market's quoter slab; the book's config is its `Clob` slot, bound",
+            "to this market and this book in the handler."
+          ]
         },
         {
           "name": "clobMarket",
           "docs": [
-            "accounts in the handler."
+            "in the handler."
           ],
           "writable": true
         },
         {
-          "name": "clobProgram"
+          "name": "clobProgram",
+          "docs": [
+            "registration; the handler re-checks through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
         {
           "name": "clobAuthority",
@@ -1333,7 +1349,7 @@ export type Velocity = {
           "writable": true
         },
         {
-          "name": "quoter",
+          "name": "quoterSlab",
           "docs": [
             "Deliberately not gated on active/approved: dead books still need",
             "their resting orders reclaimed."
@@ -1342,12 +1358,16 @@ export type Velocity = {
         {
           "name": "clobMarket",
           "docs": [
-            "accounts in the handler."
+            "in the handler."
           ],
           "writable": true
         },
         {
-          "name": "clobProgram"
+          "name": "clobProgram",
+          "docs": [
+            "registration; the handler re-checks through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
         {
           "name": "clobAuthority",
@@ -1465,7 +1485,7 @@ export type Velocity = {
           "writable": true
         },
         {
-          "name": "quoter",
+          "name": "quoterSlab",
           "docs": [
             "Deliberately not gated on active/approved: dead books still need",
             "their resting orders reclaimed."
@@ -1474,12 +1494,16 @@ export type Velocity = {
         {
           "name": "clobMarket",
           "docs": [
-            "accounts in the handler."
+            "in the handler."
           ],
           "writable": true
         },
         {
-          "name": "clobProgram"
+          "name": "clobProgram",
+          "docs": [
+            "registration; the handler re-checks through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
         {
           "name": "clobAuthority",
@@ -1711,21 +1735,25 @@ export type Velocity = {
           "writable": true
         },
         {
-          "name": "quoter",
+          "name": "quoterSlab",
           "docs": [
-            "The market's CLOB registry entry."
+            "The market's quoter slab; the book's config is its `Clob` slot."
           ]
         },
         {
           "name": "clobMarket",
           "docs": [
-            "(`ClobMarket::from_quoter`), so a valid entry cannot be pointed at an",
+            "(`ClobMarket::from_quoter`), so a valid slot cannot be pointed at an",
             "arbitrary account."
           ],
           "writable": true
         },
         {
-          "name": "clobProgram"
+          "name": "clobProgram",
+          "docs": [
+            "registration; the handler re-checks through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
         {
           "name": "clobAuthority",
@@ -3051,6 +3079,68 @@ export type Velocity = {
       ]
     },
     {
+      "name": "extendQuoterSlab",
+      "discriminator": [
+        73,
+        4,
+        123,
+        36,
+        156,
+        210,
+        246,
+        243
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "quoterSlab",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  108,
+                  97,
+                  98
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "marketIndex"
+              }
+            ]
+          }
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "marketIndex",
+          "type": "u16"
+        },
+        {
+          "name": "capacity",
+          "type": "u16"
+        }
+      ]
+    },
+    {
       "name": "fillLegacyDlobOrder",
       "docs": [
         "`fill_perp_order` with the market's CLOB accounts required: a restable",
@@ -3097,22 +3187,26 @@ export type Velocity = {
           "writable": true
         },
         {
-          "name": "quoter",
+          "name": "quoterSlab",
           "docs": [
-            "The market's CLOB registry entry — a remainder only ever rests on a",
-            "vetted book."
+            "The market's quoter slab — a remainder only ever rests on the vetted",
+            "book its `Clob` slot names."
           ]
         },
         {
           "name": "clobMarket",
           "docs": [
-            "(`ClobMarket::from_quoter`), so a valid entry cannot be pointed at an",
+            "(`ClobMarket::from_quoter`), so a valid slot cannot be pointed at an",
             "arbitrary account."
           ],
           "writable": true
         },
         {
-          "name": "clobProgram"
+          "name": "clobProgram",
+          "docs": [
+            "registration; the handler re-checks through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
         {
           "name": "clobAuthority",
@@ -3289,7 +3383,7 @@ export type Velocity = {
           ]
         },
         {
-          "name": "quoter",
+          "name": "quoterSlab",
           "docs": [
             "Deliberately not gated on active/approved: dead books still need",
             "failing makers' orders reclaimed."
@@ -3298,12 +3392,16 @@ export type Velocity = {
         {
           "name": "clobMarket",
           "docs": [
-            "accounts in the handler."
+            "in the handler."
           ],
           "writable": true
         },
         {
-          "name": "clobProgram"
+          "name": "clobProgram",
+          "docs": [
+            "registration; the handler re-checks through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
         {
           "name": "clobAuthority",
@@ -4977,7 +5075,8 @@ export type Velocity = {
         {
           "name": "quoter",
           "docs": [
-            "The Custom entry to discover crosses for."
+            "The Custom entry to discover crosses for — the conditions PDA derives",
+            "from it. Its live config is read from the slab, not from here."
           ]
         },
         {
@@ -5008,11 +5107,35 @@ export type Velocity = {
           }
         },
         {
-          "name": "clobQuoter",
+          "name": "quoterSlab",
           "docs": [
-            "The market's canonical CLOB entry — the other leg of every staged",
-            "cross."
-          ]
+            "The market's slab: the entry's approved config, and the book's — the",
+            "other leg of every staged cross — at slot 0."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  108,
+                  97,
+                  98
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "quoter"
+              }
+            ]
+          }
         },
         {
           "name": "marketConditions",
@@ -5107,6 +5230,102 @@ export type Velocity = {
         {
           "name": "expireFallbackSlots",
           "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "initializeQuoterSlab",
+      "discriminator": [
+        12,
+        251,
+        171,
+        79,
+        180,
+        169,
+        121,
+        240
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "perpMarket",
+          "docs": [
+            "Existence check: a slab serves a market that exists."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  112,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "marketIndex"
+              }
+            ]
+          }
+        },
+        {
+          "name": "quoterSlab",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  108,
+                  97,
+                  98
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "marketIndex"
+              }
+            ]
+          }
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "marketIndex",
+          "type": "u16"
+        },
+        {
+          "name": "capacity",
+          "type": "u16"
         }
       ]
     },
@@ -7253,21 +7472,27 @@ export type Velocity = {
           "signer": true
         },
         {
-          "name": "quoter",
+          "name": "quoterSlab",
           "docs": [
             "The book's registry entry. The replacement leg additionally requires it",
-            "to be active and approved."
+            "to be active and approved.",
+            "The market's quoter slab; the book's config is its `Clob` slot, bound",
+            "to this market and this book in the handler."
           ]
         },
         {
           "name": "clobMarket",
           "docs": [
-            "accounts in the handler."
+            "in the handler."
           ],
           "writable": true
         },
         {
-          "name": "clobProgram"
+          "name": "clobProgram",
+          "docs": [
+            "registration; the handler re-checks through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
         {
           "name": "clobAuthority",
@@ -7500,22 +7725,26 @@ export type Velocity = {
           "signer": true
         },
         {
-          "name": "quoter",
+          "name": "quoterSlab",
           "docs": [
-            "The market's CLOB registry entry — the maker only ever rests on a vetted",
-            "book."
+            "The market's quoter slab — the maker only ever rests on the vetted",
+            "book its `Clob` slot names."
           ]
         },
         {
           "name": "clobMarket",
           "docs": [
-            "(`ClobMarket::from_quoter`), so a valid entry can't be pointed at an",
+            "(`ClobMarket::from_quoter`), so a valid slot can't be pointed at an",
             "arbitrary account."
           ],
           "writable": true
         },
         {
-          "name": "clobProgram"
+          "name": "clobProgram",
+          "docs": [
+            "registration; the handler re-checks through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
         {
           "name": "clobAuthority",
@@ -7639,22 +7868,26 @@ export type Velocity = {
           "signer": true
         },
         {
-          "name": "quoter",
+          "name": "quoterSlab",
           "docs": [
-            "The market's CLOB registry entry — the remainder only ever rests on a",
-            "vetted book."
+            "The market's quoter slab — the remainder only ever rests on the",
+            "vetted book its `Clob` slot names."
           ]
         },
         {
           "name": "clobMarket",
           "docs": [
-            "accounts (`ClobMarket::from_quoter`), so a valid entry can't be",
-            "pointed at an arbitrary account."
+            "(`ClobMarket::from_quoter`), so a valid slot can't be pointed at an",
+            "arbitrary account."
           ],
           "writable": true
         },
         {
-          "name": "clobProgram"
+          "name": "clobProgram",
+          "docs": [
+            "registration; the handler re-checks through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
         {
           "name": "clobAuthority",
@@ -7902,22 +8135,27 @@ export type Velocity = {
           "writable": true
         },
         {
-          "name": "quoter",
+          "name": "quoterSlab",
           "docs": [
-            "The market's CLOB registry entry. The remainder only ever rests on a",
-            "vetted book, and the entry is the mandatory baseline of a router fill."
+            "The market's quoter slab. The remainder only ever rests on the vetted",
+            "book its `Clob` slot names, and that book is the mandatory baseline of",
+            "a router fill."
           ]
         },
         {
           "name": "clobMarket",
           "docs": [
-            "accounts (`ClobMarket::from_quoter`), so a valid entry cannot be",
-            "pointed at an arbitrary account."
+            "(`ClobMarket::from_quoter`), so a valid slot cannot be pointed at an",
+            "arbitrary account."
           ],
           "writable": true
         },
         {
-          "name": "clobProgram"
+          "name": "clobProgram",
+          "docs": [
+            "registration; the handler re-checks through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
         {
           "name": "clobAuthority",
@@ -8910,7 +9148,7 @@ export type Velocity = {
         {
           "name": "clobMarket",
           "docs": [
-            "accounts, same as the executor it stages.",
+            "same as the executor it stages.",
             "",
             "Writable for the book's response tail: the cross resolver asks the book",
             "for its resting orders through `quote_l3_v0`, which streams the answer",
@@ -8920,7 +9158,7 @@ export type Velocity = {
           "writable": true
         },
         {
-          "name": "quoter"
+          "name": "quoterSlab"
         },
         {
           "name": "state"
@@ -9025,7 +9263,6 @@ export type Velocity = {
         {
           "name": "crossConditions",
           "docs": [
-            "Writable only for the staging region; simulation-only.",
             "Read-only: resolvers stage into the shared scratch account."
           ]
         },
@@ -9041,24 +9278,42 @@ export type Velocity = {
           "name": "state"
         },
         {
-          "name": "quoter",
-          "relations": [
-            "crossConditions"
-          ]
+          "name": "quoterSlab",
+          "docs": [
+            "The market's slab: both legs' approved configs — the entry the",
+            "conditions name, and the book at slot 0."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  108,
+                  97,
+                  98
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "crossConditions"
+              }
+            ]
+          }
         },
         {
           "name": "user",
           "docs": [
             "The entry's quoted user — the maker every staged balance change",
-            "lands on; its identity derives the staged `(User, UserStats)` pair."
-          ]
-        },
-        {
-          "name": "clobQuoter",
-          "docs": [
-            "The market's CLOB registry entry: the other leg is quoted through the",
-            "same registered interface as this one, so neither side is read out of",
-            "an account."
+            "lands on; its identity derives the staged `(User, UserStats)` pair.",
+            "Checked against the entry's approved config in the handler."
           ]
         },
         {
@@ -11684,21 +11939,26 @@ export type Velocity = {
           ]
         },
         {
-          "name": "quoter",
+          "name": "quoterSlab",
           "docs": [
-            "The market's CLOB registry entry — placement is only allowed on a",
-            "vetted book, same as a maker's own `place_and_make_perp_order_v1`."
+            "The market's quoter slab — placement is only allowed on the vetted",
+            "book its `Clob` slot names, same as a maker's own",
+            "`place_and_make_perp_order_v1`."
           ]
         },
         {
           "name": "clobMarket",
           "docs": [
-            "accounts in the handler."
+            "in the handler."
           ],
           "writable": true
         },
         {
-          "name": "clobProgram"
+          "name": "clobProgram",
+          "docs": [
+            "registration; the handler re-checks through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
         {
           "name": "clobAuthority",
@@ -11851,10 +12111,10 @@ export type Velocity = {
           "writable": true
         },
         {
-          "name": "quoter",
+          "name": "quoterSlab",
           "docs": [
-            "The market's CLOB registry entry — the remainder only ever rests on a",
-            "vetted book."
+            "The market's quoter slab — the remainder only ever rests on the",
+            "vetted book its `Clob` slot names."
           ]
         },
         {
@@ -11862,7 +12122,11 @@ export type Velocity = {
           "writable": true
         },
         {
-          "name": "clobProgram"
+          "name": "clobProgram",
+          "docs": [
+            "registration; the handler re-checks through the slot."
+          ],
+          "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
         {
           "name": "clobAuthority",
@@ -13735,18 +13999,50 @@ export type Velocity = {
           "name": "quoter",
           "docs": [
             "Writable: the attach mirrors the book's placement rules onto the",
-            "entry, so the hot paths read a loaded field instead of CPI'ing",
-            "`order_rules_v0`."
+            "staging entry, so a later re-approval copies them forward."
           ],
           "writable": true
         },
         {
+          "name": "quoterSlab",
+          "docs": [
+            "Writable: the attach mirrors the book's placement rules onto the",
+            "approved copy in the book's slot, so the hot paths read a loaded",
+            "field instead of CPI'ing `order_rules_v0`."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  108,
+                  97,
+                  98
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "perpMarket"
+              }
+            ]
+          }
+        },
+        {
           "name": "clobMarket",
           "docs": [
-            "accounts in the handler. Writable because the attach registers",
-            "velocity's resolvers on the book itself: the wakes for an expiry, an",
-            "activation, a side at its cap and a crossed book are facts about this",
-            "account, so the conditions that watch for them live on it."
+            "in the handler. Writable because the attach registers velocity's",
+            "resolvers on the book itself: the wakes for an expiry, an activation,",
+            "a side at its cap and a crossed book are facts about this account, so",
+            "the conditions that watch for them live on it."
           ],
           "writable": true
         },
@@ -15406,6 +15702,42 @@ export type Velocity = {
         {
           "name": "quoter",
           "writable": true
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "The market's slab, so the switch reaches the approved copy. Optional:",
+            "an entry that was never approved has no copy to write. Omitting it on",
+            "an approved entry leaves the live copy as it was — the staging value",
+            "still lands at the next approval — so a maker flipping the live",
+            "switch passes it."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  108,
+                  97,
+                  98
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "quoter"
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -15437,7 +15769,37 @@ export type Velocity = {
         },
         {
           "name": "quoter",
-          "writable": true
+          "docs": [
+            "The staging entry whose config is copied in (or whose copy is pulled)."
+          ]
+        },
+        {
+          "name": "quoterSlab",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  108,
+                  97,
+                  98
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "quoter"
+              }
+            ]
+          }
         },
         {
           "name": "quoterProgram",
@@ -15514,14 +15876,44 @@ export type Velocity = {
             "The entry's own authority — the quoted user's wallet for Custom",
             "entries."
           ],
-          "signer": true,
-          "relations": [
-            "quoter"
-          ]
+          "signer": true
         },
         {
           "name": "quoter",
           "writable": true
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "The market's slab. Optional for an entry that was never approved;",
+            "omitting it on an approved entry leaves the live band as it was."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  108,
+                  97,
+                  98
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "quoter"
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -15554,6 +15946,38 @@ export type Velocity = {
         {
           "name": "quoter",
           "writable": true
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "The market's slab. Optional for an entry that was never approved."
+          ],
+          "writable": true,
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  108,
+                  97,
+                  98
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "quoter"
+              }
+            ]
+          }
         }
       ],
       "args": [
@@ -15582,10 +16006,7 @@ export type Velocity = {
             "The entry's own authority — the quoted user's wallet for Custom",
             "entries."
           ],
-          "signer": true,
-          "relations": [
-            "quoter"
-          ]
+          "signer": true
         },
         {
           "name": "quoter",
@@ -18895,6 +19316,19 @@ export type Velocity = {
       ]
     },
     {
+      "name": "quoterSlabV0",
+      "discriminator": [
+        67,
+        176,
+        136,
+        206,
+        194,
+        105,
+        138,
+        84
+      ]
+    },
+    {
       "name": "quoterV0",
       "discriminator": [
         71,
@@ -21463,6 +21897,16 @@ export type Velocity = {
       "code": 6403,
       "name": "unattestedSynchronousTake",
       "msg": "The book runs an activation speed bump; an unattested taker rests on the book instead of filling synchronously"
+    },
+    {
+      "code": 6404,
+      "name": "quoterSlabFull",
+      "msg": "The market's quoter slab has no vacant slot"
+    },
+    {
+      "code": 6405,
+      "name": "quoterNotOnSlab",
+      "msg": "The market's quoter slab holds no approved copy of this entry"
     }
   ],
   "types": [
@@ -28100,14 +28544,6 @@ export type Velocity = {
             "type": "u64"
           },
           {
-            "name": "quoterCount",
-            "docs": [
-              "`QuoterV0` entries at the head of the quoter section of",
-              "`remaining_accounts`; the rest of that section is their CPI accounts."
-            ],
-            "type": "u8"
-          },
-          {
             "name": "takerServedWindow",
             "docs": [
               "Whether the flow this view prices for served a protection window —",
@@ -28361,18 +28797,283 @@ export type Velocity = {
       }
     },
     {
-      "name": "quoterCpiLeg",
+      "name": "quoterConfigV0",
       "docs": [
-        "Which CPI leg an account-list update targets."
+        "One quoter's whole configuration: the CPI surface velocity calls it on,",
+        "and the declarations that bound how it fills.",
+        "",
+        "Held in two places with two meanings. On the [`QuoterV0`] staging entry it",
+        "is the maker's proposal, writable by the entry authority. In a",
+        "[`QuoterSlabV0`] slot it is the copy the admin approved, which is the only",
+        "copy a fill reads — so a maker edit never reaches flow until the admin",
+        "copies it in again."
       ],
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
       "type": {
-        "kind": "enum",
-        "variants": [
+        "kind": "struct",
+        "fields": [
           {
-            "name": "quote"
+            "name": "approvedProgramSlot",
+            "docs": [
+              "The slot the approved program was last deployed at, read from its",
+              "program-data account when the admin approved this config. Zero when",
+              "the program sits on a loader that cannot redeploy it. Meaningful only",
+              "in a slab slot; the staging copy holds the last approval's figure.",
+              "",
+              "Approval does not freeze the program. A maker may upgrade, and the",
+              "bounds on a quoter hold either way: a `Custom` entry can move only its",
+              "own registered user, at a price held to its own quote and to the taker's",
+              "limit, sized inside its own margin. So an upgrade can lose the maker's",
+              "money and cannot take anyone else's.",
+              "",
+              "What it can still do is quote and not deliver, which costs the taker a",
+              "fill. That is why the slot is recorded: an off-chain reader compares it",
+              "to the live one and knows the code changed, rather than waiting to infer",
+              "it from behaviour."
+            ],
+            "type": "u64"
           },
           {
-            "name": "execute"
+            "name": "bookTickSize",
+            "docs": [
+              "The book's placement rules, mirrored here by the attach",
+              "(`update_perp_market_clob_quoter`) so the hot paths read a loaded",
+              "field instead of CPI'ing `order_rules_v0` — the take gate, the",
+              "route's maker-priority skip, and the remainder rest each paid that",
+              "round trip. Zero for non-`Clob` entries and for a book no market has",
+              "attached. Changing the book's rules requires re-running the attach:",
+              "a stale mirror degrades gracefully (a wrong tick or minimum drops",
+              "the remainder to the plain cancel; a stale-zero delay routes an",
+              "unattested taker synchronously where it should have rested), but the",
+              "attach is the supported way to change an attached book's rules."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "bookMinOrderSize",
+            "type": "u64"
+          },
+          {
+            "name": "user",
+            "docs": [
+              "For Custom quoters, the User this quoter is allowed to quote for.",
+              "That user's authority creates the entry, so creation is consent. For",
+              "vAMM, the vAMM user. For CLOB, ignored: execute may return balance",
+              "changes for any user with resting orders on the CLOB."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "programId",
+            "docs": [
+              "The external program invoked for `quote_v0` / `execute_v0`."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "responseAccount",
+            "docs": [
+              "Account owned by `program_id` that quote/execute responses are written",
+              "into; must be named by both legs' index lists. Responses are read at",
+              "the pointer returned via return data, so payloads aren't bound by the",
+              "1024-byte return-data cap.",
+              "",
+              "For CLOB entries this is the book itself — the CLOB's response region",
+              "lives in its market account — which is what lets velocity read the",
+              "resting orders an execute may touch without a second registered",
+              "account to trust. Unique across one slab's occupied slots: a route",
+              "names the quoters it consults by carrying their response accounts, so",
+              "two slots sharing one could not be carried apart."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "authority",
+            "docs": [
+              "Manages the staging entry. For Custom quoters this is the quoted",
+              "user's authority (enforced at creation, no handoff), so the maker can",
+              "always kill their own quoter (`is_active` writes through to the",
+              "approved copy); the admin vets the CPI surface by copying it into the",
+              "slab."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "watchAccount",
+            "docs": [
+              "Maker-declared reprice region: the account bytes whose change means",
+              "\"this quoter may quote differently now\" (a midpoint's mid region, a",
+              "custom AMM's parameter block). Relay cross-discovery conditions wake",
+              "on it; `watch_len == 0` means no declaration (poll-only discovery).",
+              "Config like everything else here: vetted by the admin at the copy into",
+              "the slab — a watch that misses reprices only costs the maker cross",
+              "latency, never correctness (the poll is the floor)."
+            ],
+            "type": "pubkey"
+          },
+          {
+            "name": "quoteV0Discriminator",
+            "docs": [
+              "Raw instruction discriminators on `program_id`. Stored rather than",
+              "derived so non-Anchor programs can participate."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
+          },
+          {
+            "name": "executeV0Discriminator",
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
+          },
+          {
+            "name": "quoteL3V0Discriminator",
+            "docs": [
+              "The optional third leg: `quote_l3_v0`, which reports the resting",
+              "orders behind a ladder and who each belongs to. Zero means the quoter",
+              "does not implement it, and a reader attributes the whole ladder to",
+              "[`Self::user`] — which is right for every quoter that fills from one",
+              "account. A book is the exception, and this is how it says so."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                8
+              ]
+            }
+          },
+          {
+            "name": "accounts",
+            "docs": [
+              "The one registered CPI account list. Only the first `accounts_count`",
+              "entries are live. Each leg forwards a subset, in its own order, named",
+              "by the index lists below — one list to vet, and a leg cannot smuggle",
+              "an account the other leg's reviewer never saw."
+            ],
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "ammAccountMeta"
+                  }
+                },
+                12
+              ]
+            }
+          },
+          {
+            "name": "quoteAccountIndexes",
+            "docs": [
+              "Indexes into `accounts` forwarded to `quote_v0` (and `quote_l3_v0`),",
+              "in CPI order. Only the first `quote_accounts_count` are live."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                12
+              ]
+            }
+          },
+          {
+            "name": "executeAccountIndexes",
+            "docs": [
+              "Indexes into `accounts` forwarded to `execute_v0`, in CPI order. Only",
+              "the first `execute_accounts_count` are live."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                12
+              ]
+            }
+          },
+          {
+            "name": "watchOffset",
+            "type": "u32"
+          },
+          {
+            "name": "watchLen",
+            "type": "u32"
+          },
+          {
+            "name": "maxOracleDeviationBps",
+            "docs": [
+              "The furthest from oracle a fill on this entry may price, in",
+              "MARGIN_PRECISION units, so one unit is one basis point. Zero means the",
+              "entry declares nothing and the market's own band stands.",
+              "",
+              "A maker sets this to cap what its own program can lose if that program",
+              "is compromised. Velocity already bounds every external leg by the",
+              "market's band, and that band is sized for a market rather than for one",
+              "quoter's risk appetite; this is how a quoter asks for a tighter one.",
+              "",
+              "Unlike the rest of the config it writes through to the approved copy",
+              "without re-vetting. The band applies as the smaller of this and the",
+              "market's, so no value it can hold is wider than the one the admin",
+              "vetted, and a maker tightening it during an incident must not wait.",
+              "",
+              "`Custom` entries only. A book fills third parties, so a band on one",
+              "would let its entry authority revert other people's fills."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "bookDefaultActivationDelaySlots",
+            "type": "u32"
+          },
+          {
+            "name": "market",
+            "docs": [
+              "Perp market index this quoter serves."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "quoterType",
+            "type": {
+              "defined": {
+                "name": "quoterType"
+              }
+            }
+          },
+          {
+            "name": "isActive",
+            "docs": [
+              "The authority's own on/off switch — always settable by the maker, and",
+              "written through to the approved copy so a kill takes effect at once."
+            ],
+            "type": "bool"
+          },
+          {
+            "name": "priority",
+            "docs": [
+              "Routing priority: at a price, lower-priority tiers fill first, pro",
+              "rata within a tier. Defaults by type (vAMM 0, CLOB 10, Custom 20);",
+              "admin-set thereafter — never by the maker."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "accountsCount",
+            "type": "u8"
+          },
+          {
+            "name": "quoteAccountsCount",
+            "type": "u8"
+          },
+          {
+            "name": "executeAccountsCount",
+            "type": "u8"
           }
         ]
       }
@@ -28469,6 +29170,65 @@ export type Velocity = {
       }
     },
     {
+      "name": "quoterSlabV0",
+      "docs": [
+        "One market's approved quoters, in one account.",
+        "",
+        "The slab exists to spend one account lock where per-quoter registry",
+        "entries spent one each: a router fill carries the slab plus each quoter's",
+        "program and response account, so a quoter costs two unshared locks instead",
+        "of three, on the budget that decides how many quoters a route can hold.",
+        "A route names the slots it consults by carrying their response accounts —",
+        "the slab itself carries no per-transaction selection.",
+        "",
+        "This struct is only the fixed header. The slot region follows it in the",
+        "account's remaining bytes: back-to-back [`QuoterSlotV0`]s, so capacity is",
+        "set by the account's size at creation and grows by growing the account,",
+        "never by a layout change. Read it through [`quoter_slab_slots`] /",
+        "[`quoter_slab_slots_mut`]; a vacant slot is all zeroes, which is what a",
+        "fresh or grown region holds.",
+        "",
+        "Creation is permissionless (`initialize_quoter_slab`): the payer buys",
+        "rent on an all-vacant slab, and only the approval flow writes slots."
+      ],
+      "serialization": "bytemuckunsafe",
+      "repr": {
+        "kind": "c"
+      },
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "market",
+            "docs": [
+              "Perp market this slab serves; also in the PDA seeds."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "capacity",
+            "docs": [
+              "Slots the region holds. Written at creation and when the account",
+              "grows; the account must be at least [`QuoterSlabV0::space`] of it."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "padding",
+            "docs": [
+              "Header reserve, so future header fields never move the slot region."
+            ],
+            "type": {
+              "array": [
+                "u8",
+                124
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
       "name": "quoterType",
       "repr": {
         "kind": "rust"
@@ -28490,6 +29250,19 @@ export type Velocity = {
     },
     {
       "name": "quoterV0",
+      "docs": [
+        "The staging half of the registry: one entry per (perp market, quoter",
+        "program, quoted user), created by the quoted user's authority, holding the",
+        "config that authority proposes. Nothing fills from it — the admin copies",
+        "it into the market's [`QuoterSlabV0`] (`update_quoter_approved`), and",
+        "fills read only that copy. A maker edit here therefore never reaches flow",
+        "until the admin copies again, and the approved copy keeps serving its",
+        "vetted config in the meantime.",
+        "",
+        "The entry's address is also the quoter's *identity*: signed routes name",
+        "it, `PerpMarket::clob_quoter` names it, relay conditions reference it, and",
+        "its slab slot records it."
+      ],
       "serialization": "bytemuckunsafe",
       "repr": {
         "kind": "c"
@@ -28498,260 +29271,19 @@ export type Velocity = {
         "kind": "struct",
         "fields": [
           {
-            "name": "user",
-            "docs": [
-              "For Custom quoters, the User this quoter is allowed to quote for.",
-              "That user's authority creates the entry, so creation is consent. For",
-              "vAMM, the vAMM user. For CLOB, ignored: execute may return balance",
-              "changes for any user with resting orders on the CLOB."
-            ],
-            "type": "pubkey"
-          },
-          {
-            "name": "programId",
-            "docs": [
-              "The external program invoked for `quote_v0` / `execute_v0`."
-            ],
-            "type": "pubkey"
-          },
-          {
-            "name": "responseAccount",
-            "docs": [
-              "Account owned by `program_id` that quote/execute responses are written",
-              "into; must be registered in both account lists. Responses are read at",
-              "the pointer returned via return data, so payloads aren't bound by the",
-              "1024-byte return-data cap.",
-              "",
-              "For CLOB entries this is the book itself — the CLOB's response region",
-              "lives in its market account — which is what lets velocity read the",
-              "resting orders an execute may touch without a second registered",
-              "account to trust. Callers that depend on that re-derive the book's",
-              "market index from its bytes rather than assume it."
-            ],
-            "type": "pubkey"
-          },
-          {
-            "name": "authority",
-            "docs": [
-              "Manages this registry entry. For Custom quoters this is the quoted",
-              "user's authority (enforced at creation, no handoff), so the maker can",
-              "always kill their own quoter (`is_active`); the admin vets the CPI",
-              "surface (`is_approved`), which any config change resets."
-            ],
-            "type": "pubkey"
-          },
-          {
-            "name": "quoteV0Discriminator",
-            "docs": [
-              "Raw instruction discriminators on `program_id`. Stored rather than",
-              "derived so non-Anchor programs can participate."
-            ],
-            "type": {
-              "array": [
-                "u8",
-                8
-              ]
-            }
-          },
-          {
-            "name": "executeV0Discriminator",
-            "type": {
-              "array": [
-                "u8",
-                8
-              ]
-            }
-          },
-          {
-            "name": "quoteL3V0Discriminator",
-            "docs": [
-              "The optional third leg: `quote_l3_v0`, which reports the resting",
-              "orders behind a ladder and who each belongs to. Zero means the quoter",
-              "does not implement it, and a reader attributes the whole ladder to",
-              "[`Self::user`] — which is right for every quoter that fills from one",
-              "account. A book is the exception, and this is how it says so."
-            ],
-            "type": {
-              "array": [
-                "u8",
-                8
-              ]
-            }
-          },
-          {
-            "name": "quoteAccounts",
-            "docs": [
-              "Accounts forwarded to `quote_v0`, in order. Only the first",
-              "`quote_accounts_count` entries are live."
-            ],
-            "type": {
-              "array": [
-                {
-                  "defined": {
-                    "name": "ammAccountMeta"
-                  }
-                },
-                32
-              ]
-            }
-          },
-          {
-            "name": "executeAccounts",
-            "docs": [
-              "Accounts forwarded to `execute_v0`, in order. Only the first",
-              "`execute_accounts_count` entries are live."
-            ],
-            "type": {
-              "array": [
-                {
-                  "defined": {
-                    "name": "ammAccountMeta"
-                  }
-                },
-                32
-              ]
-            }
-          },
-          {
-            "name": "market",
-            "docs": [
-              "Perp market index this quoter serves."
-            ],
-            "type": "u16"
-          },
-          {
-            "name": "quoterType",
+            "name": "config",
             "type": {
               "defined": {
-                "name": "quoterType"
+                "name": "quoterConfigV0"
               }
             }
-          },
-          {
-            "name": "isActive",
-            "docs": [
-              "The authority's own on/off switch — always settable by the maker."
-            ],
-            "type": "bool"
-          },
-          {
-            "name": "isApproved",
-            "docs": [
-              "Admin vetting of the CPI surface; reset by any config change."
-            ],
-            "type": "bool"
-          },
-          {
-            "name": "priority",
-            "docs": [
-              "Routing priority: at a price, lower-priority tiers fill first, pro",
-              "rata within a tier. Defaults by type (vAMM 0, CLOB 10, Custom 20);",
-              "admin-set thereafter — never by the maker."
-            ],
-            "type": "u8"
-          },
-          {
-            "name": "quoteAccountsCount",
-            "type": "u8"
-          },
-          {
-            "name": "executeAccountsCount",
-            "type": "u8"
-          },
-          {
-            "name": "watchOffset",
-            "docs": [
-              "Maker-declared reprice region: the account bytes whose change means",
-              "\"this quoter may quote differently now\" (a midpoint's mid region, a",
-              "custom AMM's parameter block). Relay cross-discovery conditions wake",
-              "on it; `watch_len == 0` means no declaration (poll-only discovery).",
-              "Config like everything else here: vetted by the admin via the",
-              "`is_approved` reset — a watch that misses reprices only costs the",
-              "maker cross latency, never correctness (the poll is the floor)."
-            ],
-            "type": "u32"
-          },
-          {
-            "name": "watchLen",
-            "type": "u32"
-          },
-          {
-            "name": "watchAccount",
-            "type": "pubkey"
-          },
-          {
-            "name": "approvedProgramSlot",
-            "docs": [
-              "The slot the approved program was last deployed at, read from its",
-              "program-data account when the admin approved this entry. Zero when the",
-              "program sits on a loader that cannot redeploy it, and therefore has no",
-              "such account.",
-              "",
-              "Approval does not freeze the program. A maker may upgrade, and the",
-              "bounds on a quoter hold either way: a `Custom` entry can move only its",
-              "own registered user, at a price held to its own quote and to the taker's",
-              "limit, sized inside its own margin. So an upgrade can lose the maker's",
-              "money and cannot take anyone else's.",
-              "",
-              "What it can still do is quote and not deliver, which costs the taker a",
-              "fill. That is why the slot is recorded: an off-chain reader compares it",
-              "to the live one and knows the code changed, rather than waiting to infer",
-              "it from behaviour. Deliberately not checked during a fill — that would",
-              "cost one more account lock per quoter, on the budget that decides how",
-              "many quoters a route can hold."
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "bookTickSize",
-            "docs": [
-              "The furthest from oracle a fill on this entry may price, in",
-              "MARGIN_PRECISION units, so one unit is one basis point. Zero means the",
-              "entry declares nothing and the market's own band stands.",
-              "",
-              "A maker sets this to cap what its own program can lose if that program",
-              "is compromised. Velocity already bounds every external leg by the",
-              "market's band, and that band is sized for a market rather than for one",
-              "quoter's risk appetite; this is how a quoter asks for a tighter one.",
-              "",
-              "Unlike the rest of the config it does not reset `is_approved`. The band",
-              "applies as the smaller of this and the market's, so no value it can hold",
-              "is wider than the one the admin vetted, and a maker tightening it during",
-              "an incident must not have to wait for re-vetting.",
-              "",
-              "`Custom` entries only. A book fills third parties, so a band on one",
-              "would let its entry authority revert other people's fills.",
-              "The book's placement rules, mirrored here by the attach",
-              "(`update_perp_market_clob_quoter`) so the hot paths read a loaded",
-              "field instead of CPI'ing `order_rules_v0` — the take gate, the",
-              "route's maker-priority skip, and the remainder rest each paid that",
-              "round trip. Zero for non-`Clob` entries and for a book no market has",
-              "attached. Changing the book's rules requires re-running the attach:",
-              "a stale mirror degrades gracefully (a wrong tick or minimum drops",
-              "the remainder to the plain cancel; a stale-zero delay routes an",
-              "unattested taker synchronously where it should have rested), but the",
-              "attach is the supported way to change an attached book's rules."
-            ],
-            "type": "u64"
-          },
-          {
-            "name": "bookMinOrderSize",
-            "type": "u64"
-          },
-          {
-            "name": "maxOracleDeviationBps",
-            "type": "u32"
-          },
-          {
-            "name": "bookDefaultActivationDelaySlots",
-            "type": "u32"
           },
           {
             "name": "padding",
             "type": {
               "array": [
                 "u8",
-                8
+                48
               ]
             }
           }
@@ -31636,10 +32168,10 @@ export type Velocity = {
         "kind": "struct",
         "fields": [
           {
-            "name": "quoter",
+            "name": "quoterSlab",
             "docs": [
-              "The market's canonical CLOB entry / book / program — set when this",
-              "slot's executor is `trigger_limit_order_v1`, zeroed for `trigger_order`."
+              "The market's quoter slab / book / program — set when this slot's",
+              "executor is `trigger_limit_order_v1`, zeroed for `trigger_order`."
             ],
             "type": "pubkey"
           },
@@ -31697,22 +32229,10 @@ export type Velocity = {
         "kind": "struct",
         "fields": [
           {
-            "name": "leg",
-            "type": {
-              "defined": {
-                "name": "quoterCpiLeg"
-              }
-            }
-          },
-          {
-            "name": "index",
-            "docs": [
-              "Slot in the registered list this slice starts at."
-            ],
-            "type": "u8"
-          },
-          {
             "name": "metas",
+            "docs": [
+              "The unified registered list, replacing the stored one whole."
+            ],
             "type": {
               "vec": {
                 "defined": {
@@ -31720,6 +32240,21 @@ export type Velocity = {
                 }
               }
             }
+          },
+          {
+            "name": "quoteIndexes",
+            "docs": [
+              "Indexes into `metas` forwarded to `quote_v0` / `quote_l3_v0`, in CPI",
+              "order."
+            ],
+            "type": "bytes"
+          },
+          {
+            "name": "executeIndexes",
+            "docs": [
+              "Indexes into `metas` forwarded to `execute_v0`, in CPI order."
+            ],
+            "type": "bytes"
           }
         ]
       }

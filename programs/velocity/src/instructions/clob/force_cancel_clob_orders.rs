@@ -54,9 +54,9 @@ use {
             margin_calculation::MarginContext,
             perp_market_map::MarketSet,
             prop_amm::{
-                ClobCancelAllArgsV0, ClobCancelOrderArgsV0, ClobCancelSides, ClobCancelSidesExt,
-                ClobMarket, ClobOrderRefV0, ClobRemovedOrderV0, ClobSide, ClobUserRefV0, QuoterV0,
-                WireDirectionExt,
+                quoter_slab_clob, ClobCancelAllArgsV0, ClobCancelOrderArgsV0, ClobCancelSides,
+                ClobCancelSidesExt, ClobMarket, ClobOrderRefV0, ClobRemovedOrderV0, ClobSide,
+                ClobUserRefV0, QuoterSlabV0, WireDirectionExt,
             },
             spot_market_map::get_writable_spot_market_set,
             state::State,
@@ -116,13 +116,14 @@ pub struct ForceCancelClobOrders<'info> {
     pub user_stats: AccountLoader<'info, UserStats>,
     /// Deliberately not gated on active/approved: dead books still need
     /// failing makers' orders reclaimed.
-    pub quoter: AccountLoader<'info, QuoterV0>,
-    /// CHECK: validated against the quoter entry's registered execute
-    /// accounts in the handler.
+    pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
+    /// CHECK: validated against the book slot's registered response account
+    /// in the handler.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
-    /// CHECK: locked to the registered quoter program.
-    #[account(address = quoter.load()?.program_id)]
+    /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
+    /// registration; the handler re-checks through the slot.
+    #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
     /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
     /// is set to. Its own key, distinct from the per-entry signer a
@@ -178,7 +179,7 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
     )?;
 
     let clob = ClobMarket::from_quoter(
-        &*ctx.accounts.quoter.load()?,
+        &quoter_slab_clob(&ctx.accounts.quoter_slab, market_index)?.config,
         market_index,
         &ctx.accounts.clob_market,
         &ctx.accounts.clob_program,

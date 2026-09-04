@@ -18,14 +18,17 @@
 //! rejections, the mandatory-CLOB baseline check, and the CU cost.
 //!
 //! Cheapness comes from the account feed: subscribe to the CLOB program, the
-//! quoter registry, and each live PropAMM (an unfiltered
+//! per-market quoter slabs, and each live PropAMM (an unfiltered
 //! [`relay_chain_source::ProgramSubscription`]) and every account a fill
 //! touches is already resident, so a quote costs microseconds and no RPC.
 
 use {
     anchor_lang::Discriminator,
     anyhow::{Context, Result},
-    program::state::{prop_amm::QuoterV0, traits::Size},
+    program::state::{
+        prop_amm::{QuoterSlabV0, QuoterSlotV0, QUOTER_SLAB_PDA_SEED},
+        traits::Size,
+    },
     relay_chain_source::{AccountFilter, ChainSource, ProgramSubscription, SimOutcome},
     solana_sdk::{pubkey::Pubkey, transaction::Transaction},
 };
@@ -33,26 +36,75 @@ use {
 pub mod health;
 pub mod quote_view;
 
-/// Byte length of a `QuoterV0` account, from the program.
-pub fn quoter_v0_len() -> u64 {
-    QuoterV0::SIZE as u64
+/// PDA of a market's [`QuoterSlabV0`]: one per market, holding every approved
+/// quoter config. Fills and quote views read quoters from it, so it is the
+/// account a router has to know about.
+pub fn quoter_slab_pda(velocity: &Pubkey, market_index: u16) -> Pubkey {
+    Pubkey::find_program_address(
+        &[QUOTER_SLAB_PDA_SEED, market_index.to_le_bytes().as_ref()],
+        velocity,
+    )
+    .0
 }
 
-/// Account-data offset of `QuoterV0::market`, derived from the struct so a
+/// Account-data offset of `QuoterSlabV0::market`, derived from the struct so a
 /// field reorder can't silently turn this filter into a wrong-market match.
-pub fn quoter_v0_market_offset() -> usize {
-    8 + core::mem::offset_of!(QuoterV0, market)
+pub fn quoter_slab_market_offset() -> usize {
+    8 + core::mem::offset_of!(QuoterSlabV0, market)
 }
 
-/// The `QuoterV0` account discriminator, from the program.
-pub fn quoter_v0_discriminator() -> Vec<u8> {
-    QuoterV0::DISCRIMINATOR.to_vec()
+/// The `QuoterSlabV0` account discriminator, from the program.
+pub fn quoter_slab_discriminator() -> Vec<u8> {
+    QuoterSlabV0::DISCRIMINATOR.to_vec()
+}
+
+/// Decode a slab account's slot region: the fixed header, then `capacity` raw
+/// back-to-back [`QuoterSlotV0`]s. Vacant slots are kept, so an index into
+/// the result is the on-chain slot index — the handle `crank_cross_match`
+/// legs are named by.
+pub fn decode_quoter_slab_slots(data: &[u8]) -> Result<Vec<QuoterSlotV0>> {
+    let header: QuoterSlabV0 = quote_view::read_zero_copy(data)?;
+    let slot_size = core::mem::size_of::<QuoterSlotV0>();
+    let region = data
+        .get(QuoterSlabV0::SLOT_REGION_OFFSET..)
+        .and_then(|tail| tail.get(..header.capacity as usize * slot_size))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "quoter slab declares {} slots but is too short to hold them",
+                header.capacity
+            )
+        })?;
+    Ok(region
+        .chunks_exact(slot_size)
+        .map(bytemuck::pod_read_unaligned::<QuoterSlotV0>)
+        .collect())
+}
+
+/// The market's slab slots, straight from the feed. Empty when the market
+/// has no slab account yet, which reads the same as an all-vacant slab: no
+/// approved quoters.
+pub async fn quoter_slab_slots<S: ChainSource + ?Sized>(
+    source: &S,
+    velocity_program: &Pubkey,
+    market_index: u16,
+) -> Result<Vec<QuoterSlotV0>> {
+    let slab = quoter_slab_pda(velocity_program, market_index);
+    let account = source
+        .get_multiple_accounts(&[slab])
+        .await
+        .context("fetch quoter slab")?
+        .pop()
+        .flatten();
+    match account {
+        Some(account) => decode_quoter_slab_slots(&account.data),
+        None => Ok(Vec::new()),
+    }
 }
 
 /// What to subscribe to so router simulations stay off the network.
 ///
-/// The registry query is filtered (only `QuoterV0`s, and only this market's
-/// when `market_index` is given) so another market's entries never cross the
+/// The slab query is filtered (only `QuoterSlabV0`s, and only this market's
+/// when `market_index` is given) so another market's slab never crosses the
 /// wire; the CLOB and PropAMM programs are subscribed unfiltered, because a
 /// fill can touch any of their accounts and residency is the whole point.
 pub fn router_subscriptions(
@@ -60,19 +112,16 @@ pub fn router_subscriptions(
     market_index: Option<u16>,
     quoter_programs: &[Pubkey],
 ) -> Vec<ProgramSubscription> {
-    let mut registry_filters = vec![
-        AccountFilter::DataSize(quoter_v0_len()),
-        AccountFilter::prefix(quoter_v0_discriminator()),
-    ];
+    let mut slab_filters = vec![AccountFilter::prefix(quoter_slab_discriminator())];
     if let Some(market) = market_index {
-        registry_filters.push(AccountFilter::Memcmp {
-            offset: quoter_v0_market_offset(),
+        slab_filters.push(AccountFilter::Memcmp {
+            offset: quoter_slab_market_offset(),
             bytes: market.to_le_bytes().to_vec(),
         });
     }
     std::iter::once(ProgramSubscription {
         program: velocity_program,
-        filter_sets: vec![registry_filters],
+        filter_sets: vec![slab_filters],
     })
     .chain(
         quoter_programs
@@ -81,26 +130,6 @@ pub fn router_subscriptions(
             .map(ProgramSubscription::all),
     )
     .collect()
-}
-
-/// Every `QuoterV0` registry entry for a market, straight from the feed.
-pub async fn quoter_entries<S: ChainSource>(
-    source: &S,
-    velocity_program: &Pubkey,
-    market_index: u16,
-) -> Result<Vec<(Pubkey, solana_sdk::account::Account)>> {
-    let filters = vec![vec![
-        AccountFilter::DataSize(quoter_v0_len()),
-        AccountFilter::prefix(quoter_v0_discriminator()),
-        AccountFilter::Memcmp {
-            offset: quoter_v0_market_offset(),
-            bytes: market_index.to_le_bytes().to_vec(),
-        },
-    ]];
-    source
-        .get_program_accounts(velocity_program, &filters)
-        .await
-        .context("fetch quoter registry entries")
 }
 
 /// Byte length of a `RouterQuoteBufferV0` account, from the program.
@@ -209,21 +238,44 @@ pub async fn simulate_router_fill<S: ChainSource>(
 mod tests {
     use super::*;
 
-    /// The registry filter has to match what the chain actually stores, and
-    /// a memcmp at a wrong offset silently matches the wrong accounts rather
+    /// The slab filter has to match what the chain actually stores, and a
+    /// memcmp at a wrong offset silently matches the wrong accounts rather
     /// than failing — so pin both against the program's own layout.
     #[test]
-    fn registry_filter_matches_the_program_layout() {
-        assert_eq!(quoter_v0_len(), QuoterV0::SIZE as u64);
-        assert_eq!(quoter_v0_discriminator().len(), 8);
-        // `market` sits after the four pubkeys and the two discriminators
-        // and both account arrays; the point of deriving it is that this
-        // number moves by itself when the struct changes.
-        assert_eq!(
-            quoter_v0_market_offset(),
-            8 + core::mem::offset_of!(QuoterV0, market)
-        );
-        assert!(quoter_v0_market_offset() + 2 <= quoter_v0_len() as usize);
+    fn slab_filter_matches_the_program_layout() {
+        assert_eq!(quoter_slab_discriminator().len(), 8);
+        // `market` is the header's first field, right after the
+        // discriminator; deriving it means this number moves by itself when
+        // the struct changes.
+        assert_eq!(quoter_slab_market_offset(), 8);
+        assert!(quoter_slab_market_offset() + 2 <= QuoterSlabV0::SLOT_REGION_OFFSET);
+    }
+
+    /// The decoder reads the slot region straight out of account bytes, so
+    /// pin it against the program's own layout with a round trip.
+    #[test]
+    fn slab_slots_round_trip_through_the_decoder() {
+        let capacity = 3usize;
+        let mut header = QuoterSlabV0::default();
+        header.market = 7;
+        header.capacity = capacity as u16;
+        let mut slots = vec![QuoterSlotV0::default(); capacity];
+        slots[0].entry = Pubkey::new_unique();
+        slots[0].config.market = 7;
+        slots[2].entry = Pubkey::new_unique();
+        slots[2].suspended = true;
+
+        let mut data = QuoterSlabV0::DISCRIMINATOR.to_vec();
+        data.extend_from_slice(bytemuck::bytes_of(&header));
+        data.extend_from_slice(bytemuck::cast_slice(&slots));
+
+        let decoded = decode_quoter_slab_slots(&data).unwrap();
+        assert_eq!(decoded, slots);
+
+        // A slab shorter than its declared capacity is refused rather than
+        // read past the end.
+        data.truncate(data.len() - 1);
+        assert!(decode_quoter_slab_slots(&data).is_err());
     }
 }
 
@@ -254,7 +306,7 @@ pub mod l3 {
         super::*,
         anyhow::{anyhow, bail},
         program::state::prop_amm::{
-            ClobUserRefV0, Direction, L3ArgsV0, L3ResponseV0, QuoterV0, ResponsePointerV0,
+            ClobUserRefV0, Direction, L3ArgsV0, L3ResponseV0, QuoterConfigV0, ResponsePointerV0,
         },
         solana_sdk::{
             instruction::{AccountMeta, Instruction},
@@ -262,8 +314,9 @@ pub mod l3 {
         },
     };
 
-    /// Distinct makers a taker of `size` would sweep off `entry`'s book, best
-    /// price first.
+    /// Distinct makers a taker of `size` would sweep off a quoter's book,
+    /// best price first. `config` is the quoter's approved config, read from
+    /// its slab slot.
     ///
     /// The order is the answer, not a detail of it: the book stops at the
     /// first maker the transaction did not carry, so a prefix of this list
@@ -275,15 +328,15 @@ pub mod l3 {
     /// to discover, the caller already has it.
     pub async fn resting_makers<S: ChainSource + ?Sized>(
         source: &S,
-        entry: &QuoterV0,
+        config: &QuoterConfigV0,
         direction: Direction,
         size: u64,
         limit: usize,
     ) -> Result<Vec<ClobUserRefV0>> {
-        if entry.quote_l3_v0_discriminator == [0u8; 8] {
+        if config.quote_l3_v0_discriminator == [0u8; 8] {
             return Ok(Vec::new());
         }
-        let mut data = entry.quote_l3_v0_discriminator.to_vec();
+        let mut data = config.quote_l3_v0_discriminator.to_vec();
         program::state::prop_amm::write_l3_args(
             &mut data,
             &L3ArgsV0 {
@@ -294,12 +347,12 @@ pub mod l3 {
         )
         .map_err(|err| anyhow!("serialize l3 args: {err}"))?;
 
-        let book = entry.response_account;
+        let book = config.response_account;
         let payer = Pubkey::new_unique();
         let blockhash = source.latest_blockhash().await?;
         let tx = Transaction::new_unsigned(Message::new_with_blockhash(
             &[Instruction {
-                program_id: entry.program_id,
+                program_id: config.program_id,
                 accounts: vec![AccountMeta::new(book, false)],
                 data,
             }],

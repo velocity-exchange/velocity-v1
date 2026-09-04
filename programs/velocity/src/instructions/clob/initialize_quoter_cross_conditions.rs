@@ -13,7 +13,10 @@ use {
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             perp_market::PerpMarket,
-            prop_amm::{QuoterType, QuoterV0},
+            prop_amm::{
+                clob_slot_index, quoter_slab_slots, slot_for_entry, QuoterSlabV0, QuoterType,
+                QuoterV0, QUOTER_SLAB_PDA_SEED,
+            },
             quoter_cross::{
                 QuoterCrossConditionsV0, QUOTER_CROSS_CLOB, QUOTER_CROSS_CONDITIONS_PDA_SEED,
                 QUOTER_CROSS_FALLBACK, QUOTER_CROSS_WATCH,
@@ -32,22 +35,29 @@ pub struct InitializeQuoterCrossConditions<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
     pub state: AccountLoader<'info, State>,
-    /// The Custom entry to discover crosses for.
+    /// The Custom entry to discover crosses for — the conditions PDA derives
+    /// from it. Its live config is read from the slab, not from here.
     pub quoter: AccountLoader<'info, QuoterV0>,
     #[account(
-        seeds = [b"perp_market", quoter.load()?.market.to_le_bytes().as_ref()],
+        seeds = [b"perp_market", quoter.load()?.config.market.to_le_bytes().as_ref()],
         bump
     )]
     pub perp_market: AccountLoader<'info, PerpMarket>,
-    /// The market's canonical CLOB entry — the other leg of every staged
-    /// cross.
-    #[account(address = perp_market.load()?.clob_quoter)]
-    pub clob_quoter: AccountLoader<'info, QuoterV0>,
+    /// The market's slab: the entry's approved config, and the book's — the
+    /// other leg of every staged cross — at slot 0.
+    #[account(
+        seeds = [
+            QUOTER_SLAB_PDA_SEED,
+            quoter.load()?.config.market.to_le_bytes().as_ref(),
+        ],
+        bump
+    )]
+    pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
     /// The market's crank conditions: the keeper-payment source of truth.
     #[account(
         seeds = [
             CLOB_CRANK_CONDITIONS_PDA_SEED,
-            quoter.load()?.market.to_le_bytes().as_ref(),
+            quoter.load()?.config.market.to_le_bytes().as_ref(),
         ],
         bump
     )]
@@ -73,20 +83,29 @@ pub fn handle_initialize_quoter_cross_conditions(
         ErrorCode::DefaultError,
         "fallback interval must be nonzero"
     )?;
-    let quoter = ctx.accounts.quoter.load()?;
+    let slots = quoter_slab_slots(&ctx.accounts.quoter_slab)?;
+    let quoter_slot = slot_for_entry(&slots, &ctx.accounts.quoter.key()).ok_or_else(|| {
+        msg!("quoter holds no slab slot; approve it first");
+        error!(ErrorCode::QuoterNotOnSlab)
+    })?;
+    let quoter = &slots[quoter_slot].config;
     validate!(
         quoter.quoter_type == QuoterType::Custom,
         ErrorCode::InvalidQuoterConfig,
         "cross conditions are for Custom quoters (the CLOB's are on the market conditions)"
     )?;
     validate!(
-        quoter.is_active && quoter.is_approved,
+        slots[quoter_slot].quotes(),
         ErrorCode::InvalidQuoterConfig,
         "quoter must be active and approved to attach cross discovery"
     )?;
-    let clob = ctx.accounts.clob_quoter.load()?;
+    let book_slot = clob_slot_index(&slots).ok_or_else(|| {
+        msg!("quoter slab holds no book slot");
+        error!(ErrorCode::QuoterNotOnSlab)
+    })?;
+    let (clob_entry, clob) = (slots[book_slot].entry, &slots[book_slot].config);
     validate!(
-        clob.quoter_type == QuoterType::Clob && clob.market == quoter.market,
+        ctx.accounts.perp_market.load()?.clob_quoter == clob_entry,
         ErrorCode::InvalidQuoterConfig,
         "market's canonical CLOB entry required"
     )?;
@@ -116,11 +135,11 @@ pub fn handle_initialize_quoter_cross_conditions(
 
     // The resolver's account list: the shared scratch (index 0 — where the
     // response pointer says the payload lives), the conditions, the CLOB book,
-    // the state, the entry, its quoted user, the CLOB's own registry entry and
-    // program, then the entry's full registered quote surface and program —
-    // everything the two generic quote CPIs need. Stored ONCE next to the
-    // block; each condition points at it with relay's resolver-list
-    // indirection instead of inlining a copy.
+    // the state, the market's quoter slab (both legs' approved configs), the
+    // entry's quoted user and the CLOB program, then the entry's registered
+    // quote surface and program — everything the two generic quote CPIs need.
+    // Stored ONCE next to the block; each condition points at it with relay's
+    // resolver-list indirection instead of inlining a copy.
     //
     // The book is writable because the resolver quotes it through
     // `quote_l3_v0`, which streams its answer into the market account's own
@@ -130,12 +149,11 @@ pub fn handle_initialize_quoter_cross_conditions(
         AccountRefV0::readonly(ctx.accounts.cross_conditions.key().to_bytes()),
         AccountRefV0::writable(clob_market.to_bytes()),
         AccountRefV0::readonly(ctx.accounts.state.key().to_bytes()),
-        AccountRefV0::readonly(ctx.accounts.quoter.key().to_bytes()),
+        AccountRefV0::readonly(ctx.accounts.quoter_slab.key().to_bytes()),
         AccountRefV0::readonly(quoter.user.to_bytes()),
-        AccountRefV0::readonly(ctx.accounts.clob_quoter.key().to_bytes()),
         AccountRefV0::readonly(clob.program_id.to_bytes()),
     ];
-    for meta in &quoter.quote_accounts[..quoter.quote_accounts_count as usize] {
+    for meta in quoter.leg_metas(quoter.quote_leg_indexes())? {
         resolver_accounts.push(if meta.is_writable {
             AccountRefV0::writable(meta.pubkey.to_bytes())
         } else {
@@ -158,7 +176,7 @@ pub fn handle_initialize_quoter_cross_conditions(
         ctx.accounts.cross_conditions.load_mut()
     })?;
     conditions.quoter = ctx.accounts.quoter.key();
-    conditions.clob_quoter = ctx.accounts.clob_quoter.key();
+    conditions.clob_quoter = clob_entry;
     conditions.clob_market = clob_market;
     conditions.clob_program = clob.program_id;
     conditions.oracle = oracle;

@@ -16,7 +16,7 @@
 //!
 //! Cheap in accounts, which is what makes it viable on the most
 //! account-pressured instruction in the program: a router fill already
-//! carries the CLOB entry, its book, the clob program and the quoter signer,
+//! carries the quoter slab, the book, the clob program and the quoter signer,
 //! because the market's canonical CLOB is a mandatory baseline.
 //!
 //! A market-order remainder migrates too, resting at `auction_end_price` —
@@ -36,7 +36,7 @@ use {
         instructions::{constraints::*, keeper::FillAccounts, ClobRemainderRoute},
         load,
         state::{
-            prop_amm::QuoterV0,
+            prop_amm::QuoterSlabV0,
             state::State,
             user::{User, UserStats},
         },
@@ -66,16 +66,17 @@ pub struct FillLegacyDlobOrder<'info> {
         constraint = is_stats_for_user(&user, &user_stats)?
     )]
     pub user_stats: AccountLoader<'info, UserStats>,
-    /// The market's CLOB registry entry — a remainder only ever rests on a
-    /// vetted book.
-    pub quoter: AccountLoader<'info, QuoterV0>,
-    /// CHECK: validated against the quoter entry's registered accounts
-    /// (`ClobMarket::from_quoter`), so a valid entry cannot be pointed at an
+    /// The market's quoter slab — a remainder only ever rests on the vetted
+    /// book its `Clob` slot names.
+    pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
+    /// CHECK: validated against the book slot's registered response account
+    /// (`ClobMarket::from_quoter`), so a valid slot cannot be pointed at an
     /// arbitrary account.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
-    /// CHECK: locked to the registered quoter program.
-    #[account(address = quoter.load()?.program_id)]
+    /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
+    /// registration; the handler re-checks through the slot.
+    #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
     /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
     /// is, and nothing a third-party quoter is ever handed.
@@ -168,7 +169,7 @@ pub fn handle_fill_legacy_dlob_order<'c: 'info, 'info>(
         obligation,
         taker_served_window,
         Some(ClobRemainderRoute {
-            quoter: &ctx.accounts.quoter,
+            quoter_slab: &ctx.accounts.quoter_slab,
             clob_market: &ctx.accounts.clob_market,
             clob_program: &ctx.accounts.clob_program,
             clob_authority: &ctx.accounts.clob_authority,

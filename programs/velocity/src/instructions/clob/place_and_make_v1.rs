@@ -21,7 +21,7 @@ use {
         state::{
             order_params::{OrderParams, PlaceOrderOptions, PostOnlyParam},
             perp_market_map::{get_writable_perp_market_set, MarketSet},
-            prop_amm::QuoterV0,
+            prop_amm::QuoterSlabV0,
             state::State,
             user::{OrderType, User, UserStats},
         },
@@ -44,16 +44,17 @@ pub struct PlaceAndMakeV1<'info> {
     )]
     pub user_stats: AccountLoader<'info, UserStats>,
     pub authority: Signer<'info>,
-    /// The market's CLOB registry entry — the maker only ever rests on a vetted
-    /// book.
-    pub quoter: AccountLoader<'info, QuoterV0>,
-    /// CHECK: validated against the quoter entry's registered accounts
-    /// (`ClobMarket::from_quoter`), so a valid entry can't be pointed at an
+    /// The market's quoter slab — the maker only ever rests on the vetted
+    /// book its `Clob` slot names.
+    pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
+    /// CHECK: validated against the book slot's registered response account
+    /// (`ClobMarket::from_quoter`), so a valid slot can't be pointed at an
     /// arbitrary account.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
-    /// CHECK: locked to the registered quoter program.
-    #[account(address = quoter.load()?.program_id)]
+    /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
+    /// registration; the handler re-checks through the slot.
+    #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
     /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
     /// is set to, and nothing a third-party quoter is ever handed.
@@ -173,13 +174,14 @@ pub fn handle_place_and_make_perp_order_v1<'c: 'info, 'info>(
 
     // A below-default activation delay is reserved for attested flow.
     crate::instructions::attest_activation_delay(
-        &ctx.accounts.quoter,
+        &ctx.accounts.quoter_slab,
+        params.market_index,
         activation_delay_slots,
         ctx.accounts.flow_authority.is_some(),
     )?;
     try_place_remainder_on_clob(
         &ctx.accounts.user,
-        &ctx.accounts.quoter,
+        &ctx.accounts.quoter_slab,
         &ctx.accounts.clob_market.to_account_info(),
         &ctx.accounts.clob_program.to_account_info(),
         &ctx.accounts.clob_authority.to_account_info(),

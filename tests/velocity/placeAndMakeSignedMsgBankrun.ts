@@ -5,15 +5,11 @@ import { Program } from '@coral-xyz/anchor';
 
 import {
 	AccountInfo,
-	AddressLookupTableAccount,
 	AddressLookupTableProgram,
-	Connection,
-	Keypair,
 	LAMPORTS_PER_SOL,
 	PublicKey,
 	SystemProgram,
 	Transaction,
-	TransactionInstruction,
 	TransactionMessage,
 	VersionedTransaction,
 } from '@solana/web3.js';
@@ -24,7 +20,6 @@ import {
 	TestClient,
 	PositionDirection,
 	User,
-	Wallet,
 	EventSubscriber,
 	BASE_PRECISION,
 	getLimitOrderParams,
@@ -54,11 +49,7 @@ import {
 	mockUSDCMint,
 	mockUserUSDCAccount,
 } from './testHelpers';
-import {
-	getTriggerLimitOrderParams,
-	PEG_PRECISION,
-	PostOnlyParams,
-} from '../../packages/sdk/src';
+import { PEG_PRECISION, PostOnlyParams } from '../../packages/sdk/src';
 import { startAnchor } from 'solana-bankrun';
 import { TestBulkAccountLoader } from '../../packages/sdk/src/accounts/testBulkAccountLoader';
 import { BankrunContextWrapper } from '../../packages/sdk/src/bankrun/bankrunConnection';

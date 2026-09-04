@@ -68,7 +68,8 @@ import {
 	TxParams,
 	UserAccount,
 	ForceCancelClobRefV0,
-	QuoterV0Account,
+	QuoterSlabV0Account,
+	QuoterSlotV0,
 	CancelOrderV1Params,
 	ModifyOrderV1Params,
 	CancelOrdersV1Params,
@@ -82,6 +83,7 @@ import {
 	AmmCache,
 	FlowAttestationV0,
 } from './types';
+import { decodeQuoterSlab } from './quoterSlab';
 import { VelocityCore } from './core/VelocityCore';
 
 /** Client-side guardrail; mirrors on-chain `ErrorCode::SpotDlobTradingDisabled`. */
@@ -193,6 +195,7 @@ import StrictEventEmitter from 'strict-event-emitter-types';
 import {
 	getClobAuthorityPublicKey,
 	getQuoterSignerPublicKey,
+	getQuoterSlabPublicKey,
 	getClobCrankConditionsPublicKey,
 	getVelocitySignerPublicKey,
 	getVelocityStateAccountPublicKey,
@@ -8579,7 +8582,7 @@ export class VelocityClient {
 		userAccount: UserAccount,
 		order: Order,
 		clobAccounts: {
-			quoter: PublicKey;
+			quoterSlab: PublicKey;
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 		},
@@ -8612,8 +8615,8 @@ export class VelocityClient {
 	 * @param userAccountPublicKey - Public key of the order owner's user account.
 	 * @param userAccount - Decoded user account for the order owner.
 	 * @param order - The trigger-market order to fire.
-	 * @param clobAccounts - The market's CLOB registry entry, book and program.
-	 * @param routeAccounts - The maker/referrer and quoter `AccountMeta[]` the fill routes through, appended after the standard market/oracle accounts. The market's baseline CLOB quoter is mandatory.
+	 * @param clobAccounts - The market's quoter slab, book and program.
+	 * @param routeAccounts - The maker/referrer and quoter `AccountMeta[]` the fill routes through, appended after the standard market/oracle accounts. The market's quoter slab and its book are mandatory.
 	 * @param fillerPublicKey - Filler's user account public key; defaults to this client's own user account.
 	 * @returns The instruction.
 	 */
@@ -8623,7 +8626,7 @@ export class VelocityClient {
 		userAccount: UserAccount,
 		order: Order,
 		clobAccounts: {
-			quoter: PublicKey;
+			quoterSlab: PublicKey;
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 		},
@@ -8650,7 +8653,7 @@ export class VelocityClient {
 				userAccount.authority
 			),
 			authority: this.wallet.publicKey,
-			quoter: clobAccounts.quoter,
+			quoterSlab: clobAccounts.quoterSlab,
 			clobMarket: clobAccounts.clobMarket,
 			clobProgram: clobAccounts.clobProgram,
 			clobAuthority: this.getClobAuthorityPublicKey(),
@@ -8745,7 +8748,7 @@ export class VelocityClient {
 	 * @param userAccountPublicKey - Public key of the deteriorated account.
 	 * @param userAccount - Decoded account of the deteriorated user.
 	 * @param orderRefs - The orders to reclaim, each with the side it rests on.
-	 * @param clobAccounts - The market's CLOB registry entry, book and program.
+	 * @param clobAccounts - The market's quoter slab, book and program.
 	 * @param fillerPublicKey - Filler's user account; defaults to this client's own.
 	 * @returns The instruction.
 	 */
@@ -8755,7 +8758,7 @@ export class VelocityClient {
 		userAccount: UserAccount,
 		orderRefs: ForceCancelClobRefV0[],
 		clobAccounts: {
-			quoter: PublicKey;
+			quoterSlab: PublicKey;
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 		},
@@ -8783,7 +8786,7 @@ export class VelocityClient {
 						this.program.programId,
 						userAccount.authority
 					),
-					quoter: clobAccounts.quoter,
+					quoterSlab: clobAccounts.quoterSlab,
 					clobMarket: clobAccounts.clobMarket,
 					clobProgram: clobAccounts.clobProgram,
 					clobAuthority: this.getClobAuthorityPublicKey(),
@@ -9458,7 +9461,7 @@ export class VelocityClient {
 		// remainder rests on the CLOB instead of being cancelled. The quoter
 		// section these imply is appended to the remaining accounts for you.
 		clobAccounts?: {
-			quoter: PublicKey;
+			quoterSlab: PublicKey;
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 			clobAuthority: PublicKey;
@@ -9515,7 +9518,7 @@ export class VelocityClient {
 			// the program resolves a quoter's registered CPI accounts from the
 			// remaining accounts, which its named ones are not part of.
 			remainingAccounts.push(
-				{ pubkey: clobAccounts.quoter, isWritable: false, isSigner: false },
+				{ pubkey: clobAccounts.quoterSlab, isWritable: false, isSigner: false },
 				{ pubkey: clobAccounts.clobMarket, isWritable: true, isSigner: false },
 				{
 					pubkey: clobAccounts.clobAuthority,
@@ -9571,7 +9574,7 @@ export class VelocityClient {
 	public async placeAndMakePerpOrder(
 		orderParams: OptionalOrderParams,
 		clobAccounts: {
-			quoter: PublicKey;
+			quoterSlab: PublicKey;
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 			clobAuthority: PublicKey;
@@ -9610,7 +9613,7 @@ export class VelocityClient {
 	public async getPlaceAndMakePerpOrderIx(
 		orderParams: OptionalOrderParams,
 		clobAccounts: {
-			quoter: PublicKey;
+			quoterSlab: PublicKey;
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 			clobAuthority: PublicKey;
@@ -9812,7 +9815,7 @@ export class VelocityClient {
 			fillerStats: PublicKey;
 		},
 		clobAccounts?: {
-			quoter: PublicKey;
+			quoterSlab: PublicKey;
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 			clobAuthority: PublicKey;
@@ -9867,7 +9870,7 @@ export class VelocityClient {
 			fillerStats: PublicKey;
 		},
 		clobAccounts?: {
-			quoter: PublicKey;
+			quoterSlab: PublicKey;
 			clobMarket: PublicKey;
 			clobProgram: PublicKey;
 			clobAuthority: PublicKey;
@@ -9960,7 +9963,7 @@ export class VelocityClient {
 						ixSysvar: SYSVAR_INSTRUCTIONS_PUBKEY,
 						filler: filler.filler,
 						fillerStats: filler.fillerStats,
-						quoter: clob.quoter,
+						quoterSlab: clob.quoterSlab,
 						clobMarket: clob.clobMarket,
 						clobProgram: clob.clobProgram,
 						clobAuthority: clob.clobAuthority,
@@ -14223,34 +14226,49 @@ export class VelocityClient {
 	}
 
 	/**
+	 * The market's quoter slab: the decoded header plus every slot in the
+	 * account's tail region (vacant ones included, so indexes are stable).
+	 */
+	public async getQuoterSlabAccount(marketIndex: number): Promise<{
+		header: QuoterSlabV0Account;
+		slots: QuoterSlotV0[];
+	}> {
+		const address = getQuoterSlabPublicKey(this.program.programId, marketIndex);
+		const info = await this.connection.getAccountInfo(address);
+		if (!info) {
+			throw new Error(`quoter slab for market ${marketIndex} not found`);
+		}
+		return decodeQuoterSlab(info.data);
+	}
+
+	/**
 	 * The accounts every CLOB order instruction takes, resolved from the market.
 	 *
-	 * A caller names a market and nothing else. `PerpMarket.clobQuoter` names
-	 * the market's canonical registry entry, that entry names the book's
-	 * program and account, and the remaining two are PDAs — so there is no
+	 * A caller names a market and nothing else. The market's quoter slab is a
+	 * PDA, its slot 0 holds the book's approved config (which names the book's
+	 * program and account), and the remaining one is a PDA — so there is no
 	 * configuration for a client to carry and get wrong.
 	 */
 	private async getClobAccounts(marketIndex: number): Promise<{
-		quoter: PublicKey;
+		quoterSlab: PublicKey;
 		clobMarket: PublicKey;
 		clobProgram: PublicKey;
 		clobAuthority: PublicKey;
 	}> {
-		const perpMarket = this.getPerpMarketAccount(marketIndex);
-		if (!perpMarket) {
-			throw new Error(`perp market ${marketIndex} not found`);
-		}
-		if (perpMarket.clobQuoter.equals(PublicKey.default)) {
+		const { slots } = await this.getQuoterSlabAccount(marketIndex);
+		const book = slots[0];
+		if (
+			!book ||
+			book.entry.equals(PublicKey.default) ||
+			!isVariant(book.config.quoterType, 'clob')
+		) {
 			throw new Error(`perp market ${marketIndex} has no CLOB attached`);
 		}
-		const entry = (await (this.program.account as any).quoterV0.fetch(
-			perpMarket.clobQuoter
-		)) as QuoterV0Account;
 		return {
-			quoter: perpMarket.clobQuoter,
-			// The book is the account the entry's responses are written into.
-			clobMarket: entry.responseAccount,
-			clobProgram: entry.programId,
+			quoterSlab: getQuoterSlabPublicKey(this.program.programId, marketIndex),
+			// The book is the account the slot's responses are written into.
+			clobMarket: book.config.responseAccount,
+			clobProgram: book.config.programId,
 			clobAuthority: this.getClobAuthorityPublicKey(),
 		};
 	}
@@ -14283,7 +14301,7 @@ export class VelocityClient {
 				),
 				user: await this.getUserAccountPublicKey(subAccountId),
 				authority: this.wallet.publicKey,
-				quoter: clob.quoter,
+				quoterSlab: clob.quoterSlab,
 				clobMarket: clob.clobMarket,
 				clobProgram: clob.clobProgram,
 				clobAuthority: clob.clobAuthority,
@@ -14336,7 +14354,7 @@ export class VelocityClient {
 				state: await this.getStatePublicKey(),
 				user: await this.getUserAccountPublicKey(subAccountId),
 				authority: this.wallet.publicKey,
-				quoter: clob.quoter,
+				quoterSlab: clob.quoterSlab,
 				clobMarket: clob.clobMarket,
 				clobProgram: clob.clobProgram,
 				clobAuthority: clob.clobAuthority,
@@ -14387,7 +14405,7 @@ export class VelocityClient {
 				state: await this.getStatePublicKey(),
 				user: await this.getUserAccountPublicKey(subAccountId),
 				authority: this.wallet.publicKey,
-				quoter: clob.quoter,
+				quoterSlab: clob.quoterSlab,
 				clobMarket: clob.clobMarket,
 				clobProgram: clob.clobProgram,
 				clobAuthority: clob.clobAuthority,

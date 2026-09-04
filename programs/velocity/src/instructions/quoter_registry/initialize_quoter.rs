@@ -1,8 +1,9 @@
-//! Create a [`QuoterV0`] registry entry for (perp market, quoter program,
+//! Create a [`QuoterV0`] staging entry for (perp market, quoter program,
 //! quoted user). For Custom quoters the quoted user's authority must be the
-//! creating authority — creation is consent. The entry is born unapproved,
-//! so it can never be filled against until the admin vets the CPI surface;
-//! account lists are set afterwards via `update_quoter_accounts`.
+//! creating authority — creation is consent. Nothing fills from a staging
+//! entry: the admin copies its config into the market's `QuoterSlabV0`
+//! (`update_quoter_approved`), and fills read only that copy. The account
+//! list is set before that via `update_quoter_accounts`.
 //!
 //! Any other type is the admin's to designate. The type decides whose
 //! balances the entry may move: a Custom entry is held to the one account it
@@ -165,19 +166,19 @@ pub fn handle_initialize_quoter(
     }
 
     let mut quoter = ctx.accounts.quoter.load_init()?;
-    quoter.user = ctx.accounts.user.key();
-    quoter.program_id = ctx.accounts.quoter_program.key();
-    quoter.response_account = args.response_account;
-    quoter.authority = ctx.accounts.authority.key();
-    quoter.quote_v0_discriminator = args.quote_v0_discriminator;
-    quoter.quote_l3_v0_discriminator = args.quote_l3_v0_discriminator;
-    quoter.execute_v0_discriminator = args.execute_v0_discriminator;
-    quoter.market = args.market_index;
-    quoter.quoter_type = args.quoter_type;
-    quoter.priority = args.quoter_type.default_priority();
+    let config = &mut quoter.config;
+    config.user = ctx.accounts.user.key();
+    config.program_id = ctx.accounts.quoter_program.key();
+    config.response_account = args.response_account;
+    config.authority = ctx.accounts.authority.key();
+    config.quote_v0_discriminator = args.quote_v0_discriminator;
+    config.quote_l3_v0_discriminator = args.quote_l3_v0_discriminator;
+    config.execute_v0_discriminator = args.execute_v0_discriminator;
+    config.market = args.market_index;
+    config.quoter_type = args.quoter_type;
+    config.priority = args.quoter_type.default_priority();
     // The maker's own switch is on from birth; nothing fills until the admin
-    // vets the CPI surface (`is_approved`).
-    quoter.is_active = true;
-    quoter.is_approved = false;
+    // copies this config into the market's slab.
+    config.is_active = true;
     Ok(())
 }

@@ -43,8 +43,9 @@ use {
             pdas,
             perp_market::PerpMarket,
             prop_amm::{
-                ClobEvictWorstArgsV0, ClobMarket, ClobReader, ClobRemoveExpiredArgsV0,
-                ClobRemovedOrderV0, ClobUserRefV0, QuoterV0, WireDirectionExt,
+                quoter_slab_clob, ClobEvictWorstArgsV0, ClobMarket, ClobReader,
+                ClobRemoveExpiredArgsV0, ClobRemovedOrderV0, ClobUserRefV0, QuoterSlabV0,
+                WireDirectionExt,
             },
             state::State,
             user::{User, UserStats},
@@ -89,13 +90,14 @@ pub struct CrankClobOrderRemoval<'info> {
     pub perp_market: AccountLoader<'info, PerpMarket>,
     /// Deliberately not gated on active/approved: dead books still need
     /// their resting orders reclaimed.
-    pub quoter: AccountLoader<'info, QuoterV0>,
-    /// CHECK: validated against the quoter entry's registered execute
-    /// accounts in the handler.
+    pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
+    /// CHECK: validated against the book slot's registered response account
+    /// in the handler.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
-    /// CHECK: locked to the registered quoter program.
-    #[account(address = quoter.load()?.program_id)]
+    /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
+    /// registration; the handler re-checks through the slot.
+    #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
     /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
     /// is set to. Its own key, distinct from the per-entry signer a
@@ -156,7 +158,7 @@ pub fn crank_clob_removal(
     )?;
 
     let clob = ClobMarket::from_quoter(
-        &*ctx.accounts.quoter.load()?,
+        &quoter_slab_clob(&ctx.accounts.quoter_slab, market_index)?.config,
         market_index,
         &ctx.accounts.clob_market,
         &ctx.accounts.clob_program,
@@ -321,8 +323,8 @@ pub struct ResolveClobCrank<'info> {
     /// Read-only: resolvers stage into the shared scratch account, not
     /// into the block they read.
     pub crank_conditions: AccountLoader<'info, ClobCrankConditionsV0>,
-    /// CHECK: validated against the quoter entry's registered execute
-    /// accounts, same as the executor it stages.
+    /// CHECK: validated against the book slot's registered response account,
+    /// same as the executor it stages.
     ///
     /// Writable for the book's response tail: the cross resolver asks the book
     /// for its resting orders through `quote_l3_v0`, which streams the answer
@@ -330,9 +332,9 @@ pub struct ResolveClobCrank<'info> {
     /// scratch region the book rewrites on every quote.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
-    pub quoter: AccountLoader<'info, QuoterV0>,
+    pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
     pub state: AccountLoader<'info, State>,
-    /// CHECK: checked against the quoter entry's `program_id`. A resolver asks
+    /// CHECK: checked against the book slot's `program_id`. A resolver asks
     /// the book which order to remove instead of reading its arena, so it
     /// calls the program rather than parsing the account.
     pub clob_program: UncheckedAccount<'info>,
@@ -346,13 +348,14 @@ pub struct ResolveClobCrank<'info> {
 }
 
 pub fn validate_linkage(ctx: &Context<ResolveClobCrank>) -> Result<()> {
-    let quoter = ctx.accounts.quoter.load()?;
-    let conditions = ctx.accounts.crank_conditions.load()?;
-    quoter.validate_clob_book(conditions.market_index, &ctx.accounts.clob_market.key())?;
+    let market_index = ctx.accounts.crank_conditions.load()?.market_index;
+    let slot = quoter_slab_clob(&ctx.accounts.quoter_slab, market_index)?;
+    slot.config
+        .validate_clob_book(market_index, &ctx.accounts.clob_market.key())?;
     validate!(
-        quoter.program_id == ctx.accounts.clob_program.key(),
+        slot.config.program_id == ctx.accounts.clob_program.key(),
         ErrorCode::DefaultError,
-        "clob program does not match the quoter entry"
+        "clob program does not match the book slot"
     )?;
     Ok(())
 }
@@ -402,9 +405,9 @@ pub fn removal_call<I: anchor_lang::Discriminator>(
             filler_stats: protocol_user_stats,
             user: maker,
             perp_market: pdas::perp_market(market_index),
-            quoter: ctx.accounts.quoter.key(),
+            quoter_slab: ctx.accounts.quoter_slab.key(),
             clob_market: ctx.accounts.clob_market.key(),
-            clob_program: ctx.accounts.quoter.load()?.program_id,
+            clob_program: crate::ids::clob_program::id(),
             clob_authority: pdas::clob_authority(),
             crank_conditions: Some(ctx.accounts.crank_conditions.key()),
         },
@@ -542,7 +545,7 @@ pub fn find_fired_trigger(
         else {
             continue;
         };
-        let kind = if meta.quoter == Pubkey::default() {
+        let kind = if meta.quoter_slab == Pubkey::default() {
             TriggerResolverKind::Flip
         } else if order.order_type == crate::state::user::OrderType::TriggerLimit {
             TriggerResolverKind::ClobRest

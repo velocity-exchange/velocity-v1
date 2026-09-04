@@ -3255,7 +3255,7 @@ pub fn handle_legacy_place_and_take_perp_order<'c: 'info, 'info>(
 /// `instructions::clob::place_and_take_v1` and the keeper's
 /// `fill_legacy_dlob_order` route.
 pub struct ClobRemainderRoute<'a, 'info> {
-    pub quoter: &'a AccountLoader<'info, crate::state::prop_amm::QuoterV0>,
+    pub quoter_slab: &'a AccountLoader<'info, crate::state::prop_amm::QuoterSlabV0>,
     pub clob_market: &'a AccountInfo<'info>,
     pub clob_program: &'a AccountInfo<'info>,
     /// The book's `place_authority` (the CLOB place authority PDA).
@@ -3757,7 +3757,7 @@ pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
             if unfilled > 0 {
                 crate::instructions::try_place_remainder_on_clob(
                     user_loader,
-                    clob.quoter,
+                    clob.quoter_slab,
                     clob.clob_market,
                     clob.clob_program,
                     clob.clob_authority,

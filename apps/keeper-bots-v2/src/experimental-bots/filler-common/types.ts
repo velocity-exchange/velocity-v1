@@ -65,13 +65,9 @@ export type SerializedOrder = {
 	maxTs: string;
 	bitFlags: number;
 	postedSlotTail: number;
-	/**
-	 * Four bytes, already JSON-safe, so it crosses the thread boundary as it is.
-	 * It has to cross: a fill claims the route the taker signed and the program
-	 * rejects the fill unless the claim digests to this, so an order that
-	 * arrives without it cannot be filled on a routed market.
-	 */
-	routeDigest: number[];
+	/** Free bytes, mirroring `Order.padding`. The route a signed message names
+	 * travels on `SignedMsgOrderId.routeDigest`, not on the order. */
+	padding: number[];
 };
 
 export type SerializedSpotPosition = {

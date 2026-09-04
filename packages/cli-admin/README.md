@@ -81,17 +81,19 @@ velocity-admin user deposit <market> <amount> [--authority <pk>] [--vault-index 
 velocity-admin user withdraw <market> <amount> [--authority <pk>] [--vault-index <i>] [--sub-account <id>] [--user-token-account <pk>] [--reduce-only] [--dry-run]
 
 velocity-admin quoter init <market> <quoterProgram> <user> <responseAccount> <quoteDisc> <executeDisc> [--type <vamm|clob|custom>] [--authority <pk>]  # born active but unapproved; custom entries must be created by the quoted user's authority; discs = 16 hex chars
-velocity-admin quoter update-accounts <quoter> <quote|execute> <index> <metas...> [--authority <pk>]  # meta = "<pubkey>" or "<pubkey>:w"; clears admin approval
-velocity-admin quoter update-config <quoter> [--response-account <pk>] [--quote-disc <hex>] [--execute-disc <hex>] [--authority <pk>]  # clears admin approval
-velocity-admin quoter set-active <quoter> <true|false> [--authority <pk>]  # maker kill switch; entry authority signs
-velocity-admin quoter set-approved <quoter> <true|false> [--admin <pk>]    # warm/cold admin vetting gate
-velocity-admin quoter set-priority <quoter> <0-255> [--admin <pk>]         # warm/cold admin; lower fills first, pro rata within a tier
+velocity-admin quoter init-slab <market> [capacity]                        # permissionless; creates the market's QuoterSlabV0 (slot 0 = the book; capacity 1-13, default 8)
+velocity-admin quoter extend-slab <market> <capacity>                      # permissionless; grows the slab to <capacity> total slots (max +13 per call)
+velocity-admin quoter update-accounts <quoter> <metas...> --quote-indexes <csv> --execute-indexes <csv> [--authority <pk>]  # meta = "<pubkey>" or "<pubkey>:w"; replaces the whole list; the approved slab copy keeps serving until re-approved
+velocity-admin quoter update-config <quoter> [--response-account <pk>] [--quote-disc <hex>] [--execute-disc <hex>] [--authority <pk>]  # staged; the approved slab copy keeps serving until re-approved
+velocity-admin quoter set-active <quoter> <true|false> [--authority <pk>]  # maker kill switch; entry authority signs; written through to the slab slot
+velocity-admin quoter set-approved <quoter> <true|false> [--admin <pk>]    # warm/cold admin vetting gate; copies the staging config into the market's slab slot (or revokes it)
+velocity-admin quoter set-priority <quoter> <0-255> [--admin <pk>]         # warm/cold admin; lower fills first, pro rata within a tier; written through to the slab slot
 velocity-admin quoter set-market-clob <market> <quoter> <clobMarket> [expireFallbackSlots] [--crank-cu <n>] [--crank-cu-<crank> <n>] [--admin <pk>]  # warm/cold admin; names the mandatory-baseline CLOB and stands up (or re-prices) the market's relay crank conditions + reservoir. Each crank's keeper payment is derived from the cost units it requests and the fee rails
-velocity-admin quoter set-watch <quoter> --watch-account <pk> --offset <n> --len <n> [-a <pk>]  # entry authority; declares the reprice region relay cross-discovery wakes on (len 0 clears); resets approval
-velocity-admin quoter set-oracle-band <quoter> <bps> [-a <pk>]             # entry authority; caps how far from oracle a Custom quoter's fills may price (0 clears); only ever tightens the market band, so approval is kept
+velocity-admin quoter set-watch <quoter> --watch-account <pk> --offset <n> --len <n> [-a <pk>]  # entry authority; declares the reprice region relay cross-discovery wakes on (len 0 clears); staged until re-approved
+velocity-admin quoter set-oracle-band <quoter> <bps> [-a <pk>]             # entry authority; caps how far from oracle a Custom quoter's fills may price (0 clears); only ever tightens the market band, so it is written through to the slab slot
 velocity-admin quoter attach-cross <quoter> [--fallback-slots <n>]           # permissionless; stands up (or re-prices) the entry's relay cross-discovery conditions
 
-velocity-admin clob-market init <market> --clob-program <pk> [--capacity <n>] [--crank-cu <n>] [--crank-cu-<crank> <n>] [--relay-program <pk>|none] [book config flags]  # one-shot bring-up: book create+init, quoter register+approve, canonical attach (creates crank conditions), relay watches (both blocks); warm/cold admin, direct-send only
+velocity-admin clob-market init <market> --clob-program <pk> [--capacity <n>] [--slab-capacity <n>] [--crank-cu <n>] [--crank-cu-<crank> <n>] [--relay-program <pk>|none] [book config flags]  # one-shot bring-up: book create+init, quoter slab when missing, quoter register+approve into the slab, canonical attach (creates crank conditions), relay watches (both blocks); warm/cold admin, direct-send only
 velocity-admin clob-market register-watch <market> [--relay-program <pk>]  # register a relay WatchV0 over BOTH of an existing market's condition blocks (velocity's conditions account and the book's own); permissionless, direct-send only
 
 > **Turner scoping.** A market's conditions live on two accounts: velocity's

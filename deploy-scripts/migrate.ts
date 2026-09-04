@@ -105,16 +105,16 @@ function ixDiscriminator(name: string): Buffer {
 const RESIZABLE: { name: string; size: number }[] = [
 	{ name: 'User', size: 8 + 4496 },
 	{ name: 'perpMarket', size: 8 + 1328 },
-	{ name: 'quoterV0', size: 8 + 2752 },
+	{ name: 'quoterV0', size: 8 + 784 },
 	// Relay condition hosts. Sizes come from the `sizes_for_the_migration_script`
 	// test in `state/relay_scratch.rs` — run it (`cargo test -p velocity --lib
 	// sizes_for_the_migration_script -- --show-output`) and paste, rather than
 	// working them out by hand. A type missing from (or stale in) this table is
 	// the failure that has no symptom until an account is read at the wrong
 	// offset.
-	{ name: 'clobCrankConditionsV0', size: 1576 },
-	{ name: 'QuoterCrossConditionsV0', size: 2168 },
-	{ name: 'UserConditionsV0', size: 7672 },
+	{ name: 'clobCrankConditionsV0', size: 808 },
+	{ name: 'QuoterCrossConditionsV0', size: 2424 },
+	{ name: 'UserConditionsV0', size: 6040 },
 ];
 
 async function main() {
@@ -408,11 +408,11 @@ async function clobBookFor(
 	if (!clobQuoter || clobQuoter.equals(PublicKey.default)) return undefined;
 	const entryInfo = await connection.getAccountInfo(new PublicKey(clobQuoter));
 	if (!entryInfo) return undefined;
-	const { responseAccount } = program.coder.accounts.decode(
+	const { config } = program.coder.accounts.decode(
 		'quoterV0',
 		entryInfo.data
-	) as { responseAccount: PublicKey };
-	return new PublicKey(responseAccount);
+	) as { config: { responseAccount: PublicKey } };
+	return new PublicKey(config.responseAccount);
 }
 
 /** Register a relay watch over a conditions block, unless one already

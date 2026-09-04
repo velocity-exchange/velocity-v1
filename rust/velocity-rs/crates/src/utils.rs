@@ -7,6 +7,7 @@ use crate::{
 use anchor_lang::Discriminator;
 use base64::Engine;
 use bytemuck::{bytes_of, Pod, Zeroable};
+use program::state::prop_amm::{QuoterConfigV0, QuoterSlabV0, QuoterSlotV0};
 use serde_json::json;
 use solana_message::AddressLookupTableAccount;
 
@@ -177,6 +178,34 @@ pub fn try_deser_zero_copy<T: Discriminator + Pod>(data: &[u8]) -> Option<T> {
     Some(bytemuck::pod_read_unaligned::<T>(
         &data[8..8 + std::mem::size_of::<T>()],
     ))
+}
+
+/// Decode a `QuoterSlabV0` account's slot region.
+///
+/// The slab account is the fixed header plus `capacity` raw back-to-back
+/// [`QuoterSlotV0`]s, so the anchor account type alone decodes only the
+/// header. Returns every slot, vacant ones included, so a slot index here is
+/// the on-chain slot index.
+pub fn decode_quoter_slab_slots(data: &[u8]) -> SdkResult<Vec<QuoterSlotV0>> {
+    let header = try_deser_zero_copy::<QuoterSlabV0>(data).ok_or(SdkError::Deserializing)?;
+    let slot_size = std::mem::size_of::<QuoterSlotV0>();
+    let region = data
+        .get(QuoterSlabV0::SLOT_REGION_OFFSET..)
+        .and_then(|tail| tail.get(..header.capacity as usize * slot_size))
+        .ok_or(SdkError::Deserializing)?;
+    Ok(region
+        .chunks_exact(slot_size)
+        .map(bytemuck::pod_read_unaligned::<QuoterSlotV0>)
+        .collect())
+}
+
+/// The market's book config off its slab slots: slot 0 by convention,
+/// occupied and `Clob` — the program's own `clob_slot_index` rule.
+/// Deliberately not gated on `suspended`/`is_active`: those mean "may take
+/// new flow", and the removal paths must keep working on a killed or
+/// de-listed book.
+pub fn clob_slot_config(slots: &[QuoterSlotV0]) -> Option<QuoterConfigV0> {
+    program::state::prop_amm::clob_slot_index(slots).map(|index| slots[index].config)
 }
 
 /// Derive pyth lazer oracle pubkey for Velocity program

@@ -76,8 +76,8 @@ use {
             pdas,
             perp_market_map::{get_writable_perp_market_set, MarketSet, PerpMarketMap},
             prop_amm::{
-                ClobFillArgsV0, ClobFillRequestV0, ClobMarket, ClobSide, ClobUserRefV0, Direction,
-                QuoterV0, WireDirectionExt,
+                quoter_slab_clob, ClobFillArgsV0, ClobFillRequestV0, ClobMarket, ClobSide,
+                ClobUserRefV0, Direction, QuoterConfigV0, WireDirectionExt,
             },
             revenue_share::RevenueShareEscrowZeroCopyMut,
             signed_msg_user::{SignedMsgUserOrdersLoader, SIGNED_MSG_PDA_SEED},
@@ -124,15 +124,16 @@ pub struct CrankTakerOriginCross<'info> {
         constraint = is_stats_for_user(&taker, &taker_stats)?
     )]
     pub taker_stats: AccountLoader<'info, UserStats>,
-    /// The market's CLOB registry entry.
-    pub quoter: AccountLoader<'info, QuoterV0>,
-    /// CHECK: validated against the quoter entry's registered execute accounts
-    /// (`ClobMarket::from_quoter`), so a valid entry cannot be pointed at an
+    /// The market's quoter slab; the book's config is its `Clob` slot.
+    pub quoter_slab: AccountLoader<'info, crate::state::prop_amm::QuoterSlabV0>,
+    /// CHECK: validated against the book slot's registered response account
+    /// (`ClobMarket::from_quoter`), so a valid slot cannot be pointed at an
     /// arbitrary account.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
-    /// CHECK: locked to the registered quoter program.
-    #[account(address = quoter.load()?.program_id)]
+    /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
+    /// registration; the handler re-checks through the slot.
+    #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
     /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
     /// is set to, and nothing a third-party quoter is ever handed.
@@ -219,7 +220,7 @@ const MAX_CROSS_ROWS: u16 = 64;
 /// aggressors, never a better counterparty than the one this settles against.
 /// What is left crosses on the next crank.
 fn read_book_rows<'info>(
-    quoter: &QuoterV0,
+    quoter: &QuoterConfigV0,
     market_index: u16,
     entry: &Pubkey,
     rows: u16,
@@ -350,9 +351,9 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         "the counterparty section must not repeat the taker or the cranker"
     )?;
 
-    let quoter = ctx.accounts.quoter.load()?;
+    let book_slot = quoter_slab_clob(&ctx.accounts.quoter_slab, market_index)?;
     validate!(
-        quoter.is_active && quoter.is_approved,
+        book_slot.quotes(),
         ErrorCode::DefaultError,
         "CLOB quoter is not active and approved"
     )?;
@@ -378,9 +379,9 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     };
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
     let (bids, asks) = read_book_rows(
-        &quoter,
+        &book_slot.config,
         market_index,
-        &ctx.accounts.quoter.key(),
+        &book_slot.entry.clone(),
         cross_rows,
         &[
             ctx.accounts.clob_market.to_account_info(),
@@ -424,7 +425,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         .aggressor_side()
         .ok_or(ErrorCode::NoTakerOriginCross)?;
     let subject_order = aggressor_of(&subject, aggressor_side);
-    drop(quoter);
+    drop(book_slot);
 
     let taker_direction = aggressor_side.to_position_direction();
     let resting_base = subject_order.base_asset_amount;
@@ -653,9 +654,9 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     // remainder that stays on the book costs no `User` bookkeeping. One the
     // book culls for falling under its minimum has to give them back.
     let filled = {
-        let quoter = ctx.accounts.quoter.load()?;
+        let slot = quoter_slab_clob(&ctx.accounts.quoter_slab, market_index)?;
         let clob = ClobMarket::from_quoter(
-            &quoter,
+            &slot.config,
             market_index,
             &ctx.accounts.clob_market,
             &ctx.accounts.clob_program,
@@ -1010,9 +1011,9 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
     // One call for both sides. Each order shrinks in place, and the book culls
     // whichever leftover falls under its minimum.
     let filled = {
-        let quoter = ctx.accounts.quoter.load()?;
+        let slot = quoter_slab_clob(&ctx.accounts.quoter_slab, market_index)?;
         let clob = ClobMarket::from_quoter(
-            &quoter,
+            &slot.config,
             market_index,
             &ctx.accounts.clob_market,
             &ctx.accounts.clob_program,
@@ -1157,13 +1158,6 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
 pub(super) fn stage_taker_origin_cross(
     ctx: &Context<ResolveClobCrank>,
 ) -> Result<Option<StagedCall>> {
-    let quoter = ctx.accounts.quoter.load()?;
-    if !quoter.is_active || !quoter.is_approved {
-        // The crank refuses a killed or unvetted entry, so there is no work to
-        // stage against one; reclaiming orders left on a dead book is the
-        // eviction and force-cancel paths'.
-        return Ok(None);
-    }
     let (market_index, oracle, quote_spot_market_index) = {
         let conditions = ctx.accounts.crank_conditions.load()?;
         (
@@ -1172,6 +1166,13 @@ pub(super) fn stage_taker_origin_cross(
             conditions.quote_spot_market_index,
         )
     };
+    let book_slot = quoter_slab_clob(&ctx.accounts.quoter_slab, market_index)?;
+    if !book_slot.quotes() {
+        // The crank refuses a killed or unvetted book, so there is no work to
+        // stage against one; reclaiming orders left on a dead book is the
+        // eviction and force-cancel paths'.
+        return Ok(None);
+    }
 
     // The resolver runs under simulation, so it reads the whole window the
     // crank could ever be asked for and hands back the depth that matters.
@@ -1181,9 +1182,9 @@ pub(super) fn stage_taker_origin_cross(
     ];
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
     let (bids, asks) = read_book_rows(
-        &quoter,
+        &book_slot.config,
         market_index,
-        &ctx.accounts.quoter.key(),
+        &book_slot.entry.clone(),
         MAX_CROSS_ROWS,
         &book_accounts,
         &mut cpi_scratch,
@@ -1244,9 +1245,9 @@ pub(super) fn stage_taker_origin_cross(
             filler_stats: protocol_user_stats,
             taker,
             taker_stats,
-            quoter: ctx.accounts.quoter.key(),
+            quoter_slab: ctx.accounts.quoter_slab.key(),
             clob_market: ctx.accounts.clob_market.key(),
-            clob_program: quoter.program_id,
+            clob_program: crate::ids::clob_program::id(),
             clob_authority: pdas::clob_authority(),
             crank_conditions: Some(ctx.accounts.crank_conditions.key()),
             // The route the taker signed rides its own signed-message record,
@@ -1259,13 +1260,13 @@ pub(super) fn stage_taker_origin_cross(
         .map_section(oracle, quote_spot_market_index, market_index)
         .maker_refs([counterparty_ref])
         // The quoter tail. The crank routes the remainder like any other fill,
-        // and every router fill must carry the market's CLOB entry as its
-        // baseline. A taker-origin order rests on the CLOB and nowhere else,
-        // so the book this resolver reads is that baseline entry.
-        .account(ctx.accounts.quoter.key(), false)
+        // and every router fill must carry the market's slab and consult its
+        // book. A taker-origin order rests on the CLOB and nowhere else, so
+        // the book this resolver reads is that baseline.
+        .account(ctx.accounts.quoter_slab.key(), false)
         .account(ctx.accounts.clob_market.key(), true)
         .account(pdas::clob_authority(), false)
-        .account(quoter.program_id, false)
+        .account(crate::ids::clob_program::id(), false)
         .arg(market_index)?
         .arg(cross_rows)?
         // The resolver stages no quoters of its own, so it claims no route.

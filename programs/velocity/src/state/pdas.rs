@@ -114,6 +114,17 @@ pub fn crank_treasury() -> Pubkey {
     .0
 }
 
+pub fn quoter_slab(market_index: u16) -> Pubkey {
+    Pubkey::find_program_address(
+        &[
+            crate::state::prop_amm::QUOTER_SLAB_PDA_SEED,
+            market_index.to_le_bytes().as_ref(),
+        ],
+        &crate::ID,
+    )
+    .0
+}
+
 pub fn clob_crank_conditions(market_index: u16) -> Pubkey {
     Pubkey::find_program_address(
         &[

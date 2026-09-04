@@ -870,6 +870,7 @@ mod tests {
         let ix = program::instruction::PlaceSignedMsgTakerOrder {
             signed_msg_order_params_message_bytes: payload.clone(),
             is_delegate_signer: false,
+            flow_attestation: None,
         };
         let mut data: Vec<u8> = <program::instruction::PlaceSignedMsgTakerOrder as anchor_lang::Discriminator>::DISCRIMINATOR.to_vec();
         ix.serialize(&mut data).unwrap();

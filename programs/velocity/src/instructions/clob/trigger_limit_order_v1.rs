@@ -74,7 +74,10 @@ use {
             margin_calculation::MarginContext,
             market_status::MarketStatus,
             perp_market_map::MarketSet,
-            prop_amm::{ClobMarket, ClobPlaceOrderArgsV0, ClobSide, QuoterV0, WireDirectionExt},
+            prop_amm::{
+                quoter_slab_clob, ClobMarket, ClobPlaceOrderArgsV0, ClobSide, QuoterSlabV0,
+                WireDirectionExt,
+            },
             state::State,
             user::{MarketType, OrderBitFlag, OrderType, User, UserStats},
         },
@@ -108,15 +111,17 @@ pub struct TriggerLimitOrderV1<'info> {
     /// Read for the authority-wide equity breaker in the margin gate.
     #[account(constraint = is_stats_for_user(&user, &user_stats)?)]
     pub user_stats: AccountLoader<'info, UserStats>,
-    /// The market's CLOB registry entry — placement is only allowed on a
-    /// vetted book, same as a maker's own `place_and_make_perp_order_v1`.
-    pub quoter: AccountLoader<'info, QuoterV0>,
-    /// CHECK: validated against the quoter entry's registered execute
-    /// accounts in the handler.
+    /// The market's quoter slab — placement is only allowed on the vetted
+    /// book its `Clob` slot names, same as a maker's own
+    /// `place_and_make_perp_order_v1`.
+    pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
+    /// CHECK: validated against the book slot's registered response account
+    /// in the handler.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
-    /// CHECK: locked to the registered quoter program.
-    #[account(address = quoter.load()?.program_id)]
+    /// CHECK: a Clob slot's program is pinned to velocity's CLOB at
+    /// registration; the handler re-checks through the slot.
+    #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
     /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
     /// is set to. Its own key, distinct from the per-entry signer a
@@ -179,14 +184,14 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
     )?;
 
     let clob = {
-        let quoter = ctx.accounts.quoter.load()?;
+        let slot = quoter_slab_clob(&ctx.accounts.quoter_slab, market_index)?;
         validate!(
-            quoter.is_active && quoter.is_approved,
+            slot.quotes(),
             ErrorCode::DefaultError,
             "CLOB quoter is not active and approved"
         )?;
         ClobMarket::from_quoter(
-            &quoter,
+            &slot.config,
             market_index,
             &ctx.accounts.clob_market,
             &ctx.accounts.clob_program,
@@ -591,7 +596,7 @@ pub fn handle_resolve_trigger_limit_order_v1(
                 filler_stats: protocol_user_stats,
                 user: ctx.accounts.user.key(),
                 user_stats,
-                quoter: meta.quoter,
+                quoter_slab: meta.quoter_slab,
                 clob_market: meta.clob_market,
                 clob_program: meta.clob_program,
                 clob_authority: crate::state::pdas::clob_authority(),

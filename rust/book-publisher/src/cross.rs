@@ -21,10 +21,9 @@
 use {
     anyhow::{anyhow, Context, Result},
     program::state::{
-        prop_amm::{ClobUserRefV0, QuoterV0},
+        prop_amm::{ClobUserRefV0, QuoterSlotV0},
         router_quote::QuotedSourceKind,
         state::State,
-        user::User,
     },
     relay_chain_source::ChainSource,
     solana_sdk::{
@@ -32,9 +31,12 @@ use {
         pubkey::Pubkey,
     },
     std::collections::BTreeMap,
-    velocity_router_sim::quote_view::{
-        perp_market_pda, read_zero_copy, spot_market_pda, state_pda, user_stats_pda,
-        velocity_signer_pda, QuoteView, QuotedBook,
+    velocity_router_sim::{
+        quote_view::{
+            perp_market_pda, read_zero_copy, spot_market_pda, state_pda, user_stats_pda,
+            velocity_signer_pda, QuoteView, QuotedBook,
+        },
+        quoter_slab_pda, quoter_slab_slots,
     },
 };
 
@@ -217,24 +219,27 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
         return Ok(None);
     };
 
-    // Load both registry entries (they may be the same: an internally
-    // crossed CLOB).
-    let entry_keys: Vec<Pubkey> = if bid_book.key == ask_book.key {
-        vec![bid_book.key]
-    } else {
-        vec![ask_book.key, bid_book.key]
+    // Resolve both legs to their slab slots (they may be the same slot: an
+    // internally crossed CLOB). The executor names legs by slab slot index,
+    // and it consults a slot because the tail carries its response account.
+    let slots = quoter_slab_slots(source, velocity, market_index).await?;
+    let slot_for = |entry: Pubkey| -> Result<(u8, QuoterSlotV0)> {
+        slots
+            .iter()
+            .enumerate()
+            .find(|(_, slot)| slot.entry == entry)
+            .map(|(index, slot)| (index as u8, *slot))
+            .ok_or_else(|| anyhow!("quoter {entry} has no slab slot"))
     };
-    let entry_accounts = source.get_multiple_accounts(&entry_keys).await?;
-    let entries: Vec<QuoterV0> = entry_keys
-        .iter()
-        .zip(entry_accounts)
-        .map(|(key, account)| {
-            let account = account.ok_or_else(|| anyhow!("quoter entry {key} missing"))?;
-            read_zero_copy::<QuoterV0>(&account.data)
-        })
-        .collect::<Result<_>>()?;
-    let buy_index = 0u8;
-    let sell_index = if entry_keys.len() == 1 { 0u8 } else { 1u8 };
+    // A view book's key is the staging entry — the ask book fills the buy
+    // leg and the bid book the sell leg.
+    let (buy_index, buy_slot) = slot_for(ask_book.key)?;
+    let (sell_index, sell_slot) = slot_for(bid_book.key)?;
+    let legs: Vec<QuoterSlotV0> = if buy_index == sell_index {
+        vec![buy_slot]
+    } else {
+        vec![buy_slot, sell_slot]
+    };
 
     // Maker pairs per leg, capped; the cross size shrinks to what the staged
     // makers cover. Both legs answer the same way, because the view
@@ -249,8 +254,10 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
     }
 
     // Assemble the executor call: named accounts, map section, maker
-    // (User, UserStats) pairs, quoter entries, then the union of their
-    // registered execute-leg CPI accounts.
+    // (User, UserStats) pairs, then the market's slab and the union of the
+    // legs' registered CPI accounts. The whole registered list rides rather
+    // than the execute leg's subset: each leg resolves its accounts by index
+    // into the one list, so carrying the list is what guarantees the resolve.
     let signer = velocity_signer_pda(velocity);
     let protocol_user = Pubkey::find_program_address(
         &[b"user", signer.as_ref(), 0u16.to_le_bytes().as_ref()],
@@ -260,14 +267,13 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
     let protocol_user_stats = user_stats_pda(velocity, &signer);
 
     let mut cpi_union: BTreeMap<Pubkey, bool> = BTreeMap::new();
-    for entry in &entries {
-        for meta in &entry.execute_accounts[..entry.execute_accounts_count as usize] {
+    for slot in &legs {
+        for meta in slot.config.registered_accounts() {
             *cpi_union.entry(meta.pubkey).or_default() |= meta.is_writable;
         }
-        *cpi_union.entry(entry.response_account).or_default() |= true;
-        cpi_union.entry(entry.program_id).or_default();
+        *cpi_union.entry(slot.config.response_account).or_default() |= true;
+        cpi_union.entry(slot.config.program_id).or_default();
     }
-    cpi_union.entry(signer).or_default();
 
     // Named accounts through the executor's own client struct, so a change
     // to its `#[derive(Accounts)]` shape breaks this builder at compile time.
@@ -298,9 +304,10 @@ pub async fn find_cross_plan<S: ChainSource + ?Sized>(
             false,
         ));
     }
-    for key in &entry_keys {
-        accounts.push(AccountMeta::new_readonly(*key, false));
-    }
+    accounts.push(AccountMeta::new_readonly(
+        quoter_slab_pda(velocity, market_index),
+        false,
+    ));
     for (key, writable) in &cpi_union {
         accounts.push(if *writable {
             AccountMeta::new(*key, false)

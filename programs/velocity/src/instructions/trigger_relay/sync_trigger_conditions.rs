@@ -34,7 +34,7 @@ use {
             oracle::OracleSource,
             oracle_watch::{oracle_watch, OracleWatchV0, WatchDirection},
             perp_market::PerpMarket,
-            prop_amm::{QuoterType, QuoterV0},
+            prop_amm::{clob_slot_index, quoter_slab_slots, QuoterSlabV0},
             spot_market::SpotMarket,
             user::{OrderStatus, OrderType, User},
             user_conditions::{
@@ -74,7 +74,7 @@ struct MarketInputs {
     /// has a registered layout. `None` leaves the order keeper-only.
     watch: Option<OracleWatchV0>,
     keeper_payment_lamports: Option<u64>,
-    /// (entry, book, program) when a vetted CLOB is attached.
+    /// (quoter slab, book, program) when a vetted CLOB is attached.
     clob: Option<(Pubkey, Pubkey, Pubkey)>,
 }
 
@@ -131,11 +131,17 @@ pub fn rewrite_trigger_conditions<'info>(
                     .keeper_payment_lamports = Some(u64::from(conditions.crank_payments.trigger));
                 continue;
             }
-            if let Ok(loader) = AccountLoader::<QuoterV0>::try_from(info) {
-                let entry = loader.load()?;
-                if entry.quoter_type == QuoterType::Clob && entry.is_active && entry.is_approved {
-                    markets.entry(entry.market).or_default().clob =
-                        Some((*info.key, entry.response_account, entry.program_id));
+            if let Ok(loader) = AccountLoader::<QuoterSlabV0>::try_from(info) {
+                let market = loader.load()?.market;
+                let slots = quoter_slab_slots(&loader)?;
+                if let Some(index) = clob_slot_index(&slots) {
+                    if slots[index].quotes() {
+                        markets.entry(market).or_default().clob = Some((
+                            *info.key,
+                            slots[index].config.response_account,
+                            slots[index].config.program_id,
+                        ));
+                    }
                 }
                 continue;
             }
@@ -235,7 +241,7 @@ pub fn rewrite_trigger_conditions<'info>(
             && inputs.clob.is_some();
         let clob_fill = order.order_type == OrderType::TriggerMarket && inputs.clob.is_some();
         let (resolver_disc, meta) = if clob_rest || clob_fill {
-            let (entry, book, program) = inputs.clob.unwrap();
+            let (slab, book, program) = inputs.clob.unwrap();
             let disc = if clob_rest {
                 crate::instruction::ResolveTriggerLimitOrderV1::DISCRIMINATOR
             } else {
@@ -244,7 +250,7 @@ pub fn rewrite_trigger_conditions<'info>(
             (
                 disc8(disc)?,
                 TriggerSlotMetaV0 {
-                    quoter: entry,
+                    quoter_slab: slab,
                     clob_market: book,
                     clob_program: program,
                     order_id: order.order_id,
@@ -256,7 +262,7 @@ pub fn rewrite_trigger_conditions<'info>(
             (
                 disc8(crate::instruction::ResolveTriggerOrder::DISCRIMINATOR)?,
                 TriggerSlotMetaV0 {
-                    quoter: Pubkey::default(),
+                    quoter_slab: Pubkey::default(),
                     clob_market: Pubkey::default(),
                     clob_program: Pubkey::default(),
                     order_id: order.order_id,

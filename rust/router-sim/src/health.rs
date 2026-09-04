@@ -18,12 +18,11 @@
 
 use {
     crate::quote_view::{
-        build_quote_router_ix, pass_account_cost, read_zero_copy, simulate_quote_view_with_cost,
-        CarriedEntry, QuoteRouterParams, QuoteSimFailure, QuoteView, PASS_ACCOUNT_BUDGET,
-        PASS_FIXED_ACCOUNTS,
+        build_quote_router_ix, pass_account_cost, simulate_quote_view_with_cost, CarriedEntry,
+        QuoteRouterParams, QuoteSimFailure, QuoteView, PASS_ACCOUNT_BUDGET, PASS_FIXED_ACCOUNTS,
     },
     anyhow::Result,
-    program::state::prop_amm::QuoterV0,
+    program::state::prop_amm::QuoterSlotV0,
     relay_chain_source::ChainSource,
     solana_sdk::pubkey::Pubkey,
     velocity_quoter_health::{
@@ -472,7 +471,7 @@ struct Plan {
 /// is far more than a transaction can address — a quoter with its own user
 /// pair and CPI accounts costs four keys — so a market with a handful of
 /// quoters planned as one pass and then could not be sent.
-fn plan_passes(entries: &[(Pubkey, QuoterV0)], dlob_makers: usize) -> Plan {
+fn plan_passes(slots: &[QuoterSlotV0], dlob_makers: usize) -> Plan {
     // The vAMM takes a source slot on the pass that carries it and no
     // accounts of its own: the perp market it reads is already there.
     let carried_dlob = dlob_makers
@@ -481,19 +480,18 @@ fn plan_passes(entries: &[(Pubkey, QuoterV0)], dlob_makers: usize) -> Plan {
 
     let mut passes: Vec<Pass> = Vec::new();
     let mut unquotable: Vec<Pubkey> = Vec::new();
-    let mut open: Vec<(Pubkey, QuoterV0)> = Vec::new();
+    let mut open: Vec<QuoterSlotV0> = Vec::new();
     let mut first = true;
 
-    // A pass in progress, plus one more entry: does it still fit?
-    let fits = |held: &[(Pubkey, QuoterV0)], first: bool| {
+    // A pass in progress, plus one more quoter: does it still fit?
+    let fits = |held: &[QuoterSlotV0], first: bool| {
         let dlob = if first { carried_dlob } else { 0 };
         let sources = held.len() + dlob + usize::from(first);
-        let data: Vec<QuoterV0> = held.iter().map(|(_, entry)| *entry).collect();
-        sources <= SOURCES_PER_PASS && pass_account_cost(&data, dlob) <= PASS_ACCOUNT_BUDGET
+        sources <= SOURCES_PER_PASS && pass_account_cost(held, dlob) <= PASS_ACCOUNT_BUDGET
     };
 
-    for (key, entry) in entries {
-        open.push((*key, *entry));
+    for slot in slots {
+        open.push(*slot);
         if fits(&open, first) {
             continue;
         }
@@ -505,7 +503,7 @@ fn plan_passes(entries: &[(Pubkey, QuoterV0)], dlob_makers: usize) -> Plan {
         // the pass that carries them.
         if !open.is_empty() || first {
             passes.push(Pass {
-                entries: open.iter().map(|(key, _)| *key).collect(),
+                entries: open.iter().map(|slot| slot.entry).collect(),
                 include_vamm: first,
                 with_dlob: first,
             });
@@ -513,17 +511,17 @@ fn plan_passes(entries: &[(Pubkey, QuoterV0)], dlob_makers: usize) -> Plan {
             open.clear();
         }
 
-        open.push((*key, *entry));
+        open.push(*slot);
         if !fits(&open, first) {
             // Alone on an empty pass and still too wide: nothing can carry
             // it, so the market publishes without it rather than not at all.
             open.pop();
-            unquotable.push(*key);
+            unquotable.push(slot.entry);
         }
     }
     if !open.is_empty() || passes.is_empty() {
         passes.push(Pass {
-            entries: open.iter().map(|(key, _)| *key).collect(),
+            entries: open.iter().map(|slot| slot.entry).collect(),
             include_vamm: first,
             with_dlob: first,
         });
@@ -555,16 +553,13 @@ pub async fn quote_market<S: ChainSource>(
     entries: &[Pubkey],
 ) -> Result<MarketQuote> {
     // The planner sizes a pass by what it costs to *send*, so it needs each
-    // entry's registered CPI surface. The accounts are already resident —
-    // this is the read the builder does again a moment later.
-    let carried: Vec<(Pubkey, QuoterV0)> = entries
-        .iter()
-        .copied()
-        .zip(source.get_multiple_accounts(entries).await?)
-        .filter_map(|(key, account)| {
-            let entry = read_zero_copy::<QuoterV0>(&account?.data).ok()?;
-            Some((key, entry))
-        })
+    // quoter's registered CPI surface — read off the market's slab, the same
+    // copy the builder reads again a moment later. The slab keeps slot
+    // order, which is the order the on-chain walk consults.
+    let slots = crate::quoter_slab_slots(source, &request.velocity, request.market_index).await?;
+    let carried: Vec<QuoterSlotV0> = slots
+        .into_iter()
+        .filter(|slot| slot.quotes() && entries.contains(&slot.entry))
         .collect();
     let plan = plan_passes(&carried, request.dlob_makers.len());
 
@@ -634,63 +629,65 @@ mod pass_tests {
     }
 
     /// A quoter shaped like the midpoint: an instance of a shared program,
-    /// filling for its own user. Four keys a pass has to find room for — the
-    /// entry, the instance, and the user's two accounts — plus the program
-    /// and the sysvar every instance shares.
-    fn custom(program: Pubkey) -> (Pubkey, QuoterV0) {
-        let mut entry: QuoterV0 = bytemuck::Zeroable::zeroed();
+    /// filling for its own user. Three unshared keys a pass has to find room
+    /// for — the instance and the user's two accounts — plus the program and
+    /// the sysvar every instance shares.
+    fn custom(program: Pubkey) -> QuoterSlotV0 {
+        let mut slot: QuoterSlotV0 = bytemuck::Zeroable::zeroed();
         let instance = Pubkey::new_unique();
-        entry.program_id = program;
-        entry.response_account = instance;
-        entry.user = Pubkey::new_unique();
-        entry.quoter_type = QuoterType::Custom;
-        entry.quote_accounts_count = 3;
-        for (slot, pubkey) in [instance, sysvar(), state()].into_iter().enumerate() {
-            entry.quote_accounts[slot] = AmmAccountMeta {
+        slot.entry = Pubkey::new_unique();
+        slot.config.is_active = true;
+        slot.config.program_id = program;
+        slot.config.response_account = instance;
+        slot.config.user = Pubkey::new_unique();
+        slot.config.quoter_type = QuoterType::Custom;
+        slot.config.accounts_count = 3;
+        slot.config.quote_accounts_count = 3;
+        for (index, pubkey) in [instance, sysvar(), state()].into_iter().enumerate() {
+            slot.config.accounts[index] = AmmAccountMeta {
                 pubkey,
-                is_writable: slot == 0,
+                is_writable: index == 0,
                 padding: [0; 7],
             };
+            slot.config.quote_account_indexes[index] = index as u8;
         }
-        (Pubkey::new_unique(), entry)
+        slot
     }
 
-    /// One quoter whose own CPI surface is wider than a whole transaction.
-    fn oversized() -> (Pubkey, QuoterV0) {
-        let (key, mut entry) = custom(Pubkey::new_unique());
-        // Every slot the registry gives one entry, which is already more
-        // keys than a transaction has room for.
-        entry.quote_accounts_count = MAX_QUOTER_ACCOUNTS as u8;
-        for slot in 0..entry.quote_accounts_count as usize {
-            entry.quote_accounts[slot] = AmmAccountMeta {
+    /// One quoter with the widest registered surface the program allows,
+    /// every account unshared.
+    fn widest() -> QuoterSlotV0 {
+        let mut slot = custom(Pubkey::new_unique());
+        slot.config.accounts_count = MAX_QUOTER_ACCOUNTS as u8;
+        for index in 0..slot.config.accounts_count as usize {
+            slot.config.accounts[index] = AmmAccountMeta {
                 pubkey: Pubkey::new_unique(),
                 is_writable: false,
                 padding: [0; 7],
             };
         }
-        (key, entry)
+        slot
     }
 
     /// A market of `count` midpoint-shaped quoters on one program.
-    fn market(count: usize) -> Vec<(Pubkey, QuoterV0)> {
+    fn market(count: usize) -> Vec<QuoterSlotV0> {
         let program = Pubkey::new_unique();
         (0..count).map(|_| custom(program)).collect()
     }
 
     /// What every pass costs, as the transaction counts it.
-    fn accounts_per_pass(entries: &[(Pubkey, QuoterV0)], plan: &Plan) -> Vec<usize> {
+    fn accounts_per_pass(slots: &[QuoterSlotV0], plan: &Plan) -> Vec<usize> {
         plan.passes
             .iter()
             .map(|pass| {
-                let data: Vec<QuoterV0> = pass
+                let data: Vec<QuoterSlotV0> = pass
                     .entries
                     .iter()
                     .map(|key| {
-                        entries
+                        *slots
                             .iter()
-                            .find(|(entry_key, _)| entry_key == key)
+                            .find(|slot| slot.entry == *key)
                             .expect("a planned entry is one of the market's")
-                            .1
                     })
                     .collect();
                 pass_account_cost(&data, if pass.with_dlob { plan.carried_dlob } else { 0 })
@@ -771,22 +768,29 @@ mod pass_tests {
         }
     }
 
-    /// A quoter no transaction can carry is named, not silently skipped: the
-    /// market publishes without it, and an operator can see why.
+    /// The registered list is capped at `MAX_QUOTER_ACCOUNTS`, and a quoter
+    /// at that cap fits a transaction on its own — so the widest allowed
+    /// surface is planned onto a pass, never reported unquotable. The
+    /// `unquotable` report stays as the guard for a budget change that
+    /// breaks this.
     #[test]
-    fn a_quoter_wider_than_a_transaction_is_reported() {
+    fn a_quoter_with_the_widest_allowed_surface_still_quotes() {
         let mut entries = market(2);
-        let (wide, entry) = oversized();
-        entries.insert(1, (wide, entry));
+        let wide_slot = widest();
+        let wide = wide_slot.entry;
+        entries.insert(1, wide_slot);
         let plan = plan_passes(&entries, 0);
-        assert_eq!(plan.unquotable, vec![wide]);
+        assert!(plan.unquotable.is_empty());
         let planned: Vec<Pubkey> = plan
             .passes
             .iter()
             .flat_map(|pass| pass.entries.iter().copied())
             .collect();
-        assert_eq!(planned.len(), 2, "the other two still quote");
-        assert!(!planned.contains(&wide));
+        assert_eq!(planned.len(), 3, "every quoter quotes");
+        assert!(planned.contains(&wide));
+        for accounts in accounts_per_pass(&entries, &plan) {
+            assert!(accounts <= PASS_ACCOUNT_BUDGET);
+        }
     }
 
     #[test]

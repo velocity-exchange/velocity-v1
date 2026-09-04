@@ -19,7 +19,7 @@
 //! against them.
 
 use {
-    crate::quoter_entries,
+    crate::{quoter_slab_pda, quoter_slab_slots},
     anchor_lang::{Discriminator, InstructionData, ToAccountMetas},
     anyhow::{anyhow, bail, Context, Result},
     program::{
@@ -27,7 +27,7 @@ use {
         state::{
             perp_market::PerpMarket,
             prop_amm::{
-                ClobUserRefV0 as UserRefV0, Direction, QuoterType, QuoterV0,
+                ClobUserRefV0 as UserRefV0, Direction, QuoterSlotV0, QuoterType,
                 L3_ROW_FLAG_BLOCKS_WALK,
             },
             router_quote::{QuotedLevelV0, QuotedSourceKind, RouterQuoteBufferV0},
@@ -258,31 +258,31 @@ pub const PASS_ACCOUNT_BUDGET: usize = {
 pub const PACKET_DATA_SIZE: usize = 1280 - 40 - 8;
 
 /// Keys every pass carries whatever it quotes: the instruction's own three
-/// accounts, the oracle/spot/perp map, the quoter signer, and velocity
-/// itself as the program the message invokes.
+/// accounts, the oracle/spot/perp map, the market's quoter slab, and
+/// velocity itself as the program the message invokes.
 pub const PASS_FIXED_ACCOUNTS: usize = 3 + 3 + 1 + 1;
 
-/// Static account keys a pass carrying `entries` and `dlob_makers` needs.
+/// Static account keys a pass carrying `slots` and `dlob_makers` needs.
 ///
 /// The same set [`build_quote_router_ix`] assembles, counted rather than
-/// built: entry keys, the union of their registered CPI accounts, and two
-/// accounts for every user a book has to load. It rounds up rather than down
-/// where the builder would dedup further — a pass that plans too small is a
-/// pass that publishes nothing.
-pub fn pass_account_cost(entries: &[QuoterV0], dlob_makers: usize) -> usize {
+/// built: the union of the slots' registered CPI accounts, and two accounts
+/// for every user a book has to load. It rounds up rather than down where
+/// the builder would dedup further — a pass that plans too small is a pass
+/// that publishes nothing.
+pub fn pass_account_cost(slots: &[QuoterSlotV0], dlob_makers: usize) -> usize {
     let mut cpi: BTreeSet<Pubkey> = BTreeSet::new();
     let mut users: BTreeSet<Pubkey> = BTreeSet::new();
-    for entry in entries {
-        for meta in &entry.quote_accounts[..entry.quote_accounts_count as usize] {
+    for slot in slots {
+        for meta in slot.config.registered_accounts() {
             cpi.insert(meta.pubkey);
         }
-        cpi.insert(entry.response_account);
-        cpi.insert(entry.program_id);
-        if entry.quoter_type == QuoterType::Custom {
-            users.insert(entry.user);
+        cpi.insert(slot.config.response_account);
+        cpi.insert(slot.config.program_id);
+        if slot.config.quoter_type == QuoterType::Custom {
+            users.insert(slot.config.user);
         }
     }
-    PASS_FIXED_ACCOUNTS + entries.len() + cpi.len() + 2 * (users.len() + dlob_makers)
+    PASS_FIXED_ACCOUNTS + cpi.len() + 2 * (users.len() + dlob_makers)
 }
 
 /// Instructions creating + initializing a quote buffer for `(authority,
@@ -328,8 +328,8 @@ pub struct QuoteRouterIx {
     pub entries: Vec<CarriedEntry>,
 }
 
-/// A registry entry a pass carried, with what a consumer needs to attribute
-/// its levels.
+/// A quoter a pass carried, named by its staging entry, with what a consumer
+/// needs to attribute its levels.
 ///
 /// `user` is the account a Custom entry settles against: one maker, named at
 /// registration. A Custom quoter's levels therefore have a maker even though
@@ -358,10 +358,6 @@ impl CarriedEntry {
     }
 }
 
-/// Build the `quote_router` instruction for a market from live chain state:
-/// the market's oracle, every active + approved registry entry, each Custom
-/// quoter's `(User, UserStats)` pair (the margin clamp reads them), and the
-/// union of the entries' registered quote-leg CPI accounts.
 /// What one pass of the quote view should carry.
 #[derive(Clone, Copy)]
 pub struct QuoteRouterParams<'a> {
@@ -376,12 +372,12 @@ pub struct QuoteRouterParams<'a> {
     /// the buffer's source slots, so a caller passes candidates rather than
     /// the whole book; the split reports which of them the fill would reach.
     pub dlob_makers: &'a [Pubkey],
-    /// Registry entries to leave out. A quoter proven to break this market's
-    /// simulation is dropped here, so the rest of the market still quotes.
-    /// Without this the only way to route around a bad quoter is the on-chain
-    /// approval flags, which no router holds.
+    /// Quoters to leave out, by staging-entry address. A quoter proven to
+    /// break this market's simulation is dropped here, so the rest of the
+    /// market still quotes. Without this the only way to route around a bad
+    /// quoter is the on-chain approval flags, which no router holds.
     pub exclude: &'a [Pubkey],
-    /// Carry only these entries, when set.
+    /// Carry only these quoters, by staging-entry address, when set.
     ///
     /// The buffer holds a fixed number of sources and a transaction a fixed
     /// number of accounts, so a market with more quoters than either allows
@@ -425,29 +421,26 @@ pub async fn build_quote_router_ix<S: ChainSource>(
     let perp_market: PerpMarket = read_zero_copy(&perp_market_account.data)?;
     let quote_spot_market = spot_market_pda(velocity, perp_market.quote_spot_market_index);
 
-    // Live registry entries for the market, in a stable order.
-    let mut entries: Vec<(Pubkey, QuoterV0)> = quoter_entries(source, velocity, market_index)
-        .await?
-        .into_iter()
-        .map(|(key, account)| Ok((key, read_zero_copy::<QuoterV0>(&account.data)?)))
-        .collect::<Result<_>>()?;
-    entries.retain(|(key, entry)| {
-        entry.is_active
-            && entry.is_approved
-            && !exclude.contains(key)
-            && only.map(|only| only.contains(key)).unwrap_or(true)
+    // The slots this pass consults, in slab order — the order the on-chain
+    // walk quotes them in, which is what log attribution aligns against. A
+    // slot is consulted by carrying its response account, so selection here
+    // is selection of what rides the tail.
+    let mut slots: Vec<QuoterSlotV0> = quoter_slab_slots(source, velocity, market_index).await?;
+    slots.retain(|slot| {
+        slot.quotes()
+            && !exclude.contains(&slot.entry)
+            && only.map(|only| only.contains(&slot.entry)).unwrap_or(true)
     });
-    entries.sort_by_key(|(key, _)| *key);
 
     // The user map the view walks: custom quoters' users, which the margin
     // clamp needs, and the DLOB makers the caller wants bridged. One section,
     // because the instruction reads one map — a custom quoter that is also a
     // DLOB maker appears once.
     let map_users: Vec<Pubkey> = {
-        let mut users: Vec<Pubkey> = entries
+        let mut users: Vec<Pubkey> = slots
             .iter()
-            .filter(|(_, entry)| entry.quoter_type == QuoterType::Custom)
-            .map(|(_, entry)| entry.user)
+            .filter(|slot| slot.config.quoter_type == QuoterType::Custom)
+            .map(|slot| slot.config.user)
             .chain(dlob_makers.iter().copied())
             .collect();
         users.sort();
@@ -465,19 +458,21 @@ pub async fn build_quote_router_ix<S: ChainSource>(
         })
         .collect::<Result<_>>()?;
 
-    // The union of the entries' registered quote-leg accounts, plus the
-    // pieces every quoter CPI needs: its response account (written), its
-    // program, and the velocity signer. Writability ORs across entries.
+    // The union of the consulted slots' registered CPI accounts, plus the
+    // pieces every quoter CPI needs: its response account (written) and its
+    // program. Writability ORs across slots. The whole registered list rides
+    // rather than the quote leg's subset: each leg resolves its accounts by
+    // index into the one list, so carrying the list is what guarantees the
+    // resolve — a signer a quoter registered is in it by construction.
     let mut cpi_union: BTreeMap<Pubkey, bool> = BTreeMap::new();
-    for (_, entry) in &entries {
-        for meta in &entry.quote_accounts[..entry.quote_accounts_count as usize] {
+    for slot in &slots {
+        for meta in slot.config.registered_accounts() {
             let writable = cpi_union.entry(meta.pubkey).or_default();
             *writable |= meta.is_writable;
         }
-        *cpi_union.entry(entry.response_account).or_default() |= true;
-        cpi_union.entry(entry.program_id).or_default();
+        *cpi_union.entry(slot.config.response_account).or_default() |= true;
+        cpi_union.entry(slot.config.program_id).or_default();
     }
-    cpi_union.entry(velocity_signer_pda(velocity)).or_default();
 
     let mut accounts = program::accounts::QuoteRouter {
         state: state_pda(velocity),
@@ -497,10 +492,13 @@ pub async fn build_quote_router_ix<S: ChainSource>(
         accounts.push(AccountMeta::new(*user, false));
         accounts.push(AccountMeta::new(*stats, false));
     }
-    // Quoter section: entries, then the CPI union.
-    for (key, _) in &entries {
-        accounts.push(AccountMeta::new_readonly(*key, false));
-    }
+    // Quoter section: the market's slab, then the CPI union. A slot is
+    // consulted because its response account is in the union — no entry
+    // accounts ride the call.
+    accounts.push(AccountMeta::new_readonly(
+        quoter_slab_pda(velocity, market_index),
+        false,
+    ));
     for (key, writable) in &cpi_union {
         accounts.push(if *writable {
             AccountMeta::new(*key, false)
@@ -518,20 +516,19 @@ pub async fn build_quote_router_ix<S: ChainSource>(
                     market_index,
                     direction,
                     size,
-                    quoter_count: entries.len() as u8,
-                    include_vamm,
                     taker_served_window,
+                    include_vamm,
                 },
             }
             .data(),
         },
-        entries: entries
+        entries: slots
             .iter()
-            .map(|(key, entry)| CarriedEntry {
-                quoter: *key,
-                program: entry.program_id,
-                user: entry.user,
-                quoter_type: entry.quoter_type,
+            .map(|slot| CarriedEntry {
+                quoter: slot.entry,
+                program: slot.config.program_id,
+                user: slot.config.user,
+                quoter_type: slot.config.quoter_type,
             })
             .collect(),
     })

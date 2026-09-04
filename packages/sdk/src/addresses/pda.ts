@@ -741,6 +741,25 @@ export function getQuoterPublicKey(
 	)[0];
 }
 
+/**
+ * The market's quoter slab (`QuoterSlabV0`) — the one account that holds
+ * every approved quoter config for that market. Router fills carry it in
+ * place of per-quoter registry entries; the CLOB order instructions read the
+ * book's config from its slot 0.
+ */
+export function getQuoterSlabPublicKey(
+	programId: PublicKey,
+	marketIndex: number
+): PublicKey {
+	return PublicKey.findProgramAddressSync(
+		[
+			Buffer.from(anchor.utils.bytes.utf8.encode('quoter_slab')),
+			new anchor.BN(marketIndex).toArrayLike(Buffer, 'le', 2),
+		],
+		programId
+	)[0];
+}
+
 export function getClobCrankConditionsPublicKey(
 	programId: PublicKey,
 	marketIndex: number

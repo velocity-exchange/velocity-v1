@@ -147,8 +147,8 @@ public on-chain state, so the endpoint needs no auth.
 ## W4 — SDK surface
 
 - `placeClobOrder`, `cancelClobOrder`, `modifyClobOrder`, `cancelAllClobOrders` on
-  `VelocityClient`, each resolving `quoter`, `clobMarket`, `clobProgram` and the CLOB authority
-  from `PerpMarket.clob_quoter` and the PDAs. A caller passes an order and a
+  `VelocityClient`, each resolving `quoterSlab`, `clobMarket`, `clobProgram` and the CLOB authority
+  from the market's quoter slab and the PDAs. A caller passes an order and a
   market, nothing else.
 - Cancel and modify take the order object from the feed, which already holds `nodeIndex`. Re-resolve
   once and retry on a stale-hint failure, because a fill can move a node between read and send.

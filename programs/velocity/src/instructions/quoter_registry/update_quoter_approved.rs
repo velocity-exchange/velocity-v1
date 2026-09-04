@@ -1,7 +1,12 @@
-//! Admin vetting gate. Approval validates the entry is coherent enough to
-//! CPI: non-empty account lists on both legs, each containing the response
-//! account (the router reads responses from it, so it must be forwarded), and
-//! no reserved key on either list.
+//! Admin vetting gate: copy a staging entry's config into the market's slab
+//! (or pull it back out). The slab copy is the only config fills read, so a
+//! maker edit to the staging entry never reaches flow until the admin copies
+//! it in again — and until then the previously vetted copy keeps serving.
+//!
+//! Approval validates the config is coherent enough to CPI: non-empty index
+//! lists on both legs, each naming the response account (the router reads
+//! responses from it, so it must be forwarded), and no reserved key on the
+//! registered list.
 //!
 //! Approval does not require a frozen program, and does not freeze one. A maker
 //! may upgrade the program behind an approved entry. Three things make that
@@ -14,7 +19,7 @@
 //!    else's.
 //! 2. An entry that quotes and does not deliver stops being routed to: fillers
 //!    choose which entries to carry, and a taker's signed route names its own.
-//! 3. The admin can set `is_approved` false at any time, and the maker holds
+//! 3. The admin can pull the copy at any time, and the maker holds
 //!    `is_active` as well.
 //!
 //! Requiring a frozen program would buy little against that. It closes only
@@ -27,13 +32,21 @@
 //! What approval does instead is record the slot the program was deployed at.
 //! An upgrade then shows up as a changed slot, so a reader knows the code moved
 //! without having to infer it from behaviour.
+//!
+//! Revocation splits by type. A `Custom` slot is cleared — it has no resting
+//! state to unwind. A `Clob` slot is suspended instead: it quotes nothing,
+//! but its config stays so the removal paths keep working, because a maker
+//! must always be able to pull orders off a killed book.
 
 use {
     crate::{
         auth::check_warm,
         error::ErrorCode,
         state::{
-            prop_amm::{validate_quoter_accounts, QuoterV0},
+            prop_amm::{
+                occupied_slots, quoter_slab_slots_mut, slot_for_entry, vacant_slot_index,
+                validate_quoter_accounts, QuoterSlabV0, QuoterType, QuoterV0, QUOTER_SLAB_PDA_SEED,
+            },
             state::State,
         },
         validate,
@@ -46,11 +59,20 @@ pub struct UpdateQuoterApproved<'info> {
     #[account(constraint = check_warm(&admin.key(), &state)?)]
     pub admin: Signer<'info>,
     pub state: AccountLoader<'info, State>,
-    #[account(mut)]
+    /// The staging entry whose config is copied in (or whose copy is pulled).
     pub quoter: AccountLoader<'info, QuoterV0>,
+    #[account(
+        mut,
+        seeds = [
+            QUOTER_SLAB_PDA_SEED,
+            quoter.load()?.config.market.to_le_bytes().as_ref(),
+        ],
+        bump
+    )]
+    pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
     /// CHECK: locked to the entry's registered program. Read for its loader,
     /// which says whether a deploy slot exists to record.
-    #[account(address = quoter.load()?.program_id)]
+    #[account(address = quoter.load()?.config.program_id)]
     pub quoter_program: UncheckedAccount<'info>,
     /// CHECK: validated as `quoter_program`'s program-data account in the
     /// handler. Read for the slot the program was last deployed at. Optional
@@ -114,37 +136,116 @@ pub fn handle_update_quoter_approved(
     ctx: Context<UpdateQuoterApproved>,
     approved: bool,
 ) -> Result<()> {
-    let mut quoter = ctx.accounts.quoter.load_mut()?;
-    if approved {
-        quoter.approved_program_slot = deployed_slot(
-            &ctx.accounts.quoter_program,
-            ctx.accounts.quoter_program_data.as_ref(),
-        )?;
-        for (list, count) in [
-            (&quoter.quote_accounts, quoter.quote_accounts_count),
-            (&quoter.execute_accounts, quoter.execute_accounts_count),
-        ] {
-            validate!(
-                count > 0,
-                ErrorCode::InvalidQuoterConfig,
-                "cannot approve a quoter with an empty account list"
-            )?;
-            validate!(
-                list[..count as usize]
-                    .iter()
-                    .any(|meta| meta.pubkey == quoter.response_account),
-                ErrorCode::InvalidQuoterConfig,
-                "response account must be registered in both CPI account lists"
-            )?;
-            // Re-checked here, not only at write time: a list stored before
-            // the reserved-key check existed is still on chain, and approval
-            // is the gate that lets an entry take flow.
-            validate_quoter_accounts(list[..count as usize].iter().map(|meta| &meta.pubkey))?;
+    let entry_key = ctx.accounts.quoter.key();
+    let quoter = ctx.accounts.quoter.load()?;
+    let mut slots = quoter_slab_slots_mut(&ctx.accounts.quoter_slab)?;
+
+    if !approved {
+        let Some(index) = slot_for_entry(&slots, &entry_key) else {
+            msg!("quoter {} holds no slab slot; nothing to revoke", entry_key);
+            return Ok(());
+        };
+        if slots[index].config.quoter_type == QuoterType::Clob {
+            // The config stays so the removal paths keep working on the dead
+            // book; the slot just quotes nothing.
+            slots[index].suspended = true;
+        } else {
+            slots[index].clear();
         }
-    } else {
-        // Nothing is approved, so no slot is either.
-        quoter.approved_program_slot = 0;
+        return Ok(());
     }
-    quoter.is_approved = approved;
+
+    let config = &quoter.config;
+    validate!(
+        config.quoter_type != QuoterType::Vamm,
+        ErrorCode::InvalidQuoterConfig,
+        "the vAMM quotes in-program, not through the registry"
+    )?;
+    let registered = config.registered_accounts();
+    for (name, indexes) in [
+        ("quote", config.quote_leg_indexes()),
+        ("execute", config.execute_leg_indexes()),
+    ] {
+        validate!(
+            !indexes.is_empty(),
+            ErrorCode::InvalidQuoterConfig,
+            "cannot approve a quoter with an empty {} leg",
+            name
+        )?;
+        validate!(
+            indexes.iter().all(|&i| (i as usize) < registered.len()),
+            ErrorCode::InvalidQuoterConfig,
+            "a {} leg index points past the registered list",
+            name
+        )?;
+        // The router reads responses from the response account, so every leg
+        // must forward it.
+        validate!(
+            indexes
+                .iter()
+                .any(|&i| registered[i as usize].pubkey == config.response_account),
+            ErrorCode::InvalidQuoterConfig,
+            "response account must be forwarded on both CPI legs"
+        )?;
+    }
+    // Re-checked here, not only at write time: a list stored before the
+    // reserved-key check existed is still on chain, and approval is the gate
+    // that lets a config take flow.
+    validate_quoter_accounts(registered.iter().map(|meta| &meta.pubkey))?;
+
+    // A route names the slots it consults by carrying their response
+    // accounts, so two slots sharing one could not be carried apart.
+    validate!(
+        occupied_slots(&slots).all(|(_, slot)| slot.entry == entry_key
+            || slot.config.response_account != config.response_account),
+        ErrorCode::InvalidQuoterConfig,
+        "another approved quoter already uses response account {}",
+        config.response_account
+    )?;
+    // Nor may the registered lists overlap the response accounts: a list that
+    // names another slot's response account would force that slot into every
+    // fill this one rides in, and a consulted slot with an incomplete account
+    // list fails the fill. Checked in both directions, so approval order does
+    // not decide which pair is refused.
+    validate!(
+        occupied_slots(&slots).all(|(_, slot)| slot.entry == entry_key
+            || (registered
+                .iter()
+                .all(|meta| meta.pubkey != slot.config.response_account)
+                && slot
+                    .config
+                    .registered_accounts()
+                    .iter()
+                    .all(|meta| meta.pubkey != config.response_account))),
+        ErrorCode::InvalidQuoterConfig,
+        "a registered account list may not name another approved quoter's response account"
+    )?;
+    // Slot 0 is the book's, by convention, so every book-touching
+    // instruction reads it without a scan. One book per market: a second
+    // Clob approval must be the same entry re-approved.
+    let index = if config.quoter_type == QuoterType::Clob {
+        validate!(
+            slots[0].is_vacant() || slots[0].entry == entry_key,
+            ErrorCode::InvalidQuoterConfig,
+            "the slab already holds a book slot"
+        )?;
+        0
+    } else {
+        match slot_for_entry(&slots, &entry_key) {
+            Some(index) => index,
+            None => vacant_slot_index(&slots).ok_or_else(|| {
+                msg!("quoter slab for market {} is full", config.market);
+                error!(ErrorCode::QuoterSlabFull)
+            })?,
+        }
+    };
+    let approved_program_slot = deployed_slot(
+        &ctx.accounts.quoter_program,
+        ctx.accounts.quoter_program_data.as_ref(),
+    )?;
+    slots[index].entry = entry_key;
+    slots[index].suspended = false;
+    slots[index].config = *config;
+    slots[index].config.approved_program_slot = approved_program_slot;
     Ok(())
 }

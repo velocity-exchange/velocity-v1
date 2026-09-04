@@ -18,7 +18,6 @@ use {
             oracle::PrelaunchOracleParams,
             order_params::{ModifyOrderParams, OrderParams},
             perp_market::ContractTier,
-            prop_amm::{ClobOrderRefV0, ClobSide},
             scale_order_params::ScaleOrderParams,
             settle_pnl_mode::SettlePnlMode,
             spot_market::AssetTier,
@@ -316,10 +315,9 @@ pub mod velocity {
     /// route is a separate endpoint rather than optional accounts on v0.
     pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
         ctx: Context<'info, PlaceAndTakeV1<'info>>,
-        params: OrderParams,
-        success_condition: Option<u32>,
+        args: PlaceAndTakePerpOrderV1Args,
     ) -> Result<()> {
-        handle_place_and_take_perp_order_v1(ctx, params, success_condition)
+        handle_place_and_take_perp_order_v1(ctx, args)
     }
 
     /// Rest a maker limit order on the market's CLOB. The order goes straight to
@@ -328,10 +326,9 @@ pub mod velocity {
     /// default, and a below-default value needs the flow-authority attestation.
     pub fn place_and_make_perp_order_v1<'c: 'info, 'info>(
         ctx: Context<'info, PlaceAndMakeV1<'info>>,
-        params: OrderParams,
-        activation_delay_slots: Option<u32>,
+        args: PlaceAndMakePerpOrderV1Args,
     ) -> Result<()> {
-        handle_place_and_make_perp_order_v1(ctx, params, activation_delay_slots)
+        handle_place_and_make_perp_order_v1(ctx, args)
     }
 
     /// Place, route and rest one signed-message taker order.
@@ -540,12 +537,9 @@ pub mod velocity {
     /// account is loaded; it is checked against the order's own market.
     pub fn fill_legacy_dlob_order<'c: 'info, 'info>(
         ctx: Context<'info, FillLegacyDlobOrder<'info>>,
-        order_id: Option<u32>,
-        _maker_order_id: Option<u32>,
-        signed_route: Vec<Pubkey>,
-        market_index: u16,
+        args: FillLegacyDlobOrderArgs,
     ) -> Result<()> {
-        handle_fill_legacy_dlob_order(ctx, order_id, signed_route, market_index)
+        handle_fill_legacy_dlob_order(ctx, args)
     }
 
     pub fn revert_fill(ctx: Context<RevertFill>) -> Result<()> {
@@ -569,11 +563,9 @@ pub mod velocity {
     /// `User.orders`.
     pub fn trigger_market_order_v1<'c: 'info, 'info>(
         ctx: Context<'info, TriggerMarketOrderV1<'info>>,
-        market_index: u16,
-        order_id: u32,
-        signed_route: Vec<Pubkey>,
+        args: TriggerMarketOrderV1Args,
     ) -> Result<()> {
-        handle_trigger_market_order_v1(ctx, market_index, order_id, signed_route)
+        handle_trigger_market_order_v1(ctx, args)
     }
 
     pub fn force_cancel_orders<'c: 'info, 'info>(
@@ -801,9 +793,9 @@ pub mod velocity {
 
     pub fn refresh_spot_market_interest<'c: 'info, 'info>(
         ctx: Context<'info, RefreshSpotMarketInterest<'info>>,
-        market_indexes: Vec<u16>,
+        args: RefreshSpotMarketInterestArgs,
     ) -> Result<()> {
-        handle_refresh_spot_market_interest(ctx, market_indexes)
+        handle_refresh_spot_market_interest(ctx, args)
     }
 
     pub fn update_amms<'c: 'info, 'info>(
@@ -1416,16 +1408,9 @@ pub mod velocity {
 
     pub fn update_perp_market_clob_quoter(
         ctx: Context<AdminUpdatePerpMarketClobQuoter>,
-        crank_cost_units: crate::state::clob_crank::CrankCostUnitsV0,
-        expire_fallback_slots: u64,
-        min_cross_surplus: u64,
+        args: UpdatePerpMarketClobQuoterArgs,
     ) -> Result<()> {
-        handle_update_perp_market_clob_quoter(
-            ctx,
-            crank_cost_units,
-            expire_fallback_slots,
-            min_cross_surplus,
-        )
+        handle_update_perp_market_clob_quoter(ctx, args)
     }
 
     pub fn update_perp_market_contract_tier(
@@ -1490,10 +1475,9 @@ pub mod velocity {
     /// spot market whose oracle prices it in SOL.
     pub fn update_liquidation_crank_reimbursement(
         ctx: Context<AdminUpdateState>,
-        share_bps: u16,
-        sol_spot_market_index: u16,
+        args: UpdateLiquidationCrankReimbursementArgs,
     ) -> Result<()> {
-        handle_update_liquidation_crank_reimbursement(ctx, share_bps, sol_spot_market_index)
+        handle_update_liquidation_crank_reimbursement(ctx, args)
     }
 
     pub fn update_perp_fee_structure(
@@ -1818,32 +1802,26 @@ pub mod velocity {
     /// Markets take a new watermark on their next attach.
     pub fn update_crank_treasury(
         ctx: Context<UpdateCrankTreasury>,
-        refill_target_cranks: u16,
-        refill_watermark_cranks: u16,
+        args: UpdateCrankTreasuryArgs,
     ) -> Result<()> {
-        instructions::handle_update_crank_treasury(
-            ctx,
-            refill_target_cranks,
-            refill_watermark_cranks,
-        )
+        instructions::handle_update_crank_treasury(ctx, args)
     }
 
     /// Move lamports from a market's crank reservoir back to the treasury, so
     /// an over-provisioned or retired market does not hold them for good.
     pub fn sweep_crank_reservoir(
         ctx: Context<SweepCrankReservoir>,
-        market_index: u16,
-        lamports: u64,
+        args: SweepCrankReservoirArgs,
     ) -> Result<()> {
-        instructions::handle_sweep_crank_reservoir(ctx, market_index, lamports)
+        instructions::handle_sweep_crank_reservoir(ctx, args)
     }
 
     /// Recover lamports from the crank treasury, never below its own rent.
     pub fn withdraw_crank_treasury(
         ctx: Context<WithdrawCrankTreasury>,
-        lamports: u64,
+        args: WithdrawCrankTreasuryArgs,
     ) -> Result<()> {
-        instructions::handle_withdraw_crank_treasury(ctx, lamports)
+        instructions::handle_withdraw_crank_treasury(ctx, args)
     }
 
     pub fn initialize_relay_scratch(ctx: Context<InitializeRelayScratch>) -> Result<()> {
@@ -2030,18 +2008,16 @@ pub mod velocity {
 
     pub fn settle_revenue_share<'c: 'info, 'info>(
         ctx: Context<'info, SettleRevenueShare<'info>>,
-        market_index: u16,
-        num_owner_sub_accounts: u8,
+        args: SettleRevenueShareArgs,
     ) -> Result<()> {
-        handle_settle_revenue_share(ctx, market_index, num_owner_sub_accounts)
+        handle_settle_revenue_share(ctx, args)
     }
 
     pub fn forfeit_revenue_share_order(
         ctx: Context<ForfeitRevenueShareOrder>,
-        market_index: u16,
-        order_index: u32,
+        args: ForfeitRevenueShareOrderArgs,
     ) -> Result<()> {
-        handle_forfeit_revenue_share_order(ctx, market_index, order_index)
+        handle_forfeit_revenue_share_order(ctx, args)
     }
 
     #[cfg(feature = "vlp-hedge")]
@@ -2396,18 +2372,9 @@ pub mod velocity {
 
     pub fn initialize_quoter_slab(
         ctx: Context<InitializeQuoterSlab>,
-        market_index: u16,
-        capacity: u16,
+        args: InitializeQuoterSlabArgs,
     ) -> Result<()> {
-        handle_initialize_quoter_slab(ctx, market_index, capacity)
-    }
-
-    pub fn extend_quoter_slab(
-        ctx: Context<ExtendQuoterSlab>,
-        market_index: u16,
-        capacity: u16,
-    ) -> Result<()> {
-        handle_extend_quoter_slab(ctx, market_index, capacity)
+        handle_initialize_quoter_slab(ctx, args)
     }
 
     pub fn update_quoter_accounts(
@@ -2424,19 +2391,25 @@ pub mod velocity {
         handle_update_quoter_config(ctx, args)
     }
 
-    pub fn update_quoter_active(ctx: Context<UpdateQuoterActive>, active: bool) -> Result<()> {
-        handle_update_quoter_active(ctx, active)
+    pub fn update_quoter_active(
+        ctx: Context<UpdateQuoterActive>,
+        args: UpdateQuoterActiveArgs,
+    ) -> Result<()> {
+        handle_update_quoter_active(ctx, args)
     }
 
     pub fn update_quoter_approved(
         ctx: Context<UpdateQuoterApproved>,
-        approved: bool,
+        args: UpdateQuoterApprovedArgs,
     ) -> Result<()> {
-        handle_update_quoter_approved(ctx, approved)
+        handle_update_quoter_approved(ctx, args)
     }
 
-    pub fn update_quoter_priority(ctx: Context<UpdateQuoterPriority>, priority: u8) -> Result<()> {
-        handle_update_quoter_priority(ctx, priority)
+    pub fn update_quoter_priority(
+        ctx: Context<UpdateQuoterPriority>,
+        args: UpdateQuoterPriorityArgs,
+    ) -> Result<()> {
+        handle_update_quoter_priority(ctx, args)
     }
 
     pub fn update_quoter_watch(
@@ -2448,9 +2421,9 @@ pub mod velocity {
 
     pub fn update_quoter_max_oracle_deviation(
         ctx: Context<UpdateQuoterMaxOracleDeviation>,
-        max_oracle_deviation_bps: u32,
+        args: UpdateQuoterMaxOracleDeviationArgs,
     ) -> Result<()> {
-        handle_update_quoter_max_oracle_deviation(ctx, max_oracle_deviation_bps)
+        handle_update_quoter_max_oracle_deviation(ctx, args)
     }
 
     pub fn cancel_order_v1(ctx: Context<CancelOrderV1>, params: CancelOrderV1Params) -> Result<()> {
@@ -2480,9 +2453,9 @@ pub mod velocity {
 
     pub fn initialize_router_quote_buffer(
         ctx: Context<InitializeRouterQuoteBuffer>,
-        market_index: u16,
+        args: InitializeRouterQuoteBufferArgs,
     ) -> Result<()> {
-        handle_initialize_router_quote_buffer(ctx, market_index)
+        handle_initialize_router_quote_buffer(ctx, args)
     }
 
     /// Read-only router quote: writes per-source verified books into the
@@ -2496,18 +2469,16 @@ pub mod velocity {
 
     pub fn crank_clob_evict(
         ctx: Context<CrankClobOrderRemoval>,
-        market_index: u16,
-        side: ClobSide,
+        args: CrankClobEvictArgs,
     ) -> Result<()> {
-        handle_crank_clob_evict(ctx, market_index, side)
+        handle_crank_clob_evict(ctx, args)
     }
 
     pub fn crank_clob_remove_expired(
         ctx: Context<CrankClobOrderRemoval>,
-        market_index: u16,
-        order_ref: ClobOrderRefV0,
+        args: CrankClobRemoveExpiredArgs,
     ) -> Result<()> {
-        handle_crank_clob_remove_expired(ctx, market_index, order_ref)
+        handle_crank_clob_remove_expired(ctx, args)
     }
 
     /// Crank an armed trigger-limit order onto the market's CLOB once its
@@ -2515,10 +2486,9 @@ pub mod velocity {
     /// reward from the user). Stop-markets go through `trigger_order`.
     pub fn trigger_limit_order_v1<'c: 'info, 'info>(
         ctx: Context<'info, TriggerLimitOrderV1<'info>>,
-        market_index: u16,
-        order_id: u32,
+        args: TriggerLimitOrderV1Args,
     ) -> Result<()> {
-        handle_trigger_limit_order_v1(ctx, market_index, order_id)
+        handle_trigger_limit_order_v1(ctx, args)
     }
 
     /// Fill two crossed resting sources against each other (permissionless;
@@ -2526,12 +2496,9 @@ pub mod velocity {
     /// paid reservoir lamports). Reverts unless profitable after fees.
     pub fn crank_cross_match<'c: 'info, 'info>(
         ctx: Context<'info, CrankCrossMatch<'info>>,
-        market_index: u16,
-        size: u64,
-        buy_quoter_index: u8,
-        sell_quoter_index: u8,
+        args: CrankCrossMatchArgs,
     ) -> Result<()> {
-        handle_crank_cross_match(ctx, market_index, size, buy_quoter_index, sell_quoter_index)
+        handle_crank_cross_match(ctx, args)
     }
 
     /// Resolve one taker-origin cross on a market's CLOB (permissionless):
@@ -2544,21 +2511,18 @@ pub mod velocity {
     /// resting.
     pub fn crank_taker_origin_cross<'c: 'info, 'info>(
         ctx: Context<'info, CrankTakerOriginCross<'info>>,
-        market_index: u16,
-        cross_rows: u16,
-        signed_route: Vec<Pubkey>,
+        args: CrankTakerOriginCrossArgs,
     ) -> Result<()> {
-        handle_crank_taker_origin_cross(ctx, market_index, cross_rows, signed_route)
+        handle_crank_taker_origin_cross(ctx, args)
     }
 
     /// Force-cancel a failing account's CLOB orders (keeper-passed
     /// `OrderRef`s; same gates and flat fee as `force_cancel_orders`).
     pub fn force_cancel_clob_orders<'c: 'info, 'info>(
         ctx: Context<'info, ForceCancelClobOrders<'info>>,
-        market_index: u16,
-        order_refs: Vec<ForceCancelClobRefV0>,
+        args: ForceCancelClobOrdersArgs,
     ) -> Result<()> {
-        handle_force_cancel_clob_orders(ctx, market_index, order_refs)
+        handle_force_cancel_clob_orders(ctx, args)
     }
 
     /// Relay resolver for the evict condition. Meant to be simulated, not
@@ -2581,18 +2545,18 @@ pub mod velocity {
     /// for the payment.
     pub fn refill_crank_reservoir(
         ctx: Context<RefillCrankReservoir>,
-        market_index: u16,
+        args: RefillCrankReservoirArgs,
     ) -> Result<()> {
-        instructions::handle_refill_crank_reservoir(ctx, market_index)
+        instructions::handle_refill_crank_reservoir(ctx, args)
     }
 
     /// Stand up (or re-price) a Custom quoter's relay cross-discovery
     /// conditions — permissionless; rent on the caller.
     pub fn initialize_quoter_cross_conditions(
         ctx: Context<InitializeQuoterCrossConditions>,
-        expire_fallback_slots: u64,
+        args: InitializeQuoterCrossConditionsArgs,
     ) -> Result<()> {
-        handle_initialize_quoter_cross_conditions(ctx, expire_fallback_slots)
+        handle_initialize_quoter_cross_conditions(ctx, args)
     }
 
     /// Relay resolver for a Custom quoter's cross conditions: prices the
@@ -2669,10 +2633,9 @@ pub mod velocity {
 
     pub fn withdraw_protocol_user_deposit<'c: 'info, 'info>(
         ctx: Context<'info, WithdrawProtocolUserDeposit<'info>>,
-        market_index: u16,
-        amount: u64,
+        args: WithdrawProtocolUserDepositArgs,
     ) -> Result<()> {
-        handle_withdraw_protocol_user_deposit(ctx, market_index, amount)
+        handle_withdraw_protocol_user_deposit(ctx, args)
     }
 }
 

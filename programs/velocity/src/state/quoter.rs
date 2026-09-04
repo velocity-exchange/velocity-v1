@@ -306,10 +306,7 @@ impl RouterQuoter for DlobOrderQuoter<'_> {
         if size == 0 {
             return Ok(vec![]);
         }
-        Ok(vec![crate::state::prop_amm::PriceLevel {
-            price: price.into(),
-            size: size.into(),
-        }])
+        Ok(vec![crate::state::prop_amm::PriceLevel { price, size }])
     }
 
     fn execute(

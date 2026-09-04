@@ -1,3 +1,6 @@
+// Only the mainnet build gates external depositors on the allowlist.
+#[cfg(feature = "mainnet-beta")]
+use crate::ids::WHITELISTED_EXTERNAL_DEPOSITORS;
 use {
     crate::{
         controller::{
@@ -16,10 +19,7 @@ use {
         },
         error::ErrorCode,
         get_then_update_id,
-        ids::{
-            lighthouse, marinade_mainnet, WHITELISTED_EXTERNAL_DEPOSITORS,
-            WHITELISTED_SWAP_PROGRAMS,
-        },
+        ids::{lighthouse, marinade_mainnet, WHITELISTED_SWAP_PROGRAMS},
         instructions::{
             constraints::*,
             optional_accounts::{
@@ -263,6 +263,7 @@ pub fn handle_initialize_user<'c: 'info, 'info>(
         )?;
     }
 
+    #[cfg_attr(not(feature = "mainnet-beta"), allow(unused_variables))]
     let authority_is_signer = ctx.accounts.authority.is_signer;
     #[cfg(feature = "mainnet-beta")]
     if !authority_is_signer && ctx.accounts.authority.key() != ctx.accounts.payer.key() {
@@ -308,6 +309,7 @@ pub fn handle_initialize_user_stats<'c: 'info, 'info>(
         ErrorCode::MaxNumberOfUsers
     )?;
 
+    #[cfg_attr(not(feature = "mainnet-beta"), allow(unused_variables))]
     let authority_is_signer = ctx.accounts.authority.is_signer;
     #[cfg(feature = "mainnet-beta")]
     if !authority_is_signer && ctx.accounts.authority.key() != ctx.accounts.payer.key() {
@@ -3258,8 +3260,6 @@ pub struct ClobRemainderRoute<'a, 'info> {
     pub quoter_slab: &'a AccountLoader<'info, crate::state::prop_amm::QuoterSlabV0>,
     pub clob_market: &'a AccountInfo<'info>,
     pub clob_program: &'a AccountInfo<'info>,
-    /// The book's `place_authority` (the CLOB place authority PDA).
-    pub clob_authority: &'a AccountInfo<'info>,
 }
 
 /// Enforce the caller's success condition against what the take filled. The
@@ -3604,7 +3604,7 @@ pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
                 order.get_base_asset_amount_unfilled(position_base)?,
                 crate::state::prop_amm::ClobUserRefV0 {
                     authority: user.authority,
-                    sub_account_id: user.sub_account_id.into(),
+                    sub_account_id: user.sub_account_id,
                 },
                 fill_mode.quote_limit_price(
                     order,
@@ -3630,7 +3630,7 @@ pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
                 makers_and_referrer.user_ref_index()?.into_keys().map(
                     |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
                         authority,
-                        sub_account_id: sub_account_id.into(),
+                        sub_account_id,
                     },
                 ),
             )?,
@@ -3669,7 +3669,7 @@ pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
         let mut executor =
             route.executor(&inputs, clock.slot, clock.unix_timestamp, &mut cpi_scratch);
         let mut router_inputs = crate::math::router::RouterFillInputs {
-            books: &book_refs,
+            books: book_refs,
             executor: &mut executor,
             protocol_authority: state.signer,
             // The taker signs a place-and-take, so the taker chose the
@@ -3760,7 +3760,6 @@ pub fn place_and_take_perp_order_v1<'c: 'info, 'info>(
                     clob.quoter_slab,
                     clob.clob_market,
                     clob.clob_program,
-                    clob.clob_authority,
                     &perp_market_map,
                     &spot_market_map,
                     &mut oracle_map,

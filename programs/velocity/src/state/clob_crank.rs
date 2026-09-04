@@ -303,7 +303,7 @@ impl CrankPaymentsV0 {
                 .safe_mul(u128::from(units))?
                 .safe_div_ceil(1_000_000)?,
         )
-        .map_err(|_| ErrorCode::MathError.into())
+        .map_err(|_| ErrorCode::MathError)
     }
 
     pub fn liquidation_reimbursement(
@@ -378,6 +378,7 @@ impl CrankPaymentsV0 {
 #[account(zero_copy(unsafe))]
 #[derive(Debug)]
 #[repr(C)]
+#[derive(Default)]
 pub struct ClobCrankConditionsV0 {
     /// Everything relay needs hosted, in one field: the `relay-spec` header,
     /// the condition slots, and the resolver account list every condition
@@ -479,24 +480,6 @@ pub struct ClobCrankConditionsV0 {
 
 // `padding` is longer than 32 bytes, which `#[derive(Default)]` does not
 // cover (arrays only derive it up to 32).
-impl Default for ClobCrankConditionsV0 {
-    fn default() -> Self {
-        Self {
-            relay: RelayBlock::default(),
-            oracle: Pubkey::default(),
-            crank_payments: CrankPaymentsV0::default(),
-            min_cross_surplus: 0,
-            clob_block_offset: 0,
-            top_of_book_offset: 0,
-            top_of_book_len: 0,
-            market_index: 0,
-            quote_spot_market_index: 0,
-            refill_watermark_lamports: 0,
-            spendable_mirror: 0,
-            padding: [0; 16],
-        }
-    }
-}
 
 impl ClobCrankConditionsV0 {
     /// 8 (discriminator) + the relay block + trailing fields. Kept as a
@@ -631,12 +614,12 @@ impl ClobCrankConditionsV0 {
 
 // The block must start at an 8-aligned offset for `read_block`'s zero-copy
 // cast; anchor's discriminator puts field 0 at offset 8.
-const _: () = assert!(CLOB_CRANK_BLOCK_OFFSET % 8 == 0);
+const _: () = assert!(CLOB_CRANK_BLOCK_OFFSET.is_multiple_of(8));
 
 // Zero-copy alignment invariant (see docs/alignment-and-native-offsets.md):
 // no u128 fields, and `(SIZE - 8) % 16 == 0` so the struct sizes identically
 // on x86_64 and SBF.
-const _: () = assert!((ClobCrankConditionsV0::SIZE - 8) % 16 == 0);
+const _: () = assert!((ClobCrankConditionsV0::SIZE - 8).is_multiple_of(16));
 
 #[cfg(test)]
 mod tests {

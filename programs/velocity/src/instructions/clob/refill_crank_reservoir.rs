@@ -30,7 +30,7 @@ use {
 /// a plain lamport transfer into the reservoir writes only the balance — so the
 /// wake is a hint and this is the check.
 pub(super) fn stage_refill(ctx: &Context<ResolveClobCrank>) -> Result<Option<StagedCall>> {
-    let (market_index, watermark, target) = {
+    let (market_index, watermark, _target) = {
         let conditions = ctx.accounts.crank_conditions.load()?;
         (
             conditions.market_index,
@@ -54,12 +54,12 @@ pub(super) fn stage_refill(ctx: &Context<ResolveClobCrank>) -> Result<Option<Sta
             crank_conditions: ctx.accounts.crank_conditions.key(),
             authority: crate::state::pdas::keeper_placeholder(),
         })
-        .arg(market_index)?,
+        .arg(RefillCrankReservoirArgs { market_index })?,
     ))
 }
 
 #[derive(Accounts)]
-#[instruction(market_index: u16)]
+#[instruction(args: RefillCrankReservoirArgs)]
 pub struct RefillCrankReservoir<'info> {
     /// The protocol's lamport pool.
     #[account(mut, seeds = [CRANK_TREASURY_PDA_SEED], bump)]
@@ -69,7 +69,7 @@ pub struct RefillCrankReservoir<'info> {
         mut,
         seeds = [
             crate::state::clob_crank::CLOB_CRANK_CONDITIONS_PDA_SEED,
-            market_index.to_le_bytes().as_ref(),
+            args.market_index.to_le_bytes().as_ref(),
         ],
         bump
     )]
@@ -81,10 +81,16 @@ pub struct RefillCrankReservoir<'info> {
     pub authority: UncheckedAccount<'info>,
 }
 
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
+pub struct RefillCrankReservoirArgs {
+    pub market_index: u16,
+}
+
 pub fn handle_refill_crank_reservoir(
     ctx: Context<RefillCrankReservoir>,
-    market_index: u16,
+    args: RefillCrankReservoirArgs,
 ) -> Result<()> {
+    let RefillCrankReservoirArgs { market_index } = args;
     let (refill_payment, watermark, target) = {
         let treasury = ctx.accounts.treasury.load()?;
         let conditions = ctx.accounts.crank_conditions.load()?;

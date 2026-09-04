@@ -7,17 +7,15 @@
 
 use {
     crate::{
-        controller::position::{get_position_index, release_reserved_open_base_for_exit},
+        controller::position::get_position_index,
         error::ErrorCode,
         instructions::constraints::*,
         load_mut, msg,
         state::{
             perp_market::PerpMarket,
             prop_amm::{
-                quoter_slab_clob, ClobCancelOrderArgsV0, ClobMarket, ClobOrderRefV0, QuoterSlabV0,
-                WireDirectionExt,
+                ClobCancelOrderArgsV0, ClobMarket, ClobOrderRefV0, QuoterSlabV0, WireDirectionExt,
             },
-            state::State,
             user::User,
         },
         validate,
@@ -51,12 +49,6 @@ pub struct CancelOrderV1<'info> {
     /// registration; the handler re-checks through the slot.
     #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
-    /// is set to. Its own key, distinct from the per-entry signer a
-    /// third-party quoter is handed: signer privilege is inherited by a
-    /// callee, and this one may place and cancel on any book, for any user.
-    #[account(address = crate::signer::CLOB_AUTHORITY)]
-    pub clob_authority: UncheckedAccount<'info>,
 }
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
@@ -72,12 +64,11 @@ pub fn handle_cancel_order_v1(
 ) -> Result<()> {
     let clock = Clock::get()?;
 
-    let clob = ClobMarket::from_quoter(
-        &quoter_slab_clob(&ctx.accounts.quoter_slab, params.market_index)?.config,
+    let clob = ClobMarket::from_slab(
+        &ctx.accounts.quoter_slab,
         params.market_index,
         &ctx.accounts.clob_market,
         &ctx.accounts.clob_program,
-        &ctx.accounts.clob_authority,
     )?;
 
     // CPI cancel; ownership travels in the args in derivable form and the
@@ -86,7 +77,7 @@ pub fn handle_cancel_order_v1(
         let user = crate::load!(ctx.accounts.user)?;
         crate::state::prop_amm::ClobUserRefV0 {
             authority: user.authority,
-            sub_account_id: user.sub_account_id.into(),
+            sub_account_id: user.sub_account_id,
         }
     };
     let removed = clob.cancel(ClobCancelOrderArgsV0 {
@@ -103,30 +94,18 @@ pub fn handle_cancel_order_v1(
     )?;
 
     // Unwind the removed order's remaining size from the aggregates the
-    // placement reserved.
+    // placement reserved. This also frees a placed trigger's shadow slot —
+    // cancelling here is how a user cancels a placed trigger.
     let mut user = load_mut!(ctx.accounts.user)?;
-    let position_index = get_position_index(&user.perp_positions, params.market_index)?;
-    release_reserved_open_base_for_exit(
-        &mut user.perp_positions[position_index],
+    user.cleanup_removed_clob_order(
+        params.market_index,
         &removed.side.to_position_direction(),
         removed.base_asset_amount,
-    )?;
-    user.perp_positions[position_index].open_orders = user.perp_positions[position_index]
-        .open_orders
-        .saturating_sub(1);
-    user.decrement_open_orders(false);
-    // The order left the book, so disarm the reduce-only counter it armed.
-    if removed.reduce_only {
-        user.perp_positions[position_index].disarm_reduce_only_clob();
-    }
-    // If this was a placed trigger's live order, its shadow slot frees too —
-    // cancelling here is how a user cancels a placed trigger.
-    user.release_placed_trigger_slot(
-        params.market_index,
+        removed.reduce_only,
         removed.order_id,
-        crate::state::user::OrderStatus::Canceled,
-    );
+    )?;
     user.update_last_active_slot(clock.slot);
+    let position_index = get_position_index(&user.perp_positions, params.market_index)?;
     let is_isolated_position = user.perp_positions[position_index].is_isolated();
     drop(user);
 

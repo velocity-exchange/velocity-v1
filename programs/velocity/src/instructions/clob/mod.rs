@@ -92,6 +92,7 @@
 //! log budget holds, so its per-order detail rides the book's own compact
 //! cancel record instead.
 
+mod admin;
 mod cancel_order_v1;
 mod cancel_orders_v1;
 mod crank_clob_evict;
@@ -112,10 +113,10 @@ mod trigger_limit_order_v1;
 mod trigger_market_order_v1;
 
 pub use {
-    cancel_order_v1::*, cancel_orders_v1::*, crank_clob_evict::*, crank_clob_remove_expired::*,
-    crank_conditions_setup::*, crank_cross_match::*, crank_taker_origin_cross::*,
-    fill_legacy_dlob_order::*, force_cancel_clob_orders::*, helpers::*,
-    initialize_quoter_cross_conditions::*, modify_order_v1::*, place_and_make_v1::*,
+    admin::*, cancel_order_v1::*, cancel_orders_v1::*, crank_clob_evict::*,
+    crank_clob_remove_expired::*, crank_conditions_setup::*, crank_cross_match::*,
+    crank_taker_origin_cross::*, fill_legacy_dlob_order::*, force_cancel_clob_orders::*,
+    helpers::*, initialize_quoter_cross_conditions::*, modify_order_v1::*, place_and_make_v1::*,
     place_and_take_v1::*, refill_crank_reservoir::*, resolve_clob_crank::*,
     trigger_limit_order_v1::*, trigger_market_order_v1::*,
 };

@@ -17,11 +17,18 @@ use {
     anchor_lang::prelude::*,
 };
 
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
+pub struct CrankClobEvictArgs {
+    pub market_index: u16,
+    /// The side past its soft cap. The CLOB re-checks the threshold.
+    pub side: ClobSide,
+}
+
 pub fn handle_crank_clob_evict(
     ctx: Context<CrankClobOrderRemoval>,
-    market_index: u16,
-    side: ClobSide,
+    args: CrankClobEvictArgs,
 ) -> Result<()> {
+    let CrankClobEvictArgs { market_index, side } = args;
     crank_clob_removal(
         ctx,
         market_index,
@@ -43,8 +50,11 @@ pub(super) fn stage_eviction(ctx: &Context<ResolveClobCrank>) -> Result<Option<S
 
     let market_index = ctx.accounts.crank_conditions.load()?.market_index;
     Ok(Some(
-        removal_call::<crate::instruction::CrankClobEvict>(ctx, maker)?
-            .arg(market_index)?
-            .arg(found.side)?,
+        removal_call::<crate::instruction::CrankClobEvict>(ctx, maker)?.arg(
+            CrankClobEvictArgs {
+                market_index,
+                side: found.side,
+            },
+        )?,
     ))
 }

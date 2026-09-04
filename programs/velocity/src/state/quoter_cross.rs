@@ -161,8 +161,8 @@ impl QuoterCrossConditionsV0 {
     }
 }
 
-const _: () = assert!(QUOTER_CROSS_BLOCK_OFFSET % 8 == 0);
-const _: () = assert!((QuoterCrossConditionsV0::SIZE - 8) % 16 == 0);
+const _: () = assert!(QUOTER_CROSS_BLOCK_OFFSET.is_multiple_of(8));
+const _: () = assert!((QuoterCrossConditionsV0::SIZE - 8).is_multiple_of(16));
 const _: () = assert!(QuoterCrossConditionsV0::SIZE <= 10_240);
 
 #[cfg(test)]

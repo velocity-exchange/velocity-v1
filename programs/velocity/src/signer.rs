@@ -5,127 +5,72 @@
 //! and the `User`/`UserStats` authority of the protocol account. It signs
 //! token-program CPIs and nothing else.
 //!
-//! The other two exist so an external program velocity CPIs into can tell that
-//! velocity — not an arbitrary caller — invoked it. Signer privilege is
-//! inherited by a callee, so a callee handed `velocity_signer` could forward it
-//! to the token program and move vault funds; that is why external CPIs sign as
-//! one of these instead.
+//! Every external quoter CPI — the book's place/cancel/crank surface and the
+//! registry's quote/execute legs alike — signs as the market's
+//! [`crate::state::prop_amm::QuoterSlabV0`] PDA instead. The slab exists in
+//! every instruction that CPIs a quoter, so one shared identity costs zero
+//! extra accounts, where a per-quoter signer cost one account per quoter per
+//! transaction. It is a separate key from `velocity_signer` because signer
+//! privilege is inherited by a CPI callee: a callee handed `velocity_signer`
+//! could forward it to the token program and move vault funds.
 //!
-//! They are two keys rather than one, and the split is load-bearing:
+//! One key for every quoter on a market means a quoter's `execute_v0` holds,
+//! live inside its own CPI, the same signature that authenticates velocity at
+//! every other quoter on that market — including the book, whose
+//! `place_authority` it is. Two facts keep that forwarding worthless:
 //!
-//! - `clob_authority` is every book's `place_authority`, so it *is* an
-//!   authority over an account: whoever holds it may place, cancel, evict,
-//!   expire and execute on any market, for any user (`place_order_v0` takes its
-//!   `user` as an argument and trusts the authority to have checked it). It is
-//!   therefore never placed in a third party's account list — only velocity's
-//!   own CLOB CPI paths sign as it, plus the `execute_v0`/`quote_v0` leg of a
-//!   registry entry that velocity has confirmed *is* the CLOB.
-//! - `quoter_signer` is per registry entry and is the authority on nothing. A
-//!   third-party quoter receives its own entry's key and no other, which is
-//!   what stops one quoter authenticating as velocity to a second quoter it
-//!   also controls, and what stops any of them reaching a book.
+//! - A CPI can only name accounts the caller received, and a quoter receives
+//!   exactly its registered leg accounts plus the slab. Approval refuses a
+//!   registered list that names any other approved quoter's response account
+//!   (`update_quoter_approved`, both directions). Every authority-trusting
+//!   instruction on the book and on the midpoint requires its response
+//!   account — the book's market account and the midpoint's quoter account
+//!   *are* their response accounts — so the forwarded signature has no
+//!   instruction it can complete. Approving a third-party quoter program
+//!   carries the matching obligation: the admin must check that every
+//!   instruction gated on the slab signer also requires the program's
+//!   response account.
+//! - The slab is per market, so the signature authenticates nothing on any
+//!   other market's quoters or book.
 //!
-//! A single global key for both roles collapses that: every quoter's account
-//! list has to carry the key its `execute_v0` authenticates against, so a
-//! quoter whose approved list also named a book would hold the book's
-//! `place_authority` as a live signature inside its own CPI.
-
-use anchor_lang::prelude::Pubkey;
+//! The slab must never be made an authority over anything of value — not a
+//! token authority, not a `User` authority. The test below pins it apart from
+//! `velocity_signer`.
+//!
+//! Signing seeds live beside the PDA seed:
+//! [`crate::state::prop_amm::get_quoter_slab_signer_seeds`]; the bump is
+//! stored in the slab header at creation.
 
 pub const VELOCITY_SIGNER_SEED: &[u8] = b"velocity_signer";
-pub const QUOTER_SIGNER_SEED: &[u8] = b"quoter_signer";
-pub const CLOB_AUTHORITY_SEED: &[u8] = b"clob_authority";
 
 pub fn get_signer_seeds(nonce: &u8) -> [&[u8]; 2] {
     [VELOCITY_SIGNER_SEED, bytemuck::bytes_of(nonce)]
 }
 
-/// Signing seeds for one registry entry's quoter CPI signer.
-pub fn get_quoter_signer_seeds<'a>(entry: &'a Pubkey, nonce: &'a u8) -> [&'a [u8]; 3] {
-    [
-        QUOTER_SIGNER_SEED,
-        entry.as_ref(),
-        bytemuck::bytes_of(nonce),
-    ]
-}
-
-/// Signing seeds for the CLOB place authority.
-pub fn get_clob_authority_seeds(nonce: &u8) -> [&[u8]; 2] {
-    [CLOB_AUTHORITY_SEED, bytemuck::bytes_of(nonce)]
-}
-
-/// Derive the quoter CPI signer for one registry entry, and its bump.
-///
-/// Keyed by the entry rather than global so a quoter only ever receives a
-/// signature that authenticates velocity *to itself*. Forwarding it to another
-/// quoter proves nothing there, because that quoter authenticates against a key
-/// derived from its own entry.
-///
-/// Not stored on `State` the way `signer`/`signer_nonce` are: there is nothing
-/// to configure, and a `State` field left zeroed by an in-place upgrade of an
-/// already-deployed account would read as `Pubkey::default()` — a wrong key
-/// that fails obscurely rather than loudly. Deriving also means no admin write
-/// can ever point this at the vault authority.
-pub fn find_quoter_signer(entry: &Pubkey) -> (Pubkey, u8) {
-    Pubkey::find_program_address(&[QUOTER_SIGNER_SEED, entry.as_ref()], &crate::ID)
-}
-
-/// The CLOB place authority PDA. Precomputed: the seeds and the program id
-/// are both fixed, so a runtime `find_program_address` paid the full bump
-/// loop for a constant. `clob_authority_matches_the_derivation` pins it.
-///
-/// Global rather than per book: one key drives every market's book, and the
-/// books are velocity's own program. What matters is that it is not the key any
-/// third-party quoter is handed.
-pub const CLOB_AUTHORITY: Pubkey =
-    solana_program::pubkey!("D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj");
-/// [`CLOB_AUTHORITY`]'s bump.
-pub const CLOB_AUTHORITY_NONCE: u8 = 253;
-
-/// The CLOB place authority and its bump.
-pub fn find_clob_authority() -> (Pubkey, u8) {
-    (CLOB_AUTHORITY, CLOB_AUTHORITY_NONCE)
-}
-
 #[cfg(test)]
 mod tests {
-    use {super::*, anchor_lang::prelude::Pubkey};
+    use {crate::state::prop_amm::QUOTER_SLAB_PDA_SEED, anchor_lang::prelude::Pubkey};
 
-    /// The quoter CPI signers must never be the vault authority.
+    /// The quoter CPI signer must never be the vault authority.
     ///
-    /// `velocity_signer` is the SPL token authority on every spot and IF vault.
-    /// Signer privilege is inherited by a CPI callee, so a quoter handed
-    /// `velocity_signer` could forward it to the token program and drain a
-    /// vault. Every quoter instead signs as `find_quoter_signer` (per entry) or
-    /// `find_clob_authority` (the book). This pins the separation the whole
-    /// quoter safety model rests on: a seed change that collided any of them
-    /// with `velocity_signer` fails here.
-    /// The precomputed authority must be the PDA the seeds derive. A change
-    /// to the program id or the seed lands here before it lands on-chain.
+    /// `velocity_signer` is the SPL token authority on every spot and IF
+    /// vault. Signer privilege is inherited by a CPI callee, so a quoter
+    /// handed `velocity_signer` could forward it to the token program and
+    /// drain a vault. Every quoter CPI instead signs as the market's slab.
+    /// This pins the separation the whole quoter safety model rests on: a
+    /// seed change that collided the two fails here.
     #[test]
-    fn clob_authority_matches_the_derivation() {
-        assert_eq!(
-            Pubkey::find_program_address(&[CLOB_AUTHORITY_SEED], &crate::ID),
-            (CLOB_AUTHORITY, CLOB_AUTHORITY_NONCE)
-        );
-    }
-
-    #[test]
-    fn quoter_signers_are_never_the_vault_authority() {
+    fn slab_signers_are_never_the_vault_authority() {
         let (velocity_signer, _) =
-            Pubkey::find_program_address(&[VELOCITY_SIGNER_SEED], &crate::ID);
-        let (clob_authority, _) = find_clob_authority();
-        assert_ne!(velocity_signer, clob_authority);
-        for seed in 0u8..16 {
-            let entry = Pubkey::new_from_array([seed; 32]);
-            let (quoter_signer, _) = find_quoter_signer(&entry);
-            assert_ne!(
-                quoter_signer, velocity_signer,
-                "quoter signer collided with the vault authority"
+            Pubkey::find_program_address(&[super::VELOCITY_SIGNER_SEED], &crate::ID);
+        for market in 0u16..64 {
+            let (slab, _) = Pubkey::find_program_address(
+                &[QUOTER_SLAB_PDA_SEED, market.to_le_bytes().as_ref()],
+                &crate::ID,
             );
             assert_ne!(
-                quoter_signer, clob_authority,
-                "quoter signer collided with the book authority"
+                slab, velocity_signer,
+                "a quoter slab collided with the vault authority"
             );
         }
     }

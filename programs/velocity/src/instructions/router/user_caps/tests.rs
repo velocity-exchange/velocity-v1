@@ -196,23 +196,16 @@ fn budget(case: Case) -> u64 {
     create_anchor_account_info!(stats, UserStats, stats_info);
     let stats_map = crate::state::user_map::UserStatsMap::load_one(&stats_info).unwrap();
 
-    maker_budget(
-        &mut CapInputs {
-            makers_and_referrer: &makers,
-            makers_and_referrer_stats: &stats_map,
-            perp_market_map: &perp_market_map,
-            spot_market_map: &spot_market_map,
-            oracle_map: &mut oracle_map,
-            slot,
-            now: 0,
-        },
-        &maker_key,
-        0,
-        ClobSide::Bid,
-        taker_size,
-        ORACLE,
-        books,
-    )
+    CapInputs {
+        makers_and_referrer: &makers,
+        makers_and_referrer_stats: &stats_map,
+        perp_market_map: &perp_market_map,
+        spot_market_map: &spot_market_map,
+        oracle_map: &mut oracle_map,
+        slot,
+        now: 0,
+    }
+    .maker_budget(&maker_key, 0, ClobSide::Bid, taker_size, ORACLE, books)
     .unwrap()
 }
 

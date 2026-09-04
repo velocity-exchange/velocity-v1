@@ -144,7 +144,7 @@ impl CrankTreasuryV0 {
 // Zero-copy alignment invariant (see docs/alignment-and-native-offsets.md):
 // no u128 fields, and `(SIZE - 8) % 16 == 0` so the struct sizes identically
 // on x86_64 and SBF.
-const _: () = assert!((CrankTreasuryV0::SIZE - 8) % 16 == 0);
+const _: () = assert!((CrankTreasuryV0::SIZE - 8).is_multiple_of(16));
 
 #[cfg(test)]
 mod tests {

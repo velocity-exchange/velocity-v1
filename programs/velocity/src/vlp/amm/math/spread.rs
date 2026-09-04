@@ -1037,9 +1037,9 @@ fn calculate_spread_conf_component(confidence_pct: u64) -> VelocityResult<u64> {
     let divisor = SPREAD_CONF_DISCOUNT_DIVISOR;
     let ramp_weight = threshold.safe_add(divisor.safe_sub(1)?.safe_mul(confidence_pct)?)?;
 
-    Ok(confidence_pct
+    confidence_pct
         .safe_mul(ramp_weight)?
-        .safe_div(divisor.safe_mul(threshold)?)?)
+        .safe_div(divisor.safe_mul(threshold)?)
 }
 
 /// Which side of the AMM's open liquidity the inventory ratio is measured

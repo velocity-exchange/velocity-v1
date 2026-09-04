@@ -421,7 +421,7 @@ pub fn calculate_optimal_peg_and_budget(
 /// protocol floor to reserve — the drawdown breaker and `is_underwater`
 /// remain the spending guards.
 pub fn calculate_fee_pool(amm: &AMM) -> VelocityResult<u128> {
-    Ok(amm.total_fee_minus_distributions.max(0).cast()?)
+    amm.total_fee_minus_distributions.max(0).cast()
 }
 
 /// PerpMarket-level scalars `project_post_refresh` needs but the AMM

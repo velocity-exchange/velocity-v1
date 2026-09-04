@@ -1,10 +1,6 @@
 use {
     super::{wire::write_quoter_account_metas, *},
-    crate::{
-        error::ErrorCode,
-        signer::{find_clob_authority, find_quoter_signer},
-        state::pdas,
-    },
+    crate::{error::ErrorCode, state::pdas},
     anchor_lang::prelude::*,
 };
 
@@ -16,58 +12,48 @@ fn meta(pubkey: Pubkey, is_writable: bool) -> AmmAccountMeta {
     }
 }
 
-/// The key velocity signs quoter CPIs as must not be the key that authorizes
-/// spending: signer privilege is inherited by a callee, so a quoter handed the
-/// vault authority could forward it to the token program.
+/// The key velocity signs quoter CPIs as — the market's slab — must not be
+/// the key that authorizes spending: signer privilege is inherited by a
+/// callee, so a quoter handed the vault authority could forward it to the
+/// token program. Nor may a slab collide with the protocol account's
+/// authority-derived PDAs.
 #[test]
-fn quoter_signer_is_not_the_vault_authority() {
-    let entry = Pubkey::new_unique();
-    let (quoter_signer, _) = find_quoter_signer(&entry);
-    assert_eq!(quoter_signer, pdas::quoter_signer(&entry));
-    assert_ne!(quoter_signer, pdas::velocity_signer());
+fn slab_signer_is_not_the_vault_authority() {
+    let slab = pdas::quoter_slab(7);
+    assert_ne!(slab, pdas::velocity_signer());
     // Nor is it the protocol account's authority, which is derived from the
     // vault authority.
     let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
-    assert_ne!(pdas::user(&quoter_signer, 0), protocol_user);
-    assert_ne!(pdas::user_stats(&quoter_signer), protocol_user_stats);
+    assert_ne!(pdas::user(&slab, 0), protocol_user);
+    assert_ne!(pdas::user_stats(&slab), protocol_user_stats);
 }
 
-/// A quoter's signature must authenticate velocity at that quoter and nowhere
-/// else. Two things follow, and both are what stop a quoter reaching past its
-/// own program: the key differs per registry entry, so forwarding it to a
-/// second quoter proves nothing there; and none of them is the books' place
-/// authority, which may place and cancel on any market for any user.
+/// The slab signature is per market: two markets' slabs are different keys,
+/// so the signature a quoter receives authenticates velocity on its own
+/// market and nowhere else.
 #[test]
-fn every_entry_signs_as_its_own_key_and_none_of_them_is_the_book_authority() {
-    let (first, second) = (Pubkey::new_unique(), Pubkey::new_unique());
-    let (first_signer, _) = find_quoter_signer(&first);
-    let (second_signer, _) = find_quoter_signer(&second);
-    let (clob_authority, _) = find_clob_authority();
-
-    assert_ne!(first_signer, second_signer);
-    assert_ne!(first_signer, clob_authority);
-    assert_ne!(second_signer, clob_authority);
-    assert_eq!(clob_authority, pdas::clob_authority());
+fn every_market_signs_as_its_own_slab() {
+    assert_ne!(pdas::quoter_slab(0), pdas::quoter_slab(1));
 }
 
-/// Only the quoter signer's slot is handed signer privilege. The vault
-/// authority is passed unprivileged even if it somehow reached a stored list
-/// (entries registered before the reserved-key check shipped).
+/// Only the slab's slot is handed signer privilege. The vault authority is
+/// passed unprivileged even if it somehow reached a stored list (entries
+/// registered before the reserved-key check shipped).
 #[test]
-fn only_the_quoter_signer_slot_is_a_signer() {
+fn only_the_slab_slot_is_a_signer() {
     let vault_authority = pdas::velocity_signer();
-    let (quoter_signer, _) = find_quoter_signer(&Pubkey::new_unique());
+    let slab = pdas::quoter_slab(0);
     let book = Pubkey::new_unique();
     let taker_wallet = Pubkey::new_unique();
 
     let registered = [
         meta(book, true),
-        meta(quoter_signer, false),
+        meta(slab, false),
         meta(vault_authority, false),
         meta(taker_wallet, false),
     ];
     let mut metas = Vec::new();
-    write_quoter_account_metas(&mut metas, registered.iter(), &quoter_signer);
+    write_quoter_account_metas(&mut metas, registered.iter(), &slab);
 
     assert_eq!(
         metas
@@ -75,7 +61,7 @@ fn only_the_quoter_signer_slot_is_a_signer() {
             .filter(|m| m.is_signer)
             .map(|m| m.pubkey)
             .collect::<Vec<_>>(),
-        vec![quoter_signer]
+        vec![slab]
     );
     assert_eq!(
         metas
@@ -90,10 +76,10 @@ fn only_the_quoter_signer_slot_is_a_signer() {
 #[test]
 fn registration_rejects_the_vault_authority() {
     let vault_authority = pdas::velocity_signer();
-    let (quoter_signer, _) = find_quoter_signer(&Pubkey::new_unique());
+    let slab = pdas::quoter_slab(0);
     let book = Pubkey::new_unique();
 
-    assert!(validate_quoter_accounts([book, quoter_signer].iter()).is_ok());
+    assert!(validate_quoter_accounts([book, slab].iter()).is_ok());
     assert!(validate_quoter_accounts([book, vault_authority].iter()).is_err());
     assert!(validate_quoter_accounts([vault_authority].iter()).is_err());
 }

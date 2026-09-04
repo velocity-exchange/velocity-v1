@@ -107,6 +107,14 @@ impl StagedCall {
         self.account(user, true).account(stats, true)
     }
 
+    /// The margin-map section for an executor that names the perp market in
+    /// its own accounts struct: oracle (readonly), then the quote spot
+    /// market. **Positional**, like [`Self::map_section`].
+    pub fn map_section_named_perp(self, oracle: Pubkey, quote_spot_market_index: u16) -> Self {
+        self.account(oracle, false)
+            .account(pdas::spot_market(quote_spot_market_index), true)
+    }
+
     /// Append the margin-map section every executor's `load_maps` call
     /// parses: oracle (readonly), the quote spot market, then the perp
     /// market. **Positional** — `load_maps` reads these by order, not by

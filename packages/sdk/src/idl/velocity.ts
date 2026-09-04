@@ -801,9 +801,6 @@ export type Velocity = {
       ],
       "accounts": [
         {
-          "name": "state"
-        },
-        {
           "name": "user",
           "writable": true
         },
@@ -822,8 +819,7 @@ export type Velocity = {
         {
           "name": "quoterSlab",
           "docs": [
-            "The market's quoter slab; the book's config is its `Clob` slot, bound",
-            "to this market and this book in the handler."
+            "The market's quoter slab"
           ]
         },
         {
@@ -839,15 +835,6 @@ export type Velocity = {
             "registration; the handler re-checks through the slot."
           ],
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
-        },
-        {
-          "name": "clobAuthority",
-          "docs": [
-            "is set to. Its own key, distinct from the per-entry signer a",
-            "third-party quoter is handed: signer privilege is inherited by a",
-            "callee, and this one may place and cancel on any book, for any user."
-          ],
-          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
         }
       ],
       "args": [
@@ -969,9 +956,6 @@ export type Velocity = {
       ],
       "accounts": [
         {
-          "name": "state"
-        },
-        {
           "name": "user",
           "writable": true
         },
@@ -999,15 +983,6 @@ export type Velocity = {
             "registration; the handler re-checks through the slot."
           ],
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
-        },
-        {
-          "name": "clobAuthority",
-          "docs": [
-            "is set to. Its own key, distinct from the per-entry signer a",
-            "third-party quoter is handed: signer privilege is inherited by a",
-            "callee, and this one may place and cancel on any book, for any user."
-          ],
-          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
         }
       ],
       "args": [
@@ -1370,15 +1345,6 @@ export type Velocity = {
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
         {
-          "name": "clobAuthority",
-          "docs": [
-            "is set to. Its own key, distinct from the per-entry signer a",
-            "third-party quoter is handed: signer privilege is inherited by a",
-            "callee, and this one may place and cancel on any book, for any user."
-          ],
-          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
-        },
-        {
           "name": "crankConditions",
           "docs": [
             "The market's relay conditions account: the expiry-hint host and the",
@@ -1416,8 +1382,8 @@ export type Velocity = {
                 ]
               },
               {
-                "kind": "arg",
-                "path": "marketIndex"
+                "kind": "account",
+                "path": "quoterSlab"
               }
             ]
           }
@@ -1425,14 +1391,10 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "marketIndex",
-          "type": "u16"
-        },
-        {
-          "name": "side",
+          "name": "args",
           "type": {
             "defined": {
-              "name": "sideV0"
+              "name": "crankClobEvictArgs"
             }
           }
         }
@@ -1506,15 +1468,6 @@ export type Velocity = {
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
         {
-          "name": "clobAuthority",
-          "docs": [
-            "is set to. Its own key, distinct from the per-entry signer a",
-            "third-party quoter is handed: signer privilege is inherited by a",
-            "callee, and this one may place and cancel on any book, for any user."
-          ],
-          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
-        },
-        {
           "name": "crankConditions",
           "docs": [
             "The market's relay conditions account: the expiry-hint host and the",
@@ -1552,8 +1505,8 @@ export type Velocity = {
                 ]
               },
               {
-                "kind": "arg",
-                "path": "marketIndex"
+                "kind": "account",
+                "path": "quoterSlab"
               }
             ]
           }
@@ -1561,14 +1514,10 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "marketIndex",
-          "type": "u16"
-        },
-        {
-          "name": "orderRef",
+          "name": "args",
           "type": {
             "defined": {
-              "name": "clobOrderRefV0"
+              "name": "crankClobRemoveExpiredArgs"
             }
           }
         }
@@ -1650,7 +1599,70 @@ export type Velocity = {
               },
               {
                 "kind": "arg",
-                "path": "marketIndex"
+                "path": "args.market_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "perpMarket",
+          "docs": [
+            "The crossed market. Named rather than read out of the maps section:",
+            "the cross serves exactly one market, so the account is structural."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  112,
+                  95,
+                  109,
+                  97,
+                  114,
+                  107,
+                  101,
+                  116
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.market_index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "quoterSlab",
+          "docs": [
+            "The market's approved quoters — both legs' configs, and the identity",
+            "every quoter CPI signs as."
+          ],
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  113,
+                  117,
+                  111,
+                  116,
+                  101,
+                  114,
+                  95,
+                  115,
+                  108,
+                  97,
+                  98
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "args.market_index"
               }
             ]
           }
@@ -1658,20 +1670,12 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "marketIndex",
-          "type": "u16"
-        },
-        {
-          "name": "size",
-          "type": "u64"
-        },
-        {
-          "name": "buyQuoterIndex",
-          "type": "u8"
-        },
-        {
-          "name": "sellQuoterIndex",
-          "type": "u8"
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "crankCrossMatchArgs"
+            }
+          }
         }
       ]
     },
@@ -1743,7 +1747,7 @@ export type Velocity = {
         {
           "name": "clobMarket",
           "docs": [
-            "(`ClobMarket::from_quoter`), so a valid slot cannot be pointed at an",
+            "(`ClobMarket::from_slab`), so a valid slot cannot be pointed at an",
             "arbitrary account."
           ],
           "writable": true
@@ -1754,13 +1758,6 @@ export type Velocity = {
             "registration; the handler re-checks through the slot."
           ],
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
-        },
-        {
-          "name": "clobAuthority",
-          "docs": [
-            "is set to, and nothing a third-party quoter is ever handed."
-          ],
-          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
         },
         {
           "name": "crankConditions",
@@ -1801,7 +1798,7 @@ export type Velocity = {
               },
               {
                 "kind": "arg",
-                "path": "marketIndex"
+                "path": "args.market_index"
               }
             ]
           }
@@ -1854,17 +1851,11 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "marketIndex",
-          "type": "u16"
-        },
-        {
-          "name": "crossRows",
-          "type": "u16"
-        },
-        {
-          "name": "signedRoute",
+          "name": "args",
           "type": {
-            "vec": "pubkey"
+            "defined": {
+              "name": "crankTakerOriginCrossArgs"
+            }
           }
         }
       ]
@@ -3079,68 +3070,6 @@ export type Velocity = {
       ]
     },
     {
-      "name": "extendQuoterSlab",
-      "discriminator": [
-        73,
-        4,
-        123,
-        36,
-        156,
-        210,
-        246,
-        243
-      ],
-      "accounts": [
-        {
-          "name": "payer",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "quoterSlab",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  113,
-                  117,
-                  111,
-                  116,
-                  101,
-                  114,
-                  95,
-                  115,
-                  108,
-                  97,
-                  98
-                ]
-              },
-              {
-                "kind": "arg",
-                "path": "marketIndex"
-              }
-            ]
-          }
-        },
-        {
-          "name": "systemProgram",
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "marketIndex",
-          "type": "u16"
-        },
-        {
-          "name": "capacity",
-          "type": "u16"
-        }
-      ]
-    },
-    {
       "name": "fillLegacyDlobOrder",
       "docs": [
         "`fill_perp_order` with the market's CLOB accounts required: a restable",
@@ -3196,7 +3125,7 @@ export type Velocity = {
         {
           "name": "clobMarket",
           "docs": [
-            "(`ClobMarket::from_quoter`), so a valid slot cannot be pointed at an",
+            "(`ClobMarket::from_slab`), so a valid slot cannot be pointed at an",
             "arbitrary account."
           ],
           "writable": true
@@ -3207,13 +3136,6 @@ export type Velocity = {
             "registration; the handler re-checks through the slot."
           ],
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
-        },
-        {
-          "name": "clobAuthority",
-          "docs": [
-            "is, and nothing a third-party quoter is ever handed."
-          ],
-          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
         },
         {
           "name": "instructionsSysvar",
@@ -3233,26 +3155,12 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "orderId",
+          "name": "args",
           "type": {
-            "option": "u32"
+            "defined": {
+              "name": "fillLegacyDlobOrderArgs"
+            }
           }
-        },
-        {
-          "name": "makerOrderId",
-          "type": {
-            "option": "u32"
-          }
-        },
-        {
-          "name": "signedRoute",
-          "type": {
-            "vec": "pubkey"
-          }
-        },
-        {
-          "name": "marketIndex",
-          "type": "u16"
         }
       ]
     },
@@ -3404,15 +3312,6 @@ export type Velocity = {
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
         {
-          "name": "clobAuthority",
-          "docs": [
-            "is set to. Its own key, distinct from the per-entry signer a",
-            "third-party quoter is handed: signer privilege is inherited by a",
-            "callee, and this one may place and cancel on any book, for any user."
-          ],
-          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
-        },
-        {
           "name": "crankConditions",
           "docs": [
             "Wake-hint host; optional like every other CLOB path."
@@ -3449,7 +3348,7 @@ export type Velocity = {
               },
               {
                 "kind": "arg",
-                "path": "marketIndex"
+                "path": "args.market_index"
               }
             ]
           }
@@ -3457,16 +3356,10 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "marketIndex",
-          "type": "u16"
-        },
-        {
-          "name": "orderRefs",
+          "name": "args",
           "type": {
-            "vec": {
-              "defined": {
-                "name": "forceCancelClobRefV0"
-              }
+            "defined": {
+              "name": "forceCancelClobOrdersArgs"
             }
           }
         }
@@ -3673,7 +3566,7 @@ export type Velocity = {
               },
               {
                 "kind": "arg",
-                "path": "marketIndex"
+                "path": "args.market_index"
               }
             ]
           }
@@ -3756,12 +3649,12 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "marketIndex",
-          "type": "u16"
-        },
-        {
-          "name": "orderIndex",
-          "type": "u32"
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "forfeitRevenueShareOrderArgs"
+            }
+          }
         }
       ]
     },
@@ -5228,8 +5121,12 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "expireFallbackSlots",
-          "type": "u64"
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "initializeQuoterCrossConditionsArgs"
+            }
+          }
         }
       ]
     },
@@ -5276,7 +5173,7 @@ export type Velocity = {
               },
               {
                 "kind": "arg",
-                "path": "marketIndex"
+                "path": "args.market_index"
               }
             ]
           }
@@ -5304,7 +5201,7 @@ export type Velocity = {
               },
               {
                 "kind": "arg",
-                "path": "marketIndex"
+                "path": "args.market_index"
               }
             ]
           }
@@ -5320,12 +5217,12 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "marketIndex",
-          "type": "u16"
-        },
-        {
-          "name": "capacity",
-          "type": "u16"
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "initializeQuoterSlabArgs"
+            }
+          }
         }
       ]
     },
@@ -5627,8 +5524,12 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "marketIndex",
-          "type": "u16"
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "initializeRouterQuoteBufferArgs"
+            }
+          }
         }
       ]
     },
@@ -7495,15 +7396,6 @@ export type Velocity = {
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
         {
-          "name": "clobAuthority",
-          "docs": [
-            "is set to. Its own key, distinct from the per-entry signer a",
-            "third-party quoter is handed: signer privilege is inherited by a",
-            "callee, and this one may place and cancel on any book, for any user."
-          ],
-          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
-        },
-        {
           "name": "flowAuthority",
           "docs": [
             "The flow authority, signing this transaction as a named account.",
@@ -7734,7 +7626,7 @@ export type Velocity = {
         {
           "name": "clobMarket",
           "docs": [
-            "(`ClobMarket::from_quoter`), so a valid slot can't be pointed at an",
+            "(`ClobMarket::from_slab`), so a valid slot can't be pointed at an",
             "arbitrary account."
           ],
           "writable": true
@@ -7745,13 +7637,6 @@ export type Velocity = {
             "registration; the handler re-checks through the slot."
           ],
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
-        },
-        {
-          "name": "clobAuthority",
-          "docs": [
-            "is set to, and nothing a third-party quoter is ever handed."
-          ],
-          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
         },
         {
           "name": "flowAuthority",
@@ -7767,17 +7652,11 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "params",
+          "name": "args",
           "type": {
             "defined": {
-              "name": "orderParams"
+              "name": "placeAndMakePerpOrderV1Args"
             }
-          }
-        },
-        {
-          "name": "activationDelaySlots",
-          "type": {
-            "option": "u32"
           }
         }
       ]
@@ -7877,7 +7756,7 @@ export type Velocity = {
         {
           "name": "clobMarket",
           "docs": [
-            "(`ClobMarket::from_quoter`), so a valid slot can't be pointed at an",
+            "(`ClobMarket::from_slab`), so a valid slot can't be pointed at an",
             "arbitrary account."
           ],
           "writable": true
@@ -7888,15 +7767,6 @@ export type Velocity = {
             "registration; the handler re-checks through the slot."
           ],
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
-        },
-        {
-          "name": "clobAuthority",
-          "docs": [
-            "is set to. Its own key, distinct from the per-entry signer a",
-            "third-party quoter is handed: signer privilege is inherited by a",
-            "callee, and this one may place and cancel on any book, for any user."
-          ],
-          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
         },
         {
           "name": "flowAuthority",
@@ -7913,17 +7783,11 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "params",
+          "name": "args",
           "type": {
             "defined": {
-              "name": "orderParams"
+              "name": "placeAndTakePerpOrderV1Args"
             }
-          }
-        },
-        {
-          "name": "successCondition",
-          "type": {
-            "option": "u32"
           }
         }
       ]
@@ -8145,7 +8009,7 @@ export type Velocity = {
         {
           "name": "clobMarket",
           "docs": [
-            "(`ClobMarket::from_quoter`), so a valid slot cannot be pointed at an",
+            "(`ClobMarket::from_slab`), so a valid slot cannot be pointed at an",
             "arbitrary account."
           ],
           "writable": true
@@ -8156,15 +8020,6 @@ export type Velocity = {
             "registration; the handler re-checks through the slot."
           ],
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
-        },
-        {
-          "name": "clobAuthority",
-          "docs": [
-            "is set to. Its own key, distinct from the per-entry signer a",
-            "third-party quoter is handed: signer privilege is inherited by a",
-            "callee, and this one may place and cancel on any book, for any user."
-          ],
-          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
         }
       ],
       "args": [
@@ -8496,7 +8351,7 @@ export type Velocity = {
               },
               {
                 "kind": "arg",
-                "path": "marketIndex"
+                "path": "args.market_index"
               }
             ]
           }
@@ -8512,8 +8367,12 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "marketIndex",
-          "type": "u16"
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "refillCrankReservoirArgs"
+            }
+          }
         }
       ]
     },
@@ -8536,9 +8395,11 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "marketIndexes",
+          "name": "args",
           "type": {
-            "vec": "u16"
+            "defined": {
+              "name": "refreshSpotMarketInterestArgs"
+            }
           }
         }
       ]
@@ -10611,12 +10472,12 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "marketIndex",
-          "type": "u16"
-        },
-        {
-          "name": "numOwnerSubAccounts",
-          "type": "u8"
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "settleRevenueShareArgs"
+            }
+          }
         }
       ]
     },
@@ -10864,7 +10725,7 @@ export type Velocity = {
               },
               {
                 "kind": "arg",
-                "path": "marketIndex"
+                "path": "args.market_index"
               }
             ]
           }
@@ -10879,12 +10740,12 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "marketIndex",
-          "type": "u16"
-        },
-        {
-          "name": "lamports",
-          "type": "u64"
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "sweepCrankReservoirArgs"
+            }
+          }
         }
       ]
     },
@@ -11961,15 +11822,6 @@ export type Velocity = {
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
         {
-          "name": "clobAuthority",
-          "docs": [
-            "is set to. Its own key, distinct from the per-entry signer a",
-            "third-party quoter is handed: signer privilege is inherited by a",
-            "callee, and this one may place and cancel on any book, for any user."
-          ],
-          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
-        },
-        {
           "name": "crankConditions",
           "docs": [
             "Expiry-hint host, same optional contract as `place_and_make_perp_order_v1`."
@@ -12006,7 +11858,7 @@ export type Velocity = {
               },
               {
                 "kind": "arg",
-                "path": "marketIndex"
+                "path": "args.market_index"
               }
             ]
           }
@@ -12052,12 +11904,12 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "marketIndex",
-          "type": "u16"
-        },
-        {
-          "name": "orderId",
-          "type": "u32"
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "triggerLimitOrderV1Args"
+            }
+          }
         }
       ]
     },
@@ -12129,14 +11981,6 @@ export type Velocity = {
           "address": "BPX47ur8TbgZQgtJcGJvdcQMMFbmBP7ZrhpiUmLuHKqU"
         },
         {
-          "name": "clobAuthority",
-          "docs": [
-            "may place and cancel on any book for any user. Distinct from the",
-            "per-entry signer a third-party quoter is handed."
-          ],
-          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
-        },
-        {
           "name": "crankConditions",
           "docs": [
             "Wake-hint host for the rested remainder, optional as on every CLOB",
@@ -12174,7 +12018,7 @@ export type Velocity = {
               },
               {
                 "kind": "arg",
-                "path": "marketIndex"
+                "path": "args.market_index"
               }
             ]
           }
@@ -12232,17 +12076,11 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "marketIndex",
-          "type": "u16"
-        },
-        {
-          "name": "orderId",
-          "type": "u32"
-        },
-        {
-          "name": "signedRoute",
+          "name": "args",
           "type": {
-            "vec": "pubkey"
+            "defined": {
+              "name": "triggerMarketOrderV1Args"
+            }
           }
         }
       ]
@@ -12914,12 +12752,12 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "refillTargetCranks",
-          "type": "u16"
-        },
-        {
-          "name": "refillWatermarkCranks",
-          "type": "u16"
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "updateCrankTreasuryArgs"
+            }
+          }
         }
       ]
     },
@@ -13427,12 +13265,12 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "shareBps",
-          "type": "u16"
-        },
-        {
-          "name": "solSpotMarketIndex",
-          "type": "u16"
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "updateLiquidationCrankReimbursementArgs"
+            }
+          }
         }
       ]
     },
@@ -14050,13 +13888,6 @@ export type Velocity = {
           "name": "clobProgram"
         },
         {
-          "name": "clobAuthority",
-          "docs": [
-            "is set to, and therefore the only key that may register its cranks."
-          ],
-          "address": "D85RbWEhJrLQXCXgjxzVkc8SLuvu6Hh2oxJJ13r5SzLj"
-        },
-        {
           "name": "crankConditions",
           "docs": [
             "The market's relay conditions + keeper reservoir, stood up (or",
@@ -14140,20 +13971,12 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "crankCostUnits",
+          "name": "args",
           "type": {
             "defined": {
-              "name": "crankCostUnitsV0"
+              "name": "updatePerpMarketClobQuoterArgs"
             }
           }
-        },
-        {
-          "name": "expireFallbackSlots",
-          "type": "u64"
-        },
-        {
-          "name": "minCrossSurplus",
-          "type": "u64"
         }
       ]
     },
@@ -15742,8 +15565,12 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "active",
-          "type": "bool"
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "updateQuoterActiveArgs"
+            }
+          }
         }
       ]
     },
@@ -15762,6 +15589,11 @@ export type Velocity = {
       "accounts": [
         {
           "name": "admin",
+          "docs": [
+            "Mutable: approval growth takes the added rent from the admin, and",
+            "revocation shrink refunds it there."
+          ],
+          "writable": true,
           "signer": true
         },
         {
@@ -15815,12 +15647,20 @@ export type Velocity = {
             "that cannot redeploy has no such account."
           ],
           "optional": true
+        },
+        {
+          "name": "systemProgram",
+          "address": "11111111111111111111111111111111"
         }
       ],
       "args": [
         {
-          "name": "approved",
-          "type": "bool"
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "updateQuoterApprovedArgs"
+            }
+          }
         }
       ]
     },
@@ -15918,8 +15758,12 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "maxOracleDeviationBps",
-          "type": "u32"
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "updateQuoterMaxOracleDeviationArgs"
+            }
+          }
         }
       ]
     },
@@ -15982,8 +15826,12 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "priority",
-          "type": "u8"
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "updateQuoterPriorityArgs"
+            }
+          }
         }
       ]
     },
@@ -18386,8 +18234,12 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "lamports",
-          "type": "u64"
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "withdrawCrankTreasuryArgs"
+            }
+          }
         }
       ]
     },
@@ -18986,7 +18838,7 @@ export type Velocity = {
               },
               {
                 "kind": "arg",
-                "path": "marketIndex"
+                "path": "args.market_index"
               }
             ]
           }
@@ -19020,7 +18872,7 @@ export type Velocity = {
               },
               {
                 "kind": "arg",
-                "path": "marketIndex"
+                "path": "args.market_index"
               }
             ]
           }
@@ -19108,12 +18960,12 @@ export type Velocity = {
       ],
       "args": [
         {
-          "name": "marketIndex",
-          "type": "u16"
-        },
-        {
-          "name": "amount",
-          "type": "u64"
+          "name": "args",
+          "type": {
+            "defined": {
+              "name": "withdrawProtocolUserDepositArgs"
+            }
+          }
         }
       ]
     },
@@ -22343,8 +22195,9 @@ export type Velocity = {
             "docs": [
               "Whether the account is passed writable to the quoter program.",
               "`is_signer` is intentionally not stored: the only slot a quoter CPI",
-              "ever receives signer privilege on is `quoter_signer`, decided by",
-              "pubkey match rather than by registration (see [`quoter_account_metas`])."
+              "ever receives signer privilege on is the market's slab, decided by",
+              "pubkey match rather than by registration (see",
+              "[`super::wire::write_quoter_account_metas`])."
             ],
             "type": "bool"
           },
@@ -23431,6 +23284,52 @@ export type Velocity = {
       }
     },
     {
+      "name": "crankClobEvictArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "side",
+            "docs": [
+              "The side past its soft cap. The CLOB re-checks the threshold."
+            ],
+            "type": {
+              "defined": {
+                "name": "sideV0"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "crankClobRemoveExpiredArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "orderRef",
+            "docs": [
+              "The hinted expired order. The CLOB re-checks that it is due."
+            ],
+            "type": {
+              "defined": {
+                "name": "clobOrderRefV0"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
       "name": "crankCostUnitsV0",
       "docs": [
         "Cost units each of a market's cranks requests, one field per crank.",
@@ -23499,6 +23398,38 @@ export type Velocity = {
       }
     },
     {
+      "name": "crankCrossMatchArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "size",
+            "docs": [
+              "Base to take from each leg. The executor reverts unless both legs",
+              "balance exactly at this size."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "buyQuoterIndex",
+            "docs": [
+              "Legs, as slab slot indexes: the entry whose ask the pass-through",
+              "taker buys, and the one whose bid it sells into. The book is slot 0."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "sellQuoterIndex",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
       "name": "crankPaymentsV0",
       "docs": [
         "What each of a market's cranks pays its keeper, in lamports.",
@@ -23561,6 +23492,36 @@ export type Velocity = {
           {
             "name": "padding",
             "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "crankTakerOriginCrossArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "crossRows",
+            "docs": [
+              "How deep to read each side of the book. A short read truncates worse",
+              "prices, never a better counterparty."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "signedRoute",
+            "docs": [
+              "The taker's signed route, when the crank claims one. Empty claims the",
+              "market baseline."
+            ],
+            "type": {
+              "vec": "pubkey"
+            }
           }
         ]
       }
@@ -24043,6 +24004,37 @@ export type Velocity = {
       }
     },
     {
+      "name": "fillLegacyDlobOrderArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "orderId",
+            "docs": [
+              "The DLOB order to fill. `None` fills the user's most recent order."
+            ],
+            "type": {
+              "option": "u32"
+            }
+          },
+          {
+            "name": "signedRoute",
+            "docs": [
+              "The taker's signed route, when the fill claims one. Empty claims the",
+              "market baseline."
+            ],
+            "type": {
+              "vec": "pubkey"
+            }
+          }
+        ]
+      }
+    },
+    {
       "name": "firedConditionArgV0",
       "docs": [
         "Which condition relay is asking about.",
@@ -24118,6 +24110,32 @@ export type Velocity = {
       }
     },
     {
+      "name": "forceCancelClobOrdersArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "orderRefs",
+            "docs": [
+              "The orders to cancel one by one, each judged not risk-reducing by the",
+              "declared side. Empty asks for the whole-side sweep instead."
+            ],
+            "type": {
+              "vec": {
+                "defined": {
+                  "name": "forceCancelClobRefV0"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
       "name": "forceCancelClobRefV0",
       "docs": [
         "One order the caller wants reclaimed.",
@@ -24148,6 +24166,25 @@ export type Velocity = {
                 "name": "sideV0"
               }
             }
+          }
+        ]
+      }
+    },
+    {
+      "name": "forfeitRevenueShareOrderArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "orderIndex",
+            "docs": [
+              "Index of the escrow order row to forfeit."
+            ],
+            "type": "u32"
           }
         ]
       }
@@ -24545,6 +24582,46 @@ export type Velocity = {
                 8
               ]
             }
+          }
+        ]
+      }
+    },
+    {
+      "name": "initializeQuoterCrossConditionsArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "expireFallbackSlots",
+            "docs": [
+              "The poll interval behind the reprice watch — the discovery floor when",
+              "the maker's declared watch misses a reprice."
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "initializeQuoterSlabArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          }
+        ]
+      }
+    },
+    {
+      "name": "initializeRouterQuoteBufferArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
           }
         ]
       }
@@ -28163,6 +28240,59 @@ export type Velocity = {
       }
     },
     {
+      "name": "placeAndMakePerpOrderV1Args",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "params",
+            "type": {
+              "defined": {
+                "name": "orderParams"
+              }
+            }
+          },
+          {
+            "name": "activationDelaySlots",
+            "docs": [
+              "The book speed bump the maker rests behind. `None` takes the book's",
+              "default. A value below the default needs the flow-authority",
+              "attestation."
+            ],
+            "type": {
+              "option": "u32"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "placeAndTakePerpOrderV1Args",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "params",
+            "type": {
+              "defined": {
+                "name": "orderParams"
+              }
+            }
+          },
+          {
+            "name": "successCondition",
+            "docs": [
+              "Bit 0 selects a success condition (`PlaceAndTakeOrderSuccessCondition`);",
+              "a u32 for wire compatibility with the v0 `optional_params`."
+            ],
+            "type": {
+              "option": "u32"
+            }
+          }
+        ]
+      }
+    },
+    {
       "name": "poolBalance",
       "serialization": "bytemuckunsafe",
       "repr": {
@@ -28841,14 +28971,12 @@ export type Velocity = {
             "docs": [
               "The book's placement rules, mirrored here by the attach",
               "(`update_perp_market_clob_quoter`) so the hot paths read a loaded",
-              "field instead of CPI'ing `order_rules_v0` — the take gate, the",
-              "route's maker-priority skip, and the remainder rest each paid that",
-              "round trip. Zero for non-`Clob` entries and for a book no market has",
+              "field instead of CPI'ing `order_rules_v0`",
+              "Zero for non-`Clob` entries and for a book no market has",
               "attached. Changing the book's rules requires re-running the attach:",
               "a stale mirror degrades gracefully (a wrong tick or minimum drops",
               "the remainder to the plain cancel; a stale-zero delay routes an",
-              "unattested taker synchronously where it should have rested), but the",
-              "attach is the supported way to change an attached book's rules."
+              "unattested taker synchronously where it should have rested)"
             ],
             "type": "u64"
           },
@@ -28884,9 +29012,7 @@ export type Velocity = {
               "For CLOB entries this is the book itself — the CLOB's response region",
               "lives in its market account — which is what lets velocity read the",
               "resting orders an execute may touch without a second registered",
-              "account to trust. Unique across one slab's occupied slots: a route",
-              "names the quoters it consults by carrying their response accounts, so",
-              "two slots sharing one could not be carried apart."
+              "account to trust."
             ],
             "type": "pubkey"
           },
@@ -29183,10 +29309,12 @@ export type Velocity = {
         "",
         "This struct is only the fixed header. The slot region follows it in the",
         "account's remaining bytes: back-to-back [`QuoterSlotV0`]s, so capacity is",
-        "set by the account's size at creation and grows by growing the account,",
-        "never by a layout change. Read it through [`quoter_slab_slots`] /",
-        "[`quoter_slab_slots_mut`]; a vacant slot is all zeroes, which is what a",
-        "fresh or grown region holds.",
+        "the account's size, never a layout constant. The approval flow keeps the",
+        "account right-sized: it grows by exactly the slot an approval needs and",
+        "gives trailing vacancy back on revocation, so readers pay compute for the",
+        "roster rather than for a guess made at creation. Read it through",
+        "[`quoter_slab_slots`] / [`quoter_slab_slots_mut`]; a vacant slot is all",
+        "zeroes, which is what a fresh or grown region holds.",
         "",
         "Creation is permissionless (`initialize_quoter_slab`): the payer buys",
         "rent on an all-vacant slab, and only the approval flow writes slots."
@@ -29214,6 +29342,16 @@ export type Velocity = {
             "type": "u16"
           },
           {
+            "name": "bump",
+            "docs": [
+              "The slab PDA's bump, stored at creation. The slab is the identity",
+              "velocity signs every external quoter CPI as (see `crate::signer`), and",
+              "signing needs the bump; a stored byte is cheaper than a derivation on",
+              "every leg."
+            ],
+            "type": "u8"
+          },
+          {
             "name": "padding",
             "docs": [
               "Header reserve, so future header fields never move the slot region."
@@ -29221,7 +29359,7 @@ export type Velocity = {
             "type": {
               "array": [
                 "u8",
-                124
+                123
               ]
             }
           }
@@ -29318,6 +29456,37 @@ export type Velocity = {
                 "u8",
                 32
               ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "refillCrankReservoirArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          }
+        ]
+      }
+    },
+    {
+      "name": "refreshSpotMarketInterestArgs",
+      "docs": [
+        "The markets to refresh arrive as writable spot market accounts in `remaining_accounts`.",
+        "`SpotMarketMap` reads each market's index out of the account it loads, so a market is refreshed",
+        "only when its own account is passed."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndexes",
+            "type": {
+              "vec": "u16"
             }
           }
         ]
@@ -29964,6 +30133,25 @@ export type Velocity = {
                 "name": "settlePnlExplanation"
               }
             }
+          }
+        ]
+      }
+    },
+    {
+      "name": "settleRevenueShareArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "numOwnerSubAccounts",
+            "docs": [
+              "How many of the owner's sub-accounts ride the remaining accounts."
+            ],
+            "type": "u8"
           }
         ]
       }
@@ -31743,6 +31931,22 @@ export type Velocity = {
       }
     },
     {
+      "name": "sweepCrankReservoirArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "lamports",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
       "name": "syncLiqConditionsArgs",
       "docs": [
         "What the caller asks for; the terms the account ends up holding are",
@@ -32159,6 +32363,54 @@ export type Velocity = {
       }
     },
     {
+      "name": "triggerLimitOrderV1Args",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "orderId",
+            "docs": [
+              "The trigger-limit order to fire, by its `User.orders` id."
+            ],
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "triggerMarketOrderV1Args",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "orderId",
+            "docs": [
+              "The trigger-market order to fire, by its `User.orders` id."
+            ],
+            "type": "u32"
+          },
+          {
+            "name": "signedRoute",
+            "docs": [
+              "The taker's signed route, when the fill claims one. Empty claims the",
+              "market baseline."
+            ],
+            "type": {
+              "vec": "pubkey"
+            }
+          }
+        ]
+      }
+    },
+    {
       "name": "triggerSlotMetaV0",
       "serialization": "bytemuckunsafe",
       "repr": {
@@ -32199,6 +32451,133 @@ export type Velocity = {
                 2
               ]
             }
+          }
+        ]
+      }
+    },
+    {
+      "name": "updateCrankTreasuryArgs",
+      "docs": [
+        "Both levels are counted in cranks rather than lamports, so one setting",
+        "serves every market: a market whose cranks cost more carries a",
+        "proportionally larger float.",
+        "",
+        "The target is read at refill time and so reaches every market at once. The",
+        "watermark is resolved to lamports and written onto a market at attach,",
+        "because it is the threshold that market's wake condition carries, so a new",
+        "watermark reaches a market on its next attach.",
+        "",
+        "What a refill *pays* is not set here. It is priced from the network rails",
+        "like every other crank and stored on the market whose reservoir it fills,",
+        "because that is where the condition advertising it lives."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "refillTargetCranks",
+            "docs": [
+              "Cranks' worth of lamports a refill fills a reservoir up to."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "refillWatermarkCranks",
+            "docs": [
+              "Cranks' worth of lamports at or under which a refill wakes."
+            ],
+            "type": "u16"
+          }
+        ]
+      }
+    },
+    {
+      "name": "updateLiquidationCrankReimbursementArgs",
+      "docs": [
+        "Set what the protocol will spend getting a liquidation cranked, and the",
+        "market whose oracle prices it.",
+        "",
+        "A liquidation crank repays the priority fee its keeper paid, so the crank",
+        "stays worth landing when the fee market moves — and this bounds that at a",
+        "share of what the liquidation recovers, so a recovery too small to cover",
+        "its own gas is simply left. Both halves are needed: a share with no SOL",
+        "market has no way to turn quote into lamports, and a market with no share",
+        "spends nothing.",
+        "",
+        "Zero in either field is a valid setting. It leaves the flat payment, which",
+        "is where every market starts."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "shareBps",
+            "docs": [
+              "The liquidator fee share paid back to a cranked liquidation's payer,",
+              "in basis points of the fee."
+            ],
+            "type": "u16"
+          },
+          {
+            "name": "solSpotMarketIndex",
+            "docs": [
+              "The SOL spot market the reimbursement is priced through."
+            ],
+            "type": "u16"
+          }
+        ]
+      }
+    },
+    {
+      "name": "updatePerpMarketClobQuoterArgs",
+      "docs": [
+        "Name the market's canonical CLOB quoter entry: once set, every router",
+        "fill must carry it in its quoter section (mandatory baseline — a route",
+        "can't exclude the public book). A dead entry is still passed but skipped",
+        "at quote time, so deactivating the book never bricks fills; there is no",
+        "clear path for the same reason — kill the entry instead.",
+        "",
+        "The attach also stands up (or, on re-attach, rewrites) the market's relay",
+        "crank conditions: the evict/expire condition block plus the lamport",
+        "reservoir that pays relay keepers per crank. This is the earliest point the",
+        "full reference graph (book + registry entry) exists, so a new market needs",
+        "no separate conditions ceremony, and re-pricing the cranks is just",
+        "re-running the attach.",
+        "",
+        "`crank_cost_units` is what each crank requests, measured by simulating it.",
+        "The lamport payments are derived here from `State.transaction_fee_rails`,",
+        "so a change in what the network charges is one write to the rails plus a",
+        "re-run of this instruction per market — not a fresh round of guesswork per",
+        "market."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "crankCostUnits",
+            "docs": [
+              "What each crank requests, measured by simulating it. The lamport",
+              "payments derive from these and `State.transaction_fee_rails`."
+            ],
+            "type": {
+              "defined": {
+                "name": "crankCostUnitsV0"
+              }
+            }
+          },
+          {
+            "name": "expireFallbackSlots",
+            "docs": [
+              "The cross fallback poll interval, in slots."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "minCrossSurplus",
+            "docs": [
+              "The least a cross must clear by before the resolver stages it."
+            ],
+            "type": "u64"
           }
         ]
       }
@@ -32260,6 +32639,33 @@ export type Velocity = {
       }
     },
     {
+      "name": "updateQuoterActiveArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "active",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "updateQuoterApprovedArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "approved",
+            "docs": [
+              "True copies the staged config into the slab; false pulls the copy."
+            ],
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
       "name": "updateQuoterConfigArgs",
       "type": {
         "kind": "struct",
@@ -32305,6 +32711,37 @@ export type Velocity = {
                 ]
               }
             }
+          }
+        ]
+      }
+    },
+    {
+      "name": "updateQuoterMaxOracleDeviationArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "maxOracleDeviationBps",
+            "docs": [
+              "In MARGIN_PRECISION units, so one unit is one basis point. Zero clears",
+              "the declaration and the market's own band stands."
+            ],
+            "type": "u32"
+          }
+        ]
+      }
+    },
+    {
+      "name": "updateQuoterPriorityArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "priority",
+            "docs": [
+              "Routing tier at a shared price: lower fills first, pro rata within."
+            ],
+            "type": "u8"
           }
         ]
       }
@@ -32973,6 +33410,34 @@ export type Velocity = {
           {
             "name": "tooVolatileRatio",
             "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "withdrawCrankTreasuryArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "lamports",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "withdrawProtocolUserDepositArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "marketIndex",
+            "type": "u16"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
           }
         ]
       }

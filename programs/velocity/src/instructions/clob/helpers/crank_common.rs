@@ -62,7 +62,6 @@ use {
 pub const MAX_CROSS_MAKERS: usize = 8;
 
 #[derive(Accounts)]
-#[instruction(market_index: u16)]
 pub struct CrankClobOrderRemoval<'info> {
     pub state: AccountLoader<'info, State>,
     /// CHECK: in signed-keeper mode this must sign for `filler` (enforced by
@@ -99,20 +98,16 @@ pub struct CrankClobOrderRemoval<'info> {
     /// registration; the handler re-checks through the slot.
     #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
-    /// is set to. Its own key, distinct from the per-entry signer a
-    /// third-party quoter is handed: signer privilege is inherited by a
-    /// callee, and this one may place and cancel on any book, for any user.
-    #[account(address = crate::signer::CLOB_AUTHORITY)]
-    pub clob_authority: UncheckedAccount<'info>,
     /// The market's relay conditions account: the expiry-hint host and the
     /// lamport reservoir. Optional so signed keepers can crank markets whose
     /// conditions were never initialized; required in program-keeper mode.
     #[account(
         mut,
+        // Derived from the slab's market rather than from instruction args:
+        // this struct serves both removal cranks, whose args differ.
         seeds = [
             CLOB_CRANK_CONDITIONS_PDA_SEED,
-            market_index.to_le_bytes().as_ref(),
+            quoter_slab.load()?.market.to_le_bytes().as_ref(),
         ],
         bump
     )]
@@ -157,12 +152,11 @@ pub fn crank_clob_removal(
         "program-keeper crank requires the market's conditions account"
     )?;
 
-    let clob = ClobMarket::from_quoter(
-        &quoter_slab_clob(&ctx.accounts.quoter_slab, market_index)?.config,
+    let clob = ClobMarket::from_slab(
+        &ctx.accounts.quoter_slab,
         market_index,
         &ctx.accounts.clob_market,
         &ctx.accounts.clob_program,
-        &ctx.accounts.clob_authority,
     )?;
 
     // CPI while no user borrows are held.
@@ -408,7 +402,6 @@ pub fn removal_call<I: anchor_lang::Discriminator>(
             quoter_slab: ctx.accounts.quoter_slab.key(),
             clob_market: ctx.accounts.clob_market.key(),
             clob_program: crate::ids::clob_program::id(),
-            clob_authority: pdas::clob_authority(),
             crank_conditions: Some(ctx.accounts.crank_conditions.key()),
         },
     ))

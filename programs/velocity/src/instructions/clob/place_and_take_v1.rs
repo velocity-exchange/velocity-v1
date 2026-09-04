@@ -46,7 +46,7 @@ pub struct PlaceAndTakeV1<'info> {
     /// vetted book its `Clob` slot names.
     pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
     /// CHECK: validated against the book slot's registered response account
-    /// (`ClobMarket::from_quoter`), so a valid slot can't be pointed at an
+    /// (`ClobMarket::from_slab`), so a valid slot can't be pointed at an
     /// arbitrary account.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
@@ -54,12 +54,6 @@ pub struct PlaceAndTakeV1<'info> {
     /// registration; the handler re-checks through the slot.
     #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
-    /// is set to. Its own key, distinct from the per-entry signer a
-    /// third-party quoter is handed: signer privilege is inherited by a
-    /// callee, and this one may place and cancel on any book, for any user.
-    #[account(address = crate::signer::CLOB_AUTHORITY)]
-    pub clob_authority: UncheckedAccount<'info>,
     /// The flow authority, signing this transaction as a named account —
     /// swift builds and signs its own user transactions, so presence marks
     /// the flow attested. Absent reads as unattested, which on a book with
@@ -73,14 +67,25 @@ pub struct PlaceAndTakeV1<'info> {
     pub flow_authority: Option<Signer<'info>>,
 }
 
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
+pub struct PlaceAndTakePerpOrderV1Args {
+    pub params: OrderParams,
+    /// Bit 0 selects a success condition (`PlaceAndTakeOrderSuccessCondition`);
+    /// a u32 for wire compatibility with the v0 `optional_params`.
+    pub success_condition: Option<u32>,
+}
+
 #[access_control(
     fill_not_paused(&ctx.accounts.state)
 )]
 pub fn handle_place_and_take_perp_order_v1<'c: 'info, 'info>(
     ctx: Context<'info, PlaceAndTakeV1<'info>>,
-    params: OrderParams,
-    optional_params: Option<u32>, // u32 for backwards compatibility with v0
+    args: PlaceAndTakePerpOrderV1Args,
 ) -> Result<()> {
+    let PlaceAndTakePerpOrderV1Args {
+        params,
+        success_condition: optional_params,
+    } = args;
     let (taker_served_window, synchronous_take) = {
         let attested = ctx.accounts.flow_authority.is_some();
         let synchronous = crate::instructions::synchronous_take_allowed(
@@ -101,7 +106,6 @@ pub fn handle_place_and_take_perp_order_v1<'c: 'info, 'info>(
             quoter_slab: &ctx.accounts.quoter_slab,
             clob_market: &ctx.accounts.clob_market,
             clob_program: &ctx.accounts.clob_program,
-            clob_authority: &ctx.accounts.clob_authority,
         },
         taker_served_window,
         synchronous_take,

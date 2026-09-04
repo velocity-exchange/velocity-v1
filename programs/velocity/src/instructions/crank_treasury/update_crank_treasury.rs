@@ -34,11 +34,22 @@ pub struct UpdateCrankTreasury<'info> {
 /// What a refill *pays* is not set here. It is priced from the network rails
 /// like every other crank and stored on the market whose reservoir it fills,
 /// because that is where the condition advertising it lives.
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
+pub struct UpdateCrankTreasuryArgs {
+    /// Cranks' worth of lamports a refill fills a reservoir up to.
+    pub refill_target_cranks: u16,
+    /// Cranks' worth of lamports at or under which a refill wakes.
+    pub refill_watermark_cranks: u16,
+}
+
 pub fn handle_update_crank_treasury(
     ctx: Context<UpdateCrankTreasury>,
-    refill_target_cranks: u16,
-    refill_watermark_cranks: u16,
+    args: UpdateCrankTreasuryArgs,
 ) -> Result<()> {
+    let UpdateCrankTreasuryArgs {
+        refill_target_cranks,
+        refill_watermark_cranks,
+    } = args;
     validate!(
         refill_watermark_cranks > 0,
         ErrorCode::DefaultError,

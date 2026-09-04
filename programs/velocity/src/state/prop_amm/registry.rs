@@ -59,8 +59,9 @@ pub struct AmmAccountMeta {
     pub pubkey: Pubkey,
     /// Whether the account is passed writable to the quoter program.
     /// `is_signer` is intentionally not stored: the only slot a quoter CPI
-    /// ever receives signer privilege on is `quoter_signer`, decided by
-    /// pubkey match rather than by registration (see [`quoter_account_metas`]).
+    /// ever receives signer privilege on is the market's slab, decided by
+    /// pubkey match rather than by registration (see
+    /// [`super::wire::write_quoter_account_metas`]).
     pub is_writable: bool,
     pub padding: [u8; 7],
 }
@@ -288,10 +289,11 @@ pub const QUOTER_PDA_SEED: &[u8] = b"quoter";
 ///
 /// That PDA is the SPL token authority on every `spot_market_vault` and
 /// `insurance_fund_vault` and the `User`/`UserStats` authority of the protocol
-/// account. Velocity never signs a quoter CPI as it — [`quoter_account_metas`]
-/// only ever marks `quoter_signer` — but a quoter has no legitimate use for
-/// the key either, so naming it is refused at registration rather than
-/// silently downgraded to a read-only slot.
+/// account. Velocity never signs a quoter CPI as it —
+/// [`super::wire::write_quoter_account_metas`] only ever marks the market's
+/// slab — but a quoter has no legitimate use for the key either, so naming it
+/// is refused at registration rather than silently downgraded to a read-only
+/// slot.
 pub fn validate_quoter_accounts<'a>(pubkeys: impl IntoIterator<Item = &'a Pubkey>) -> Result<()> {
     let vault_authority = crate::state::pdas::velocity_signer();
     pubkeys.into_iter().try_for_each(|pubkey| {

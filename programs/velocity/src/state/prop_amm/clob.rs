@@ -8,8 +8,11 @@
 //! quoter type shares ([`super::QuoterConfigV0::execute`]).
 
 use {
-    super::{QuoterConfigV0, QuoterType, CLOB_USER_REF_BYTES},
-    crate::{error::ErrorCode, msg, signer::get_clob_authority_seeds, validate},
+    super::{
+        get_quoter_slab_signer_seeds, quoter_slab_clob, QuoterConfigV0, QuoterSlabV0, QuoterType,
+        CLOB_USER_REF_BYTES,
+    },
+    crate::{error::ErrorCode, msg, validate},
     anchor_lang::prelude::*,
     solana_program::{
         instruction::{AccountMeta, Instruction},
@@ -191,12 +194,12 @@ pub const CLOB_ORDERS_V0_DISCRIMINATOR: [u8; 8] = [124, 117, 208, 33, 202, 209, 
 pub const CLOB_ORDER_RULES_V0_DISCRIMINATOR: [u8; 8] = [201, 129, 212, 105, 18, 69, 149, 252];
 
 /// The velocity-mediated CLOB CPI surface, bound to one book: the three
-/// accounts every call takes plus the signer nonce that lets velocity sign as
-/// the book's `place_authority`.
+/// accounts every call takes plus the seeds that let velocity sign as the
+/// book's `place_authority` — the market's quoter slab.
 ///
 /// This and [`ClobReader`] are the only places in the program that speak the
 /// CLOB's wire — the discriminators above, the borsh arg encoding, the
-/// `invoke_signed` with the fixed `[market (w), clob_authority (s)]` account
+/// `invoke_signed` with the fixed `[market (w), quoter_slab (s)]` account
 /// pair, and the return-data decode (writer-checked, so a program the CLOB
 /// CPI'd into can't spoof the response). Every caller — placement, cancel,
 /// the evict/expire cranks, force-cancel — goes through a method here. The
@@ -218,40 +221,43 @@ pub struct ClobMarket<'a, 'info> {
     pub market: &'a AccountInfo<'info>,
     /// The registered CLOB program.
     pub program: &'a AccountInfo<'info>,
-    /// The CLOB place authority PDA — what a book's `place_authority` is set
-    /// to. The CLOB gates place/cancel/evict/expire *and* `execute_v0` on that
+    /// The market's quoter slab — what a book's `place_authority` is set to.
+    /// The CLOB gates place/cancel/evict/expire *and* `execute_v0` on that
     /// one field, so this leg and the registry's execute leg for a CLOB entry
-    /// necessarily sign as the same key.
-    ///
-    /// It is its own key rather than the one a third-party quoter is handed.
-    /// Signer privilege is inherited by a callee, and this key may place and
-    /// cancel on any book for *any* user (`place_order_v0` takes the user as an
-    /// argument), so a quoter that received it and also held a book in its
-    /// account list could rest unreserved orders on that book or wipe it.
-    pub clob_authority: &'a AccountInfo<'info>,
+    /// necessarily sign as the same key. See `crate::signer` for why the slab
+    /// is safe as the shared external-CPI identity.
+    pub slab: &'a AccountInfo<'info>,
+    /// The slab's PDA seeds, for signing: the market index and the stored
+    /// bump.
+    market_index_le: [u8; 2],
+    bump: u8,
 }
 
 impl<'a, 'info> ClobMarket<'a, 'info> {
-    /// Bind to the book a CLOB registry entry names. Checks what every
-    /// caller needs: the entry is a CLOB, it serves `market_index`, and this
-    /// book is one of the accounts the admin vetted onto the entry (so a
-    /// caller can't point a valid entry at an arbitrary account it owns).
+    /// Bind to the book the market's slab names. Checks what every caller
+    /// needs: the slab serves `market_index`, it holds a book slot, and
+    /// `market` is the account the admin vetted onto that slot (so a caller
+    /// can't point the slab at an arbitrary account it owns).
     ///
-    /// Deliberately *not* gated on `is_active`/`is_approved`: those mean
-    /// "may take new flow", and the removal paths must keep working on a
-    /// killed or de-listed book. Placement applies that gate itself.
-    pub fn from_quoter(
-        quoter: &QuoterConfigV0,
+    /// Deliberately *not* gated on `is_active`/`suspended`: those mean "may
+    /// take new flow", and the removal paths must keep working on a killed or
+    /// de-listed book. Placement applies that gate itself.
+    pub fn from_slab(
+        slab: &'a AccountLoader<'info, QuoterSlabV0>,
         market_index: u16,
         market: &'a AccountInfo<'info>,
         program: &'a AccountInfo<'info>,
-        clob_authority: &'a AccountInfo<'info>,
     ) -> Result<Self> {
-        quoter.validate_clob_book(market_index, &market.key())?;
+        quoter_slab_clob(slab, market_index)?
+            .config
+            .validate_clob_book(market_index, &market.key())?;
+        let bump = slab.load()?.bump;
         Ok(Self {
             market,
             program,
-            clob_authority,
+            slab: slab.as_ref(),
+            market_index_le: market_index.to_le_bytes(),
+            bump,
         })
     }
 
@@ -349,17 +355,14 @@ impl<'a, 'info> ClobMarket<'a, 'info> {
                 program_id: self.program.key(),
                 accounts: vec![
                     AccountMeta::new(self.market.key(), false),
-                    AccountMeta::new_readonly(self.clob_authority.key(), true),
+                    AccountMeta::new_readonly(self.slab.key(), true),
                 ],
                 data,
             },
-            &[
-                self.market.clone(),
-                self.clob_authority.clone(),
-                self.program.clone(),
-            ],
-            &[&get_clob_authority_seeds(
-                &crate::signer::CLOB_AUTHORITY_NONCE,
+            &[self.market.clone(), self.slab.clone(), self.program.clone()],
+            &[&get_quoter_slab_signer_seeds(
+                &self.market_index_le,
+                &self.bump,
             )],
         )?;
 
@@ -455,103 +458,106 @@ impl ClobReader<'_, '_> {
     }
 }
 
-/// Unwind one user's reserve for everything a bulk sweep took, and report how
-/// many orders that was.
-///
-/// One `decrease_open_bids_and_asks` per side by the summed base the sweep
-/// reported: identical arithmetic to N per-order unwinds — each placement
-/// reserved its own amount, so the sum can never exceed what is reserved — at
-/// a cost that does not grow with the count. Both directions regardless of
-/// which sides were asked for, so the reserve moves by exactly what left the
-/// book rather than by what the caller intended to take.
-pub fn unwind_swept_orders(
-    user: &mut crate::state::user::User,
-    clob: &ClobReader,
-    market_index: u16,
-    sides: ClobCancelSides,
-    swept: &ClobCancelAllOutcomeV0,
-) -> Result<u32> {
-    use crate::controller::position::{
-        decrease_open_bids_and_asks, get_position_index, PositionDirection,
-    };
-    let position_index = get_position_index(&user.perp_positions, market_index)?;
-    for direction in [PositionDirection::Long, PositionDirection::Short] {
-        decrease_open_bids_and_asks(
-            &mut user.perp_positions[position_index],
-            &direction,
-            swept.base_for(direction),
-            true,
-        )?;
+impl crate::state::user::User {
+    /// Unwind this user's reserve for everything a bulk sweep took, and
+    /// report how many orders that was.
+    ///
+    /// One `decrease_open_bids_and_asks` per side by the summed base the
+    /// sweep reported: identical arithmetic to N per-order unwinds — each
+    /// placement reserved its own amount, so the sum can never exceed what is
+    /// reserved — at a cost that does not grow with the count. Both
+    /// directions regardless of which sides were asked for, so the reserve
+    /// moves by exactly what left the book rather than by what the caller
+    /// intended to take.
+    pub fn unwind_swept_orders(
+        &mut self,
+        clob: &ClobReader,
+        market_index: u16,
+        sides: ClobCancelSides,
+        swept: &ClobCancelAllOutcomeV0,
+    ) -> Result<u32> {
+        use crate::controller::position::{
+            decrease_open_bids_and_asks, get_position_index, PositionDirection,
+        };
+        let position_index = get_position_index(&self.perp_positions, market_index)?;
+        for direction in [PositionDirection::Long, PositionDirection::Short] {
+            decrease_open_bids_and_asks(
+                &mut self.perp_positions[position_index],
+                &direction,
+                swept.base_for(direction),
+                true,
+            )?;
+        }
+        let orders = swept.orders();
+        self.perp_positions[position_index].open_orders = self.perp_positions[position_index]
+            .open_orders
+            .saturating_sub(orders.min(u8::MAX as u32) as u8);
+        // The sweep took this many reduce-only orders off the book, so disarm
+        // the counter by the same amount.
+        self.perp_positions[position_index]
+            .disarm_reduce_only_clob_by(swept.reduce_only_orders().min(u16::MAX as u32) as u16);
+        (0..orders).for_each(|_| self.decrement_open_orders(false));
+        self.release_swept_trigger_shadows(clob, market_index, sides)?;
+        Ok(orders)
     }
-    let orders = swept.orders();
-    user.perp_positions[position_index].open_orders = user.perp_positions[position_index]
-        .open_orders
-        .saturating_sub(orders.min(u8::MAX as u32) as u8);
-    // The sweep took this many reduce-only orders off the book, so disarm the
-    // counter by the same amount.
-    user.perp_positions[position_index]
-        .disarm_reduce_only_clob_by(swept.reduce_only_orders().min(u16::MAX as u32) as u16);
-    (0..orders).for_each(|_| user.decrement_open_orders(false));
-    release_swept_trigger_shadows(user, clob, market_index, sides)?;
-    Ok(orders)
-}
 
-/// Free the placed-trigger shadows on `sides` whose live orders a bulk sweep
-/// took, and report how many were freed.
-///
-/// Driven off what the *book* still holds rather than off a list of removed
-/// ids: a shadow is released exactly when its ref no longer names its order,
-/// which is true whether the sweep was capped or not, and is strictly more
-/// robust than matching ids — a shadow whose order left the book by any route
-/// reads as released here. The scan is over `User.orders`, so it is bounded by
-/// that array, not by the book.
-///
-/// Asked in chunks because the book answers about
-/// [`CLOB_ORDER_VIEW_CEILING`] refs per call, and a user may hold more
-/// shadows than that.
-pub fn release_swept_trigger_shadows(
-    user: &mut crate::state::user::User,
-    clob: &ClobReader,
-    market_index: u16,
-    sides: ClobCancelSides,
-) -> Result<usize> {
-    use crate::state::user::{MarketType, OrderStatus};
-    let candidates: Vec<(usize, ClobOrderRefV0)> = user
-        .orders
-        .iter()
-        .enumerate()
-        .filter(|(_, order)| {
-            order.status == OrderStatus::Open
-                && order.is_placed_on_clob()
-                && order.market_type == MarketType::Perp
-                && order.market_index == market_index
-                && sides.includes(order.direction)
-        })
-        .map(|(index, order)| {
-            let (node_index, order_id) = order.clob_order_ref();
-            (
-                index,
-                ClobOrderRefV0 {
-                    node_index,
-                    order_id,
-                },
-            )
-        })
-        .collect();
-
-    let mut freed = 0usize;
-    for chunk in candidates.chunks(CLOB_ORDER_VIEW_CEILING) {
-        let views = clob.orders(chunk.iter().map(|(_, r)| *r).collect())?;
-        chunk
+    /// Free this user's placed-trigger shadows on `sides` whose live orders a
+    /// bulk sweep took, and report how many were freed.
+    ///
+    /// Driven off what the *book* still holds rather than off a list of
+    /// removed ids: a shadow is released exactly when its ref no longer names
+    /// its order, which is true whether the sweep was capped or not, and is
+    /// strictly more robust than matching ids — a shadow whose order left the
+    /// book by any route reads as released here. The scan is over
+    /// `User.orders`, so it is bounded by that array, not by the book.
+    ///
+    /// Asked in chunks because the book answers about
+    /// [`CLOB_ORDER_VIEW_CEILING`] refs per call, and a user may hold more
+    /// shadows than that.
+    pub fn release_swept_trigger_shadows(
+        &mut self,
+        clob: &ClobReader,
+        market_index: u16,
+        sides: ClobCancelSides,
+    ) -> Result<usize> {
+        use crate::state::user::{MarketType, OrderStatus};
+        let candidates: Vec<(usize, ClobOrderRefV0)> = self
+            .orders
             .iter()
-            .zip(views.iter())
-            .filter(|(_, view)| !view.found())
-            .for_each(|((index, _), _)| {
-                user.orders[*index].status = OrderStatus::Canceled;
-                freed += 1;
-            });
+            .enumerate()
+            .filter(|(_, order)| {
+                order.status == OrderStatus::Open
+                    && order.is_placed_on_clob()
+                    && order.market_type == MarketType::Perp
+                    && order.market_index == market_index
+                    && sides.includes(order.direction)
+            })
+            .map(|(index, order)| {
+                let (node_index, order_id) = order.clob_order_ref();
+                (
+                    index,
+                    ClobOrderRefV0 {
+                        node_index,
+                        order_id,
+                    },
+                )
+            })
+            .collect();
+
+        let mut freed = 0usize;
+        for chunk in candidates.chunks(CLOB_ORDER_VIEW_CEILING) {
+            let views = clob.orders(chunk.iter().map(|(_, r)| *r).collect())?;
+            chunk
+                .iter()
+                .zip(views.iter())
+                .filter(|(_, view)| !view.found())
+                .for_each(|((index, _), _)| {
+                    self.orders[*index].status = OrderStatus::Canceled;
+                    freed += 1;
+                });
+        }
+        Ok(freed)
     }
-    Ok(freed)
 }
 
 impl QuoterConfigV0 {

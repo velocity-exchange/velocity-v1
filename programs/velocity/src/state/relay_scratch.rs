@@ -73,7 +73,7 @@ impl RelayScratchV0 {
     }
 }
 
-const _: () = assert!((RelayScratchV0::SIZE - 8) % 16 == 0);
+const _: () = assert!((RelayScratchV0::SIZE - 8).is_multiple_of(16));
 const _: () = assert!(RelayScratchV0::SIZE <= 10_240);
 
 #[cfg(test)]

@@ -1873,11 +1873,10 @@ pub fn fill_perp_order_with_router(
         return Ok((0, 0));
     }
 
-    // The fill takes the order itself, not a slot index. Copy it out, let the
-    // fill work on that, and put it back — `Order` is `Copy` and 104 bytes, so
-    // this costs nothing and it is what lets an order that lives nowhere (a
-    // remainder lifted off a book) be filled by the same path.
-    let mut order = order;
+    // The fill takes the order itself, not a slot index — `Order` is `Copy`
+    // and 104 bytes, so this costs nothing and it is what lets an order that
+    // lives nowhere (a remainder lifted off a book) be filled by the same
+    // path.
     let (base_asset_amount, quote_asset_amount) = fulfill_perp_order(
         user,
         &mut order,
@@ -2404,8 +2403,8 @@ fn admit_reducing_maker_orders(
     resting_base_asset_amount: i64,
 ) -> VelocityResult<Vec<(usize, u64)>> {
     match maker_direction {
-        PositionDirection::Long => candidates.sort_by(|a, b| b.1.cmp(&a.1)),
-        PositionDirection::Short => candidates.sort_by(|a, b| a.1.cmp(&b.1)),
+        PositionDirection::Long => candidates.sort_by_key(|c| std::cmp::Reverse(c.1)),
+        PositionDirection::Short => candidates.sort_by_key(|a| a.1),
     }
 
     let mut projected_base_asset_amount = resting_base_asset_amount;
@@ -2431,7 +2430,6 @@ fn admit_reducing_maker_orders(
 }
 
 #[inline(always)]
-
 fn insert_maker_order_info(
     maker_orders_info: &mut Vec<MakerOrderInfo>,
     maker_order_info: MakerOrderInfo,
@@ -3355,22 +3353,23 @@ fn settle_amm_house_fill(
     //    its limit. The AMM keeps the curve to limit gap as spread surplus.
     //  * Normal sole-AMM step: charge the shade and hold the taker to its
     //    limit. See `settle_amm_house_normal_quote`.
-    let (taker_quote, taker_surplus) = if order_post_only && taker_limit_price.is_some() {
-        crate::controller::position::calculate_quote_asset_amount_surplus(
-            taker_direction,
-            fill.quote_filled,
-            fill.base_filled,
-            taker_limit_price.unwrap(),
-        )?
-    } else {
-        settle_amm_house_normal_quote(
-            fill,
-            taker_direction,
-            taker_limit_price,
-            amm_allocation_quote,
-            amm_allocation_base,
-        )?
-    };
+    let (taker_quote, taker_surplus) =
+        if let (true, Some(taker_limit_price)) = (order_post_only, taker_limit_price) {
+            crate::controller::position::calculate_quote_asset_amount_surplus(
+                taker_direction,
+                fill.quote_filled,
+                fill.base_filled,
+                taker_limit_price,
+            )?
+        } else {
+            settle_amm_house_normal_quote(
+                fill,
+                taker_direction,
+                taker_limit_price,
+                amm_allocation_quote,
+                amm_allocation_base,
+            )?
+        };
 
     let reward_referrer =
         can_reward_user_with_referral_reward(market.market_index, rev_share_escrow);
@@ -3540,7 +3539,7 @@ fn settle_amm_house_fill(
     }
 
     let (taker_record_key, taker_record_order, maker_record_key, maker_record_order) =
-        get_taker_and_maker_for_order_record(taker_key, &taker_order);
+        get_taker_and_maker_for_order_record(taker_key, taker_order);
 
     let order_action_explanation = if is_liquidation {
         OrderActionExplanation::Liquidation
@@ -4411,7 +4410,7 @@ fn fulfill_perp_order_router_pass(
     };
     let taker_ref = crate::state::prop_amm::ClobUserRefV0 {
         authority: taker.authority,
-        sub_account_id: taker.sub_account_id.into(),
+        sub_account_id: taker.sub_account_id,
     };
     let protocol_authority = router.protocol_authority;
     // One bit per loaded user, in the order the map holds them. Set as each
@@ -4538,7 +4537,7 @@ fn fulfill_perp_order_router_pass(
                     remaining -= size;
                     Some(PriceLevel {
                         price: level.price,
-                        size: size.into(),
+                        size,
                     })
                 })
                 .collect();
@@ -4585,7 +4584,7 @@ fn fulfill_perp_order_router_pass(
     // buffered one, which is LP value handed to the taker. Maker books keep
     // the raw limit: the buffer is the AMM's, not theirs.
     let amm_taker_limit = crate::math::orders::calculate_effective_amm_taker_limit(
-        &taker_order,
+        taker_order,
         taker_limit_price,
         None,
         &crate::math::fees::determine_user_fee_tier(
@@ -4663,8 +4662,8 @@ fn fulfill_perp_order_router_pass(
         .iter()
         .map(|maker| {
             [PriceLevel {
-                price: maker.price.into(),
-                size: maker.unfilled.into(),
+                price: maker.price,
+                size: maker.unfilled,
             }]
         })
         .collect();
@@ -5636,7 +5635,7 @@ pub fn cross_match(
     }
     let taker_ref = crate::state::prop_amm::ClobUserRefV0 {
         authority: taker.authority,
-        sub_account_id: taker.sub_account_id.into(),
+        sub_account_id: taker.sub_account_id,
     };
     let protocol_authority = state.signer;
     let user_ref_index = makers_and_referrer.user_ref_index()?;
@@ -5659,11 +5658,7 @@ pub fn cross_match(
     let base_before = taker.perp_positions[taker_position_index].base_asset_amount;
     let quote_before = taker.perp_positions[taker_position_index].quote_asset_amount;
 
-    // The ephemeral taker order the settlement path reads (fee schedule off
-    // its slot, id for the fill records). A local, not an `orders` slot: the
-    // settlement takes the order itself, so this leg never needs the protocol
-    // user to have a free one.
-    let mut taker_order = Order::default();
+    // Both legs' fill records share one order id (see `taker_order` below).
     let order_id = taker.next_order_id;
     taker.next_order_id = taker.next_order_id.wrapping_add(1).max(1);
 
@@ -5747,7 +5742,10 @@ pub fn cross_match(
         }
 
         // The leg's ephemeral order (settlement reads direction + slot + id).
-        taker_order = Order {
+        // A local, not an `orders` slot: the settlement takes the order
+        // itself, so this leg never needs the protocol user to have a free
+        // one.
+        let mut taker_order = Order {
             slot,
             order_id,
             market_index,
@@ -5809,7 +5807,7 @@ pub fn cross_match(
         };
         if let Some(quoted) = quoted.as_ref() {
             validate!(
-                crate::math::router::validate_executed_notional(&quoted, leg_quote)?,
+                crate::math::router::validate_executed_notional(quoted, leg_quote)?,
                 ErrorCode::QuoterFillOffQuote,
                 "quoter {} filled {}/{} outside the book it swept ({}..{})",
                 executor.quoter_key(book_index),
@@ -7335,5 +7333,4 @@ pub fn pay_taker_origin_crank_reward(
         msg!("crank reward would leave the taker below maintenance margin");
         ErrorCode::InsufficientCollateral
     })
-    .map_err(Into::into)
 }

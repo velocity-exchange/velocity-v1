@@ -607,7 +607,6 @@ mod sig_verification {
         // Untagged: the pre-tag encoding keeps working.
         let untagged = deserialize_into_verified_message(encode(None, None), &signature, false)
             .expect("untagged message decodes");
-        assert_eq!(untagged.network, None);
         assert_eq!(untagged.route, None);
 
         // Tagged for this build, with a route: accepted verbatim. The CLOB
@@ -618,7 +617,6 @@ mod sig_verification {
             false,
         )
         .expect("correctly tagged message decodes");
-        assert_eq!(tagged.network, Some(expected_signed_msg_network()));
         assert_eq!(tagged.route, Some(vec![quoter]));
 
         // Tagged for the other cluster: refused, so a devnet order cannot

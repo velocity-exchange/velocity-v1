@@ -19,9 +19,9 @@
 //!   [`ClobReader`], the book's wire shapes, and the aggregate unwinds a
 //!   removal drives.
 //!
-//! Every CPI out of this module signs as one of velocity's two external-CPI
-//! identities — the book's `clob_authority`, or the entry's own
-//! `quoter_signer` (see `crate::signer`), never as the vault authority.
+//! Every CPI out of this module signs as velocity's one external-CPI
+//! identity — the market's quoter slab (see `crate::signer`), never as the
+//! vault authority.
 
 mod clob;
 mod registry;

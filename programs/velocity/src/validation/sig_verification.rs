@@ -36,8 +36,6 @@ pub struct VerifiedMessage {
     pub builder_idx: Option<u8>,
     pub builder_fee_tenth_bps: Option<u16>,
     pub isolated_position_deposit: Option<u64>,
-    /// The cluster the taker signed for; validated against this build.
-    pub network: Option<u8>,
     /// Custom quoters (PropAMMs) the taker's route names. The CLOB and vAMM
     /// baseline is implicit.
     pub route: Option<Vec<Pubkey>>,
@@ -70,6 +68,7 @@ pub fn deserialize_into_verified_message(
             SignatureVerificationError::InvalidMessageDataSize
         })?;
 
+        validate_signed_msg_network(deserialized.network)?;
         Ok(VerifiedMessage {
             signed_msg_order_params: deserialized.signed_msg_order_params,
             sub_account_id: None,
@@ -82,7 +81,6 @@ pub fn deserialize_into_verified_message(
             builder_idx: deserialized.builder_idx,
             builder_fee_tenth_bps: deserialized.builder_fee_tenth_bps,
             isolated_position_deposit: deserialized.isolated_position_deposit,
-            network: validate_signed_msg_network(deserialized.network)?,
             route: validate_signed_msg_route(deserialized.route)?,
             signature: *signature,
         })
@@ -102,6 +100,7 @@ pub fn deserialize_into_verified_message(
             msg!("Invalid delegate message encoding for with is_delegate_signer = false");
             SignatureVerificationError::InvalidMessageDataSize
         })?;
+        validate_signed_msg_network(deserialized.network)?;
         Ok(VerifiedMessage {
             signed_msg_order_params: deserialized.signed_msg_order_params,
             sub_account_id: Some(deserialized.sub_account_id),
@@ -114,7 +113,6 @@ pub fn deserialize_into_verified_message(
             builder_idx: deserialized.builder_idx,
             builder_fee_tenth_bps: deserialized.builder_fee_tenth_bps,
             isolated_position_deposit: deserialized.isolated_position_deposit,
-            network: validate_signed_msg_network(deserialized.network)?,
             route: validate_signed_msg_route(deserialized.route)?,
             signature: *signature,
         })
@@ -149,7 +147,7 @@ fn validate_signed_msg_route(
 
 fn validate_signed_msg_network(
     network: Option<u8>,
-) -> std::result::Result<Option<u8>, anchor_lang::error::Error> {
+) -> std::result::Result<(), anchor_lang::error::Error> {
     let expected = crate::state::order_params::expected_signed_msg_network();
     match network {
         Some(tag) if tag != expected => {
@@ -160,7 +158,7 @@ fn validate_signed_msg_network(
             );
             Err(SignatureVerificationError::InvalidMessageDataSize.into())
         }
-        other => Ok(other),
+        _ => Ok(()),
     }
 }
 

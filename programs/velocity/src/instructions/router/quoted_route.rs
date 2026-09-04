@@ -3,7 +3,8 @@
 //!
 //! Every router fill ends with the same account tail — the market's
 //! [`QuoterSlabV0`] plus, per consulted quoter, the union of its registered
-//! CPI accounts (its program, its response account, the quoter CPI signer).
+//! CPI accounts (its program, its response account; the slab itself is the
+//! CPI signer).
 //! The slab holds every approved config; the transaction names the slots it
 //! consults by *carrying their response accounts* — a slot whose response
 //! account is absent is simply not consulted, and carrying one is the intent
@@ -211,6 +212,7 @@ impl<'info> QuotedRoute<'info> {
         let Some(slab_loader) = route.slab.clone() else {
             return Ok(route);
         };
+        let slab_bump = slab_loader.load()?.bump;
 
         // A consulted slot is one whose response account rides the
         // transaction. Collected before any quoting so the rival check below
@@ -291,7 +293,6 @@ impl<'info> QuotedRoute<'info> {
                     );
                     continue;
                 }
-                let (cpi_signer, cpi_signer_nonce) = slot.config.cpi_signer(&entry_key);
                 let levels = slot.config.quote(
                     inputs.market_index,
                     QuoteArgsV0 {
@@ -304,9 +305,8 @@ impl<'info> QuotedRoute<'info> {
                         limit_price: inputs.limit_price,
                         taker_served_window: inputs.taker_served_window,
                     },
-                    &entry_key,
-                    &cpi_signer,
-                    cpi_signer_nonce,
+                    slab_loader.as_ref(),
+                    slab_bump,
                     route.accounts,
                     scratch,
                     &mut route.levels,

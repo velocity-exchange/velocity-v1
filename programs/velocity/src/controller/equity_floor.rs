@@ -89,7 +89,7 @@ mod tests {
                 spot_market_map::SpotMarketMap,
                 user::{Order, PerpPosition, SpotPosition, User, UserStats},
             },
-            test_utils::{get_positions, get_pyth_price, *},
+            test_utils::*,
         },
         solana_program::pubkey::Pubkey,
         std::str::FromStr,

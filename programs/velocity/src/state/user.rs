@@ -674,6 +674,96 @@ impl User {
             .find(|market_index| self.clob_resident_open_orders(*market_index) > 0)
     }
 
+    /// Take one removed CLOB order off its owner's aggregates: the reserve
+    /// its remaining size held, the position's open-order slot, the
+    /// reduce-only counter it armed, and the placed-trigger shadow if one
+    /// shadows it.
+    ///
+    /// The reserve release clamps rather than fails
+    /// ([`crate::controller::position::release_reserved_open_base_for_exit`]):
+    /// this is the shape of an exit the owner chose or a keeper forced, and a
+    /// book that reports garbage must not be able to keep a maker on it. The
+    /// crank paths, where the report is the book's own word against margin it
+    /// frees, hold the release to the reservation instead and do not use
+    /// this.
+    pub fn cleanup_removed_clob_order(
+        &mut self,
+        market_index: u16,
+        direction: &PositionDirection,
+        base_asset_amount: u64,
+        reduce_only: bool,
+        clob_order_id: u64,
+    ) -> VelocityResult<()> {
+        let position_index = get_position_index(&self.perp_positions, market_index)?;
+        crate::controller::position::release_reserved_open_base_for_exit(
+            &mut self.perp_positions[position_index],
+            direction,
+            base_asset_amount,
+        )?;
+        self.perp_positions[position_index].open_orders = self.perp_positions[position_index]
+            .open_orders
+            .saturating_sub(1);
+        self.decrement_open_orders(false);
+        // The order left the book, so disarm the reduce-only counter it
+        // armed.
+        if reduce_only {
+            self.perp_positions[position_index].disarm_reduce_only_clob();
+        }
+        self.release_placed_trigger_slot(market_index, clob_order_id, OrderStatus::Canceled);
+        Ok(())
+    }
+
+    /// Take an order that has left the book off its owner's aggregates:
+    /// whatever it still reserved comes off, and the open-order slot with it.
+    /// Runs for an order a fill consumed outright (nothing left to unwind but
+    /// the slot) and for one the book culled for falling under its minimum.
+    ///
+    /// `leftover` is the book's report, so it is held to what velocity
+    /// reserved for this user rather than clamped to it
+    /// ([`crate::controller::position::release_reserved_open_base`]). A
+    /// report above the reservation would free the margin behind orders that
+    /// still rest. [`Self::cleanup_removed_clob_order`] is the lenient
+    /// sibling for an exit the owner chose or a keeper forced.
+    ///
+    /// `release_slot` is false when the fill already took the slot. A router
+    /// fill releases it as soon as the order it was handed reaches zero
+    /// unfilled, so a fully-consumed order arrives here with its slot already
+    /// gone; taking it again would free the slot of some other order the
+    /// owner still has resting.
+    pub fn unwind_removed_clob_order(
+        &mut self,
+        market_index: u16,
+        direction: &PositionDirection,
+        leftover: u64,
+        clob_order_id: u64,
+        release_slot: bool,
+        reduce_only: bool,
+    ) -> VelocityResult<()> {
+        let position_index = get_position_index(&self.perp_positions, market_index)?;
+        if leftover > 0 {
+            crate::controller::position::release_reserved_open_base(
+                &mut self.perp_positions[position_index],
+                direction,
+                leftover,
+            )?;
+        }
+        if release_slot {
+            crate::controller::position::release_reserved_open_orders(
+                &mut self.perp_positions[position_index],
+                1,
+            )?;
+            self.decrement_open_orders(false);
+        }
+        // The order left the book, so disarm the reduce-only counter it
+        // armed. This runs only for a removed order: a partial fill shrinks
+        // the order in place and never lands here.
+        if reduce_only {
+            self.perp_positions[position_index].disarm_reduce_only_clob();
+        }
+        self.release_placed_trigger_slot(market_index, clob_order_id, OrderStatus::Canceled);
+        Ok(())
+    }
+
     /// The slot shadowing CLOB order `clob_order_id` on `market_index` — a
     /// placed trigger (see [`OrderBitFlag::PlacedOnClob`]). Order ids are
     /// unique per book, so at most one slot matches.

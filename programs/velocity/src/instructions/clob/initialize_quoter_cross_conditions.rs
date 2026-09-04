@@ -74,10 +74,20 @@ pub struct InitializeQuoterCrossConditions<'info> {
     pub system_program: Program<'info, System>,
 }
 
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
+pub struct InitializeQuoterCrossConditionsArgs {
+    /// The poll interval behind the reprice watch — the discovery floor when
+    /// the maker's declared watch misses a reprice.
+    pub expire_fallback_slots: u64,
+}
+
 pub fn handle_initialize_quoter_cross_conditions(
     ctx: Context<InitializeQuoterCrossConditions>,
-    expire_fallback_slots: u64,
+    args: InitializeQuoterCrossConditionsArgs,
 ) -> Result<()> {
+    let InitializeQuoterCrossConditionsArgs {
+        expire_fallback_slots,
+    } = args;
     validate!(
         expire_fallback_slots > 0,
         ErrorCode::DefaultError,

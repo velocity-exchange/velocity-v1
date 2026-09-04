@@ -237,7 +237,7 @@ pub fn get_vault_len(mint: &InterfaceAccount<Mint>) -> anchor_lang::Result<usize
 mod tests {
     use {
         super::*,
-        crate::{create_account_info, create_anchor_account_info, state::state::State},
+        crate::{create_anchor_account_info, state::state::State},
         anchor_lang::prelude::AccountLoader,
         std::str::FromStr,
     };

@@ -180,15 +180,14 @@ pub fn build_user_caps<'info>(
             .find(|(_, loader)| {
                 loader.load().is_ok_and(|maker| {
                     maker.authority == user_ref.authority
-                        && u16::from(maker.sub_account_id) == user_ref.sub_account_id
+                        && maker.sub_account_id == user_ref.sub_account_id
                 })
             })
             .map(|(key, _)| *key)
         else {
             continue;
         };
-        let budget = maker_budget(
-            ctx,
+        let budget = ctx.maker_budget(
             &key,
             inputs.market_index,
             resting_side,
@@ -202,7 +201,7 @@ pub fn build_user_caps<'info>(
         // it grow a position it should shrink. A reduce-only order rests only
         // when the owner is capped here, so this is always computed, even for a
         // maker whose quote budget does not bind.
-        let base_cover = maker_reduce_cover(ctx, &key, inputs.market_index, resting_side)?;
+        let base_cover = ctx.maker_reduce_cover(&key, inputs.market_index, resting_side)?;
         if budget == u64::MAX && base_cover == u64::MAX {
             continue;
         }
@@ -242,118 +241,152 @@ fn clob_books_in_route<'info>(tail: &'info [AccountInfo<'info>], market_index: u
     Ok(0)
 }
 
-/// Quote this maker may lose filling on `resting_side`: `0` when the fill
-/// would refuse them outright, `u64::MAX` when this fill cannot reach far
-/// enough to matter.
-///
-/// The cheap answers come first, and deliberately so. A margin walk leaves
-/// allocations on a heap that never reclaims, so every named user that can be
-/// answered without one has to be.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn maker_budget(
-    ctx: &mut CapInputs<'_, '_>,
-    key: &Pubkey,
-    market_index: u16,
-    resting_side: ClobSide,
-    taker_size: u64,
-    reference_price: i64,
-    books: u32,
-) -> Result<u64> {
-    let maker = ctx.makers_and_referrer.get_ref(key)?;
+impl CapInputs<'_, '_> {
+    /// Quote this maker may lose filling on `resting_side`: `0` when the fill
+    /// would refuse them outright, `u64::MAX` when this fill cannot reach far
+    /// enough to matter.
+    ///
+    /// The cheap answers come first, and deliberately so. A margin walk leaves
+    /// allocations on a heap that never reclaims, so every named user that can be
+    /// answered without one has to be.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn maker_budget(
+        &mut self,
+        key: &Pubkey,
+        market_index: u16,
+        resting_side: ClobSide,
+        taker_size: u64,
+        reference_price: i64,
+        books: u32,
+    ) -> Result<u64> {
+        let maker = self.makers_and_referrer.get_ref(key)?;
 
-    // The most base this maker can give up, which bounds everything below. A
-    // user with nothing on a book — a referrer, a maker who only quotes the
-    // DLOB, a maker quoting the other way — cannot lose a cent to this fill,
-    // and is answered before any walk is spent on it.
-    let position = maker.get_perp_position(market_index).ok();
-    let resting = clob_resting_base(&maker, market_index, resting_side)?.min(taker_size);
-    if resting == 0 {
-        return Ok(u64::MAX);
-    }
-    // And the most it can cost them, which is that base sold for nothing.
-    let worst_loss = resting
-        .cast::<i128>()?
-        .safe_mul(reference_price.max(0).cast()?)?
-        .safe_div(BASE_PRECISION_U64.cast()?)?;
+        // The most base this maker can give up, which bounds everything below. A
+        // user with nothing on a book — a referrer, a maker who only quotes the
+        // DLOB, a maker quoting the other way — cannot lose a cent to this fill,
+        // and is answered before any walk is spent on it.
+        let position = maker.get_perp_position(market_index).ok();
+        let resting = clob_resting_base(&maker, market_index, resting_side)?.min(taker_size);
+        if resting == 0 {
+            return Ok(u64::MAX);
+        }
+        // And the most it can cost them, which is that base sold for nothing.
+        let worst_loss = resting
+            .cast::<i128>()?
+            .safe_mul(reference_price.max(0).cast()?)?
+            .safe_div(BASE_PRECISION_U64.cast()?)?;
 
-    // The two that answer without pricing anything: an authority-wide latch
-    // bars every subaccount from risk-increasing activity, and a floor the
-    // program cannot verify cannot authorise one either.
-    if ctx
-        .makers_and_referrer_stats
-        .get_ref(&maker.authority)
-        .map(|stats| stats.is_equity_breaker_tripped())
-        .unwrap_or(false)
-    {
-        return Ok(0);
-    }
-    // Equity above `floor + buffer` is the first budget. A floor that cannot
-    // be verified, or one already breached, leaves no budget at all.
-    let mut budget = i128::MAX;
-    if let Some(net_equity) = calculate_net_equity_for_floor(
-        &maker,
-        ctx.perp_market_map,
-        ctx.spot_market_map,
-        ctx.oracle_map,
-    )? {
-        if !net_equity.all_oracles_valid || !net_equity.clears_buffered_floor(&maker) {
+        // The two that answer without pricing anything: an authority-wide latch
+        // bars every subaccount from risk-increasing activity, and a floor the
+        // program cannot verify cannot authorise one either.
+        if self
+            .makers_and_referrer_stats
+            .get_ref(&maker.authority)
+            .map(|stats| stats.is_equity_breaker_tripped())
+            .unwrap_or(false)
+        {
             return Ok(0);
         }
-        if maker.equity_floor > 0 {
-            budget = net_equity
-                .value
-                .safe_sub(maker.buffered_equity_floor().cast::<i128>()?)?;
+        // Equity above `floor + buffer` is the first budget. A floor that cannot
+        // be verified, or one already breached, leaves no budget at all.
+        let mut budget = i128::MAX;
+        if let Some(net_equity) = calculate_net_equity_for_floor(
+            &maker,
+            self.perp_market_map,
+            self.spot_market_map,
+            self.oracle_map,
+        )? {
+            if !net_equity.all_oracles_valid || !net_equity.clears_buffered_floor(&maker) {
+                return Ok(0);
+            }
+            if maker.equity_floor > 0 {
+                budget = net_equity
+                    .value
+                    .safe_sub(maker.buffered_equity_floor().cast::<i128>()?)?;
+            }
         }
+
+        // Free collateral at the tier the fill will judge by is the second. A
+        // maker who already fails it is skipped outright rather than sized: the
+        // fill would have to *earn* them back through the floor, and a budget
+        // that counted on that would be routing to an account the checks
+        // currently refuse.
+        let margin_type_config = if position.is_some_and(|position| position.is_isolated()) {
+            MarginTypeConfig::IsolatedPositionOverride {
+                market_index,
+                margin_requirement_type: MarginRequirementType::Fill,
+                default_isolated_margin_requirement_type: MarginRequirementType::Maintenance,
+                cross_margin_requirement_type: MarginRequirementType::Maintenance,
+            }
+        } else {
+            MarginTypeConfig::CrossMarginOverride {
+                margin_requirement_type: MarginRequirementType::Fill,
+                default_margin_requirement_type: MarginRequirementType::Maintenance,
+            }
+        };
+        let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
+            &maker,
+            self.perp_market_map,
+            self.spot_market_map,
+            self.oracle_map,
+            MarginContext::standard_with_config(margin_type_config)
+                .ignore_invalid_deposit_oracles(true),
+        )?;
+        if !calculation.meets_margin_requirement() {
+            return Ok(0);
+        }
+        let free_collateral = if calculation.has_isolated_margin_calculation(market_index) {
+            calculation.get_isolated_free_collateral(market_index)?
+        } else {
+            calculation.get_cross_free_collateral()?
+        };
+        budget = budget
+            .min(free_collateral.cast::<i128>()?)
+            .safe_mul(BPS_DENOM.safe_sub(BUDGET_HAIRCUT_BPS)?)?
+            .safe_div(BPS_DENOM)?
+            .safe_div(books.cast::<i128>()?)?;
+        if budget <= 0 {
+            return Ok(0);
+        }
+
+        // Worth a slot only if this fill can reach the budget at all.
+        if budget >= worst_loss {
+            return Ok(u64::MAX);
+        }
+        Ok(budget.cast()?)
     }
 
-    // Free collateral at the tier the fill will judge by is the second. A
-    // maker who already fails it is skipped outright rather than sized: the
-    // fill would have to *earn* them back through the floor, and a budget
-    // that counted on that would be routing to an account the checks
-    // currently refuse.
-    let margin_type_config = if position.is_some_and(|position| position.is_isolated()) {
-        MarginTypeConfig::IsolatedPositionOverride {
-            market_index,
-            margin_requirement_type: MarginRequirementType::Fill,
-            default_isolated_margin_requirement_type: MarginRequirementType::Maintenance,
-            cross_margin_requirement_type: MarginRequirementType::Maintenance,
+    /// The most base the book may fill against this user's reduce-only orders on
+    /// `resting_side`, or `u64::MAX` when the user holds none.
+    ///
+    /// A user with no reduce-only order resting stays uncapped, so a normal maker
+    /// never spends one of the scarce cap slots. A user who does hold one is capped
+    /// to the position those orders reduce: a reduce-only ask reduces a long, and a
+    /// reduce-only bid reduces a short, so the cover is the position held in the
+    /// reduce direction. It is `0` when the user holds none of that position, which
+    /// is the whole guard: the book is position-blind, so without this a reduce-only
+    /// order rested against a flat account would grow a position it exists to
+    /// shrink. The cover reads from live position every call, so a position closed
+    /// elsewhere shrinks the cover on the next fill.
+    fn maker_reduce_cover(
+        &mut self,
+        key: &Pubkey,
+        market_index: u16,
+        resting_side: ClobSide,
+    ) -> Result<u64> {
+        let maker = self.makers_and_referrer.get_ref(key)?;
+        let Ok(position) = maker.get_perp_position(market_index) else {
+            return Ok(u64::MAX);
+        };
+        if !position.has_reduce_only_clob() {
+            return Ok(u64::MAX);
         }
-    } else {
-        MarginTypeConfig::CrossMarginOverride {
-            margin_requirement_type: MarginRequirementType::Fill,
-            default_margin_requirement_type: MarginRequirementType::Maintenance,
-        }
-    };
-    let calculation = calculate_margin_requirement_and_total_collateral_and_liability_info(
-        &maker,
-        ctx.perp_market_map,
-        ctx.spot_market_map,
-        ctx.oracle_map,
-        MarginContext::standard_with_config(margin_type_config)
-            .ignore_invalid_deposit_oracles(true),
-    )?;
-    if !calculation.meets_margin_requirement() {
-        return Ok(0);
+        let base = position.base_asset_amount;
+        Ok(match resting_side {
+            ClobSide::Ask => base.max(0).unsigned_abs(),
+            ClobSide::Bid => base.min(0).unsigned_abs(),
+        })
     }
-    let free_collateral = if calculation.has_isolated_margin_calculation(market_index) {
-        calculation.get_isolated_free_collateral(market_index)?
-    } else {
-        calculation.get_cross_free_collateral()?
-    };
-    budget = budget
-        .min(free_collateral.cast::<i128>()?)
-        .safe_mul(BPS_DENOM.safe_sub(BUDGET_HAIRCUT_BPS)?)?
-        .safe_div(BPS_DENOM)?
-        .safe_div(books.cast::<i128>()?)?;
-    if budget <= 0 {
-        return Ok(0);
-    }
-
-    // Worth a slot only if this fill can reach the budget at all.
-    if budget >= worst_loss {
-        return Ok(u64::MAX);
-    }
-    Ok(budget.cast()?)
 }
 
 /// Base this maker has resting on a CLOB book for `market_index`, on the side
@@ -397,38 +430,6 @@ fn clob_resting_base(
             )
         })?;
     Ok(reserved.saturating_sub(on_the_dlob))
-}
-
-/// The most base the book may fill against this user's reduce-only orders on
-/// `resting_side`, or `u64::MAX` when the user holds none.
-///
-/// A user with no reduce-only order resting stays uncapped, so a normal maker
-/// never spends one of the scarce cap slots. A user who does hold one is capped
-/// to the position those orders reduce: a reduce-only ask reduces a long, and a
-/// reduce-only bid reduces a short, so the cover is the position held in the
-/// reduce direction. It is `0` when the user holds none of that position, which
-/// is the whole guard: the book is position-blind, so without this a reduce-only
-/// order rested against a flat account would grow a position it exists to
-/// shrink. The cover reads from live position every call, so a position closed
-/// elsewhere shrinks the cover on the next fill.
-fn maker_reduce_cover(
-    ctx: &mut CapInputs<'_, '_>,
-    key: &Pubkey,
-    market_index: u16,
-    resting_side: ClobSide,
-) -> Result<u64> {
-    let maker = ctx.makers_and_referrer.get_ref(key)?;
-    let Ok(position) = maker.get_perp_position(market_index) else {
-        return Ok(u64::MAX);
-    };
-    if !position.has_reduce_only_clob() {
-        return Ok(u64::MAX);
-    }
-    let base = position.base_asset_amount;
-    Ok(match resting_side {
-        ClobSide::Ask => base.max(0).unsigned_abs(),
-        ClobSide::Bid => base.min(0).unsigned_abs(),
-    })
 }
 
 #[cfg(test)]

@@ -174,15 +174,8 @@ pub fn handle_quote_router<'c: 'info, 'info>(
     };
     for slot_index in consulted {
         let slab_loader = slab_loader.as_ref().unwrap();
-        let (
-            priority,
-            quoter_type,
-            quoter_user,
-            entry_key,
-            quoter_signer,
-            quoter_signer_nonce,
-            located,
-        ) = {
+        let slab_bump = slab_loader.load()?.bump;
+        let (priority, quoter_type, quoter_user, entry_key, located) = {
             let slots = quoter_slab_slots(slab_loader)?;
             let slot = &slots[slot_index];
             if !slot.quotes() {
@@ -198,7 +191,6 @@ pub fn handle_quote_router<'c: 'info, 'info>(
             {
                 continue;
             }
-            let (quoter_signer, quoter_signer_nonce) = slot.config.cpi_signer(&entry_key);
             let located = slot
                 .config
                 .quote_in_place(
@@ -221,9 +213,8 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                         limit_price: 0,
                         taker_served_window: args.taker_served_window,
                     },
-                    &entry_key,
-                    &quoter_signer,
-                    quoter_signer_nonce,
+                    slab_loader.as_ref(),
+                    slab_bump,
                     &accounts,
                     &mut cpi_scratch,
                 )
@@ -236,8 +227,6 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                 slot.config.quoter_type,
                 slot.config.user,
                 entry_key,
-                quoter_signer,
-                quoter_signer_nonce,
                 located,
             )
         };
@@ -305,14 +294,13 @@ pub fn handle_quote_router<'c: 'info, 'info>(
                 .flatten();
             let described = quoter_rows(
                 slab_loader,
+                slab_bump,
                 slot_index,
                 market_index,
                 args.direction,
                 admitted,
                 rows_wanted,
                 &entry_key,
-                &quoter_signer,
-                quoter_signer_nonce,
                 &accounts,
                 &mut cpi_scratch,
                 bound_to,
@@ -357,14 +345,11 @@ pub fn handle_quote_router<'c: 'info, 'info>(
             if size == 0 {
                 continue;
             }
-            let levels = [PriceLevel {
-                price: price.into(),
-                size: size.into(),
-            }];
+            let levels = [PriceLevel { price, size }];
             buffer.push(QuotedSourceKind::DlobOrder, *maker_key, clob_tier, &levels)?;
             buffer.push_row(QuotedRowV0 {
-                price: price.into(),
-                size: size.into(),
+                price,
+                size,
                 order_id: maker.orders[order_index].order_id.into(),
                 // A DLOB order lives in the owner's own array, not an arena.
                 node_index: 0,
@@ -444,14 +429,13 @@ pub fn handle_quote_router<'c: 'info, 'info>(
 #[allow(clippy::too_many_arguments)]
 fn quoter_rows<'info>(
     slab_loader: &AccountLoader<'info, QuoterSlabV0>,
+    slab_bump: u8,
     slot_index: usize,
     market_index: u16,
     direction: Direction,
     admitted: u64,
     rows_wanted: usize,
     entry: &Pubkey,
-    quoter_signer: &Pubkey,
-    quoter_signer_nonce: u8,
     accounts: &[AccountInfo<'info>],
     scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
     // The one user a Custom entry may name, `None` for a book. The same rule
@@ -468,9 +452,8 @@ fn quoter_rows<'info>(
                 size: admitted,
                 max_rows: rows_wanted.min(u16::MAX as usize) as u16,
             },
-            entry,
-            quoter_signer,
-            quoter_signer_nonce,
+            slab_loader.as_ref(),
+            slab_bump,
             accounts,
             scratch,
         )?

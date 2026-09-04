@@ -8295,10 +8295,7 @@ pub mod cancel_reduce_only_trigger_orders {
 }
 
 pub mod insert_maker_order_info {
-    use {
-        crate::controller::{orders::insert_maker_order_info, position::PositionDirection},
-        solana_program::pubkey::Pubkey,
-    };
+    use crate::controller::{orders::insert_maker_order_info, position::PositionDirection};
 
     #[test]
     fn bids() {

@@ -49,10 +49,7 @@ use {
     crate::{
         controller::{
             self,
-            position::{
-                get_position_index, release_reserved_open_base, release_reserved_open_orders,
-                PositionDirection,
-            },
+            position::{get_position_index, PositionDirection},
         },
         error::ErrorCode,
         instructions::{
@@ -83,7 +80,7 @@ use {
             signed_msg_user::{SignedMsgUserOrdersLoader, SIGNED_MSG_PDA_SEED},
             spot_market_map::SpotMarketMap,
             state::State,
-            user::{OrderStatus, User, UserStats},
+            user::{User, UserStats},
             user_map::{load_user_maps, UserMap, UserStatsMap},
         },
         validate,
@@ -93,8 +90,19 @@ use {
     std::ops::DerefMut,
 };
 
+#[derive(Clone, AnchorSerialize, AnchorDeserialize)]
+pub struct CrankTakerOriginCrossArgs {
+    pub market_index: u16,
+    /// How deep to read each side of the book. A short read truncates worse
+    /// prices, never a better counterparty.
+    pub cross_rows: u16,
+    /// The taker's signed route, when the crank claims one. Empty claims the
+    /// market baseline.
+    pub signed_route: Vec<Pubkey>,
+}
+
 #[derive(Accounts)]
-#[instruction(market_index: u16)]
+#[instruction(args: CrankTakerOriginCrossArgs)]
 pub struct CrankTakerOriginCross<'info> {
     pub state: AccountLoader<'info, State>,
     /// CHECK: in signed-keeper mode this must sign for `filler` (the
@@ -127,7 +135,7 @@ pub struct CrankTakerOriginCross<'info> {
     /// The market's quoter slab; the book's config is its `Clob` slot.
     pub quoter_slab: AccountLoader<'info, crate::state::prop_amm::QuoterSlabV0>,
     /// CHECK: validated against the book slot's registered response account
-    /// (`ClobMarket::from_quoter`), so a valid slot cannot be pointed at an
+    /// (`ClobMarket::from_slab`), so a valid slot cannot be pointed at an
     /// arbitrary account.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
@@ -135,10 +143,6 @@ pub struct CrankTakerOriginCross<'info> {
     /// registration; the handler re-checks through the slot.
     #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
-    /// is set to, and nothing a third-party quoter is ever handed.
-    #[account(address = crate::signer::CLOB_AUTHORITY)]
-    pub clob_authority: UncheckedAccount<'info>,
     /// The market's relay conditions account: the wake-hint host and the
     /// lamport reservoir. Optional so a signed keeper can crank a market whose
     /// conditions were never initialized; required in program-keeper mode.
@@ -146,7 +150,7 @@ pub struct CrankTakerOriginCross<'info> {
         mut,
         seeds = [
             CLOB_CRANK_CONDITIONS_PDA_SEED,
-            market_index.to_le_bytes().as_ref(),
+            args.market_index.to_le_bytes().as_ref(),
         ],
         bump
     )]
@@ -222,7 +226,8 @@ const MAX_CROSS_ROWS: u16 = 64;
 fn read_book_rows<'info>(
     quoter: &QuoterConfigV0,
     market_index: u16,
-    entry: &Pubkey,
+    slab: &AccountInfo<'info>,
+    slab_bump: u8,
     rows: u16,
     accounts: &[AccountInfo<'info>],
     scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
@@ -238,9 +243,8 @@ fn read_book_rows<'info>(
                     size: 0,
                     max_rows: rows.min(MAX_CROSS_ROWS),
                 },
-                entry,
-                &quoter.cpi_signer(entry).0,
-                quoter.cpi_signer(entry).1,
+                slab,
+                slab_bump,
                 accounts,
                 scratch,
             )?
@@ -259,56 +263,15 @@ fn read_book_rows<'info>(
     Ok((bids, asks))
 }
 
-/// Take an order that has left the book off its owner's aggregates: whatever
-/// it still reserved comes off, and the open-order slot with it. Runs for an
-/// order the fill consumed outright (nothing left to unwind but the slot) and
-/// for one the book culled for falling under its minimum.
-///
-/// `leftover` is the book's report, so it is held to what velocity reserved for
-/// this user rather than clamped to it. A report above the reservation would
-/// free the margin behind orders that still rest.
-///
-/// `release_slot` is false when the fill already took the slot. A router fill
-/// releases it as soon as the order it was handed reaches zero unfilled, so a
-/// fully-consumed order arrives here with its slot already gone; taking it
-/// again would free the slot of some other order the owner still has resting.
-fn unwind_leftover(
-    user: &mut User,
-    market_index: u16,
-    direction: &PositionDirection,
-    leftover: u64,
-    order_id: u64,
-    release_slot: bool,
-    reduce_only: bool,
-) -> Result<()> {
-    let position_index = get_position_index(&user.perp_positions, market_index)?;
-    if leftover > 0 {
-        release_reserved_open_base(
-            &mut user.perp_positions[position_index],
-            direction,
-            leftover,
-        )?;
-    }
-    if release_slot {
-        release_reserved_open_orders(&mut user.perp_positions[position_index], 1)?;
-        user.decrement_open_orders(false);
-    }
-    // The order left the book, so disarm the reduce-only counter it armed. This
-    // runs only for a removed order, which is the one arm-and-disarm point on
-    // this path: a partial fill shrinks the order in place and never lands here.
-    if reduce_only {
-        user.perp_positions[position_index].disarm_reduce_only_clob();
-    }
-    user.release_placed_trigger_slot(market_index, order_id, OrderStatus::Canceled);
-    Ok(())
-}
-
 pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     ctx: Context<'info, CrankTakerOriginCross<'info>>,
-    market_index: u16,
-    cross_rows: u16,
-    signed_route: Vec<Pubkey>,
+    args: CrankTakerOriginCrossArgs,
 ) -> Result<()> {
+    let CrankTakerOriginCrossArgs {
+        market_index,
+        cross_rows,
+        signed_route,
+    } = args;
     let clock = Clock::get()?;
     let state = ctx.accounts.state.load()?;
     let program_keeper_mode = load!(ctx.accounts.filler)?.authority == state.signer;
@@ -374,18 +337,18 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         let taker = load!(ctx.accounts.taker)?;
         ClobUserRefV0 {
             authority: taker.authority,
-            sub_account_id: taker.sub_account_id.into(),
+            sub_account_id: taker.sub_account_id,
         }
     };
     let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
     let (bids, asks) = read_book_rows(
         &book_slot.config,
         market_index,
-        &book_slot.entry.clone(),
+        ctx.accounts.quoter_slab.as_ref(),
+        ctx.accounts.quoter_slab.load()?.bump,
         cross_rows,
         &[
             ctx.accounts.clob_market.to_account_info(),
-            ctx.accounts.clob_authority.to_account_info(),
             ctx.accounts.clob_program.to_account_info(),
         ],
         &mut cpi_scratch,
@@ -513,7 +476,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
                 .into_keys()
                 .map(|(authority, sub_account_id)| ClobUserRefV0 {
                     authority,
-                    sub_account_id: sub_account_id.into(),
+                    sub_account_id,
                 }),
         )?,
         reference_price: route_reference_price,
@@ -654,13 +617,11 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
     // remainder that stays on the book costs no `User` bookkeeping. One the
     // book culls for falling under its minimum has to give them back.
     let filled = {
-        let slot = quoter_slab_clob(&ctx.accounts.quoter_slab, market_index)?;
-        let clob = ClobMarket::from_quoter(
-            &slot.config,
+        let clob = ClobMarket::from_slab(
+            &ctx.accounts.quoter_slab,
             market_index,
             &ctx.accounts.clob_market,
             &ctx.accounts.clob_program,
-            &ctx.accounts.clob_authority,
         )?;
         clob.fill(ClobFillArgsV0 {
             fills: vec![ClobFillRequestV0 {
@@ -681,8 +642,7 @@ pub fn handle_crank_taker_origin_cross<'c: 'info, 'info>(
         // write back.
         let release_slot = base_filled < subject_order.base_asset_amount;
         let mut taker = load_mut!(ctx.accounts.taker)?;
-        unwind_leftover(
-            &mut taker,
+        taker.unwind_removed_clob_order(
             market_index,
             &taker_direction,
             filled.culled_base_asset_amount,
@@ -833,7 +793,7 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
         .user_ref_index()?
         .get(&(
             counterparty.user.authority,
-            counterparty.user.sub_account_id as u16,
+            counterparty.user.sub_account_id,
         ))
         .ok_or_else(|| {
             msg!(
@@ -1011,13 +971,11 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
     // One call for both sides. Each order shrinks in place, and the book culls
     // whichever leftover falls under its minimum.
     let filled = {
-        let slot = quoter_slab_clob(&ctx.accounts.quoter_slab, market_index)?;
-        let clob = ClobMarket::from_quoter(
-            &slot.config,
+        let clob = ClobMarket::from_slab(
+            &ctx.accounts.quoter_slab,
             market_index,
             &ctx.accounts.clob_market,
             &ctx.accounts.clob_program,
-            &ctx.accounts.clob_authority,
         )?;
         clob.fill(ClobFillArgsV0 {
             fills: vec![
@@ -1046,8 +1004,7 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
         };
         if owner_is_taker {
             let mut taker = load_mut!(ctx.accounts.taker)?;
-            unwind_leftover(
-                &mut taker,
+            taker.unwind_removed_clob_order(
                 market_index,
                 &direction,
                 leg.culled_base_asset_amount,
@@ -1057,8 +1014,7 @@ fn settle_taker_origin_pair<'c: 'info, 'info>(
             )?;
         } else {
             let mut maker = makers_and_referrer.get_ref_mut(&maker_key)?;
-            unwind_leftover(
-                &mut maker,
+            maker.unwind_removed_clob_order(
                 market_index,
                 &direction,
                 leg.culled_base_asset_amount,
@@ -1184,7 +1140,8 @@ pub(super) fn stage_taker_origin_cross(
     let (bids, asks) = read_book_rows(
         &book_slot.config,
         market_index,
-        &book_slot.entry.clone(),
+        ctx.accounts.quoter_slab.as_ref(),
+        ctx.accounts.quoter_slab.load()?.bump,
         MAX_CROSS_ROWS,
         &book_accounts,
         &mut cpi_scratch,
@@ -1248,7 +1205,6 @@ pub(super) fn stage_taker_origin_cross(
             quoter_slab: ctx.accounts.quoter_slab.key(),
             clob_market: ctx.accounts.clob_market.key(),
             clob_program: crate::ids::clob_program::id(),
-            clob_authority: pdas::clob_authority(),
             crank_conditions: Some(ctx.accounts.crank_conditions.key()),
             // The route the taker signed rides its own signed-message record,
             // derived from the authority the book stores on the node.
@@ -1265,15 +1221,16 @@ pub(super) fn stage_taker_origin_cross(
         // the book this resolver reads is that baseline.
         .account(ctx.accounts.quoter_slab.key(), false)
         .account(ctx.accounts.clob_market.key(), true)
-        .account(pdas::clob_authority(), false)
         .account(crate::ids::clob_program::id(), false)
-        .arg(market_index)?
-        .arg(cross_rows)?
-        // The resolver stages no quoters of its own, so it claims no route.
-        // A staged crank routes through the market's baseline — the CLOB and
-        // the vAMM — which every fill carries anyway. A keeper that wants a
-        // taker's custom quoters consulted builds the call itself and claims
-        // the route the taker signed.
-        .arg(Vec::<Pubkey>::new())?,
+        // The resolver stages no quoters of its own, so it claims no route
+        // (an empty signed route). A staged crank routes through the market's
+        // baseline — the CLOB and the vAMM — which every fill carries anyway.
+        // A keeper that wants a taker's custom quoters consulted builds the
+        // call itself and claims the route the taker signed.
+        .arg(CrankTakerOriginCrossArgs {
+            market_index,
+            cross_rows,
+            signed_route: Vec::new(),
+        })?,
     ))
 }

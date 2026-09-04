@@ -7,13 +7,11 @@
 //! router fill drives those legs through.
 
 use {
-    super::{AmmAccountMeta, ClobCancelAllOutcomeV0, ClobCancelSides, QuoterConfigV0, QuoterType},
-    crate::{
-        error::ErrorCode,
-        msg,
-        signer::{get_clob_authority_seeds, get_quoter_signer_seeds},
-        validate,
+    super::{
+        get_quoter_slab_signer_seeds, AmmAccountMeta, ClobCancelAllOutcomeV0, ClobCancelSides,
+        QuoterConfigV0, QuoterType,
     },
+    crate::{error::ErrorCode, msg, validate},
     anchor_lang::prelude::*,
     solana_program::{
         instruction::{AccountMeta, Instruction},
@@ -30,19 +28,19 @@ use {
 /// outer transaction (e.g. the `flow_authority` attestation) introspect the
 /// instructions sysvar instead.
 ///
-/// The single signer is `quoter_signer` (velocity signing as itself) — a
-/// registered slot for it is how a quoter authenticates that velocity, not an
-/// arbitrary caller, is invoking it. That PDA is the authority on nothing, so
-/// a quoter that forwards the signature onward gains nothing by it.
+/// The single signer is the market's quoter slab (velocity signing as
+/// itself) — a registered slot for it is how a quoter authenticates that
+/// velocity, not an arbitrary caller, is invoking it. See `crate::signer`
+/// for why forwarding that signature to another quoter completes nothing.
 pub(super) fn write_quoter_account_metas<'a>(
     into: &mut Vec<AccountMeta>,
     registered: impl Iterator<Item = &'a AmmAccountMeta>,
-    quoter_signer: &Pubkey,
+    slab: &Pubkey,
 ) {
     into.clear();
     into.extend(registered.map(|meta| AccountMeta {
         pubkey: meta.pubkey,
-        is_signer: meta.pubkey == *quoter_signer,
+        is_signer: meta.pubkey == *slab,
         is_writable: meta.is_writable,
     }));
 }
@@ -724,24 +722,6 @@ impl<'info> ExternalQuoterExecutor<'info> for NoExternalQuoters {
 pub use quoter_spec::UserBalanceChangeV0;
 
 impl QuoterConfigV0 {
-    /// The identity velocity signs this entry's CPI legs as, and its bump.
-    ///
-    /// A `Clob` entry signs as the book's place authority, because that is the
-    /// key `execute_v0` requires; the caller passes it in because anchor already
-    /// derived it for the named account and its bump is free there. Every other
-    /// entry signs as a key derived from the entry itself, which is what keeps a
-    /// quoter's signature from authenticating anywhere but at that quoter — not
-    /// at a book, and not at a second quoter the same maker controls.
-    pub fn cpi_signer(&self, entry: &Pubkey) -> (Pubkey, u8) {
-        match self.quoter_type {
-            QuoterType::Clob => (
-                crate::signer::CLOB_AUTHORITY,
-                crate::signer::CLOB_AUTHORITY_NONCE,
-            ),
-            _ => crate::signer::find_quoter_signer(entry),
-        }
-    }
-
     /// Shared gate on both CPI legs: the entry takes new flow, and it takes
     /// it for the market the caller is filling. An entry is registered per
     /// `(market, program, user)`, and nothing about the CPI itself carries the
@@ -775,23 +755,15 @@ impl QuoterConfigV0 {
         &self,
         market_index: u16,
         args: QuoteArgsV0<'_>,
-        entry: &Pubkey,
-        quoter_signer: &Pubkey,
-        quoter_signer_nonce: u8,
+        slab: &AccountInfo<'info>,
+        slab_bump: u8,
         accounts: &[AccountInfo<'info>],
         scratch: &mut QuoterCpiScratch<'info>,
         // Where the quoted levels are appended. See `QuotedLadderV0::levels`.
         out: &mut Vec<PriceLevel>,
     ) -> Result<QuotedLadderV0> {
-        let located = self.quote_in_place(
-            market_index,
-            args,
-            entry,
-            quoter_signer,
-            quoter_signer_nonce,
-            accounts,
-            scratch,
-        )?;
+        let located =
+            self.quote_in_place(market_index, args, slab, slab_bump, accounts, scratch)?;
         let data = located.borrow()?;
         let response = located.checked_quote_response(&data, args.direction)?;
         // The copy a fill earns: the split reads every book at once, and the
@@ -828,9 +800,8 @@ impl QuoterConfigV0 {
         &self,
         market_index: u16,
         args: QuoteArgsV0<'_>,
-        entry: &Pubkey,
-        quoter_signer: &Pubkey,
-        quoter_signer_nonce: u8,
+        slab: &AccountInfo<'info>,
+        slab_bump: u8,
         accounts: &[AccountInfo<'info>],
         scratch: &mut QuoterCpiScratch<'info>,
     ) -> Result<ResponseLocationV0<'info>> {
@@ -839,9 +810,8 @@ impl QuoterConfigV0 {
             &self.quote_v0_discriminator,
             self.quote_leg_indexes(),
             &args,
-            entry,
-            quoter_signer,
-            quoter_signer_nonce,
+            slab,
+            slab_bump,
             accounts,
             scratch,
         )
@@ -861,9 +831,8 @@ impl QuoterConfigV0 {
         &self,
         market_index: u16,
         args: L3ArgsV0,
-        entry: &Pubkey,
-        quoter_signer: &Pubkey,
-        quoter_signer_nonce: u8,
+        slab: &AccountInfo<'info>,
+        slab_bump: u8,
         accounts: &[AccountInfo<'info>],
         scratch: &mut QuoterCpiScratch<'info>,
     ) -> Result<Option<ResponseLocationV0<'info>>> {
@@ -875,9 +844,8 @@ impl QuoterConfigV0 {
             &self.quote_l3_v0_discriminator,
             self.quote_leg_indexes(),
             &args,
-            entry,
-            quoter_signer,
-            quoter_signer_nonce,
+            slab,
+            slab_bump,
             accounts,
             scratch,
         )
@@ -892,9 +860,8 @@ impl QuoterConfigV0 {
         &self,
         market_index: u16,
         args: ExecuteArgsV0<'_>,
-        entry: &Pubkey,
-        quoter_signer: &Pubkey,
-        quoter_signer_nonce: u8,
+        slab: &AccountInfo<'info>,
+        slab_bump: u8,
         accounts: &[AccountInfo<'info>],
         scratch: &mut QuoterCpiScratch<'info>,
     ) -> Result<ResponseLocationV0<'info>> {
@@ -903,9 +870,8 @@ impl QuoterConfigV0 {
             &self.execute_v0_discriminator,
             self.execute_leg_indexes(),
             &args,
-            entry,
-            quoter_signer,
-            quoter_signer_nonce,
+            slab,
+            slab_bump,
             accounts,
             scratch,
         )
@@ -922,9 +888,8 @@ impl QuoterConfigV0 {
         discriminator: &[u8; 8],
         leg_indexes: &[u8],
         args: &A,
-        entry: &Pubkey,
-        quoter_signer: &Pubkey,
-        quoter_signer_nonce: u8,
+        slab: &AccountInfo<'info>,
+        slab_bump: u8,
         accounts: &[AccountInfo<'info>],
         scratch: &mut QuoterCpiScratch<'info>,
     ) -> Result<ResponseLocationV0<'info>> {
@@ -933,11 +898,17 @@ impl QuoterConfigV0 {
         write_quoter_account_metas(
             &mut instruction.accounts,
             self.leg_metas(leg_indexes)?,
-            quoter_signer,
+            slab.key,
         );
 
         infos.clear();
         for meta in instruction.accounts.iter() {
+            // The slab is a named account of the outer instruction, not part
+            // of the account tail the registered lists resolve against.
+            if meta.pubkey == *slab.key {
+                infos.push(slab.clone());
+                continue;
+            }
             let info = find_account(accounts, &meta.pubkey).ok_or_else(|| {
                 msg!("prop amm account {} missing from account map", meta.pubkey);
                 ErrorCode::DefaultError
@@ -975,26 +946,14 @@ impl QuoterConfigV0 {
             ErrorCode::DefaultError
         })?;
 
-        // Signed as whichever identity this entry authenticates velocity by,
-        // and the two families are deliberately separate. A `Clob` entry
-        // authenticates by the book's place authority, because that is the key
-        // its instructions require. Every other entry gets a key derived from
-        // its own registry entry, so the signature it receives proves velocity
-        // called *it* and proves nothing anywhere else — forwarded to a second
-        // quoter it does not authenticate, and it is not any book's authority.
-        let clob_seeds;
-        let entry_seeds;
-        let signer_seeds: &[&[u8]] = match self.quoter_type {
-            QuoterType::Clob => {
-                clob_seeds = get_clob_authority_seeds(&quoter_signer_nonce);
-                &clob_seeds
-            }
-            _ => {
-                entry_seeds = get_quoter_signer_seeds(entry, &quoter_signer_nonce);
-                &entry_seeds
-            }
-        };
-        invoke_quoter_signed(instruction, infos, &[signer_seeds])?;
+        // Signed as the market's slab — the one identity every quoter on the
+        // market authenticates velocity by. See `crate::signer` for why the
+        // shared key is safe to hand a quoter. The seeds derive from the
+        // config's own market, so a slab for a different market fails the
+        // runtime's signer check instead of signing.
+        let market = self.market.to_le_bytes();
+        let seeds = get_quoter_slab_signer_seeds(&market, &slab_bump);
+        invoke_quoter_signed(instruction, infos, &[&seeds])?;
 
         // The payload lives in the quoter's response account; return data
         // carries only a pointer into it, so responses aren't bound by the

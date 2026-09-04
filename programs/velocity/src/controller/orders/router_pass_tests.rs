@@ -155,10 +155,10 @@ pub mod amm_jit {
             controller::{orders::fulfill_perp_order, position::PositionDirection},
             create_anchor_account_info,
             math::constants::{
-                AMM_RESERVE_PRECISION, BASE_PRECISION_I128, BASE_PRECISION_I64, BASE_PRECISION_U64,
-                CONCENTRATION_PRECISION, PEG_PRECISION, PRICE_PRECISION, PRICE_PRECISION_I64,
-                PRICE_PRECISION_U64, QUOTE_PRECISION_I64, SPOT_BALANCE_PRECISION_U64,
-                SPOT_CUMULATIVE_INTEREST_PRECISION, SPOT_WEIGHT_PRECISION,
+                AMM_RESERVE_PRECISION, BASE_PRECISION_I64, BASE_PRECISION_U64, PEG_PRECISION,
+                PRICE_PRECISION, PRICE_PRECISION_I64, PRICE_PRECISION_U64, QUOTE_PRECISION_I64,
+                SPOT_BALANCE_PRECISION_U64, SPOT_CUMULATIVE_INTEREST_PRECISION,
+                SPOT_WEIGHT_PRECISION,
             },
             state::{
                 fill_mode::FillMode,
@@ -407,8 +407,8 @@ pub mod amm_jit {
     #[test]
     fn router_pass_settles_external_clob_fills_against_loaded_makers() {
         use crate::state::prop_amm::{
-            CompletedOrderV0, Direction, ExecuteResponseV0, ExternalQuoterExecutor, PriceLevel,
-            QuoterType, UserBalanceChangeV0,
+            CompletedOrderV0, Direction, ExternalQuoterExecutor, PriceLevel, QuoterType,
+            UserBalanceChangeV0,
         };
 
         struct MockClobExecutor {
@@ -757,8 +757,8 @@ pub mod amm_jit {
     #[test]
     fn router_pass_refuses_a_book_filling_a_user_who_reserved_nothing() {
         use crate::state::prop_amm::{
-            CompletedOrderV0, Direction, ExecuteResponseV0, ExternalQuoterExecutor, PriceLevel,
-            QuoterType, UserBalanceChangeV0,
+            CompletedOrderV0, Direction, ExternalQuoterExecutor, PriceLevel, QuoterType,
+            UserBalanceChangeV0,
         };
 
         struct MockClobExecutor {
@@ -1072,8 +1072,8 @@ pub mod amm_jit {
     #[test]
     fn router_pass_rejects_an_external_quoter_naming_another_sources_maker() {
         use crate::state::prop_amm::{
-            ClobUserRefV0, Direction, ExecuteResponseV0, ExternalQuoterExecutor, PriceLevel,
-            QuoterSubjects, QuoterType, UserBalanceChangeV0,
+            ClobUserRefV0, Direction, ExternalQuoterExecutor, PriceLevel, QuoterSubjects,
+            QuoterType, UserBalanceChangeV0,
         };
 
         /// Its book rests `resting`; its response names `names`.
@@ -1385,8 +1385,7 @@ pub mod amm_jit {
     #[test]
     fn router_pass_clamps_custom_book_to_the_quoter_users_margin() {
         use crate::state::prop_amm::{
-            CompletedOrderV0, Direction, ExecuteResponseV0, ExternalQuoterExecutor, PriceLevel,
-            QuoterType, UserBalanceChangeV0,
+            Direction, ExternalQuoterExecutor, PriceLevel, QuoterType, UserBalanceChangeV0,
         };
 
         struct MockCustomExecutor {
@@ -1807,7 +1806,7 @@ pub mod hostile_book_reports {
             error::ErrorCode,
             math::constants::{BASE_PRECISION_I64, BASE_PRECISION_U64},
             state::{
-                prop_amm::{QuoterType, QuoterV0},
+                prop_amm::QuoterType,
                 user::{OrderBitFlag, OrderStatus, OrderTriggerCondition, OrderType, User},
             },
         },

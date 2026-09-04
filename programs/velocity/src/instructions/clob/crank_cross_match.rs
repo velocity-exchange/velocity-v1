@@ -27,7 +27,6 @@ use {
         error::ErrorCode,
         instructions::{
             constraints::*,
-            optional_accounts::{load_maps, AccountMaps},
             relay_harness::{resolve_into, StagedCall},
             router::{cpi_executor::CpiQuoterExecutor, quoted_route::QuotedEntry},
         },
@@ -35,7 +34,7 @@ use {
         state::{
             clob_crank::{ClobCrankConditionsV0, CLOB_CRANK_CONDITIONS_PDA_SEED},
             pdas,
-            perp_market_map::{get_writable_perp_market_set, MarketSet},
+            perp_market_map::MarketSet,
             prop_amm::{
                 find_account, occupied_slots, quoter_slab_slots, PriceLevel, QuoterConfigV0,
                 QuoterSlabV0, QuoterType,
@@ -46,14 +45,26 @@ use {
         },
         validate,
     },
-    anchor_lang::{prelude::*, Discriminator},
+    anchor_lang::prelude::*,
 };
 
 #[cfg(test)]
 mod tests;
 
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
+pub struct CrankCrossMatchArgs {
+    pub market_index: u16,
+    /// Base to take from each leg. The executor reverts unless both legs
+    /// balance exactly at this size.
+    pub size: u64,
+    /// Legs, as slab slot indexes: the entry whose ask the pass-through
+    /// taker buys, and the one whose bid it sells into. The book is slot 0.
+    pub buy_quoter_index: u8,
+    pub sell_quoter_index: u8,
+}
+
 #[derive(Accounts)]
-#[instruction(market_index: u16)]
+#[instruction(args: CrankCrossMatchArgs)]
 pub struct CrankCrossMatch<'info> {
     pub state: AccountLoader<'info, State>,
     /// CHECK: the lamport payout target — relay's keeper-placeholder slot.
@@ -77,66 +88,81 @@ pub struct CrankCrossMatch<'info> {
         mut,
         seeds = [
             CLOB_CRANK_CONDITIONS_PDA_SEED,
-            market_index.to_le_bytes().as_ref(),
+            args.market_index.to_le_bytes().as_ref(),
         ],
         bump
     )]
     pub crank_conditions: AccountLoader<'info, ClobCrankConditionsV0>,
+    /// The crossed market. Named rather than read out of the maps section:
+    /// the cross serves exactly one market, so the account is structural.
+    #[account(
+        mut,
+        seeds = [b"perp_market", args.market_index.to_le_bytes().as_ref()],
+        bump
+    )]
+    pub perp_market: AccountLoader<'info, crate::state::perp_market::PerpMarket>,
+    /// The market's approved quoters — both legs' configs, and the identity
+    /// every quoter CPI signs as.
+    #[account(
+        seeds = [
+            crate::state::prop_amm::QUOTER_SLAB_PDA_SEED,
+            args.market_index.to_le_bytes().as_ref(),
+        ],
+        bump
+    )]
+    pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
 }
 
 pub fn handle_crank_cross_match<'c: 'info, 'info>(
     ctx: Context<'info, CrankCrossMatch<'info>>,
-    market_index: u16,
-    size: u64,
-    buy_quoter_index: u8,
-    sell_quoter_index: u8,
+    args: CrankCrossMatchArgs,
 ) -> Result<()> {
+    let CrankCrossMatchArgs {
+        market_index,
+        size,
+        buy_quoter_index,
+        sell_quoter_index,
+    } = args;
     let clock = Clock::get()?;
     let state = ctx.accounts.state.load()?;
 
     let remaining_accounts_iter = &mut ctx.remaining_accounts.iter().peekable();
-    let AccountMaps {
-        perp_market_map,
-        spot_market_map,
-        mut oracle_map,
-    } = load_maps(
+    // The perp market is a named account, so the maps section carries only
+    // the oracle and the quote spot market.
+    let mut oracle_map = crate::state::oracle_map::OracleMap::load(
         remaining_accounts_iter,
-        &get_writable_perp_market_set(market_index),
-        &MarketSet::new(),
         clock.slot,
         state.slot_clock(),
         Some(state.oracle_guard_rails),
     )?;
+    let spot_market_map = crate::state::spot_market_map::SpotMarketMap::load(
+        &MarketSet::new(),
+        remaining_accounts_iter,
+    )?;
+    let perp_market_map = crate::state::perp_market_map::PerpMarketMap::load_one(
+        ctx.accounts.perp_market.as_ref(),
+        true,
+    )?;
+    crate::instructions::optional_accounts::update_prelaunch_oracle(
+        std::ops::Deref::deref(&perp_market_map.get_ref(&market_index)?),
+        &oracle_map,
+        clock.slot,
+    )?;
     let (makers_and_referrer, makers_and_referrer_stats) =
         load_user_maps(remaining_accounts_iter, true)?;
 
-    // The account tail: the market's slab plus the union of the consulted
-    // quoters' registered CPI accounts, same shape as the router fill's. A
-    // slot is consulted when its response account rides the tail. This crank
-    // does not quote, so each consulted slot carries no levels.
+    // The account tail: the union of the consulted quoters' registered CPI
+    // accounts, same shape as the router fill's. A slot is consulted when its
+    // response account rides the tail. This crank does not quote, so each
+    // consulted slot carries no levels.
     // Borrow the tail in place: the executor and the guard read it by
     // reference, so nothing needs an owned clone of every account.
     let tail_from = ctx.remaining_accounts.len() - remaining_accounts_iter.len();
     let tail = &ctx.remaining_accounts[tail_from..];
     let mut quoted: Vec<QuotedEntry<'info>> = Vec::new();
-    for info in tail {
-        let is_slab = info.owner == &crate::ID
-            && info
-                .try_borrow_data()
-                .is_ok_and(|data| data.get(..8) == Some(QuoterSlabV0::DISCRIMINATOR));
-        if !is_slab {
-            continue;
-        }
-        let loader = AccountLoader::<QuoterSlabV0>::try_from(info)?;
-        validate!(
-            loader.load()?.market == market_index,
-            ErrorCode::DefaultError,
-            "quoter slab {} is for market {}, cross is for market {}",
-            loader.key(),
-            loader.load()?.market,
-            market_index
-        )?;
-        let slots = quoter_slab_slots(&loader)?;
+    {
+        let loader = &ctx.accounts.quoter_slab;
+        let slots = quoter_slab_slots(loader)?;
         for (index, slot) in occupied_slots(&slots) {
             if find_account(tail, &slot.config.response_account).is_none() {
                 continue;
@@ -156,7 +182,6 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
                 levels: 0..0,
             });
         }
-        break;
     }
     // Legs are named by slab slot index — stable whatever else rides the
     // tail — and resolved to consulted entries here.
@@ -179,7 +204,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         let taker = load!(ctx.accounts.taker)?;
         crate::state::prop_amm::ClobUserRefV0 {
             authority: taker.authority,
-            sub_account_id: taker.sub_account_id.into(),
+            sub_account_id: taker.sub_account_id,
         }
     };
     let users = crate::state::prop_amm::quoter_wire_users(
@@ -189,7 +214,7 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
             .map(
                 |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
                     authority,
-                    sub_account_id: sub_account_id.into(),
+                    sub_account_id,
                 },
             ),
     )?;
@@ -242,7 +267,8 @@ pub fn handle_crank_cross_match<'c: 'info, 'info>(
         ];
         let (bids, asks) = book_sides(
             config,
-            &clob.entry_key,
+            clob.slab.as_ref(),
+            clob.slab.load()?.bump,
             market_index,
             &sides,
             &mut cpi_scratch,
@@ -428,9 +454,6 @@ pub(super) fn stage_cross(ctx: &Context<ResolveClobCrank>) -> Result<Option<Stag
             conditions.quote_spot_market_index,
         )
     };
-    // The CLOB's execute leg is signed by the book's place authority, not the
-    // vault authority — stage the one the executor will actually sign as.
-    let (clob_authority, _) = crate::signer::find_clob_authority();
     let (protocol_user, protocol_user_stats) = pdas::protocol_user_pair();
 
     // Named accounts through the executor's own client struct (compile-time
@@ -443,18 +466,21 @@ pub(super) fn stage_cross(ctx: &Context<ResolveClobCrank>) -> Result<Option<Stag
         taker: protocol_user,
         taker_stats: protocol_user_stats,
         crank_conditions: ctx.accounts.crank_conditions.key(),
+        perp_market: pdas::perp_market(market_index),
+        quoter_slab: ctx.accounts.quoter_slab.key(),
     })
-    .map_section(oracle, quote_spot_market_index, market_index)
+    .map_section_named_perp(oracle, quote_spot_market_index)
     .maker_refs(cross.makers.iter().copied());
     Ok(Some(
-        call.account(ctx.accounts.quoter_slab.key(), false)
-            .account(ctx.accounts.clob_market.key(), true)
-            .account(clob_authority, false)
+        call.account(ctx.accounts.clob_market.key(), true)
             .account(crate::ids::clob_program::id(), false)
-            .arg(market_index)?
-            .arg(cross.size)?
-            .arg(0u8)? // buy leg: the book's slot
-            .arg(0u8)?, // sell leg: the book's slot
+            // Both legs are the book's slot.
+            .arg(CrankCrossMatchArgs {
+                market_index,
+                size: cross.size,
+                buy_quoter_index: 0,
+                sell_quoter_index: 0,
+            })?,
     ))
 }
 
@@ -483,13 +509,13 @@ const CROSS_ROWS_PER_SIDE: u16 = 32;
 /// re-derives an activation slot or an expiry.
 fn clob_rows<'info>(
     quoter: &QuoterConfigV0,
-    entry: &Pubkey,
+    slab: &AccountInfo<'info>,
+    slab_bump: u8,
     market_index: u16,
     direction: crate::state::prop_amm::Direction,
     accounts: &[AccountInfo<'info>],
     scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
 ) -> Result<Vec<crate::state::prop_amm::L3RowV0>> {
-    let (cpi_signer, cpi_signer_nonce) = quoter.cpi_signer(entry);
     let located = quoter.quote_l3(
         market_index,
         crate::state::prop_amm::L3ArgsV0 {
@@ -500,9 +526,8 @@ fn clob_rows<'info>(
             size: 0,
             max_rows: CROSS_ROWS_PER_SIDE,
         },
-        entry,
-        &cpi_signer,
-        cpi_signer_nonce,
+        slab,
+        slab_bump,
         accounts,
         scratch,
     )?;
@@ -552,7 +577,8 @@ fn strips_taker_origin_gate(
 /// reads. A taker of `Long` sweeps asks, so that read names the ask side.
 fn book_sides<'info>(
     quoter: &QuoterConfigV0,
-    entry: &Pubkey,
+    slab: &AccountInfo<'info>,
+    slab_bump: u8,
     market_index: u16,
     accounts: &[AccountInfo<'info>],
     scratch: &mut crate::state::prop_amm::QuoterCpiScratch<'info>,
@@ -570,9 +596,8 @@ fn book_sides<'info>(
                 size: 0,
                 max_rows: CROSS_ROWS_PER_SIDE,
             },
-            entry,
-            &quoter.cpi_signer(entry).0,
-            quoter.cpi_signer(entry).1,
+            slab,
+            slab_bump,
             accounts,
             scratch,
         )?;
@@ -697,7 +722,7 @@ fn find_clob_cross(ctx: &Context<ResolveClobCrank>) -> Result<ClobCross> {
         return Ok(cross_prefix(&[], &[]));
     }
     let quoter = &book_slot.config;
-    let clob_entry_key = book_slot.entry;
+    let slab_bump = ctx.accounts.quoter_slab.load()?.bump;
     let accounts = [
         ctx.accounts.clob_market.to_account_info(),
         ctx.accounts.clob_program.to_account_info(),
@@ -708,7 +733,8 @@ fn find_clob_cross(ctx: &Context<ResolveClobCrank>) -> Result<ClobCross> {
     // overwrites it. A buyer consumes the asks.
     let asks = clob_rows(
         quoter,
-        &clob_entry_key,
+        ctx.accounts.quoter_slab.as_ref(),
+        slab_bump,
         market_index,
         crate::state::prop_amm::Direction::Long,
         &accounts,
@@ -716,7 +742,8 @@ fn find_clob_cross(ctx: &Context<ResolveClobCrank>) -> Result<ClobCross> {
     )?;
     let bids = clob_rows(
         quoter,
-        &clob_entry_key,
+        ctx.accounts.quoter_slab.as_ref(),
+        slab_bump,
         market_index,
         crate::state::prop_amm::Direction::Short,
         &accounts,
@@ -793,16 +820,11 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             "user {} is not the entry's quoted user",
             ctx.accounts.user.key()
         )?;
-        let clob_authority = crate::signer::find_clob_authority();
         let mut cpi_scratch = crate::state::prop_amm::QuoterCpiScratch::new();
-        let (quoter_signer, quoter_signer_nonce) = quoter.cpi_signer(&quoter_entry_key);
+        let slab_bump = ctx.accounts.quoter_slab.load()?.bump;
         // The resolver's own tail, searched rather than indexed: it is a
         // handful of accounts and this reads a few of them.
-        let accounts: Vec<AccountInfo<'info>> = ctx
-            .remaining_accounts
-            .iter()
-            .map(|info| info.clone())
-            .collect();
+        let accounts: Vec<AccountInfo<'info>> = ctx.remaining_accounts.to_vec();
 
         // Quote both sides. An empty user set is discovery mode
         // (unrestricted); no taker (the executor's taker is the protocol
@@ -831,9 +853,8 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
                         // orders that rested through placement.
                         taker_served_window: true,
                     },
-                    &quoter_entry_key,
-                    &quoter_signer,
-                    quoter_signer_nonce,
+                    ctx.accounts.quoter_slab.as_ref(),
+                    slab_bump,
                     &accounts,
                     &mut cpi_scratch,
                     &mut levels,
@@ -849,7 +870,7 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             let user = crate::load!(ctx.accounts.user)?;
             crate::state::prop_amm::ClobUserRefV0 {
                 authority: user.authority,
-                sub_account_id: user.sub_account_id.into(),
+                sub_account_id: user.sub_account_id,
             }
         };
 
@@ -868,11 +889,11 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             msg!("quoter slab holds no book slot");
             error!(ErrorCode::QuoterNotOnSlab)
         })?;
-        let clob_entry_key = slots[book_slot].entry;
         let mut clob_book = |direction: crate::state::prop_amm::Direction| -> Result<Vec<_>> {
             clob_rows(
                 &slots[book_slot].config,
-                &clob_entry_key,
+                ctx.accounts.quoter_slab.as_ref(),
+                slab_bump,
                 market_index,
                 direction,
                 &clob_accounts,
@@ -920,8 +941,10 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
             taker: protocol_user,
             taker_stats: protocol_user_stats,
             crank_conditions: pdas::clob_crank_conditions(market_index),
+            perp_market: pdas::perp_market(market_index),
+            quoter_slab: ctx.accounts.quoter_slab.key(),
         })
-        .map_section(oracle, quote_spot_market_index, market_index);
+        .map_section_named_perp(oracle, quote_spot_market_index);
         // Maker pairs: the quoter's user first, then the CLOB-side makers.
         let mut staged = vec![maker_ref];
         for maker in &cross.makers {
@@ -929,34 +952,28 @@ pub fn handle_resolve_crank_cross_match_quoter<'info>(
                 staged.push(*maker);
             }
         }
-        // The slab, then the union of both execute surfaces: the CLOB's
-        // [book, signer] plus everything the quoter registered, programs
-        // included.
-        let mut call = call
-            .maker_refs(staged.iter().copied())
-            .account(ctx.accounts.quoter_slab.key(), false);
+        // The union of both execute surfaces: the CLOB's book plus everything
+        // the quoter registered, programs included. Both legs sign as the
+        // slab, which is staged as a named account.
+        let slab_key = ctx.accounts.quoter_slab.key();
+        let mut call = call.maker_refs(staged.iter().copied());
         let mut union: std::collections::BTreeMap<Pubkey, bool> = Default::default();
         *union.entry(ctx.accounts.clob_market.key()).or_default() |= true;
-        // Both identities, because the two legs authenticate as different keys:
-        // the book's execute wants the place authority, and the quoter's wants
-        // the signer derived from its own entry.
-        union.entry(clob_authority.0).or_default();
-        union.entry(quoter_signer).or_default();
         union.entry(clob_program).or_default();
         for meta in quoter.leg_metas(quoter.execute_leg_indexes())? {
             *union.entry(meta.pubkey).or_default() |= meta.is_writable;
         }
         *union.entry(quoter.response_account).or_default() |= true;
         union.entry(quoter.program_id).or_default();
-        for (key, writable) in &union {
+        for (key, writable) in union.iter().filter(|(key, _)| **key != slab_key) {
             call = call.account(*key, *writable);
         }
-        Ok(Some(
-            call.arg(market_index)?
-                .arg(cross.size)?
-                .arg(buy_index)?
-                .arg(sell_index)?,
-        ))
+        Ok(Some(call.arg(CrankCrossMatchArgs {
+            market_index,
+            size: cross.size,
+            buy_quoter_index: buy_index,
+            sell_quoter_index: sell_index,
+        })?))
     })
 }
 

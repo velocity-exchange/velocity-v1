@@ -243,11 +243,7 @@ mod tests {
         super::*,
         crate::{
             math::time::SlotClock,
-            state::{
-                oracle::OraclePriceData,
-                perp_market::MarketStats,
-                quoter::{FillFeePolicy, QuoteContext},
-            },
+            state::{oracle::OraclePriceData, perp_market::MarketStats, quoter::QuoteContext},
             vlp::amm::AmmQuoter,
         },
     };

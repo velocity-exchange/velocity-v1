@@ -38,7 +38,16 @@ pub struct UpdateQuoterActive<'info> {
     pub quoter_slab: Option<AccountLoader<'info, QuoterSlabV0>>,
 }
 
-pub fn handle_update_quoter_active(ctx: Context<UpdateQuoterActive>, active: bool) -> Result<()> {
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
+pub struct UpdateQuoterActiveArgs {
+    pub active: bool,
+}
+
+pub fn handle_update_quoter_active(
+    ctx: Context<UpdateQuoterActive>,
+    args: UpdateQuoterActiveArgs,
+) -> Result<()> {
+    let UpdateQuoterActiveArgs { active } = args;
     ctx.accounts.quoter.load_mut()?.config.is_active = active;
     if let Some(slab) = &ctx.accounts.quoter_slab {
         let mut slots = quoter_slab_slots_mut(slab)?;

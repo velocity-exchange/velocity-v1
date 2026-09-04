@@ -157,16 +157,19 @@ pub fn handle_resolve_liquidate_perp_with_fill<'c: 'info, 'info>(
                             quoter_slab,
                             clob_market,
                             clob_program,
-                            clob_authority: crate::signer::find_clob_authority().0,
                             crank_conditions: Some(crate::state::pdas::clob_crank_conditions(
                                 market_index,
                             )),
                         })
                         .refs(stored)
-                        .arg(market_index)?
                         // The sweep takes the side that cannot be reducing, so
                         // the resolver never has to read the book to name refs.
-                        .arg(Vec::<crate::instructions::ForceCancelClobRefV0>::new())?,
+                        .arg(
+                            crate::instructions::ForceCancelClobOrdersArgs {
+                                market_index,
+                                order_refs: Vec::new(),
+                            },
+                        )?,
                     ),
                 );
             }

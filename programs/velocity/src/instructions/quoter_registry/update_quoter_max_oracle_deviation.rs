@@ -48,12 +48,20 @@ pub struct UpdateQuoterMaxOracleDeviation<'info> {
     pub quoter_slab: Option<AccountLoader<'info, QuoterSlabV0>>,
 }
 
-/// `max_oracle_deviation_bps` is in MARGIN_PRECISION units, so one unit is one
-/// basis point. Zero clears the declaration and the market's own band stands.
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
+pub struct UpdateQuoterMaxOracleDeviationArgs {
+    /// In MARGIN_PRECISION units, so one unit is one basis point. Zero clears
+    /// the declaration and the market's own band stands.
+    pub max_oracle_deviation_bps: u32,
+}
+
 pub fn handle_update_quoter_max_oracle_deviation(
     ctx: Context<UpdateQuoterMaxOracleDeviation>,
-    max_oracle_deviation_bps: u32,
+    args: UpdateQuoterMaxOracleDeviationArgs,
 ) -> Result<()> {
+    let UpdateQuoterMaxOracleDeviationArgs {
+        max_oracle_deviation_bps,
+    } = args;
     let mut quoter = ctx.accounts.quoter.load_mut()?;
     // Custom entries only. A book fills third parties, and its entry authority
     // is whoever registered it, so a band on a book would let that authority

@@ -293,7 +293,7 @@ impl UserConditionsV0 {
             fold(position.quote_asset_amount as u64);
             fold(position.open_bids as u64);
             fold(position.open_asks as u64);
-            fold(position.isolated_position_scaled_balance as u64);
+            fold(position.isolated_position_scaled_balance);
         }
         for position in user.spot_positions.iter() {
             if position.is_available() {
@@ -405,10 +405,10 @@ impl UserConditionsV0 {
     }
 }
 
-const _: () = assert!((UserConditionsV0::SIZE - 8) % 16 == 0);
+const _: () = assert!((UserConditionsV0::SIZE - 8).is_multiple_of(16));
 const _: () = assert!(UserConditionsV0::SIZE <= 10_240);
 
-const _: () = assert!(USER_CONDITIONS_BLOCK_OFFSET % 8 == 0);
+const _: () = assert!(USER_CONDITIONS_BLOCK_OFFSET.is_multiple_of(8));
 
 #[cfg(test)]
 mod tests {

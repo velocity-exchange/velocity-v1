@@ -118,7 +118,10 @@ pub fn refresh_spot_markets_that_price_equity<'info>(
     };
     let cpi_context = CpiContext::new(velocity_program.key(), cpi_accounts)
         .with_remaining_accounts(remaining_accounts.to_vec());
-    velocity::cpi::refresh_spot_market_interest(cpi_context, market_indexes)?;
+    velocity::cpi::refresh_spot_market_interest(
+        cpi_context,
+        velocity::instructions::RefreshSpotMarketInterestArgs { market_indexes },
+    )?;
 
     Ok(())
 }

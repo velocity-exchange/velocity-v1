@@ -33,9 +33,6 @@ pub struct CpiQuoterExecutor<'a, 'info> {
     /// instruction: velocity's heap never reclaims, so a buffer per leg is a
     /// buffer for the rest of the fill.
     pub scratch: &'a mut crate::state::prop_amm::QuoterCpiScratch<'info>,
-    /// The CLOB place authority and its bump — what a `Clob` entry's CPI legs
-    /// are signed as. Every other entry signs as a key derived from its own
-    /// registry entry (`QuoterConfigV0::cpi_signer`).
     /// Forwarded on every quote and execute leg — see
     /// [`crate::instructions::QuoteInputs::taker_served_window`].
     pub taker_served_window: bool,
@@ -105,6 +102,10 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
             msg!("router executor index {} out of range", index);
             ErrorCode::DefaultError
         })?;
+        let slab_bump = quoted.slab.load().map(|slab| slab.bump).map_err(|_| {
+            msg!("router executor failed to load the quoter slab");
+            ErrorCode::DefaultError
+        })?;
         let slots = quoter_slab_slots(&quoted.slab).map_err(|_| {
             msg!("router executor failed to load the quoter slab");
             ErrorCode::DefaultError
@@ -133,9 +134,8 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                         limit_price: 0,
                         taker_served_window: self.taker_served_window,
                     },
-                    &quoted.entry_key,
-                    &crate::signer::CLOB_AUTHORITY,
-                    crate::signer::CLOB_AUTHORITY_NONCE,
+                    quoted.slab.as_ref(),
+                    slab_bump,
                     self.accounts,
                     self.scratch,
                     &mut levels,
@@ -174,31 +174,29 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
             msg!("router executor index {} out of range", index);
             ErrorCode::DefaultError
         })?;
-        let slots = quoter_slab_slots(&quoted.slab).map_err(|_| {
-            msg!("router executor failed to load the quoter slab");
-            ErrorCode::DefaultError
-        })?;
-        let config = &slots[quoted.slot].config;
-        let book = find_account(self.accounts, &config.response_account).ok_or_else(|| {
-            msg!(
-                "clob book {} missing from the account map",
-                config.response_account
-            );
-            ErrorCode::DefaultError
-        })?;
-        let program = find_account(self.accounts, &config.program_id).ok_or_else(|| {
-            msg!(
-                "clob program {} missing from the account map",
-                config.program_id
-            );
-            ErrorCode::DefaultError
-        })?;
-        let signer =
-            find_account(self.accounts, &crate::signer::CLOB_AUTHORITY).ok_or_else(|| {
-                msg!("clob place authority missing from the account map");
+        let (book, program) = {
+            let slots = quoter_slab_slots(&quoted.slab).map_err(|_| {
+                msg!("router executor failed to load the quoter slab");
                 ErrorCode::DefaultError
             })?;
-        let clob = ClobMarket::from_quoter(config, self.market_index, book, program, signer)
+            let config = &slots[quoted.slot].config;
+            let book = find_account(self.accounts, &config.response_account).ok_or_else(|| {
+                msg!(
+                    "clob book {} missing from the account map",
+                    config.response_account
+                );
+                ErrorCode::DefaultError
+            })?;
+            let program = find_account(self.accounts, &config.program_id).ok_or_else(|| {
+                msg!(
+                    "clob program {} missing from the account map",
+                    config.program_id
+                );
+                ErrorCode::DefaultError
+            })?;
+            (book, program)
+        };
+        let clob = ClobMarket::from_slab(&quoted.slab, self.market_index, book, program)
             .map_err(|_| ErrorCode::DefaultError)?;
         clob.cancel_all(ClobCancelAllArgsV0 {
             user,
@@ -222,13 +220,16 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
             msg!("router executor index {} out of range", index);
             ErrorCode::DefaultError
         })?;
+        let slab_bump = quoted.slab.load().map(|slab| slab.bump).map_err(|_| {
+            msg!("router executor failed to load the quoter slab");
+            ErrorCode::DefaultError
+        })?;
         let slots = quoter_slab_slots(&quoted.slab).map_err(|_| {
             msg!("router executor failed to load the quoter slab");
             ErrorCode::DefaultError
         })?;
         let config = &slots[quoted.slot].config;
         let entry_key = quoted.entry_key;
-        let (cpi_signer, cpi_signer_nonce) = config.cpi_signer(&entry_key);
         config
             .execute(
                 self.market_index,
@@ -241,9 +242,8 @@ impl<'info> ExternalQuoterExecutor<'info> for CpiQuoterExecutor<'_, 'info> {
                     taker: Some(self.taker),
                     taker_served_window: self.taker_served_window,
                 },
-                &entry_key,
-                &cpi_signer,
-                cpi_signer_nonce,
+                quoted.slab.as_ref(),
+                slab_bump,
                 self.accounts,
                 self.scratch,
             )

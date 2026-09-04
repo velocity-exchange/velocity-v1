@@ -28,10 +28,7 @@
 
 use {
     crate::{
-        controller::{
-            orders::pay_keeper_flat_reward_for_spot,
-            position::{get_position_index, release_reserved_open_base_for_exit},
-        },
+        controller::{orders::pay_keeper_flat_reward_for_spot, position::get_position_index},
         error::ErrorCode,
         instructions::{
             constraints::*,
@@ -54,13 +51,13 @@ use {
             margin_calculation::MarginContext,
             perp_market_map::MarketSet,
             prop_amm::{
-                quoter_slab_clob, ClobCancelAllArgsV0, ClobCancelOrderArgsV0, ClobCancelSides,
-                ClobCancelSidesExt, ClobMarket, ClobOrderRefV0, ClobRemovedOrderV0, ClobSide,
-                ClobUserRefV0, QuoterSlabV0, WireDirectionExt,
+                ClobCancelAllArgsV0, ClobCancelOrderArgsV0, ClobCancelSides, ClobCancelSidesExt,
+                ClobMarket, ClobOrderRefV0, ClobRemovedOrderV0, ClobSide, ClobUserRefV0,
+                QuoterSlabV0, WireDirectionExt,
             },
             spot_market_map::get_writable_spot_market_set,
             state::State,
-            user::{OrderStatus, User, UserStats},
+            user::{User, UserStats},
         },
         validate,
     },
@@ -89,8 +86,16 @@ pub struct ForceCancelClobRefV0 {
     pub side: ClobSide,
 }
 
+#[derive(Clone, AnchorSerialize, AnchorDeserialize)]
+pub struct ForceCancelClobOrdersArgs {
+    pub market_index: u16,
+    /// The orders to cancel one by one, each judged not risk-reducing by the
+    /// declared side. Empty asks for the whole-side sweep instead.
+    pub order_refs: Vec<ForceCancelClobRefV0>,
+}
+
 #[derive(Accounts)]
-#[instruction(market_index: u16)]
+#[instruction(args: ForceCancelClobOrdersArgs)]
 pub struct ForceCancelClobOrders<'info> {
     pub state: AccountLoader<'info, State>,
     /// CHECK: in signed-keeper mode this must sign for `filler`; in
@@ -125,18 +130,12 @@ pub struct ForceCancelClobOrders<'info> {
     /// registration; the handler re-checks through the slot.
     #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
-    /// is set to. Its own key, distinct from the per-entry signer a
-    /// third-party quoter is handed: signer privilege is inherited by a
-    /// callee, and this one may place and cancel on any book, for any user.
-    #[account(address = crate::signer::CLOB_AUTHORITY)]
-    pub clob_authority: UncheckedAccount<'info>,
     /// Wake-hint host; optional like every other CLOB path.
     #[account(
         mut,
         seeds = [
             CLOB_CRANK_CONDITIONS_PDA_SEED,
-            market_index.to_le_bytes().as_ref(),
+            args.market_index.to_le_bytes().as_ref(),
         ],
         bump
     )]
@@ -145,9 +144,12 @@ pub struct ForceCancelClobOrders<'info> {
 
 pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
     ctx: Context<'info, ForceCancelClobOrders<'info>>,
-    market_index: u16,
-    order_refs: Vec<ForceCancelClobRefV0>,
+    args: ForceCancelClobOrdersArgs,
 ) -> Result<()> {
+    let ForceCancelClobOrdersArgs {
+        market_index,
+        order_refs,
+    } = args;
     let clock = Clock::get()?;
     let state = ctx.accounts.state.load()?;
     let program_keeper_mode = is_protocol_user(&ctx.accounts.filler, &ctx.accounts.state)?;
@@ -178,12 +180,11 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
         None,
     )?;
 
-    let clob = ClobMarket::from_quoter(
-        &quoter_slab_clob(&ctx.accounts.quoter_slab, market_index)?.config,
+    let clob = ClobMarket::from_slab(
+        &ctx.accounts.quoter_slab,
         market_index,
         &ctx.accounts.clob_market,
         &ctx.accounts.clob_program,
-        &ctx.accounts.clob_authority,
     )?;
 
     // ---- Gate: the account must actually be failing, same as the DLOB
@@ -254,7 +255,7 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
 
         let user_ref = ClobUserRefV0 {
             authority: user.authority,
-            sub_account_id: user.sub_account_id.into(),
+            sub_account_id: user.sub_account_id,
         };
         let position = user.get_perp_position(market_index).ok();
         let position_base = position.map(|p| p.base_asset_amount).unwrap_or(0);
@@ -414,22 +415,15 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
                 removed.order_id
             )?;
             let direction = removed.side.to_position_direction();
-            release_reserved_open_base_for_exit(
-                &mut user.perp_positions[position_index],
+            // The cleanup also frees a placed trigger's shadow for good — a
+            // failing account must not re-arm.
+            user.cleanup_removed_clob_order(
+                market_index,
                 &direction,
                 removed.base_asset_amount,
+                removed.reduce_only,
+                removed.order_id,
             )?;
-            user.perp_positions[position_index].open_orders = user.perp_positions[position_index]
-                .open_orders
-                .saturating_sub(1);
-            user.decrement_open_orders(false);
-            // The order left the book, so disarm the reduce-only counter it armed.
-            if removed.reduce_only {
-                user.perp_positions[position_index].disarm_reduce_only_clob();
-            }
-            // A placed trigger's shadow frees for good — a failing account
-            // must not re-arm.
-            user.release_placed_trigger_slot(market_index, removed.order_id, OrderStatus::Canceled);
             total_fee = total_fee.safe_add(state.perp_fee_structure.flat_filler_fee)?;
             super::emit_clob_cancel_record(
                 clock.unix_timestamp,
@@ -464,13 +458,7 @@ pub fn handle_force_cancel_clob_orders<'c: 'info, 'info>(
                 ErrorCode::DefaultError,
                 "clob swept orders for a different user"
             )?;
-            let orders = crate::state::prop_amm::unwind_swept_orders(
-                user,
-                &clob.reader(),
-                market_index,
-                sides,
-                &swept,
-            )?;
+            let orders = user.unwind_swept_orders(&clob.reader(), market_index, sides, &swept)?;
             total_fee = total_fee.safe_add(
                 state
                     .perp_fee_structure

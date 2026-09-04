@@ -647,7 +647,7 @@ impl OrderParams {
         #[cfg(feature = "anchor-test")]
         {
             let _ = (perp_market, oracle_price, is_signed_msg);
-            return Ok(false);
+            Ok(false)
         }
 
         #[cfg(not(feature = "anchor-test"))]

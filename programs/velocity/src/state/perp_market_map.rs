@@ -139,8 +139,10 @@ impl<'a> PerpMarketMap<'a> {
     }
 }
 
-#[cfg(test)]
 impl<'a> PerpMarketMap<'a> {
+    /// A map holding one market, from a named account rather than the
+    /// positional maps section — for an instruction whose accounts struct
+    /// names the perp market it serves.
     pub fn load_one<'c: 'a>(
         account_info: &'c AccountInfo<'a>,
         must_be_writable: bool,

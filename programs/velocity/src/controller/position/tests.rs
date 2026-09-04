@@ -1,5 +1,5 @@
 use crate::{
-    controller::position::{update_position_and_market, PositionDelta, PositionDirection},
+    controller::position::{update_position_and_market, PositionDelta},
     math::time::SlotClock,
     state::{
         prop_amm::Direction,

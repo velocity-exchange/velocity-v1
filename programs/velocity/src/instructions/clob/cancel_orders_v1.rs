@@ -28,10 +28,9 @@ use {
         load_mut, msg,
         state::{
             prop_amm::{
-                quoter_slab_clob, ClobCancelAllArgsV0, ClobCancelAllOutcomeExt, ClobCancelSides,
-                ClobCancelSidesExt, ClobMarket, ClobUserRefV0, QuoterSlabV0,
+                ClobCancelAllArgsV0, ClobCancelAllOutcomeExt, ClobCancelSides, ClobCancelSidesExt,
+                ClobMarket, ClobUserRefV0, QuoterSlabV0,
             },
-            state::State,
             user::User,
         },
         validate,
@@ -58,12 +57,6 @@ pub struct CancelOrdersV1<'info> {
     /// registration; the handler re-checks through the slot.
     #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
-    /// is set to. Its own key, distinct from the per-entry signer a
-    /// third-party quoter is handed: signer privilege is inherited by a
-    /// callee, and this one may place and cancel on any book, for any user.
-    #[account(address = crate::signer::CLOB_AUTHORITY)]
-    pub clob_authority: UncheckedAccount<'info>,
 }
 
 #[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
@@ -78,12 +71,11 @@ pub fn handle_cancel_orders_v1(
 ) -> Result<()> {
     let clock = Clock::get()?;
 
-    let clob = ClobMarket::from_quoter(
-        &quoter_slab_clob(&ctx.accounts.quoter_slab, params.market_index)?.config,
+    let clob = ClobMarket::from_slab(
+        &ctx.accounts.quoter_slab,
         params.market_index,
         &ctx.accounts.clob_market,
         &ctx.accounts.clob_program,
-        &ctx.accounts.clob_authority,
     )?;
 
     // CPI the sweep with no user borrow held; ownership travels in the args in
@@ -92,7 +84,7 @@ pub fn handle_cancel_orders_v1(
         let user = crate::load!(ctx.accounts.user)?;
         ClobUserRefV0 {
             authority: user.authority,
-            sub_account_id: user.sub_account_id.into(),
+            sub_account_id: user.sub_account_id,
         }
     };
     let removed = clob.cancel_all(ClobCancelAllArgsV0 {
@@ -175,12 +167,8 @@ pub fn handle_cancel_orders_v1(
             .disarm_reduce_only_clob_by(removed.reduce_only_orders().min(u16::MAX as u32) as u16);
 
         // Free the placed-trigger shadows whose live orders the sweep took.
-        let shadows = crate::state::prop_amm::release_swept_trigger_shadows(
-            &mut user,
-            &clob.reader(),
-            params.market_index,
-            params.sides,
-        )?;
+        let shadows =
+            user.release_swept_trigger_shadows(&clob.reader(), params.market_index, params.sides)?;
         if shadows > 0 {
             msg!("released {} placed-trigger shadows", shadows);
         }

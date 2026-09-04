@@ -70,7 +70,7 @@ pub struct FillLegacyDlobOrder<'info> {
     /// book its `Clob` slot names.
     pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
     /// CHECK: validated against the book slot's registered response account
-    /// (`ClobMarket::from_quoter`), so a valid slot cannot be pointed at an
+    /// (`ClobMarket::from_slab`), so a valid slot cannot be pointed at an
     /// arbitrary account.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
@@ -78,10 +78,6 @@ pub struct FillLegacyDlobOrder<'info> {
     /// registration; the handler re-checks through the slot.
     #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
-    /// is, and nothing a third-party quoter is ever handed.
-    #[account(address = crate::signer::CLOB_AUTHORITY)]
-    pub clob_authority: UncheckedAccount<'info>,
     /// CHECK: address-locked to the instructions sysvar. Read for two facts a
     /// fill cannot get anywhere else: whether the taker signed this
     /// transaction, and how many accounts the transaction locks.
@@ -95,6 +91,16 @@ pub struct FillLegacyDlobOrder<'info> {
     pub instructions_sysvar: Option<UncheckedAccount<'info>>,
 }
 
+#[derive(Clone, AnchorSerialize, AnchorDeserialize)]
+pub struct FillLegacyDlobOrderArgs {
+    pub market_index: u16,
+    /// The DLOB order to fill. `None` fills the user's most recent order.
+    pub order_id: Option<u32>,
+    /// The taker's signed route, when the fill claims one. Empty claims the
+    /// market baseline.
+    pub signed_route: Vec<Pubkey>,
+}
+
 /// `market_index` is checked against the order's own market below, so a
 /// mismatch is a malformed transaction rather than a wrong book.
 #[access_control(
@@ -102,10 +108,13 @@ pub struct FillLegacyDlobOrder<'info> {
 )]
 pub fn handle_fill_legacy_dlob_order<'c: 'info, 'info>(
     ctx: Context<'info, FillLegacyDlobOrder<'info>>,
-    order_id: Option<u32>,
-    signed_route: Vec<Pubkey>,
-    market_index: u16,
+    args: FillLegacyDlobOrderArgs,
 ) -> Result<()> {
+    let FillLegacyDlobOrderArgs {
+        market_index,
+        order_id,
+        signed_route,
+    } = args;
     let (order_id, order_market_index) = {
         let user = &load!(ctx.accounts.user)?;
         let order_id = order_id.unwrap_or_else(|| user.get_last_order_id());
@@ -172,7 +181,6 @@ pub fn handle_fill_legacy_dlob_order<'c: 'info, 'info>(
             quoter_slab: &ctx.accounts.quoter_slab,
             clob_market: &ctx.accounts.clob_market,
             clob_program: &ctx.accounts.clob_program,
-            clob_authority: &ctx.accounts.clob_authority,
         }),
     )
     .inspect_err(|_e| {

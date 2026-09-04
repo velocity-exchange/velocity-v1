@@ -22,12 +22,17 @@ pub struct InitializeRouterQuoteBuffer<'info> {
     pub authority: Signer<'info>,
 }
 
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
+pub struct InitializeRouterQuoteBufferArgs {
+    pub market_index: u16,
+}
+
 pub fn handle_initialize_router_quote_buffer(
     ctx: Context<InitializeRouterQuoteBuffer>,
-    market_index: u16,
+    args: InitializeRouterQuoteBufferArgs,
 ) -> Result<()> {
     let mut buffer = ctx.accounts.quote_buffer.load_init()?;
     buffer.authority = ctx.accounts.authority.key();
-    buffer.market = market_index;
+    buffer.market = args.market_index;
     Ok(())
 }

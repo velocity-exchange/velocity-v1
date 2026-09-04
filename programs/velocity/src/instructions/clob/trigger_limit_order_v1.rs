@@ -86,8 +86,15 @@ use {
     anchor_lang::prelude::*,
 };
 
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
+pub struct TriggerLimitOrderV1Args {
+    pub market_index: u16,
+    /// The trigger-limit order to fire, by its `User.orders` id.
+    pub order_id: u32,
+}
+
 #[derive(Accounts)]
-#[instruction(market_index: u16)]
+#[instruction(args: TriggerLimitOrderV1Args)]
 pub struct TriggerLimitOrderV1<'info> {
     pub state: AccountLoader<'info, State>,
     /// CHECK: in signed-keeper mode this must sign for `filler`; in
@@ -123,18 +130,12 @@ pub struct TriggerLimitOrderV1<'info> {
     /// registration; the handler re-checks through the slot.
     #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
-    /// is set to. Its own key, distinct from the per-entry signer a
-    /// third-party quoter is handed: signer privilege is inherited by a
-    /// callee, and this one may place and cancel on any book, for any user.
-    #[account(address = crate::signer::CLOB_AUTHORITY)]
-    pub clob_authority: UncheckedAccount<'info>,
     /// Expiry-hint host, same optional contract as `place_and_make_perp_order_v1`.
     #[account(
         mut,
         seeds = [
             CLOB_CRANK_CONDITIONS_PDA_SEED,
-            market_index.to_le_bytes().as_ref(),
+            args.market_index.to_le_bytes().as_ref(),
         ],
         bump
     )]
@@ -159,9 +160,12 @@ pub struct TriggerLimitOrderV1<'info> {
 )]
 pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
     ctx: Context<'info, TriggerLimitOrderV1<'info>>,
-    market_index: u16,
-    order_id: u32,
+    args: TriggerLimitOrderV1Args,
 ) -> Result<()> {
+    let TriggerLimitOrderV1Args {
+        market_index,
+        order_id,
+    } = args;
     let clock = Clock::get()?;
     let now = clock.unix_timestamp;
     let slot = clock.slot;
@@ -190,12 +194,12 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
             ErrorCode::DefaultError,
             "CLOB quoter is not active and approved"
         )?;
-        ClobMarket::from_quoter(
-            &slot.config,
+        drop(slot);
+        ClobMarket::from_slab(
+            &ctx.accounts.quoter_slab,
             market_index,
             &ctx.accounts.clob_market,
             &ctx.accounts.clob_program,
-            &ctx.accounts.clob_authority,
         )?
     };
 
@@ -451,7 +455,7 @@ pub fn handle_trigger_limit_order_v1<'c: 'info, 'info>(
             reduce_only,
             crate::state::prop_amm::ClobUserRefV0 {
                 authority: user.authority,
-                sub_account_id: user.sub_account_id.into(),
+                sub_account_id: user.sub_account_id,
             },
         )
     };
@@ -599,15 +603,16 @@ pub fn handle_resolve_trigger_limit_order_v1(
                 quoter_slab: meta.quoter_slab,
                 clob_market: meta.clob_market,
                 clob_program: meta.clob_program,
-                clob_authority: crate::state::pdas::clob_authority(),
                 crank_conditions: Some(crate::state::pdas::clob_crank_conditions(
                     meta.market_index,
                 )),
                 trigger_conditions: Some(ctx.accounts.trigger_conditions.key()),
             })
             .refs(ctx.accounts.trigger_conditions.load()?.read_sync_accounts())
-            .arg(meta.market_index)?
-            .arg(meta.order_id)?,
+            .arg(TriggerLimitOrderV1Args {
+                market_index: meta.market_index,
+                order_id: meta.order_id,
+            })?,
         ))
     })
 }

@@ -5727,8 +5727,9 @@ pub mod types {
     pub struct QuoterSlabV0 {
         pub market: u16,
         pub capacity: u16,
+        pub bump: u8,
         #[serde(skip)]
-        pub padding: Padding<124>,
+        pub padding: Padding<123>,
     }
     #[derive(
         AnchorSerialize,
@@ -7774,8 +7775,9 @@ pub mod accounts {
     pub struct QuoterSlabV0 {
         pub market: u16,
         pub capacity: u16,
+        pub bump: u8,
         #[serde(skip)]
-        pub padding: Padding<124>,
+        pub padding: Padding<123>,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for QuoterSlabV0 {
@@ -9523,14 +9525,12 @@ pub mod accounts {
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct CancelOrderV1 {
-        pub state: Pubkey,
         pub user: Pubkey,
         pub authority: Pubkey,
         pub perp_market: Pubkey,
         pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub clob_authority: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for CancelOrderV1 {
@@ -9548,11 +9548,6 @@ pub mod accounts {
     impl ToAccountMetas for CancelOrderV1 {
         fn to_account_metas(&self) -> Vec<AccountMeta> {
             vec![
-                AccountMeta {
-                    pubkey: self.state,
-                    is_signer: false,
-                    is_writable: false,
-                },
                 AccountMeta {
                     pubkey: self.user,
                     is_signer: false,
@@ -9580,11 +9575,6 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.clob_program,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.clob_authority,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -9763,13 +9753,11 @@ pub mod accounts {
     #[repr(C)]
     #[derive(Copy, Clone, Default, AnchorSerialize, AnchorDeserialize, Serialize, Deserialize)]
     pub struct CancelOrdersV1 {
-        pub state: Pubkey,
         pub user: Pubkey,
         pub authority: Pubkey,
         pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub clob_authority: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for CancelOrdersV1 {
@@ -9787,11 +9775,6 @@ pub mod accounts {
     impl ToAccountMetas for CancelOrdersV1 {
         fn to_account_metas(&self) -> Vec<AccountMeta> {
             vec![
-                AccountMeta {
-                    pubkey: self.state,
-                    is_signer: false,
-                    is_writable: false,
-                },
                 AccountMeta {
                     pubkey: self.user,
                     is_signer: false,
@@ -9814,11 +9797,6 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.clob_program,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.clob_authority,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -10118,7 +10096,6 @@ pub mod accounts {
         pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub clob_authority: Pubkey,
         pub crank_conditions: Pubkey,
     }
     #[automatically_derived]
@@ -10183,11 +10160,6 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.clob_authority,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
                     pubkey: self.crank_conditions,
                     is_signer: false,
                     is_writable: true,
@@ -10236,7 +10208,6 @@ pub mod accounts {
         pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub clob_authority: Pubkey,
         pub crank_conditions: Pubkey,
     }
     #[automatically_derived]
@@ -10297,11 +10268,6 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.clob_program,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.clob_authority,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -10436,7 +10402,6 @@ pub mod accounts {
         pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub clob_authority: Pubkey,
         pub crank_conditions: Pubkey,
         pub signed_msg_user_orders: Pubkey,
         pub instructions_sysvar: Pubkey,
@@ -10499,11 +10464,6 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.clob_program,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.clob_authority,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -12068,7 +12028,6 @@ pub mod accounts {
         pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub clob_authority: Pubkey,
         pub instructions_sysvar: Pubkey,
     }
     #[automatically_derived]
@@ -12129,11 +12088,6 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.clob_program,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.clob_authority,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -12280,7 +12234,6 @@ pub mod accounts {
         pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub clob_authority: Pubkey,
         pub crank_conditions: Pubkey,
     }
     #[automatically_derived]
@@ -12341,11 +12294,6 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.clob_program,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.clob_authority,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -16067,7 +16015,6 @@ pub mod accounts {
         pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub clob_authority: Pubkey,
         pub flow_authority: Pubkey,
     }
     #[automatically_derived]
@@ -16113,11 +16060,6 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.clob_program,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.clob_authority,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -16384,7 +16326,6 @@ pub mod accounts {
         pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub clob_authority: Pubkey,
         pub flow_authority: Pubkey,
     }
     #[automatically_derived]
@@ -16435,11 +16376,6 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.clob_program,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.clob_authority,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -16566,7 +16502,6 @@ pub mod accounts {
         pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub clob_authority: Pubkey,
         pub flow_authority: Pubkey,
     }
     #[automatically_derived]
@@ -16617,11 +16552,6 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.clob_program,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.clob_authority,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -16886,7 +16816,6 @@ pub mod accounts {
         pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub clob_authority: Pubkey,
     }
     #[automatically_derived]
     impl anchor_lang::Discriminator for PlaceSignedMsgTakerOrder {
@@ -16956,11 +16885,6 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.clob_program,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.clob_authority,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -21012,7 +20936,6 @@ pub mod accounts {
         pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub clob_authority: Pubkey,
         pub crank_conditions: Pubkey,
         pub trigger_conditions: Pubkey,
     }
@@ -21078,11 +21001,6 @@ pub mod accounts {
                     is_writable: false,
                 },
                 AccountMeta {
-                    pubkey: self.clob_authority,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
                     pubkey: self.crank_conditions,
                     is_signer: false,
                     is_writable: true,
@@ -21136,7 +21054,6 @@ pub mod accounts {
         pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub clob_authority: Pubkey,
         pub crank_conditions: Pubkey,
         pub trigger_conditions: Pubkey,
         pub ix_sysvar: Pubkey,
@@ -21199,11 +21116,6 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.clob_program,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.clob_authority,
                     is_signer: false,
                     is_writable: false,
                 },
@@ -24368,7 +24280,6 @@ pub mod accounts {
         pub quoter_slab: Pubkey,
         pub clob_market: Pubkey,
         pub clob_program: Pubkey,
-        pub clob_authority: Pubkey,
         pub crank_conditions: Pubkey,
         pub treasury: Pubkey,
         pub rent: Pubkey,
@@ -24422,11 +24333,6 @@ pub mod accounts {
                 },
                 AccountMeta {
                     pubkey: self.clob_program,
-                    is_signer: false,
-                    is_writable: false,
-                },
-                AccountMeta {
-                    pubkey: self.clob_authority,
                     is_signer: false,
                     is_writable: false,
                 },

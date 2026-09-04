@@ -35,10 +35,17 @@ pub struct UpdateQuoterPriority<'info> {
     pub quoter_slab: Option<AccountLoader<'info, QuoterSlabV0>>,
 }
 
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
+pub struct UpdateQuoterPriorityArgs {
+    /// Routing tier at a shared price: lower fills first, pro rata within.
+    pub priority: u8,
+}
+
 pub fn handle_update_quoter_priority(
     ctx: Context<UpdateQuoterPriority>,
-    priority: u8,
+    args: UpdateQuoterPriorityArgs,
 ) -> Result<()> {
+    let UpdateQuoterPriorityArgs { priority } = args;
     ctx.accounts.quoter.load_mut()?.config.priority = priority;
     if let Some(slab) = &ctx.accounts.quoter_slab {
         let mut slots = quoter_slab_slots_mut(slab)?;

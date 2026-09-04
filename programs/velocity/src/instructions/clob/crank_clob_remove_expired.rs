@@ -16,11 +16,21 @@ use {
     anchor_lang::prelude::*,
 };
 
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
+pub struct CrankClobRemoveExpiredArgs {
+    pub market_index: u16,
+    /// The hinted expired order. The CLOB re-checks that it is due.
+    pub order_ref: ClobOrderRefV0,
+}
+
 pub fn handle_crank_clob_remove_expired(
     ctx: Context<CrankClobOrderRemoval>,
-    market_index: u16,
-    order_ref: ClobOrderRefV0,
+    args: CrankClobRemoveExpiredArgs,
 ) -> Result<()> {
+    let CrankClobRemoveExpiredArgs {
+        market_index,
+        order_ref,
+    } = args;
     crank_clob_removal(
         ctx,
         market_index,
@@ -41,10 +51,12 @@ pub(super) fn stage_expired_removal(ctx: &Context<ResolveClobCrank>) -> Result<O
     let market_index = ctx.accounts.crank_conditions.load()?.market_index;
     Ok(Some(
         removal_call::<crate::instruction::CrankClobRemoveExpired>(
-            &ctx,
+            ctx,
             derive_user_pdas(&found.user).0,
         )?
-        .arg(market_index)?
-        .arg(found.order_ref)?,
+        .arg(CrankClobRemoveExpiredArgs {
+            market_index,
+            order_ref: found.order_ref,
+        })?,
     ))
 }

@@ -37,8 +37,18 @@ use {
     anchor_lang::prelude::*,
 };
 
+#[derive(Clone, AnchorSerialize, AnchorDeserialize)]
+pub struct TriggerMarketOrderV1Args {
+    pub market_index: u16,
+    /// The trigger-market order to fire, by its `User.orders` id.
+    pub order_id: u32,
+    /// The taker's signed route, when the fill claims one. Empty claims the
+    /// market baseline.
+    pub signed_route: Vec<Pubkey>,
+}
+
 #[derive(Accounts)]
-#[instruction(market_index: u16, order_id: u32, signed_route: Vec<Pubkey>)]
+#[instruction(args: TriggerMarketOrderV1Args)]
 pub struct TriggerMarketOrderV1<'info> {
     pub state: AccountLoader<'info, State>,
     /// CHECK: in signed-keeper mode this must sign for `filler`; in
@@ -74,18 +84,13 @@ pub struct TriggerMarketOrderV1<'info> {
     /// registration; the handler re-checks through the slot.
     #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the CLOB place authority PDA — a book's `place_authority`, which
-    /// may place and cancel on any book for any user. Distinct from the
-    /// per-entry signer a third-party quoter is handed.
-    #[account(address = crate::signer::CLOB_AUTHORITY)]
-    pub clob_authority: UncheckedAccount<'info>,
     /// Wake-hint host for the rested remainder, optional as on every CLOB
     /// placement path.
     #[account(
         mut,
         seeds = [
             CLOB_CRANK_CONDITIONS_PDA_SEED,
-            market_index.to_le_bytes().as_ref(),
+            args.market_index.to_le_bytes().as_ref(),
         ],
         bump
     )]
@@ -118,10 +123,13 @@ pub struct TriggerMarketOrderV1<'info> {
 )]
 pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
     ctx: Context<'info, TriggerMarketOrderV1<'info>>,
-    market_index: u16,
-    order_id: u32,
-    signed_route: Vec<Pubkey>,
+    args: TriggerMarketOrderV1Args,
 ) -> Result<()> {
+    let TriggerMarketOrderV1Args {
+        market_index,
+        order_id,
+        signed_route,
+    } = args;
     let clock = &Clock::get()?;
     let state = ctx.accounts.state.load()?;
 
@@ -194,7 +202,7 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
             fired.get_base_asset_amount_unfilled(position_base)?,
             ClobUserRefV0 {
                 authority: user.authority,
-                sub_account_id: user.sub_account_id.into(),
+                sub_account_id: user.sub_account_id,
             },
             FillMode::Fill.quote_limit_price(
                 &fired,
@@ -238,7 +246,7 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
                 makers_and_referrer.user_ref_index()?.into_keys().map(
                     |(authority, sub_account_id)| ClobUserRefV0 {
                         authority,
-                        sub_account_id: sub_account_id.into(),
+                        sub_account_id,
                     },
                 ),
             )?,
@@ -356,7 +364,6 @@ pub fn handle_trigger_market_order_v1<'c: 'info, 'info>(
                 &ctx.accounts.quoter_slab,
                 &ctx.accounts.clob_market.to_account_info(),
                 &ctx.accounts.clob_program.to_account_info(),
-                &ctx.accounts.clob_authority.to_account_info(),
                 &perp_market_map,
                 &spot_market_map,
                 &mut oracle_map,
@@ -457,7 +464,6 @@ pub fn handle_resolve_trigger_market_order_v1(
                 quoter_slab: meta.quoter_slab,
                 clob_market: meta.clob_market,
                 clob_program: meta.clob_program,
-                clob_authority: crate::state::pdas::clob_authority(),
                 crank_conditions: Some(crate::state::pdas::clob_crank_conditions(
                     meta.market_index,
                 )),
@@ -473,9 +479,11 @@ pub fn handle_resolve_trigger_market_order_v1(
                 quote_spot_market_index,
                 meta.market_index,
             )
-            .arg(meta.market_index)?
-            .arg(meta.order_id)?
-            .arg(Vec::<Pubkey>::new())?,
+            .arg(TriggerMarketOrderV1Args {
+                market_index: meta.market_index,
+                order_id: meta.order_id,
+                signed_route: Vec::new(),
+            })?,
         ))
     })
 }

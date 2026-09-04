@@ -12,13 +12,6 @@ use {
     static_assertions::const_assert_eq,
 };
 
-/// Slots a fresh slab is sized for when the creator asks for no particular
-/// capacity. Capacity is the account's size, not a layout constant: a market
-/// that outgrows it grows the account (`extend_quoter_slab`). One creation
-/// call can allocate at most 10,240 bytes, which is 13 slots; the default
-/// stays under that.
-pub const QUOTER_SLAB_DEFAULT_CAPACITY: usize = 12;
-
 /// One approved quoter in a market's slab.
 #[zero_copy(unsafe)]
 #[derive(Default, Eq, PartialEq, Debug)]
@@ -77,10 +70,12 @@ impl QuoterSlotV0 {
 ///
 /// This struct is only the fixed header. The slot region follows it in the
 /// account's remaining bytes: back-to-back [`QuoterSlotV0`]s, so capacity is
-/// set by the account's size at creation and grows by growing the account,
-/// never by a layout change. Read it through [`quoter_slab_slots`] /
-/// [`quoter_slab_slots_mut`]; a vacant slot is all zeroes, which is what a
-/// fresh or grown region holds.
+/// the account's size, never a layout constant. The approval flow keeps the
+/// account right-sized: it grows by exactly the slot an approval needs and
+/// gives trailing vacancy back on revocation, so readers pay compute for the
+/// roster rather than for a guess made at creation. Read it through
+/// [`quoter_slab_slots`] / [`quoter_slab_slots_mut`]; a vacant slot is all
+/// zeroes, which is what a fresh or grown region holds.
 ///
 /// Creation is permissionless (`initialize_quoter_slab`): the payer buys
 /// rent on an all-vacant slab, and only the approval flow writes slots.
@@ -93,8 +88,13 @@ pub struct QuoterSlabV0 {
     /// Slots the region holds. Written at creation and when the account
     /// grows; the account must be at least [`QuoterSlabV0::space`] of it.
     pub capacity: u16,
+    /// The slab PDA's bump, stored at creation. The slab is the identity
+    /// velocity signs every external quoter CPI as (see `crate::signer`), and
+    /// signing needs the bump; a stored byte is cheaper than a derivation on
+    /// every leg.
+    pub bump: u8,
     /// Header reserve, so future header fields never move the slot region.
-    pub padding: [u8; 124],
+    pub padding: [u8; 123],
 }
 
 impl Default for QuoterSlabV0 {
@@ -102,7 +102,8 @@ impl Default for QuoterSlabV0 {
         QuoterSlabV0 {
             market: 0,
             capacity: 0,
-            padding: [0; 124],
+            bump: 0,
+            padding: [0; 123],
         }
     }
 }
@@ -116,6 +117,13 @@ const_assert_eq!(QuoterSlabV0::SLOT_REGION_OFFSET % 8, 0);
 
 /// PDA: one slab per perp market.
 pub const QUOTER_SLAB_PDA_SEED: &[u8] = b"quoter_slab";
+
+/// Signing seeds for a market's slab — the identity velocity signs every
+/// external quoter CPI as. `market` must be the header's market index in
+/// little-endian bytes and `bump` the header's stored bump.
+pub fn get_quoter_slab_signer_seeds<'a>(market: &'a [u8; 2], bump: &'a u8) -> [&'a [u8]; 3] {
+    [QUOTER_SLAB_PDA_SEED, market, bytemuck::bytes_of(bump)]
+}
 
 impl QuoterSlabV0 {
     /// Where the slot region starts: discriminator + header.

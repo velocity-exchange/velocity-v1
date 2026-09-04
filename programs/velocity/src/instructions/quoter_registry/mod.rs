@@ -8,7 +8,6 @@
 //! `is_active` (the kill switch must land at once), `priority` (admin-set),
 //! and the oracle band (it can only tighten a bound the admin vetted).
 
-pub mod extend_quoter_slab;
 pub mod initialize_quoter;
 pub mod initialize_quoter_slab;
 pub mod update_quoter_accounts;
@@ -20,8 +19,7 @@ pub mod update_quoter_priority;
 pub mod update_quoter_watch;
 
 pub use {
-    extend_quoter_slab::*, initialize_quoter::*, initialize_quoter_slab::*,
-    update_quoter_accounts::*, update_quoter_active::*, update_quoter_approved::*,
-    update_quoter_config::*, update_quoter_max_oracle_deviation::*, update_quoter_priority::*,
-    update_quoter_watch::*,
+    initialize_quoter::*, initialize_quoter_slab::*, update_quoter_accounts::*,
+    update_quoter_active::*, update_quoter_approved::*, update_quoter_config::*,
+    update_quoter_max_oracle_deviation::*, update_quoter_priority::*, update_quoter_watch::*,
 };

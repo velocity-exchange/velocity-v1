@@ -305,7 +305,7 @@ fn fill_order<'c: 'info, 'info>(
             order.get_base_asset_amount_unfilled(position_base)?,
             crate::state::prop_amm::ClobUserRefV0 {
                 authority: user.authority,
-                sub_account_id: user.sub_account_id.into(),
+                sub_account_id: user.sub_account_id,
             },
             // A DLOB order carries no route. Only a signed message names one,
             // and such an order routes at placement and rests any remainder on
@@ -337,7 +337,7 @@ fn fill_order<'c: 'info, 'info>(
                 makers_and_referrer.user_ref_index()?.into_keys().map(
                     |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
                         authority,
-                        sub_account_id: sub_account_id.into(),
+                        sub_account_id,
                     },
                 ),
             )?,
@@ -390,13 +390,13 @@ fn fill_order<'c: 'info, 'info>(
     let (base_asset_amount_filled, _) = controller::orders::fill_perp_order_with_router(
         controller::orders::FillTarget::Slot(order_id),
         &*accounts.state.load()?,
-        &accounts.user,
-        &accounts.user_stats,
+        accounts.user,
+        accounts.user_stats,
         &spot_market_map,
         &perp_market_map,
         &mut oracle_map,
-        &accounts.filler,
-        &accounts.filler_stats,
+        accounts.filler,
+        accounts.filler_stats,
         &makers_and_referrer,
         &makers_and_referrer_stats,
         clock,
@@ -472,7 +472,6 @@ fn fill_order<'c: 'info, 'info>(
                     clob.quoter_slab,
                     clob.clob_market,
                     clob.clob_program,
-                    clob.clob_authority,
                     &perp_market_map,
                     &spot_market_map,
                     &mut oracle_map,
@@ -1017,8 +1016,8 @@ pub fn handle_place_signed_msg_taker_order<'c: 'info, 'info>(
     )?;
 
     if let Some(ref mut escrow) = escrow {
-        let mut taker = load_mut!(ctx.accounts.user)?;
-        escrow.revoke_completed_orders(&mut taker)?;
+        let taker = load_mut!(ctx.accounts.user)?;
+        escrow.revoke_completed_orders(&taker)?;
     }
     Ok(())
 }
@@ -1066,7 +1065,7 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
             order.get_base_asset_amount_unfilled(position_base)?,
             crate::state::prop_amm::ClobUserRefV0 {
                 authority: user.authority,
-                sub_account_id: user.sub_account_id.into(),
+                sub_account_id: user.sub_account_id,
             },
             // Zero progress prices the auction at its start. A signed-message
             // order takes only genuine improvement now and rests the rest, so
@@ -1097,7 +1096,7 @@ fn fill_signed_msg_taker_order<'c: 'info, 'info>(
                 makers_and_referrer.user_ref_index()?.into_keys().map(
                     |(authority, sub_account_id)| crate::state::prop_amm::ClobUserRefV0 {
                         authority,
-                        sub_account_id: sub_account_id.into(),
+                        sub_account_id,
                     },
                 ),
             )?,
@@ -1245,7 +1244,6 @@ fn rest_signed_msg_remainder<'c: 'info, 'info>(
         &ctx.accounts.quoter_slab,
         &ctx.accounts.clob_market.to_account_info(),
         &ctx.accounts.clob_program.to_account_info(),
-        &ctx.accounts.clob_authority.to_account_info(),
         perp_market_map,
         spot_market_map,
         oracle_map,
@@ -4014,9 +4012,12 @@ pub fn handle_sweep_perp_market_fees(
 )]
 pub fn handle_forfeit_revenue_share_order(
     ctx: Context<ForfeitRevenueShareOrder>,
-    market_index: u16,
-    order_index: u32,
+    args: ForfeitRevenueShareOrderArgs,
 ) -> Result<()> {
+    let ForfeitRevenueShareOrderArgs {
+        market_index,
+        order_index,
+    } = args;
     let clock = Clock::get()?;
     let state = ctx.accounts.state.load()?;
     let perp_market = &mut load_mut!(ctx.accounts.perp_market)?;
@@ -4091,9 +4092,12 @@ pub fn handle_forfeit_revenue_share_order(
 )]
 pub fn handle_settle_revenue_share<'c: 'info, 'info>(
     ctx: Context<'info, SettleRevenueShare<'info>>,
-    market_index: u16,
-    num_owner_sub_accounts: u8,
+    args: SettleRevenueShareArgs,
 ) -> Result<()> {
+    let SettleRevenueShareArgs {
+        market_index,
+        num_owner_sub_accounts,
+    } = args;
     let clock = Clock::get()?;
     let state = ctx.accounts.state.load()?;
 
@@ -4281,8 +4285,9 @@ pub fn handle_update_spot_market_cumulative_interest(
 )]
 pub fn handle_refresh_spot_market_interest<'c: 'info, 'info>(
     ctx: Context<'info, RefreshSpotMarketInterest<'info>>,
-    market_indexes: Vec<u16>,
+    args: RefreshSpotMarketInterestArgs,
 ) -> Result<()> {
+    let RefreshSpotMarketInterestArgs { market_indexes } = args;
     // A user holds eight spot positions, and every perp market quotes the same spot market
     // (`initialize_perp_market` hardcodes it and no setter exists), so ten markets cover every
     // market one user's equity can read. The cap keeps one call inside a compute budget.
@@ -4989,7 +4994,7 @@ pub struct PlaceSignedMsgTakerOrder<'info> {
     /// a router fill.
     pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
     /// CHECK: validated against the book slot's registered response account
-    /// (`ClobMarket::from_quoter`), so a valid slot cannot be pointed at an
+    /// (`ClobMarket::from_slab`), so a valid slot cannot be pointed at an
     /// arbitrary account.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
@@ -4997,12 +5002,6 @@ pub struct PlaceSignedMsgTakerOrder<'info> {
     /// registration; the handler re-checks through the slot.
     #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
-    /// is set to. Its own key, distinct from the per-entry signer a
-    /// third-party quoter is handed: signer privilege is inherited by a
-    /// callee, and this one may place and cancel on any book, for any user.
-    #[account(address = crate::signer::CLOB_AUTHORITY)]
-    pub clob_authority: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
@@ -5309,13 +5308,20 @@ pub struct SweepPerpMarketFees<'info> {
     pub oracle: UncheckedAccount<'info>,
 }
 
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
+pub struct ForfeitRevenueShareOrderArgs {
+    pub market_index: u16,
+    /// Index of the escrow order row to forfeit.
+    pub order_index: u32,
+}
+
 #[derive(Accounts)]
-#[instruction(market_index: u16)]
+#[instruction(args: ForfeitRevenueShareOrderArgs)]
 pub struct ForfeitRevenueShareOrder<'info> {
     pub state: AccountLoader<'info, State>,
     #[account(
         mut,
-        seeds = [b"perp_market", market_index.to_le_bytes().as_ref()],
+        seeds = [b"perp_market", args.market_index.to_le_bytes().as_ref()],
         bump,
     )]
     pub perp_market: AccountLoader<'info, PerpMarket>,
@@ -5342,6 +5348,13 @@ pub struct ForfeitRevenueShareOrder<'info> {
     /// that it does not exist.
     /// CHECK: the handler derives the required address from the beneficiary of the row and rejects any other address. Anchor `seeds` cannot express this, because the address depends on `builder_idx` and on `approved_builders`, which the handler reads at run time.
     pub beneficiary_user: UncheckedAccount<'info>,
+}
+
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
+pub struct SettleRevenueShareArgs {
+    pub market_index: u16,
+    /// How many of the owner's sub-accounts ride the remaining accounts.
+    pub num_owner_sub_accounts: u8,
 }
 
 #[derive(Accounts)]
@@ -5382,6 +5395,11 @@ pub struct UpdateSpotMarketCumulativeInterest<'info> {
 /// The markets to refresh arrive as writable spot market accounts in `remaining_accounts`.
 /// `SpotMarketMap` reads each market's index out of the account it loads, so a market is refreshed
 /// only when its own account is passed.
+#[derive(Clone, AnchorSerialize, AnchorDeserialize)]
+pub struct RefreshSpotMarketInterestArgs {
+    pub market_indexes: Vec<u16>,
+}
+
 #[derive(Accounts)]
 pub struct RefreshSpotMarketInterest<'info> {
     pub state: AccountLoader<'info, State>,

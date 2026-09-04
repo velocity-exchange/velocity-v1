@@ -315,10 +315,10 @@ pub fn snap_to_oracle(
     // PerpMarket-stats field — the orchestrator updates it via
     // `refresh_perp_market_stats_from_oracle` alongside this call.
     if let Some(validity) = oracle_validity {
-        if is_oracle_valid_for_action(validity, Some(VelocityAction::FillOrderAmmLowRisk))? {
-            if !projection.rejected_due_to_affordability {
-                market.amm.last_update_slot = slot;
-            }
+        if is_oracle_valid_for_action(validity, Some(VelocityAction::FillOrderAmmLowRisk))?
+            && !projection.rejected_due_to_affordability
+        {
+            market.amm.last_update_slot = slot;
         }
     }
 

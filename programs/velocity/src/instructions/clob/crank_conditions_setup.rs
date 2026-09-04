@@ -17,7 +17,7 @@
 //! trigger slot — none of which the book holds.
 //!
 //! So [`register_clob_crank_conditions`] hands the book velocity's resolvers
-//! and velocity's account list, and [`write_clob_crank_conditions`] keeps the
+//! and velocity's account list, and [`ClobCrankConditionsV0::write_crank_conditions`] keeps the
 //! one wake that is not about the book: the poll that catches a cross a
 //! PropAMM created by repricing.
 //!
@@ -131,89 +131,95 @@ pub fn clob_crank_registration(
     })
 }
 
-/// (Re)write velocity's own block: the cross fallback poll, and the market
-/// references every staged executor is built from.
-pub fn write_clob_crank_conditions(
-    conditions: &mut ClobCrankConditionsV0,
-    keys: &ClobCrankConditionKeys,
-    market_index: u16,
-    payments: CrankPaymentsV0,
-    min_cross_surplus: u64,
-    cross_fallback_slots: u64,
-    refill_watermark_lamports: u64,
-) -> Result<()> {
-    validate!(
-        payments.all_priced(),
-        ErrorCode::DefaultError,
-        "every crank must be priced: turners have no signal to take unpaid work"
-    )?;
-    validate!(
-        cross_fallback_slots > 0,
-        ErrorCode::DefaultError,
-        "cross fallback interval must be nonzero"
-    )?;
+impl ClobCrankConditionsV0 {
+    /// (Re)write velocity's own block: the cross fallback poll, and the
+    /// market references every staged executor is built from.
+    ///
+    /// Declared here rather than in `state::clob_crank` because everything it
+    /// writes — the resolver keys, the payments, the condition specs — is the
+    /// attach's business; the state module only holds the layout.
+    pub fn write_crank_conditions(
+        &mut self,
+        keys: &ClobCrankConditionKeys,
+        market_index: u16,
+        payments: CrankPaymentsV0,
+        min_cross_surplus: u64,
+        cross_fallback_slots: u64,
+        refill_watermark_lamports: u64,
+    ) -> Result<()> {
+        validate!(
+            payments.all_priced(),
+            ErrorCode::DefaultError,
+            "every crank must be priced: turners have no signal to take unpaid work"
+        )?;
+        validate!(
+            cross_fallback_slots > 0,
+            ErrorCode::DefaultError,
+            "cross fallback interval must be nonzero"
+        )?;
 
-    // The block stamps its own account offset before anything points into
-    // it. Stored once on the account; the condition below points at it.
-    // Index 0 by contract: the staged response pointer names the scratch.
-    conditions.init_block()?;
-    let resolvers = conditions.write_resolvers(&keys.resolver_accounts())?;
+        // The block stamps its own account offset before anything points into
+        // it. Stored once on the account; the condition below points at it.
+        // Index 0 by contract: the staged response pointer names the scratch.
+        self.init_block()?;
+        let resolvers = self.write_resolvers(&keys.resolver_accounts())?;
 
-    conditions.market_index = market_index;
-    conditions.refill_watermark_lamports = refill_watermark_lamports;
-    conditions.crank_payments = payments;
-    conditions.min_cross_surplus = min_cross_surplus;
-    conditions.oracle = keys.oracle;
-    conditions.quote_spot_market_index = keys.quote_spot_market_index;
-    conditions.set_condition(
-        CLOB_CRANK_CROSS_FALLBACK,
-        // A PropAMM crossing the CLOB writes to neither account the book's
-        // own cross watch covers, so the poll is that case's liveness floor
-        // (the book publisher is the fast path).
-        &ConditionV0::every_slots(
-            cross_fallback_slots,
-            CrankSpecV0 {
-                resolver_program: crate::ID.to_bytes(),
-                resolver_disc: disc8(crate::instruction::ResolveClobCrank::DISCRIMINATOR)?,
-                min_payment: u64::from(payments.cross.min(payments.taker_origin_cross)),
-            },
-            resolvers,
-        ),
-    )?;
-    // The reservoir's own liveness. A lamport balance is account metadata and
-    // a watch reads account data, so the account mirrors its spendable balance
-    // into `spendable_mirror` and this wakes on that value falling to the
-    // watermark. Watched account and block account are the same one, so the
-    // watch that finds this block already covers the value.
-    conditions.set_condition(
-        CLOB_CRANK_REFILL,
-        &ConditionV0::on_value_cross(
-            keys.crank_conditions.to_bytes(),
-            <u32 as core::convert::TryFrom<usize>>::try_from(
-                crate::state::clob_crank::CLOB_CRANK_SPENDABLE_MIRROR_OFFSET,
-            )
-            .map_err(|_| error!(ErrorCode::DefaultError))?,
-            8,
-            relay_spec::WatchValue::Unsigned(refill_watermark_lamports),
-            // Due when the mirrored balance is at or below the watermark.
-            1,
-            CrankSpecV0 {
-                resolver_program: crate::ID.to_bytes(),
-                resolver_disc: disc8(crate::instruction::ResolveClobCrank::DISCRIMINATOR)?,
-                // A turner drops any condition advertising less than its own
-                // configured floor, so this states what the refill really
-                // pays. Priced from the same rails as every other crank and
-                // stored on this account, so re-pricing the network re-prices
-                // it on the next attach — the treasury holds the lamports, not
-                // the price.
-                min_payment: u64::from(payments.refill),
-            },
-            resolvers,
-        ),
-    )?;
-    // A new account's mirror is zero, which reads as below the watermark, so
-    // the refill fires as soon as the market is attached. That is the intent:
-    // a market funds its own reservoir from the treasury and nobody seeds it
-    // by hand.
-    Ok(())
+        self.market_index = market_index;
+        self.refill_watermark_lamports = refill_watermark_lamports;
+        self.crank_payments = payments;
+        self.min_cross_surplus = min_cross_surplus;
+        self.oracle = keys.oracle;
+        self.quote_spot_market_index = keys.quote_spot_market_index;
+        self.set_condition(
+            CLOB_CRANK_CROSS_FALLBACK,
+            // A PropAMM crossing the CLOB writes to neither account the book's
+            // own cross watch covers, so the poll is that case's liveness floor
+            // (the book publisher is the fast path).
+            &ConditionV0::every_slots(
+                cross_fallback_slots,
+                CrankSpecV0 {
+                    resolver_program: crate::ID.to_bytes(),
+                    resolver_disc: disc8(crate::instruction::ResolveClobCrank::DISCRIMINATOR)?,
+                    min_payment: u64::from(payments.cross.min(payments.taker_origin_cross)),
+                },
+                resolvers,
+            ),
+        )?;
+        // The reservoir's own liveness. A lamport balance is account metadata and
+        // a watch reads account data, so the account mirrors its spendable balance
+        // into `spendable_mirror` and this wakes on that value falling to the
+        // watermark. Watched account and block account are the same one, so the
+        // watch that finds this block already covers the value.
+        self.set_condition(
+            CLOB_CRANK_REFILL,
+            &ConditionV0::on_value_cross(
+                keys.crank_conditions.to_bytes(),
+                <u32 as core::convert::TryFrom<usize>>::try_from(
+                    crate::state::clob_crank::CLOB_CRANK_SPENDABLE_MIRROR_OFFSET,
+                )
+                .map_err(|_| error!(ErrorCode::DefaultError))?,
+                8,
+                relay_spec::WatchValue::Unsigned(refill_watermark_lamports),
+                // Due when the mirrored balance is at or below the watermark.
+                1,
+                CrankSpecV0 {
+                    resolver_program: crate::ID.to_bytes(),
+                    resolver_disc: disc8(crate::instruction::ResolveClobCrank::DISCRIMINATOR)?,
+                    // A turner drops any condition advertising less than its own
+                    // configured floor, so this states what the refill really
+                    // pays. Priced from the same rails as every other crank and
+                    // stored on this account, so re-pricing the network re-prices
+                    // it on the next attach — the treasury holds the lamports, not
+                    // the price.
+                    min_payment: u64::from(payments.refill),
+                },
+                resolvers,
+            ),
+        )?;
+        // A new account's mirror is zero, which reads as below the watermark, so
+        // the refill fires as soon as the market is attached. That is the intent:
+        // a market funds its own reservoir from the treasury and nobody seeds it
+        // by hand.
+        Ok(())
+    }
 }

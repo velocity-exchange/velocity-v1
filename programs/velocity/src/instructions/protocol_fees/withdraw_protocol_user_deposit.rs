@@ -40,7 +40,7 @@ use {
 };
 
 #[derive(Accounts)]
-#[instruction(market_index: u16)]
+#[instruction(args: WithdrawProtocolUserDepositArgs)]
 pub struct WithdrawProtocolUserDeposit<'info> {
     pub state: AccountLoader<'info, State>,
     #[account(mut)]
@@ -54,13 +54,13 @@ pub struct WithdrawProtocolUserDeposit<'info> {
     pub protocol_user: AccountLoader<'info, User>,
     #[account(
         mut,
-        seeds = [b"spot_market", market_index.to_le_bytes().as_ref()],
+        seeds = [b"spot_market", args.market_index.to_le_bytes().as_ref()],
         bump
     )]
     pub spot_market: AccountLoader<'info, SpotMarket>,
     #[account(
         mut,
-        seeds = [b"spot_market_vault".as_ref(), market_index.to_le_bytes().as_ref()],
+        seeds = [b"spot_market_vault".as_ref(), args.market_index.to_le_bytes().as_ref()],
         has_one = mint,
         bump,
     )]
@@ -90,11 +90,20 @@ pub struct WithdrawProtocolUserDeposit<'info> {
     pub associated_token_program: Program<'info, AssociatedToken>,
 }
 
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
+pub struct WithdrawProtocolUserDepositArgs {
+    pub market_index: u16,
+    pub amount: u64,
+}
+
 pub fn handle_withdraw_protocol_user_deposit<'c: 'info, 'info>(
     ctx: Context<'info, WithdrawProtocolUserDeposit<'info>>,
-    market_index: u16,
-    amount: u64,
+    args: WithdrawProtocolUserDepositArgs,
 ) -> Result<()> {
+    let WithdrawProtocolUserDepositArgs {
+        market_index,
+        amount,
+    } = args;
     let state = ctx.accounts.state.load()?;
     let now = Clock::get()?.unix_timestamp;
     let user = &mut load_mut!(ctx.accounts.protocol_user)?;

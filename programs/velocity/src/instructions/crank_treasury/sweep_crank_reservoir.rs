@@ -21,8 +21,14 @@ use {
     anchor_lang::prelude::*,
 };
 
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
+pub struct SweepCrankReservoirArgs {
+    pub market_index: u16,
+    pub lamports: u64,
+}
+
 #[derive(Accounts)]
-#[instruction(market_index: u16)]
+#[instruction(args: SweepCrankReservoirArgs)]
 pub struct SweepCrankReservoir<'info> {
     #[account(mut, seeds = [CRANK_TREASURY_PDA_SEED], bump)]
     pub treasury: AccountLoader<'info, CrankTreasuryV0>,
@@ -30,7 +36,7 @@ pub struct SweepCrankReservoir<'info> {
         mut,
         seeds = [
             crate::state::clob_crank::CLOB_CRANK_CONDITIONS_PDA_SEED,
-            market_index.to_le_bytes().as_ref(),
+            args.market_index.to_le_bytes().as_ref(),
         ],
         bump
     )]
@@ -42,9 +48,12 @@ pub struct SweepCrankReservoir<'info> {
 
 pub fn handle_sweep_crank_reservoir(
     ctx: Context<SweepCrankReservoir>,
-    market_index: u16,
-    lamports: u64,
+    args: SweepCrankReservoirArgs,
 ) -> Result<()> {
+    let SweepCrankReservoirArgs {
+        market_index,
+        lamports,
+    } = args;
     let conditions = ctx.accounts.crank_conditions.to_account_info();
     let rent_minimum = Rent::get()?.minimum_balance(conditions.data_len());
     // The same helper the reservoir pays keepers with, so a sweep is held

@@ -48,7 +48,7 @@ pub struct PlaceAndMakeV1<'info> {
     /// book its `Clob` slot names.
     pub quoter_slab: AccountLoader<'info, QuoterSlabV0>,
     /// CHECK: validated against the book slot's registered response account
-    /// (`ClobMarket::from_quoter`), so a valid slot can't be pointed at an
+    /// (`ClobMarket::from_slab`), so a valid slot can't be pointed at an
     /// arbitrary account.
     #[account(mut)]
     pub clob_market: UncheckedAccount<'info>,
@@ -56,10 +56,6 @@ pub struct PlaceAndMakeV1<'info> {
     /// registration; the handler re-checks through the slot.
     #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
-    /// is set to, and nothing a third-party quoter is ever handed.
-    #[account(address = crate::signer::CLOB_AUTHORITY)]
-    pub clob_authority: UncheckedAccount<'info>,
     /// The flow authority, signing this transaction as a named account.
     /// Required only for a faster-than-default activation delay — presence
     /// is the attestation. The zero key cannot sign, so an unset flow
@@ -72,16 +68,26 @@ pub struct PlaceAndMakeV1<'info> {
     pub flow_authority: Option<Signer<'info>>,
 }
 
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
+pub struct PlaceAndMakePerpOrderV1Args {
+    pub params: OrderParams,
+    /// The book speed bump the maker rests behind. `None` takes the book's
+    /// default. A value below the default needs the flow-authority
+    /// attestation.
+    pub activation_delay_slots: Option<u32>,
+}
+
 #[access_control(
     fill_not_paused(&ctx.accounts.state)
 )]
 pub fn handle_place_and_make_perp_order_v1<'c: 'info, 'info>(
     ctx: Context<'info, PlaceAndMakeV1<'info>>,
-    params: OrderParams,
-    // The book speed bump the maker rests behind. `None` takes the book's
-    // default. A value below the default needs the flow-authority attestation.
-    activation_delay_slots: Option<u32>,
+    args: PlaceAndMakePerpOrderV1Args,
 ) -> Result<()> {
+    let PlaceAndMakePerpOrderV1Args {
+        params,
+        activation_delay_slots,
+    } = args;
     let clock = Clock::get()?;
     let state = ctx.accounts.state.load()?;
     let user_key = ctx.accounts.user.key();
@@ -184,7 +190,6 @@ pub fn handle_place_and_make_perp_order_v1<'c: 'info, 'info>(
         &ctx.accounts.quoter_slab,
         &ctx.accounts.clob_market.to_account_info(),
         &ctx.accounts.clob_program.to_account_info(),
-        &ctx.accounts.clob_authority.to_account_info(),
         &perp_market_map,
         &spot_market_map,
         &mut oracle_map,

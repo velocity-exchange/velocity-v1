@@ -201,7 +201,6 @@ pub fn try_place_remainder_on_clob<'info>(
     quoter_slab: &AccountLoader<'info, QuoterSlabV0>,
     clob_market: &AccountInfo<'info>,
     clob_program: &AccountInfo<'info>,
-    clob_authority: &AccountInfo<'info>,
     perp_market_map: &crate::state::perp_market_map::PerpMarketMap,
     spot_market_map: &crate::state::spot_market_map::SpotMarketMap,
     oracle_map: &mut crate::state::oracle_map::OracleMap,
@@ -238,21 +237,11 @@ pub fn try_place_remainder_on_clob<'info>(
     activation_delay_slots: Option<u32>,
     clock: &Clock,
 ) -> Result<Option<u64>> {
-    let clob = {
-        let slot = quoter_slab_clob(quoter_slab, market_index)?;
-        let clob = ClobMarket::from_quoter(
-            &slot.config,
-            market_index,
-            clob_market,
-            clob_program,
-            clob_authority,
-        )?;
-        if !slot.quotes() {
-            msg!("clob quoter inactive; remainder stays cancelled");
-            return Ok(None);
-        }
-        clob
-    };
+    if !quoter_slab_clob(quoter_slab, market_index)?.quotes() {
+        msg!("clob quoter inactive; remainder stays cancelled");
+        return Ok(None);
+    }
+    let clob = ClobMarket::from_slab(quoter_slab, market_index, clob_market, clob_program)?;
 
     // A remainder below the book's minimum cannot rest — the book rejects it,
     // and that rejection would revert the whole fill that already landed. A
@@ -326,7 +315,7 @@ pub fn try_place_remainder_on_clob<'info>(
         }
         crate::state::prop_amm::ClobUserRefV0 {
             authority: user.authority,
-            sub_account_id: user.sub_account_id.into(),
+            sub_account_id: user.sub_account_id,
         }
     };
 

@@ -80,12 +80,6 @@ pub struct ModifyOrderV1<'info> {
     /// registration; the handler re-checks through the slot.
     #[account(address = crate::ids::clob_program::id())]
     pub clob_program: UncheckedAccount<'info>,
-    /// CHECK: the CLOB place authority PDA — what a book's `place_authority`
-    /// is set to. Its own key, distinct from the per-entry signer a
-    /// third-party quoter is handed: signer privilege is inherited by a
-    /// callee, and this one may place and cancel on any book, for any user.
-    #[account(address = crate::signer::CLOB_AUTHORITY)]
-    pub clob_authority: UncheckedAccount<'info>,
     /// The flow authority, signing this transaction as a named account.
     /// Required only for a faster-than-default activation delay on the
     /// replacement — presence is the attestation. The zero key cannot sign,
@@ -156,12 +150,12 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
             ErrorCode::DefaultError,
             "CLOB quoter is not active and approved; cancel the order instead"
         )?;
-        ClobMarket::from_quoter(
-            &slot.config,
+        drop(slot);
+        ClobMarket::from_slab(
+            &ctx.accounts.quoter_slab,
             params.market_index,
             &ctx.accounts.clob_market,
             &ctx.accounts.clob_program,
-            &ctx.accounts.clob_authority,
         )?
     };
     validate!(
@@ -197,7 +191,7 @@ pub fn handle_modify_order_v1<'c: 'info, 'info>(
         let user = crate::load!(ctx.accounts.user)?;
         ClobUserRefV0 {
             authority: user.authority,
-            sub_account_id: user.sub_account_id.into(),
+            sub_account_id: user.sub_account_id,
         }
     };
 

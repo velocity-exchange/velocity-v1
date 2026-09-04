@@ -7,6 +7,10 @@
 //! `#[derive(Accounts)]` structs are shared with non-AMM perp-market admin
 //! instructions and continue to live in `admin.rs`.
 
+// Edition 2018: `TryInto` is not in the prelude. Used only by the hot-key
+// check that test builds compile out.
+#[cfg(not(feature = "anchor-test"))]
+use std::convert::TryInto;
 use {
     crate::{
         auth::{check_hot, check_warm},
@@ -44,7 +48,6 @@ use {
     },
     anchor_lang::{prelude::*, Discriminator},
     anchor_spl::token_interface::{TokenAccount, TokenInterface},
-    std::convert::TryInto,
 };
 
 pub fn handle_initialize_amm_cache(ctx: Context<InitializeAmmCache>) -> Result<()> {

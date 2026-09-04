@@ -24,10 +24,16 @@ pub struct WithdrawCrankTreasury<'info> {
     pub state: AccountLoader<'info, State>,
 }
 
+#[derive(Clone, Copy, AnchorSerialize, AnchorDeserialize)]
+pub struct WithdrawCrankTreasuryArgs {
+    pub lamports: u64,
+}
+
 pub fn handle_withdraw_crank_treasury(
     ctx: Context<WithdrawCrankTreasury>,
-    lamports: u64,
+    args: WithdrawCrankTreasuryArgs,
 ) -> Result<()> {
+    let WithdrawCrankTreasuryArgs { lamports } = args;
     let treasury = ctx.accounts.treasury.to_account_info();
     let rent_minimum = Rent::get()?.minimum_balance(treasury.data_len());
     // `pay_out` holds the account above its own rent exemption, so a withdraw

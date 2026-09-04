@@ -10,6 +10,7 @@
 		"@anchor-lang/core": "1.0.1",
 		"@changesets/changelog-github": "0.5.2",
 		"@changesets/cli": "2.31.0",
+		"@clack/prompts": "0.11.0",
 		"@coral-xyz/anchor": "npm:@anchor-lang/core@1.0.1",
 		"@coral-xyz/anchor-29": "npm:@coral-xyz/anchor@0.29.0",
 		"@jest/globals": "29.7.0",
@@ -28,6 +29,7 @@
 		"@typescript-eslint/eslint-plugin": "6.21.0",
 		"@typescript-eslint/parser": "6.21.0",
 		"chai": "4.4.1",
+		"commander": "12.1.0",
 		"eslint": "8.57.0",
 		"eslint-config-prettier": "8.3.0",
 		"eslint-plugin-prettier": "3.4.0",
@@ -76,6 +78,7 @@
 		"program:idl:vaults": "anchor idl build --skip-lint -p vaults -o packages/vaults-sdk/src/idl/vaults.json && anchor idl type packages/vaults-sdk/src/idl/vaults.json --out packages/vaults-sdk/src/types/vaults.ts && bun run prettify:fix",
 		"program:idl:jit-proxy": "anchor idl build --skip-lint -p jit-proxy -o packages/jit-proxy/src/idl/jit_proxy.json && anchor idl type packages/jit-proxy/src/idl/jit_proxy.json --out packages/jit-proxy/src/types/jit_proxy.ts && bun run prettify:fix",
 		"rust:build": "cargo build --locked --manifest-path rust/Cargo.toml",
+		"release": "bun scripts/release/index.ts",
 		"fmt:rust": "bash scripts/fmt-rust.sh",
 		"fmt:rust:check": "bash scripts/fmt-rust.sh --check"
 	},

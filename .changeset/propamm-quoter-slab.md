@@ -24,10 +24,17 @@ removal paths keep working on a dead book. `updateQuoterActive`, `updateQuoterPr
 plus per-leg index lists. `updateQuoterAccounts` takes `{ metas, quoteIndexes, executeIndexes }`
 in one call; the chunked `leg`/`index` form and `QuoterCpiLeg` are removed.
 
-**Client surface.** New permissionless `initializeQuoterSlab(marketIndex, capacity)` and
-`extendQuoterSlab(marketIndex, capacity)` — capacity is the account's size (recorded in the
-header), not a layout constant. One call allocates or adds at most 13 slots (the runtime's
-10,240-byte ceiling); extension appends vacant slots and never moves an occupied one. New `getQuoterSlabPublicKey` (seeds `["quoter_slab", marketIndex]`),
+**The slab signs everything.** The market's slab PDA is the one identity velocity signs every
+external quoter CPI as: a book's `place_authority`, a midpoint instance's `execute_authority`,
+and the signer slot in every registered CPI account list. `getClobAuthorityPublicKey`,
+`getQuoterSignerPublicKey` and the `VelocityClient` accessors are removed, every CLOB
+instruction drops its `clobAuthority` account, and fills stop carrying per-quoter signer
+accounts — one more account lock back per quoter, and one per CLOB instruction.
+
+**Client surface.** New permissionless `initializeQuoterSlab({ marketIndex })` creates a
+one-slot slab; approval right-sizes the account from then on (growth paid by the admin,
+trailing vacancy refunded on revocation), so there is no extend instruction. The header records
+the slab's own bump (`QuoterSlabV0Account.bump`). New `getQuoterSlabPublicKey` (seeds `["quoter_slab", marketIndex]`),
 `decodeQuoterSlab` (the slot region is raw bytes past the header, so the generated coder cannot
 read it), and `VelocityClient.getQuoterSlabAccount`. Type mirrors: `QuoterConfigV0`,
 `QuoterSlotV0`, `QuoterSlabV0Account`; `QuoterV0Account` becomes `{ config, padding }`.
@@ -37,4 +44,8 @@ to `quoterSlab` (the slab PDA), and `clobProgram` is pinned to velocity's CLOB p
 fills and `quoteRouter` carry the slab in the account tail instead of `QuoterV0` entries — a slot
 is consulted when its response account rides the transaction — and `quoteRouter` drops its
 `quoterCount` argument. `crankCrossMatch`'s leg indexes become slab slot indexes (the book is
-slot 0). Errors `QuoterSlabFull` (6404) and `QuoterNotOnSlab` (6405) are appended.
+slot 0), and `crankCrossMatch` names the perp market and the slab in its accounts struct.
+Every endpoint this branch added takes a single args struct
+(`PlaceAndTakePerpOrderV1Args`, `TriggerMarketOrderV1Args`, `UpdateQuoterApprovedArgs`, …);
+`fillLegacyDlobOrder` moves `marketIndex` first and drops the dead `makerOrderId`. Errors
+`QuoterSlabFull` (6404) and `QuoterNotOnSlab` (6405) are appended.
